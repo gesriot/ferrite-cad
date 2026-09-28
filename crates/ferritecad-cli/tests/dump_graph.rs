@@ -493,9 +493,10 @@ fn text_keeps_evaluation_order_and_every_stored_need() {
     let root = tempfile::tempdir().expect("directory");
     let path = root.path().join("graph.fcad");
     create_sample(&path);
-    let ids: Vec<[u8; 16]> = (1..=6).map(object_id).collect();
-    // Inserted out of read order. Output must follow evaluation order and the
-    // dependency rows as stored, including both roles of one pair.
+    // Neither object read order (5,2,3,4,1,6) nor UUID order is topological:
+    // 1 must wait for 3 and 5. Initially-ready 2 and 5 use the UUID tie-break.
+    let ids = [5, 2, 3, 4, 1, 6].map(object_id);
+    // Edges are inserted out of read order. Every stored role must survive.
     replace_with_planes(
         &path,
         &[
@@ -518,18 +519,18 @@ fn text_keeps_evaluation_order_and_every_stored_need() {
     );
 
     let text = [
-        format!("{} plane α", object_text(1)),
         format!("{} datum.plane", object_text(2)),
+        format!("{} plane α", object_text(5)),
         format!("{} sketch line", object_text(3)),
-        format!("    needs {} plane α [plane]", object_text(1)),
-        format!("{} side wall", object_text(4)),
-        format!("    needs {} sketch line [profile]", object_text(3)),
-        format!("{} boss 板", object_text(5)),
-        format!("    needs {} plane α [plane]", object_text(1)),
+        format!("    needs {} plane α [plane]", object_text(5)),
+        format!("{} boss 板", object_text(1)),
         format!("    needs {} sketch line [predecessor]", object_text(3)),
         format!("    needs {} sketch line [profile]", object_text(3)),
+        format!("    needs {} plane α [plane]", object_text(5)),
+        format!("{} side wall", object_text(4)),
+        format!("    needs {} sketch line [profile]", object_text(3)),
         format!("{} tip body", object_text(6)),
-        format!("    needs {} boss 板 [predecessor]", object_text(5)),
+        format!("    needs {} boss 板 [predecessor]", object_text(1)),
     ]
     .join("\n")
         + "\n";
@@ -538,11 +539,11 @@ fn text_keeps_evaluation_order_and_every_stored_need() {
         "digraph features {\n  rankdir=LR;\n  node [shape=box, fontname=\"sans-serif\"];\n",
     );
     for (last, name) in [
-        (1, "plane α"),
+        (5, "plane α"),
         (2, "-"),
         (3, "sketch line"),
         (4, "side wall"),
-        (5, "boss 板"),
+        (1, "boss 板"),
         (6, "tip body"),
     ] {
         dot.push_str(&format!(
@@ -551,12 +552,12 @@ fn text_keeps_evaluation_order_and_every_stored_need() {
         ));
     }
     for (dependency, dependent, role) in [
-        (1, 3, "plane"),
+        (3, 1, "predecessor"),
+        (3, 1, "profile"),
+        (5, 1, "plane"),
+        (5, 3, "plane"),
         (3, 4, "profile"),
-        (1, 5, "plane"),
-        (3, 5, "predecessor"),
-        (3, 5, "profile"),
-        (5, 6, "predecessor"),
+        (1, 6, "predecessor"),
     ] {
         dot.push_str(&format!(
             "  \"{}\" -> \"{}\" [label=\"{role}\"];\n",
