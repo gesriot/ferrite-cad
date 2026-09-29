@@ -114,6 +114,10 @@ impl FilletCorner {
 /// this build rounds: a strip narrower than the smallest radius counts as the
 /// arcs touching. Opposite corners share no Line and answer `Ok`. The same
 /// corner twice is refused here too. Nothing is clamped.
+///
+/// The rule is stated as a bound on the second radius, [`pair_bound`], the
+/// one expression discovery reports: `r2 ≤ L − r1 − MIN_RADIUS_MM`, so the
+/// largest radius discovery offers is one this check accepts.
 pub fn check_pair(
     first: &FilletCorner,
     first_radius_mm: f64,
@@ -129,8 +133,8 @@ pub fn check_pair(
     let Some((shared, length)) = shared_side(first, second) else {
         return Ok(());
     };
-    let flat = length - first_radius_mm - second_radius_mm;
-    if flat < MIN_RADIUS_MM {
+    if second_radius_mm > pair_bound(length, first_radius_mm) {
+        let flat = length - first_radius_mm - second_radius_mm;
         return Err(CadError::input(format!(
             "fillets of {first_radius_mm} mm and {second_radius_mm} mm at the two ends of Line \
              {shared} ({length} mm) would leave {flat} mm of it flat; this build keeps at least \
@@ -139,6 +143,12 @@ pub fn check_pair(
         )));
     }
     Ok(())
+}
+
+/// §28G: the largest second radius beside a first one of `first_radius_mm`
+/// on a shared Line of `length_mm`.
+pub fn pair_bound(length_mm: f64, first_radius_mm: f64) -> f64 {
+    length_mm - first_radius_mm - MIN_RADIUS_MM
 }
 
 /// The Line two corners share, with its length, if they are adjacent.
@@ -356,7 +366,7 @@ impl SavedFilletTarget {
         let pair = self
             .adjacent_fillet(corner)
             .map_or(f64::INFINITY, |(f, _, length)| {
-                length - f.radius_mm - MIN_RADIUS_MM
+                pair_bound(length, f.radius_mm)
             });
         Some(corner.max_radius_mm.min(pair))
     }

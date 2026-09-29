@@ -529,7 +529,17 @@ fn check_mesh(m: &Mesh, corner: [f64; 2], r: f64, height: f64) {
 }
 
 /// [`check_mesh`] for the plate `[x0, y0, width, depth]` (§28D moves it).
-fn check_mesh_in(m: &Mesh, [x0, y0, w, d]: [f64; 4], corner: [f64; 2], r: f64, height: f64) {
+fn check_mesh_in(m: &Mesh, rect: [f64; 4], corner: [f64; 2], r: f64, height: f64) {
+    check_mesh_rounded(m, rect, &[(corner, r)], height);
+}
+
+/// [`check_mesh_in`] for every rounded corner at once (§28G: two).
+fn check_mesh_rounded(
+    m: &Mesh,
+    [x0, y0, w, d]: [f64; 4],
+    rounded: &[([f64; 2], f64)],
+    height: f64,
+) {
     // Closed and wound one way.
     let quantise = |v: [f64; 3]| {
         let q = |x: f64| (x * 1e4).round() as i64;
@@ -566,36 +576,47 @@ fn check_mesh_in(m: &Mesh, [x0, y0, w, d]: [f64; 4], corner: [f64; 2], r: f64, h
                 && (v[2] - z).abs() < ROUNDING_MM
         })
     };
+    let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
     for c in [[x0, y0], [x0 + w, y0], [x0 + w, y0 + d], [x0, y0 + d]] {
+        let is_rounded = rounded.iter().any(|(corner, _)| near(c, *corner));
         for z in [0.0, height] {
             assert_eq!(
                 has(c[0], c[1], z),
-                c != corner,
-                "corner {c:?} at z={z}: rounded is {corner:?}"
+                !is_rounded,
+                "corner {c:?} at z={z}: rounded are {rounded:?}"
             );
         }
     }
-    // Every vertex inside the corner's r x r square lies on the arc, about the
+    // Every vertex inside a corner's r x r square lies on its arc, about the
     // centre r inward of the corner, from z = 0 to the top.
-    let centre = inward_in([x0, y0], corner, r);
-    let inside = |v: &[f64; 3]| {
-        (v[0] - corner[0]).abs() < r - ROUNDING_MM && (v[1] - corner[1]).abs() < r - ROUNDING_MM
-    };
-    let on_arc: Vec<_> = vertices.iter().filter(|v| inside(v)).collect();
-    assert!(on_arc.len() >= 4, "the mesh has no fillet wall");
-    for v in &on_arc {
-        let d = (v[0] - centre[0]).hypot(v[1] - centre[1]);
+    for &(corner, r) in rounded {
+        let centre = inward_in([x0, y0], corner, r);
+        let inside = |v: &[f64; 3]| {
+            (v[0] - corner[0]).abs() < r - ROUNDING_MM && (v[1] - corner[1]).abs() < r - ROUNDING_MM
+        };
+        let on_arc: Vec<_> = vertices.iter().filter(|v| inside(v)).collect();
         assert!(
-            (d - r).abs() < 10. * ROUNDING_MM,
-            "{v:?} is {d} from the axis"
+            on_arc.len() >= 4,
+            "the mesh has no fillet wall at {corner:?}"
         );
+        for v in &on_arc {
+            let d = (v[0] - centre[0]).hypot(v[1] - centre[1]);
+            assert!(
+                (d - r).abs() < 10. * ROUNDING_MM,
+                "{v:?} is {d} from the axis"
+            );
+        }
+        assert!(on_arc.iter().any(|v| v[2].abs() < ROUNDING_MM));
+        assert!(on_arc.iter().any(|v| (v[2] - height).abs() < ROUNDING_MM));
     }
-    assert!(on_arc.iter().any(|v| v[2].abs() < ROUNDING_MM));
-    assert!(on_arc.iter().any(|v| (v[2] - height).abs() < ROUNDING_MM));
     // Chords of a convex arc lie inside it, so a mesh removes a little more
     // than the exact fillet, never less, and not more than its sagitta allows.
-    let exact = w * d * height - (1. - PI / 4.) * r * r * height;
-    let slack = PI / 2. * r * LINEAR_MM * height;
+    let squares: f64 = rounded.iter().map(|(_, r)| r * r).sum();
+    let exact = w * d * height - (1. - PI / 4.) * squares * height;
+    let slack: f64 = rounded
+        .iter()
+        .map(|(_, r)| PI / 2. * r * LINEAR_MM * height)
+        .sum();
     assert!(
         m.volume <= exact + 1e-6 * exact && m.volume >= exact - slack - 1e-6 * exact,
         "STL volume {} is not a mesh of {exact}",
@@ -699,6 +720,29 @@ fn capability_names(path: &Path) -> Vec<String> {
 /// the predecessor and tip edges, seven names, capabilities, and the copy's
 /// own timestamp.
 fn only_the_fillet_was_added(source: &Path, copy: &Path, body: ferritecad_types::ObjectId) {
+    only_a_fillet_was_added(
+        source,
+        copy,
+        body,
+        7,
+        &[
+            "feature.fillet.v1",
+            "topology.origin-face.v1",
+            "feature.predecessor.v1",
+        ],
+    );
+}
+
+/// [`only_the_fillet_was_added`] with the number of new names and the
+/// capabilities a copy may add as parameters (§28G: eight, and only
+/// `feature.fillet.sequential.v1`).
+fn only_a_fillet_was_added(
+    source: &Path,
+    copy: &Path,
+    body: ferritecad_types::ObjectId,
+    names: usize,
+    new_capabilities: &[&str],
+) {
     let before = tables(source);
     let after = tables(copy);
     assert_eq!(
@@ -737,7 +781,7 @@ fn only_the_fillet_was_added(source: &Path, copy: &Path, body: ferritecad_types:
                 let added = mine.len() - rows.len();
                 match table.as_str() {
                     "deps" => assert_eq!(added, 1, "two edges in, one out"),
-                    "topology_refs" => assert_eq!(added, 7, "seven new names"),
+                    "topology_refs" => assert_eq!(added, names, "the new names"),
                     _ => {}
                 }
             }
@@ -760,11 +804,7 @@ fn only_the_fillet_was_added(source: &Path, copy: &Path, body: ferritecad_types:
     assert!(new.contains(&"feature.fillet.v1".to_owned()));
     for name in &new {
         assert!(
-            old.contains(name)
-                || matches!(
-                    name.as_str(),
-                    "feature.fillet.v1" | "topology.origin-face.v1" | "feature.predecessor.v1"
-                ),
+            old.contains(name) || new_capabilities.contains(&name.as_str()),
             "capability {name} was added"
         );
     }
@@ -3920,7 +3960,7 @@ mod constraints {
 
     /// A kernel and a solver, or why this build has none. A build required
     /// to link PlaneGCS must have it: this never skips there.
-    fn solving() -> bool {
+    pub(crate) fn solving() -> bool {
         if !super::native() {
             return false;
         }
@@ -3939,16 +3979,16 @@ mod constraints {
         fn constraint_row(&self) -> &Value {
             &self.catalog["sketches"][0]["constraint_edit"]
         }
-        fn plate_sketch_id(&self) -> &str {
+        pub(crate) fn plate_sketch_id(&self) -> &str {
             self.catalog["sketches"][0]["sketch_id"]
                 .as_str()
                 .expect("Sketch UUID")
         }
         /// The stored Line `i`, in stored order.
-        fn line(&self, i: usize) -> Value {
+        pub(crate) fn line(&self, i: usize) -> Value {
             self.constraint_row()["curves"][i]["curve_id"].clone()
         }
-        fn stored_starts(&self) -> Vec<[f64; 2]> {
+        pub(crate) fn stored_starts(&self) -> Vec<[f64; 2]> {
             self.constraint_row()["curves"]
                 .as_array()
                 .expect("curves")
@@ -3959,7 +3999,7 @@ mod constraints {
                 })
                 .collect()
         }
-        fn ask_constraints(&self, remove: &[Value], add: &[Value]) {
+        pub(crate) fn ask_constraints(&self, remove: &[Value], add: &[Value]) {
             write(
                 &self.request,
                 &json!({"request_version": 1, "remove": remove, "add": add}),
@@ -3981,7 +4021,7 @@ mod constraints {
             c
         }
         /// The same fixture, reading `path` instead.
-        fn at_copy(&self, path: &Path) -> Fixture {
+        pub(crate) fn at_copy(&self, path: &Path) -> Fixture {
             Fixture {
                 root: tempfile::tempdir().expect("directory"),
                 source: path.to_path_buf(),
@@ -4034,7 +4074,7 @@ mod constraints {
     }
 
     /// `[x0, y0, width, depth]` of the rectangle through these vertices.
-    fn rect_of(vertices: &[[f64; 2]]) -> [f64; 4] {
+    pub(crate) fn rect_of(vertices: &[[f64; 2]]) -> [f64; 4] {
         let lo = |k: usize| vertices.iter().map(|v| v[k]).fold(f64::INFINITY, f64::min);
         let hi = |k: usize| {
             vertices
@@ -4047,7 +4087,7 @@ mod constraints {
 
     /// The Line starts the rebuild built the plate from, and the solve's
     /// degrees of freedom, read in-process from a cold rebuild.
-    fn solved(path: &Path) -> (Vec<[f64; 2]>, usize) {
+    pub(crate) fn solved(path: &Path) -> (Vec<[f64; 2]>, usize) {
         let d = Document::open_read_only(path).expect("reopen");
         let objects = d.objects().expect("objects");
         let sketch = objects
@@ -4138,7 +4178,7 @@ mod constraints {
 
     /// The axis a Fillet of radius `r` at `corner` of `rect` has: r inward
     /// along both sides.
-    fn axis_of(rect: [f64; 4], corner: [f64; 2], r: f64) -> [f64; 2] {
+    pub(crate) fn axis_of(rect: [f64; 4], corner: [f64; 2], r: f64) -> [f64; 2] {
         let [x0, y0, w, d] = rect;
         let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
         assert!(near(corner[0], x0) || near(corner[0], x0 + w));
@@ -4822,7 +4862,7 @@ mod constraints {
 
     /// §28F: the natural order. The rectangle is dimensioned first, by the
     /// shipped constraint command, and then rounded by `fillet-edge-copy`.
-    mod first {
+    pub(crate) mod first {
         use super::*;
 
         const ROUND: &str = "fillet-edge-copy";
@@ -4830,14 +4870,14 @@ mod constraints {
 
         impl Fixture {
             /// The candidate whose stored corner is `corner`.
-            fn stored_at(&self, corner: [f64; 2]) -> &Value {
+            pub(crate) fn stored_at(&self, corner: [f64; 2]) -> &Value {
                 self.candidates()
                     .iter()
                     .find(|c| c["stored_corner_mm"] == json!(corner))
                     .unwrap_or_else(|| panic!("no candidate stored at {corner:?}"))
             }
             /// The request for that candidate, its pair written the other way.
-            fn ask_stored(&self, corner: [f64; 2], r: f64) {
+            pub(crate) fn ask_stored(&self, corner: [f64; 2], r: f64) {
                 let edge = &self.stored_at(corner)["edge"];
                 self.ask_edge(
                     &json!({"feature_id": edge["feature_id"],
@@ -4850,7 +4890,7 @@ mod constraints {
         /// A plain plate, and the same plate dimensioned by the shipped
         /// command: translated to `at`, `width` along X and `depth` along Y.
         /// Returns both fixtures and the Line starts the solve must reach.
-        fn dimensioned_plate(
+        pub(crate) fn dimensioned_plate(
             corners: [[f64; 2]; 4],
             at: [f64; 2],
             width: f64,
@@ -4879,7 +4919,7 @@ mod constraints {
         }
 
         /// The whole SQL row of the plate's Sketch.
-        fn sketch_row(path: &Path, sketch: &str) -> Vec<rusqlite::types::Value> {
+        pub(crate) fn sketch_row(path: &Path, sketch: &str) -> Vec<rusqlite::types::Value> {
             let id: ferritecad_types::ObjectId = sketch.parse().expect("UUID");
             let key = rusqlite::types::Value::Blob(id.to_bytes().to_vec());
             tables(path)["objects"]
@@ -5600,6 +5640,1172 @@ mod constraints {
             );
             std::fs::remove_file(&taken).expect("tidy");
             assert_eq!(entries(g.root.path()), names);
+        }
+    }
+}
+
+/// §28G: a second Fillet on another vertical corner of the rounded plate,
+/// through the same `fillet-edge-copy`, into a new copy. History Extrude →
+/// Fillet 1 → Fillet 2 → Body tip; both cylinders measured under their own
+/// names; the pair policy at its edge; the cache cold, Miss, Hit and with the
+/// first Fillet restored; every refusal atomic.
+mod sequential {
+    use super::constraints::first::{dimensioned_plate, sketch_row};
+    use super::constraints::{axis_of, rect_of, solved, solving};
+    use super::radius::{filleted_by_cli, filleted_without_kernel, stored_refs};
+    use super::*;
+    use ferritecad_types::ObjectId;
+
+    const SEQUENTIAL: &str = "feature.fillet.sequential.v1";
+
+    /// What one reference resolves to on the rebuilt part.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Named {
+        role: String,
+        producer: ObjectId,
+        surfaces: Vec<FaceSurface>,
+        /// The axis of a single cylinder, `[x, y]`, with its direction.
+        axis: Option<([f64; 2], [f64; 3])>,
+        on_tip: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Two {
+        faces: u64,
+        volume: f64,
+        shapes: usize,
+        named: BTreeMap<String, Named>,
+    }
+    impl Two {
+        fn same_as(&self, other: &Self) {
+            assert_eq!(self.faces, other.faces);
+            assert!((self.volume - other.volume).abs() < 1e-9 * self.volume);
+            assert_eq!(self.shapes, other.shapes);
+            assert_eq!(
+                self.named.keys().collect::<Vec<_>>(),
+                other.named.keys().collect::<Vec<_>>()
+            );
+            for (id, mine) in &self.named {
+                let theirs = &other.named[id];
+                assert_eq!(mine.role, theirs.role, "{id}");
+                assert_eq!(mine.producer, theirs.producer, "{id}");
+                assert_eq!(mine.surfaces, theirs.surfaces, "{id}");
+                assert_eq!(mine.on_tip, theirs.on_tip, "{id}");
+                match (mine.axis, theirs.axis) {
+                    (Some((a, _)), Some((b, _))) => {
+                        assert!((a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9);
+                    }
+                    (None, None) => {}
+                    other => panic!("{id}: {other:?}"),
+                }
+            }
+        }
+        /// The one reference of `role` owned by `producer`.
+        fn one(&self, role: &str, producer: ObjectId) -> &Named {
+            let found: Vec<_> = self
+                .named
+                .values()
+                .filter(|n| n.role == role && n.producer == producer)
+                .collect();
+            assert_eq!(found.len(), 1, "{role} of {producer}: {found:?}");
+            found[0]
+        }
+        fn all(&self, role: &str, producer: ObjectId) -> Vec<&Named> {
+            self.named
+                .values()
+                .filter(|n| n.role == role && n.producer == producer)
+                .collect()
+        }
+    }
+
+    fn role_of(role: &SemanticRole) -> String {
+        match role {
+            SemanticRole::OriginFilletFace { .. } => "origin fillet face".to_owned(),
+            other => role_name(other),
+        }
+    }
+
+    /// Rebuilds `path` cold or through the cache at `cache`, resolving every
+    /// stored reference in the kernel that built it.
+    fn measure_two(path: &Path, cache: Option<&Path>) -> (Two, Vec<ferritecad_eval::CacheEvent>) {
+        let doc = Document::open_read_only(path).expect("reopen");
+        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+        let mut events = Vec::new();
+        let built = match cache {
+            Some(cache_path) => {
+                let mut store = ferritecad_document::CacheStore::open(
+                    cache_path,
+                    doc.meta().document_id,
+                    kernel.identity().id(),
+                    kernel.identity().version(),
+                )
+                .expect("cache");
+                let (built, e) = ferritecad_eval::rebuild_cached(
+                    &doc,
+                    &mut kernel,
+                    &mut store,
+                    &OperationContext::default(),
+                )
+                .expect("cached rebuild");
+                events = e;
+                built
+            }
+            None => ferritecad_eval::rebuild_cold(&doc, &mut kernel, &OperationContext::default())
+                .expect("cold rebuild"),
+        };
+        let objects = doc.objects().expect("objects");
+        let body = objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+            .expect("a body");
+        let tip = built.shape(body.id).expect("the body was built");
+        let mut named = BTreeMap::new();
+        for reference in &doc.topology_refs().expect("refs") {
+            let resolved = built.resolve(reference).expect("resolve");
+            assert!(!resolved.is_empty(), "{} resolved to nothing", reference.id);
+            let producer = built
+                .shape(reference.producer_feature)
+                .expect("the producer was built");
+            for handle in &resolved {
+                assert_eq!(handle.shape(), producer, "{} was repointed", reference.id);
+            }
+            let mut surfaces: Vec<FaceSurface> = resolved
+                .iter()
+                .map(|h| kernel.face_surface(*h).expect("surface"))
+                .collect();
+            surfaces.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+            let axis = match (resolved.as_slice(), surfaces.as_slice()) {
+                ([one], [FaceSurface::Cylinder { .. }]) => {
+                    let (origin, direction) = kernel.cylinder_axis(*one).expect("axis");
+                    Some(([origin[0], origin[1]], direction))
+                }
+                _ => None,
+            };
+            named.insert(
+                reference.id.to_string(),
+                Named {
+                    role: role_of(&reference.output_role),
+                    producer: reference.producer_feature,
+                    surfaces,
+                    axis,
+                    on_tip: producer == tip,
+                },
+            );
+        }
+        let (faces, volume) = kernel.shape_stats(tip).expect("stats");
+        let two = Two {
+            faces,
+            volume,
+            shapes: built.shape_count(),
+            named,
+        };
+        built.release_all(&mut kernel);
+        doc.close().expect("close");
+        assert_eq!(kernel.live_shape_count(), 0, "every handle was released");
+        (two, events)
+    }
+
+    /// The outcome the cache reported for each feature, by feature.
+    fn outcomes(
+        events: &[ferritecad_eval::CacheEvent],
+    ) -> BTreeMap<ObjectId, Vec<ferritecad_eval::CacheOutcome>> {
+        let mut by: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for e in events {
+            by.entry(e.feature).or_default().push(e.outcome);
+        }
+        by
+    }
+
+    fn exact_two([_, _, w, d]: [f64; 4], r1: f64, r2: f64, h: f64) -> f64 {
+        (w * d - (1. - PI / 4.) * (r1 * r1 + r2 * r2)) * h
+    }
+
+    fn assert_axis(named: &Named, rect: [f64; 4], corner: [f64; 2], r: f64) {
+        let (origin, direction) = named.axis.expect("a cylinder axis");
+        let want = axis_of(rect, corner, r);
+        assert!(
+            (origin[0] - want[0]).abs() < 1e-9 && (origin[1] - want[1]).abs() < 1e-9,
+            "the axis {origin:?} is not r inward of {corner:?}"
+        );
+        assert!(direction[0].abs() < 1e-12 && direction[1].abs() < 1e-12);
+    }
+
+    fn id(v: &Value) -> ObjectId {
+        v.as_str().expect("UUID").parse().expect("UUID")
+    }
+
+    /// Whether two stored corners of an axis-aligned plate share a Line.
+    fn adjacent(a: [f64; 2], b: [f64; 2]) -> bool {
+        a != b && (a[0] == b[0] || a[1] == b[1])
+    }
+
+    /// The part's plate and the map from a stored corner to the part's.
+    struct Part {
+        rect: [f64; 4],
+        stored: Vec<[f64; 2]>,
+        solved: Vec<[f64; 2]>,
+        constrained: bool,
+    }
+    impl Part {
+        fn plain(corners: [[f64; 2]; 4]) -> Self {
+            Self {
+                rect: [X0, Y0, W, D],
+                stored: corners.to_vec(),
+                solved: corners.to_vec(),
+                constrained: false,
+            }
+        }
+        fn corner(&self, stored: [f64; 2]) -> [f64; 2] {
+            self.solved[self
+                .stored
+                .iter()
+                .position(|v| *v == stored)
+                .expect("corner")]
+        }
+    }
+
+    /// The second Fillet of `g` — a rounded plate whose Fillet is at stored
+    /// corner `first` with radius `r1` — at stored corner `second` with
+    /// radius `r2`, published by the shipped command and measured:
+    /// discovery, identities, the exact allowlist, validation, the B-Rep
+    /// cold and through a real cache Miss and Hit, both cylinders under
+    /// their own names, the mesh and the FBX.
+    #[allow(clippy::too_many_arguments)]
+    fn second_fillet(
+        g: &Fixture,
+        part: &Part,
+        first: [f64; 2],
+        r1: f64,
+        second: [f64; 2],
+        r2: f64,
+        name: &str,
+    ) -> PathBuf {
+        let before = std::fs::read(&g.source).expect("source bytes");
+        let refs = stored_refs(&g.source);
+        let first_id = id(&g.catalog["fillets"][0]["feature_id"]);
+        let first_edge = g.catalog["fillets"][0]["edge"].clone();
+
+        // Discovery: the one saved Fillet, and the three other corners.
+        let discovery = g.discovery();
+        assert_eq!(discovery["available"], true, "{discovery}");
+        let target = &discovery["target"];
+        let base = id(&target["base_feature_id"]);
+        assert_eq!(id(&target["previous_feature_id"]), first_id);
+        assert_eq!(target["profile_constrained"], part.constrained);
+        let fillets = target["fillets"].as_array().expect("fillets");
+        assert_eq!(fillets.len(), 1);
+        assert_eq!(id(&fillets[0]["feature_id"]), first_id);
+        assert_eq!(fillets[0]["edge"], first_edge);
+        assert_eq!(fillets[0]["radius_mm"], r1);
+        assert_eq!(fillets[0]["stored_corner_mm"], json!(first));
+        let candidates = g.candidates();
+        assert_eq!(candidates.len(), 3, "the three other corners");
+        assert!(
+            candidates
+                .iter()
+                .all(|c| c["stored_corner_mm"] != json!(first) && c["edge"] != first_edge)
+        );
+        let candidate = candidates
+            .iter()
+            .find(|c| c["stored_corner_mm"] == json!(second))
+            .expect("the second corner is offered")
+            .clone();
+        assert_eq!(
+            id(&candidate["edge"]["feature_id"]),
+            base,
+            "named by the base"
+        );
+        if adjacent(first, second) {
+            assert_eq!(id(&candidate["adjacent_fillet_feature_id"]), first_id);
+            assert!(candidate["shared_line_id"].is_string());
+            assert!(
+                candidate["label"]
+                    .as_str()
+                    .expect("label")
+                    .contains("shares Line")
+            );
+        } else {
+            assert!(candidate["adjacent_fillet_feature_id"].is_null());
+            assert!(candidate["shared_line_id"].is_null());
+        }
+        if part.constrained {
+            assert!(candidate["max_radius_mm"].is_null(), "{candidate}");
+        } else {
+            let lengths: Vec<f64> = (0..2)
+                .map(|k| candidate["adjacent_lengths_mm"][k].as_f64().expect("side"))
+                .collect();
+            let mut max = lengths[0].min(lengths[1]) / 2.;
+            if adjacent(first, second) {
+                let shared = if first[0] == second[0] { D } else { W };
+                max = max.min(shared - r1 - 0.01);
+            }
+            let got = candidate["max_radius_mm"].as_f64().expect("bound");
+            assert!((got - max).abs() < 1e-12, "{got} is not {max}");
+        }
+
+        // Publish, the pair written the other way round.
+        let copy = g.root.path().join(format!("{name}.fcad"));
+        g.ask_edge(
+            &json!({"feature_id": candidate["edge"]["feature_id"],
+                    "joint": [candidate["edge"]["joint"][1], candidate["edge"]["joint"][0]]}),
+            r2,
+        );
+        let v = reply(g.fillet(&copy).output().expect("process"), OP, 0);
+        let result = &v["result"];
+        assert_eq!(result["body_id"], g.body_id());
+        assert_eq!(id(&result["previous_feature_id"]), first_id, "{v}");
+        assert_eq!(result["edge"], candidate["edge"], "the canonical meaning");
+        assert_eq!(result["radius_mm"], r2);
+        assert_eq!(result["stored_corner_mm"], json!(second));
+        assert_eq!(result["profile_constrained"], part.constrained);
+        let moved = part.corner(second);
+        for k in 0..2 {
+            let got = result["corner_mm"][k].as_f64().expect("corner");
+            assert!((got - moved[k]).abs() < 1e-9, "{v} is not at {moved:?}");
+        }
+        let mut roles: Vec<&str> = result["references"]
+            .as_array()
+            .expect("references")
+            .iter()
+            .map(|r| r["role"].as_str().expect("role"))
+            .collect();
+        roles.sort_unstable();
+        assert_eq!(
+            roles,
+            [
+                "edge_fillet_face",
+                "origin_cap",
+                "origin_cap",
+                "origin_fillet_face",
+                "origin_side",
+                "origin_side",
+                "origin_side",
+                "origin_side"
+            ]
+        );
+        assert_eq!(std::fs::read(&g.source).expect("bytes"), before, "source");
+
+        // The stored history.
+        let second_id = id(&result["feature_id"]);
+        let body = id(&json!(g.body_id()));
+        let d = Document::open_read_only(&copy).expect("copy");
+        let objects = d.objects().expect("objects");
+        assert_eq!(objects.len(), 6);
+        let ObjectPayload::Fillet(stored) = &objects
+            .iter()
+            .find(|o| o.id == second_id)
+            .expect("Fillet 2")
+            .payload
+        else {
+            panic!("a Fillet");
+        };
+        assert_eq!(stored.previous, first_id, "it rounds Fillet 1's result");
+        assert_eq!(stored.edge.feature, base, "the producer is not substituted");
+        assert_eq!(stored.radius_mm, r2);
+        assert_eq!(stored.schema_version(), 2);
+        let ObjectPayload::Fillet(kept) = &objects
+            .iter()
+            .find(|o| o.id == first_id)
+            .expect("Fillet 1")
+            .payload
+        else {
+            panic!("a Fillet");
+        };
+        assert_eq!(kept.schema_version(), 1, "Fillet 1 stays a §28A Fillet");
+        assert!(objects.iter().any(|o| matches!(
+            o.payload,
+            ObjectPayload::Body(ferritecad_document::Body { tip_feature: Some(t) }) if t == second_id
+        )));
+        let now = d.topology_refs().expect("refs");
+        d.close().expect("close");
+        assert!(refs.iter().all(|r| now.contains(r)), "a name was lost");
+        assert_eq!(now.len(), refs.len() + 8);
+        let first_joint = kept.edge.joint;
+        for r in now.iter().filter(|r| !refs.contains(r)) {
+            assert_eq!((r.owner, r.producer_feature), (second_id, second_id));
+            match &r.output_role {
+                SemanticRole::EdgeFilletFace {
+                    edge_feature,
+                    joint,
+                } => assert_eq!((*edge_feature, *joint), (base, stored.edge.joint)),
+                SemanticRole::OriginFilletFace {
+                    origin_feature,
+                    edge_feature,
+                    joint,
+                } => assert_eq!(
+                    (*origin_feature, *edge_feature, *joint),
+                    (first_id, base, first_joint)
+                ),
+                SemanticRole::OriginCap { origin_feature, .. }
+                | SemanticRole::OriginSide { origin_feature, .. } => {
+                    assert_eq!(*origin_feature, base)
+                }
+                other => panic!("unexpected new role {other:?}"),
+            }
+        }
+        only_a_fillet_was_added(&g.source, &copy, body, 8, &[SEQUENTIAL]);
+        assert!(!capability_names(&g.source).contains(&SEQUENTIAL.to_owned()));
+        assert!(capability_names(&copy).contains(&SEQUENTIAL.to_owned()));
+        let schema = |path: &Path, object: ObjectId| -> i64 {
+            let c = rusqlite::Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("SQL");
+            c.query_row(
+                "SELECT schema_version FROM objects WHERE id=?1",
+                [object.to_bytes().to_vec()],
+                |r| r.get(0),
+            )
+            .expect("row")
+        };
+        assert_eq!(schema(&copy, second_id), 2, "payload v2 on disk");
+        assert_eq!(schema(&copy, first_id), 1);
+        if part.constrained {
+            let sketch = g.plate_sketch_id();
+            assert_eq!(sketch_row(&copy, sketch), sketch_row(&g.source, sketch));
+        }
+
+        // The copy as the catalogue and the editors see it.
+        let after = inspect(&copy);
+        let row = &after["bodies"][0]["fillet_edge"];
+        assert_eq!(row["available"], false, "{row}");
+        assert!(row["refusal"].as_str().expect("reason").contains("third"));
+        assert_eq!(after["fillets"].as_array().map(Vec::len), Some(2));
+        for f in after["fillets"].as_array().expect("fillets") {
+            let reason = f["radius_edit"]["refusal"].as_str().expect("a reason");
+            assert!(reason.contains("two Fillets"), "{reason}");
+        }
+        assert_eq!(after["edit_extrude"]["available"], false, "{after}");
+        assert_eq!(after["sketches"][0]["editable"], false);
+        assert_eq!(after["sketches"][0]["constraint_edit"]["available"], false);
+
+        // Validation and the shipped rebuild.
+        let checked = cli()
+            .arg("validate")
+            .arg(&copy)
+            .arg("--json")
+            .output()
+            .expect("validate");
+        assert_eq!(reply(checked, "validate", 0)["result"]["valid"], true);
+        let n = now.len();
+        let rebuilt = cli()
+            .arg("rebuild")
+            .arg(&copy)
+            .arg("--cold")
+            .output()
+            .expect("rebuild");
+        let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
+        assert!(
+            text.contains(&format!("{n} of {n} stored references resolved")),
+            "{text}"
+        );
+        if part.constrained {
+            let (starts, _) = solved(&copy);
+            for (s, e) in starts.iter().zip(&part.solved) {
+                assert!((s[0] - e[0]).abs() < 1e-9 && (s[1] - e[1]).abs() < 1e-9);
+            }
+        }
+
+        // The B-Rep: cold, then a real Miss and Hit.
+        let (cold, _) = measure_two(&copy, None);
+        let cache = copy.with_extension("fcad-cache");
+        let (miss, events) = measure_two(&copy, Some(&cache));
+        assert!(
+            events
+                .iter()
+                .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Miss),
+            "{events:?}"
+        );
+        assert_eq!(outcomes(&events).len(), 3, "the plate and both Fillets");
+        let (hit, events) = measure_two(&copy, Some(&cache));
+        assert!(
+            events
+                .iter()
+                .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit),
+            "{events:?}"
+        );
+        cold.same_as(&miss);
+        cold.same_as(&hit);
+        check_two(
+            &cold,
+            part.rect,
+            (first_id, part.corner(first), r1),
+            (second_id, moved, r2),
+            base,
+        );
+
+        // The mesh, read independently; and the FBX.
+        let m = mesh(&copy, &copy.with_extension("stl"));
+        check_mesh_rounded(&m, part.rect, &[(part.corner(first), r1), (moved, r2)], H);
+        fbx(&copy, name);
+        copy
+    }
+
+    /// Both cylinders under their own names, the plate's faces under the
+    /// base, the analytic volume.
+    fn check_two(
+        two: &Two,
+        rect: [f64; 4],
+        (first, c1, r1): (ObjectId, [f64; 2], f64),
+        (second, c2, r2): (ObjectId, [f64; 2], f64),
+        base: ObjectId,
+    ) {
+        assert_eq!(two.faces, 8, "two caps, four sides and two fillet faces");
+        let volume = exact_two(rect, r1, r2, H);
+        assert!(
+            (two.volume - volume).abs() < 1e-9 * volume,
+            "{} is not {volume}",
+            two.volume
+        );
+        assert_eq!(two.shapes, 3, "the plate and both rounded plates");
+        // Fillet 2's own cylinder, on the tip.
+        let own = two.one("edge fillet face", second);
+        assert!(own.on_tip);
+        assert_eq!(own.surfaces, [FaceSurface::Cylinder { radius: r2 }]);
+        assert_axis(own, rect, c2, r2);
+        // Fillet 1's cylinder as the finished part has it: its own name on
+        // Fillet 2, a separate proof it survived.
+        let carried = two.one("origin fillet face", second);
+        assert!(carried.on_tip);
+        assert_eq!(carried.surfaces, [FaceSurface::Cylinder { radius: r1 }]);
+        assert_axis(carried, rect, c1, r1);
+        // Fillet 1's own name still addresses Fillet 1's result.
+        let earlier = two.one("edge fillet face", first);
+        assert!(!earlier.on_tip);
+        assert_eq!(earlier.surfaces, [FaceSurface::Cylinder { radius: r1 }]);
+        assert_axis(earlier, rect, c1, r1);
+        assert_ne!(own.axis.map(|a| a.0), carried.axis.map(|a| a.0));
+        // The plate's faces under the base, on the tip.
+        for cap in ["origin cap Start", "origin cap End"] {
+            let n = two.one(cap, second);
+            assert!(n.on_tip);
+            assert_eq!(n.surfaces, [FaceSurface::Plane]);
+        }
+        let sides = two.all("origin side", second);
+        assert_eq!(sides.len(), 4);
+        assert!(
+            sides
+                .iter()
+                .all(|n| n.on_tip && n.surfaces == [FaceSurface::Plane])
+        );
+        assert_eq!(two.one("cap Start", base).surfaces, [FaceSurface::Plane]);
+    }
+
+    /// Discovery on a rounded plate and on a plate with two Fillets, and the
+    /// protocol, with no kernel needed: the three other corners with the
+    /// adjacent one marked, the saved Fillet's history, the same corner
+    /// refused, a third Fillet and every editor of the two-Fillet history
+    /// refused by name, and nothing written.
+    #[test]
+    fn sequential_discovery_and_protocol_without_native() {
+        let f = filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
+        let first = f.fillet_id().to_owned();
+        let d = f.discovery();
+        assert_eq!(d["available"], true, "{d}");
+        let t = &d["target"];
+        assert_eq!(t["previous_feature_id"], first.as_str());
+        assert_eq!(t["fillets"][0]["feature_id"], first.as_str());
+        assert_eq!(t["fillets"][0]["radius_mm"], 2.375);
+        assert_eq!(t["fillets"][0]["corner_mm"], json!([X0 + W, Y0]));
+        let candidates = f.candidates();
+        assert_eq!(candidates.len(), 3);
+        let marked: Vec<bool> = candidates
+            .iter()
+            .map(|c| c["adjacent_fillet_feature_id"] == first.as_str())
+            .collect();
+        assert_eq!(marked.iter().filter(|m| **m).count(), 2, "two neighbours");
+        let short = f.at([X0 + W, Y0 + D]);
+        assert_eq!(short["adjacent_fillet_feature_id"], first.as_str());
+        assert_eq!(short["max_radius_mm"], D / 2.);
+        let opposite = f.at([X0, Y0 + D]);
+        assert!(opposite["adjacent_fillet_feature_id"].is_null());
+
+        // The protocol: the same corner is refused as input before the kernel
+        // is asked; a malformed request as input; and a build without the
+        // kernel refuses a well-formed one as unsupported.
+        let before = std::fs::read(&f.source).expect("bytes");
+        let never = f.root.path().join("never.fcad");
+        let edge = &t["fillets"][0]["edge"];
+        f.ask_edge(edge, 1.0);
+        let names = entries(f.root.path());
+        let v = reply(f.fillet(&never).output().expect("process"), OP, 2);
+        assert_eq!(refused(&v), "input", "the same corner: {v}");
+        assert!(v["error"]["message"].as_str().expect("m").contains(&first));
+        write(
+            &f.request,
+            &json!({"request_version": 1, "edge": short["edge"]}),
+        );
+        let v = reply(f.fillet(&never).output().expect("process"), OP, 2);
+        assert_eq!(refused(&v), "input", "no radius: {v}");
+        for r in [0.0, 0.009, D / 2. + 1e-9] {
+            f.ask_edge(&short["edge"], r);
+            let v = reply(f.fillet(&never).output().expect("process"), OP, 2);
+            assert_eq!(refused(&v), "input", "{r}: {v}");
+        }
+        f.ask_edge(&short["edge"], 3.0);
+        let out = f.fillet(&never).output().expect("process");
+        if ferritecad_occt::is_available() {
+            assert_eq!(out.status.code(), Some(0), "{out:?}");
+            std::fs::remove_file(&never).expect("clean");
+        } else {
+            let v = reply(out, OP, 2);
+            assert_eq!(refused(&v), "unsupported", "no kernel: {v}");
+        }
+        assert_eq!(entries(f.root.path()), names, "a refusal left something");
+        assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
+
+        // Two Fillets, written with the shipped preparation and writer.
+        let mut doc = Document::open(&f.source).expect("writable");
+        let body: ObjectId = f.body_id().parse().expect("UUID");
+        let e = &short["edge"];
+        let fillet = ferritecad_document::EdgeFillet {
+            edge: ferritecad_document::FilletEdge {
+                feature: id(&e["feature_id"]),
+                joint: ferritecad_types::ProfileJoint::new(
+                    e["joint"][0].as_str().expect("a").parse().expect("UUID"),
+                    e["joint"][1].as_str().expect("b").parse().expect("UUID"),
+                )
+                .expect("joint"),
+            },
+            radius_mm: 3.0,
+        };
+        let prepared =
+            ferritecad_document::prepare_edge_fillet(&doc, body, &fillet).expect("prepared");
+        doc.write_edge_fillet(&prepared).expect("written");
+        doc.close().expect("close");
+        let two = inspect(&f.source);
+        let row = &two["bodies"][0]["fillet_edge"];
+        assert_eq!(row["available"], false);
+        assert!(row["target"].is_null());
+        assert!(row["refusal"].as_str().expect("reason").contains("third"));
+        assert_eq!(two["fillets"].as_array().map(Vec::len), Some(2));
+        for fillet in two["fillets"].as_array().expect("fillets") {
+            assert_eq!(fillet["radius_edit"]["available"], false);
+            assert!(
+                fillet["radius_edit"]["refusal"]
+                    .as_str()
+                    .expect("reason")
+                    .contains("two Fillets")
+            );
+        }
+        assert_eq!(two["edit_extrude"]["available"], false);
+        assert_eq!(two["sketches"][0]["editable"], false);
+        assert_eq!(two["sketches"][0]["constraint_edit"]["available"], false);
+        assert!(two["bodies"][0]["cut_edit"]["refusal"].is_string());
+        let version = two["content_version"].as_str().expect("version");
+        f.ask_edge(&opposite["edge"], 1.0);
+        let v = reply(
+            f.fillet_from(&f.source, f.body_id(), version, &never)
+                .output()
+                .expect("process"),
+            OP,
+            2,
+        );
+        assert_eq!(refused(&v), "unsupported", "a third Fillet: {v}");
+        assert!(!never.exists());
+        let valid = cli()
+            .arg("validate")
+            .arg(&f.source)
+            .arg("--json")
+            .output()
+            .expect("validate");
+        assert_eq!(reply(valid, "validate", 0)["result"]["valid"], true);
+    }
+
+    /// The measured slice: adjacent (across the short and the long side) and
+    /// opposite corners, fractional radii, both windings and another starting
+    /// Line.
+    #[test]
+    fn native_second_fillets_on_adjacent_and_opposite_corners_are_what_the_numbers_say() {
+        if !native() {
+            return;
+        }
+        let first = [X0 + W, Y0];
+        let r1 = 2.375;
+        for (label, corners) in [
+            ("ccw", CCW),
+            ("cw", CW_FROM_UPPER_RIGHT),
+            ("third", CCW_FROM_THIRD),
+        ] {
+            let g = filleted_by_cli(corners, first, r1, &format!("first-{label}"));
+            let part = Part::plain(corners);
+            let short = second_fillet(
+                &g,
+                &part,
+                first,
+                r1,
+                [X0 + W, Y0 + D],
+                3.0625,
+                &format!("second-{label}-short"),
+            );
+            let opposite = second_fillet(
+                &g,
+                &part,
+                first,
+                r1,
+                [X0, Y0 + D],
+                4.5625,
+                &format!("second-{label}-opposite"),
+            );
+            assert_ne!(
+                std::fs::read(short.with_extension("stl")).expect("a"),
+                std::fs::read(opposite.with_extension("stl")).expect("b")
+            );
+            if label == "ccw" {
+                second_fillet(&g, &part, first, r1, [X0, Y0], 1.625, "second-ccw-long");
+            }
+        }
+    }
+
+    /// The pair policy at its edge on the short side: the bound discovery
+    /// states is published and measured, anything past it — touching arcs
+    /// included — is refused before publication, and §28A's own bound still
+    /// holds at each corner.
+    #[test]
+    fn native_the_pair_policy_is_exact_at_its_bound() {
+        if !native() {
+            return;
+        }
+        let first = [X0 + W, Y0];
+        let second = [X0 + W, Y0 + D];
+        let r1 = D / 2.;
+        let g = filleted_by_cli(CCW, first, r1, "widest-first");
+        let bound = g.at(second)["max_radius_mm"].as_f64().expect("bound");
+        assert!((bound - (D - r1 - 0.01)).abs() < 1e-12);
+        let names = entries(g.root.path());
+        let before = std::fs::read(&g.source).expect("bytes");
+        let never = g.root.path().join("never.fcad");
+        for (r, why) in [
+            (D - r1, "touching"),
+            (bound + 1e-9, "past the bound"),
+            (6.12, "a flat narrower than the smallest radius"),
+        ] {
+            g.ask_edge(&g.at(second)["edge"], r);
+            let v = reply(g.fillet(&never).output().expect("process"), OP, 2);
+            assert_eq!(refused(&v), "input", "{why}: {v}");
+            assert!(
+                v["error"]["message"].as_str().expect("m").contains("flat"),
+                "{why}: {v}"
+            );
+        }
+        assert_eq!(entries(g.root.path()), names, "a refusal left something");
+        assert_eq!(std::fs::read(&g.source).expect("bytes"), before);
+        second_fillet(
+            &g,
+            &Part::plain(CCW),
+            first,
+            r1,
+            second,
+            bound,
+            "at-the-bound",
+        );
+    }
+
+    /// A dimensioned plate, rounded and rounded again: the stored drawing and
+    /// the solved part differ visibly, discovery defers the bound, and the
+    /// part — both corners, both cylinders, the volume — is the solved one.
+    /// A second radius that fits the stored sides but not the solved ones is
+    /// refused by the rebuild before anything is published.
+    #[test]
+    fn native_a_dimensioned_plate_is_rounded_twice_at_its_solved_corners() {
+        if !solving() {
+            return;
+        }
+        let at = [2.5, -1.75];
+        let (width, depth) = (30.5, 8.0);
+        let (_plain, g, expected) = dimensioned_plate(CCW, at, width, depth, "dimensioned");
+        let first = [X0 + W, Y0];
+        let r1 = 4.0;
+        let rounded = g.root.path().join("first.fcad");
+        g.ask_stored(first, r1);
+        reply(g.fillet(&rounded).output().expect("process"), OP, 0);
+        let h = g.at_copy(&rounded);
+        let part = Part {
+            rect: rect_of(&expected),
+            stored: g.stored_starts(),
+            solved: expected.clone(),
+            constrained: true,
+        };
+        assert_ne!(part.stored, part.solved, "stored and solved differ visibly");
+        let second = [X0 + W, Y0 + D];
+        // Room on the stored 12.25 mm side, not on the solved 8 mm one.
+        let names = entries(h.root.path());
+        let never = h.root.path().join("never.fcad");
+        h.ask_stored(second, 3.995);
+        let v = reply(h.fillet(&never).output().expect("process"), OP, 2);
+        assert_eq!(refused(&v), "input", "{v}");
+        assert!(
+            v["error"]["message"].as_str().expect("m").contains("flat"),
+            "{v}"
+        );
+        assert_eq!(entries(h.root.path()), names, "a refusal left something");
+        second_fillet(&h, &part, first, r1, second, 3.25, "second-dimensioned");
+        second_fillet(
+            &h,
+            &part,
+            first,
+            r1,
+            [X0, Y0 + D],
+            3.875,
+            "opposite-dimensioned",
+        );
+    }
+
+    /// Every refusal of the second Fillet publishes nothing and leaves no
+    /// scratch file; a cancelled one leaves nothing; a lost report keeps the
+    /// published copy with exit 7.
+    #[test]
+    fn native_second_fillet_refusals_races_cancellation_and_report_loss_are_atomic() {
+        if !native() {
+            return;
+        }
+        let first = [X0, Y0];
+        let g = filleted_by_cli(CCW, first, 2.0, "rounded");
+        let before = std::fs::read(&g.source).expect("bytes");
+        let never = g.root.path().join("never.fcad");
+        let second = [X0 + W, Y0];
+        let taken = g.root.path().join("taken.fcad");
+        std::fs::write(&taken, b"another process owns this").expect("occupied");
+        let alias = g.root.path().join("alias.fcad");
+        std::fs::hard_link(&g.source, &alias).expect("hard link");
+        let names = entries(g.root.path());
+
+        g.ask_edge(&g.at(second)["edge"], 1.5);
+        for (destination, why) in [
+            (g.source.clone(), "the source is not its own output"),
+            (taken.clone(), "an occupied output is not replaced"),
+            (alias.clone(), "an alias of the source is the source"),
+        ] {
+            let v = reply(g.fillet(&destination).output().expect("process"), OP, 2);
+            assert_eq!(refused(&v), "input", "{why}: {v}");
+        }
+        assert_eq!(
+            std::fs::read(&taken).expect("occupied"),
+            b"another process owns this"
+        );
+        // The same corner, and radii the policy refuses.
+        g.ask_edge(&g.fillet_row()["edge"], 1.0);
+        let v = reply(g.fillet(&never).output().expect("process"), OP, 2);
+        assert_eq!(refused(&v), "input", "{v}");
+        for r in [0.0, 0.009, D / 2. + 1e-9, 100.0] {
+            g.ask_edge(&g.at(second)["edge"], r);
+            let v = reply(g.fillet(&never).output().expect("process"), OP, 2);
+            assert_eq!(refused(&v), "input", "{r}: {v}");
+        }
+        // A stale version: the rounded copy changed after it was inspected.
+        let stale = g.root.path().join("stale-source.fcad");
+        std::fs::copy(&g.source, &stale).expect("copy");
+        let old = g.version().to_owned();
+        let mut d = Document::open(&stale).expect("writable");
+        let o = d.objects().expect("objects").remove(0);
+        d.write(|w| {
+            w.put_object(o.id, o.parent, o.ordinal, Some("renamed"), &o.payload)
+                .map(|_| ())
+        })
+        .expect("change");
+        d.close().expect("close");
+        g.ask_edge(&g.at(second)["edge"], 1.5);
+        let v = reply(
+            g.fillet_from(&stale, g.body_id(), &old, &never)
+                .output()
+                .expect("process"),
+            OP,
+            2,
+        );
+        assert_eq!(refused(&v), "input", "stale: {v}");
+        std::fs::remove_file(&stale).expect("clean");
+        assert_eq!(entries(g.root.path()), names, "a refusal left something");
+
+        // Cancellation, before the job and at its last barrier.
+        let e = &g.at(second)["edge"];
+        let fillet = ferritecad_document::EdgeFillet {
+            edge: ferritecad_document::FilletEdge {
+                feature: id(&e["feature_id"]),
+                joint: ferritecad_types::ProfileJoint::new(
+                    e["joint"][0].as_str().expect("a").parse().expect("UUID"),
+                    e["joint"][1].as_str().expect("b").parse().expect("UUID"),
+                )
+                .expect("joint"),
+            },
+            radius_mm: 1.5,
+        };
+        for at in [0.0, 0.95] {
+            let destination = g.root.path().join(format!("cancelled-{at}.fcad"));
+            let token = ferritecad_kernel::CancelToken::new();
+            let stop = token.clone();
+            if at == 0.0 {
+                token.cancel();
+            }
+            let context = OperationContext::default()
+                .with_cancel(token)
+                .with_progress(ferritecad_kernel::ProgressSink::new(move |fraction| {
+                    if fraction >= at {
+                        stop.cancel();
+                    }
+                }));
+            let d = Document::open_read_only(&g.source).expect("source");
+            let expected = ferritecad_document::DocumentVersion {
+                document_id: d.meta().document_id,
+                content: d.content_version().expect("version"),
+            };
+            d.close().expect("close");
+            let request = ferritecad_jobs::EdgeFilletRequest {
+                source: g.source.clone(),
+                expected,
+                body: g.body_id().parse().expect("UUID"),
+                fillet,
+                destination: destination.clone(),
+            };
+            let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+            let result = ferritecad_jobs::fillet_edge_copy(&request, &mut kernel, &context);
+            assert!(result.is_err(), "cancelled at {at}: {result:?}");
+            assert!(!destination.exists());
+            assert_eq!(kernel.live_shape_count(), 0);
+        }
+        assert_eq!(entries(g.root.path()), names, "cancellation left something");
+        assert_eq!(std::fs::read(&g.source).expect("bytes"), before);
+
+        // A lost report: the copy is published and kept, exit 7.
+        let lost = g.root.path().join("lost-report.fcad");
+        assert_eq!(
+            g.fillet(&lost)
+                .stdout(pipe::closed_pipe())
+                .stderr(pipe::closed_pipe())
+                .status()
+                .expect("pipes")
+                .code(),
+            Some(7)
+        );
+        assert!(lost.exists(), "the published copy is kept");
+        let kept = inspect(&lost);
+        assert_eq!(kept["fillets"].as_array().map(Vec::len), Some(2));
+        assert_eq!(kept["bodies"][0]["fillet_edge"]["available"], false);
+        assert_eq!(std::fs::read(&g.source).expect("bytes"), before);
+    }
+
+    /// The first Fillet restored from the cache: Fillet 2 rebuilt on it picks
+    /// the same edge a cold build does. A changed first radius or Sketch
+    /// invalidates the suffix and nothing before it.
+    #[test]
+    fn native_a_second_fillet_on_a_restored_first_and_invalidated_suffixes() {
+        if !native() {
+            return;
+        }
+        let first = [X0 + W, Y0];
+        let second = [X0 + W, Y0 + D];
+        let (r1, r2) = (2.375, 3.0625);
+        let g = filleted_by_cli(CCW, first, r1, "first");
+        let copy = second_fillet(&g, &Part::plain(CCW), first, r1, second, r2, "second");
+        let cache = copy.with_extension("fcad-cache");
+        let d = Document::open_read_only(&copy).expect("copy");
+        let objects = d.objects().expect("objects");
+        d.close().expect("close");
+        let base = objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Extrude(_)))
+            .expect("base")
+            .clone();
+        let fillet = |previous_is_base: bool| {
+            objects
+                .iter()
+                .find(|o| {
+                    matches!(&o.payload, ObjectPayload::Fillet(f)
+                        if (f.previous == base.id) == previous_is_base)
+                })
+                .expect("a Fillet")
+                .clone()
+        };
+        let (one, two) = (fillet(true), fillet(false));
+        let rewrite = |object: &ferritecad_document::ObjectRecord, payload: ObjectPayload| {
+            let mut d = Document::open(&copy).expect("writable");
+            d.write(|w| {
+                w.put_object(
+                    object.id,
+                    object.parent,
+                    object.ordinal,
+                    object.name.as_deref(),
+                    &payload,
+                )
+                .map(|_| ())
+            })
+            .expect("in place");
+            d.close().expect("close");
+        };
+        use ferritecad_eval::CacheOutcome::{Hit, Miss};
+        let judge = |events: &[ferritecad_eval::CacheEvent], want: [(ObjectId, _); 3]| {
+            let by = outcomes(events);
+            for (feature, outcome) in want {
+                assert_eq!(by.get(&feature), Some(&vec![outcome]), "{events:?}");
+            }
+        };
+
+        // Fillet 2's radius, in place: the plate and Fillet 1 are restored,
+        // Fillet 2 is rebuilt on the restored Fillet 1.
+        let ObjectPayload::Fillet(mut p) = two.payload.clone() else {
+            panic!("a Fillet");
+        };
+        let r2b = 1.8125;
+        p.radius_mm = r2b;
+        rewrite(&two, ObjectPayload::Fillet(p));
+        let (warm, events) = measure_two(&copy, Some(&cache));
+        judge(&events, [(base.id, Hit), (one.id, Hit), (two.id, Miss)]);
+        let (cold, _) = measure_two(&copy, None);
+        cold.same_as(&warm);
+        let rect = [X0, Y0, W, D];
+        check_two(
+            &cold,
+            rect,
+            (one.id, first, r1),
+            (two.id, second, r2b),
+            base.id,
+        );
+        let (hit, events) = measure_two(&copy, Some(&cache));
+        judge(&events, [(base.id, Hit), (one.id, Hit), (two.id, Hit)]);
+        cold.same_as(&hit);
+
+        // Fillet 1's radius: the suffix misses, the plate is reused.
+        let ObjectPayload::Fillet(mut p) = one.payload.clone() else {
+            panic!("a Fillet");
+        };
+        let r1b = 1.4375;
+        p.radius_mm = r1b;
+        rewrite(&one, ObjectPayload::Fillet(p));
+        let (warm, events) = measure_two(&copy, Some(&cache));
+        judge(&events, [(base.id, Hit), (one.id, Miss), (two.id, Miss)]);
+        let (cold, _) = measure_two(&copy, None);
+        cold.same_as(&warm);
+        check_two(
+            &cold,
+            rect,
+            (one.id, first, r1b),
+            (two.id, second, r2b),
+            base.id,
+        );
+
+        // The Sketch, moved along X: everything misses, both axes move.
+        let sketch = objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("the Sketch")
+            .clone();
+        let ObjectPayload::Sketch(mut s) = sketch.payload.clone() else {
+            panic!("a Sketch");
+        };
+        let dx = 1.5;
+        for c in &mut s.curves {
+            if let ferritecad_document::SketchGeometry::Line { start, end } = &mut c.geometry {
+                *start = ferritecad_document::Point2::new(start.x + dx, start.y).expect("p");
+                *end = ferritecad_document::Point2::new(end.x + dx, end.y).expect("p");
+            }
+        }
+        rewrite(&sketch, ObjectPayload::Sketch(s));
+        let (warm, events) = measure_two(&copy, Some(&cache));
+        judge(&events, [(base.id, Miss), (one.id, Miss), (two.id, Miss)]);
+        let (cold, _) = measure_two(&copy, None);
+        cold.same_as(&warm);
+        check_two(
+            &cold,
+            [X0 + dx, Y0, W, D],
+            (one.id, [first[0] + dx, first[1]], r1b),
+            (two.id, [second[0] + dx, second[1]], r2b),
+            base.id,
+        );
+    }
+
+    /// The evaluator states the class again at every rebuild: a saved second
+    /// Fillet this build would not have written is refused by name.
+    #[test]
+    fn native_the_evaluator_refuses_a_saved_second_fillet_outside_the_class() {
+        if !native() {
+            return;
+        }
+        let first = [X0 + W, Y0];
+        let g = filleted_by_cli(CCW, first, 6.125, "first");
+        let copy = second_fillet(
+            &g,
+            &Part::plain(CCW),
+            first,
+            6.125,
+            [X0, Y0 + D],
+            2.0,
+            "second",
+        );
+        let d = Document::open_read_only(&copy).expect("copy");
+        let objects = d.objects().expect("objects");
+        d.close().expect("close");
+        let (saved, stored, one) = objects
+            .iter()
+            .find_map(|o| match &o.payload {
+                ObjectPayload::Fillet(f)
+                    if !objects.iter().any(|b| {
+                        b.id == f.previous && matches!(b.payload, ObjectPayload::Extrude(_))
+                    }) =>
+                {
+                    Some((o.clone(), f.clone(), f.previous))
+                }
+                _ => None,
+            })
+            .expect("Fillet 2");
+        let ObjectPayload::Fillet(first_payload) = &objects
+            .iter()
+            .find(|o| o.id == one)
+            .expect("Fillet 1")
+            .payload
+        else {
+            panic!("a Fillet");
+        };
+        let adjacent_joint = {
+            // The corner sharing the 12.25 mm Line with Fillet 1.
+            let target = &g.at([X0 + W, Y0 + D])["edge"]["joint"];
+            ferritecad_types::ProfileJoint::new(
+                target[0].as_str().expect("a").parse().expect("UUID"),
+                target[1].as_str().expect("b").parse().expect("UUID"),
+            )
+            .expect("joint")
+        };
+        let mut forged = Vec::new();
+        let mut same = stored.clone();
+        same.edge.joint = first_payload.edge.joint;
+        forged.push(("the same corner twice", same, "already rounded"));
+        let mut touching = stored.clone();
+        touching.edge.joint = adjacent_joint;
+        touching.radius_mm = 6.125;
+        forged.push(("touching arcs", touching, "flat"));
+        let mut producer = stored.clone();
+        producer.edge.feature = one;
+        forged.push((
+            "the first Fillet as the producer",
+            producer,
+            "not an Extrude",
+        ));
+        for (why, payload, expect) in forged {
+            let path = g.root.path().join("forged.fcad");
+            std::fs::copy(&copy, &path).expect("copy");
+            let mut d = Document::open(&path).expect("writable");
+            d.write(|w| {
+                w.put_object(
+                    saved.id,
+                    saved.parent,
+                    saved.ordinal,
+                    saved.name.as_deref(),
+                    &ObjectPayload::Fillet(payload),
+                )
+                .map(|_| ())
+            })
+            .expect("forge");
+            d.close().expect("close");
+            let out = cli()
+                .arg("rebuild")
+                .arg(&path)
+                .arg("--cold")
+                .output()
+                .expect("rebuild");
+            assert!(!out.status.success(), "{why} was built");
+            let text = String::from_utf8_lossy(&out.stderr).into_owned()
+                + &String::from_utf8_lossy(&out.stdout);
+            assert!(text.contains(expect), "{why}: {text}");
+            std::fs::remove_file(&path).expect("clean");
         }
     }
 }
