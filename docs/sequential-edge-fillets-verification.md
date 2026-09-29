@@ -266,7 +266,18 @@ scratchpad, against copies this build wrote:
   planegcs pin
   ([36621937658](https://github.com/gesriot/ferrite-cad/actions/runs/36621937658)),
   rust notices, product sbom and rust sbom: all concluded **success**.
-* **This change:** recorded after its runs conclude.
+* **First round, head `e017d82`:** the combined runtime layout's Linux job
+  failed in the §28A public recipe (`docs/single-edge-fillet.md`), which
+  asserted that a rounded copy refuses a second Fillet by name — exactly what
+  §28G changes. The recipe now asserts the second target (previous is the
+  saved Fillet, its corner not offered) and that the same corner is refused
+  `input` «already rounded». Locally before pushing: all seven Fillet recipes
+  §28A–§28G print `FCAD_28x_RECIPE_OK` against the release CLI, and in the
+  stub build `tests/fillet.rs` (43), the app Fillet tests (14) and the
+  document Fillet tests (22) pass, the §28A recipe printing
+  `FCAD_28A_RECIPE_NO_KERNEL`. This had not been run locally in the first
+  round: only the §28F and §28G recipes had.
+* **Final head:** recorded after its runs conclude.
 
 ## Limits
 
