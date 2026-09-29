@@ -603,6 +603,12 @@ struct FilletTarget {
     request_versions: &'static [u32],
     min_radius_mm: f64,
     max_radius_fraction: f64,
+    /// §28F, additive: whether the profile carries the constraint editor's
+    /// managed Line family. Then every candidate is a structurally admissible
+    /// joint of the stored Lines, and the part's corner, sides and radius
+    /// bound are the solved plate's, judged when the copy is rebuilt;
+    /// discovery does no solve.
+    profile_constrained: bool,
     /// The four vertical edges, in stored segment order.
     candidates: Vec<FilletCandidate>,
 }
@@ -613,9 +619,15 @@ struct FilletTarget {
 struct FilletCandidate {
     edge: FilletEdgeDto,
     label: String,
-    corner_mm: [f64; 2],
-    adjacent_lengths_mm: [f64; 2],
-    max_radius_mm: f64,
+    /// The part's corner, sides and bound: the stored ones of an
+    /// unconstrained plate; `null` for a constrained one (§28F), whose part
+    /// only a solve knows.
+    corner_mm: Option<[f64; 2]>,
+    adjacent_lengths_mm: Option<[f64; 2]>,
+    max_radius_mm: Option<f64>,
+    /// §28F, additive: the same corner and sides in the stored Lines.
+    stored_corner_mm: [f64; 2],
+    stored_adjacent_lengths_mm: [f64; 2],
 }
 
 /// An edge as a request states it: the feature that swept it and the two
@@ -638,24 +650,36 @@ impl FilletDiscovery {
             request_versions: &[1],
             min_radius_mm: ferritecad_document::MIN_RADIUS_MM,
             max_radius_fraction: ferritecad_document::MAX_RADIUS_FRACTION,
+            profile_constrained: t.constrained,
             candidates: t
                 .corners
                 .iter()
-                .map(|c| FilletCandidate {
-                    edge: FilletEdgeDto {
-                        feature_id: c.feature,
-                        joint: c.joint.segments(),
-                    },
-                    label: format!(
-                        "vertical edge at ({}, {}) mm between Lines {} and {}",
-                        c.corner_mm[0],
-                        c.corner_mm[1],
-                        c.joint.segments()[0],
-                        c.joint.segments()[1]
-                    ),
-                    corner_mm: c.corner_mm,
-                    adjacent_lengths_mm: c.adjacent_lengths_mm,
-                    max_radius_mm: c.max_radius_mm,
+                .map(|c| {
+                    let [a, b] = c.joint.segments();
+                    let part = (!t.constrained).then_some(c);
+                    FilletCandidate {
+                        edge: FilletEdgeDto {
+                            feature_id: c.feature,
+                            joint: c.joint.segments(),
+                        },
+                        label: if t.constrained {
+                            format!(
+                                "vertical edge between Lines {a} and {b}, stored at ({}, {}) mm; \
+                                 the solved plate decides where it is and how large a radius fits",
+                                c.corner_mm[0], c.corner_mm[1]
+                            )
+                        } else {
+                            format!(
+                                "vertical edge at ({}, {}) mm between Lines {a} and {b}",
+                                c.corner_mm[0], c.corner_mm[1]
+                            )
+                        },
+                        corner_mm: part.map(|c| c.corner_mm),
+                        adjacent_lengths_mm: part.map(|c| c.adjacent_lengths_mm),
+                        max_radius_mm: part.map(|c| c.max_radius_mm),
+                        stored_corner_mm: c.corner_mm,
+                        stored_adjacent_lengths_mm: c.adjacent_lengths_mm,
+                    }
                 })
                 .collect(),
         });

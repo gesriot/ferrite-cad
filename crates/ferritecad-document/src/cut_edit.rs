@@ -1024,7 +1024,19 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
     // Named first, so every editor built on this reader says why a filleted
     // part is not its target rather than reporting a shape mismatch.
     crate::fillet::refuse_filleted(objects)?;
-    read_history(document, objects, None)
+    read_history(document, objects, None, false)
+}
+
+/// §28F: the same reader, asked about the plate a new Fillet would round.
+/// Its base may carry the constraint editor's managed Line family, whose
+/// stored Lines are the solver's starting guess; the caller takes the plate
+/// only with no Cut ([`CutHistory::target_for_fillet`]).
+pub(crate) fn saved_plate_for_fillet(
+    document: &Document,
+    objects: &[ObjectRecord],
+) -> Result<CutHistory> {
+    crate::fillet::refuse_filleted(objects)?;
+    read_history(document, objects, None, true)
 }
 
 /// §28B: the same reader, asked about the history under one saved Fillet
@@ -1038,13 +1050,17 @@ pub(crate) fn saved_history_under_fillet(
     objects: &[ObjectRecord],
     fillet: &ObjectRecord,
 ) -> Result<CutHistory> {
-    read_history(document, objects, Some(fillet))
+    read_history(document, objects, Some(fillet), true)
 }
 
+/// `constrained_base`: whether the base Sketch may carry the constraint
+/// editor's managed Line family. Under a Fillet (§28E) and for a Fillet's new
+/// plate (§28F) it may; a Cut history never does.
 fn read_history(
     document: &Document,
     objects: &[ObjectRecord],
     fillet: Option<&ObjectRecord>,
+    constrained_base: bool,
 ) -> Result<CutHistory> {
     let own = usize::from(fillet.is_some());
     if objects.len() < 4 + own
@@ -1153,14 +1169,20 @@ fn read_history(
     };
     // §28E: under the one Fillet, the base may carry the constraint editor's
     // own managed Line family; its stored Lines are still read below as the
-    // rectangle the Fillet names. A Cut history stays unconstrained.
+    // rectangle the Fillet names. §28F: so may the plate a new Fillet rounds.
+    // A Cut history stays unconstrained.
     if !part.constraints.is_empty() {
-        if fillet.is_none() {
+        if !constrained_base || (fillet.is_none() && !chain.is_empty()) {
             return Err(unsupported("this slice edits an unconstrained part"));
         }
         crate::sketch_constraints::managed_lines(part).map_err(|e| {
             unsupported(format!(
-                "the rounded plate's constraints are outside what this build edits: {e}"
+                "the {} constraints are outside what this build edits: {e}",
+                if fillet.is_some() {
+                    "rounded plate's"
+                } else {
+                    "plate's"
+                }
             ))
         })?;
     }

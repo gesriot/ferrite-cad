@@ -242,7 +242,10 @@ impl Editor {
                     saved.previous,
                     draft.source.display()
                 ));
-                ui.small(format!("Edge: {}", describe(&saved.corner)));
+                ui.small(format!(
+                    "Edge: {}",
+                    describe(&saved.corner, saved.constrained)
+                ));
                 if saved.constrained {
                     // §28E: the stored corner is the solver's starting guess.
                     // The bound is the solved plate's and is checked when the
@@ -363,13 +366,27 @@ impl Editor {
                     ferritecad_document::MIN_RADIUS_MM,
                     ferritecad_document::MAX_RADIUS_FRACTION
                 ));
+                if target.constrained {
+                    ui.label(format!(
+                        "This plate's Sketch carries constraints. The corners and sides below \
+                         are the stored drawing, the solver's starting guess. Where the corner \
+                         is and the {} × shorter side limit are the solved plate's: the new copy \
+                         is saved only if the solved plate is still this rectangle with every \
+                         Line on its side and room for the radius at that corner.",
+                        ferritecad_document::MAX_RADIUS_FRACTION
+                    ));
+                }
                 ui.add_enabled_ui(!running, |ui| {
                     if ui.button("Cancel fillet draft").clicked() {
                         cancel = true;
                     }
                     ui.label("Edge:");
                     for (i, corner) in target.corners.iter().enumerate() {
-                        ui.radio_value(&mut draft.typed.corner, Some(i), describe(corner));
+                        ui.radio_value(
+                            &mut draft.typed.corner,
+                            Some(i),
+                            describe(corner, target.constrained),
+                        );
                     }
                     ui.horizontal(|ui| {
                         ui.label("Radius (mm):");
@@ -404,10 +421,19 @@ impl Editor {
                         .and_then(|applied| draft.fillet(applied).ok());
                     match confirmed {
                         Some((corner, fillet)) => {
-                            ui.small(format!(
-                                "Ready: round the edge at ({}, {}) with r{} mm",
-                                corner.corner_mm[0], corner.corner_mm[1], fillet.radius_mm
-                            ));
+                            ui.small(if target.constrained {
+                                let [a, b] = corner.joint.segments();
+                                format!(
+                                    "Ready: round the edge between Lines {a} | {b} with r{} mm; \
+                                     the radius is checked on the solved plate when saved",
+                                    fillet.radius_mm
+                                )
+                            } else {
+                                format!(
+                                    "Ready: round the edge at ({}, {}) with r{} mm",
+                                    corner.corner_mm[0], corner.corner_mm[1], fillet.radius_mm
+                                )
+                            });
                             if ui.button("Save fillet copy…").clicked() {
                                 self.pending = Some(EdgeFilletRequest {
                                     source: draft.source.clone(),
@@ -434,8 +460,20 @@ impl Editor {
 }
 
 /// One candidate as the form lists it: where, which Lines, and the limit.
-fn describe(corner: &FilletCorner) -> String {
+/// For a constrained plate (§28F) the numbers are the stored drawing's and are
+/// labelled so; the limit is the solved plate's and is not shown as a number.
+fn describe(corner: &FilletCorner, constrained: bool) -> String {
     let [a, b] = corner.joint.segments();
+    if constrained {
+        return format!(
+            "Lines {a} | {b} — stored corner ({}, {}), stored sides {} × {} mm; r limit from the \
+             solved plate",
+            corner.corner_mm[0],
+            corner.corner_mm[1],
+            corner.adjacent_lengths_mm[0],
+            corner.adjacent_lengths_mm[1]
+        );
+    }
     format!(
         "Corner ({}, {}) — Lines {a} | {b}; sides {} × {} mm; r ≤ {} mm",
         corner.corner_mm[0],
@@ -879,6 +917,8 @@ pub(crate) mod tests {
             feature: ObjectId::new(),
             previous: ObjectId::new(),
             corner,
+            built_corner: corner,
+            profile_constrained: false,
             radius_mm: 0.25,
             references: Vec::new(),
         }
@@ -1002,10 +1042,19 @@ pub(crate) mod tests {
             .expect("peer");
         assert!(out.status.success(), "{out:?}");
 
+        same_publication(&ui, &peer);
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
+    /// The worker's copy and the command line's are one publication: every
+    /// SQL cell is the same once the identifiers the operation minted — the
+    /// Fillet, then each new name by what it means — are matched, and the
+    /// STL and FBX exports are the same bytes.
+    pub(crate) fn same_publication(ui: &Path, peer: &Path) {
         // Match the minted identifiers: the Fillet, then each new name by
         // what it means. Nothing else may differ.
-        let a_doc = Document::open_read_only(&ui).expect("worker copy");
-        let b_doc = Document::open_read_only(&peer).expect("CLI copy");
+        let a_doc = Document::open_read_only(ui).expect("worker copy");
+        let b_doc = Document::open_read_only(peer).expect("CLI copy");
         let minted = |d: &Document| {
             let refs = d.topology_refs().expect("refs");
             let fillet = d
@@ -1062,7 +1111,7 @@ pub(crate) mod tests {
                 other => other.clone(),
             }
         };
-        let (left, right) = (tables(&ui), tables(&peer));
+        let (left, right) = (tables(ui), tables(peer));
         assert_eq!(
             left.keys().collect::<Vec<_>>(),
             right.keys().collect::<Vec<_>>()
@@ -1104,10 +1153,10 @@ pub(crate) mod tests {
             }
         }
 
-        // The exports are the same bytes, and the source is untouched.
+        // The exports are the same bytes.
         for format in ["stl", "fbx"] {
             let mut exports = Vec::new();
-            for model in [&ui, &peer] {
+            for model in [ui, peer] {
                 let output = model.with_extension(format);
                 let result = std::process::Command::new(crate::creates::tests::ferritecad())
                     .arg(format!("export-{format}"))
@@ -1122,6 +1171,279 @@ pub(crate) mod tests {
             }
             assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
         }
+    }
+
+    /// §28F: [`plate`], dimensioned by the shipped preparation and writer
+    /// with no kernel: H/V on every Line, the first Line's start fixed at
+    /// (36.5, 17.75), 41 mm wide and 14.25 mm deep. Its stored corner
+    /// (33, 3.25) solves to (36.5, 3.5); the stored sides allow r ≤ 6.125
+    /// mm there and the solved ones r ≤ 7.125 mm.
+    pub(crate) fn dimensioned() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+        use ferritecad_document::{
+            AddLineConstraint, AddSketchConstraint, LineConstraintKind, LineEndpoint, LineLengthMm,
+            SketchConstraintEdits, SketchCoordinateMm,
+        };
+        let (root, path, _) = plate();
+        let mut d = Document::open(&path).expect("writable");
+        let (sketch, lines) = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find_map(|o| match o.payload {
+                ObjectPayload::Sketch(s) => {
+                    Some((o.id, s.curves.iter().map(|c| c.id).collect::<Vec<_>>()))
+                }
+                _ => None,
+            })
+            .expect("the Sketch");
+        let line = |curve, kind| AddSketchConstraint::Line(AddLineConstraint::Line { curve, kind });
+        let mut add: Vec<_> = (0..4)
+            .map(|i| {
+                line(
+                    lines[i],
+                    if i % 2 == 0 {
+                        LineConstraintKind::Vertical
+                    } else {
+                        LineConstraintKind::Horizontal
+                    },
+                )
+            })
+            .collect();
+        add.push(line(
+            lines[0],
+            LineConstraintKind::Fixed {
+                at: LineEndpoint::Start,
+                x: SketchCoordinateMm::new(36.5).expect("x"),
+                y: SketchCoordinateMm::new(17.75).expect("y"),
+            },
+        ));
+        add.push(line(
+            lines[1],
+            LineConstraintKind::Distance(LineLengthMm::new(41.).expect("width")),
+        ));
+        add.push(line(
+            lines[0],
+            LineConstraintKind::Distance(LineLengthMm::new(14.25).expect("depth")),
+        ));
+        let edits = SketchConstraintEdits {
+            remove: Vec::new(),
+            add,
+        };
+        let prepared =
+            ferritecad_document::prepare_sketch_constraints(&d, sketch, &edits).expect("prepared");
+        d.write_sketch_constraints(&prepared).expect("written");
+        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        d.close().expect("close");
+        (root, path, source)
+    }
+
+    /// §28F: on a dimensioned plate the form says the numbers are the stored
+    /// drawing's, lists the corners by their Lines, applies a radius beyond
+    /// the stored bound (the solved plate decides it), refuses what the
+    /// value policy refuses, and asks for the same request. No kernel.
+    #[test]
+    fn fillet_widgets_on_a_dimensioned_plate_label_stored_numbers_and_defer_the_bound() {
+        let (_root, path, source) = dimensioned();
+        let choice = source.fillet_bodies[0].clone();
+        assert_eq!(choice.refusal, None);
+        let target = choice.target.clone().expect("a target");
+        assert!(target.constrained);
+        let mut e = Editor::default();
+        begin_by_button(&mut e, &path, &source);
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        let out = frame(&ctx, &mut e, false);
+        assert!(painted(&out, "This plate's Sketch carries constraints"));
+        assert!(painted(&out, "the solver's starting guess"));
+        for corner in &target.corners {
+            let [a, b] = corner.joint.segments();
+            let label = format!(
+                "Lines {a} | {b} — stored corner ({}, {}), stored sides",
+                corner.corner_mm[0], corner.corner_mm[1]
+            );
+            assert!(painted(&out, &label), "{label}");
+        }
+        assert!(painted(&out, "r limit from the solved plate"));
+        assert!(!painted(&out, "r ≤"), "no bound read off the stored sides");
+
+        let chosen = target
+            .corners
+            .iter()
+            .position(|c| c.corner_mm == [33., 3.25])
+            .expect("that corner");
+        let [a, b] = target.corners[chosen].joint.segments();
+        click(&ctx, &mut e, &format!("Lines {a} | {b}"));
+        for (text, why) in [
+            ("banana", "finite"),
+            ("0.005", "at least"),
+            ("inf", "finite"),
+        ] {
+            radius(&ctx, &mut e, text);
+            click(&ctx, &mut e, "Apply fillet");
+            let draft = e.draft.as_ref().expect("draft");
+            assert!(draft.applied.is_none(), "{text} was applied");
+            assert!(
+                draft.refusal.as_deref().expect("a refusal").contains(why),
+                "{text}: {:?}",
+                draft.refusal
+            );
+        }
+        radius(&ctx, &mut e, "6.5");
+        click(&ctx, &mut e, "Apply fillet");
+        let out = frame(&ctx, &mut e, false);
+        assert!(painted(
+            &out,
+            &format!(
+                "Ready: round the edge between Lines {a} | {b} with r6.5 mm; the radius is \
+                 checked on the solved plate when saved"
+            )
+        ));
+        click(&ctx, &mut e, "Save fillet copy…");
+        let request = e.take_request().expect("the widgets' request");
+        assert_eq!(request.body, choice.body);
+        assert_eq!(request.expected, source.version);
+        assert_eq!(request.fillet.edge.joint, target.corners[chosen].joint);
+        assert_eq!(request.fillet.radius_mm, 6.5);
+        assert!(e.active(), "the draft stays until publication");
+    }
+
+    /// §28F: the same widget request through the worker and the shipped
+    /// command publishes one part on a dimensioned plate, at the solved
+    /// corner; before that, a radius the solved plate cannot carry is
+    /// refused by the worker, keeping the draft and publishing nothing.
+    #[test]
+    fn native_dimensioned_fillet_worker_and_cli_publish_the_same_part() {
+        let occt = ferritecad_occt::is_available();
+        if !occt || !ferritecad_eval::solver_available() {
+            if !occt {
+                assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            } else {
+                assert_ne!(
+                    std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                    Ok("1")
+                );
+            }
+            eprintln!("skipped: rounding a dimensioned plate needs OCCT and PlaneGCS");
+            return;
+        }
+        let (root, path, source) = dimensioned();
+        let before = std::fs::read(&path).expect("source");
+        let target = source.fillet_bodies[0].target.clone().expect("a target");
+        let corner = target
+            .corners
+            .iter()
+            .find(|c| c.corner_mm == [33., 3.25])
+            .expect("that corner");
+        let [a, b] = corner.joint.segments();
+        let mut e = Editor::default();
+        begin_by_button(&mut e, &path, &source);
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        click(&ctx, &mut e, &format!("Lines {a} | {b}"));
+        let run = |e: &mut Editor, destination: &Path| {
+            click(&ctx, e, "Apply fillet");
+            click(&ctx, e, "Save fillet copy…");
+            let mut request = e.take_request().expect("widget request");
+            request.destination = destination.to_path_buf();
+            let fillet = request.fillet;
+            let mut edits = crate::edits::Edits::default();
+            let (tx, rx) = std::sync::mpsc::channel();
+            edits
+                .start_fillet(request, move |r, g, c| {
+                    crate::edits::spawn_fillet(r, c, move |result| {
+                        tx.send((g, result)).expect("reply")
+                    })
+                })
+                .expect("worker");
+            let (generation, result) = rx
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .expect("worker response");
+            (edits, generation, result, fillet)
+        };
+
+        // 7.5 mm: within nothing the stored drawing says, and beyond half of
+        // the solved 14.25 mm side. Refused by the worker; the draft stays.
+        radius(&ctx, &mut e, "7.5");
+        let refused = root.path().join("too-large.fcad");
+        let (mut edits, generation, result, _) = run(&mut e, &refused);
+        let error = result.as_ref().expect_err("refused").to_string();
+        assert!(error.contains("too short"), "{error}");
+        let typed = e.draft.as_ref().expect("draft").typed.clone();
+        let mut editor = crate::sketch::Editor::default();
+        editor.fillets = e;
+        assert_eq!(
+            finish_fillet(&mut editor, &mut edits, generation, result),
+            None
+        );
+        assert!(editor.fillets.active(), "a refusal keeps the draft");
+        assert_eq!(editor.fillets.draft.as_ref().expect("draft").typed, typed);
+        assert!(!refused.exists());
+        let mut e = std::mem::take(&mut editor.fillets);
+
+        // 6.5 mm: beyond the stored 6.125 mm, within the solved 7.125 mm.
+        radius(&ctx, &mut e, "6.5");
+        let ui = root.path().join("worker.fcad");
+        let (mut edits, generation, result, fillet) = run(&mut e, &ui);
+        let published = result.as_ref().expect("published").clone();
+        assert!(published.profile_constrained);
+        assert_eq!(published.corner.corner_mm, [33., 3.25], "stored");
+        let near = |p: [f64; 2]| (p[0] - 36.5).abs() < 1e-9 && (p[1] - 3.5).abs() < 1e-9;
+        assert!(
+            near(published.built_corner.corner_mm),
+            "solved: {:?}",
+            published.built_corner.corner_mm
+        );
+        let mut editor = crate::sketch::Editor::default();
+        editor.fillets = e;
+        assert_eq!(
+            finish_fillet(&mut editor, &mut edits, generation, result),
+            Some(ui.clone()),
+            "publication goes to the ordinary async Open"
+        );
+        editor.draft_published(&ui);
+        editor.draft_load_finished(&ui, true);
+        assert!(!editor.active());
+
+        let input = root.path().join("request.json");
+        std::fs::write(
+            &input,
+            format!(
+                r#"{{"request_version":1,"edge":{{"feature_id":"{}","joint":["{b}","{a}"]}},"radius_mm":{}}}"#,
+                fillet.edge.feature, fillet.radius_mm
+            ),
+        )
+        .expect("input");
+        let peer = root.path().join("peer.fcad");
+        let out = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("fillet-edge-copy")
+            .arg(&path)
+            .arg("--body")
+            .arg(source.fillet_bodies[0].body.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(out.status.success(), "{out:?}");
+        // The command's own report names the solved corner (compact JSON v1).
+        let text = String::from_utf8(out.stdout).expect("UTF-8");
+        let pair = |key: &str| -> [f64; 2] {
+            let at = text.find(&format!("\"{key}\":[")).expect(key) + key.len() + 4;
+            let inner = &text[at..at + text[at..].find(']').expect("pair")];
+            let mut xy = inner.split(',').map(|v| v.parse::<f64>().expect("number"));
+            [xy.next().expect("x"), xy.next().expect("y")]
+        };
+        assert!(near(pair("corner_mm")), "{text}");
+        assert_eq!(pair("stored_corner_mm"), [33., 3.25], "{text}");
+        same_publication(&ui, &peer);
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 

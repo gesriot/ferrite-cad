@@ -140,7 +140,16 @@ struct Published {
     previous_feature_id: ObjectId,
     /// The edge rounded, in canonical order.
     edge: FilletEdgeDto,
+    /// The corner of the plate the copy was built from: the stored corner of
+    /// an unconstrained plate, the solved one of a constrained plate (§28F).
     corner_mm: [f64; 2],
+    /// §28F, additive: the sides meeting there, on the same plate.
+    adjacent_lengths_mm: [f64; 2],
+    /// §28F, additive: whether the plate's Sketch carries constraints.
+    profile_constrained: bool,
+    /// §28F, additive: the corner in the stored Lines, the solver's starting
+    /// guess when `profile_constrained`.
+    stored_corner_mm: [f64; 2],
     radius_mm: f64,
     references: Vec<NewReference>,
 }
@@ -160,7 +169,10 @@ pub fn run(args: FilletArgs) -> Result<ExitCode> {
                     feature_id: r.corner.feature,
                     joint: r.corner.joint.segments(),
                 },
-                corner_mm: r.corner.corner_mm,
+                corner_mm: r.built_corner.corner_mm,
+                adjacent_lengths_mm: r.built_corner.adjacent_lengths_mm,
+                profile_constrained: r.profile_constrained,
+                stored_corner_mm: r.corner.corner_mm,
                 radius_mm: r.radius_mm,
                 references: r
                     .references

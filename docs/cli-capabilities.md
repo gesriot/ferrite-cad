@@ -247,6 +247,22 @@ Fillet, его ребро, радиус, все UUID, имена и зависи
 ядром без PlaneGCS — `unsupported`; discovery работает везде.
 [Контракт §28E и исполняемый рецепт](fillet-base-constraints.md).
 
+§28F: прежний `fillet-edge-copy` (и форма **Fillet edge of …**) скругляет
+ребро плиты, чей Sketch уже размерен Line-ограничениями редактора ограничений,
+в естественном порядке: прямоугольник → H/V, Fixed, размеры → Fillet. Кандидаты
+— стыки хранимых Line по двум UUID; где угол и сколько места для радиуса,
+решает решённая плита, проверяемая тем же evaluator при сборке копии (тот же
+порядок Line, прямоугольник при прежнем допуске 1e-7 мм, каждая Line на своей
+стороне, стык по UUID, `r ≤ ½` меньшей решённой стороны). До решения
+проверяется только значение радиуса (конечное, ≥ 0.01 мм). Allowlist прежний
+§28A: строка Sketch с ограничениями остаётся байт в байт. Команд, запросов,
+payload, capability и схем не добавлено; документ — тот же, что пишет §28E, и
+его читает, пересобирает и экспортирует байт в байт reader `main` после #69.
+Радиус слишком большой для решённой плиты, Line на другой стороне — `input`;
+не прямоугольник — `unsupported`; без PlaneGCS — `unsupported`, без ядра —
+`unsupported` «Open CASCADE»; discovery работает везде.
+[Контракт §28F и исполняемый рецепт](fillet-constrained-plate.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

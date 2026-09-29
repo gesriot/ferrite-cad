@@ -3994,3 +3994,48 @@ Independent review found no production defect. Pinned native checks and the
 real macOS window scenario passed, including refusal recovery, Save Cancel,
 Replace length and two publications. GUI/CLI SQL and STL/FBX agreed; independent
 ufbx/triangle checks passed. Viewer peak 206.111 MiB, swap 0, exit 0.
+
+**§28F — round a dimensioned plate, in a new copy.** The natural order now
+works: draw the rectangle, give it H/V, a Fixed point and its sizes with the
+existing **Edit constraints** form or `edit-sketch-constraints-copy`, then
+round one vertical edge with the existing **Fillet edge of …** form or
+`fillet-edge-copy`. The result is the same stored model §28E writes (a real
+§28A Fillet over a constrained base), so no command, request, pipeline, solve,
+constraint family, capability, payload version or schema is added. The 5C
+milestone stays open: an arbitrary quadrilateral, a second Fillet, Cut with
+Fillet, Chamfer, another or rotated plane, preview and picking are not part of
+this slice.
+
+The contract, with the exact SQL allowlist, was recorded before
+implementation:
+- The plate reader behind `fillet-edge-copy` admits the constraint editor's
+  managed Line family on the base of a plate with no Cut (a Cut history stays
+  unconstrained). The stored Lines must still be a rectangle; their joints,
+  by two Line UUIDs, are the candidates.
+- One stored/solved policy, §28E's, unchanged: preparation and discovery
+  judge only the value part of the radius for a constrained plate; the
+  evaluator judges the class, every Line's side, the joint and `r ≤ ½` the
+  shorter side on the Lines the predecessor was built from, cold and cached,
+  with no second solve. The copy job's own cold rebuild before publication
+  therefore refuses a radius the solved plate cannot carry and accepts one the
+  stored drawing could not.
+- §28A's allowlist: the Sketch row, constraints and all, is byte-identical.
+  The writer re-derives the preparation inside its transaction.
+- Additive JSON: `fillet_edge.target.profile_constrained`; candidates'
+  `corner_mm`/`adjacent_lengths_mm`/`max_radius_mm` are `null` for a
+  constrained plate, with `stored_corner_mm`/`stored_adjacent_lengths_mm`
+  always present; the result's `corner_mm` is the built plate's, with
+  `profile_constrained`, `stored_corner_mm` and `adjacent_lengths_mm`.
+- The document is readable, rebuildable and editable by the reader on `main`
+  after #69, measured; that reader still refuses to create such a Fillet.
+
+[Contract and executable recipe](fillet-constrained-plate.md),
+[verification](fillet-constrained-plate-verification.md).
+
+Independent review found no production defect. Pinned local native checks
+(505 executed, four build-specific N/A and one ignored timing test) and the
+real macOS window scenario passed: stored/solved radius refusals, Save Cancel,
+recovery, publication and async Open. GUI/CLI SQL and byte-identical STL/FBX
+were checked independently; ufbx and oriented triangles agreed. Viewer peak
+208.126 MiB, swap 0, exit 0. The actual three-platform CI logs confirmed the
+new named gates and recipe/reader markers; the earlier OOM remains unexplained.
