@@ -4031,3 +4031,11 @@ implementation:
 
 [Contract and executable recipe](fillet-constrained-plate.md),
 [verification](fillet-constrained-plate-verification.md).
+
+Independent review found no production defect. Pinned local native checks
+(505 executed, four build-specific N/A and one ignored timing test) and the
+real macOS window scenario passed: stored/solved radius refusals, Save Cancel,
+recovery, publication and async Open. GUI/CLI SQL and byte-identical STL/FBX
+were checked independently; ufbx and oriented triangles agreed. Viewer peak
+208.126 MiB, swap 0, exit 0. The actual three-platform CI logs confirmed the
+new named gates and recipe/reader markers; the earlier OOM remains unexplained.
