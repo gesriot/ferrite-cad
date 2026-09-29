@@ -213,7 +213,23 @@ discovery says `available: false`. No new stored semantics, so no capability.
   ([36480010010](https://github.com/gesriot/ferrite-cad/actions/runs/36480010010)),
   product sbom, rust sbom and rust notices: all concluded success (workflow
   runs read through the API; the check-run count itself was not recounted).
-* **This change:** recorded in a later documentation-only commit.
+* **This change, code head `f402aef`** (first and only CI round, no fix was
+  needed): CI
+  ([run 36606963811](https://github.com/gesriot/ferrite-cad/actions/runs/36606963811)),
+  planegcs pin
+  ([36606919303](https://github.com/gesriot/ferrite-cad/actions/runs/36606919303))
+  and the combined runtime layout
+  ([36606919110](https://github.com/gesriot/ferrite-cad/actions/runs/36606919110):
+  Linux, macOS on Apple Silicon, Windows, and the comparison of the three)
+  concluded success. That includes the new stub step, the mixed step with
+  the two no-solver gates and `FCAD_28F_RECIPE_NO_SOLVER`, the Fillet step
+  with the six native CLI gates, the document and app gates and
+  `FCAD_28F_RECIPE_OK` against the pinned PlaneGCS, and the FBX campaign with
+  `FCAD_FILLET_FIRST_UFBX_EXECUTED`. The job logs cannot be downloaded
+  through this container's proxy, so the step conclusions are what is
+  claimed, not gate counts read from logs.
+* This documentation-only commit changes no input of the runtime layout or
+  the pin; CI runs on it.
 
 ## Limits
 
