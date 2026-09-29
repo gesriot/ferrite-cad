@@ -6229,9 +6229,17 @@ mod sequential {
         let edge = &t["fillets"][0]["edge"];
         f.ask_edge(edge, 1.0);
         let names = entries(f.root.path());
+        // A build without a kernel reads the source and then asks for the
+        // kernel before any other check, so a well-formed request is
+        // `unsupported` there (the domain test refuses the same corner
+        // without a kernel); with a kernel each is `input`.
+        let kernel = ferritecad_occt::is_available();
+        let well_formed = if kernel { "input" } else { "unsupported" };
         let v = reply(f.fillet(&never).output().expect("process"), OP, 2);
-        assert_eq!(refused(&v), "input", "the same corner: {v}");
-        assert!(v["error"]["message"].as_str().expect("m").contains(&first));
+        assert_eq!(refused(&v), well_formed, "the same corner: {v}");
+        if kernel {
+            assert!(v["error"]["message"].as_str().expect("m").contains(&first));
+        }
         write(
             &f.request,
             &json!({"request_version": 1, "edge": short["edge"]}),
@@ -6241,11 +6249,11 @@ mod sequential {
         for r in [0.0, 0.009, D / 2. + 1e-9] {
             f.ask_edge(&short["edge"], r);
             let v = reply(f.fillet(&never).output().expect("process"), OP, 2);
-            assert_eq!(refused(&v), "input", "{r}: {v}");
+            assert_eq!(refused(&v), well_formed, "{r}: {v}");
         }
         f.ask_edge(&short["edge"], 3.0);
         let out = f.fillet(&never).output().expect("process");
-        if ferritecad_occt::is_available() {
+        if kernel {
             assert_eq!(out.status.code(), Some(0), "{out:?}");
             std::fs::remove_file(&never).expect("clean");
         } else {
@@ -6398,7 +6406,7 @@ mod sequential {
             r1,
             second,
             bound,
-            "at-the-bound",
+            "second-bound",
         );
     }
 
@@ -6448,7 +6456,7 @@ mod sequential {
             r1,
             [X0, Y0 + D],
             3.875,
-            "opposite-dimensioned",
+            "second-dimensioned-opposite",
         );
     }
 
@@ -6596,7 +6604,15 @@ mod sequential {
         let second = [X0 + W, Y0 + D];
         let (r1, r2) = (2.375, 3.0625);
         let g = filleted_by_cli(CCW, first, r1, "first");
-        let copy = second_fillet(&g, &Part::plain(CCW), first, r1, second, r2, "second");
+        let copy = second_fillet(
+            &g,
+            &Part::plain(CCW),
+            first,
+            r1,
+            second,
+            r2,
+            "second-restored",
+        );
         let cache = copy.with_extension("fcad-cache");
         let d = Document::open_read_only(&copy).expect("copy");
         let objects = d.objects().expect("objects");
@@ -6729,7 +6745,7 @@ mod sequential {
             6.125,
             [X0, Y0 + D],
             2.0,
-            "second",
+            "second-forged-base",
         );
         let d = Document::open_read_only(&copy).expect("copy");
         let objects = d.objects().expect("objects");

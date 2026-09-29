@@ -168,3 +168,210 @@ build wrote before still reads and rebuilds.
 A third Fillet, the same corner twice, touching or merged arcs, cap edges,
 edge chains, Cut with Fillet, Chamfer, editing a history with two Fillets,
 picking, live preview, in-place Save.
+
+## Recipe: create → first Fillet → second → reopen, measure, export
+
+For a caller driving the CLI with JSON v1. Extract it from this file and run
+it:
+
+```sh
+python3 - <<'EXTRACT'
+from pathlib import Path
+text = Path("docs/sequential-edge-fillets.md").read_text(encoding="utf-8")
+code = text.split("# FCAD_28G_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+Path("ferrite-28g-recipe.py").write_text(code, encoding="utf-8")
+EXTRACT
+FERRITECAD=/path/to/ferritecad python3 ferrite-28g-recipe.py
+```
+
+A build without Open CASCADE stops at the first geometry step and prints
+`FCAD_28G_RECIPE_NO_KERNEL`. Any build with Open CASCADE — the plate is
+unconstrained, so no solver is asked — prints `FCAD_28G_RECIPE_OK` with the
+measured mesh and exact volumes.
+
+```python
+# FCAD_28G_AGENT_RECIPE
+import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+cli = os.environ["FERRITECAD"]
+root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28g-"))
+SEQUENTIAL = "feature.fillet.sequential.v1"
+
+def run(args, code=0):
+    p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
+    if p.returncode == 7:
+        raise RuntimeError("report lost: inspect the destination; do not retry blindly")
+    assert p.returncode == code, (args, p.returncode, p.stdout, p.stderr)
+    return json.loads(p.stdout) if "--json" in args else p.stdout
+
+def inspect(path):
+    return run(["inspect", path, "--json"])["result"]
+
+def geometry(args, out):
+    """A step that needs the kernel: a build without it refuses typed."""
+    p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
+    if p.returncode == 2 and not out.exists():
+        error = json.loads(p.stdout)["error"]
+        if error["kind"] == "unsupported" and "Open CASCADE" in error["message"]:
+            print("FCAD_28G_RECIPE_NO_KERNEL", json.dumps(error))
+            sys.exit(0)
+    assert p.returncode == 0, (args, p.returncode, p.stdout, p.stderr)
+    return json.loads(p.stdout)
+
+def tables(path):
+    db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    out = {}
+    for (t,) in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+        cur = db.execute(f'SELECT * FROM "{t}"')
+        out[t] = ([d[0] for d in cur.description], sorted(cur.fetchall(), key=repr))
+    db.close()
+    return out
+
+def second_allowlist(source, copy, body):
+    """§28G's allowlist: every source cell survives except the Body row's
+    payload/payload_hash and its old tip edge; the copy adds one object, two
+    edges, eight names, at most the sequential capability, and stamps
+    modified_at. Fillet 1's row is the same bytes."""
+    bid = bytes.fromhex(body.replace("-", ""))
+    a, b = tables(source), tables(copy)
+    assert a.keys() == b.keys()
+    for t in a:
+        (ac, arows), (bc, brows) = a[t], b[t]
+        assert ac == bc, t
+        if t == "objects":
+            k = ac.index("id")
+            mine = {r[k]: r for r in brows}
+            assert len(brows) == len(arows) + 1, "one new object"
+            for row in arows:
+                for c, u, v in zip(ac, row, mine[row[k]]):
+                    assert u == v or (row[k] == bid and c in ("payload", "payload_hash")), \
+                        f"objects.{c} moved"
+        elif t in ("deps", "topology_refs"):
+            kept = [r for r in arows if r in brows]
+            lost = [r for r in arows if r not in brows]
+            assert all(t == "deps" and bid in r for r in lost), (t, lost)
+            assert len(brows) - len(kept) == (2 if t == "deps" else 8), t
+        elif t == "capabilities":
+            assert set(arows) <= set(brows), "a capability changed"
+            assert {r[0] for r in set(brows) - set(arows)} == {SEQUENTIAL}
+        elif t == "meta":
+            for x, y in zip(arows, brows):
+                assert all(u == v or c == "modified_at" for c, u, v in zip(ac, x, y)), "meta"
+        else:
+            assert arows == brows, t
+
+def stl(path):
+    data = path.read_bytes()
+    (count,) = struct.unpack_from("<I", data, 80)
+    assert len(data) == 84 + 50 * count
+    six, points = 0.0, []
+    for i in range(count):
+        a, b, c = (struct.unpack_from("<3f", data, 84 + 50 * i + 12 + 12 * k) for k in range(3))
+        six += (a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]))
+        points += [a, b, c]
+    return six / 6, points
+
+X0, Y0, W, D, H = -4.5, 3.25, 37.5, 12.25, 6.75
+CORNERS = [[X0, Y0], [X0 + W, Y0], [X0 + W, Y0 + D], [X0, Y0 + D]]
+
+def measured(copy, rounded):
+    """After reopening: valid, a cold rebuild resolves every name, and the
+    independently read mesh is the plate with exactly `rounded` (corner,
+    radius) pairs rounded. The exact volume is the B-Rep's analytic one; the
+    mesh is bounded by the chord deflection."""
+    assert run(["validate", copy, "--json"])["result"]["valid"] is True
+    n = len(tables(copy)["topology_refs"][1])
+    text = run(["rebuild", copy, "--cold"])
+    assert "tip Fillet" in text and f"{n} of {n} stored references resolved" in text, text
+    out = copy.with_suffix(".stl")
+    run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
+    volume, points = stl(out)
+    exact = (W * D - (1 - math.pi / 4) * sum(r * r for _, r in rounded)) * H
+    slack = sum(math.pi / 2 * r * 0.01 * H for _, r in rounded)
+    assert exact - slack - 1e-3 <= volume <= exact + 1e-3, (volume, exact)
+    for c in CORNERS:
+        for z in (0.0, H):
+            near = any(abs(p[0] - c[0]) < 1e-4 and abs(p[1] - c[1]) < 1e-4 and abs(p[2] - z) < 1e-4
+                       for p in points)
+            assert near == all(c != at for at, _ in rounded), (c, z)
+    fbx = run(["export-fbx", copy, "-o", copy.with_suffix(".fbx"), "--json"])["result"]
+    assert fbx["complete"] is True, fbx
+    return volume, exact
+
+def ask(candidate, radius):
+    path = root / "fillet.json"
+    path.write_text(json.dumps({"request_version": 1, "edge": {
+        "feature_id": candidate["edge"]["feature_id"],
+        "joint": candidate["edge"]["joint"][::-1]}, "radius_mm": radius}))
+    return path
+
+def fillet(source, catalog, request, out, code=0):
+    body = catalog["bodies"][0]["body_id"]
+    return run(["fillet-edge-copy", source, "--body", body, "--expect-version",
+                catalog["content_version"], "--request", request, "-o", out, "--json"], code)
+
+# 1. A plate.
+create = root / "create.json"
+create.write_text(json.dumps({"request_version": 1, "points_mm": CORNERS, "height_mm": H}))
+plate = root / "plate.fcad"
+geometry(["create-sketch-extrude", create, "-o", plate, "--json"], plate)
+
+# 2. The first Fillet.
+catalog = inspect(plate)
+at = lambda cat, c: next(x for x in cat["bodies"][0]["fillet_edge"]["target"]["candidates"]
+                         if x["stored_corner_mm"] == c)
+FIRST, R1 = [X0 + W, Y0], 2.375
+first = root / "first.fcad"
+done1 = geometry(["fillet-edge-copy", plate, "--body", catalog["bodies"][0]["body_id"],
+                  "--expect-version", catalog["content_version"], "--request",
+                  ask(at(catalog, FIRST), R1), "-o", first, "--json"], first)["result"]
+v1, e1 = measured(first, [(FIRST, R1)])
+
+# 3. Discovery on the rounded plate: its history and the three other corners.
+catalog = inspect(first)
+edge = catalog["bodies"][0]["fillet_edge"]
+assert edge["available"] is True, edge
+target = edge["target"]
+assert target["previous_feature_id"] == done1["feature_id"], target
+(saved,) = target["fillets"]
+assert saved["feature_id"] == done1["feature_id"] and saved["radius_mm"] == R1, saved
+assert len(target["candidates"]) == 3
+SECOND, R2 = [X0 + W, Y0 + D], 3.0625
+chosen = at(catalog, SECOND)
+assert chosen["adjacent_fillet_feature_id"] == done1["feature_id"], chosen
+assert chosen["edge"]["feature_id"] == target["base_feature_id"], "named by the plate"
+assert at(catalog, [X0, Y0 + D])["adjacent_fillet_feature_id"] is None
+
+# 4. The second Fillet, into a new copy.
+second = root / "second.fcad"
+before = first.read_bytes()
+done2 = fillet(first, catalog, ask(chosen, R2), second)["result"]
+assert first.read_bytes() == before, "the source is untouched"
+assert done2["previous_feature_id"] == done1["feature_id"], done2
+assert done2["edge"] == chosen["edge"] and done2["corner_mm"] == SECOND, done2
+assert sorted(r["role"] for r in done2["references"]).count("origin_fillet_face") == 1
+second_allowlist(first, second, catalog["bodies"][0]["body_id"])
+v2, e2 = measured(second, [(FIRST, R1), (SECOND, R2)])
+after = inspect(second)
+assert after["bodies"][0]["fillet_edge"]["available"] is False, "a third Fillet"
+assert all(f["radius_edit"]["available"] is False for f in after["fillets"])
+
+# 5. Refusals write nothing: the same corner, a third Fillet, a stale version.
+names = sorted(p.name for p in root.iterdir())
+never = root / "never.fcad"
+error = fillet(first, catalog, ask({"edge": saved["edge"]}, 1.0), never, 2)["error"]
+assert error["kind"] == "input" and "already rounded" in error["message"], error
+request = ask(at(catalog, [X0, Y0 + D]), 1.0)
+error = run(["fillet-edge-copy", second, "--body", after["bodies"][0]["body_id"],
+             "--expect-version", after["content_version"], "--request", request,
+             "-o", never, "--json"], 2)["error"]
+assert error["kind"] == "unsupported" and "third" in error["message"], error
+error = run(["fillet-edge-copy", second, "--body", after["bodies"][0]["body_id"],
+             "--expect-version", catalog["content_version"], "--request", request,
+             "-o", never, "--json"], 2)["error"]
+assert error["kind"] == "input", error
+assert not never.exists()
+assert sorted(p.name for p in root.iterdir()) == names
+print("FCAD_28G_RECIPE_OK", f"first={v1:.6f}/{e1:.6f}", f"second={v2:.6f}/{e2:.6f}",
+      f"fillets={done1['feature_id']},{done2['feature_id']}")
+```
