@@ -39,8 +39,11 @@ Fillet rounded (`input`), a document that already holds two Fillets
   Line pair } — the stable meaning of the corner. The producer is not
   rewritten to Fillet 1 to keep the old `edge.feature == previous` equality.
 * That is new stored meaning, so it moves the layout: a Fillet whose
-  `previous` is another Fillet is **payload v2** and requires the new
-  capability **`feature.fillet.sequential.v1`**. A §28A Fillet stays v1. A
+  `edge.feature` is not its `previous` — decided from the payload alone,
+  which in this class means one that rounds another Fillet's result — is
+  **payload v2** and requires the new capability
+  **`feature.fillet.sequential.v1`**; the header must say so, both ways. A
+  §28A Fillet stays v1. A
   build that predates this one does not read Fillet v2, keeps the row verbatim
   and opens the document read-only; its rebuild refuses the object rather than
   building part of the history. No SQLite schema change.
@@ -110,7 +113,9 @@ corners, each radius within §28A's bound (`0.01 mm ≤ r ≤ ½` the shorter si
 at its corner), and, for **adjacent** corners, the new pair policy:
 
 > the flat left on the Line the two corners share must be at least
-> `MIN_RADIUS_MM` (0.01 mm): `L_shared − r1 − r2 ≥ 0.01 mm`.
+> `MIN_RADIUS_MM` (0.01 mm), stated as a bound on the second radius:
+> `r2 ≤ L_shared − r1 − 0.01 mm` — the very expression discovery reports, so
+> the largest radius it offers is accepted.
 
 Measured on OCCT 8.0.1 on the 37.5 × 12.25 × 6.75 mm plate, second corner
 adjacent across the 12.25 mm side: touching (`r1 + r2 = L`, flat 0) is not
