@@ -277,7 +277,25 @@ scratchpad, against copies this build wrote:
   document Fillet tests (22) pass, the §28A recipe printing
   `FCAD_28A_RECIPE_NO_KERNEL`. This had not been run locally in the first
   round: only the §28F and §28G recipes had.
-* **Final head:** recorded after its runs conclude.
+* **Head `5860705`:** CI
+  ([36638648061](https://github.com/gesriot/ferrite-cad/actions/runs/36638648061):
+  lint, test on Ubuntu, macOS and Windows — with the stub step's five §28G
+  gates and `FCAD_28G_RECIPE_NO_KERNEL` — sbom, notices, supply-chain) and the
+  combined runtime layout
+  ([36640255679](https://github.com/gesriot/ferrite-cad/actions/runs/36640255679):
+  Linux, macOS on Apple Silicon, Windows and the three-platform comparison,
+  including the OCCT-without-solver step, the Fillet step with the new native
+  gates and `FCAD_28G_RECIPE_OK` against the pinned PlaneGCS, and the FBX
+  campaign with `FCAD_FILLET_SEQUENTIAL_UFBX_EXECUTED`) concluded
+  **success**. The runtime layout's push trigger does not list `docs/**`,
+  although it executes the recipes kept there, so it was started on this
+  head by `workflow_dispatch`. The planegcs pin
+  ([36637802226](https://github.com/gesriot/ferrite-cad/actions/runs/36637802226))
+  passed on `e017d82`; `5860705` changes none of its inputs. Step
+  conclusions are what is claimed here; the gate counts were not read from
+  the job logs.
+* This record's own commit changes no input of the runtime layout or the pin;
+  CI runs on it.
 
 ## Limits
 
