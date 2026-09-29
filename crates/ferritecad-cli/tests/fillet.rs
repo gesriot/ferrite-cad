@@ -5156,8 +5156,8 @@ mod constraints {
             assert_eq!(measure(&f.source, None).faces, 7);
             let g = constrained_without_kernel();
             let before = std::fs::read(&g.source).expect("bytes");
-            let names = entries(g.root.path());
             g.ask_stored([X0 + W, Y0], 2.375);
+            let names = entries(g.root.path());
             let never = g.root.path().join("never.fcad");
             let v = reply(g.fillet(&never).output().expect("process"), ROUND, 2);
             assert_eq!(refused(&v), "unsupported", "{v}");
