@@ -53,7 +53,11 @@ const MAGIC: &[u8; 4] = b"FCNA";
 /// rebuild, which is what a cache is for.
 // v3 adds the immediate predecessor and qualified ancestor names. v2
 // cannot supply that provenance, so it is rejected and rebuilt in full.
-const FORMAT_VERSION: u16 = 3;
+// v4 (§28G) carries sweep edges and a predecessor Fillet's face under their
+// origin. A v3 entry of a Fillet has neither, and a second Fillet restored on
+// it would find no edge to round, so v3 is refused and rebuilt, never read as
+// a v4 entry that happens to carry none.
+const FORMAT_VERSION: u16 = 4;
 
 /// Bytes before the checksummed archive payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>() + size_of::<u64>() + 32;
@@ -113,6 +117,66 @@ const TAG_REVOLVED_END_CAP: u16 = 17;
 /// the format version is not, and a reader that predates the tag refuses the
 /// whole entry as malformed and rebuilds.
 const TAG_EDGE_FILLET_FACE: u16 = 18;
+
+/// §28G: an edge an origin feature swept at one corner, carried by a later
+/// feature, and the face an origin Fillet made, carried the same way. Kept
+/// apart from every face tag so an edge name can never come back as a face.
+const TAG_ORIGIN_SWEEP_EDGE: u16 = 19;
+const TAG_ORIGIN_FILLET_FACE: u16 = 20;
+
+/// Writes a §28G origin name, which may be bound or removed alike. Answers
+/// whether `name` was one.
+fn put_sequential_origin(payload: &mut Vec<u8>, name: BoundName) -> bool {
+    match name {
+        BoundName::OriginSweepEdge {
+            origin_feature,
+            joint,
+        } => {
+            payload.extend_from_slice(&TAG_ORIGIN_SWEEP_EDGE.to_le_bytes());
+            payload.extend_from_slice(&origin_feature.to_bytes());
+            for segment in joint.segments() {
+                payload.extend_from_slice(&segment.to_bytes());
+            }
+            true
+        }
+        BoundName::OriginFilletFace {
+            origin_feature,
+            edge_feature,
+            joint,
+        } => {
+            payload.extend_from_slice(&TAG_ORIGIN_FILLET_FACE.to_le_bytes());
+            payload.extend_from_slice(&origin_feature.to_bytes());
+            payload.extend_from_slice(&edge_feature.to_bytes());
+            for segment in joint.segments() {
+                payload.extend_from_slice(&segment.to_bytes());
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Reads the §28G origin name `tag` introduces, if it is one of theirs.
+fn take_sequential_origin(tag: u16, reader: &mut Reader<'_>) -> Result<Option<BoundName>> {
+    Ok(match tag {
+        TAG_ORIGIN_SWEEP_EDGE => Some(BoundName::OriginSweepEdge {
+            origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
+            joint: ProfileJoint::from_canonical([
+                StableEntityId::from_bytes(reader.array("first profile segment")?)?,
+                StableEntityId::from_bytes(reader.array("second profile segment")?)?,
+            ])?,
+        }),
+        TAG_ORIGIN_FILLET_FACE => Some(BoundName::OriginFilletFace {
+            origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
+            edge_feature: ObjectId::from_bytes(reader.array("edge feature")?)?,
+            joint: ProfileJoint::from_canonical([
+                StableEntityId::from_bytes(reader.array("first profile segment")?)?,
+                StableEntityId::from_bytes(reader.array("second profile segment")?)?,
+            ])?,
+        }),
+        _ => None,
+    })
+}
 
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
@@ -232,6 +296,9 @@ impl ArchivedFeature {
                         payload.extend_from_slice(&segment.to_bytes());
                     }
                 }
+                BoundName::OriginSweepEdge { .. } | BoundName::OriginFilletFace { .. } => {
+                    put_sequential_origin(&mut payload, name);
+                }
             }
             payload.extend_from_slice(&slot.index().to_le_bytes());
         }
@@ -276,9 +343,11 @@ impl ArchivedFeature {
                     payload.extend_from_slice(&profile_segment.to_bytes());
                 }
                 other => {
-                    return Err(malformed(format!(
-                        "only a carried name can be removed, and {other:?} is not one"
-                    )));
+                    if !put_sequential_origin(&mut payload, other) {
+                        return Err(malformed(format!(
+                            "only a carried name can be removed, and {other:?} is not one"
+                        )));
+                    }
                 }
             }
         }
@@ -423,12 +492,15 @@ impl ArchivedFeature {
                     origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
-                unknown => {
-                    return Err(malformed(format!(
-                        "this archive names something with tag {unknown}, which this build does \
-                         not know; a name it cannot read is not a name it may ignore"
-                    )));
-                }
+                unknown => match take_sequential_origin(unknown, &mut reader)? {
+                    Some(name) => name,
+                    None => {
+                        return Err(malformed(format!(
+                            "this archive names something with tag {unknown}, which this build \
+                             does not know; a name it cannot read is not a name it may ignore"
+                        )));
+                    }
+                },
             };
             bindings.push((name, ArchiveSlot::new(reader.u32("slot")?)));
         }
@@ -455,12 +527,15 @@ impl ArchivedFeature {
                     origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
-                unknown => {
-                    return Err(malformed(format!(
-                        "this archive says tag {unknown} was removed, and only a carried name \
-                         can be"
-                    )));
-                }
+                unknown => match take_sequential_origin(unknown, &mut reader)? {
+                    Some(name) => name,
+                    None => {
+                        return Err(malformed(format!(
+                            "this archive says tag {unknown} was removed, and only a carried \
+                             name can be"
+                        )));
+                    }
+                },
             });
         }
 
@@ -911,6 +986,8 @@ mod tests {
             ("revolved start cap", TAG_REVOLVED_START_CAP),
             ("revolved end cap", TAG_REVOLVED_END_CAP),
             ("edge fillet face", TAG_EDGE_FILLET_FACE),
+            ("origin sweep edge", TAG_ORIGIN_SWEEP_EDGE),
+            ("origin fillet face", TAG_ORIGIN_FILLET_FACE),
         ];
         for (index, (what, tag)) in tags.iter().enumerate() {
             for (other_what, other) in &tags[index + 1..] {
@@ -942,7 +1019,15 @@ mod tests {
         assert_eq!(TAG_EDGE_FILLET_FACE, 18, "§28A appends; it never reuses");
         // v2 appended the removed-name list, which is a layout change and not
         // only a wider vocabulary; see the note on `FORMAT_VERSION`.
-        assert_eq!(FORMAT_VERSION, 3, "predecessor provenance requires v3");
+        assert_eq!(
+            [TAG_ORIGIN_SWEEP_EDGE, TAG_ORIGIN_FILLET_FACE],
+            [19, 20],
+            "§28G appends; it never reuses"
+        );
+        assert_eq!(
+            FORMAT_VERSION, 4,
+            "carried sweep edges and fillet faces require v4"
+        );
     }
 
     #[test]
@@ -1020,7 +1105,7 @@ mod tests {
             ArchivedFeature::decode(&bytes, producer, &kernel).expect("restore"),
             rebuilt
         );
-        for version in [1u16, 2] {
+        for version in [1u16, 2, 3] {
             let mut old = bytes.clone();
             old[4..6].copy_from_slice(&version.to_le_bytes());
             let err = ArchivedFeature::decode(&old, producer, &kernel)
@@ -1097,6 +1182,64 @@ mod tests {
         unknown[at..at + 2].copy_from_slice(&99u16.to_le_bytes());
         reseal(&mut unknown);
         assert!(ArchivedFeature::decode(&unknown, producer, &identity).is_err());
+    }
+
+    /// §28G: an origin's sweep edge and an earlier Fillet's face, bound and
+    /// removed, come back as themselves under their own tags; a v3 entry is
+    /// refused and rebuilt rather than read as a v4 one that carries none.
+    #[test]
+    fn origin_edges_and_fillet_faces_survive_their_byte_form_and_v3_is_refused() {
+        let kernel = MockKernel::new();
+        let identity = kernel.identity().clone();
+        let blob = BrepBlob::new(identity.clone(), vec![7, 7, 7]);
+        let hash = blob.content_hash();
+        let producer = ObjectId::new();
+        let first = ObjectId::new();
+        let base = ObjectId::new();
+        let [kept, rounded, other] = [a_joint(), a_joint(), a_joint()];
+        let edge = BoundName::OriginSweepEdge {
+            origin_feature: base,
+            joint: kept,
+        };
+        let face = BoundName::OriginFilletFace {
+            origin_feature: first,
+            edge_feature: base,
+            joint: rounded,
+        };
+        let gone = BoundName::OriginSweepEdge {
+            origin_feature: base,
+            joint: other,
+        };
+        let gone_face = BoundName::OriginFilletFace {
+            origin_feature: first,
+            edge_feature: base,
+            joint: other,
+        };
+        let mut archive = ArchivedFeature::from_parts_with_removed(
+            producer,
+            blob,
+            hash,
+            [(edge, ArchiveSlot::new(1)), (face, ArchiveSlot::new(2))],
+            [gone, gone_face],
+        )
+        .expect("parts");
+        archive.previous = Some(first);
+        let bytes = archive.encode().expect("encodes");
+        let restored = ArchivedFeature::decode(&bytes, producer, &identity).expect("reads back");
+        assert_eq!(restored, archive);
+        assert_eq!(restored.slot(edge).map(|s| s.index()), Some(1));
+        assert_eq!(restored.slot(face).map(|s| s.index()), Some(2));
+        assert_eq!(restored.removed().collect::<Vec<_>>().len(), 2);
+        assert_eq!(edge.kind(), ferritecad_kernel::SubShapeKind::Edge);
+        assert_eq!(face.kind(), ferritecad_kernel::SubShapeKind::Face);
+
+        let mut old = bytes.clone();
+        old[4..6].copy_from_slice(&3u16.to_le_bytes());
+        let err = ArchivedFeature::decode(&old, producer, &identity).expect_err("v3");
+        assert!(
+            err.to_string().contains("discard the entry and rebuild"),
+            "{err}"
+        );
     }
 
     fn reseal(bytes: &mut [u8]) {

@@ -1510,10 +1510,10 @@ fn native_fillet_refusals_and_cancellation_are_atomic() {
         Some(7)
     );
     assert!(lost.exists(), "the published copy is kept");
-    assert_eq!(
-        inspect(&lost)["bodies"][0]["fillet_edge"]["available"],
-        false
-    );
+    // §28G: the kept copy is a rounded plate, offered for a second Fillet.
+    let kept = &inspect(&lost)["bodies"][0]["fillet_edge"];
+    assert_eq!(kept["available"], true, "{kept}");
+    assert_eq!(kept["target"]["fillets"].as_array().map(Vec::len), Some(1));
     assert_eq!(std::fs::read(&f.source).expect("source bytes"), before);
 }
 
@@ -1542,7 +1542,14 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
         let text = reason.as_str().expect("a reason");
         assert!(text.contains(&fillet_id), "{text}");
     };
-    names_it(&catalog["bodies"][0]["fillet_edge"]["refusal"]);
+    // §28G: a second Fillet is offered, on the three other corners.
+    let second = &catalog["bodies"][0]["fillet_edge"];
+    assert_eq!(second["available"], true, "{second}");
+    assert_eq!(second["target"]["previous_feature_id"], fillet_id.as_str());
+    assert_eq!(
+        second["target"]["candidates"].as_array().map(Vec::len),
+        Some(3)
+    );
     names_it(&catalog["bodies"][0]["cut_edit"]["refusal"]);
     assert_eq!(catalog["edit_extrude"]["available"], true, "§28C");
     assert_eq!(catalog["sketches"][0]["editable"], true, "§28D");
@@ -1560,8 +1567,9 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
         .to_owned();
 
     // The commands themselves, each with a request that would otherwise do.
+    // The corner already rounded is refused as input (§28G).
     let out = f.root.path().join("again.fcad");
-    f.ask_reversed([X0 + W, Y0], 2.0);
+    f.ask_reversed([X0, Y0], 2.0);
     let v = reply(
         f.fillet_from(&copy, body, version, &out)
             .output()
@@ -1569,7 +1577,7 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
         OP,
         2,
     );
-    assert_eq!(refused(&v), "unsupported", "a second fillet: {v}");
+    assert_eq!(refused(&v), "input", "the same corner twice: {v}");
     let cut = f.root.path().join("cut.json");
     write(
         &cut,
@@ -2530,7 +2538,11 @@ mod height {
             let text = reason.as_str().expect("a reason");
             assert!(text.contains(f.fillet_id()), "{text}");
         };
-        names_it(&f.catalog["bodies"][0]["fillet_edge"]["refusal"]);
+        // §28G: a second Fillet is offered on the rounded plate.
+        assert_eq!(
+            f.catalog["bodies"][0]["fillet_edge"]["target"]["previous_feature_id"],
+            f.fillet_id()
+        );
         names_it(&f.catalog["bodies"][0]["cut_edit"]["refusal"]);
         assert_eq!(f.catalog["sketches"][0]["editable"], true, "§28D");
         assert_eq!(

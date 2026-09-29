@@ -491,6 +491,39 @@ fn check_semantic_references(
                         object.id, fillet.edge.feature
                     ),
                 );
+            } else {
+                // §28G: the edge must come from the result the Fillet
+                // rounds — its predecessor or one of that one's own
+                // predecessors — never from a feature outside its history.
+                // Bounded by the object count, so a cycle (reported by the
+                // graph check) cannot loop here.
+                let mut current = Some(previous);
+                let mut steps = 0usize;
+                let mut inside = false;
+                while let Some(id) = current {
+                    if id == fillet.edge.feature {
+                        inside = true;
+                        break;
+                    }
+                    steps += 1;
+                    if steps > by_id.len() {
+                        break;
+                    }
+                    current = by_id
+                        .get(&id)
+                        .and_then(|found| found.payload.previous_feature());
+                }
+                if !inside {
+                    report.error(
+                        "fillet.edge-outside-history",
+                        Some(object.id),
+                        format!(
+                            "fillet {} rounds an edge of {}, which is neither the result it \
+                             rounds ({previous}) nor one of that result's predecessors",
+                            object.id, fillet.edge.feature
+                        ),
+                    );
+                }
             }
         }
         ObjectPayload::Revolve(revolve) => {

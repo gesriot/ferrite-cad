@@ -77,9 +77,9 @@ pub use cut_edit::{
     cut_plane_placement, prepare_circular_cut, prepare_cut_parameters,
 };
 pub use fillet::{
-    EdgeFillet, FilletChoice, FilletCorner, MAX_RADIUS_FRACTION, MIN_RADIUS_MM, PreparedEdgeFillet,
-    SavedFilletTarget, check_radius_value, corner_for, evaluable_fillet, fillet_choices,
-    prepare_edge_fillet, rectangle_corners,
+    EdgeFillet, ExistingFillet, FilletChoice, FilletCorner, MAX_RADIUS_FRACTION, MIN_RADIUS_MM,
+    PreparedEdgeFillet, SavedFilletTarget, check_pair, check_radius_value, corner_for,
+    evaluable_fillet, fillet_choices, prepare_edge_fillet, rectangle_corners, shared_side,
 };
 pub use fillet_radius::{
     FilletRadiusChoice, PreparedFilletRadius, SavedFillet, fillet_radius_choices,
@@ -113,15 +113,15 @@ pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
     Body, CORE_CAPABILITY, CapSide, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY,
     EXTRUDE_CAP_VERTEX_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
-    Expression, Extrude, FEATURE_FILLET_CAPABILITY, FEATURE_PREDECESSOR_CAPABILITY,
-    FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY, FEATURE_REVOLVE_CAPABILITY,
-    FEATURE_REVOLVE_PARTIAL_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY, Fillet, FilletEdge,
-    GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
-    ObjectKind, ObjectPayload, Parameter, Point2, Revolve, RevolveAngle, RevolveAxis,
-    RevolveExtent, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY,
-    STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch, SketchConstraint,
-    SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
-    SketchSegmentRef, SolidOperation, TOPOLOGY_CARRIED_FACE_CAPABILITY,
+    Expression, Extrude, FEATURE_FILLET_CAPABILITY, FEATURE_FILLET_SEQUENTIAL_CAPABILITY,
+    FEATURE_PREDECESSOR_CAPABILITY, FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
+    FEATURE_REVOLVE_CAPABILITY, FEATURE_REVOLVE_PARTIAL_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY,
+    Fillet, FilletEdge, GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef,
+    ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter, Point2, Revolve,
+    RevolveAngle, RevolveAxis, RevolveExtent, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
+    SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
+    SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
+    SketchPointSelector, SketchSegmentRef, SolidOperation, TOPOLOGY_CARRIED_FACE_CAPABILITY,
     TOPOLOGY_ORIGIN_FACE_CAPABILITY, TopologyRef,
 };
 pub use schema::{

@@ -189,6 +189,17 @@ pub const FEATURE_REVOLVE_PARTIAL_CAPABILITY: &str = "feature.revolve.partial.v1
 /// reader, which is what earns the name.
 pub const FEATURE_FILLET_CAPABILITY: &str = "feature.fillet.v1";
 
+/// The capability a [`Fillet`] built on another Fillet depends on (§28G), and
+/// the name that carries the earlier Fillet's face into it
+/// ([`SemanticRole::OriginFilletFace`]).
+///
+/// Such a Fillet names its corner by the plate that swept it while rounding
+/// the result of the Fillet before it, so `edge.feature` is no longer its
+/// `previous`. A §28A build reads that as a Fillet of the wrong feature. It
+/// reads Fillet payload v1 only, keeps a v2 row verbatim and opens the
+/// document read-only rather than rebuild half of the history.
+pub const FEATURE_FILLET_SEQUENTIAL_CAPABILITY: &str = "feature.fillet.sequential.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -311,6 +322,12 @@ impl ObjectKind {
                 FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
                 FEATURE_THROUGH_ALL_CAPABILITY.to_owned(),
             ],
+            (Self::Fillet, 2) => vec![
+                CORE_CAPABILITY.to_owned(),
+                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
+                FEATURE_FILLET_CAPABILITY.to_owned(),
+                FEATURE_FILLET_SEQUENTIAL_CAPABILITY.to_owned(),
+            ],
             // Every Fillet consumes a predecessor, so it declares that
             // contract as well as its own.
             (Self::Fillet, _) => vec![
@@ -352,6 +369,7 @@ impl ObjectKind {
                 CORE_CAPABILITY,
                 FEATURE_PREDECESSOR_CAPABILITY,
                 FEATURE_FILLET_CAPABILITY,
+                FEATURE_FILLET_SEQUENTIAL_CAPABILITY,
             ],
             _ => &[CORE_CAPABILITY],
         }
@@ -385,6 +403,9 @@ impl ObjectKind {
             // full turn with a bore is still stored at v1; see
             // [`Revolve::schema_version`].
             Self::Revolve => 4,
+            // v2 is a Fillet built on a Fillet (§28G); a first Fillet is
+            // still stored at v1. See [`Fillet::schema_version`].
+            Self::Fillet => 2,
             _ => 1,
         }
     }
@@ -399,6 +420,7 @@ impl ObjectKind {
             Self::Sketch => &[3, 2, 1],
             Self::Extrude => &[3, 2, 1],
             Self::Revolve => &[4, 3, 2, 1],
+            Self::Fillet => &[2, 1],
             _ => &[1],
         }
     }
@@ -1249,6 +1271,21 @@ pub struct Fillet {
 }
 
 impl Fillet {
+    /// The layout this feature has to be stored at, decided by what it holds.
+    ///
+    /// A Fillet that rounds its own predecessor's edge is the §28A v1 feature.
+    /// One whose edge was swept by an earlier feature than the one it rounds
+    /// (§28G: the second Fillet, rounding the first one's result at a corner
+    /// of the plate) is v2: a v1 reader would take that edge as belonging to
+    /// the feature it rounds.
+    pub fn schema_version(&self) -> u32 {
+        if self.edge.feature == self.previous {
+            1
+        } else {
+            2
+        }
+    }
+
     /// The cache key for this feature's own statement; the caller adds the
     /// predecessor's key and the kernel identity.
     pub fn cache_key(&self, tolerance: ferritecad_types::Tolerance) -> ContentHash {
@@ -1515,6 +1552,16 @@ pub enum SemanticRole {
         origin_feature: ObjectId,
         profile_segment: StableEntityId,
     },
+    /// §28G: the face an earlier Fillet `origin_feature` made by rounding the
+    /// edge `edge_feature` swept at `joint`, as the feature naming it leaves
+    /// it. Its own role rather than [`SemanticRole::EdgeFilletFace`] under a
+    /// later producer: that one names the face on the Fillet's own result,
+    /// this one the same face carried through a later Fillet's history.
+    OriginFilletFace {
+        origin_feature: ObjectId,
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    },
     /// The face of revolution a [`Revolve`] raised from one profile Line.
     ///
     /// Its own role, not [`SemanticRole::ExtrudeSide`]: a turned face and a
@@ -1707,6 +1754,19 @@ impl TopologyRef {
             }
             SemanticRole::FilletFace { source_edge } => {
                 hasher.str("fillet_face").bytes(&source_edge.to_bytes());
+            }
+            SemanticRole::OriginFilletFace {
+                origin_feature,
+                edge_feature,
+                joint,
+            } => {
+                let [one, other] = joint.segments();
+                hasher
+                    .str("origin_fillet_face")
+                    .bytes(&origin_feature.to_bytes())
+                    .bytes(&edge_feature.to_bytes())
+                    .bytes(&one.to_bytes())
+                    .bytes(&other.to_bytes());
             }
             SemanticRole::EdgeFilletFace {
                 edge_feature,
@@ -2021,6 +2081,7 @@ impl ObjectPayload {
             Self::Sketch(sketch) => sketch.schema_version(),
             Self::Extrude(extrude) => extrude.schema_version(),
             Self::Revolve(revolve) => revolve.schema_version(),
+            Self::Fillet(fillet) => fillet.schema_version(),
             known => known
                 .kind()
                 .map(ObjectKind::schema_version)

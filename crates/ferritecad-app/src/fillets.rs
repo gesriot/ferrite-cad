@@ -9,7 +9,7 @@
 //! control that suggested otherwise would be promising it.
 use ferritecad_document::{
     DocumentVersion, EdgeFillet, ExtrudeEditSource, FilletChoice, FilletCorner, FilletEdge,
-    FilletRadiusChoice, SavedFillet,
+    FilletRadiusChoice, SavedFillet, SavedFilletTarget,
 };
 use ferritecad_jobs::{EdgeFilletRequest, EditFilletRadiusRequest};
 use ferritecad_types::{CadError, ObjectId, Result};
@@ -366,6 +366,21 @@ impl Editor {
                     ferritecad_document::MIN_RADIUS_MM,
                     ferritecad_document::MAX_RADIUS_FRACTION
                 ));
+                // §28G: the history the new Fillet goes on the end of.
+                for existing in &target.fillets {
+                    let [a, b] = existing.edge.joint.segments();
+                    ui.label(format!(
+                        "History: Extrude {} → Fillet {} (Lines {a} | {b}, r{} mm) → new \
+                         Fillet. It rounds one of the other three corners of the same plate; a \
+                         corner sharing a Line with the saved Fillet must leave at least {} mm \
+                         of that Line flat between the two arcs. Editing a part with two \
+                         Fillets is not supported yet.",
+                        existing.edge.feature,
+                        existing.feature,
+                        existing.radius_mm,
+                        ferritecad_document::MIN_RADIUS_MM
+                    ));
+                }
                 if target.constrained {
                     ui.label(format!(
                         "This plate's Sketch carries constraints. The corners and sides below \
@@ -385,7 +400,7 @@ impl Editor {
                         ui.radio_value(
                             &mut draft.typed.corner,
                             Some(i),
-                            describe(corner, target.constrained),
+                            describe_candidate(corner, &target),
                         );
                     }
                     ui.horizontal(|ui| {
@@ -482,6 +497,32 @@ fn describe(corner: &FilletCorner, constrained: bool) -> String {
         corner.adjacent_lengths_mm[1],
         corner.max_radius_mm
     )
+}
+
+/// One candidate of a target: [`describe`], and (§28G) the saved Fillet it
+/// shares a Line with, with the bound that pair leaves.
+fn describe_candidate(corner: &FilletCorner, target: &SavedFilletTarget) -> String {
+    let Some((existing, line, _)) = target.adjacent_fillet(corner) else {
+        return describe(corner, target.constrained);
+    };
+    let [a, b] = corner.joint.segments();
+    let beside = format!(
+        "shares Line {line} with Fillet {} (r{} mm)",
+        existing.feature, existing.radius_mm
+    );
+    match target.max_radius_mm(corner) {
+        Some(max) => format!(
+            "Corner ({}, {}) — Lines {a} | {b}; sides {} × {} mm; {beside}; r ≤ {max} mm",
+            corner.corner_mm[0],
+            corner.corner_mm[1],
+            corner.adjacent_lengths_mm[0],
+            corner.adjacent_lengths_mm[1],
+        ),
+        None => format!(
+            "{}; {beside}, and the solved plate decides the room left",
+            describe(corner, true)
+        ),
+    }
 }
 
 /// The same two steps every published copy takes: the draft is handed to the

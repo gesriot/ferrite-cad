@@ -41,6 +41,7 @@ pub const SUPPORTED_CAPABILITIES: &[&str] = &[
     "feature.revolve.axis-closed.v1",
     "feature.revolve.partial.v1",
     "feature.fillet.v1",
+    "feature.fillet.sequential.v1",
     "topology.extrude-cap-edge.v1",
     "topology.extrude-sweep-edge.v1",
     "topology.extrude-cap-vertex.v1",

@@ -77,6 +77,27 @@ pub struct FeatureNames {
 pub enum CarriedName {
     Cap(CapSide),
     Side(StableEntityId),
+    /// §28G: the edge the origin feature swept at one corner, as a later
+    /// feature leaves it. An edge, never a face: a Fillet built on a Fillet
+    /// rounds the edge its predecessor kept, found here by history.
+    SweepEdge(ProfileJoint),
+    /// §28G: the face the origin feature — a Fillet — made by rounding the
+    /// edge `edge_feature` swept at `joint`, as a later feature leaves it.
+    FilletFace {
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    },
+}
+
+impl CarriedName {
+    /// What sort of geometry the name refers to, asked when it is recorded,
+    /// archived and restored, so an edge name can never hold a face.
+    pub fn kind(self) -> SubShapeKind {
+        match self {
+            Self::Cap(_) | Self::Side(_) | Self::FilletFace { .. } => SubShapeKind::Face,
+            Self::SweepEdge(_) => SubShapeKind::Edge,
+        }
+    }
 }
 
 impl FeatureNames {
@@ -295,6 +316,17 @@ impl FeatureNames {
             .into_iter()
     }
 
+    /// §28G: the edge `origin` swept at `joint`, as this feature leaves it.
+    pub fn origin_sweep_edge(
+        &self,
+        origin: ObjectId,
+        joint: ProfileJoint,
+    ) -> impl ExactSizeIterator<Item = SubShapeHandle> + '_ {
+        self.origin_faces(origin, CarriedName::SweepEdge(joint))
+    }
+
+    /// The sub-shapes carried under one origin name: faces for a face name,
+    /// edges for [`CarriedName::SweepEdge`].
     pub fn origin_faces(
         &self,
         origin: ObjectId,
@@ -320,7 +352,12 @@ impl FeatureNames {
         self.start_cap.len()
             + self.end_cap.len()
             + self.sides.values().map(BTreeSet::len).sum::<usize>()
-            + self.carried.values().map(BTreeSet::len).sum::<usize>()
+            + self
+                .carried
+                .iter()
+                .filter(|((_, name), _)| name.kind() == SubShapeKind::Face)
+                .map(|(_, faces)| faces.len())
+                .sum::<usize>()
             + self.fillet_faces.values().map(BTreeSet::len).sum::<usize>()
     }
 
@@ -872,7 +909,13 @@ impl TopologyMap {
                 ));
             }
             for face in faces {
-                check(*face, shape, producer, "a restored origin face")?;
+                check_kind(
+                    *face,
+                    shape,
+                    producer,
+                    "a restored origin name",
+                    name.1.kind(),
+                )?;
                 names.carried.entry(*name).or_default().insert(*face);
             }
         }
@@ -1106,7 +1149,13 @@ impl TopologyMap {
                     ));
                 }
                 for out in outputs(face) {
-                    check(out, result.shape, producer, "a carried origin face")?;
+                    check_kind(
+                        out,
+                        result.shape,
+                        producer,
+                        "a carried origin name",
+                        name.1.kind(),
+                    )?;
                     carried.insert(out);
                 }
             }
@@ -1179,16 +1228,52 @@ impl TopologyMap {
         };
         names.previous = Some(previous);
         let mut inputs: BTreeMap<(ObjectId, CarriedName), Vec<SubShapeHandle>> = BTreeMap::new();
-        for side in [CapSide::Start, CapSide::End] {
+        // The predecessor's own caps and sides, when it has them: a plate
+        // does, a Fillet (§28G) has none of its own and carries its plate's
+        // under their origin instead. Recording an empty cap of a Fillet as
+        // "removed" would claim it once had one.
+        let own_faces = previous_names.named_segments().len() > 0
+            || [CapSide::Start, CapSide::End].iter().any(|side| {
+                previous_names
+                    .cap(*side)
+                    .into_iter()
+                    .flatten()
+                    .next()
+                    .is_some()
+            });
+        if own_faces {
+            for side in [CapSide::Start, CapSide::End] {
+                inputs.insert(
+                    (previous, CarriedName::Cap(side)),
+                    previous_names.cap(side).into_iter().flatten().collect(),
+                );
+            }
+            for segment in previous_names.named_segments() {
+                inputs.insert(
+                    (previous, CarriedName::Side(segment)),
+                    previous_names.side(segment).collect(),
+                );
+            }
+        }
+        // §28G: every edge the predecessor swept along a corner, and the face a
+        // predecessor Fillet made, carried under their origin through this
+        // fillet's own history. The rounded edge comes out removed.
+        for joint in previous_names.named_joints() {
             inputs.insert(
-                (previous, CarriedName::Cap(side)),
-                previous_names.cap(side).into_iter().flatten().collect(),
+                (previous, CarriedName::SweepEdge(joint)),
+                previous_names.sweep_edge(joint).collect(),
             );
         }
-        for segment in previous_names.named_segments() {
+        for (made_from, rounded) in previous_names.named_fillet_edges() {
             inputs.insert(
-                (previous, CarriedName::Side(segment)),
-                previous_names.side(segment).collect(),
+                (
+                    previous,
+                    CarriedName::FilletFace {
+                        edge_feature: made_from,
+                        joint: rounded,
+                    },
+                ),
+                previous_names.fillet_face(made_from, rounded).collect(),
             );
         }
         for (origin, name) in previous_names.origins() {
@@ -1206,7 +1291,13 @@ impl TopologyMap {
                     ));
                 }
                 for out in outputs(face) {
-                    check(out, result.shape, producer, "a carried origin face")?;
+                    check_kind(
+                        out,
+                        result.shape,
+                        producer,
+                        "a carried origin name",
+                        name.1.kind(),
+                    )?;
                     carried.insert(out);
                 }
             }

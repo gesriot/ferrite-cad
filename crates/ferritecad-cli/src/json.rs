@@ -609,8 +609,27 @@ struct FilletTarget {
     /// bound are the solved plate's, judged when the copy is rebuilt;
     /// discovery does no solve.
     profile_constrained: bool,
-    /// The four vertical edges, in stored segment order.
+    /// §28G, additive: the feature whose result the new Fillet rounds — the
+    /// base Extrude of a plain plate, or the plate's one Fillet.
+    previous_feature_id: ObjectId,
+    /// §28G, additive: the Fillets the plate already has (at most one).
+    fillets: Vec<ExistingFilletDto>,
+    /// The vertical edges still sharp, in stored segment order: four on a
+    /// plain plate, three beside one Fillet.
     candidates: Vec<FilletCandidate>,
+}
+
+/// §28G: a Fillet the plate already carries.
+#[derive(Serialize)]
+struct ExistingFilletDto {
+    feature_id: ObjectId,
+    edge: FilletEdgeDto,
+    radius_mm: f64,
+    /// Its corner on the stored Lines.
+    stored_corner_mm: [f64; 2],
+    /// The part's corner: the stored one of an unconstrained plate, `null`
+    /// for a constrained one.
+    corner_mm: Option<[f64; 2]>,
 }
 
 /// One edge, by its meaning. `edge` is the identity a request repeats; the
@@ -628,6 +647,12 @@ struct FilletCandidate {
     /// §28F, additive: the same corner and sides in the stored Lines.
     stored_corner_mm: [f64; 2],
     stored_adjacent_lengths_mm: [f64; 2],
+    /// §28G, additive: the saved Fillet at a corner sharing a Line with this
+    /// one, and that Line. Both `null` for the opposite corner or a plain
+    /// plate. For an unconstrained plate `max_radius_mm` also keeps the
+    /// shared Line's flat of at least `min_radius_mm`.
+    adjacent_fillet_feature_id: Option<ObjectId>,
+    shared_line_id: Option<StableEntityId>,
 }
 
 /// An edge as a request states it: the feature that swept it and the two
@@ -651,12 +676,37 @@ impl FilletDiscovery {
             min_radius_mm: ferritecad_document::MIN_RADIUS_MM,
             max_radius_fraction: ferritecad_document::MAX_RADIUS_FRACTION,
             profile_constrained: t.constrained,
+            previous_feature_id: t.previous_feature,
+            fillets: t
+                .fillets
+                .iter()
+                .map(|f| ExistingFilletDto {
+                    feature_id: f.feature,
+                    edge: FilletEdgeDto {
+                        feature_id: f.edge.feature,
+                        joint: f.edge.joint.segments(),
+                    },
+                    radius_mm: f.radius_mm,
+                    stored_corner_mm: f.corner.corner_mm,
+                    corner_mm: (!t.constrained).then_some(f.corner.corner_mm),
+                })
+                .collect(),
             candidates: t
                 .corners
                 .iter()
                 .map(|c| {
                     let [a, b] = c.joint.segments();
                     let part = (!t.constrained).then_some(c);
+                    let adjacent = t.adjacent_fillet(c);
+                    let beside = adjacent.map_or(String::new(), |(f, line, _)| {
+                        format!(
+                            "; shares Line {line} with Fillet {} (r {} mm), whose flat must stay \
+                             at least {} mm",
+                            f.feature,
+                            f.radius_mm,
+                            ferritecad_document::MIN_RADIUS_MM
+                        )
+                    });
                     FilletCandidate {
                         edge: FilletEdgeDto {
                             feature_id: c.feature,
@@ -665,20 +715,23 @@ impl FilletDiscovery {
                         label: if t.constrained {
                             format!(
                                 "vertical edge between Lines {a} and {b}, stored at ({}, {}) mm; \
-                                 the solved plate decides where it is and how large a radius fits",
+                                 the solved plate decides where it is and how large a radius \
+                                 fits{beside}",
                                 c.corner_mm[0], c.corner_mm[1]
                             )
                         } else {
                             format!(
-                                "vertical edge at ({}, {}) mm between Lines {a} and {b}",
+                                "vertical edge at ({}, {}) mm between Lines {a} and {b}{beside}",
                                 c.corner_mm[0], c.corner_mm[1]
                             )
                         },
                         corner_mm: part.map(|c| c.corner_mm),
                         adjacent_lengths_mm: part.map(|c| c.adjacent_lengths_mm),
-                        max_radius_mm: part.map(|c| c.max_radius_mm),
+                        max_radius_mm: t.max_radius_mm(c),
                         stored_corner_mm: c.corner_mm,
                         stored_adjacent_lengths_mm: c.adjacent_lengths_mm,
+                        adjacent_fillet_feature_id: adjacent.map(|(f, _, _)| f.feature),
+                        shared_line_id: adjacent.map(|(_, line, _)| line),
                     }
                 })
                 .collect(),
