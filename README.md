@@ -83,11 +83,14 @@ dimensions. Its axis Line stays the saved one and still raises no face; the
 request keeps it on the axis by pinning one of its ends at X = 0 and making it
 vertical, and nothing is snapped. A solution that leaves the axis is refused.
 [Solid Revolve constraint contract and recipe](docs/axis-closed-revolve-constraints.md).
-A saved rectangular plate — one unconstrained XY rectangle of four Lines with
-a forward Blind extrusion — can have one of its four vertical edges rounded
+A saved rectangular plate — one XY rectangle of four Lines with a forward
+Blind extrusion, unconstrained or already dimensioned with the constraint
+editor's Line constraints — can have one of its four vertical edges rounded
 with **Fillet edge of …** or `fillet-edge-copy`. The edge is chosen from a list
 by the two Lines that meet there, and the radius is from 0.01 mm to half the
-shorter adjacent side. The copy's Body ends in a named Fillet whose rounded
+shorter adjacent side; on a dimensioned plate the sides are the solved ones,
+checked when the copy is built, and the stored drawing only names the
+corners. The copy's Body ends in a named Fillet whose rounded
 face is a real cylinder. Its radius can then be changed in a new copy with
 **Edit Fillet radius** or `edit-fillet-radius`: the same Fillet on the same
 edge, with every name kept. The plate's height can be changed under it with
@@ -107,6 +110,7 @@ and editing the rest of a filleted part are not supported yet.
 [Rounded-plate height contract and recipe](docs/edit-fillet-base-height.md).
 [Rounded-plate Sketch contract and recipe](docs/edit-fillet-base-sketch.md).
 [Rounded-plate constraints contract and recipe](docs/fillet-base-constraints.md).
+[Rounding a dimensioned plate: contract and recipe](docs/fillet-constrained-plate.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

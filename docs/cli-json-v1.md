@@ -647,7 +647,8 @@ Sketch в `sketches[]` — `editable`, с `vertices` и `profile_feature`, ка�
 
 У остальных строк и в остальных документах `fillet_base` равно `null`.
 `cut_history_v3` остаётся `null`. Редакторы окружности и кольца этого Sketch
-по-прежнему отказывают, называя UUID Fillet'а; Line-ограничения — §28E. Если
+по-прежнему отказывают, называя UUID Fillet'а; Line-ограничения — §28E
+(а скругление уже размеренной плиты — §28F). Если
 Sketch несёт ограничения, редактор координат отказывает, как любому
 ограниченному профилю. Если Fillet вне
 класса, строка остаётся `editable: false`, а причина называет UUID Fillet'а
@@ -694,6 +695,43 @@ Discovery аддитивна. На поддержанной скруглённо
 Порядок проверок в stub-сборке прежний: запрос разбирается до ядра, поэтому
 корректный запрос — `unsupported` «Open CASCADE».
 [Контракт §28E и исполняемый рецепт](fillet-base-constraints.md).
+
+### Скругление размеренной плиты (§28F)
+
+Отдельной команды нет: прежний `fillet-edge-copy` с прежними аргументами,
+запросом v1, envelope и кодами выхода (0, 2, 7).
+
+Discovery аддитивна. `bodies[].fillet_edge` сохраняет каждое поле, тип и
+смысл для неограниченной плиты. Если Sketch плиты несёт управляемое
+семейство Line-ограничений, `available` может быть `true` (по-прежнему только
+структурно: ни ядра, ни решения не обещано), а `target` получает
+`"profile_constrained": true`. Каждый кандидат — структурно допустимый стык
+двух Line (`edge`); его `corner_mm`, `adjacent_lengths_mm` и `max_radius_mm`
+описывают деталь и для такой плиты равны `null`: inspect ничего не решает и
+не пересобирает. Новые `stored_corner_mm` и `stored_adjacent_lengths_mm`
+всегда числа — хранимый чертёж (у неограниченной плиты совпадают с
+`corner_mm`/`adjacent_lengths_mm`). `label` называет числа хранимыми.
+
+```json
+{"profile_constrained":true,"min_radius_mm":0.01,"max_radius_fraction":0.5,
+ "candidates":[{"edge":{"feature_id":"…","joint":["…","…"]},
+   "corner_mm":null,"adjacent_lengths_mm":null,"max_radius_mm":null,
+   "stored_corner_mm":[33.0,3.25],"stored_adjacent_lengths_mm":[37.5,12.25],
+   "label":"vertical edge between Lines … and …, stored at (33, 3.25) mm; the solved plate decides where it is and how large a radius fits"}]}
+```
+
+Result аддитивен: `corner_mm` — угол плиты, из которой собрана копия
+(у неограниченной плиты — хранимый, как прежде), новые
+`adjacent_lengths_mm` той же плиты, `profile_constrained` и
+`stored_corner_mm`.
+
+Отказы (ничего не записывается): решённая плита слишком узка для радиуса или
+Line сменила сторону — `input` с числами; решение не осепараллельный
+прямоугольник — `unsupported`; радиус не конечен или меньше 0.01 мм —
+`input`; без PlaneGCS — `unsupported`; устаревшая версия, занятый выход,
+неверный запрос — `input`. Порядок в stub-сборке прежний: запрос
+разбирается до ядра, корректный запрос — `unsupported` «Open CASCADE».
+[Контракт §28F и исполняемый рецепт](fillet-constrained-plate.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 
