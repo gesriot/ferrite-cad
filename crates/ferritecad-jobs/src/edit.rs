@@ -360,7 +360,7 @@ pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
             ferritecad_document::prepare_sketch_constraints(source, request.sketch, &request.edits)
                 .map(|p| CopyWrite::Constraints(Box::new(p)))
         },
-        |prepared, solve| {
+        |prepared, checked| {
             let CopyWrite::Constraints(prepared) = prepared else {
                 return Err(CadError::input("missing prepared constraint edit"));
             };
@@ -370,7 +370,7 @@ pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
                 sketch: request.sketch,
                 added: prepared.added.clone(),
                 removed: prepared.removed.clone(),
-                solve,
+                solve: checked.solve,
             })
         },
     )
@@ -464,8 +464,14 @@ pub struct AddedEdgeFillet {
     pub feature: ObjectId,
     /// The feature rounded, which was the tip before.
     pub previous: ObjectId,
-    /// The corner rounded, with its labels.
+    /// The corner rounded, with its labels, read from the stored Lines.
     pub corner: ferritecad_document::FilletCorner,
+    /// §28F: the same corner of the plate the published copy was built from,
+    /// as the rebuild before publication found it — the solved plate's for a
+    /// constrained Sketch, `corner` itself for an unconstrained one.
+    pub built_corner: ferritecad_document::FilletCorner,
+    /// §28F: whether the plate's Sketch carries constraints.
+    pub profile_constrained: bool,
     pub radius_mm: f64,
     /// The new references the Fillet persisted, by role, for a report.
     pub references: Vec<ferritecad_document::TopologyRef>,
@@ -493,10 +499,13 @@ pub fn fillet_edge_copy<K: GeometryKernel + ?Sized>(
                 .map(Box::new)
                 .map(CopyWrite::Fillet)
         },
-        |prepared, _| {
+        |prepared, checked| {
             let CopyWrite::Fillet(prepared) = prepared else {
                 return Err(CadError::input("missing prepared fillet"));
             };
+            let built_corner = checked.fillet_corner.ok_or_else(|| {
+                CadError::input("the rebuilt copy reported no corner for the new Fillet")
+            })?;
             Ok(AddedEdgeFillet {
                 destination: request.destination.clone(),
                 document_id: request.expected.document_id,
@@ -504,6 +513,8 @@ pub fn fillet_edge_copy<K: GeometryKernel + ?Sized>(
                 feature: prepared.feature().id,
                 previous: prepared.previous(),
                 corner: prepared.corner(),
+                built_corner,
+                profile_constrained: prepared.profile_constrained(),
                 radius_mm: prepared.radius_mm(),
                 references: prepared.references().to_vec(),
             })
@@ -648,7 +659,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     kernel: &mut K,
     context: &OperationContext,
     prepare: impl FnOnce(&Document) -> Result<CopyWrite>,
-    complete: impl FnOnce(&CopyWrite, Option<ferritecad_eval::SketchSolveReport>) -> Result<T>,
+    complete: impl FnOnce(&CopyWrite, Checked) -> Result<T>,
 ) -> Result<T> {
     refuse_source_as_destination(
         source_path,
@@ -679,7 +690,15 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     // Baseline and edited refs are compared by their stored IDs. An already
     // unresolved ref may remain unresolved; a previously resolved one may not
     // be lost. Rebuild errors (including solver diagnostics) always refuse.
-    let baseline = checked_rebuild(&document, kernel, &phase(context, 0.1, 0.4), None, None)?.0;
+    let baseline = checked_rebuild(
+        &document,
+        kernel,
+        &phase(context, 0.1, 0.4),
+        None,
+        None,
+        None,
+    )?
+    .0;
     if prepared.requires_resolved_references() && baseline.len() != document.topology_refs()?.len()
     {
         return Err(CadError::topology(
@@ -727,14 +746,21 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         _ => BTreeSet::new(),
     };
     let required: BTreeSet<StableEntityId> = baseline.union(&minted).copied().collect();
-    let (_, solve) = checked_rebuild(
+    // A new Fillet's corner is read from the plate this very rebuild built
+    // it on (§28F), by the evaluator's own policy: no second rebuild or solve.
+    let fillet = match &prepared {
+        CopyWrite::Fillet(p) => Some(p.feature().id),
+        _ => None,
+    };
+    let (_, checked) = checked_rebuild(
         &document,
         kernel,
         &phase(context, 0.4, 0.9),
         Some(&required),
         constraints,
+        fillet,
     )?;
-    let completed = complete(&prepared, solve)?;
+    let completed = complete(&prepared, checked)?;
     document.close()?;
     context.progress().report(0.95);
     context.check_cancelled()?;
@@ -786,16 +812,22 @@ struct SolveCheck {
     roles: Option<(StableEntityId, StableEntityId)>,
 }
 
+/// What the rebuild of a written copy found, for its completion.
+#[derive(Debug, Default)]
+struct Checked {
+    solve: Option<ferritecad_eval::SketchSolveReport>,
+    /// The corner of a new Fillet, on the plate the rebuild built.
+    fillet_corner: Option<ferritecad_document::FilletCorner>,
+}
+
 fn checked_rebuild<K: GeometryKernel + ?Sized>(
     document: &Document,
     kernel: &mut K,
     context: &OperationContext,
     baseline: Option<&BTreeSet<StableEntityId>>,
     constraints: Option<SolveCheck>,
-) -> Result<(
-    BTreeSet<StableEntityId>,
-    Option<ferritecad_eval::SketchSolveReport>,
-)> {
+    fillet: Option<ObjectId>,
+) -> Result<(BTreeSet<StableEntityId>, Checked)> {
     let built = rebuild_cold(document, kernel, context)?;
     let result = (|| {
         let mut resolved = BTreeSet::new();
@@ -950,10 +982,57 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
         } else {
             None
         };
-        Ok((resolved, solve))
+        let fillet_corner = match fillet {
+            Some(id) => Some(built_fillet_corner(document, &built, id)?),
+            None => None,
+        };
+        Ok((
+            resolved,
+            Checked {
+                solve,
+                fillet_corner,
+            },
+        ))
     })();
     built.release_all(kernel);
     result
+}
+
+/// The corner the evaluator judged a saved Fillet by, asked of the Lines this
+/// rebuild built its predecessor from: the same call, on the same drawing, the
+/// evaluator made while building it.
+fn built_fillet_corner(
+    document: &Document,
+    built: &ferritecad_eval::RebuildResult,
+    id: ObjectId,
+) -> Result<ferritecad_document::FilletCorner> {
+    let objects = document.objects()?;
+    let fillet = objects
+        .iter()
+        .find_map(|o| match &o.payload {
+            ObjectPayload::Fillet(f) if o.id == id => Some(f),
+            _ => None,
+        })
+        .ok_or_else(|| CadError::input("the written Fillet is missing from the copy"))?;
+    let profile = objects
+        .iter()
+        .find_map(|o| match &o.payload {
+            ObjectPayload::Extrude(e) if o.id == fillet.previous => Some(e.profile),
+            _ => None,
+        })
+        .ok_or_else(|| CadError::input("the written Fillet rounds no Extrude"))?;
+    let curves: Option<Vec<ferritecad_document::SketchCurve>> =
+        built.sketch_presentation(profile).map(|p| {
+            p.curves()
+                .iter()
+                .map(|c| ferritecad_document::SketchCurve {
+                    id: c.id(),
+                    construction: c.is_construction(),
+                    geometry: c.geometry().clone(),
+                })
+                .collect()
+        });
+    ferritecad_document::evaluable_fillet(&objects, fillet, curves.as_deref())
 }
 
 fn phase(context: &OperationContext, start: f64, end: f64) -> OperationContext {

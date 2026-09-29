@@ -8,6 +8,11 @@
 //! through [`crate::cut_edit::saved_history`], with no Cut, and a profile that
 //! is literally an axis-aligned rectangle.
 //!
+//! §28F: the plate's Sketch may carry the constraint editor's managed Line
+//! family. Its stored Lines are then the solver's starting guess: they name
+//! the candidate joints, and the part itself is judged by
+//! [`evaluable_fillet`] on the solved plate when the copy is rebuilt.
+//!
 //! The edge is chosen by what it means — the base Extrude and the corner of
 //! its profile, named by the unordered pair of the two Line UUIDs that meet
 //! there — never by an index or a position. The radius is judged by one
@@ -255,8 +260,28 @@ pub struct SavedFilletTarget {
     pub profile: ObjectId,
     pub profile_segments: Vec<StableEntityId>,
     pub height_mm: f64,
-    /// The four candidates, in stored segment order.
+    /// The four candidates, in stored segment order, read from the stored
+    /// Lines.
     pub corners: Vec<FilletCorner>,
+    /// §28F: whether the profile carries the constraint editor's managed Line
+    /// family. Then the stored Lines are the solver's starting guess: the
+    /// candidates' joints are structural facts, their positions, sides and
+    /// `max_radius_mm` are the guess's, and the part is judged on the solved
+    /// plate when the copy is rebuilt.
+    pub constrained: bool,
+}
+
+impl SavedFilletTarget {
+    /// The radius policy this target can judge without a solve: the whole of
+    /// it for an unconstrained plate, only its value part for a constrained
+    /// one, whose sides only the solve knows.
+    pub fn check_radius(&self, corner: &FilletCorner, radius_mm: f64) -> Result<()> {
+        if self.constrained {
+            check_radius_value(radius_mm)
+        } else {
+            corner.check_radius(radius_mm)
+        }
+    }
 }
 
 /// A Body row of discovery: a target, or the reason it is not one.
@@ -276,7 +301,7 @@ impl FilletChoice {
             .as_ref()
             .ok_or_else(|| unsupported(self.refusal.clone().unwrap_or_default()))?;
         let corner = corner_for(&target.corners, fillet.edge)?;
-        corner.check_radius(fillet.radius_mm)?;
+        target.check_radius(&corner, fillet.radius_mm)?;
         Ok(corner)
     }
 }
@@ -325,8 +350,7 @@ fn saved_target(
     objects: &[ObjectRecord],
     body: ObjectId,
 ) -> Result<SavedFilletTarget> {
-    refuse_filleted(objects)?;
-    let history = crate::cut_edit::saved_history(document, objects)?;
+    let history = crate::cut_edit::saved_plate_for_fillet(document, objects)?;
     let target = history.target_for_fillet(body)?;
     let profile = objects
         .iter()
@@ -335,7 +359,9 @@ fn saved_target(
     let ObjectPayload::Sketch(sketch) = &profile.payload else {
         return Err(unsupported("the part's profile is not a Sketch"));
     };
-    let corners = rectangle_corners(target.base_feature, sketch)?;
+    // The reader has already admitted only the managed Line family; the
+    // stored Lines still have to be the rectangle whose joints are offered.
+    let corners = corners_of_lines(target.base_feature, &sketch.curves)?;
     Ok(SavedFilletTarget {
         body,
         base_feature: target.base_feature,
@@ -343,6 +369,7 @@ fn saved_target(
         profile_segments: target.profile_segments,
         height_mm: target.height_mm,
         corners,
+        constrained: !sketch.constraints.is_empty(),
     })
 }
 
@@ -374,6 +401,7 @@ pub struct PreparedEdgeFillet {
     pub(crate) references: Vec<TopologyRef>,
     pub(crate) previous: ObjectId,
     pub(crate) corner: FilletCorner,
+    pub(crate) constrained: bool,
 }
 
 impl PreparedEdgeFillet {
@@ -389,9 +417,16 @@ impl PreparedEdgeFillet {
     pub fn references(&self) -> &[TopologyRef] {
         &self.references
     }
-    /// The corner being rounded, with its labels.
+    /// The corner being rounded, with its labels, read from the stored
+    /// Lines.
     pub fn corner(&self) -> FilletCorner {
         self.corner
+    }
+    /// §28F: whether the plate's Sketch carries constraints, so that
+    /// [`Self::corner`] is the stored guess's and the part's corner is the
+    /// solved one.
+    pub fn profile_constrained(&self) -> bool {
+        self.constrained
     }
     pub fn radius_mm(&self) -> f64 {
         match &self.feature.payload {
@@ -470,7 +505,7 @@ pub fn prepare_edge_fillet(
     }
     let target = saved_target(document, &objects, body)?;
     let corner = corner_for(&target.corners, fillet.edge)?;
-    corner.check_radius(fillet.radius_mm)?;
+    target.check_radius(&corner, fillet.radius_mm)?;
 
     let ordinal = objects
         .iter()
@@ -530,6 +565,7 @@ pub fn prepare_edge_fillet(
         references,
         previous: target.base_feature,
         corner,
+        constrained: target.constrained,
     })
 }
 
@@ -1178,5 +1214,92 @@ mod tests {
         let found = codes(&d);
         assert!(found.contains(&"feature.self-predecessor"), "{found:?}");
         assert!(found.contains(&"reference.missing-target"), "{found:?}");
+    }
+
+    /// §28F: a plate whose Sketch carries the managed Line family is a
+    /// target. Its candidates are the stored joints; discovery and
+    /// preparation judge only the value part of the radius, which the solved
+    /// plate completes when the copy is rebuilt; and the writer re-derives
+    /// the preparation against the document it writes to, so one prepared
+    /// under the constrained policy is refused once that policy no longer
+    /// holds there.
+    #[test]
+    fn a_dimensioned_plate_is_a_target_judged_by_value_until_it_is_solved() {
+        let (_root, mut d, body) = plate(PLATE);
+        let objects = d.objects().expect("objects");
+        let (sketch_id, drawn) = objects
+            .iter()
+            .find_map(|o| match &o.payload {
+                ObjectPayload::Sketch(s) => Some((o.id, s.clone())),
+                _ => None,
+            })
+            .expect("the Sketch");
+        let edits = crate::SketchConstraintEdits {
+            remove: Vec::new(),
+            add: vec![crate::AddSketchConstraint::Line(
+                crate::AddLineConstraint::Line {
+                    curve: drawn.curves[0].id,
+                    kind: crate::LineConstraintKind::Horizontal,
+                },
+            )],
+        };
+        let prepared = crate::prepare_sketch_constraints(&d, sketch_id, &edits).expect("prepared");
+        d.write_sketch_constraints(&prepared).expect("written");
+
+        let choice = fillet_choices(&d, &d.objects().expect("objects"))[0].clone();
+        assert_eq!(choice.refusal, None);
+        let target = choice.target.clone().expect("a target");
+        assert!(target.constrained);
+        assert_eq!(
+            target.corners,
+            corners_of_lines(target.base_feature, &drawn.curves).expect("stored corners"),
+            "the candidates are the stored joints"
+        );
+        let corner = target.corners[1];
+        assert_eq!(corner.max_radius_mm, 6.125, "the stored guess's bound");
+        let ask = |radius_mm| EdgeFillet {
+            edge: FilletEdge {
+                feature: target.base_feature,
+                joint: corner.joint,
+            },
+            radius_mm,
+        };
+        // Beyond the stored bound: the solved plate decides.
+        assert_eq!(choice.validate(&ask(7.0)).expect("value only"), corner);
+        for (radius, why) in [(0.005, "at least"), (f64::NAN, "finite")] {
+            let e = choice.validate(&ask(radius)).expect_err(why);
+            assert_eq!(e.kind(), ErrorKind::Input);
+            assert!(e.to_string().contains(why), "{e}");
+        }
+        let prepared = prepare_edge_fillet(&d, body, &ask(7.0)).expect("prepared");
+        assert!(prepared.profile_constrained());
+        assert_eq!(prepared.corner(), corner);
+
+        // The same plate made unconstrained under the preparation: the
+        // writer re-derives it with the stored bound and refuses, writing
+        // nothing.
+        let ordinal = objects
+            .iter()
+            .find(|o| o.id == sketch_id)
+            .expect("row")
+            .ordinal;
+        d.write(|w| {
+            w.put_object(
+                sketch_id,
+                None,
+                ordinal,
+                Some("Profile"),
+                &ObjectPayload::Sketch(drawn.clone()),
+            )
+            .map(|_| ())
+        })
+        .expect("unconstrained again");
+        let count = d.objects().expect("objects").len();
+        let e = d
+            .write_edge_fillet(&prepared)
+            .expect_err("stale preparation");
+        assert_eq!(e.kind(), ErrorKind::Input);
+        assert!(e.to_string().contains("too large"), "{e}");
+        assert_eq!(d.objects().expect("objects").len(), count);
     }
 }
