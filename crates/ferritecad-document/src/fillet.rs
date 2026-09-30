@@ -482,9 +482,9 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
     if fillets.len() > 1 {
         return Err(unsupported(format!(
             "this Body ends in Fillet {} after {} Fillets in all (§28G); only the radius of \
-             either Fillet can be edited (edit-fillet-radius, §28H). Editing the rest of a \
-             history with two Fillets, and adding a third Fillet or a Cut, are not supported \
-             yet",
+             either Fillet (edit-fillet-radius, §28H) and the plate's height (edit-extrude, \
+             §28I) can be edited. Editing the Sketch or constraints of a history with two \
+             Fillets, and adding a third Fillet or a Cut, are not supported yet",
             tip.id,
             fillets.len()
         )));
@@ -1664,10 +1664,25 @@ mod tests {
         let e = prepare_edge_fillet(&d, body, &ask(&opposite, 1.0)).expect_err("a third");
         assert_eq!(e.kind(), ErrorKind::Unsupported);
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        // §28H: the radius of either Fillet is editable; nothing else is.
+        // §28H: the radius of either Fillet is editable; §28I: and the base
+        // height, with both Fillets as context; the Sketch editors are not.
         assert!(reading.fillet_features.iter().all(|c| c.refusal.is_none()));
         assert_eq!(reading.fillet_features.len(), 2);
-        assert!(reading.features.iter().all(|f| f.refusal.is_some()));
+        let (base,) = match reading.features.as_slice() {
+            [base] => (base,),
+            other => panic!("one Extrude: {other:?}"),
+        };
+        assert!(base.refusal.is_none(), "{:?}", base.refusal);
+        let (one, two) = (
+            base.fillet.as_ref().expect("Fillet 1"),
+            base.second_fillet.as_ref().expect("Fillet 2"),
+        );
+        assert_eq!(one.previous, base.feature);
+        assert_eq!(
+            two.previous, one.feature,
+            "Fillet 2 rounds Fillet 1's result"
+        );
+        assert_eq!((one.history_index, two.history_index), (1, 2));
         assert!(reading.sketches.iter().all(|s| s.refusal.is_some()));
         assert!(
             reading

@@ -2499,7 +2499,7 @@ mod height {
     /// Every SQL cell of the source survives into the copy, except exactly
     /// the base Extrude row's payload and hash and the copy's own stamp.
     /// Returns how many cells moved.
-    fn only_the_height_changed(source: &Path, copy: &Path, base: &str) -> usize {
+    pub(super) fn only_the_height_changed(source: &Path, copy: &Path, base: &str) -> usize {
         let before = tables(source);
         let after = tables(copy);
         assert_eq!(
@@ -2577,6 +2577,8 @@ mod height {
                 "radius_mm": 2.375,
                 // §28E, additive.
                 "profile_constrained": false,
+                // §28I, additive: no second Fillet over this plate.
+                "second_fillet": null,
             })
         );
         // Every other editor still refuses the filleted plate by name.
@@ -6078,7 +6080,8 @@ mod sequential {
         assert_eq!(row["available"], false, "{row}");
         assert!(row["refusal"].as_str().expect("reason").contains("third"));
         assert_eq!(after["fillets"].as_array().map(Vec::len), Some(2));
-        // §28H: each radius is editable, by its own UUID; nothing else is.
+        // §28H: each radius is editable, by its own UUID; §28I: and the
+        // plate's height; the Sketch and its constraints are not.
         for (f, index) in after["fillets"]
             .as_array()
             .expect("fillets")
@@ -6089,7 +6092,19 @@ mod sequential {
             assert!(f["radius_edit"]["refusal"].is_null());
             assert_eq!(f["history_index"], index, "{f}");
         }
-        assert_eq!(after["edit_extrude"]["available"], false, "{after}");
+        assert_eq!(after["edit_extrude"]["available"], true, "{after}");
+        let base_row = after["features"]
+            .as_array()
+            .expect("features")
+            .iter()
+            .find(|f| !f["fillet_base"].is_null())
+            .expect("the base Extrude row");
+        assert_eq!(base_row["refusal"], Value::Null, "{base_row}");
+        assert_eq!(
+            base_row["fillet_base"]["second_fillet"]["previous_feature_id"],
+            base_row["fillet_base"]["fillet_feature_id"],
+            "Fillet 2 rounds Fillet 1's result, not the base"
+        );
         assert_eq!(after["sketches"][0]["editable"], false);
         assert_eq!(after["sketches"][0]["constraint_edit"]["available"], false);
 
@@ -6160,12 +6175,24 @@ mod sequential {
     fn check_two(
         two: &Two,
         rect: [f64; 4],
+        first: (ObjectId, [f64; 2], f64),
+        second: (ObjectId, [f64; 2], f64),
+        base: ObjectId,
+    ) {
+        check_two_at(two, rect, first, second, base, H);
+    }
+
+    /// [`check_two`] for a plate of height `h` (§28I changes it).
+    fn check_two_at(
+        two: &Two,
+        rect: [f64; 4],
         (first, c1, r1): (ObjectId, [f64; 2], f64),
         (second, c2, r2): (ObjectId, [f64; 2], f64),
         base: ObjectId,
+        h: f64,
     ) {
         assert_eq!(two.faces, 8, "two caps, four sides and two fillet faces");
-        let volume = exact_two(rect, r1, r2, H);
+        let volume = exact_two(rect, r1, r2, h);
         assert!(
             (two.volume - volume).abs() < 1e-9 * volume,
             "{} is not {volume}",
@@ -6301,12 +6328,13 @@ mod sequential {
         assert!(row["target"].is_null());
         assert!(row["refusal"].as_str().expect("reason").contains("third"));
         assert_eq!(two["fillets"].as_array().map(Vec::len), Some(2));
-        // §28H: both radii are editable; the other editors still refuse.
+        // §28H: both radii are editable; §28I: and the base height; the
+        // Sketch editors still refuse.
         for fillet in two["fillets"].as_array().expect("fillets") {
             assert_eq!(fillet["radius_edit"]["available"], true, "{fillet}");
             assert!(fillet["radius_edit"]["neighbour"].is_object(), "{fillet}");
         }
-        assert_eq!(two["edit_extrude"]["available"], false);
+        assert_eq!(two["edit_extrude"]["available"], true);
         assert_eq!(two["sketches"][0]["editable"], false);
         assert_eq!(two["sketches"][0]["constraint_edit"]["available"], false);
         assert!(two["bodies"][0]["cut_edit"]["refusal"].is_string());
@@ -6846,7 +6874,7 @@ mod sequential {
 
         /// A plate rounded twice by the shipped command, as a fixture reading
         /// the two-Fillet copy. The first fixture owns the files.
-        fn rounded_twice(
+        pub(super) fn rounded_twice(
             part: &Part,
             corners: [[f64; 2]; 4],
             (first, r1): ([f64; 2], f64),
@@ -6860,7 +6888,7 @@ mod sequential {
         }
 
         /// The two Fillet rows of a two-Fillet copy, in history order.
-        fn rows(f: &Fixture) -> [Value; 2] {
+        pub(super) fn rows(f: &Fixture) -> [Value; 2] {
             let rows = f.catalog["fillets"].as_array().expect("fillets").clone();
             assert_eq!(rows.len(), 2);
             let first = rows
@@ -6931,7 +6959,8 @@ mod sequential {
                 assert_eq!(theirs[key], other[key], "{key}");
             }
             assert_eq!(after["bodies"][0]["fillet_edge"]["available"], false);
-            assert_eq!(after["edit_extrude"]["available"], false);
+            // §28I: the plate's height is editable under both Fillets.
+            assert_eq!(after["edit_extrude"]["available"], true);
 
             let checked = cli()
                 .arg("validate")
@@ -6982,7 +7011,7 @@ mod sequential {
             copy
         }
 
-        fn id_of(v: &Value) -> ferritecad_types::ObjectId {
+        pub(super) fn id_of(v: &Value) -> ferritecad_types::ObjectId {
             v.as_str().expect("UUID").parse().expect("UUID")
         }
 
@@ -7458,6 +7487,606 @@ mod sequential {
             assert!(lost.exists());
             let [_, kept] = rows(&h.at_copy(&lost));
             assert_eq!(kept["radius_mm"], 2.5);
+            assert_eq!(std::fs::read(&h.source).expect("bytes"), before);
+        }
+    }
+
+    /// §28I: the base height of Extrude -> Fillet 1 -> Fillet 2 -> Body,
+    /// through the existing `edit-extrude`.
+    mod height {
+        use super::radius::{id_of, rounded_twice, rows};
+        use super::*;
+
+        const EDIT: &str = "edit-extrude";
+
+        /// One height edit of `h`'s base Extrude, published by the shipped
+        /// command and measured: discovery naming both Fillets in history
+        /// order, the exact allowlist, every name kept, both Fillet rows and
+        /// the Sketch unchanged, validation, the B-Rep cold and through a
+        /// real Miss and Hit (both cylinders under their own names at the new
+        /// height, Fillet 1's carried into the final Body, the analytic
+        /// volume), the independent mesh and the FBX.
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn raised_twice(
+            h: &Fixture,
+            part: &Part,
+            (c1, r1): ([f64; 2], f64),
+            (c2, r2): ([f64; 2], f64),
+            height: f64,
+            name: &str,
+        ) -> PathBuf {
+            let before = std::fs::read(&h.source).expect("source bytes");
+            let refs = stored_refs(&h.source);
+            let [one, two] = rows(h);
+            let base = h.base_id().to_owned();
+            let row = h.base_row().clone();
+            assert_eq!(row["editable"], true, "{row}");
+            assert!(row["refusal"].is_null(), "{row}");
+            let context = &row["fillet_base"];
+            assert_eq!(context["fillet_feature_id"], one["feature_id"]);
+            assert_eq!(context["radius_mm"], r1);
+            assert_eq!(context["profile_constrained"], part.constrained);
+            let later = &context["second_fillet"];
+            assert_eq!(later["fillet_feature_id"], two["feature_id"]);
+            assert_eq!(
+                later["previous_feature_id"], one["feature_id"],
+                "Fillet 2 rounds Fillet 1's result, not the base"
+            );
+            assert_eq!(later["history_index"], 2);
+            assert_eq!(later["edge"], two["edge"]);
+            assert_eq!(later["radius_mm"], r2);
+            assert_eq!(id_of(&later["edge"]["feature_id"]), id_of(&json!(base)));
+
+            let copy = h.root.path().join(format!("{name}.fcad"));
+            let v = reply(
+                h.raise(&h.source, &base, &height.to_string(), &copy)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                0,
+            );
+            assert_eq!(v["result"]["feature_id"], base.as_str(), "{v}");
+            assert_eq!(v["result"]["document_id"], h.catalog["document_id"]);
+            assert_eq!(std::fs::read(&h.source).expect("bytes"), before, "source");
+            let moved = super::super::height::only_the_height_changed(&h.source, &copy, &base);
+            if row["distance_mm"] == height {
+                assert!(moved <= 1, "the same height moves only the stamp");
+            } else {
+                assert!(moved >= 2, "the payload and its hash");
+            }
+            assert_eq!(stored_refs(&copy), refs, "every name and its UUID kept");
+            let after = h.at_copy(&copy);
+            assert_eq!(after.base_row()["distance_mm"], height);
+            assert_eq!(
+                after.base_row()["fillet_base"],
+                row["fillet_base"],
+                "both Fillets as they were"
+            );
+            assert_eq!(rows(&after), [one.clone(), two.clone()]);
+            assert_eq!(after.catalog["edit_extrude"]["available"], true);
+            assert_eq!(after.catalog["sketches"][0]["editable"], false);
+            assert_eq!(
+                after.catalog["sketches"][0]["constraint_edit"]["available"],
+                false
+            );
+            if part.constrained {
+                let sketch = after.catalog["sketches"][0]["sketch_id"]
+                    .as_str()
+                    .expect("Sketch UUID");
+                assert_eq!(
+                    sketch_row(&copy, sketch),
+                    sketch_row(&h.source, sketch),
+                    "the stored Sketch stays the solver's starting guess"
+                );
+            }
+
+            let checked = cli()
+                .arg("validate")
+                .arg(&copy)
+                .arg("--json")
+                .output()
+                .expect("validate");
+            assert_eq!(reply(checked, "validate", 0)["result"]["valid"], true);
+            let n = refs.len();
+            let rebuilt = cli()
+                .arg("rebuild")
+                .arg(&copy)
+                .arg("--cold")
+                .output()
+                .expect("rebuild");
+            let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
+            assert!(
+                text.contains(&format!("{n} of {n} stored references resolved")),
+                "{text}"
+            );
+            if part.constrained {
+                let (starts, _) = solved(&copy);
+                for (s, e) in starts.iter().zip(&part.solved) {
+                    assert!((s[0] - e[0]).abs() < 1e-9 && (s[1] - e[1]).abs() < 1e-9);
+                }
+            }
+
+            let (first, second, b) = (
+                id_of(&one["feature_id"]),
+                id_of(&two["feature_id"]),
+                id_of(&json!(base)),
+            );
+            let (cold, _) = measure_two(&copy, None);
+            let cache = copy.with_extension("fcad-cache");
+            let (miss, events) = measure_two(&copy, Some(&cache));
+            assert!(
+                events
+                    .iter()
+                    .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Miss),
+                "{events:?}"
+            );
+            assert_eq!(outcomes(&events).len(), 3, "the plate and both Fillets");
+            let (hit, events) = measure_two(&copy, Some(&cache));
+            assert!(
+                events
+                    .iter()
+                    .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit),
+                "{events:?}"
+            );
+            cold.same_as(&miss);
+            cold.same_as(&hit);
+            let (c1, c2) = (part.corner(c1), part.corner(c2));
+            check_two_at(
+                &cold,
+                part.rect,
+                (first, c1, r1),
+                (second, c2, r2),
+                b,
+                height,
+            );
+            let m = mesh(&copy, &copy.with_extension("stl"));
+            check_mesh_rounded(&m, part.rect, &[(c1, r1), (c2, r2)], height);
+            fbx(&copy, name);
+            copy
+        }
+
+        /// Discovery on a two-Fillet plate written without a kernel, and the
+        /// protocol: the base row editable with both Fillets in history order,
+        /// the Sketch editors still refused, every other feature and every bad
+        /// height refused before anything is written.
+        #[test]
+        fn height_discovery_and_protocol_without_native() {
+            let f = filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
+            let short = f.at([X0 + W, Y0 + D]).clone();
+            let mut doc = Document::open(&f.source).expect("writable");
+            let body: ferritecad_types::ObjectId = f.body_id().parse().expect("UUID");
+            let e = &short["edge"];
+            let fillet = ferritecad_document::EdgeFillet {
+                edge: ferritecad_document::FilletEdge {
+                    feature: id_of(&e["feature_id"]),
+                    joint: ferritecad_types::ProfileJoint::new(
+                        e["joint"][0].as_str().expect("a").parse().expect("UUID"),
+                        e["joint"][1].as_str().expect("b").parse().expect("UUID"),
+                    )
+                    .expect("joint"),
+                },
+                radius_mm: 3.0625,
+            };
+            let prepared =
+                ferritecad_document::prepare_edge_fillet(&doc, body, &fillet).expect("prepared");
+            doc.write_edge_fillet(&prepared).expect("written");
+            doc.close().expect("close");
+            let h = Fixture {
+                catalog: inspect(&f.source),
+                root: tempfile::tempdir().expect("directory"),
+                source: f.source.clone(),
+                request: f.request.clone(),
+            };
+            let [one, two] = rows(&h);
+            assert_eq!(h.catalog["edit_extrude"]["available"], true);
+            let row = h.base_row();
+            assert_eq!(row["editable"], true, "{row}");
+            assert!(row["refusal"].is_null());
+            assert_eq!(row["distance_mm"], H);
+            for key in [
+                "base_height_edit",
+                "base_height_edit_v2",
+                "base_height_edit_v3",
+            ] {
+                assert_eq!(
+                    row[key],
+                    Value::Null,
+                    "{key}: Fillets are not a Cut history"
+                );
+            }
+            assert_eq!(
+                row["fillet_base"],
+                json!({
+                    "fillet_feature_id": one["feature_id"],
+                    "body_id": f.body_id(),
+                    "edge": one["edge"],
+                    "corner_mm": [X0 + W, Y0],
+                    "radius_mm": 2.375,
+                    "profile_constrained": false,
+                    "second_fillet": {
+                        "fillet_feature_id": two["feature_id"],
+                        "previous_feature_id": one["feature_id"],
+                        "history_index": 2,
+                        "edge": two["edge"],
+                        "corner_mm": [X0 + W, Y0 + D],
+                        "radius_mm": 3.0625,
+                    },
+                })
+            );
+            // The Sketch editors keep refusing the two-Fillet history, and say
+            // what can be edited.
+            let sketch = &h.catalog["sketches"][0];
+            assert_eq!(sketch["editable"], false);
+            assert!(sketch["fillet_base"].is_null());
+            let reason = sketch["refusal"].as_str().expect("a reason");
+            assert!(reason.contains("height"), "{reason}");
+            assert_eq!(sketch["constraint_edit"]["available"], false);
+
+            // The protocol: nothing written by any refusal. A build without a
+            // kernel asks for it before any other check (§28C), so every
+            // request is `unsupported` there; with a kernel each is its kind.
+            let before = std::fs::read(&h.source).expect("bytes");
+            let never = h.root.path().join("never.fcad");
+            let names = entries(h.root.path());
+            let base = h.base_id().to_owned();
+            let sketch_id = sketch["sketch_id"].as_str().expect("UUID").to_owned();
+            let foreign = ferritecad_types::ObjectId::new().to_string();
+            let kernel = ferritecad_occt::is_available();
+            let f1 = one["feature_id"].as_str().expect("F1").to_owned();
+            let f2 = two["feature_id"].as_str().expect("F2").to_owned();
+            for (why, feature, height, kind) in [
+                ("zero", &base, "0", "input"),
+                ("negative", &base, "-1", "input"),
+                ("not a number", &base, "NaN", "input"),
+                ("infinite", &base, "inf", "input"),
+                ("Fillet 1", &f1, "9", "unsupported"),
+                ("Fillet 2", &f2, "9", "unsupported"),
+                ("the Sketch", &sketch_id, "9", "unsupported"),
+                ("a foreign UUID", &foreign, "9", "input"),
+            ] {
+                let v = reply(
+                    h.raise(&h.source, feature, height, &never)
+                        .output()
+                        .expect("process"),
+                    EDIT,
+                    2,
+                );
+                if kernel {
+                    assert_eq!(refused(&v), kind, "{why}: {v}");
+                } else {
+                    assert_eq!(refused(&v), "unsupported", "{why}: {v}");
+                    assert!(v.to_string().contains("Open CASCADE"), "{why}: {v}");
+                }
+            }
+            if !kernel {
+                let v = reply(
+                    h.raise(&h.source, &base, "9", &never)
+                        .output()
+                        .expect("process"),
+                    EDIT,
+                    2,
+                );
+                assert_eq!(refused(&v), "unsupported", "no kernel: {v}");
+            }
+            assert_eq!(entries(h.root.path()), names, "a refusal left something");
+            assert_eq!(std::fs::read(&h.source).expect("bytes"), before);
+        }
+
+        /// Adjacent and opposite corners, both windings of the offset
+        /// fractional plate, different radii; the height raised, lowered and
+        /// kept, each copy measured in full.
+        #[test]
+        fn native_heights_under_both_fillets_are_what_the_numbers_say() {
+            if !native() {
+                return;
+            }
+            type Case = (
+                &'static str,
+                [[f64; 2]; 4],
+                [f64; 2],
+                [f64; 2],
+                (f64, f64),
+                Vec<f64>,
+            );
+            let cases: [Case; 3] = [
+                (
+                    "ccw-adjacent",
+                    CCW,
+                    [X0 + W, Y0],
+                    [X0 + W, Y0 + D],
+                    (2.375, 3.0625),
+                    vec![11.5, 2.25],
+                ),
+                (
+                    "cw-adjacent",
+                    CW_FROM_UPPER_RIGHT,
+                    [X0 + W, Y0],
+                    [X0 + W, Y0 + D],
+                    (4.8125, 1.1875),
+                    vec![H, 3.375],
+                ),
+                (
+                    "ccw-opposite",
+                    CCW,
+                    [X0, Y0],
+                    [X0 + W, Y0 + D],
+                    (2.0, 5.5),
+                    vec![9.125],
+                ),
+            ];
+            for (label, corners, first, second, (r1, r2), heights) in cases {
+                let part = Part::plain(corners);
+                let (_g, mut h) = rounded_twice(
+                    &part,
+                    corners,
+                    (first, r1),
+                    (second, r2),
+                    &format!("h-{label}"),
+                );
+                let mut kept = Vec::new();
+                for (k, height) in heights.into_iter().enumerate() {
+                    let copy = raised_twice(
+                        &h,
+                        &part,
+                        (first, r1),
+                        (second, r2),
+                        height,
+                        &format!("height-{label}-{k}"),
+                    );
+                    let next = h.at_copy(&copy);
+                    kept.push(h);
+                    h = next;
+                }
+            }
+        }
+
+        /// A new height misses the plate and both Fillets on a warm cache and
+        /// hits all three after; both radii are then edited on the raised
+        /// copy, each measured at the new height.
+        #[test]
+        fn native_a_new_height_misses_the_whole_chain_and_radii_stay_editable() {
+            if !native() {
+                return;
+            }
+            let part = Part::plain(CCW);
+            let (first, second) = ([X0 + W, Y0], [X0 + W, Y0 + D]);
+            let (_g, h) = rounded_twice(&part, CCW, (first, 2.375), (second, 3.0625), "h-cache");
+            let warm = h.source.with_extension("fcad-cache");
+            measure_two(&h.source, Some(&warm));
+            let (_, events) = measure_two(&h.source, Some(&warm));
+            use ferritecad_eval::CacheOutcome::{Hit, Miss};
+            assert!(events.iter().all(|e| e.outcome == Hit), "{events:?}");
+            let [one, two] = rows(&h);
+            let (f1, f2, base) = (
+                id_of(&one["feature_id"]),
+                id_of(&two["feature_id"]),
+                id_of(&one["edge"]["feature_id"]),
+            );
+            let copy = h.root.path().join("raised.fcad");
+            reply(
+                h.raise(&h.source, &base.to_string(), "10.5", &copy)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                0,
+            );
+            // The copy keeps the document's identity, so the source's warm
+            // entries are the ones a reader of the copy would find.
+            let cache = copy.with_extension("fcad-cache");
+            std::fs::copy(&warm, &cache).expect("the warm cache");
+            let (warmed, events) = measure_two(&copy, Some(&cache));
+            let by = outcomes(&events);
+            for feature in [base, f1, f2] {
+                assert_eq!(by.get(&feature), Some(&vec![Miss]), "{events:?}");
+            }
+            let (cold, _) = measure_two(&copy, None);
+            cold.same_as(&warmed);
+            check_two_at(
+                &cold,
+                part.rect,
+                (f1, first, 2.375),
+                (f2, second, 3.0625),
+                base,
+                10.5,
+            );
+            let (hit, events) = measure_two(&copy, Some(&cache));
+            assert!(events.iter().all(|e| e.outcome == Hit), "{events:?}");
+            cold.same_as(&hit);
+
+            // Each radius on the raised plate, through the shipped command.
+            let refs = stored_refs(&copy);
+            let mut at = h.at_copy(&copy);
+            let mut kept = Vec::new();
+            let (mut r1, mut r2) = (2.375, 3.0625);
+            for (feature, r, name) in [(f1, 4.25, "raised-f1"), (f2, 1.5, "raised-f2")] {
+                let out = at.root.path().join(format!("{name}.fcad"));
+                at.ask_radius(r);
+                reply(
+                    at.edit_from(&at.source, &feature.to_string(), at.version(), &out)
+                        .output()
+                        .expect("process"),
+                    "edit-fillet-radius",
+                    0,
+                );
+                if feature == f1 {
+                    r1 = r;
+                } else {
+                    r2 = r;
+                }
+                assert_eq!(stored_refs(&out), refs);
+                let next = at.at_copy(&out);
+                assert_eq!(next.base_row()["distance_mm"], 10.5);
+                let (cold, _) = measure_two(&out, None);
+                check_two_at(
+                    &cold,
+                    part.rect,
+                    (f1, first, r1),
+                    (f2, second, r2),
+                    base,
+                    10.5,
+                );
+                let m = mesh(&out, &out.with_extension("stl"));
+                check_mesh_rounded(&m, part.rect, &[(first, r1), (second, r2)], 10.5);
+                // The copy lives in `at`'s directory; keep it for the next edit.
+                kept.push(std::mem::replace(&mut at, next));
+            }
+        }
+
+        /// A dimensioned plate whose stored and solved rectangles differ:
+        /// the height changes only the base row, the stored Sketch stays the
+        /// solver's starting guess, and both Fillets stand at the solved
+        /// corners at the new height.
+        #[test]
+        fn native_dimensioned_height_keeps_the_stored_sketch_and_the_solved_plate() {
+            if !solving() {
+                return;
+            }
+            let at = [2.5, -1.75];
+            let (width, depth) = (30.5, 8.0);
+            let (_plain, g, expected) = dimensioned_plate(CCW, at, width, depth, "h-dimensioned");
+            let (first, second) = ([X0 + W, Y0], [X0, Y0 + D]);
+            let one = g.root.path().join("one.fcad");
+            g.ask_stored(first, 3.5);
+            reply(g.fillet(&one).output().expect("process"), OP, 0);
+            let g1 = g.at_copy(&one);
+            let part = Part {
+                rect: rect_of(&expected),
+                stored: g.stored_starts(),
+                solved: expected.clone(),
+                constrained: true,
+            };
+            assert_ne!(part.stored, part.solved, "stored and solved differ");
+            let two = second_fillet(&g1, &part, first, 3.5, second, 2.0, "h-dimensioned-two");
+            let h = g1.at_copy(&two);
+            let up = raised_twice(
+                &h,
+                &part,
+                (first, 3.5),
+                (second, 2.0),
+                13.25,
+                "height-dimensioned",
+            );
+            raised_twice(
+                &h.at_copy(&up),
+                &part,
+                (first, 3.5),
+                (second, 2.0),
+                4.5,
+                "height-dimensioned-down",
+            );
+        }
+
+        /// Refusals publish nothing and leave no scratch file: a height the
+        /// kernel cannot round, the source as its own output, an occupied
+        /// output, an alias of the source and a stale version. A cancelled job
+        /// leaves nothing; a lost report keeps the copy, exit 7.
+        #[test]
+        fn native_height_refusals_cancellation_and_report_loss_are_atomic() {
+            if !native() {
+                return;
+            }
+            let part = Part::plain(CCW);
+            let (first, second) = ([X0, Y0], [X0 + W, Y0]);
+            let (_g, h) = rounded_twice(&part, CCW, (first, 2.0), (second, 1.5), "h-atomic");
+            let base = h.base_id().to_owned();
+            let before = std::fs::read(&h.source).expect("bytes");
+            let taken = h.root.path().join("taken.fcad");
+            std::fs::write(&taken, b"another process owns this").expect("occupied");
+            let alias = h.root.path().join("alias.fcad");
+            std::fs::hard_link(&h.source, &alias).expect("hard link");
+            let names = entries(h.root.path());
+            let never = h.root.path().join("never.fcad");
+            let v = reply(
+                h.raise(&h.source, &base, "0.000001", &never)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                2,
+            );
+            assert_eq!(refused(&v), "kernel", "too thin to round: {v}");
+            for (destination, why) in [
+                (h.source.clone(), "the source is not its own output"),
+                (taken.clone(), "an occupied output is not replaced"),
+                (alias.clone(), "an alias of the source is the source"),
+            ] {
+                let v = reply(
+                    h.raise(&h.source, &base, "9", &destination)
+                        .output()
+                        .expect("process"),
+                    EDIT,
+                    2,
+                );
+                assert_eq!(refused(&v), "input", "{why}: {v}");
+            }
+            assert_eq!(
+                std::fs::read(&taken).expect("taken"),
+                b"another process owns this"
+            );
+            let stale = h.root.path().join("stale-source.fcad");
+            std::fs::copy(&h.source, &stale).expect("copy");
+            let mut d = Document::open(&stale).expect("writable");
+            let o = d.objects().expect("objects").remove(0);
+            d.write(|w| {
+                w.put_object(o.id, o.parent, o.ordinal, Some("renamed"), &o.payload)
+                    .map(|_| ())
+            })
+            .expect("change");
+            d.close().expect("close");
+            let v = reply(
+                h.raise(&stale, &base, "9", &never)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                2,
+            );
+            assert_eq!(refused(&v), "input", "stale: {v}");
+            std::fs::remove_file(&stale).expect("clean");
+            assert_eq!(entries(h.root.path()), names, "a refusal left something");
+
+            // Cancelled at the last barrier, through the shared job.
+            let d = Document::open_read_only(&h.source).expect("source");
+            let expected = ferritecad_document::DocumentVersion {
+                document_id: d.meta().document_id,
+                content: d.content_version().expect("version"),
+            };
+            d.close().expect("close");
+            let destination = h.root.path().join("cancelled.fcad");
+            let token = ferritecad_kernel::CancelToken::new();
+            let stop = token.clone();
+            let context = OperationContext::default()
+                .with_cancel(token)
+                .with_progress(ferritecad_kernel::ProgressSink::new(move |fraction| {
+                    if fraction >= 0.95 {
+                        stop.cancel();
+                    }
+                }));
+            let request = ferritecad_jobs::EditExtrudeRequest {
+                source: h.source.clone(),
+                expected,
+                feature: id_of(&json!(base)),
+                distance_mm: 9.0,
+                destination: destination.clone(),
+            };
+            let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+            let result = ferritecad_jobs::edit_extrude_copy(&request, &mut kernel, &context);
+            assert!(result.is_err(), "{result:?}");
+            assert!(!destination.exists());
+            assert_eq!(kernel.live_shape_count(), 0);
+            assert_eq!(entries(h.root.path()), names, "cancellation left something");
+
+            // A lost report: published, kept, exit 7.
+            let lost = h.root.path().join("lost-report.fcad");
+            assert_eq!(
+                h.raise(&h.source, &base, "9", &lost)
+                    .stdout(pipe::closed_pipe())
+                    .stderr(pipe::closed_pipe())
+                    .status()
+                    .expect("pipes")
+                    .code(),
+                Some(7)
+            );
+            assert!(lost.exists());
+            assert_eq!(h.at_copy(&lost).base_row()["distance_mm"], 9.0);
             assert_eq!(std::fs::read(&h.source).expect("bytes"), before);
         }
     }

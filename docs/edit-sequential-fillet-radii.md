@@ -34,7 +34,9 @@ The one-Fillet path is unchanged: a document with one Fillet goes through the
 §28B frame exactly as it did, with the same wire. The guard that the base
 height, Sketch and constraint editors apply (exactly one Fillet) is **not**
 lifted: with two Fillets they still refuse, now saying that only the radius
-edit is offered.
+edit is offered. (Since [§28I](edit-two-fillet-base-height.md) the base
+height is edited through its own reader; the Sketch and constraint guards
+still hold.)
 
 ### What an edit is
 
@@ -100,8 +102,9 @@ line.
 
 ### Out of scope
 
-A third Fillet, editing the base height, Sketch or constraints of a two-Fillet
-history, retargeting a corner, Cut with Fillet, Chamfer, picking, preview,
+A third Fillet, editing the base height (since
+[§28I](edit-two-fillet-base-height.md) it can be), Sketch or constraints of a
+two-Fillet history, retargeting a corner, Cut with Fillet, Chamfer, picking, preview,
 in-place Save.
 
 ## Recipe: inspect → exact UUID → edit Fillet 1 → edit Fillet 2 → cold rebuild, export

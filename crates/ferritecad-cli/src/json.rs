@@ -1156,9 +1156,45 @@ struct FilletBaseDiscovery {
     /// §28E, additive: whether the base Sketch carries constraints; then
     /// `corner_mm` is in the stored coordinates, not the solved part's.
     profile_constrained: bool,
+    /// §28I, additive: the second Fillet of a §28G history, which rounds this
+    /// Fillet's result (not the base Extrude) and which the height edit also
+    /// keeps; `null` for a plate with one Fillet and on `sketches[]` rows.
+    second_fillet: Option<SecondFilletDiscovery>,
+}
+
+/// §28I: Fillet 2 of Extrude -> Fillet 1 -> Fillet 2, as the height edit keeps it.
+#[derive(Serialize)]
+struct SecondFilletDiscovery {
+    fillet_feature_id: ObjectId,
+    /// Fillet 1: the feature whose result this Fillet rounds.
+    previous_feature_id: ObjectId,
+    history_index: usize,
+    edge: FilletEdgeDto,
+    corner_mm: [f64; 2],
+    radius_mm: f64,
 }
 
 impl FilletBaseDiscovery {
+    fn with_second(
+        saved: &ferritecad_document::SavedFillet,
+        second: Option<&ferritecad_document::SavedFillet>,
+    ) -> Self {
+        Self {
+            second_fillet: second.map(|s| SecondFilletDiscovery {
+                fillet_feature_id: s.feature,
+                previous_feature_id: s.previous,
+                history_index: s.history_index,
+                edge: FilletEdgeDto {
+                    feature_id: s.edge.feature,
+                    joint: s.edge.joint.segments(),
+                },
+                corner_mm: s.corner.corner_mm,
+                radius_mm: s.radius_mm,
+            }),
+            ..Self::of(saved)
+        }
+    }
+
     fn of(saved: &ferritecad_document::SavedFillet) -> Self {
         Self {
             fillet_feature_id: saved.feature,
@@ -1170,6 +1206,7 @@ impl FilletBaseDiscovery {
             corner_mm: saved.corner.corner_mm,
             radius_mm: saved.radius_mm,
             profile_constrained: saved.constrained,
+            second_fillet: None,
         }
     }
 }
@@ -1554,7 +1591,9 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                         .cut_history
                         .as_ref()
                         .and_then(BaseHeightDiscovery::of),
-                    fillet_base: feature.fillet.as_ref().map(FilletBaseDiscovery::of),
+                    fillet_base: feature.fillet.as_ref().map(|f| {
+                        FilletBaseDiscovery::with_second(f, feature.second_fillet.as_ref())
+                    }),
                     feature_id: feature.feature,
                     name: feature.name,
                     distance_mm: feature.distance_mm,
