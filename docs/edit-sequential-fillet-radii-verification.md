@@ -557,3 +557,40 @@ gate now checks cancellation, large finite values, invalid inputs, acceptance
 at the result and refusal at its next float. That exact release gate, fmt
 and workspace clippy with all targets/features and `-D warnings` passed
 locally. GUI and CI evidence for this correction are recorded separately below.
+
+## Independent local review on macOS arm64
+
+At b55af32, the pinned OCCT 8.0.1/PlaneGCS release run executed 538 tests:
+document/jobs/eval 470, CLI Fillet 47, app Fillet workers 10 and app edits 11.
+Four checks for another build configuration and one old ignored timing
+benchmark are accounted separately. fmt, all-target/all-feature workspace
+clippy with `-D warnings`, and whitespace checks passed.
+
+After correction 1b68cb1, the mandatory exact boundary gate, all six
+`sequential::radius::` CLI tests and all ten Fillet app tests passed without
+skips; fmt/clippy passed again. The first CLI filter `sequential_radius`
+matched zero tests and was not counted: it was corrected to the real module
+name and six executions were checked. The fresh release CLI/viewer bundle
+passed strict deep codesign verification; the viewer's `--solver-info`
+confirmed its bundled solver without DYLD overrides. A mistaken invocation
+of that viewer-only flag on the CLI was a usage refusal, not a loader fault.
+
+Native original CI log audit (36655594658) read all three OS logs, including
+the mixed step unavailable through the cloud service's truncated log view:
+11 distinct new exact names, 12 executions per OS; two recipe markers per OS
+and one FBX reader marker per OS. CI of the review correction is separate.
+
+The first GUI preflight refused before creating a viewer because macOS
+reported pressure=2, despite swap=0 and 140 GiB free disk. The safeguard was
+not weakened; this attempt is not a GUI success.
+
+A second preflight was normal and armed PID 57480, but pressure returned to
+2 after 7.3 seconds (sampled viewer footprint 173.735 MiB); watchdog stopped
+that process, exit 125. The subsequent CUA access restarted the application
+automatically. This unguarded instance was closed with Cmd-Q as soon as the
+watchdog log was checked; no viewer process remained. The interactions
+observed on it (small-radius refusal and Save Cancel) are not claimed as
+a successful protected smoke. No edited document/export was published.
+The form also exposed missing arrow glyphs in the bundled font; the history
+labels now use ASCII arrows. A subsequent attempt must check the guard's
+liveness before every CUA access, including getApp/getAXState.

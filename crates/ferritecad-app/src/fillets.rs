@@ -259,7 +259,7 @@ impl Editor {
                         (other.feature, saved.feature)
                     };
                     ui.label(format!(
-                        "Editing Fillet {} of 2: Extrude {} → Fillet {first} → Fillet {second}. \
+                        "Editing Fillet {} of 2: Extrude {} -> Fillet {first} -> Fillet {second}. \
                          The other Fillet ({}) keeps r{} mm at ({}, {}).",
                         saved.history_index,
                         saved.base_feature,
@@ -410,7 +410,7 @@ impl Editor {
                 for existing in &target.fillets {
                     let [a, b] = existing.edge.joint.segments();
                     ui.label(format!(
-                        "History: Extrude {} → Fillet {} (Lines {a} | {b}, r{} mm) → new \
+                        "History: Extrude {} -> Fillet {} (Lines {a} | {b}, r{} mm) -> new \
                          Fillet. It rounds one of the other three corners of the same plate; a \
                          corner sharing a Line with the saved Fillet must leave at least {} mm \
                          of that Line flat between the two arcs. With two Fillets only their \
@@ -1851,7 +1851,7 @@ pub(crate) mod tests {
         assert!(painted(
             &out,
             &format!(
-                "History: Extrude {} → Fillet {}",
+                "History: Extrude {} -> Fillet {}",
                 target.base_feature, first.feature
             )
         ));

@@ -4076,3 +4076,13 @@ constraint editors still refuse a two-Fillet history. A third Fillet, Cut
 with Fillet and Chamfer remain outside; milestone 5C remains open.
 [Contract and recipe](edit-sequential-fillet-radii.md),
 [verification](edit-sequential-fillet-radii-verification.md).
+
+Independent review replaced the unbounded inverse-radius float walk with
+bounded bisection and explicit invalid-input refusal. Pinned local checks
+executed 538 tests before the correction, then the exact boundary gate, six
+CLI radius gates and ten app gates passed after it. The bundled font lacked
+the history arrow glyphs; labels now use ASCII arrows. Window validation is
+still pending: the first memory preflight refused and the second watchdog
+stopped on system pressure, not the viewer's 1536 MiB cap. The old OOM is
+not considered fixed. See the verification record for the CUA relaunch
+deviation and the distinction between native tests and window evidence.
