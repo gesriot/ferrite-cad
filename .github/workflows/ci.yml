@@ -476,6 +476,36 @@ jobs:
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28j-recipe.py | tee fillet-two-sketch-recipe-stub.log
           grep -q '^FCAD_28J_RECIPE_NO_KERNEL ' fillet-two-sketch-recipe-stub.log
 
+      - name: Discover and refuse the constraints of a plate rounded twice without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §28K: the constraint editor offers the base Sketch of a two-Fillet
+          # history with both Fillets in history order and their stored corners;
+          # the writer re-derives both; the evaluator judges both radii and
+          # their pair on the built Lines; nothing is built or solved here.
+          gate=sequential::constraints::constraint_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-two-constraints-discovery.log
+          if grep -q 'skipped:' fillet-two-constraints-discovery.log || ! grep -Fq "test $gate ... ok" fillet-two-constraints-discovery.log; then exit 1; fi
+          gate=constraints::tests::two_fillet_base_constraint_widgets_name_both_fillets_and_keep_the_draft
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-two-constraints-widgets.log
+          if grep -q 'skipped:' fillet-two-constraints-widgets.log || ! grep -Fq "test $gate ... ok" fillet-two-constraints-widgets.log; then exit 1; fi
+          for gate in fillet_radius::tests::constraints_under_two_fillets_change_only_the_sketch_and_keep_both_fillets \
+            fillet_radius::tests::the_constraint_writer_rederives_both_fillets_and_refuses_forgery \
+            fillet_radius::tests::the_evaluator_judges_both_fillets_and_the_pair_on_the_built_lines
+          do
+            cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-two-constraints-writer.log
+            if grep -q 'skipped:' fillet-two-constraints-writer.log || ! grep -Fq "test $gate ... ok" fillet-two-constraints-writer.log; then exit 1; fi
+          done
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-two-fillet-base-constraints.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28K_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28k-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28k-recipe.py | tee fillet-two-constraints-recipe-stub.log
+          grep -q '^FCAD_28K_RECIPE_NO_KERNEL ' fillet-two-constraints-recipe-stub.log
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |

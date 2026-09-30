@@ -285,7 +285,7 @@ assert ctx["fillet_feature_id"] == done1["feature_id"] and ctx["radius_mm"] == R
 two = ctx["second_fillet"]
 assert two["fillet_feature_id"] == done2["feature_id"] and two["radius_mm"] == R2, two
 assert two["previous_feature_id"] == done1["feature_id"] and two["history_index"] == 2, two
-assert row["constraint_edit"]["available"] is False, "the constraint editor keeps refusing"
+assert row["constraint_edit"]["available"] is True, "§28K: the constraint editor reads both Fillets"
 refs = tables(twice)["topology_refs"]
 
 def redraw(source, rect, name, code=0, starts=None):
