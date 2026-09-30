@@ -154,13 +154,13 @@ inside its transaction. The SQL allowlist:
   corner). For an unconstrained plate `max_radius_mm` also answers the pair
   policy; for a constrained one it stays `null`. The rebuild decides finally.
 * With two Fillets, `fillet_edge.available` is `false` with the reason; the
-  height, Sketch and constraint editors refuse the two-Fillet history
-  honestly (their rows say so) and keep working for none or one Fillet. The
-  radius editor refused it too until
-  [§28H](edit-sequential-fillet-radii.md), which offers the radius of either
-  Fillet, the height editor until
-  [§28I](edit-two-fillet-base-height.md) and the Sketch-coordinate editor
-  until [§28J](edit-two-fillet-base-sketch.md).
+  radius, height, Sketch-coordinate and constraint editors refused the
+  two-Fillet history honestly (their rows said so) and kept working for none
+  or one Fillet. The radius editor offers the radius of either Fillet since
+  [§28H](edit-sequential-fillet-radii.md), the height editor since
+  [§28I](edit-two-fillet-base-height.md), the Sketch-coordinate editor since
+  [§28J](edit-two-fillet-base-sketch.md) and the constraint editor since
+  [§28K](edit-two-fillet-base-constraints.md).
 * The form shows the history (Extrude → Fillet 1 at its corner, r → new
   Fillet), lists only the other corners, marks the adjacent ones with the
   shared-side rule, and refuses at Save what the rebuild refuses, keeping the

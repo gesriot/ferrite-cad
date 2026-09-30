@@ -762,11 +762,11 @@ Result второго Fillet называет первый в `previous_feature_
 payload v2 с capability `feature.fillet.sequential.v1`; это не изменение
 JSON schema v1 или SQLite schema.
 
-Повтор угла и нарушение границы радиусов — `input`; третий Fillet и правка
-Sketch или ограничений истории из двух — `unsupported`. В копии с двумя
-Fillet discovery честно отказывает добавлению третьего и этим редакторам;
-строки `fillets[]` остаются, а их `radius_edit` с §28H доступен, как и
-высота базы с §28I (ниже). Старый reader открывает новую семантику
+Повтор угла и нарушение границы радиусов — `input`; третий Fillet —
+`unsupported`. В копии с двумя Fillet discovery честно отказывает добавлению
+третьего; строки `fillets[]` остаются, а их `radius_edit` с §28H доступен,
+как и высота базы с §28I, координаты Sketch с §28J и ограничения с §28K
+(ниже). Старый reader открывает новую семантику
 только для чтения, не пересобирает её частично и не переписывает файл.
 [Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
 
@@ -832,6 +832,29 @@ Fillet 1, — `input`, ничего не записано.
 другим ограничением — `unsupported`; ничего не записано. Редактор ограничений
 для двух Fillet по-прежнему отказывает.
 [Контракт §28J и исполняемый рецепт](edit-two-fillet-base-sketch.md).
+
+### Ограничения Sketch плиты под двумя Fillet (§28K)
+
+Команда, аргументы, request, envelope, result и коды выхода — прежние
+`edit-sketch-constraints-copy`. `sketches[].constraint_edit.available` —
+`true` для плиты, скруглённой дважды, а её `fillet_base` по-прежнему
+описывает Fillet на базе (Fillet 1) и аддитивно получает `second_fillet`
+(`null` при одном Fillet):
+
+```json
+{"second_fillet":{"fillet_feature_id":"…","previous_feature_id":"…",
+ "history_index":2,"edge":{"feature_id":"…","joint":["…","…"]},
+ "radius_mm":3.0625,"stored_corner_mm":[33.0,15.5]}}
+```
+
+`previous_feature_id` — Fillet 1; `edge.feature_id` — базовый Extrude;
+`stored_corner_mm` — угол в сохранённых координатах (начальном приближении
+решателя), а не в решённой детали: вмещается ли каждый радиус и оставляют ли
+соседние дуги плоский участок, решает rebuild на решённых Line. Причина
+отказа называет joint-UUID нарушенного Fillet или общую Line — `input`,
+ничего не записано; конфликт решателя — `constraint` с реальными UUID
+ограничений. Прочие поля и их типы не меняются.
+[Контракт §28K и исполняемый рецепт](edit-two-fillet-base-constraints.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 

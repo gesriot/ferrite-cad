@@ -94,9 +94,9 @@ height misses the Extrude and both Fillets; a second rebuild hits all three.
 
 ### Out of scope
 
-A third Fillet, arbitrary edges, Cut with Fillet, Chamfer, editing the
-constraints of a two-Fillet history, in-place Save. (The Sketch's coordinates
-are [§28J](edit-two-fillet-base-sketch.md).)
+A third Fillet, arbitrary edges, Cut with Fillet, Chamfer, in-place Save.
+(The Sketch's coordinates are [§28J](edit-two-fillet-base-sketch.md) and its
+constraints [§28K](edit-two-fillet-base-constraints.md).)
 
 ## Recipe: inspect -> exact UUIDs -> height up and down -> a radius after -> cold rebuild, export
 

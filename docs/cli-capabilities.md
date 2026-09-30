@@ -275,8 +275,8 @@ Fillet 2 — payload v2 с `feature.fillet.sequential.v1`; восемь новы
 включают `origin_fillet_face` — цилиндр первого Fillet в конечном Body.
 Исходник, Sketch, первая фича и прежние UUID/refs сохраняются. Старый reader
 отказывает новой семантике безопасно. Третий Fillet, повтор того же угла,
-касание дуг и правка ограничений истории из двух Fillet пока недоступны;
-радиусы — §28H, высота — §28I, координаты Sketch — §28J.
+и касание дуг пока недоступны; радиусы — §28H, высота — §28I, координаты
+Sketch — §28J, ограничения Sketch — §28K.
 [Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
 
 §28H: прежний `edit-fillet-radius` с тем же request v1, envelope и exit 0/2/7
@@ -293,7 +293,8 @@ Sketch, все UUID, имена, зависимости и capabilities сохр
 размеренной — `null`, судит rebuild на решённых Line. В `fillets[]`
 аддитивно `history_index` и `radius_edit.neighbour`; result добавляет
 `previous_feature_id` и `history_index`. Редактор ограничений для двух
-Fillet по-прежнему отказывает; высоту меняет §28I, координаты Sketch — §28J.
+Fillet отказывал до §28K; высоту меняет §28I, координаты Sketch — §28J,
+ограничения — §28K.
 [Контракт §28H и исполняемый рецепт](edit-sequential-fillet-radii.md).
 
 §28I: прежний `edit-extrude` с теми же аргументами, результатом, envelope и
@@ -310,16 +311,15 @@ exit 0/2/7 меняет Blind-высоту базового Extrude плиты, 
 имена, включая цилиндр Fillet 1 в конечном Body; кэш промахивается по
 Extrude и обоим Fillet. В `features[].fillet_base` аддитивно
 `second_fillet` — Fillet 2, округляющий результат Fillet 1 (`null` при
-одном Fillet). Редактор ограничений для двух Fillet по-прежнему отказывает;
-координаты Sketch — §28J.
+одном Fillet). Ограничения Sketch — §28K.
 [Контракт §28I и исполняемый рецепт](edit-two-fillet-base-height.md).
 
 §28J: прежний `edit-sketch-copy` с тем же request v1, envelope и exit 0/2/7
 переносит и меняет размеры базового прямоугольного Sketch под двумя
 последовательными Fillet (Extrude → Fillet 1 → Fillet 2 → Body tip): свободного
 или с одними Coincident-звеньями замыкания (что остаётся после снятия
-последнего ограничения, §28E). Sketch с любым другим ограничением по-прежнему
-отказывает (`unsupported`). Меняются только геометрия Line в `payload`/
+последнего ограничения, §28E). Sketch с любым другим ограничением отказывает
+(`unsupported`) и отсылает к редактору ограничений (§28K). Меняются только геометрия Line в `payload`/
 `payload_hash` этого Sketch (и `meta.modified_at`, если писатель его
 ставит); UUID и порядок кривых, замыкание, Extrude и его высота, оба
 Fillet, их радиусы, рёбра и предшественники, зависимости, tip Body,
@@ -335,6 +335,27 @@ Extrude и обоим Fillet, затем высота и каждый радиу
 `sketches[]` строка базового Sketch аддитивно получает `fillet_base.second_fillet`
 (как в `features[]` с §28I).
 [Контракт §28J и исполняемый рецепт](edit-two-fillet-base-sketch.md).
+
+§28K: прежний `edit-sketch-constraints-copy` с тем же request v1, envelope и
+exit 0/2/7 добавляет, заменяет и снимает Line-ограничения базового Sketch под
+двумя последовательными Fillet (тот же класс §28G, что читают §28H–§28J).
+Меняются только `schema_version`/`payload`/`payload_hash` строки Sketch и
+строка capability `sketch.constraints.v1` по прежнему договору §28E; UUID
+нетронутых ограничений и Coincident-замыканий сохраняются, новые правила
+получают новые UUID, обе строки Fillet, радиусы, рёбра, предшественники,
+Extrude и его высота, tip Body, `document_id` и refs остаются. Сохранённые
+координаты — начальное приближение решателя и не заменяются решёнными. Оба
+радиуса и их пара проверяются на **решённых** Line тех же UUID при каждом
+rebuild тем же `evaluable_fillet`, что и раньше (стороны, угол, `r ≤ ½·min`
+решённой стороны, пара в порядке истории); сохранённые длины ничего не
+доказывают. Причины называют joint-UUID Fillet или общую Line; конфликт
+решателя — `constraint` с реальными UUID, избыточность публикуется и
+называется в `solve.redundant_constraint_ids`. Снятие всех пользовательских
+ограничений оставляет замыкание, деталь — сохранённая плита, и §28J снова
+доступен. В `sketches[].constraint_edit.fillet_base` аддитивно
+`second_fillet` (`null` при одном Fillet); `constraint_edit.available` —
+`true` для этого класса.
+[Контракт §28K и исполняемый рецепт](edit-two-fillet-base-constraints.md).
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
