@@ -75,7 +75,60 @@ re-derives the edit through the same choice and compares the whole payload.
 
 ## Local results
 
-REGRESSION_PLACEHOLDER
+Solver build (Open CASCADE + local unpinned PlaneGCS), debug:
+
+* `tests/fillet.rs`: **60 passed** — 58 executed plus 2 that are N/A here
+  because they run only in the build without PlaneGCS (`skipped: the mixed
+  gate needs a build without PlaneGCS`). The six `sequential::sketch` tests
+  executed; none printed `skipped:`.
+* Recipes §28A–§28J against the solver CLI extracted from Markdown: all ten
+  print `FCAD_28x_RECIPE_OK`. §28J: `FCAD_28J_RECIPE_OK
+  moved=1949.910066/1950.087022 narrow=815.277235/815.454209
+  tall_f2=1162.038831/1162.210120` (independently read mesh / exact volume,
+  mm³, after the move, after the shrink to 2 × 3.0625 = 6.125 mm, and after
+  height 9.5 mm and Fillet 2 → 1.5 mm on the shrunk plate). The §28I recipe's
+  one assertion that the Sketch is refused became "editable" and passes.
+* FBX: `tools/check-fbx-complex.sh --features planegcs` as CI runs it, over
+  the artifacts of the whole `tests/fillet.rs` run: every Fillet marker
+  including the new `FCAD_FILLET_TWO_SKETCH_UFBX_EXECUTED`; the four files
+  `sketch-ccw-adjacent-1`, `sketch-cw-adjacent-0`, `sketch-ccw-opposite-1`,
+  `s-links-moved` read by pinned ufbx 0.23.0 (`checks=6 failures=0` each)
+  and joined with their STL (120, 120, 136, 120 triangles, worst 3.47e-18
+  m); 60 joins in all.
+* fmt, workspace clippy (`--all-targets --all-features -D warnings`) and
+  `git diff --check`: clean.
+
+Regression of the affected crates, solver build, debug (`--no-fail-fast`):
+`ferritecad-document`, `-jobs`, `-eval` (lib and integration tests), every
+`ferritecad-cli` test target except the heavy ones listed below, the CLI binaries, and `ferritecad-app`: **1112 passed,
+2 failed, 1 ignored** (the 1100 of §28I plus the 12 new tests). The two
+failures are the root-only permission tests (`dump_graph`'s
+`read_only_permissions_still_dump_when_the_file_can_be_read` and `validate`'s
+`validation_really_read_only_permissions`): a directory made read-only does
+not stop uid 0. Copied to a directory and run as `nobody`, both pass (8/8 and
+4/4). The ignored test is the timing benchmark. The heavy targets
+`complex_step_pixels export_scene_complex occurrence_identity_complex
+imported_step_pixels fillet_shell_corpus export_fbx_identity shared_step_import
+import_step export_fbx_complex` were not run: nothing in this slice touches
+STEP import, scene export or pixels.
+
+OCCT without a solver (release, `--no-default-features`,
+`FERRITECAD_REQUIRE_PLANEGCS=0`): `tests/fillet.rs` 60 passed, 14 of them N/A
+(`skipped: constrained geometry requires PlaneGCS`), so 46 executed,
+including `sequential::sketch::sketch_discovery_and_protocol_without_native`
+and the recipe (`FCAD_28J_RECIPE_OK` with the same volumes as the solver
+build).
+
+Stub (no Open CASCADE, `CMAKE_TOOLCHAIN_FILE` hiding the native prefix):
+`tests/fillet.rs` 60 passed, 49 N/A (`skipped: this build has no Open
+CASCADE`), 11 executed; the extracted `ci.yml` step passes — the CLI
+discovery gate, the app widget gate, the four document gates and
+`FCAD_28J_RECIPE_NO_KERNEL`.
+
+The worker-versus-CLI equality
+(`sketch::tests::native_two_fillet_base_sketch_worker_and_cli_publish_the_same_part`)
+compares every SQL cell but `meta.modified_at` and requires byte-identical
+STL and FBX; it and the widget test executed.
 
 ### Mutations — local, executed, restored
 
