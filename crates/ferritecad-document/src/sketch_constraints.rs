@@ -393,6 +393,21 @@ fn closures(sketch: &Sketch) -> Vec<[SketchPointRef; 2]> {
         })
         .collect()
 }
+/// §28J: whether every stored constraint is a distinct Coincident closure
+/// link at an adjacent Line joint — what the constraint editor leaves when
+/// the last user constraint is removed (§28E). Such links name endpoints, not
+/// coordinates, so a coordinate edit that keeps the loop exactly closed keeps
+/// them satisfied. Any other constraint answers `false`.
+pub(crate) fn closure_links_only(sketch: &Sketch) -> bool {
+    let expected: BTreeSet<_> = closures(sketch).into_iter().collect();
+    let mut seen = BTreeSet::new();
+    let mut ids = BTreeSet::new();
+    sketch.constraints.iter().all(|c| {
+        matches!(c.rule, SketchConstraintRule::Coincident { a, b }
+            if expected.contains(&unordered(a, b)) && seen.insert(unordered(a, b)))
+            && ids.insert(c.id)
+    })
+}
 /// The Line a point pair spans, when it is exactly that Line's Start and End
 /// in either stored orientation.
 fn whole_line(a: SketchPointRef, b: SketchPointRef) -> Option<StableEntityId> {

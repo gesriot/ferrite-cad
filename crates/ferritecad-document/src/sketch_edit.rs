@@ -91,6 +91,12 @@ pub struct SketchChoice {
     /// rounds, in the frame the radius and height edits read. The Fillet
     /// keeps its row; a candidate must keep its corner and fit its radius.
     pub fillet: Option<crate::SavedFillet>,
+    /// §28J: present only beside `fillet` on the base Sketch of a §28G
+    /// history: Fillet 2, which rounds Fillet 1's result (`previous` is
+    /// Fillet 1, never the base) at another corner the base Extrude swept.
+    /// A candidate must keep its corner, fit its radius and leave the pair
+    /// rule satisfied in history order.
+    pub second_fillet: Option<crate::SavedFillet>,
     pub refusal: Option<String>,
 }
 
@@ -127,6 +133,7 @@ pub(crate) fn choices_with_history(
                 profile_use: None,
                 cut_history: None,
                 fillet: None,
+                second_fillet: None,
                 refusal: Some(error.to_string()),
             })
         })
@@ -148,6 +155,7 @@ fn coordinate_choice(
         profile_use: None,
         cut_history: None,
         fillet: None,
+        second_fillet: None,
         refusal: None,
     };
     let checked = (|| {
@@ -164,9 +172,11 @@ fn coordinate_choice(
         // §28D: the base of the plate under the one saved Fillet, read by
         // the frame the radius and height edits read. A Fillet outside that
         // frame refuses every Sketch of the document, naming the Fillet.
-        match crate::fillet_radius::fillet_over_plate(document, objects) {
+        // §28J: the §28G history of two, read by the reader the radius and
+        // height edits use for two; both Fillets travel in history order.
+        match crate::fillet_radius::fillets_over_plate(document, objects) {
             Ok(None) => {}
-            Ok(Some(saved)) => {
+            Ok(Some(crate::fillet_radius::FilletsOverPlate { first: saved, second })) => {
                 if object.id != saved.profile {
                     return Err(unsupported(&format!(
                         "coordinate editing of the plate under Fillet {} requires its base \
@@ -182,8 +192,21 @@ fn coordinate_choice(
                     feature: saved.previous,
                     height_mm: saved.height_mm,
                 };
-                let vertices = lines(sketch, &profile_use, false)?;
+                // §28J: under two Fillets the Sketch may keep the closure
+                // links §28E leaves; they name endpoints, and the loop stays
+                // exactly closed. Any other constraint is a later slice.
+                let closure_only = second.is_some()
+                    && crate::sketch_constraints::closure_links_only(sketch);
+                if second.is_some() && !sketch.constraints.is_empty() && !closure_only {
+                    return Err(unsupported(
+                        "coordinate editing of the plate under two Fillets requires a Sketch \
+                         without constraints other than Coincident closure links; editing \
+                         constraints under two Fillets is not supported yet",
+                    ));
+                }
+                let vertices = lines(sketch, &profile_use, closure_only)?;
                 choice.fillet = Some(saved);
+                choice.second_fillet = second;
                 return Ok((vertices, profile_use));
             }
             Err(reason) => return Err(crate::fillet::filleted_outside_frame(objects, &reason)),
@@ -644,7 +667,15 @@ impl SketchChoice {
             // The saved corner and radius on the new rectangle, then every
             // Line on its saved side: the rounded corner stays the same corner
             // of the part, not the same two UUIDs moved to another one.
-            fillet.corner_on(&coordinate_curves(vertices, &points))?;
+            let curves = coordinate_curves(vertices, &points);
+            let first = fillet.corner_on(&curves)?;
+            // §28J: Fillet 2 at its own saved corner and radius, then the
+            // pair in history order on the candidate corners — the rule the
+            // rebuild applies at Fillet 2. Nothing is clamped.
+            if let Some(second) = &self.second_fillet {
+                let other = second.corner_on(&curves)?;
+                crate::fillet::check_pair(&first, fillet.radius_mm, &other, second.radius_mm)?;
+            }
             keeps_every_side(original, &points)?;
         }
         Ok(points)

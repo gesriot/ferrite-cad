@@ -1402,7 +1402,29 @@ impl Editor {
                     None => "Part with a bore: every point stays at X > 0.".to_owned(),
                 });
             }
-            if let Some(fillet) = &choice.fillet {
+            if let (Some(first), Some(second)) = (&choice.fillet, &choice.second_fillet) {
+                // §28J: both Fillets in history order; the second rounds the
+                // first one's result and both keep their corners and radii.
+                let [a1, b1] = first.edge.joint.segments();
+                let [a2, b2] = second.edge.joint.segments();
+                ui.label(format!(
+                    "History: Extrude -> Fillet 1 {} at the corner of Lines {} | {}, r {} mm -> \
+                     Fillet 2 {} at the corner of Lines {} | {}, r {} mm. Both Fillets keep \
+                     their corners and radii: every Line keeps its side, no side may be shorter \
+                     than {} mm (Fillet 1) or {} mm (Fillet 2), and Lines shared by adjacent \
+                     corners must leave a flat between the arcs.",
+                    first.feature,
+                    a1,
+                    b1,
+                    first.radius_mm,
+                    second.feature,
+                    a2,
+                    b2,
+                    second.radius_mm,
+                    first.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION,
+                    second.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
+                ));
+            } else if let Some(fillet) = &choice.fillet {
                 ui.label(format!(
                     "Rounded by Fillet {} at the corner of Lines {} | {}, r {} mm. The Fillet \
                      keeps its corner and radius: every Line keeps its side, and no side \

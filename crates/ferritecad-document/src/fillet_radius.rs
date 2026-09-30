@@ -107,7 +107,9 @@ impl SavedFillet {
             curves: curves.to_vec(),
             constraints: Vec::new(),
         };
-        let corners = rectangle_corners(self.previous, &candidate)?;
+        // §28J: the edge was swept by the base Extrude, which is `previous`
+        // only for the first Fillet; Fillet 2's `previous` is Fillet 1.
+        let corners = rectangle_corners(self.base_feature, &candidate)?;
         let corner = crate::corner_for(&corners, self.edge)?;
         corner.check_radius(self.radius_mm)?;
         Ok(corner)
@@ -923,12 +925,12 @@ mod tests {
             assert_eq!(d.topology_refs().expect("refs"), refs, "no name moved");
             assert!(d.validate().expect("validate").is_ok());
         }
-        // The Sketch editors still refuse the two-Fillet history; the base
-        // height (§28I) does not.
+        // The constraint editor still refuses the two-Fillet history; the
+        // base height (§28I) and the base Sketch's coordinates (§28J) do not.
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         assert!(reading.fillet_features.iter().all(|c| c.refusal.is_none()));
         assert!(reading.features.iter().all(|f| f.refusal.is_none()));
-        assert!(reading.sketches.iter().all(|s| s.refusal.is_some()));
+        assert!(reading.sketches.iter().all(|s| s.refusal.is_none()));
         assert!(
             reading
                 .constraint_sketches
@@ -1169,12 +1171,12 @@ mod tests {
                     ErrorKind::Input
                 );
             }
-            // The Sketch and constraint editors keep refusing, naming what
-            // can be edited.
+            // §28J: the Sketch editor reads the same history; the constraint
+            // editor keeps refusing.
             let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
             for s in &reading.sketches {
-                let reason = s.refusal.as_deref().expect("refused");
-                assert!(reason.contains("height"), "{reason}");
+                assert_eq!(s.refusal, None);
+                assert!(s.second_fillet.is_some());
             }
             assert!(
                 reading
@@ -2218,5 +2220,291 @@ mod tests {
         let e =
             crate::evaluable_fillet(&objects, &payload, Some(&shuffled)).expect_err("reordered");
         assert!(e.to_string().contains("same four Lines"), "{e}");
+    }
+
+    /// §28J: a rectangle by its lower-left and upper-right corner, in stored
+    /// order: counter-clockwise, or clockwise starting at the upper left.
+    fn rect(cw: bool, (x0, y0): (f64, f64), (x1, y1): (f64, f64)) -> [[f64; 2]; 4] {
+        if cw {
+            [[x0, y1], [x1, y1], [x1, y0], [x0, y0]]
+        } else {
+            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        }
+    }
+
+    /// §28J: the two Fillets as the Sketch editor reads them.
+    fn both(d: &Document) -> (crate::SketchChoice, crate::SavedFillet, crate::SavedFillet) {
+        let reading = crate::ExtrudeEditSource::read(d).expect("catalogue");
+        let choice = reading.sketches[0].clone();
+        let one = choice.fillet.clone().expect("Fillet 1 as context");
+        let two = choice.second_fillet.clone().expect("Fillet 2 as context");
+        (choice, one, two)
+    }
+
+    /// §28J: under two Fillets, adjacent and opposite, in both windings, the
+    /// base rectangle moves, grows and shrinks to the exact bound alone. Only
+    /// the Sketch row's payload, hash and the stamp move; both Fillet rows,
+    /// the Extrude, every name and dependency stay; each rounded corner
+    /// follows its own two Lines; height and either radius interleave.
+    #[test]
+    fn the_rectangle_under_two_fillets_moves_alone_and_both_corners_follow() {
+        // (clockwise, r1, second corner, r2, the narrowest side both allow)
+        for (cw, r1, at, r2, narrowest) in [
+            (false, 2.375, 2, 3.0625, 6.125),
+            (true, 2.375, 2, 3.0625, 6.125),
+            (false, 2.0, 3, 5.5, 11.0),
+        ] {
+            let plate = rect(cw, (-4.5, 3.25), (33., 15.5));
+            let (_root, mut d, first, second) = sequential_on(plate, r1, at, r2);
+            let base = base_of(&d, first);
+            let (choice, one, two) = both(&d);
+            assert_eq!(choice.refusal, None);
+            assert_eq!((one.feature, one.previous), (first, base));
+            assert_eq!(
+                (two.feature, two.previous, two.base_feature),
+                (second, first, base),
+                "Fillet 2 rounds Fillet 1's result; both edges are the base's"
+            );
+            let refs = d.topology_refs().expect("refs");
+            let deps = d.dependencies().expect("deps");
+            let mut before = cells(&d);
+            let steps = [
+                ("moved", rect(cw, (-2., 1.75), (35.5, 14.))),
+                ("larger", rect(cw, (-9.25, -2.5), (41.75, 17.125))),
+                (
+                    "narrowest",
+                    rect(cw, (0.5, 1.), (0.5 + 3. * narrowest, 1. + narrowest)),
+                ),
+                ("restored", plate),
+            ];
+            for (step, at_step) in steps {
+                let (sketch, vertices) = starts(&d, at_step);
+                let prepared =
+                    crate::replace_sketch_coordinates(&d, sketch, &vertices).expect(step);
+                d.write_sketch_geometry(&prepared).expect(step);
+                let (_, one_now, two_now) = both(&d);
+                assert_eq!(one_now.corner.corner_mm, at_step[1], "{step}: Fillet 1");
+                assert_eq!(two_now.corner.corner_mm, at_step[at], "{step}: Fillet 2");
+                let after = cells(&d);
+                assert!(only_this_row_moved(&before, &after, sketch) >= 2, "{step}");
+                before = after;
+                for (id, r, previous) in [(first, r1, base), (second, r2, first)] {
+                    let stored = stored_fillet(&d, id);
+                    assert_eq!((stored.radius_mm, stored.previous), (r, previous), "{step}");
+                }
+                assert_eq!(d.topology_refs().expect("refs"), refs, "{step}: no name");
+                assert_eq!(d.dependencies().expect("deps"), deps, "{step}");
+                assert!(d.validate().expect("validate").is_ok(), "{step}");
+            }
+            // Height and each radius still edit, and the Sketch again after.
+            let p = crate::prepare_extrude_height(&d, base, 9.5).expect("height");
+            d.write_extrude_height(&p).expect("height written");
+            for (id, r) in [(first, r1 * 0.5), (second, r2 * 0.5)] {
+                let p = prepare_fillet_radius(&d, id, r).expect("radius");
+                d.write_fillet_radius(&p).expect("radius written");
+            }
+            let (sketch, vertices) = starts(&d, rect(cw, (1., 1.), (60., 40.)));
+            let p = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("again");
+            d.write_sketch_geometry(&p).expect("again written");
+            assert_eq!(height_of(&d, base), 9.5);
+        }
+    }
+
+    /// §28J refusals, each by the check the form and the writer share, naming
+    /// the Fillet that fails: a Line that changes side, a shape that is no
+    /// longer a rectangle, a side too short for Fillet 1's radius or for
+    /// Fillet 2's alone, and the flat between two adjacent arcs — at exactly
+    /// the bound and one float below it — which opposite corners never owe.
+    #[test]
+    fn a_rectangle_that_loses_a_corner_a_radius_or_the_shared_flat_is_refused() {
+        let ask = |d: &Document, at: [[f64; 2]; 4]| {
+            let (choice, ..) = both(d);
+            let (_, vertices) = starts(d, at);
+            choice.validate_coordinates(&vertices)
+        };
+        // The wider Fillet is the second: its bound is what fails first.
+        let (_a, d, first, second) = sequential(2.0, 3, 5.5);
+        let (_, one, two) = both(&d);
+        assert_eq!((one.feature, two.feature), (first, second));
+        ask(&d, rect(false, (0., 0.), (30., 11.))).expect("exactly 2 r2");
+        let e = ask(&d, rect(false, (0., 0.), (30., 10.9))).expect_err("under 2 r2");
+        assert_eq!(e.kind(), ErrorKind::Input);
+        assert!(e.to_string().contains(&two.edge.joint.to_string()), "{e}");
+        assert!(!e.to_string().contains(&one.edge.joint.to_string()), "{e}");
+        // The wider Fillet is the first: Fillet 1's own bound names Fillet 1.
+        let (_b, d, ..) = sequential(5.5, 3, 2.0);
+        let (_, one, two) = both(&d);
+        let e = ask(&d, rect(false, (0., 0.), (30., 10.9))).expect_err("under 2 r1");
+        assert!(e.to_string().contains(&one.edge.joint.to_string()), "{e}");
+        assert!(!e.to_string().contains(&two.edge.joint.to_string()), "{e}");
+        // The same Lines in another order, and a rectangle turned to a skew.
+        let plate = rect(false, (-4.5, 3.25), (33., 15.5));
+        let mut shifted = plate;
+        shifted.rotate_left(1);
+        let e = ask(&d, shifted).expect_err("Lines swap their sides");
+        assert!(e.to_string().contains("keep its side"), "{e}");
+        let e = ask(&d, [[0., 0.], [20., 0.], [20., 12.], [1., 12.]]).expect_err("not a rectangle");
+        assert_eq!(e.kind(), ErrorKind::Unsupported);
+        // The pair: r1 = r2 = 3 on adjacent corners share the Line x = 33.
+        // Each radius alone fits a 6.005 mm deep plate; the flat between them
+        // does not, and the bound is the predicate itself, not an epsilon.
+        let (_c, adjacent, ..) = sequential(3.0, 2, 3.0);
+        let deep = |d: f64| rect(false, (0., 0.), (20., d));
+        let e = ask(&adjacent, deep(6.005)).expect_err("no flat left");
+        assert_eq!(e.kind(), ErrorKind::Input);
+        assert!(e.to_string().contains("flat"), "{e}");
+        let mut fits = 6.01_f64;
+        while 3.0 > crate::fillet::pair_bound(fits, 3.0) {
+            fits = fits.next_up();
+        }
+        ask(&adjacent, deep(fits)).expect("the least depth that leaves the flat");
+        let e = ask(&adjacent, deep(fits.next_down())).expect_err("one float below");
+        assert!(e.to_string().contains("flat"), "{e}");
+        // Opposite corners share no Line: only each radius counts (2 r = 6).
+        let (_o, opposite, ..) = sequential(3.0, 3, 3.0);
+        ask(&opposite, deep(6.0)).expect("no shared Line, no flat owed");
+        let e = ask(&opposite, deep(5.999)).expect_err("under 2 r");
+        assert!(e.to_string().contains("too large"), "{e}");
+        // Nothing was written by any refusal.
+        let before = cells(&adjacent);
+        let (sketch, vertices) = starts(&adjacent, deep(6.005));
+        assert!(crate::replace_sketch_coordinates(&adjacent, sketch, &vertices).is_err());
+        assert_eq!(cells(&adjacent), before);
+    }
+
+    /// §28J: the writer re-derives both Fillets. A preparation that no longer
+    /// fits Fillet 2, a Sketch changed after preparation, a Fillet 2 radius
+    /// that grew past the prepared rectangle, and a forged payload are all
+    /// refused, writing nothing.
+    #[test]
+    fn the_sketch_writer_rederives_both_fillets_and_refuses_forgery() {
+        let (_root, mut d, first, second) = sequential(2.375, 2, 3.0625);
+        let (sketch, vertices) = starts(&d, rect(false, (0., 0.), (20., 6.125)));
+        let honest = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("prepared");
+        let forge = |edit: &dyn Fn(&mut crate::Sketch)| {
+            let mut p = honest.clone();
+            let ObjectPayload::Sketch(s) = &mut p.payload else {
+                panic!("a Sketch")
+            };
+            edit(s);
+            p
+        };
+        let line = |s: &mut crate::Sketch, i: usize, a: [f64; 2], b: [f64; 2]| {
+            s.curves[i].geometry = SketchGeometry::Line {
+                start: Point2::new(a[0], a[1]).expect("a"),
+                end: Point2::new(b[0], b[1]).expect("b"),
+            };
+        };
+        let forged = [
+            (
+                "5.9 mm deep: under 2 r2 (Fillet 2)",
+                forge(&|s| {
+                    line(s, 1, [20., 0.], [20., 5.9]);
+                    line(s, 2, [20., 5.9], [0., 5.9]);
+                    line(s, 3, [0., 5.9], [0., 0.]);
+                }),
+            ),
+            (
+                "another plane",
+                forge(&|s| {
+                    s.plane = ObjectId::new();
+                }),
+            ),
+            ("the loop reversed", forge(&|s| s.curves.reverse())),
+            (
+                "a constraint that was never there",
+                forge(&|s| {
+                    s.constraints.push(crate::SketchConstraint {
+                        id: StableEntityId::new(),
+                        rule: crate::SketchConstraintRule::Horizontal {
+                            a: crate::SketchPointRef::new(
+                                s.curves[0].id,
+                                crate::SketchPointSelector::Start,
+                            ),
+                            b: crate::SketchPointRef::new(
+                                s.curves[0].id,
+                                crate::SketchPointSelector::End,
+                            ),
+                        },
+                    });
+                }),
+            ),
+        ];
+        let before = cells(&d);
+        for (why, p) in &forged {
+            assert!(d.write_sketch_geometry(p).is_err(), "{why} was written");
+            assert_eq!(cells(&d), before, "{why} wrote something");
+        }
+        // Stale: Fillet 2 grows to 3.0625 → 3.5 after preparation. The
+        // prepared 6.125 mm deep rectangle cannot hold it (2 × 3.5 = 7).
+        let p = prepare_fillet_radius(&d, second, 3.5).expect("fits the saved plate");
+        d.write_fillet_radius(&p).expect("radius written");
+        let before = cells(&d);
+        let error = d.write_sketch_geometry(&honest).expect_err("stale");
+        assert!(error.to_string().contains("too large"), "{error}");
+        assert_eq!(cells(&d), before, "stale wrote something");
+        // Fillet 1 keeps its radius throughout.
+        assert_eq!(stored_fillet(&d, first).radius_mm, 2.375);
+    }
+
+    /// §28J: what the Sketch may carry under two Fillets. Only the Coincident
+    /// closure links §28E leaves are kept — byte for byte — and edited
+    /// around; any other constraint keeps refusing, naming the later slice.
+    #[test]
+    fn under_two_fillets_only_closure_links_survive_a_coordinate_edit() {
+        let (_root, mut d, ..) = sequential(2.375, 2, 3.0625);
+        let (sketch, lines) = plate_lines(&d);
+        let object = d.object(sketch).expect("read").expect("Sketch");
+        let mut payload = object.payload.clone();
+        let ObjectPayload::Sketch(s) = &mut payload else {
+            unreachable!()
+        };
+        let point = |curve, at| crate::SketchPointRef::new(curve, at);
+        let joins: Vec<_> = (0..4)
+            .map(|i| crate::SketchConstraint {
+                id: StableEntityId::new(),
+                rule: crate::SketchConstraintRule::Coincident {
+                    a: point(lines[i], crate::SketchPointSelector::End),
+                    b: point(lines[(i + 1) % 4], crate::SketchPointSelector::Start),
+                },
+            })
+            .collect();
+        s.constraints = joins.clone();
+        let put = |d: &mut Document, payload: &ObjectPayload| {
+            d.write(|w| w.put_object(sketch, None, object.ordinal, object.name.as_deref(), payload))
+                .expect("stored");
+        };
+        put(&mut d, &payload);
+        let (choice, ..) = both(&d);
+        assert_eq!(choice.refusal, None, "closure links are free");
+        let (_, vertices) = starts(&d, rect(false, (0., 0.), (20., 7.)));
+        let prepared = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("edit");
+        d.write_sketch_geometry(&prepared).expect("written");
+        let ObjectPayload::Sketch(now) = d.object(sketch).expect("read").expect("row").payload
+        else {
+            unreachable!()
+        };
+        assert_eq!(now.constraints, joins, "the links are kept byte for byte");
+        assert!(d.validate().expect("validate").is_ok());
+        // One more constraint and the coordinate editor refuses, naming why.
+        let ObjectPayload::Sketch(s) = &mut payload else {
+            unreachable!()
+        };
+        s.constraints.push(crate::SketchConstraint {
+            id: StableEntityId::new(),
+            rule: crate::SketchConstraintRule::Horizontal {
+                a: point(lines[0], crate::SketchPointSelector::Start),
+                b: point(lines[0], crate::SketchPointSelector::End),
+            },
+        });
+        put(&mut d, &payload);
+        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+        let row = &reading.sketches[0];
+        assert!(row.vertices.is_none() && row.second_fillet.is_none());
+        let reason = row.refusal.as_deref().expect("refused");
+        assert!(reason.contains("not supported yet"), "{reason}");
+        let before = cells(&d);
+        assert!(crate::replace_sketch_coordinates(&d, sketch, &vertices).is_err());
+        assert_eq!(cells(&d), before);
     }
 }
