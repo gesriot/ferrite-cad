@@ -2,6 +2,63 @@
 
 [The contract and recipe](edit-two-fillet-base-sketch.md).
 
+## Independent review on macOS arm64 — 2026-09-30
+
+Reviewed PR #74 at `a9f62f9`; the code/workflow head was `74e7f0e`.
+Review fix `2a35388` corrects the old `saved_fillet` refusal guidance: the
+available edits now include base Sketch coordinates, alongside radii and
+height. Constraints under two Fillets still refuse. Helper comments were
+aligned; geometry, writer policy and wire contracts did not change.
+
+Local native validation used the existing release target, pinned OCCT 8.0.1
+and PlaneGCS, with both require flags enabled. The affected matrix executed
+**603 tests**: document/jobs/eval 476, CLI Fillet 58, app Sketch 46, app edits
+13 and app Fillet 10, with no failures. Four tests applicable only to builds
+without the solver were separately N/A; one old timing benchmark was ignored.
+After the review fix, a fresh CLI/viewer build and 22 domain Fillet-radius
+plus six CLI sequential-Sketch tests passed. Fmt and workspace clippy
+(all targets/features, warnings denied) passed. The extracted public recipe
+ran against the bundled CLI and reproduced its three expected volumes.
+
+The fresh macOS bundle passed the 53-arm64-Mach-O closure checks and strict
+code-signature verification. One viewer ran under the 1536 MiB watchdog:
+Open -> Edit Sketch -> coordinate Undo/Redo -> drag/one Undo -> individual
+Fillet 1 and Fillet 2 radius refusals -> shared-flat refusal -> recovery ->
+Save Cancel -> Restore saved vertices/one Undo -> publish/async Open ->
+second coordinate edit -> publish/async Open -> STL/FBX export -> normal Quit.
+The refused depths were 7.9, 8 and 8.012 mm respectively, with radii 4 and
+4.005 mm; the form identified the relevant corner or shared Line and offered
+no Save. The two published rectangles were 40 x 12.5 mm at (-1.25, 1) and
+20.25 x 8.02 mm at (2, -3.5), both height 6.75 mm. Both retained Fillet UUIDs
+and radii. The GUI produced its own files before the comparator ran.
+
+`FCAD_28J_GUI_COMPARE_OK cells=378`: all SQL cells agreed with CLI copies
+apart from allowed timestamps, source and unrelated cells stayed intact,
+all 18 stored refs resolved on cold rebuild, and GUI/CLI STL and FBX were
+byte-identical. The independent STL measurements checked dimensions, volume
+and both moved arc axes. Pinned ufbx 0.23.0 read the actual GUI FBX with six
+checks and no failures; the independent oriented-triangle join matched all
+140 triangles (worst distance 3.47e-18 m).
+
+Viewer PID 52747 exited 0; peak footprint **298.861 MiB**, pressure normal
+throughout, swap unchanged at 681.313 MiB, minimum free disk 136.49 GiB.
+No watchdog abort occurred. Exit was checked by PID without accessing CUA
+again. This bounded run does not explain or declare fixed the previous OOM.
+
+Full logs of runtime run 36736623453 were independently downloaded, closing
+the cloud tool's truncation gap: each OS executed 12 distinct new gates,
+**13 executions including the mixed discovery gate**, two successful recipe
+runs (mixed/native), and the new ufbx marker. The base notices job, previously
+cancelled before any step, passed on rerun (36730888316, attempt 2).
+The review fix triggered CI 36757555511 and runtime 36757549273; those runs
+were still in progress when this review record was added and must pass
+before merge. The later record-only head changes no executable input.
+
+Local evidence: `/private/tmp/ferrite-pr74-review`; a copy of the logs,
+screenshots and small models is preserved in the task's artifact directory.
+No large STEP campaign, Unity run, native-library rebuild or new target was
+needed locally. Windows/Linux are covered by CI, not this macOS GUI run.
+
 ## Base and scope
 
 Base `main` = `2b5aab645fc7b2db53a3cf1bd7e2fbe70111c7eb` (PR #73, §28I),

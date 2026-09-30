@@ -4129,3 +4129,13 @@ history; a third Fillet, Cut with Fillet and Chamfer remain outside;
 milestone 5C remains open.
 [Contract and recipe](edit-two-fillet-base-sketch.md),
 [verification](edit-two-fillet-base-sketch-verification.md).
+
+Independent PR #74 review (2026-09-30): corrected stale edit guidance; 603
+local native tests plus 22 domain/six CLI tests after that correction passed.
+The protected macOS window run exercised draft history, both radius refusals,
+the shared-flat refusal, Cancel/Restore, two publications/async Open and
+exports. GUI/CLI SQL and byte-identical STL/FBX agreed; pinned ufbx and the
+140-triangle independent join passed. Peak viewer footprint 298.861 MiB,
+normal pressure, unchanged swap, exit 0. Runtime logs of the implementation
+head confirm 13 new executions per OS including mixed discovery; the review
+fix's CI must finish before merge. Previous OOM remains unexplained.
