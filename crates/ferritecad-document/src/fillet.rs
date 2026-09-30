@@ -157,18 +157,34 @@ pub fn pair_bound(length_mm: f64, first_radius_mm: f64) -> f64 {
 ///
 /// Not `pair_bound(L, r2)`: the rule is not symmetric in floating point, and
 /// an offered maximum the check would then refuse (by an ulp) is what §28G
-/// measured once already. The float next to `L − r2 − MIN_RADIUS_MM` is
-/// stepped until the predicate holds there and fails at the next float up.
+/// measured once already. Bisect the ordered positive-float bit patterns,
+/// so the search takes at most 63 steps even when the answer is near zero.
+/// Returns NaN for non-finite/negative inputs or when no nonnegative first
+/// radius fits. The corner and minimum-radius checks remain the caller's.
 pub fn pair_bound_of_first(length_mm: f64, second_radius_mm: f64) -> f64 {
+    if !length_mm.is_finite()
+        || !second_radius_mm.is_finite()
+        || length_mm <= 0.0
+        || second_radius_mm < 0.0
+    {
+        return f64::NAN;
+    }
     let fits = |first: f64| second_radius_mm <= pair_bound(length_mm, first);
-    let mut first = length_mm - second_radius_mm - MIN_RADIUS_MM;
-    while !fits(first) {
-        first = first.next_down();
+    if !fits(0.0) {
+        return f64::NAN;
     }
-    while fits(first.next_up()) {
-        first = first.next_up();
+    // Zero fits, while L cannot: its remainder is -MIN_RADIUS_MM.
+    // Nonnegative finite f64 bit patterns have the same order as their values.
+    let (mut low, mut high) = (0_u64, length_mm.to_bits());
+    while high - low > 1 {
+        let mid = low + (high - low) / 2;
+        if fits(f64::from_bits(mid)) {
+            low = mid;
+        } else {
+            high = mid;
+        }
     }
-    first
+    f64::from_bits(low)
 }
 
 /// The Line two corners share, with its length, if they are adjacent.

@@ -903,6 +903,34 @@ mod tests {
     /// no pair bound.
     #[test]
     fn the_pair_bound_is_exact_for_either_radius_and_absent_opposite() {
+        // The public numeric helper must terminate outside the narrower
+        // saved-model domain too. Near cancellation, stepping by one ulp
+        // from L-r2-0.01 would traverse quadrillions of floats.
+        for (length, second) in [
+            (1.0, 0.99),
+            (0.03, 0.01),
+            (8.0, 4.0),
+            (12.25, 6.12),
+            (1e12, 0.01),
+            (f64::MAX, f64::MAX / 2.0),
+        ] {
+            let first = crate::pair_bound_of_first(length, second);
+            assert!(first.is_finite() && first >= 0.0);
+            assert!(second <= crate::pair_bound(length, first));
+            assert!(second > crate::pair_bound(length, first.next_up()));
+        }
+        for (length, second) in [
+            (f64::NAN, 1.0),
+            (1.0, f64::NAN),
+            (f64::INFINITY, 1.0),
+            (1.0, f64::INFINITY),
+            (-1.0, 0.1),
+            (1.0, -0.1),
+            (0.0, 0.0),
+            (1.0, 2.0),
+        ] {
+            assert!(crate::pair_bound_of_first(length, second).is_nan());
+        }
         // r2 = 6.12 > 12.25 − 6.125 − 0.01, so the pair bound on r1 is
         // tighter than §28A's 6.125.
         let (_root, d, first, second) = sequential(6.0, 2, 6.12);

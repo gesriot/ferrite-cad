@@ -34,8 +34,8 @@
   is the one validator: value only on a constrained plate; otherwise §28A's
   corner bound and `check_pair` in history order with the other radius as
   saved. `max_radius_mm` is `None` on a constrained plate, else the exact
-  bound (`pair_bound` for Fillet 2, `pair_bound_of_first` — float stepping
-  under the same predicate — for Fillet 1). `saved_fillet` (height, Sketch,
+  bound (`pair_bound` for Fillet 2, `pair_bound_of_first` — bounded bisection
+  under the same predicate after independent review — for Fillet 1). `saved_fillet` (height, Sketch,
   constraints) still accepts exactly one Fillet; with two it now says only the
   radii can be edited. The writer is unchanged: it re-derives the preparation
   inside the transaction and writes one row's payload/hash and the stamp.
@@ -540,3 +540,20 @@ for (cx, cy), r in rounded:
     assert all(abs(math.hypot(p[0] - ax, p[1] - ay) - r) < 1e-3 for p in wall), (cx, cy, r)
 print("FCAD_28H_GUI_COMPARE_OK", f"cells={cells}")
 ```
+
+## Independent review: bounded numerical search
+
+On macOS arm64, the original public `pair_bound_of_first` was reproduced
+in isolation: `(8, 4)` returned promptly, but `(1, 0.99)` and NaN arguments
+each exceeded a one-second process deadline. The former traverses an enormous
+number of float values near zero; the latter has no terminating predicate.
+This is an API robustness defect, not evidence that a validated ordinary
+document hangs or that the earlier viewer OOM is fixed.
+
+The search now bisects ordered nonnegative finite float bit patterns (at most
+63 steps), returns NaN for invalid inputs/no feasible nonnegative radius, and
+preserves the exact history-order predicate. The existing mandatory boundary
+gate now checks cancellation, large finite values, invalid inputs, acceptance
+at the result and refusal at its next float. That exact release gate, fmt
+and workspace clippy with all targets/features and `-D warnings` passed
+locally. GUI and CI evidence for this correction are recorded separately below.

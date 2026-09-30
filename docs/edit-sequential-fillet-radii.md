@@ -68,7 +68,7 @@ rebuild's check of Fillet 2 would refuse it.
   bound: its §28A bound and, beside an adjacent Fillet, the pair bound — for
   Fillet 2 `L − r1 − 0.01` (the check's own expression); for Fillet 1 the
   largest `r1` the same predicate accepts with the saved `r2`, found by
-  stepping the float next to `L − r2 − 0.01`, so the offered maximum is
+  bounded bisection of ordered nonnegative float bit patterns, so the offered maximum is
   accepted and the next float refused.
 * **Constrained plate:** the stored Lines are the solver's starting guess.
   Preparation checks only the value part (finite, ≥ 0.01 mm); discovery shows
