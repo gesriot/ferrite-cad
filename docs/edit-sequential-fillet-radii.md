@@ -35,8 +35,9 @@ The one-Fillet path is unchanged: a document with one Fillet goes through the
 height, Sketch and constraint editors apply (exactly one Fillet) is **not**
 lifted: with two Fillets they still refuse, now saying that only the radius
 edit is offered. (Since [§28I](edit-two-fillet-base-height.md) the base
-height is edited through its own reader; the Sketch and constraint guards
-still hold.)
+height, and since [§28J](edit-two-fillet-base-sketch.md) the base Sketch's
+coordinates, are edited through the two-Fillet reader; the constraint guard
+still holds.)
 
 ### What an edit is
 
@@ -103,7 +104,8 @@ line.
 ### Out of scope
 
 A third Fillet, editing the base height (since
-[§28I](edit-two-fillet-base-height.md) it can be), Sketch or constraints of a
+[§28I](edit-two-fillet-base-height.md) it can be), the Sketch's coordinates
+(since [§28J](edit-two-fillet-base-sketch.md)) or constraints of a
 two-Fillet history, retargeting a corner, Cut with Fillet, Chamfer, picking, preview,
 in-place Save.
 

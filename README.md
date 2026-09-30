@@ -112,9 +112,12 @@ radius** form or `edit-fillet-radius` then changes the radius of either of
 the two Fillets, named by its exact UUID, under the same pair rule, checked in
 history order, and the existing **Edit extrusion** form or `edit-extrude`
 changes the plate's height under both Fillets, keeping each one's radius,
-corner and names. Editing the Sketch or constraints of a two-Fillet history,
-a third Fillet, touching arcs, chains, cap edges, Cut with Fillet and Chamfer
-are not supported yet.
+corner and names, and the existing **Edit Sketch** form or `edit-sketch-copy`
+moves or resizes the plate's free rectangle, keeping both Fillets on the same
+named corners and judging both radii and the flat between adjacent arcs on the
+new sides. Editing the constraints of a two-Fillet history, a third Fillet,
+touching arcs, chains, cap edges, Cut with Fillet and Chamfer are not
+supported yet.
 [Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
 [Fillet radius edit contract and recipe](docs/edit-fillet-radius.md).
 [Rounded-plate height contract and recipe](docs/edit-fillet-base-height.md).
@@ -124,6 +127,7 @@ are not supported yet.
 [Second sequential Fillet: contract and recipe](docs/sequential-edge-fillets.md).
 [Either sequential Fillet radius: contract and recipe](docs/edit-sequential-fillet-radii.md).
 [Height under two Fillets: contract and recipe](docs/edit-two-fillet-base-height.md).
+[Sketch under two Fillets: contract and recipe](docs/edit-two-fillet-base-sketch.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to
