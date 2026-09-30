@@ -212,9 +212,33 @@ scratchpad (`FCAD_28I_COMPAT_OK`):
   planegcs pin ([36677625733](https://github.com/gesriot/ferrite-cad/actions/runs/36677625733)),
   rust notices, product sbom and rust sbom concluded **success**; the combined
   runtime layout ([36677625739](https://github.com/gesriot/ferrite-cad/actions/runs/36677625739))
-  was still **in progress** when this was written and is not counted as a
-  success here.
-* This change's runs are recorded in a separate commit once they finish.
+  was still in progress when the local record was written and later
+  concluded **success**.
+* **Head `02fbf1d` (code, workflows and this record):**
+  * CI ([36681661660](https://github.com/gesriot/ferrite-cad/actions/runs/36681661660)):
+    lint, test on Ubuntu, macOS and Windows, sbom, notices, supply-chain —
+    **success**. The Ubuntu job log, read in full (4844 lines): the step
+    "Discover and refuse the height of a plate rounded twice without native
+    geometry" printed `test … ok` for its four gates and
+    `FCAD_28I_RECIPE_NO_KERNEL`; no line starts with `skipped:`. On macOS and
+    Windows that step concluded success; their logs were not read.
+  * planegcs pin ([36681632058](https://github.com/gesriot/ferrite-cad/actions/runs/36681632058)),
+    three platforms and the comparison — **success**.
+  * Combined runtime layout ([36681632081](https://github.com/gesriot/ferrite-cad/actions/runs/36681632081)):
+    Linux, macOS (Apple Silicon) and Windows — **success**, first attempt. In
+    each job log all nine native gates of §28I (`sequential::height::*` 5,
+    `fillet_radius::tests::*` 2, `edits::tests::*` 2) print `test … ok`, no
+    line starts with `skipped:`, `FCAD_28I_RECIPE_OK` prints the local
+    volumes to the last digit (`up=5245.444012/5245.745482
+    down=1026.282524/1026.341507 f1_after=1020.263403/1020.343554`), and the
+    FBX step prints `FCAD_FILLET_TWO_HEIGHT_UFBX_EXECUTED`. The API returns
+    only the last 5000 of 10533 (Linux), 11069 (macOS) and 11084 (Windows)
+    lines; the OCCT-without-solver step lies before them, so its §28I lines
+    (the discovery gate and `FCAD_28I_RECIPE_OK` without PlaneGCS) were not
+    read in CI. That step concluded success on all three platforms, and its
+    gate lines fail the step when the test is missing or skipped.
+* This record's own commit changes no input of the runtime layout, the pin or
+  the recipes; CI runs on it.
 
 ## Limits
 
