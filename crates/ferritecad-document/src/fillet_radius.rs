@@ -549,6 +549,10 @@ mod tests {
     /// A plate with one §28A Fillet on its second corner, written with the
     /// shipped preparation and writer and no kernel.
     fn filleted(radius: f64) -> (tempfile::TempDir, Document, ObjectId) {
+        filleted_on(PLATE, radius)
+    }
+
+    fn filleted_on(plate: [[f64; 2]; 4], radius: f64) -> (tempfile::TempDir, Document, ObjectId) {
         let root = tempfile::tempdir().expect("dir");
         let mut d = Document::create(root.path().join("plate.fcad")).expect("document");
         let [plane, profile, extrude, body] = std::array::from_fn(|_| ObjectId::new());
@@ -569,8 +573,8 @@ mod tests {
                         id: segments[i],
                         construction: false,
                         geometry: SketchGeometry::Line {
-                            start: Point2::new(PLATE[i][0], PLATE[i][1])?,
-                            end: Point2::new(PLATE[(i + 1) % 4][0], PLATE[(i + 1) % 4][1])?,
+                            start: Point2::new(plate[i][0], plate[i][1])?,
+                            end: Point2::new(plate[(i + 1) % 4][0], plate[(i + 1) % 4][1])?,
                         },
                     })
                 })
@@ -777,7 +781,16 @@ mod tests {
         at: usize,
         r2: f64,
     ) -> (tempfile::TempDir, Document, ObjectId, ObjectId) {
-        let (root, mut d, first) = filleted(r1);
+        sequential_on(PLATE, r1, at, r2)
+    }
+
+    fn sequential_on(
+        plate: [[f64; 2]; 4],
+        r1: f64,
+        at: usize,
+        r2: f64,
+    ) -> (tempfile::TempDir, Document, ObjectId, ObjectId) {
+        let (root, mut d, first) = filleted_on(plate, r1);
         let objects = d.objects().expect("objects");
         let body = objects
             .iter()
@@ -947,6 +960,59 @@ mod tests {
         assert_eq!(max2, crate::pair_bound(12.25, 6.0).min(6.125));
         c2.validate(max2).expect("accepted");
         assert!(c2.validate(max2.next_up()).is_err());
+
+        // On an 8 mm side beside r2 = 4 the offered r1 is 3.9900000000000007:
+        // the history-order predicate accepts it, while the same inequality
+        // written the other way round (r1 ≤ 8 − 4 − 0.01) would refuse it.
+        // Editing Fillet 1 is judged in history order, float for float.
+        let short = [[-4.5, 3.25], [33., 3.25], [33., 11.25], [-4.5, 11.25]];
+        let (_root, d, first, second) = sequential_on(short, 2.375, 2, 4.0);
+        let objects = d.objects().expect("objects");
+        let choices = fillet_radius_choices(&d, &objects);
+        let c1 = choices.iter().find(|c| c.feature == first).expect("row");
+        let max1 = c1
+            .saved
+            .as_ref()
+            .expect("saved")
+            .max_radius_mm()
+            .expect("bound");
+        assert_eq!(max1, 3.9900000000000007);
+        assert!(
+            max1 > crate::pair_bound(8.0, 4.0),
+            "the swapped form refuses it"
+        );
+        c1.validate(max1).expect("accepted in history order");
+        assert!(c1.validate(max1.next_up()).is_err());
+        let lines = match &objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("Sketch")
+            .payload
+        {
+            ObjectPayload::Sketch(s) => s.curves.clone(),
+            _ => unreachable!(),
+        };
+        let two = match &objects
+            .iter()
+            .find(|o| o.id == second)
+            .expect("row")
+            .payload
+        {
+            ObjectPayload::Fillet(f) => f.clone(),
+            _ => unreachable!(),
+        };
+        let mut objects_at = objects.clone();
+        for (r1, ok) in [(max1, true), (max1.next_up(), false)] {
+            for o in &mut objects_at {
+                if o.id == first
+                    && let ObjectPayload::Fillet(f) = &mut o.payload
+                {
+                    f.radius_mm = r1;
+                }
+            }
+            let verdict = crate::evaluable_fillet(&objects_at, &two, Some(&lines));
+            assert_eq!(verdict.is_ok(), ok, "{r1}: {verdict:?}");
+        }
 
         // The opposite corner: §28A's bound alone, for both.
         let (_root, d, first, second) = sequential(6.125, 3, 6.125);
