@@ -239,9 +239,40 @@ impl Editor {
                     "Fillet {} · Body {} · base Extrude {} · {}",
                     saved.feature,
                     saved.body,
-                    saved.previous,
+                    saved.base_feature,
                     draft.source.display()
                 ));
+                // §28H: which of two sequential Fillets this is, and the other.
+                if let Some(other) = &saved.neighbour {
+                    let (first, second) = if saved.history_index == 1 {
+                        (saved.feature, other.feature)
+                    } else {
+                        (other.feature, saved.feature)
+                    };
+                    ui.label(format!(
+                        "Editing Fillet {} of 2: Extrude {} → Fillet {first} → Fillet {second}. \
+                         The other Fillet ({}) keeps r{} mm at ({}, {}).",
+                        saved.history_index,
+                        saved.base_feature,
+                        other.feature,
+                        other.radius_mm,
+                        other.corner.corner_mm[0],
+                        other.corner.corner_mm[1]
+                    ));
+                    match other.shared {
+                        Some((line, length)) => ui.small(format!(
+                            "Shares Line {line} ({length} mm {}) with the other Fillet: the two \
+                             radii must leave at least {} mm of it flat.",
+                            if saved.constrained {
+                                "as stored"
+                            } else {
+                                "long"
+                            },
+                            ferritecad_document::MIN_RADIUS_MM
+                        )),
+                        None => ui.small("The other Fillet is at the opposite corner."),
+                    };
+                }
                 ui.small(format!(
                     "Edge: {}",
                     describe(&saved.corner, saved.constrained)
@@ -263,7 +294,7 @@ impl Editor {
                         "Saved radius {} mm; from {} mm to {} mm here.",
                         saved.radius_mm,
                         ferritecad_document::MIN_RADIUS_MM,
-                        saved.corner.max_radius_mm
+                        saved.max_radius_mm().unwrap_or(saved.corner.max_radius_mm)
                     ));
                 }
                 ui.add_enabled_ui(!running, |ui| {
@@ -373,8 +404,8 @@ impl Editor {
                         "History: Extrude {} → Fillet {} (Lines {a} | {b}, r{} mm) → new \
                          Fillet. It rounds one of the other three corners of the same plate; a \
                          corner sharing a Line with the saved Fillet must leave at least {} mm \
-                         of that Line flat between the two arcs. Editing a part with two \
-                         Fillets is not supported yet.",
+                         of that Line flat between the two arcs. With two Fillets only their \
+                         radii can be edited.",
                         existing.edge.feature,
                         existing.feature,
                         existing.radius_mm,
@@ -549,10 +580,17 @@ pub(crate) fn finish_fillet_radius(
     generation: u64,
     result: Result<ferritecad_jobs::EditedFilletRadius>,
 ) -> Option<PathBuf> {
-    if edits.accepts(generation)
-        && let Ok(saved) = &result
-    {
-        editor.draft_published(&saved.destination);
+    if edits.accepts(generation) {
+        match &result {
+            Ok(saved) => editor.draft_published(&saved.destination),
+            // §28H: the refusal is shown in the form it came from as well as
+            // in the status line behind it; the draft is kept.
+            Err(error) => {
+                if let Some(draft) = editor.fillets.radius.as_mut() {
+                    draft.refusal = Some(format!("Could not save: {error}"));
+                }
+            }
+        }
     }
     edits.finish_fillet_radius(generation, result)
 }
@@ -1620,6 +1658,8 @@ pub(crate) mod tests {
             corner_mm: [0., 0.],
             previous_radius_mm: 1.,
             radius_mm: 2.,
+            previous: ObjectId::new(),
+            history_index: 1,
         };
         assert_eq!(
             finish_fillet_radius(&mut editor, &mut edits, generation + 1, Ok(stale)),
@@ -1801,7 +1841,7 @@ pub(crate) mod tests {
         ));
         assert!(painted(
             &out,
-            "Editing a part with two Fillets is not supported yet"
+            "With two Fillets only their radii can be edited"
         ));
         assert_eq!(target.corners.len(), 3);
         for corner in &target.corners {

@@ -151,6 +151,26 @@ pub fn pair_bound(length_mm: f64, first_radius_mm: f64) -> f64 {
     length_mm - first_radius_mm - MIN_RADIUS_MM
 }
 
+/// §28H: the largest first radius beside a second one of
+/// `second_radius_mm` on a shared Line of `length_mm`, by the same predicate
+/// [`check_pair`] applies in history order (`r2 ≤ pair_bound(L, r1)`).
+///
+/// Not `pair_bound(L, r2)`: the rule is not symmetric in floating point, and
+/// an offered maximum the check would then refuse (by an ulp) is what §28G
+/// measured once already. The float next to `L − r2 − MIN_RADIUS_MM` is
+/// stepped until the predicate holds there and fails at the next float up.
+pub fn pair_bound_of_first(length_mm: f64, second_radius_mm: f64) -> f64 {
+    let fits = |first: f64| second_radius_mm <= pair_bound(length_mm, first);
+    let mut first = length_mm - second_radius_mm - MIN_RADIUS_MM;
+    while !fits(first) {
+        first = first.next_down();
+    }
+    while fits(first.next_up()) {
+        first = first.next_up();
+    }
+    first
+}
+
 /// The Line two corners share, with its length, if they are adjacent.
 pub fn shared_side(first: &FilletCorner, second: &FilletCorner) -> Option<(StableEntityId, f64)> {
     let theirs = second.joint.segments();
@@ -445,8 +465,10 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
     };
     if fillets.len() > 1 {
         return Err(unsupported(format!(
-            "this Body ends in Fillet {} after {} Fillets in all (§28G); editing a history \
-             with two Fillets, and adding a third Fillet or a Cut, are not supported yet",
+            "this Body ends in Fillet {} after {} Fillets in all (§28G); only the radius of \
+             either Fillet can be edited (edit-fillet-radius, §28H). Editing the rest of a \
+             history with two Fillets, and adding a third Fillet or a Cut, are not supported \
+             yet",
             tip.id,
             fillets.len()
         )));
@@ -1626,11 +1648,8 @@ mod tests {
         let e = prepare_edge_fillet(&d, body, &ask(&opposite, 1.0)).expect_err("a third");
         assert_eq!(e.kind(), ErrorKind::Unsupported);
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        assert!(reading.fillet_features.iter().all(|c| {
-            c.refusal
-                .as_deref()
-                .is_some_and(|r| r.contains("two Fillets"))
-        }));
+        // §28H: the radius of either Fillet is editable; nothing else is.
+        assert!(reading.fillet_features.iter().all(|c| c.refusal.is_none()));
         assert_eq!(reading.fillet_features.len(), 2);
         assert!(reading.features.iter().all(|f| f.refusal.is_some()));
         assert!(reading.sketches.iter().all(|s| s.refusal.is_some()));

@@ -6072,9 +6072,16 @@ mod sequential {
         assert_eq!(row["available"], false, "{row}");
         assert!(row["refusal"].as_str().expect("reason").contains("third"));
         assert_eq!(after["fillets"].as_array().map(Vec::len), Some(2));
-        for f in after["fillets"].as_array().expect("fillets") {
-            let reason = f["radius_edit"]["refusal"].as_str().expect("a reason");
-            assert!(reason.contains("two Fillets"), "{reason}");
+        // §28H: each radius is editable, by its own UUID; nothing else is.
+        for (f, index) in after["fillets"]
+            .as_array()
+            .expect("fillets")
+            .iter()
+            .zip([1, 2])
+        {
+            assert_eq!(f["radius_edit"]["available"], true, "{f}");
+            assert!(f["radius_edit"]["refusal"].is_null());
+            assert_eq!(f["history_index"], index, "{f}");
         }
         assert_eq!(after["edit_extrude"]["available"], false, "{after}");
         assert_eq!(after["sketches"][0]["editable"], false);
@@ -6288,14 +6295,10 @@ mod sequential {
         assert!(row["target"].is_null());
         assert!(row["refusal"].as_str().expect("reason").contains("third"));
         assert_eq!(two["fillets"].as_array().map(Vec::len), Some(2));
+        // §28H: both radii are editable; the other editors still refuse.
         for fillet in two["fillets"].as_array().expect("fillets") {
-            assert_eq!(fillet["radius_edit"]["available"], false);
-            assert!(
-                fillet["radius_edit"]["refusal"]
-                    .as_str()
-                    .expect("reason")
-                    .contains("two Fillets")
-            );
+            assert_eq!(fillet["radius_edit"]["available"], true, "{fillet}");
+            assert!(fillet["radius_edit"]["neighbour"].is_object(), "{fillet}");
         }
         assert_eq!(two["edit_extrude"]["available"], false);
         assert_eq!(two["sketches"][0]["editable"], false);

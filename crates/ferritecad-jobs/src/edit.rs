@@ -170,6 +170,11 @@ pub struct EditedFilletRadius {
     pub corner_mm: [f64; 2],
     pub previous_radius_mm: f64,
     pub radius_mm: f64,
+    /// §28H: the feature the edited Fillet rounds — the plate for the only or
+    /// first Fillet, the first Fillet for the second — and its place in the
+    /// history (1 or 2). Both unchanged by the edit.
+    pub previous: ObjectId,
+    pub history_index: usize,
 }
 
 /// Change the radius of the one saved Fillet in a new copy.
@@ -208,6 +213,8 @@ pub fn edit_fillet_radius_copy<K: GeometryKernel + ?Sized>(
                 corner_mm: saved.corner.corner_mm,
                 previous_radius_mm: saved.radius_mm,
                 radius_mm: prepared.radius_mm(),
+                previous: saved.previous,
+                history_index: saved.history_index,
             })
         },
     )
