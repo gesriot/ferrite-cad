@@ -2471,8 +2471,16 @@ mod tests {
             .collect();
         s.constraints = joins.clone();
         let put = |d: &mut Document, payload: &ObjectPayload| {
-            d.write(|w| w.put_object(sketch, None, object.ordinal, object.name.as_deref(), payload))
-                .expect("stored");
+            d.write(|w| {
+                w.put_object(
+                    sketch,
+                    None,
+                    object.ordinal,
+                    object.name.as_deref(),
+                    payload,
+                )
+            })
+            .expect("stored");
         };
         put(&mut d, &payload);
         let (choice, ..) = both(&d);

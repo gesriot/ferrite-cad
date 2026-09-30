@@ -176,7 +176,10 @@ fn coordinate_choice(
         // height edits use for two; both Fillets travel in history order.
         match crate::fillet_radius::fillets_over_plate(document, objects) {
             Ok(None) => {}
-            Ok(Some(crate::fillet_radius::FilletsOverPlate { first: saved, second })) => {
+            Ok(Some(crate::fillet_radius::FilletsOverPlate {
+                first: saved,
+                second,
+            })) => {
                 if object.id != saved.profile {
                     return Err(unsupported(&format!(
                         "coordinate editing of the plate under Fillet {} requires its base \
@@ -195,8 +198,8 @@ fn coordinate_choice(
                 // §28J: under two Fillets the Sketch may keep the closure
                 // links §28E leaves; they name endpoints, and the loop stays
                 // exactly closed. Any other constraint is a later slice.
-                let closure_only = second.is_some()
-                    && crate::sketch_constraints::closure_links_only(sketch);
+                let closure_only =
+                    second.is_some() && crate::sketch_constraints::closure_links_only(sketch);
                 if second.is_some() && !sketch.constraints.is_empty() && !closure_only {
                     return Err(unsupported(
                         "coordinate editing of the plate under two Fillets requires a Sketch \
