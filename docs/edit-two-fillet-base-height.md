@@ -94,8 +94,9 @@ height misses the Extrude and both Fillets; a second rebuild hits all three.
 
 ### Out of scope
 
-A third Fillet, arbitrary edges, Cut with Fillet, Chamfer, editing the Sketch
-or constraints of a two-Fillet history, in-place Save.
+A third Fillet, arbitrary edges, Cut with Fillet, Chamfer, editing the
+constraints of a two-Fillet history, in-place Save. (The Sketch's coordinates
+are [§28J](edit-two-fillet-base-sketch.md).)
 
 ## Recipe: inspect -> exact UUIDs -> height up and down -> a radius after -> cold rebuild, export
 
@@ -262,7 +263,7 @@ assert ctx["fillet_feature_id"] == done1["feature_id"] and ctx["radius_mm"] == R
 two = ctx["second_fillet"]
 assert two["fillet_feature_id"] == done2["feature_id"] and two["radius_mm"] == R2, two
 assert two["previous_feature_id"] == done1["feature_id"] and two["history_index"] == 2, two
-assert catalog["sketches"][0]["editable"] is False, "the Sketch editors keep refusing"
+assert catalog["sketches"][0]["editable"] is True, "§28J: the base Sketch reads both Fillets"
 refs = tables(twice)["topology_refs"]
 
 def raised(source, h, name):

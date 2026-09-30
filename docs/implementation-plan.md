@@ -4112,3 +4112,30 @@ Cancel, recovery, raising/lowering, publication/async Open and exports.
 GUI/CLI SQL and byte-identical STL/FBX agreed; pinned ufbx and the independent
 oriented-triangle join passed. Viewer peak 212.579 MiB, pressure normal,
 swap decreased, exit 0. The previous OOM remains unexplained.
+
+**§28J — the base rectangle of a plate rounded twice, in a new copy.** The
+existing **Edit Sketch** form and `edit-sketch-copy` move or resize the base
+rectangle under Extrude -> Fillet 1 -> Fillet 2 -> Body, on a free Sketch or
+one that keeps only its Coincident closure links. Only the Lines' geometry in
+the Sketch row's payload/payload_hash moves; both Fillets stay on the same
+named corners with their radii, and every name, dependency and identity
+stays. The Sketch editor reads both Fillets through the reader §28H/§28I use
+for two, and judges the new sides jointly: the rectangle, each Line's side,
+both saved corners, each radius and the flat between adjacent arcs, in history
+order (the bounded bisection for the first radius's bound is unchanged). The
+writer re-derives the whole edit inside its transaction. The cache misses the
+plate and both Fillets. The constraint editor still refuses a two-Fillet
+history; a third Fillet, Cut with Fillet and Chamfer remain outside;
+milestone 5C remains open.
+[Contract and recipe](edit-two-fillet-base-sketch.md),
+[verification](edit-two-fillet-base-sketch-verification.md).
+
+Independent PR #74 review (2026-09-30): corrected stale edit guidance; 603
+local native tests plus 22 domain/six CLI tests after that correction passed.
+The protected macOS window run exercised draft history, both radius refusals,
+the shared-flat refusal, Cancel/Restore, two publications/async Open and
+exports. GUI/CLI SQL and byte-identical STL/FBX agreed; pinned ufbx and the
+140-triangle independent join passed. Peak viewer footprint 298.861 MiB,
+normal pressure, unchanged swap, exit 0. Runtime logs of the implementation
+head confirm 13 new executions per OS including mixed discovery; the review
+fix's CI must finish before merge. Previous OOM remains unexplained.

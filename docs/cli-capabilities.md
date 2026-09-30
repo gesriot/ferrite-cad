@@ -275,8 +275,8 @@ Fillet 2 — payload v2 с `feature.fillet.sequential.v1`; восемь новы
 включают `origin_fillet_face` — цилиндр первого Fillet в конечном Body.
 Исходник, Sketch, первая фича и прежние UUID/refs сохраняются. Старый reader
 отказывает новой семантике безопасно. Третий Fillet, повтор того же угла,
-касание дуг и правка Sketch и ограничений истории из двух Fillet пока
-недоступны; радиусы — §28H, высота — §28I.
+касание дуг и правка ограничений истории из двух Fillet пока недоступны;
+радиусы — §28H, высота — §28I, координаты Sketch — §28J.
 [Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
 
 §28H: прежний `edit-fillet-radius` с тем же request v1, envelope и exit 0/2/7
@@ -292,8 +292,8 @@ Sketch, все UUID, имена, зависимости и capabilities сохр
 наибольшее `r1`, которое тот же предикат принимает, по соседним float); у
 размеренной — `null`, судит rebuild на решённых Line. В `fillets[]`
 аддитивно `history_index` и `radius_edit.neighbour`; result добавляет
-`previous_feature_id` и `history_index`. Редакторы Sketch и ограничений
-для двух Fillet по-прежнему отказывают; высоту меняет §28I.
+`previous_feature_id` и `history_index`. Редактор ограничений для двух
+Fillet по-прежнему отказывает; высоту меняет §28I, координаты Sketch — §28J.
 [Контракт §28H и исполняемый рецепт](edit-sequential-fillet-radii.md).
 
 §28I: прежний `edit-extrude` с теми же аргументами, результатом, envelope и
@@ -310,9 +310,31 @@ exit 0/2/7 меняет Blind-высоту базового Extrude плиты, 
 имена, включая цилиндр Fillet 1 в конечном Body; кэш промахивается по
 Extrude и обоим Fillet. В `features[].fillet_base` аддитивно
 `second_fillet` — Fillet 2, округляющий результат Fillet 1 (`null` при
-одном Fillet). Редакторы Sketch и ограничений для двух Fillet по-прежнему
-отказывают.
+одном Fillet). Редактор ограничений для двух Fillet по-прежнему отказывает;
+координаты Sketch — §28J.
 [Контракт §28I и исполняемый рецепт](edit-two-fillet-base-height.md).
+
+§28J: прежний `edit-sketch-copy` с тем же request v1, envelope и exit 0/2/7
+переносит и меняет размеры базового прямоугольного Sketch под двумя
+последовательными Fillet (Extrude → Fillet 1 → Fillet 2 → Body tip): свободного
+или с одними Coincident-звеньями замыкания (что остаётся после снятия
+последнего ограничения, §28E). Sketch с любым другим ограничением по-прежнему
+отказывает (`unsupported`). Меняются только геометрия Line в `payload`/
+`payload_hash` этого Sketch (и `meta.modified_at`, если писатель его
+ставит); UUID и порядок кривых, замыкание, Extrude и его высота, оба
+Fillet, их радиусы, рёбра и предшественники, зависимости, tip Body,
+`document_id` и все refs сохраняются, ничего не создаётся, сохранённые
+координаты не заменяются выводом решателя. По новым координатам совместно
+проверяются: осевой прямоугольник из тех же четырёх Line, сторона каждой
+Line, оба сохранённых угла по UUID Line, оба радиуса (`r ≤ ½·min стороны`) и
+пара в порядке истории (`r2 ≤ L − r1 − 0,01 мм` на общей Line соседних углов;
+противоположные углы общей Line не имеют); ничего не подгоняется. Writer
+заново выводит правку из текущего документа внутри транзакции и сравнивает
+payload целиком; cold rebuild разрешает все имена, кэш промахивается по
+Extrude и обоим Fillet, затем высота и каждый радиус по-прежнему правятся. В
+`sketches[]` строка базового Sketch аддитивно получает `fillet_base.second_fillet`
+(как в `features[]` с §28I).
+[Контракт §28J и исполняемый рецепт](edit-two-fillet-base-sketch.md).
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`

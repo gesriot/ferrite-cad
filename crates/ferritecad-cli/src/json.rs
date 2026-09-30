@@ -1158,7 +1158,8 @@ struct FilletBaseDiscovery {
     profile_constrained: bool,
     /// §28I, additive: the second Fillet of a §28G history, which rounds this
     /// Fillet's result (not the base Extrude) and which the height edit also
-    /// keeps; `null` for a plate with one Fillet and on `sketches[]` rows.
+    /// keeps; `null` for a plate with one Fillet. §28J: the base Sketch's `sketches[]`
+    /// row carries it too.
     second_fillet: Option<SecondFilletDiscovery>,
 }
 
@@ -1545,7 +1546,10 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 cut_history_v2: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 cut_history_v3: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 profile_feature: s.profile_use.map(ProfileFeature::of),
-                fillet_base: s.fillet.as_ref().map(FilletBaseDiscovery::of),
+                fillet_base: s
+                    .fillet
+                    .as_ref()
+                    .map(|f| FilletBaseDiscovery::with_second(f, s.second_fillet.as_ref())),
                 vertices: s.vertices.map(|vs| {
                     vs.into_iter()
                         .map(|v| SketchVertex {

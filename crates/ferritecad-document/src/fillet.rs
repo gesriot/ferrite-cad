@@ -483,8 +483,9 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
         return Err(unsupported(format!(
             "this Body ends in Fillet {} after {} Fillets in all (§28G); only the radius of \
              either Fillet (edit-fillet-radius, §28H) and the plate's height (edit-extrude, \
-             §28I) can be edited. Editing the Sketch or constraints of a history with two \
-             Fillets, and adding a third Fillet or a Cut, are not supported yet",
+             §28I) and the base Sketch's Line coordinates (edit-sketch-copy, §28J) can be \
+             edited. Editing the constraints of a history with two Fillets, and adding a \
+             third Fillet or a Cut, are not supported yet",
             tip.id,
             fillets.len()
         )));
@@ -1683,7 +1684,8 @@ mod tests {
             "Fillet 2 rounds Fillet 1's result"
         );
         assert_eq!((one.history_index, two.history_index), (1, 2));
-        assert!(reading.sketches.iter().all(|s| s.refusal.is_some()));
+        // §28J: the base Sketch's coordinates read both Fillets.
+        assert!(reading.sketches.iter().all(|s| s.refusal.is_none()));
         assert!(
             reading
                 .constraint_sketches

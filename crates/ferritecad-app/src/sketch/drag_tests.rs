@@ -828,6 +828,7 @@ fn saved_winding_and_crossing_previews_refuse_through_shared_policy() {
     let choice = SketchChoice {
         cut_history: None,
         fillet: None,
+        second_fillet: None,
         sketch: id,
         name: None,
         vertices: Some(vertices.clone()),

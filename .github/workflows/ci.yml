@@ -446,6 +446,36 @@ jobs:
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28i-recipe.py | tee fillet-two-height-recipe-stub.log
           grep -q '^FCAD_28I_RECIPE_NO_KERNEL ' fillet-two-height-recipe-stub.log
 
+      - name: Discover and refuse the Sketch of a plate rounded twice without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §28J: the base Sketch of a two-Fillet history is editable with both
+          # Fillets in history order; the writer re-derives both and the shared
+          # flat; the constraint editor keeps refusing; nothing is built here.
+          gate=sequential::sketch::sketch_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-two-sketch-discovery.log
+          if grep -q 'skipped:' fillet-two-sketch-discovery.log || ! grep -Fq "test $gate ... ok" fillet-two-sketch-discovery.log; then exit 1; fi
+          gate=sketch::tests::two_fillet_base_sketch_widgets_show_both_fillets_and_keep_the_draft
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-two-sketch-widgets.log
+          if grep -q 'skipped:' fillet-two-sketch-widgets.log || ! grep -Fq "test $gate ... ok" fillet-two-sketch-widgets.log; then exit 1; fi
+          for gate in fillet_radius::tests::the_rectangle_under_two_fillets_moves_alone_and_both_corners_follow \
+            fillet_radius::tests::a_rectangle_that_loses_a_corner_a_radius_or_the_shared_flat_is_refused \
+            fillet_radius::tests::the_sketch_writer_rederives_both_fillets_and_refuses_forgery \
+            fillet_radius::tests::under_two_fillets_only_closure_links_survive_a_coordinate_edit
+          do
+            cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-two-sketch-writer.log
+            if grep -q 'skipped:' fillet-two-sketch-writer.log || ! grep -Fq "test $gate ... ok" fillet-two-sketch-writer.log; then exit 1; fi
+          done
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-two-fillet-base-sketch.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28J_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28j-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28j-recipe.py | tee fillet-two-sketch-recipe-stub.log
+          grep -q '^FCAD_28J_RECIPE_NO_KERNEL ' fillet-two-sketch-recipe-stub.log
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |
