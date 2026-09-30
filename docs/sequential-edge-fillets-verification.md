@@ -630,7 +630,9 @@ second_allowlist(source, out / "gui.fcad", facts["body_id"])
 f = second_of(out / "gui.fcad")
 assert f["edge"] == facts["edge"] and f["radius_mm"] == facts["radius_mm"], f
 assert f["previous_feature_id"] == facts["first_fillet_id"], f
-assert f["radius_edit"]["available"] is False, "editing two Fillets is not offered"
+# A §28G bundle offered no radius edit; from §28H (its rows carry
+# `history_index`) either radius is editable.
+assert f["radius_edit"]["available"] is ("history_index" in f), f["radius_edit"]
 after = run("inspect", out / "gui.fcad", "--json")["result"]
 assert after["bodies"][0]["fillet_edge"]["available"] is False, "no third Fillet"
 # The same request through the shipped CLI, and its exports.

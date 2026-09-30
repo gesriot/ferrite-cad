@@ -107,7 +107,10 @@ room for the radius at the same corner. The same **Fillet edge of …** form or
 `fillet-edge-copy` can then round a second, different vertical corner as its
 own Fillet. Adjacent corners must leave at least 0.01 mm flat between their
 arcs; on a dimensioned plate this is checked on the solved sides. The first
-Fillet's cylinder keeps its origin in the final Body. Editing a two-Fillet
+Fillet's cylinder keeps its origin in the final Body. The same **Edit Fillet
+radius** form or `edit-fillet-radius` then changes the radius of either of
+the two Fillets, named by its exact UUID, under the same pair rule, checked in
+history order. Editing the height, Sketch or constraints of a two-Fillet
 history, a third Fillet, touching arcs, chains, cap edges, Cut with Fillet and
 Chamfer are not supported yet.
 [Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
@@ -117,6 +120,7 @@ Chamfer are not supported yet.
 [Rounded-plate constraints contract and recipe](docs/fillet-base-constraints.md).
 [Rounding a dimensioned plate: contract and recipe](docs/fillet-constrained-plate.md).
 [Second sequential Fillet: contract and recipe](docs/sequential-edge-fillets.md).
+[Either sequential Fillet radius: contract and recipe](docs/edit-sequential-fillet-radii.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

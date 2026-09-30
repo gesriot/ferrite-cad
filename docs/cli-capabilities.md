@@ -192,7 +192,7 @@ Discovery — аддитивный `fillets[]` в `inspect --json`, без яд�
 находит Fillet, разбирает запрос и затем отказывает геометрии
 (`unsupported`). PlaneGCS не нужен для неограниченного Sketch. Смена ребра,
 радиус 0 как удаление и Chamfer отказывают. Правки под одним Fillet описаны
-в §28C–E; добавление второго — в §28G, правка истории из двух пока недоступна.
+в §28C–E; добавление второго — в §28G; радиус любого из двух — §28H ниже.
 [Контракт §28B и исполняемый рецепт](edit-fillet-radius.md).
 
 §28C: прежний `edit-extrude` меняет высоту плиты под сохранённым Fillet
@@ -275,8 +275,26 @@ Fillet 2 — payload v2 с `feature.fillet.sequential.v1`; восемь новы
 включают `origin_fillet_face` — цилиндр первого Fillet в конечном Body.
 Исходник, Sketch, первая фича и прежние UUID/refs сохраняются. Старый reader
 отказывает новой семантике безопасно. Третий Fillet, повтор того же угла,
-касание дуг и редактирование истории из двух Fillet пока недоступны.
+касание дуг и правка высоты, Sketch и ограничений истории из двух Fillet
+пока недоступны.
 [Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
+
+§28H: прежний `edit-fillet-radius` с тем же request v1, envelope и exit 0/2/7
+меняет радиус **любого** из двух последовательных Fillet §28G, выбранного по
+точному UUID, и публикует новую копию. Меняются только `payload`/
+`payload_hash` строки выбранного Fillet и `meta.modified_at`; второй Fillet,
+Sketch, все UUID, имена, зависимости и capabilities сохраняются, ничего не
+создаётся. Правило одно — предел угла §28A и правило пары §28G в порядке
+истории: `r2 ≤ L_shared − r1 − 0.01` для соседних углов, для
+противоположных пары нет. Правка первого проверяет весь суффикс: rebuild
+заново судит и Fillet 1, и Fillet 2. У неограниченной плиты
+`radius_edit.max_radius_mm` — точная граница этого правила (для Fillet 1 —
+наибольшее `r1`, которое тот же предикат принимает, по соседним float); у
+размеренной — `null`, судит rebuild на решённых Line. В `fillets[]`
+аддитивно `history_index` и `radius_edit.neighbour`; result добавляет
+`previous_feature_id` и `history_index`. Редакторы высоты, Sketch и
+ограничений для двух Fillet по-прежнему отказывают.
+[Контракт §28H и исполняемый рецепт](edit-sequential-fillet-radii.md).
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`

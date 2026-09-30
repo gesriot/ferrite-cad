@@ -4061,3 +4061,18 @@ recovery, publication and async Open; SQL and byte-identical GUI/CLI STL/FBX
 were checked, with pinned ufbx and an independent oriented-triangle comparison.
 Viewer peak 202.704 MiB, pressure normal, swap 0, exit 0. Actual CI logs confirmed
 all new gates on three platforms; the old OOM remains unexplained.
+
+**§28H — the radius of either of two sequential Fillets, in a new copy.** The
+existing **Edit Fillet radius** form and `edit-fillet-radius` change the
+radius of Fillet 1 or Fillet 2 of a §28G history, chosen by exact UUID,
+unconstrained or dimensioned. Only that Fillet's payload/payload_hash and
+`meta.modified_at` move; nothing is minted, squashed or retargeted. One
+validator: §28A's corner bound and §28G's pair rule in history order; editing
+Fillet 1 re-judges the whole suffix, and the cache misses exactly the edited
+Fillet and those after it. Discovery adds `history_index` and
+`radius_edit.neighbour`; the result adds `previous_feature_id` and
+`history_index`. The one-Fillet path is unchanged; height, Sketch and
+constraint editors still refuse a two-Fillet history. A third Fillet, Cut
+with Fillet and Chamfer remain outside; milestone 5C remains open.
+[Contract and recipe](edit-sequential-fillet-radii.md),
+[verification](edit-sequential-fillet-radii-verification.md).

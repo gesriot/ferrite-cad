@@ -389,6 +389,35 @@ jobs:
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28g-recipe.py | tee fillet-second-recipe-stub.log
           grep -q '^FCAD_28G_RECIPE_NO_KERNEL ' fillet-second-recipe-stub.log
 
+      - name: Discover and refuse editing either sequential Fillet radius without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §28H: both rows of a two-Fillet history are editable, each naming
+          # the other; the pair bound is exact in history order and the
+          # writer re-derives the edit; nothing is built here.
+          gate=sequential::radius::radius_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-radii-discovery.log
+          if grep -q 'skipped:' fillet-radii-discovery.log || ! grep -Fq "test $gate ... ok" fillet-radii-discovery.log; then exit 1; fi
+          gate=fillets::tests::sequential_radius_widgets_name_the_fillet_and_keep_the_draft
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-radii-widgets.log
+          if grep -q 'skipped:' fillet-radii-widgets.log || ! grep -Fq "test $gate ... ok" fillet-radii-widgets.log; then exit 1; fi
+          for gate in fillet_radius::tests::either_sequential_radius_changes_alone_and_keeps_every_identity \
+            fillet_radius::tests::the_pair_bound_is_exact_for_either_radius_and_absent_opposite \
+            fillet_radius::tests::the_writer_refuses_a_forged_sequential_radius_edit
+          do
+            cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-radii-writer.log
+            if grep -q 'skipped:' fillet-radii-writer.log || ! grep -Fq "test $gate ... ok" fillet-radii-writer.log; then exit 1; fi
+          done
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-sequential-fillet-radii.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28H_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28h-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28h-recipe.py | tee fillet-radii-recipe-stub.log
+          grep -q '^FCAD_28H_RECIPE_NO_KERNEL ' fillet-radii-recipe-stub.log
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |
