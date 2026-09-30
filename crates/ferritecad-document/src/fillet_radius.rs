@@ -769,6 +769,245 @@ mod tests {
         }
     }
 
+    /// §28H: [`filleted`] with a second Fillet at stored corner `at` (an
+    /// index into the plate's corners), written by the shipped preparation
+    /// and writer. Returns the two Fillets in history order.
+    fn sequential(
+        r1: f64,
+        at: usize,
+        r2: f64,
+    ) -> (tempfile::TempDir, Document, ObjectId, ObjectId) {
+        let (root, mut d, first) = filleted(r1);
+        let objects = d.objects().expect("objects");
+        let body = objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+            .expect("body")
+            .id;
+        let target = crate::fillet_choices(&d, &objects)[0]
+            .target
+            .clone()
+            .expect("a second target");
+        let corner = crate::rectangle_corners(
+            target.base_feature,
+            &match &objects
+                .iter()
+                .find(|o| o.id == target.profile)
+                .expect("profile")
+                .payload
+            {
+                ObjectPayload::Sketch(s) => s.clone(),
+                _ => panic!("a Sketch"),
+            },
+        )
+        .expect("corners")[at];
+        let prepared = crate::prepare_edge_fillet(
+            &d,
+            body,
+            &EdgeFillet {
+                edge: FilletEdge {
+                    feature: target.base_feature,
+                    joint: corner.joint,
+                },
+                radius_mm: r2,
+            },
+        )
+        .expect("second");
+        let second = prepared.feature().id;
+        d.write_edge_fillet(&prepared).expect("written");
+        (root, d, first, second)
+    }
+
+    fn radius_of(d: &Document, fillet: ObjectId) -> f64 {
+        match &d.object(fillet).expect("read").expect("row").payload {
+            ObjectPayload::Fillet(f) => f.radius_mm,
+            _ => panic!("a Fillet"),
+        }
+    }
+
+    /// §28H: either Fillet of the §28G history is editable by its UUID; the
+    /// edit moves only that row's payload, its hash and the stamp; every
+    /// name, the other Fillet, both predecessors and edges are kept.
+    #[test]
+    fn either_sequential_radius_changes_alone_and_keeps_every_identity() {
+        // Corners 1 and 2 share the 12.25 mm Line x = 33.
+        let (_root, mut d, first, second) = sequential(2.375, 2, 3.0625);
+        let choices = fillet_radius_choices(&d, &d.objects().expect("objects"));
+        assert_eq!(choices.len(), 2);
+        for (choice, (id, index, other)) in
+            choices.iter().zip([(first, 1, second), (second, 2, first)])
+        {
+            assert_eq!(choice.refusal, None, "{choice:?}");
+            let saved = choice.saved.as_ref().expect("editable");
+            assert_eq!(saved.feature, id);
+            assert_eq!(saved.history_index, index);
+            let n = saved.neighbour.expect("the other Fillet");
+            assert_eq!((n.feature, n.history_index), (other, 3 - index));
+            let (_, length) = n.shared.expect("adjacent");
+            assert_eq!(length, 12.25);
+            assert_eq!(
+                saved.max_radius_mm(),
+                Some(6.125),
+                "§28A's bound decides here"
+            );
+        }
+        let refs = d.topology_refs().expect("refs");
+        let mut before = cells(&d);
+        for (fillet, radius) in [(first, 4.5), (second, 5.0625), (first, 1.25), (second, 2.0)] {
+            let other = if fillet == first { second } else { first };
+            let other_radius = radius_of(&d, other);
+            let prepared = prepare_fillet_radius(&d, fillet, radius).expect("prepared");
+            assert_eq!(prepared.saved().feature, fillet);
+            d.write_fillet_radius(&prepared).expect("written");
+            let after = cells(&d);
+            assert!(only_this_row_moved(&before, &after, fillet) >= 2);
+            before = after;
+            assert_eq!(radius_of(&d, fillet), radius);
+            assert_eq!(
+                radius_of(&d, other),
+                other_radius,
+                "the other radius is kept"
+            );
+            assert_eq!(d.topology_refs().expect("refs"), refs, "no name moved");
+            assert!(d.validate().expect("validate").is_ok());
+        }
+        // The other editors still refuse the two-Fillet history.
+        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+        assert!(reading.fillet_features.iter().all(|c| c.refusal.is_none()));
+        assert!(reading.features.iter().all(|f| f.refusal.is_some()));
+        assert!(reading.sketches.iter().all(|s| s.refusal.is_some()));
+        assert!(
+            reading
+                .constraint_sketches
+                .iter()
+                .all(|s| s.refusal.is_some())
+        );
+    }
+
+    /// §28H: the bound discovery states for either radius is the largest the
+    /// one predicate accepts — the one the rebuild applies at the second
+    /// Fillet — and the next float is refused by both. Opposite corners get
+    /// no pair bound.
+    #[test]
+    fn the_pair_bound_is_exact_for_either_radius_and_absent_opposite() {
+        // r2 = 6.12 > 12.25 − 6.125 − 0.01, so the pair bound on r1 is
+        // tighter than §28A's 6.125.
+        let (_root, d, first, second) = sequential(6.0, 2, 6.12);
+        let objects = d.objects().expect("objects");
+        let choices = fillet_radius_choices(&d, &objects);
+        let bound = |id: ObjectId| {
+            let c = choices.iter().find(|c| c.feature == id).expect("row");
+            (
+                c.clone(),
+                c.saved
+                    .as_ref()
+                    .expect("saved")
+                    .max_radius_mm()
+                    .expect("bound"),
+            )
+        };
+        let lines = match &objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("Sketch")
+            .payload
+        {
+            ObjectPayload::Sketch(s) => s.curves.clone(),
+            _ => unreachable!(),
+        };
+        let stored = |id: ObjectId| match &objects.iter().find(|o| o.id == id).expect("row").payload
+        {
+            ObjectPayload::Fillet(f) => f.clone(),
+            _ => unreachable!(),
+        };
+        let (c1, max1) = bound(first);
+        assert_eq!(max1, crate::pair_bound_of_first(12.25, 6.12));
+        assert!(max1 < 6.125);
+        c1.validate(max1).expect("the offered bound is accepted");
+        assert_eq!(
+            c1.validate(max1.next_up())
+                .expect_err("the next float")
+                .kind(),
+            ErrorKind::Input
+        );
+        // The rebuild's own check at the second Fillet agrees, float for float.
+        let mut objects_at = objects.clone();
+        for (r1, ok) in [(max1, true), (max1.next_up(), false)] {
+            for o in &mut objects_at {
+                if o.id == first
+                    && let ObjectPayload::Fillet(f) = &mut o.payload
+                {
+                    f.radius_mm = r1;
+                }
+            }
+            let verdict = crate::evaluable_fillet(&objects_at, &stored(second), Some(&lines));
+            assert_eq!(verdict.is_ok(), ok, "{r1}: {verdict:?}");
+        }
+        let (c2, max2) = bound(second);
+        assert_eq!(max2, crate::pair_bound(12.25, 6.0).min(6.125));
+        c2.validate(max2).expect("accepted");
+        assert!(c2.validate(max2.next_up()).is_err());
+
+        // The opposite corner: §28A's bound alone, for both.
+        let (_root, d, first, second) = sequential(6.125, 3, 6.125);
+        for c in fillet_radius_choices(&d, &d.objects().expect("objects")) {
+            let saved = c.saved.as_ref().expect("editable");
+            assert_eq!(saved.neighbour.expect("other").shared, None);
+            assert_eq!(saved.max_radius_mm(), Some(6.125));
+            c.validate(6.125)
+                .expect("the per-corner bound is inclusive");
+            assert!(c.validate(6.125f64.next_up()).is_err());
+            assert!([first, second].contains(&c.feature));
+        }
+    }
+
+    /// §28H: the writer re-derives a two-Fillet radius edit; a forged payload,
+    /// the other Fillet's row, a radius past the pair bound and a stale version
+    /// are refused, writing nothing.
+    #[test]
+    fn the_writer_refuses_a_forged_sequential_radius_edit() {
+        // r2 = 6.12: any r1 above 6.12 leaves less than 0.01 mm flat, within
+        // §28A's 6.125 at each corner.
+        let (_root, mut d, first, second) = sequential(2.375, 2, 6.12);
+        let honest = prepare_fillet_radius(&d, first, 4.0).expect("prepared");
+        let mut forged = Vec::new();
+        let mut p = honest.clone();
+        if let ObjectPayload::Fillet(f) = &mut p.feature.payload {
+            f.radius_mm = 6.125;
+        }
+        forged.push(("a radius past the pair bound", p));
+        let mut p = honest.clone();
+        if let ObjectPayload::Fillet(f) = &mut p.feature.payload {
+            f.previous = second;
+        }
+        forged.push(("another predecessor", p));
+        let mut p = honest.clone();
+        if let ObjectPayload::Fillet(f) = &mut p.feature.payload {
+            f.edge = match &d.object(second).expect("read").expect("row").payload {
+                ObjectPayload::Fillet(s) => s.edge,
+                _ => unreachable!(),
+            };
+        }
+        forged.push(("the other Fillet's corner", p));
+        let mut p = honest.clone();
+        p.feature.id = second;
+        forged.push(("the other Fillet's row", p));
+        let mut p = honest.clone();
+        p.source_version = ContentHash::of_bytes(b"another version");
+        forged.push(("another version", p));
+        let before = cells(&d);
+        for (why, p) in &forged {
+            assert!(d.write_fillet_radius(p).is_err(), "{why} was written");
+            assert_eq!(cells(&d), before, "{why} wrote something");
+        }
+        // Past the pair bound is refused before any writer, by the one rule.
+        let e = prepare_fillet_radius(&d, first, 6.125).expect_err("pair");
+        assert_eq!(e.kind(), ErrorKind::Input);
+        assert!(e.to_string().contains("flat"), "{e}");
+        d.write_fillet_radius(&honest).expect("the honest edit");
+        assert_eq!(radius_of(&d, first), 4.0);
+    }
+
     #[test]
     fn the_writer_refuses_a_forged_or_stale_preparation() {
         let (_root, mut d, fillet) = filleted(2.375);

@@ -1897,7 +1897,13 @@ mod radius {
         pub(super) fn edit(&self, output: &Path) -> Command {
             self.edit_from(&self.source, self.fillet_id(), self.version(), output)
         }
-        fn edit_from(&self, source: &Path, feature: &str, version: &str, output: &Path) -> Command {
+        pub(super) fn edit_from(
+            &self,
+            source: &Path,
+            feature: &str,
+            version: &str,
+            output: &Path,
+        ) -> Command {
             let mut c = cli();
             c.arg(OP)
                 .arg(source)
@@ -1917,7 +1923,7 @@ mod radius {
     /// Every SQL cell of the source survives into the copy, except exactly
     /// the Fillet row's payload and hash and the copy's own stamp. Returns
     /// how many cells moved.
-    fn only_the_radius_changed(source: &Path, copy: &Path, fillet: &str) -> usize {
+    pub(super) fn only_the_radius_changed(source: &Path, copy: &Path, fillet: &str) -> usize {
         let before = tables(source);
         let after = tables(copy);
         assert_eq!(
@@ -6825,6 +6831,634 @@ mod sequential {
                 + &String::from_utf8_lossy(&out.stdout);
             assert!(text.contains(expect), "{why}: {text}");
             std::fs::remove_file(&path).expect("clean");
+        }
+    }
+
+    /// §28H: the radius of either Fillet of the §28G history, through the
+    /// existing `edit-fillet-radius`, into a new copy. Nothing is minted;
+    /// only the selected payload moves; both cylinders stay under their own
+    /// names; the suffix of the cache is rebuilt and nothing before it.
+    mod radius {
+        use super::super::radius::only_the_radius_changed;
+        use super::*;
+
+        const EDIT: &str = "edit-fillet-radius";
+
+        /// A plate rounded twice by the shipped command, as a fixture reading
+        /// the two-Fillet copy. The first fixture owns the files.
+        fn rounded_twice(
+            part: &Part,
+            corners: [[f64; 2]; 4],
+            (first, r1): ([f64; 2], f64),
+            (second, r2): ([f64; 2], f64),
+            name: &str,
+        ) -> (Fixture, Fixture) {
+            let g = filleted_by_cli(corners, first, r1, &format!("first-{name}"));
+            let two = second_fillet(&g, part, first, r1, second, r2, &format!("two-{name}"));
+            let h = g.at_copy(&two);
+            (g, h)
+        }
+
+        /// The two Fillet rows of a two-Fillet copy, in history order.
+        fn rows(f: &Fixture) -> [Value; 2] {
+            let rows = f.catalog["fillets"].as_array().expect("fillets").clone();
+            assert_eq!(rows.len(), 2);
+            let first = rows
+                .iter()
+                .find(|r| r["history_index"] == 1)
+                .expect("Fillet 1")
+                .clone();
+            let second = rows
+                .iter()
+                .find(|r| r["history_index"] == 2)
+                .expect("Fillet 2")
+                .clone();
+            [first, second]
+        }
+
+        /// One radius edit of Fillet `which` (1 or 2) of `h`, published by
+        /// the shipped command and measured: the result, the exact allowlist,
+        /// every name kept, the other Fillet unchanged, validation, the
+        /// B-Rep cold and through a real Miss and Hit (both cylinders under
+        /// their own names, Fillet 1's carried into the final Body, the
+        /// analytic volume), the mesh and the FBX.
+        #[allow(clippy::too_many_arguments)]
+        fn edited_either(
+            h: &Fixture,
+            part: &Part,
+            which: usize,
+            (c1, r1): ([f64; 2], f64),
+            (c2, r2): ([f64; 2], f64),
+            r: f64,
+            name: &str,
+        ) -> PathBuf {
+            let before = std::fs::read(&h.source).expect("source bytes");
+            let refs = stored_refs(&h.source);
+            let [one, two] = rows(h);
+            let (row, other) = if which == 1 {
+                (&one, &two)
+            } else {
+                (&two, &one)
+            };
+            let id = row["feature_id"].as_str().expect("UUID").to_owned();
+            let from = if which == 1 { r1 } else { r2 };
+            let copy = h.root.path().join(format!("{name}.fcad"));
+            h.ask_radius(r);
+            let v = reply(
+                h.edit_from(&h.source, &id, h.version(), &copy)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                0,
+            );
+            let result = &v["result"];
+            assert_eq!(result["feature_id"], id.as_str(), "the selected Fillet");
+            assert_eq!(result["history_index"], which);
+            assert_eq!(result["previous_feature_id"], row["previous_feature_id"]);
+            assert_eq!(result["edge"], row["edge"], "the same edge");
+            assert_eq!(result["previous_radius_mm"], from);
+            assert_eq!(result["radius_mm"], r);
+            assert_eq!(std::fs::read(&h.source).expect("bytes"), before, "source");
+            assert!(only_the_radius_changed(&h.source, &copy, &id) >= 2);
+            assert_eq!(stored_refs(&copy), refs, "every name and its UUID kept");
+            let after = inspect(&copy);
+            let [a1, a2] = rows(&h.at_copy(&copy));
+            let (mine, theirs) = if which == 1 { (&a1, &a2) } else { (&a2, &a1) };
+            assert_eq!(mine["radius_mm"], r);
+            assert_eq!(theirs["radius_mm"], other["radius_mm"], "the other radius");
+            for key in ["feature_id", "edge", "previous_feature_id"] {
+                assert_eq!(mine[key], row[key], "{key}");
+                assert_eq!(theirs[key], other[key], "{key}");
+            }
+            assert_eq!(after["bodies"][0]["fillet_edge"]["available"], false);
+            assert_eq!(after["edit_extrude"]["available"], false);
+
+            let checked = cli()
+                .arg("validate")
+                .arg(&copy)
+                .arg("--json")
+                .output()
+                .expect("validate");
+            assert_eq!(reply(checked, "validate", 0)["result"]["valid"], true);
+            let n = refs.len();
+            let rebuilt = cli()
+                .arg("rebuild")
+                .arg(&copy)
+                .arg("--cold")
+                .output()
+                .expect("rebuild");
+            let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
+            assert!(
+                text.contains(&format!("{n} of {n} stored references resolved")),
+                "{text}"
+            );
+
+            let (r1, r2) = if which == 1 { (r, r2) } else { (r1, r) };
+            let first = id_of(&one["feature_id"]);
+            let second = id_of(&two["feature_id"]);
+            let base = id_of(&one["edge"]["feature_id"]);
+            let (cold, _) = measure_two(&copy, None);
+            let cache = copy.with_extension("fcad-cache");
+            let (miss, events) = measure_two(&copy, Some(&cache));
+            assert!(
+                events
+                    .iter()
+                    .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Miss)
+            );
+            let (hit, events) = measure_two(&copy, Some(&cache));
+            assert!(
+                events
+                    .iter()
+                    .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit)
+            );
+            cold.same_as(&miss);
+            cold.same_as(&hit);
+            let c1 = part.corner(c1);
+            let c2 = part.corner(c2);
+            check_two(&cold, part.rect, (first, c1, r1), (second, c2, r2), base);
+            let m = mesh(&copy, &copy.with_extension("stl"));
+            check_mesh_rounded(&m, part.rect, &[(c1, r1), (c2, r2)], H);
+            fbx(&copy, name);
+            copy
+        }
+
+        fn id_of(v: &Value) -> ferritecad_types::ObjectId {
+            v.as_str().expect("UUID").parse().expect("UUID")
+        }
+
+        /// Discovery on a two-Fillet plate written without a kernel, and the
+        /// protocol: both rows editable with their place and neighbour, the
+        /// exact bound, and a build without the kernel refusing a well-formed
+        /// request before writing anything.
+        #[test]
+        fn radius_discovery_and_protocol_without_native() {
+            let f = filleted_without_kernel(CCW, [X0 + W, Y0], 6.0);
+            // The second Fillet across the 12.25 mm side, written by the
+            // shipped preparation and writer.
+            let short = f.at([X0 + W, Y0 + D]).clone();
+            let mut doc = Document::open(&f.source).expect("writable");
+            let body: ferritecad_types::ObjectId = f.body_id().parse().expect("UUID");
+            let e = &short["edge"];
+            let fillet = ferritecad_document::EdgeFillet {
+                edge: ferritecad_document::FilletEdge {
+                    feature: id_of(&e["feature_id"]),
+                    joint: ferritecad_types::ProfileJoint::new(
+                        e["joint"][0].as_str().expect("a").parse().expect("UUID"),
+                        e["joint"][1].as_str().expect("b").parse().expect("UUID"),
+                    )
+                    .expect("joint"),
+                },
+                radius_mm: 6.12,
+            };
+            let prepared =
+                ferritecad_document::prepare_edge_fillet(&doc, body, &fillet).expect("prepared");
+            doc.write_edge_fillet(&prepared).expect("written");
+            doc.close().expect("close");
+            let h = Fixture {
+                catalog: inspect(&f.source),
+                root: tempfile::tempdir().expect("directory"),
+                source: f.source.clone(),
+                request: f.request.clone(),
+            };
+            let [one, two] = rows(&h);
+            for (row, other, index) in [(&one, &two, 1), (&two, &one, 2)] {
+                let edit = &row["radius_edit"];
+                assert_eq!(edit["available"], true, "{row}");
+                assert!(edit["refusal"].is_null());
+                let n = &edit["neighbour"];
+                assert_eq!(n["feature_id"], other["feature_id"]);
+                assert_eq!(n["history_index"], 3 - index);
+                assert_eq!(n["radius_mm"], other["radius_mm"]);
+                assert_eq!(n["stored_shared_length_mm"], D);
+                assert!(n["shared_line_id"].is_string());
+            }
+            assert_eq!(one["previous_feature_id"], one["edge"]["feature_id"]);
+            assert_eq!(two["previous_feature_id"], one["feature_id"]);
+            // Fillet 1 beside r2 = 6.12: the pair bound, below §28A's 6.125,
+            // exactly as the domain states it; Fillet 2: §28A's 6.125 caps
+            // 12.25 − 6 − 0.01.
+            let max1 = one["radius_edit"]["max_radius_mm"].as_f64().expect("bound");
+            assert_eq!(max1, ferritecad_document::pair_bound_of_first(D, 6.12));
+            assert!(max1 < D / 2.);
+            assert_eq!(two["radius_edit"]["max_radius_mm"], D / 2.);
+
+            // The protocol.
+            let before = std::fs::read(&h.source).expect("bytes");
+            let never = h.root.path().join("never.fcad");
+            h.ask_radius(1.0);
+            let names = entries(h.root.path());
+            let kernel = ferritecad_occt::is_available();
+            let well_formed = if kernel { "input" } else { "unsupported" };
+            let id1 = one["feature_id"].as_str().expect("UUID");
+            let id2 = two["feature_id"].as_str().expect("UUID");
+            for (id, r, why) in [
+                (id1, max1.next_up(), "past the pair bound"),
+                (id1, 0.009, "below the smallest radius"),
+                (id2, D / 2. + 1e-9, "past §28A's bound"),
+            ] {
+                h.ask_radius(r);
+                let v = reply(
+                    h.edit_from(&h.source, id, h.version(), &never)
+                        .output()
+                        .expect("process"),
+                    EDIT,
+                    2,
+                );
+                assert_eq!(refused(&v), well_formed, "{why}: {v}");
+            }
+            // The base Extrude is no Fillet; a malformed request is input.
+            h.ask_radius(1.0);
+            let base = one["edge"]["feature_id"].as_str().expect("UUID");
+            let v = reply(
+                h.edit_from(&h.source, base, h.version(), &never)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                2,
+            );
+            assert!(matches!(refused(&v), "input" | "unsupported"), "{v}");
+            write(&h.request, &json!({"request_version": 1}));
+            let v = reply(
+                h.edit_from(&h.source, id2, h.version(), &never)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                2,
+            );
+            assert_eq!(refused(&v), "input", "no radius: {v}");
+            h.ask_radius(1.0);
+            assert_eq!(entries(h.root.path()), names, "a refusal left something");
+            assert_eq!(std::fs::read(&h.source).expect("bytes"), before);
+        }
+
+        /// Both Fillets of adjacent and opposite corners, up and down, both
+        /// windings; equal radii keep the two cylinders apart by name.
+        #[test]
+        fn native_editing_either_radius_is_what_the_numbers_say() {
+            if !native() {
+                return;
+            }
+            let first = [X0 + W, Y0];
+            for (label, corners) in [("ccw", CCW), ("cw", CW_FROM_UPPER_RIGHT)] {
+                let part = Part::plain(corners);
+                let (r1, r2) = (2.375, 3.0625);
+                let short = [X0 + W, Y0 + D];
+                let (_g, h) = rounded_twice(
+                    &part,
+                    corners,
+                    (first, r1),
+                    (short, r2),
+                    &format!("r-{label}"),
+                );
+                edited_either(
+                    &h,
+                    &part,
+                    1,
+                    (first, r1),
+                    (short, r2),
+                    4.8125,
+                    &format!("radius-{label}-f1-up"),
+                );
+                edited_either(
+                    &h,
+                    &part,
+                    1,
+                    (first, r1),
+                    (short, r2),
+                    1.1875,
+                    &format!("radius-{label}-f1-down"),
+                );
+                edited_either(
+                    &h,
+                    &part,
+                    2,
+                    (first, r1),
+                    (short, r2),
+                    5.4375,
+                    &format!("radius-{label}-f2-up"),
+                );
+                // Equal radii: two cylinders of one radius, each still under
+                // its own UUIDs at its own corner.
+                edited_either(
+                    &h,
+                    &part,
+                    2,
+                    (first, r1),
+                    (short, r2),
+                    r1,
+                    &format!("radius-{label}-f2-equal"),
+                );
+            }
+            let part = Part::plain(CCW);
+            let opposite = [X0, Y0 + D];
+            let (_g, h) =
+                rounded_twice(&part, CCW, (first, 4.5625), (opposite, 1.625), "r-opposite");
+            edited_either(
+                &h,
+                &part,
+                1,
+                (first, 4.5625),
+                (opposite, 1.625),
+                6.125,
+                "radius-opposite-f1",
+            );
+            edited_either(
+                &h,
+                &part,
+                2,
+                (first, 4.5625),
+                (opposite, 1.625),
+                6.125,
+                "radius-opposite-f2",
+            );
+        }
+
+        /// The bound discovery states for Fillet 1 beside a wide Fillet 2 is
+        /// published and measured; the next float is refused and nothing is
+        /// written.
+        #[test]
+        fn native_the_pair_bound_is_exact_when_editing_the_first_radius() {
+            if !native() {
+                return;
+            }
+            let part = Part::plain(CCW);
+            let (first, second) = ([X0 + W, Y0], [X0 + W, Y0 + D]);
+            let (_g, h) = rounded_twice(&part, CCW, (first, 6.0), (second, 6.12), "r-bound");
+            let [one, _] = rows(&h);
+            let bound = one["radius_edit"]["max_radius_mm"].as_f64().expect("bound");
+            assert_eq!(bound, ferritecad_document::pair_bound_of_first(D, 6.12));
+            let never = h.root.path().join("never.fcad");
+            let names = entries(h.root.path());
+            let id = one["feature_id"].as_str().expect("UUID");
+            h.ask_radius(bound.next_up());
+            let v = reply(
+                h.edit_from(&h.source, id, h.version(), &never)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                2,
+            );
+            assert_eq!(refused(&v), "input", "{v}");
+            assert!(
+                v["error"]["message"].as_str().expect("m").contains("flat"),
+                "{v}"
+            );
+            h.ask_radius(bound);
+            assert_eq!(entries(h.root.path()), names, "a refusal left something");
+            edited_either(
+                &h,
+                &part,
+                1,
+                (first, 6.0),
+                (second, 6.12),
+                bound,
+                "radius-bound",
+            );
+        }
+
+        /// The first Fillet restored from the cache stays when the second
+        /// changes; a changed first radius rebuilds both and nothing before.
+        #[test]
+        fn native_either_radius_edit_invalidates_exactly_its_suffix() {
+            if !native() {
+                return;
+            }
+            let part = Part::plain(CCW);
+            let (first, second) = ([X0 + W, Y0], [X0 + W, Y0 + D]);
+            let (_g, h) = rounded_twice(&part, CCW, (first, 2.375), (second, 3.0625), "r-cache");
+            let warm = h.source.with_extension("fcad-cache");
+            measure_two(&h.source, Some(&warm));
+            let (_, events) = measure_two(&h.source, Some(&warm));
+            assert!(
+                events
+                    .iter()
+                    .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit)
+            );
+            let [one, two] = rows(&h);
+            let (f1, f2, base) = (
+                id_of(&one["feature_id"]),
+                id_of(&two["feature_id"]),
+                id_of(&one["edge"]["feature_id"]),
+            );
+            use ferritecad_eval::CacheOutcome::{Hit, Miss};
+            for (which, r, want, name) in [
+                (2, 4.25, [Hit, Hit, Miss], "cache-f2"),
+                (1, 4.25, [Hit, Miss, Miss], "cache-f1"),
+            ] {
+                let id = if which == 1 { f1 } else { f2 };
+                let copy = h.root.path().join(format!("{name}.fcad"));
+                h.ask_radius(r);
+                reply(
+                    h.edit_from(&h.source, &id.to_string(), h.version(), &copy)
+                        .output()
+                        .expect("process"),
+                    EDIT,
+                    0,
+                );
+                // The copy keeps the document's identity, so the source's warm
+                // entries are the ones a reader of the copy would find.
+                let cache = copy.with_extension("fcad-cache");
+                std::fs::copy(&warm, &cache).expect("the warm cache");
+                let (warmed, events) = measure_two(&copy, Some(&cache));
+                let by = outcomes(&events);
+                for (feature, outcome) in [(base, want[0]), (f1, want[1]), (f2, want[2])] {
+                    assert_eq!(by.get(&feature), Some(&vec![outcome]), "{name}: {events:?}");
+                }
+                let (cold, _) = measure_two(&copy, None);
+                cold.same_as(&warmed);
+                let (r1, r2) = if which == 1 { (r, 3.0625) } else { (2.375, r) };
+                check_two(&cold, part.rect, (f1, first, r1), (f2, second, r2), base);
+                let (hit, events) = measure_two(&copy, Some(&cache));
+                assert!(events.iter().all(|e| e.outcome == Hit), "{events:?}");
+                cold.same_as(&hit);
+            }
+        }
+
+        /// A dimensioned plate: the stored drawing and the solved part differ;
+        /// discovery defers every bound; the rebuild judges both corners and
+        /// the pair on the solved Lines, refusing a radius the stored drawing
+        /// would allow, and publishing the solved part.
+        #[test]
+        fn native_dimensioned_radius_edits_answer_to_the_solved_plate() {
+            if !solving() {
+                return;
+            }
+            let at = [2.5, -1.75];
+            let (width, depth) = (30.5, 8.0);
+            let (_plain, g, expected) = dimensioned_plate(CCW, at, width, depth, "r-dimensioned");
+            let (first, second) = ([X0 + W, Y0], [X0 + W, Y0 + D]);
+            let one = g.root.path().join("one.fcad");
+            g.ask_stored(first, 3.5);
+            reply(g.fillet(&one).output().expect("process"), OP, 0);
+            let g1 = g.at_copy(&one);
+            let part = Part {
+                rect: rect_of(&expected),
+                stored: g.stored_starts(),
+                solved: expected.clone(),
+                constrained: true,
+            };
+            let two = second_fillet(&g1, &part, first, 3.5, second, 3.0, "r-dimensioned-two");
+            let h = g1.at_copy(&two);
+            let [r1row, r2row] = rows(&h);
+            for row in [&r1row, &r2row] {
+                assert!(row["radius_edit"]["max_radius_mm"].is_null(), "{row}");
+                assert_eq!(row["profile_constrained"], true);
+                assert_eq!(
+                    row["radius_edit"]["neighbour"]["stored_shared_length_mm"],
+                    D
+                );
+            }
+            // 4.0 each fits §28A on the solved 8 mm side, the stored 12.25 mm
+            // side lets both through, and together they touch: refused by the
+            // rebuild, nothing written.
+            let e1 = edited_either(
+                &h,
+                &part,
+                1,
+                (first, 3.5),
+                (second, 3.0),
+                4.0,
+                "radius-dimensioned-f1",
+            );
+            let h1 = h.at_copy(&e1);
+            let never = h1.root.path().join("never.fcad");
+            let names = entries(h1.root.path());
+            h1.ask_radius(4.0);
+            let id2 = r2row["feature_id"].as_str().expect("UUID");
+            let v = reply(
+                h1.edit_from(&h1.source, id2, h1.version(), &never)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                2,
+            );
+            assert_eq!(refused(&v), "input", "{v}");
+            assert!(
+                v["error"]["message"].as_str().expect("m").contains("flat"),
+                "{v}"
+            );
+            h1.ask_radius(3.99);
+            assert_eq!(entries(h1.root.path()), names, "a refusal left something");
+            edited_either(
+                &h1,
+                &part,
+                2,
+                (first, 4.0),
+                (second, 3.0),
+                3.99,
+                "radius-dimensioned-f2",
+            );
+        }
+
+        /// Refusals of either edit publish nothing and leave no scratch file; a
+        /// cancelled one leaves nothing; a lost report keeps the copy, exit 7.
+        #[test]
+        fn native_either_radius_refusals_cancellation_and_report_loss_are_atomic() {
+            if !native() {
+                return;
+            }
+            let part = Part::plain(CCW);
+            let (first, second) = ([X0, Y0], [X0 + W, Y0]);
+            let (_g, h) = rounded_twice(&part, CCW, (first, 2.0), (second, 1.5), "r-atomic");
+            let [one, two] = rows(&h);
+            let (id1, id2) = (
+                one["feature_id"].as_str().expect("UUID").to_owned(),
+                two["feature_id"].as_str().expect("UUID").to_owned(),
+            );
+            let before = std::fs::read(&h.source).expect("bytes");
+            let taken = h.root.path().join("taken.fcad");
+            std::fs::write(&taken, b"another process owns this").expect("occupied");
+            let alias = h.root.path().join("alias.fcad");
+            std::fs::hard_link(&h.source, &alias).expect("hard link");
+            h.ask_radius(2.5);
+            let names = entries(h.root.path());
+            for (id, destination, why) in [
+                (&id1, h.source.clone(), "the source is not its own output"),
+                (&id2, taken.clone(), "an occupied output is not replaced"),
+                (&id1, alias.clone(), "an alias of the source is the source"),
+            ] {
+                let v = reply(
+                    h.edit_from(&h.source, id, h.version(), &destination)
+                        .output()
+                        .expect("process"),
+                    EDIT,
+                    2,
+                );
+                assert_eq!(refused(&v), "input", "{why}: {v}");
+            }
+            assert_eq!(
+                std::fs::read(&taken).expect("taken"),
+                b"another process owns this"
+            );
+            // A stale version.
+            let stale = h.root.path().join("stale-source.fcad");
+            std::fs::copy(&h.source, &stale).expect("copy");
+            let mut d = Document::open(&stale).expect("writable");
+            let o = d.objects().expect("objects").remove(0);
+            d.write(|w| {
+                w.put_object(o.id, o.parent, o.ordinal, Some("renamed"), &o.payload)
+                    .map(|_| ())
+            })
+            .expect("change");
+            d.close().expect("close");
+            let never = h.root.path().join("never.fcad");
+            let v = reply(
+                h.edit_from(&stale, &id2, h.version(), &never)
+                    .output()
+                    .expect("process"),
+                EDIT,
+                2,
+            );
+            assert_eq!(refused(&v), "input", "stale: {v}");
+            std::fs::remove_file(&stale).expect("clean");
+            assert_eq!(entries(h.root.path()), names, "a refusal left something");
+
+            // Cancelled at the last barrier, through the shared job.
+            let d = Document::open_read_only(&h.source).expect("source");
+            let expected = ferritecad_document::DocumentVersion {
+                document_id: d.meta().document_id,
+                content: d.content_version().expect("version"),
+            };
+            d.close().expect("close");
+            let destination = h.root.path().join("cancelled.fcad");
+            let token = ferritecad_kernel::CancelToken::new();
+            let stop = token.clone();
+            let context = OperationContext::default()
+                .with_cancel(token)
+                .with_progress(ferritecad_kernel::ProgressSink::new(move |fraction| {
+                    if fraction >= 0.95 {
+                        stop.cancel();
+                    }
+                }));
+            let request = ferritecad_jobs::EditFilletRadiusRequest {
+                source: h.source.clone(),
+                expected,
+                feature: id_of(&json!(id1)),
+                radius_mm: 2.5,
+                destination: destination.clone(),
+            };
+            let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+            let result = ferritecad_jobs::edit_fillet_radius_copy(&request, &mut kernel, &context);
+            assert!(result.is_err(), "{result:?}");
+            assert!(!destination.exists());
+            assert_eq!(kernel.live_shape_count(), 0);
+            assert_eq!(entries(h.root.path()), names, "cancellation left something");
+
+            // A lost report: published, kept, exit 7.
+            let lost = h.root.path().join("lost-report.fcad");
+            assert_eq!(
+                h.edit_from(&h.source, &id2, h.version(), &lost)
+                    .stdout(pipe::closed_pipe())
+                    .stderr(pipe::closed_pipe())
+                    .status()
+                    .expect("pipes")
+                    .code(),
+                Some(7)
+            );
+            assert!(lost.exists());
+            let [_, kept] = rows(&h.at_copy(&lost));
+            assert_eq!(kept["radius_mm"], 2.5);
+            assert_eq!(std::fs::read(&h.source).expect("bytes"), before);
         }
     }
 }

@@ -205,9 +205,18 @@ impl Editor {
             let response = ui.add_enabled(
                 can_begin && refusal.is_none(),
                 egui::Button::new(format!(
-                    "Edit Fillet radius {} — {}…",
+                    "Edit Fillet radius {} — {}{}…",
                     choice.name.as_deref().unwrap_or("Unnamed fillet"),
-                    choice.feature
+                    choice.feature,
+                    // §28H: which of two sequential Fillets, and its radius.
+                    choice
+                        .saved
+                        .as_ref()
+                        .filter(|s| s.neighbour.is_some())
+                        .map_or(String::new(), |s| format!(
+                            " (Fillet {} of 2, r{} mm)",
+                            s.history_index, s.radius_mm
+                        ))
                 )),
             );
             if response.clicked() {
@@ -1534,6 +1543,53 @@ pub(crate) mod tests {
     /// §28B: the plate of [`plate`], with a §28A Fillet on its (33, 3.25)
     /// corner written by the shipped preparation and writer, and no kernel.
     /// §28C's height form tests use it too.
+    /// A radius edit mints nothing: the worker's copy and the command line's
+    /// are the same cells but for the stamp, and the exports the same bytes.
+    pub(crate) fn same_radius_publication(path: &Path, ui: &Path, peer: &Path) {
+        let (ui, peer) = (ui.to_path_buf(), peer.to_path_buf());
+        let (left, right) = (tables(&ui), tables(&peer));
+        let original = tables(path);
+        assert_eq!(
+            left.keys().collect::<Vec<_>>(),
+            right.keys().collect::<Vec<_>>()
+        );
+        for (table, (columns, rows)) in &left {
+            let (their_columns, theirs) = &right[table];
+            assert_eq!(columns, their_columns);
+            assert_eq!(rows.len(), theirs.len(), "{table} rows");
+            assert_eq!(
+                rows.len(),
+                original[table].1.len(),
+                "{table} rows vs source"
+            );
+            for (l, r) in rows.iter().zip(theirs) {
+                for (i, column) in columns.iter().enumerate() {
+                    if table == "meta" && column == "modified_at" {
+                        continue;
+                    }
+                    assert_eq!(l[i], r[i], "{table}.{column} differs");
+                }
+            }
+        }
+        for format in ["stl", "fbx"] {
+            let mut exports = Vec::new();
+            for model in [&ui, &peer] {
+                let output = model.with_extension(format);
+                let result = std::process::Command::new(crate::creates::tests::ferritecad())
+                    .arg(format!("export-{format}"))
+                    .arg(model)
+                    .arg("-o")
+                    .arg(&output)
+                    .arg("--json")
+                    .output()
+                    .expect("export");
+                assert!(result.status.success(), "{result:?}");
+                exports.push(std::fs::read(output).expect("export bytes"));
+            }
+            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
+        }
+    }
+
     pub(crate) fn rounded(radius: f64) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let (root, path, source) = plate();
         let target = source.fillet_bodies[0].target.clone().expect("a target");
@@ -1769,47 +1825,7 @@ pub(crate) mod tests {
             .expect("peer");
         assert!(out.status.success(), "{out:?}");
 
-        let (left, right) = (tables(&ui), tables(&peer));
-        let original = tables(&path);
-        assert_eq!(
-            left.keys().collect::<Vec<_>>(),
-            right.keys().collect::<Vec<_>>()
-        );
-        for (table, (columns, rows)) in &left {
-            let (their_columns, theirs) = &right[table];
-            assert_eq!(columns, their_columns);
-            assert_eq!(rows.len(), theirs.len(), "{table} rows");
-            assert_eq!(
-                rows.len(),
-                original[table].1.len(),
-                "{table} rows vs source"
-            );
-            for (l, r) in rows.iter().zip(theirs) {
-                for (i, column) in columns.iter().enumerate() {
-                    if table == "meta" && column == "modified_at" {
-                        continue;
-                    }
-                    assert_eq!(l[i], r[i], "{table}.{column} differs");
-                }
-            }
-        }
-        for format in ["stl", "fbx"] {
-            let mut exports = Vec::new();
-            for model in [&ui, &peer] {
-                let output = model.with_extension(format);
-                let result = std::process::Command::new(crate::creates::tests::ferritecad())
-                    .arg(format!("export-{format}"))
-                    .arg(model)
-                    .arg("-o")
-                    .arg(&output)
-                    .arg("--json")
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                exports.push(std::fs::read(output).expect("export bytes"));
-            }
-            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
-        }
+        same_radius_publication(&path, &ui, &peer);
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
@@ -2016,6 +2032,274 @@ pub(crate) mod tests {
             .expect("peer");
         assert!(out.status.success(), "{out:?}");
         same_publication(&ui, &peer);
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
+    /// §28H: [`rounded`] with a second Fillet at (33, 15.5), across the 12.25
+    /// mm side, written by the shipped preparation and writer.
+    pub(crate) fn rounded_twice(
+        r1: f64,
+        r2: f64,
+    ) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+        let (root, path, source) = rounded(r1);
+        let target = source.fillet_bodies[0]
+            .target
+            .clone()
+            .expect("a second target");
+        let corner = *target
+            .corners
+            .iter()
+            .find(|c| c.corner_mm == [33., 15.5])
+            .expect("that corner");
+        let mut d = Document::open(&path).expect("writable");
+        let prepared = ferritecad_document::prepare_edge_fillet(
+            &d,
+            source.fillet_bodies[0].body,
+            &EdgeFillet {
+                edge: FilletEdge {
+                    feature: target.base_feature,
+                    joint: corner.joint,
+                },
+                radius_mm: r2,
+            },
+        )
+        .expect("prepared");
+        d.write_edge_fillet(&prepared).expect("written");
+        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        d.close().expect("close");
+        (root, path, source)
+    }
+
+    /// §28H: each of two sequential Fillets has its own button naming its
+    /// place and radius; the form says which it edits, shows the other
+    /// radius and the shared side, refuses a radius past the pair bound as
+    /// the document does, hands over exactly the widgets' request, and keeps
+    /// the draft — with the worker's refusal shown in the form — when the
+    /// worker refuses. No kernel is involved.
+    #[test]
+    fn sequential_radius_widgets_name_the_fillet_and_keep_the_draft() {
+        let (_root, path, source) = rounded_twice(6.0, 6.12);
+        let rows = &source.fillet_features;
+        assert_eq!(rows.len(), 2);
+        let saved = |i: usize| {
+            rows.iter()
+                .filter_map(|c| c.saved.clone())
+                .find(|s| s.history_index == i)
+                .expect("editable")
+        };
+        let (one, two) = (saved(1), saved(2));
+        let max1 = one.max_radius_mm().expect("bound");
+        assert_eq!(max1, ferritecad_document::pair_bound_of_first(12.25, 6.12));
+
+        let mut e = Editor::default();
+        begin_by(
+            &mut e,
+            &path,
+            &source,
+            &format!(
+                "Edit Fillet radius Fillet — {} (Fillet 1 of 2, r6 mm)",
+                one.feature
+            ),
+        );
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        let out = frame(&ctx, &mut e, false);
+        assert!(painted(&out, "Editing Fillet 1 of 2"));
+        assert!(painted(
+            &out,
+            &format!(
+                "The other Fillet ({}) keeps r6.12 mm at (33, 15.5)",
+                two.feature
+            )
+        ));
+        assert!(painted(
+            &out,
+            "with the other Fillet: the two radii must leave at least 0.01 mm"
+        ));
+        assert!(painted(&out, &format!("from 0.01 mm to {max1} mm here.")));
+        enter(
+            &ctx,
+            &mut e,
+            "New radius (mm):",
+            &max1.next_up().to_string(),
+        );
+        click(&ctx, &mut e, "Apply radius");
+        let draft = e.radius.as_ref().expect("draft");
+        assert!(draft.applied.is_none());
+        assert!(
+            draft.refusal.as_deref().expect("refused").contains("flat"),
+            "{:?}",
+            draft.refusal
+        );
+        enter(&ctx, &mut e, "New radius (mm):", &max1.to_string());
+        click(&ctx, &mut e, "Apply radius");
+        click(&ctx, &mut e, "Save radius copy…");
+        let request = e.take_radius_request().expect("the widgets' request");
+        assert_eq!(
+            request.feature, one.feature,
+            "Fillet 1, not the last Fillet"
+        );
+        assert_eq!(request.radius_mm, max1);
+        assert_eq!(request.expected, source.version);
+
+        // The worker's refusal is shown in the form, and the draft is kept.
+        let mut editor = crate::sketch::Editor::default();
+        editor.fillets = e;
+        let mut edits = crate::edits::Edits::default();
+        let generation = edits
+            .start_fillet_radius(request, |_, _, _| std::thread::spawn(|| {}))
+            .expect("started");
+        assert_eq!(
+            finish_fillet_radius(
+                &mut editor,
+                &mut edits,
+                generation,
+                Err(ferritecad_types::CadError::input("refused by the worker"))
+            ),
+            None
+        );
+        assert!(editor.fillets.active());
+        let draft = editor.fillets.radius.as_ref().expect("draft");
+        assert_eq!(draft.typed, max1.to_string());
+        assert!(
+            draft
+                .refusal
+                .as_deref()
+                .is_some_and(|r| r.contains("refused by the worker")),
+            "{:?}",
+            draft.refusal
+        );
+        let mut e = std::mem::take(&mut editor.fillets);
+        assert!(painted(&frame(&ctx, &mut e, false), "Could not save"));
+        click(&ctx, &mut e, "Cancel radius draft");
+        assert!(!e.active());
+
+        // The second Fillet's own form.
+        let mut e = Editor::default();
+        begin_by(
+            &mut e,
+            &path,
+            &source,
+            &format!(
+                "Edit Fillet radius Fillet — {} (Fillet 2 of 2, r6.12 mm)",
+                two.feature
+            ),
+        );
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        let out = frame(&ctx, &mut e, false);
+        assert!(painted(&out, "Editing Fillet 2 of 2"));
+        assert!(painted(&out, "from 0.01 mm to 6.125 mm here."));
+        // Beside r1 = 6 the pair allows 12.25 − 6 − 0.01 = 6.24 mm, so the
+        // corner's own 6.125 mm is the bound: it is accepted, the next
+        // float is refused.
+        enter(
+            &ctx,
+            &mut e,
+            "New radius (mm):",
+            &6.125f64.next_up().to_string(),
+        );
+        click(&ctx, &mut e, "Apply radius");
+        let draft = e.radius.as_ref().expect("draft");
+        assert!(draft.applied.is_none());
+        assert!(draft.refusal.is_some(), "past the corner's bound");
+        enter(&ctx, &mut e, "New radius (mm):", "6.125");
+        click(&ctx, &mut e, "Apply radius");
+        let draft = e.radius.as_ref().expect("draft");
+        assert!(draft.refusal.is_none(), "{:?}", draft.refusal);
+        assert_eq!(draft.applied.as_deref(), Some("6.125"));
+    }
+
+    /// §28H: the same second-Fillet radius edit through the app's worker and
+    /// through the shipped CLI publishes one document; nothing is minted.
+    #[test]
+    fn native_sequential_radius_worker_and_cli_publish_the_same_part() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: the Fillet radius worker needs OCCT");
+            return;
+        }
+        let (root, path, source) = rounded_twice(2.375, 3.0625);
+        let before = std::fs::read(&path).expect("source");
+        let feature = source
+            .fillet_features
+            .iter()
+            .filter_map(|c| c.saved.as_ref())
+            .find(|s| s.history_index == 1)
+            .expect("Fillet 1")
+            .feature;
+        let mut e = Editor::default();
+        begin_by(
+            &mut e,
+            &path,
+            &source,
+            &format!("Edit Fillet radius Fillet — {feature}"),
+        );
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        enter(&ctx, &mut e, "New radius (mm):", "4.8125");
+        click(&ctx, &mut e, "Apply radius");
+        click(&ctx, &mut e, "Save radius copy…");
+        let mut request = e.take_radius_request().expect("widget request");
+        assert_eq!(request.feature, feature);
+        let ui = root.path().join("worker.fcad");
+        request.destination = ui.clone();
+        let mut edits = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        edits
+            .start_fillet_radius(request, move |r, g, c| {
+                crate::edits::spawn_fillet_radius(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (generation, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("worker response");
+        let published = result.as_ref().expect("published").clone();
+        assert_eq!(published.feature, feature);
+        assert_eq!(published.history_index, 1);
+        assert_eq!(
+            (published.previous_radius_mm, published.radius_mm),
+            (2.375, 4.8125)
+        );
+        let mut editor = crate::sketch::Editor::default();
+        editor.fillets = e;
+        assert_eq!(
+            finish_fillet_radius(&mut editor, &mut edits, generation, result),
+            Some(ui.clone()),
+            "publication goes to the ordinary async Open"
+        );
+        editor.draft_load_finished(&ui, false);
+        assert!(editor.fillets.active(), "a refused Open restores the draft");
+        editor.draft_published(&ui);
+        editor.draft_load_finished(&ui, true);
+        assert!(!editor.active());
+
+        let input = root.path().join("request.json");
+        std::fs::write(&input, r#"{"request_version":1,"radius_mm":4.8125}"#).expect("input");
+        let peer = root.path().join("peer.fcad");
+        let out = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("edit-fillet-radius")
+            .arg(&path)
+            .arg("--feature")
+            .arg(feature.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(out.status.success(), "{out:?}");
+        same_radius_publication(&path, &ui, &peer);
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 }
