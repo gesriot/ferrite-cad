@@ -482,10 +482,10 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
     if fillets.len() > 1 {
         return Err(unsupported(format!(
             "this Body ends in Fillet {} after {} Fillets in all (§28G); only the radius of \
-             either Fillet (edit-fillet-radius, §28H) and the plate's height (edit-extrude, \
-             §28I) and the base Sketch's Line coordinates (edit-sketch-copy, §28J) can be \
-             edited. Editing the constraints of a history with two Fillets, and adding a \
-             third Fillet or a Cut, are not supported yet",
+             either Fillet (edit-fillet-radius, §28H), the plate's height (edit-extrude, \
+             §28I), the base Sketch's Line coordinates (edit-sketch-copy, §28J) and its Line \
+             constraints (edit-sketch-constraints-copy, §28K) can be edited. Adding a third \
+             Fillet or a Cut is not supported yet",
             tip.id,
             fillets.len()
         )));
@@ -1686,12 +1686,15 @@ mod tests {
         assert_eq!((one.history_index, two.history_index), (1, 2));
         // §28J: the base Sketch's coordinates read both Fillets.
         assert!(reading.sketches.iter().all(|s| s.refusal.is_none()));
-        assert!(
-            reading
-                .constraint_sketches
-                .iter()
-                .all(|s| s.refusal.is_some())
-        );
+        // §28K: so do its Line constraints, with both Fillets in order.
+        for s in &reading.constraint_sketches {
+            assert_eq!(s.refusal, None);
+            assert_eq!(s.fillet.as_ref().map(|f| f.feature), Some(one.feature));
+            assert_eq!(
+                s.second_fillet.as_ref().map(|f| f.feature),
+                Some(two.feature)
+            );
+        }
         assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
     }
 

@@ -197,14 +197,16 @@ fn coordinate_choice(
                 };
                 // §28J: under two Fillets the Sketch may keep the closure
                 // links §28E leaves; they name endpoints, and the loop stays
-                // exactly closed. Any other constraint is a later slice.
+                // exactly closed. Any other constraint is edited with the
+                // constraint editor (§28K) before its coordinates are.
                 let closure_only =
                     second.is_some() && crate::sketch_constraints::closure_links_only(sketch);
                 if second.is_some() && !sketch.constraints.is_empty() && !closure_only {
                     return Err(unsupported(
                         "coordinate editing of the plate under two Fillets requires a Sketch \
-                         without constraints other than Coincident closure links; editing \
-                         constraints under two Fillets is not supported yet",
+                         without constraints other than Coincident closure links; its \
+                         constraints are edited with edit-sketch-constraints-copy (§28K), and \
+                         removing the last of them leaves only those links",
                     ));
                 }
                 let vertices = lines(sketch, &profile_use, closure_only)?;
@@ -271,6 +273,11 @@ fn unsupported(message: &str) -> CadError {
 /// drawing is judged by the Extrude's polygon policy here and by the Fillet's
 /// own policy in the rebuild. Any other Sketch of a filleted part, and a
 /// Fillet outside that frame, are refused naming the Fillet.
+///
+/// §28K: the §28G history of two Fillets is read by the reader the radius,
+/// height and coordinate edits use for two (`fillets_over_plate`); both
+/// Fillets come back in history order, and their radii and pair are judged on
+/// the solved Lines by the rebuild, as for one.
 pub(crate) fn constraint_frame<'a>(
     document: &Document,
     objects: &'a [ObjectRecord],
@@ -278,7 +285,7 @@ pub(crate) fn constraint_frame<'a>(
 ) -> Result<(
     &'a crate::Sketch,
     SketchProfileUse,
-    Option<crate::SavedFillet>,
+    Option<crate::fillet_radius::FilletsOverPlate>,
 )> {
     if objects
         .iter()
@@ -287,9 +294,10 @@ pub(crate) fn constraint_frame<'a>(
         let (sketch, profile_use) = revolve_frame(document, objects, object)?;
         return Ok((sketch, profile_use, None));
     }
-    match crate::fillet_radius::fillet_over_plate(document, objects) {
+    match crate::fillet_radius::fillets_over_plate(document, objects) {
         Ok(None) => {}
-        Ok(Some(saved)) => {
+        Ok(Some(over)) => {
+            let saved = &over.first;
             if object.id != saved.profile {
                 return Err(unsupported(&format!(
                     "constraint editing of the plate under Fillet {} requires its base Sketch {}",
@@ -304,7 +312,7 @@ pub(crate) fn constraint_frame<'a>(
                 feature: saved.previous,
                 height_mm: saved.height_mm,
             };
-            return Ok((sketch, profile_use, Some(saved)));
+            return Ok((sketch, profile_use, Some(over)));
         }
         Err(reason) => return Err(crate::fillet::filleted_outside_frame(objects, &reason)),
     }
