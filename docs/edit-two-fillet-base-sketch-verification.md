@@ -153,7 +153,38 @@ and writes nothing; a document written by that build is moved by this one.
 
 ## CI
 
-CI_PLACEHOLDER
+Head `74e7f0e` (code, workflows and docs), all 15 checks green:
+
+* [CI 36736660741](https://github.com/gesriot/ferrite-cad/actions/runs/36736660741):
+  7/7. The Ubuntu log (4 949 lines, read in full) shows the stub gates `ok` —
+  `sequential::sketch::sketch_discovery_and_protocol_without_native`, the app
+  widget test and the four `fillet_radius::tests` gates — and
+  `FCAD_28J_RECIPE_NO_KERNEL`.
+* [planegcs pin 36736623496](https://github.com/gesriot/ferrite-cad/actions/runs/36736623496):
+  success on three platforms plus the comparison.
+* [Combined runtime layout 36736623453](https://github.com/gesriot/ferrite-cad/actions/runs/36736623453):
+  Linux, macOS (arm64) and Windows succeeded at the first attempt, and the
+  comparison job succeeded. In each platform's log all 12 new distinct gates
+  are `ok` (6 `sequential::sketch`, 4 `fillet_radius::tests`, 2 app
+  `sketch::tests`), 12 executions, no `skipped:` line;
+  `FCAD_28J_RECIPE_OK` shows the same volumes as the local run
+  (`moved=1949.910066/1950.087022 narrow=815.277235/815.454209
+  tall_f2=1162.038831/1162.210120`); `FCAD_FILLET_TWO_SKETCH_UFBX_EXECUTED`
+  is present.
+* **Log limit, stated:** the GitHub tool of the cloud session returns only the
+  last 5000 lines of a job log, and each of the three runtime logs has about
+  11 000. The step that runs the OCCT-without-solver gate and recipe (§28J's
+  `sequential::sketch::sketch_discovery_and_protocol_without_native` in the
+  no-default-features build and its recipe) lies before those 5000 lines, so
+  its §28J lines were **not** read in CI; that step passed on all three
+  platforms. The full logs are available on GitHub itself.
+* **Base `2b5aab6`:** its post-merge CI, planegcs pin, product SBOM, rust SBOM
+  and combined runtime layout ([36730887956](https://github.com/gesriot/ferrite-cad/actions/runs/36730887956))
+  succeeded. `rust notices` [36730888316](https://github.com/gesriot/ferrite-cad/actions/runs/36730888316)
+  is red on the base: its macOS job was cancelled after about 15 minutes with
+  no step started, so the comparison job was skipped; Linux and Windows
+  passed. That is a check of the same tree that this branch did not touch and
+  did not trigger.
 
 ## Limits
 
