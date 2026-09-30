@@ -2,6 +2,65 @@
 
 [Contract and recipe](edit-two-fillet-base-height.md).
 
+## Independent review and macOS window verification — 2026-09-30
+
+Reviewed PR #73 at `6450494beb673f3ea961bd738e9be8ac1047bf39` against
+`38064fb409551eef21dc75be3bbfb99e2377bbc1`. No product-code correction was
+needed. The shared history reader, complete writer re-derivation, additive
+JSON field and refusals retained by the other editors were checked.
+
+Pinned local OCCT 8.0.1 and PlaneGCS, existing release target, two build jobs:
+document/jobs/eval **472 executed**, CLI Fillet **52**, app edit **13**, app
+Fillet **10** — **547 executed, no failures**. Four build-specific N/A tests
+and one old ignored timing benchmark are separate. Fresh CLI/app builds,
+fmt and workspace clippy (all targets/features, warnings denied) passed.
+The extracted §28I recipe passed against the freshly staged bundled CLI.
+The arm64 bundle passed dependency closure and strict/deep codesign checks;
+its bundled solver-info ran without external library-path overrides.
+
+The complete downloaded runtime log was inspected, not just the workflow
+definition: [runtime 36681632081](https://github.com/gesriot/ferrite-cad/actions/runs/36681632081)
+and [PlaneGCS pin 36681632058](https://github.com/gesriot/ferrite-cad/actions/runs/36681632058)
+succeeded on code head `02fbf1d1198db281c57fcc6213f3dde84385efa2`. Each OS
+executed nine distinct new gates twelve times: discovery in mixed/native,
+and both app gates also in the general regression run. Both recipe markers
+and the new ufbx marker were present per OS; each of the four new FBX files
+passed six checks, with STL joins of 120/120/136/120 triangles. The final
+reviewed head differs only in this verification document; its
+[CI 36687890946](https://github.com/gesriot/ferrite-cad/actions/runs/36687890946)
+passed all seven jobs. The earlier reported 5,000-line ceiling was a cloud
+tool output limit; the full GitHub runtime log was retrievable (33,721 lines).
+
+Real macOS window, fresh bundle, fixture and comparator extracted from this
+document: empty start, Open of the dimensioned clockwise fractional plate,
+selection of the base Extrude and visible context for both Fillets; zero
+height disabled Save; Save Cancel retained 12.25; a 0.000001 mm height was
+refused by the kernel after Save, retaining the accepted scene and draft.
+Recovery published 12.25 mm, async Open accepted it, then a second edit
+published 3.5 mm and async Open accepted that. The top view showed both
+rounded corners. System Save dialogs exported its STL and FBX.
+
+The strict comparator required the four GUI artifacts before creating CLI
+peers: `FCAD_28I_GUI_COMPARE_OK cells=382`. Both edits obeyed the SQL
+allowlist, source bytes were unchanged, `never.fcad` was absent, identities
+and both radii were retained, and GUI/CLI STL and FBX were byte-identical.
+Its independent STL measurement passed; pinned ufbx 0.23.0 read the GUI FBX
+with six checks and zero failures. An independent oriented-triangle join
+matched all 136 triangles (worst difference `6.94e-18` m).
+
+One viewer process under the 1536 MiB watchdog: **212.579 MiB peak**, 677
+samples, pressure level 1 throughout, swap 753.313 → 705.313 MiB. It exited
+normally with code 0 and no watchdog abort. Process termination was checked
+by PID without further CUA access that could relaunch it. Before this run,
+system pressure had refused the preflight without launching a viewer; the
+user restarted desktop apps and pressure returned to normal. This is not
+evidence that the earlier FerriteCAD OOM has been fixed.
+
+Local artifacts: `/private/tmp/ferrite-pr73-review/` (test and CI logs,
+fixture/comparator/recipe, window screenshots, `smoke1.jsonl`, GUI exports
+and reader/join output). No large STEP corpus or unrelated GPU suite was
+repeated locally. Windows/Linux window behavior was not tested here.
+
 ## Where and how this was run
 
 * **Base.** `origin/main` at `38064fb409551eef21dc75be3bbfb99e2377bbc1`

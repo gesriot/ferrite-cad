@@ -4103,3 +4103,12 @@ Fillet, Cut with Fillet and Chamfer remain outside; milestone 5C remains
 open.
 [Contract and recipe](edit-two-fillet-base-height.md),
 [verification](edit-two-fillet-base-height-verification.md).
+
+Independent review found no product-code correction. Pinned local checks
+executed 547 tests (four build-specific N/A and one ignored timing benchmark
+separate), and actual CI logs confirmed the new gates on all three platforms.
+The protected macOS window run passed invalid input, kernel refusal, Save
+Cancel, recovery, raising/lowering, publication/async Open and exports.
+GUI/CLI SQL and byte-identical STL/FBX agreed; pinned ufbx and the independent
+oriented-triangle join passed. Viewer peak 212.579 MiB, pressure normal,
+swap decreased, exit 0. The previous OOM remains unexplained.
