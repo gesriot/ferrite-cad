@@ -175,9 +175,9 @@ escape) и массивы на месте объектов отказывают�
 для чтения. Stub-сборка находит кандидатов и отказывает геометрии
 (`unsupported`). PlaneGCS не нужен.
 
-Все прежние редакторы отказывают скруглённой детали с причиной, называющей
-Fillet: высота, координаты и ограничения эскиза, Cut, Revolve, а также второй
-Fillet.
+Правки радиуса, высоты, координат и ограничений плиты с одним Fillet —
+§28B–E ниже; добавление второго Fillet — §28G. Cut после Fillet и Revolve
+такой детали остаются неподдержанными.
 [Контракт §28A и исполняемый рецепт](single-edge-fillet.md).
 
 §28B: `edit-fillet-radius <source.fcad> --feature UUID --expect-version HASH
@@ -190,8 +190,9 @@ Fillet §28A и публикует новую копию. Фича остаёт�
 
 Discovery — аддитивный `fillets[]` в `inspect --json`, без ядра. Stub-сборка
 находит Fillet, разбирает запрос и затем отказывает геометрии
-(`unsupported`). PlaneGCS не нужен. Второй Fillet, смена ребра, радиус 0 как
-удаление, Chamfer и правка детали под Fillet'ом по-прежнему отказывают.
+(`unsupported`). PlaneGCS не нужен для неограниченного Sketch. Смена ребра,
+радиус 0 как удаление и Chamfer отказывают. Правки под одним Fillet описаны
+в §28C–E; добавление второго — в §28G, правка истории из двух пока недоступна.
 [Контракт §28B и исполняемый рецепт](edit-fillet-radius.md).
 
 §28C: прежний `edit-extrude` меняет высоту плиты под сохранённым Fillet
@@ -262,6 +263,20 @@ payload, capability и схем не добавлено; документ — т
 не прямоугольник — `unsupported`; без PlaneGCS — `unsupported`, без ядра —
 `unsupported` «Open CASCADE»; discovery работает везде.
 [Контракт §28F и исполняемый рецепт](fillet-constrained-plate.md).
+
+§28G: тот же `fillet-edge-copy` добавляет второй Fillet на другом вертикальном
+углу плиты, неограниченной или уже размеренной. История —
+Extrude → Fillet 1 → Fillet 2 → Body tip. `previous_feature_id` называет
+первый Fillet, а `edge.feature_id` остаётся UUID базового Extrude.
+Discovery предлагает три оставшихся угла и историю; для соседнего угла
+учитывает плоский участок не меньше 0,01 мм на общей Line. У размеренной
+плиты окончательное решение принимает rebuild по решённым Line.
+Fillet 2 — payload v2 с `feature.fillet.sequential.v1`; восемь новых имён
+включают `origin_fillet_face` — цилиндр первого Fillet в конечном Body.
+Исходник, Sketch, первая фича и прежние UUID/refs сохраняются. Старый reader
+отказывает новой семантике безопасно. Третий Fillet, повтор того же угла,
+касание дуг и редактирование истории из двух Fillet пока недоступны.
+[Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`

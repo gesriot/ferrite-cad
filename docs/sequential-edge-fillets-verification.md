@@ -2,6 +2,61 @@
 
 [Contract and recipe](sequential-edge-fillets.md).
 
+## Independent macOS review — 2026-09-29
+
+Reviewed `a046469b2fb08acf27fb8ff77eff83a092be01d3` against `931da6d`.
+No production defect was found. The public README, CLI capabilities and JSON
+contract still said a second Fillet was unavailable; those statements were
+corrected and §28G was added to the implementation plan. Production sources,
+workflow commands and executable recipes were unchanged during review.
+
+**Local native checks.** Fresh release CLI/viewer, pinned OCCT 8.0.1 and the
+existing pinned PlaneGCS delivery on Apple Silicon. Kernel, OCCT, topology,
+document, jobs and eval suites reported 818 harness passes: 816 executed and
+two explicit no-solver-only N/A; one existing timing benchmark was ignored.
+The complete CLI Fillet suite reported 43 passes: 41 executed and two explicit
+mixed-build-only N/A. All eight headless Fillet app tests executed. No required
+native gate skipped. Formatting and workspace clippy (all targets/features,
+`-D warnings`) passed. The heavy STEP campaign was not repeated locally.
+
+**Real window.** A fresh staged arm64 bundle passed strict/deep codesign and
+its bundled solver probe without DYLD overrides. One viewer, PID 16712, ran
+under the 1536 MiB watchdog. The fixture and comparator below ran against its
+bundled CLI. Open showed the first Fillet; the form listed only the other three
+corners and the first radius. Radius 0.005 was rejected. Radius 7.12 survived
+Save Cancel, then failed after solving because the two arcs would leave only
+0.004999999999999893 mm flat on the shared 14.25 mm Line. `never.fcad` was not
+created and the draft survived. Radius 5.5 published `gui.fcad` and opened it
+asynchronously; the top view showed both rounded corners. Third Fillet and
+both saved-radius editors were disabled with the documented reason.
+
+GUI STL/FBX exports matched the CLI copy byte for byte; the comparator reported
+`FCAD_28G_GUI_COMPARE_OK cells=167`, including source preservation and SQL/ref
+allowlists. Pinned ufbx 0.23.0 reported six checks, zero failures. Independent
+oriented STL/FBX comparison matched 172 triangles (worst coordinate difference
+6.94e-18 m). Peak physical footprint was **202.704 MiB**, pressure stayed normal,
+swap stayed zero and Cmd+Q returned exit 0. No CUA viewer call was made after
+Quit. An initial watchdog invocation failed before launching any child because
+its stdout log name was already reserved by the invoking shell; a new log stem
+was used for the sole viewer process. The earlier OOM remains unexplained.
+
+**Remote evidence read independently.** Ordinary CI on `a046469` succeeded
+([run 36647824593](https://github.com/gesriot/ferrite-cad/actions/runs/36647824593)).
+The actual logs of the complete runtime rerun on `5860705`
+([36640255679](https://github.com/gesriot/ferrite-cad/actions/runs/36640255679))
+contained all 12 distinct new exact gate names, 13 executions per OS because
+one discovery gate also runs in the mixed build, two recipe markers per OS
+and one sequential-FBX reader marker per OS. All three platforms and comparison
+passed. Changes after that head were verification prose only; pin run
+[36637802226](https://github.com/gesriot/ferrite-cad/actions/runs/36637802226)
+also passed on its applicable code inputs. The later review documentation
+commit must pass its own ordinary CI before merge; it is not covered by the
+older head's status.
+
+Local evidence: `/private/tmp/ferrite-pr71-review`, with retained small logs,
+models and screenshots under the review artifact directory. No foreign
+worktree or user model was changed.
+
 ## Where and how this was run
 
 * **Base.** `origin/main` at `931da6d9a450db34e2a613286465acdedf551463`

@@ -103,14 +103,20 @@ rectangle's Lines can also be dimensioned with the ordinary **Edit
 constraints** form or `edit-sketch-constraints-copy` (H/V, lengths, one fixed
 point, equal length, Parallel/Perpendicular): the part is built from the
 solved sketch, and the new copy is saved only if the solved plate still has
-room for the radius at the same corner. Chains, cap edges, a second Fillet, another edge, Chamfer
-and editing the rest of a filleted part are not supported yet.
+room for the radius at the same corner. The same **Fillet edge of …** form or
+`fillet-edge-copy` can then round a second, different vertical corner as its
+own Fillet. Adjacent corners must leave at least 0.01 mm flat between their
+arcs; on a dimensioned plate this is checked on the solved sides. The first
+Fillet's cylinder keeps its origin in the final Body. Editing a two-Fillet
+history, a third Fillet, touching arcs, chains, cap edges, Cut with Fillet and
+Chamfer are not supported yet.
 [Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
 [Fillet radius edit contract and recipe](docs/edit-fillet-radius.md).
 [Rounded-plate height contract and recipe](docs/edit-fillet-base-height.md).
 [Rounded-plate Sketch contract and recipe](docs/edit-fillet-base-sketch.md).
 [Rounded-plate constraints contract and recipe](docs/fillet-base-constraints.md).
 [Rounding a dimensioned plate: contract and recipe](docs/fillet-constrained-plate.md).
+[Second sequential Fillet: contract and recipe](docs/sequential-edge-fillets.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to
