@@ -1095,6 +1095,145 @@ mod tests {
         }
     }
 
+    /// The object rows of `d` whose payload differs from `before`'s.
+    fn changed_rows(before: &[ObjectRecord], d: &Document) -> Vec<ObjectId> {
+        let after = d.objects().expect("objects");
+        assert_eq!(after.len(), before.len());
+        after
+            .iter()
+            .filter(|o| before.iter().find(|b| b.id == o.id).expect("same rows") != *o)
+            .map(|o| o.id)
+            .collect()
+    }
+
+    /// §28I: under two sequential Fillets, adjacent and opposite, the base
+    /// height alone changes — raised, lowered and kept — through the shipped
+    /// preparation and writer; both Fillet rows, the Sketch, every name and
+    /// every dependency stay; the preparation carries Fillet 1 as the Fillet
+    /// on the base and Fillet 2 as rounding Fillet 1's result. Every other
+    /// feature and bad height is refused before any writer.
+    #[test]
+    fn the_base_height_under_two_fillets_changes_alone_and_keeps_both() {
+        for (r1, at, r2) in [(2.375, 2, 3.0625), (2.0, 3, 5.5)] {
+            let (_root, mut d, first, second) = sequential(r1, at, r2);
+            let base = base_of(&d, first);
+            let sketch = match &d.object(base).expect("read").expect("base").payload {
+                ObjectPayload::Extrude(e) => e.profile,
+                _ => panic!("an Extrude"),
+            };
+            let refs = d.topology_refs().expect("refs");
+            let deps = d.dependencies().expect("dependencies");
+            for height in [11.5, 2.25, 2.25] {
+                let objects = d.objects().expect("objects");
+                let p = crate::prepare_extrude_height(&d, base, height).expect("prepared");
+                let one = p.fillet().expect("Fillet 1");
+                let two = p.second_fillet().expect("Fillet 2");
+                assert_eq!((one.feature, one.previous), (first, base));
+                assert_eq!(
+                    (two.feature, two.previous),
+                    (second, first),
+                    "Fillet 2 rounds Fillet 1's result, not the base"
+                );
+                assert_eq!((one.history_index, two.history_index), (1, 2));
+                assert!(p.history().is_none(), "not a Cut history");
+                d.write_extrude_height(&p).expect("written");
+                let moved = changed_rows(&objects, &d);
+                let was = objects.iter().find(|o| o.id == base).expect("base");
+                let same = match &was.payload {
+                    ObjectPayload::Extrude(e) => matches!(
+                        &e.end_condition,
+                        EndCondition::Blind { distance } if distance.value() == height
+                    ),
+                    _ => false,
+                };
+                assert_eq!(moved, if same { vec![] } else { vec![base] });
+                assert_eq!(stored_fillet(&d, first).radius_mm, r1);
+                assert_eq!(stored_fillet(&d, second).radius_mm, r2);
+                assert_eq!(stored_fillet(&d, second).previous, first);
+                assert_eq!(d.topology_refs().expect("refs"), refs, "no name moved");
+                assert_eq!(d.dependencies().expect("deps"), deps);
+                assert!(d.validate().expect("validate").is_ok());
+            }
+            // Not the base: either Fillet or the Sketch; no bad height.
+            for feature in [first, second, sketch, ObjectId::new()] {
+                assert!(
+                    crate::prepare_extrude_height(&d, feature, 9.5).is_err(),
+                    "{feature}"
+                );
+            }
+            for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+                assert_eq!(
+                    crate::prepare_extrude_height(&d, base, bad)
+                        .expect_err("bad height")
+                        .kind(),
+                    ErrorKind::Input
+                );
+            }
+            // The Sketch and constraint editors keep refusing, naming what
+            // can be edited.
+            let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+            for s in &reading.sketches {
+                let reason = s.refusal.as_deref().expect("refused");
+                assert!(reason.contains("height"), "{reason}");
+            }
+            assert!(
+                reading
+                    .constraint_sketches
+                    .iter()
+                    .all(|s| s.refusal.is_some())
+            );
+        }
+    }
+
+    /// §28I: the height writer re-derives both Fillets. A preparation that
+    /// drops or alters Fillet 2, swaps the two, names another row, or comes
+    /// from another version, and a document changed after preparation, are
+    /// refused and write nothing.
+    #[test]
+    fn the_height_writer_refuses_a_forged_two_fillet_preparation() {
+        let (_root, mut d, first, second) = sequential(2.375, 2, 3.0625);
+        let base = base_of(&d, first);
+        let honest = crate::prepare_extrude_height(&d, base, 9.5).expect("prepared");
+        let mut forged = Vec::new();
+        let mut p = honest.clone();
+        p.second_fillet = None;
+        forged.push(("a preparation without Fillet 2", p));
+        let mut p = honest.clone();
+        if let Some(f) = &mut p.second_fillet {
+            f.radius_mm = 4.0;
+        }
+        forged.push(("another radius of Fillet 2", p));
+        let mut p = honest.clone();
+        if let Some(f) = &mut p.second_fillet {
+            f.previous = base;
+        }
+        forged.push(("Fillet 2 on the base", p));
+        let mut p = honest.clone();
+        std::mem::swap(&mut p.fillet, &mut p.second_fillet);
+        forged.push(("the two swapped", p));
+        let mut p = honest.clone();
+        p.fillet = None;
+        p.second_fillet = None;
+        forged.push(("no Fillet at all (the legacy writer)", p));
+        let mut p = honest.clone();
+        p.feature.id = second;
+        forged.push(("Fillet 2's row", p));
+        let mut p = honest.clone();
+        p.source_version = ContentHash::of_bytes(b"another version");
+        forged.push(("another version", p));
+        let before = cells(&d);
+        for (why, p) in &forged {
+            assert!(d.write_extrude_height(p).is_err(), "{why} was written");
+            assert_eq!(cells(&d), before, "{why} wrote something");
+        }
+        // Stale: Fillet 2's radius changed after the height was prepared.
+        let radius = prepare_fillet_radius(&d, second, 2.5).expect("radius");
+        d.write_fillet_radius(&radius).expect("radius written");
+        let before = cells(&d);
+        assert!(d.write_extrude_height(&honest).is_err(), "stale");
+        assert_eq!(cells(&d), before, "stale wrote something");
+    }
+
     /// §28H: the writer re-derives a two-Fillet radius edit; a forged payload,
     /// the other Fillet's row, a radius past the pair bound and a stale version
     /// are refused, writing nothing.

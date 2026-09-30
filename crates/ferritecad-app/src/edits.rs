@@ -1865,4 +1865,174 @@ mod tests {
         }
         assert_eq!(std::fs::read(&path).expect("source"), original);
     }
+
+    /// §28I, kernel-free: on a plate rounded twice, the same form names both
+    /// Fillets in history order, hands over the base Extrude's request and
+    /// keeps its draft through Save Cancel and a worker refusal.
+    #[test]
+    fn two_fillet_base_height_widgets_show_both_fillets_and_keep_the_draft() {
+        let (_root, path, reading) = crate::fillets::tests::rounded_twice(2.375, 3.0625);
+        assert_eq!(reading.unavailable_reason(), None);
+        let base = reading
+            .features
+            .iter()
+            .find(|f| f.fillet.is_some())
+            .expect("the base under the Fillets");
+        let one = base.fillet.clone().expect("Fillet 1");
+        let two = base.second_fillet.clone().expect("Fillet 2");
+        assert_eq!(
+            two.previous, one.feature,
+            "Fillet 2 rounds Fillet 1's result"
+        );
+        let mut e = Edits::default();
+        assert!(e.begin(&path, &reading), "the form opens");
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        }
+        let row = e
+            .form
+            .as_ref()
+            .expect("form")
+            .shown
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("row")
+            .clone();
+        assert_eq!(row.refusal, None);
+        height_click(&ctx, &mut e, &path, &reading, &row.label);
+        let out = height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        assert!(painted(
+            &out,
+            &format!(
+                "History: Extrude {} -> Fillet 1 {} at (33, 3.25), r 2.375 mm -> Fillet 2 {} at \
+                 (33, 15.5), r 3.0625 mm. Both Fillets keep their edges and radii; only the \
+                 plate's height changes.",
+                base.feature, one.feature, two.feature
+            )
+        ));
+        e.form.as_mut().expect("form").shown.distance = "0".into();
+        assert!(e.request(PathBuf::from("never.fcad")).is_none());
+        e.form.as_mut().expect("form").shown.distance = "6.75".into();
+        type_height(&ctx, &mut e, &path, &reading, "6.75", "12.125");
+        height_click(&ctx, &mut e, &path, &reading, "Save new file…");
+        assert!(!e.running(), "Save Cancel submits nothing");
+        let request = e.request(PathBuf::from("ui.fcad")).expect("valid request");
+        assert_eq!(request.feature, base.feature);
+        assert_eq!(request.distance_mm, 12.125);
+        assert_eq!(request.expected, reading.version);
+        let g = e
+            .start(request, |_, _, _| std::thread::spawn(|| {}))
+            .expect("started");
+        assert!(
+            e.finish(g, Err(CadError::kernel("refused by the worker")))
+                .is_none()
+        );
+        assert_eq!(
+            e.form
+                .as_ref()
+                .expect("a refusal keeps the draft")
+                .shown
+                .distance,
+            "12.125"
+        );
+        e.cancel();
+        assert!(!e.busy());
+    }
+
+    /// §28I, native: the two-Fillet height through the app's worker and the
+    /// shipped CLI publish one document — every SQL cell equal but the stamp,
+    /// nothing minted — and byte-identical STL and FBX; the accepted scene
+    /// keeps both Fillets at the new height.
+    #[test]
+    fn native_two_fillet_base_height_worker_and_cli_publish_the_same_part() {
+        if !native() {
+            return;
+        }
+        let (root, path, reading) = crate::fillets::tests::rounded_twice(2.375, 3.0625);
+        let original = std::fs::read(&path).expect("bytes");
+        let base = reading
+            .features
+            .iter()
+            .find(|f| f.fillet.is_some())
+            .expect("base")
+            .clone();
+        let mut e = Edits::default();
+        assert!(e.begin(&path, &reading));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        }
+        let label = e
+            .form
+            .as_ref()
+            .expect("form")
+            .shown
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("row")
+            .label
+            .clone();
+        height_click(&ctx, &mut e, &path, &reading, &label);
+        type_height(&ctx, &mut e, &path, &reading, "6.75", "3.3125");
+        let ui = root.path().join("ui.fcad");
+        let request = e.request(ui.clone()).expect("request");
+        let (tx, rx) = mpsc::channel();
+        let g = e
+            .start(request, move |r, g, c| {
+                spawn_edit(r, c, move |v| tx.send((g, v)).expect("reply"))
+            })
+            .expect("start");
+        let (g2, result) = rx.recv().expect("worker result");
+        assert_eq!(g, g2);
+        assert_eq!(e.finish(g, result).expect("published"), ui);
+        e.draft_load_finished(&ui, false);
+        assert_eq!(
+            e.form
+                .as_ref()
+                .expect("a failed Open restores the draft")
+                .shown
+                .distance,
+            "3.3125"
+        );
+        let accepted = opened(&ui).edit_source.expect("the new scene's catalogue");
+        let current = accepted
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("the same base");
+        assert_eq!(current.distance_mm, Some(3.3125));
+        // Both Fillets as they were; only the plate's height under them moved.
+        let kept = |f: &Option<ferritecad_document::SavedFillet>| {
+            f.as_ref()
+                .map(|f| (f.feature, f.previous, f.edge, f.radius_mm, f.history_index))
+        };
+        assert_eq!(kept(&current.fillet), kept(&base.fillet), "Fillet 1");
+        assert_eq!(
+            kept(&current.second_fillet),
+            kept(&base.second_fillet),
+            "Fillet 2"
+        );
+        assert_eq!(current.fillet.as_ref().map(|f| f.height_mm), Some(3.3125));
+        e.cancel();
+        e.draft_load_finished(&ui, true);
+
+        let peer = root.path().join("cli.fcad");
+        run(&[
+            "edit-extrude".as_ref(),
+            path.as_os_str(),
+            "--feature".as_ref(),
+            base.feature.to_string().as_ref(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--distance-mm".as_ref(),
+            "3.3125".as_ref(),
+            "-o".as_ref(),
+            peer.as_os_str(),
+        ]);
+        crate::fillets::tests::same_radius_publication(&path, &ui, &peer);
+        assert_eq!(std::fs::read(&path).expect("source"), original);
+    }
 }
