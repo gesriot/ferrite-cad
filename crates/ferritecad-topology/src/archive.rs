@@ -74,6 +74,19 @@ pub enum BoundName {
         edge_feature: ObjectId,
         joint: ProfileJoint,
     },
+    /// §28G: the edge `origin_feature` swept at `joint`, as this feature
+    /// leaves it. What a second Fillet rounds, restored with the geometry.
+    OriginSweepEdge {
+        origin_feature: ObjectId,
+        joint: ProfileJoint,
+    },
+    /// §28G: the face the Fillet `origin_feature` made by rounding the edge
+    /// `edge_feature` swept at `joint`, as this feature leaves it.
+    OriginFilletFace {
+        origin_feature: ObjectId,
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    },
 }
 
 impl BoundName {
@@ -137,10 +150,12 @@ impl BoundName {
             | Self::RevolvedFace { .. }
             | Self::RevolvedStartCap
             | Self::RevolvedEndCap
-            | Self::EdgeFilletFace { .. } => SubShapeKind::Face,
-            Self::StartCapEdge { .. } | Self::EndCapEdge { .. } | Self::SweepEdge { .. } => {
-                SubShapeKind::Edge
-            }
+            | Self::EdgeFilletFace { .. }
+            | Self::OriginFilletFace { .. } => SubShapeKind::Face,
+            Self::StartCapEdge { .. }
+            | Self::EndCapEdge { .. }
+            | Self::SweepEdge { .. }
+            | Self::OriginSweepEdge { .. } => SubShapeKind::Edge,
             Self::StartCapVertex { .. } | Self::EndCapVertex { .. } => SubShapeKind::Vertex,
         }
     }
@@ -408,6 +423,23 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
                 origin_feature: origin,
                 profile_segment,
             },
+            // §28G names have no legacy predecessor-relative form: always
+            // qualified by their origin.
+            (_, crate::CarriedName::SweepEdge(joint)) => BoundName::OriginSweepEdge {
+                origin_feature: origin,
+                joint,
+            },
+            (
+                _,
+                crate::CarriedName::FilletFace {
+                    edge_feature,
+                    joint,
+                },
+            ) => BoundName::OriginFilletFace {
+                origin_feature: origin,
+                edge_feature,
+                joint,
+            },
         };
         if names.origin_is_deleted(origin, carried) {
             removed.push(name);
@@ -658,6 +690,21 @@ fn carried_origin(
             origin_feature,
             profile_segment,
         } => Ok((origin_feature, crate::CarriedName::Side(profile_segment))),
+        BoundName::OriginSweepEdge {
+            origin_feature,
+            joint,
+        } => Ok((origin_feature, crate::CarriedName::SweepEdge(joint))),
+        BoundName::OriginFilletFace {
+            origin_feature,
+            edge_feature,
+            joint,
+        } => Ok((
+            origin_feature,
+            crate::CarriedName::FilletFace {
+                edge_feature,
+                joint,
+            },
+        )),
         _ => Err(CadError::topology("only a carried name may be removed")),
     }
 }

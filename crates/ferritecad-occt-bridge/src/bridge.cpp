@@ -2563,6 +2563,14 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
 
     // What became of every name the target had, asked now while the builder
     // is alive; the same four-fact vocabulary a cut answers in.
+    //
+    // Classified by `Modified`, then by membership of the result, and only
+    // then as deleted (§28G). Measured on Open CASCADE 8.0.1: this builder's
+    // `IsDeleted` answers true for edges and vertices the result still holds
+    // unchanged — 7 of a box's 8 edges and 6 of its 8 vertices after one
+    // vertical edge is rounded — while it answers false for every kept face.
+    // Asking it first would report a surviving edge as gone. The answer for
+    // every face is the same as before.
     for (size_t i = 0; i < source.sub_shapes.size(); ++i) {
       const TopoDS_Shape &sub = source.sub_shapes[i];
       if (sub.IsNull()) {
@@ -2570,22 +2578,27 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
       }
       std::vector<uint64_t> outputs;
       int32_t kind = FC_OCCT_CARRIED_DELETED;
-      if (!fillet.IsDeleted(sub)) {
-        const TopTools_ListOfShape &changed = fillet.Modified(sub);
-        if (!changed.IsEmpty()) {
-          kind = FC_OCCT_CARRIED_MODIFIED;
-          for (TopTools_ListOfShape::Iterator it(changed); it.More(); it.Next()) {
-            if (in_result(it.Value())) {
-              outputs.push_back(record.remember(it.Value()));
-            }
+      const TopTools_ListOfShape &changed = fillet.Modified(sub);
+      if (!changed.IsEmpty()) {
+        for (TopTools_ListOfShape::Iterator it(changed); it.More(); it.Next()) {
+          // An answer of another sort — an edge for a face, a vertex for an
+          // edge — is not what the name meant, and is refused rather than
+          // filed under it.
+          if (it.Value().ShapeType() != sub.ShapeType()) {
+            write_error(out_error,
+                        "the fillet reported a modified sub-shape of another type");
+            return FC_OCCT_KERNEL;
           }
-          if (outputs.empty()) {
-            kind = FC_OCCT_CARRIED_DELETED;
+          if (in_result(it.Value())) {
+            outputs.push_back(record.remember(it.Value()));
           }
-        } else if (in_result(sub)) {
-          kind = FC_OCCT_CARRIED_KEPT;
-          outputs.push_back(record.remember(sub));
         }
+        if (!outputs.empty()) {
+          kind = FC_OCCT_CARRIED_MODIFIED;
+        }
+      } else if (in_result(sub)) {
+        kind = FC_OCCT_CARRIED_KEPT;
+        outputs.push_back(record.remember(sub));
       }
       record.carried.emplace(std::make_pair(target, static_cast<uint64_t>(i)),
                              std::make_pair(kind, std::move(outputs)));

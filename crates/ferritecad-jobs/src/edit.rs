@@ -1017,7 +1017,7 @@ fn built_fillet_corner(
     let profile = objects
         .iter()
         .find_map(|o| match &o.payload {
-            ObjectPayload::Extrude(e) if o.id == fillet.previous => Some(e.profile),
+            ObjectPayload::Extrude(e) if o.id == fillet.edge.feature => Some(e.profile),
             _ => None,
         })
         .ok_or_else(|| CadError::input("the written Fillet rounds no Extrude"))?;

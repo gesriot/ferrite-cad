@@ -547,7 +547,8 @@ Discovery аддитивна: у каждого `bodies[]` появляется 
 `operation:"fillet-edge-copy"`. Result содержит:
 - `destination`, `document_id`, `body_id`;
 - `feature_id` — новый Fillet;
-- `previous_feature_id` — Extrude, которое было tip;
+- `previous_feature_id` — предыдущий tip: Extrude для первого Fillet,
+  первый Fillet для второго (§28G);
 - `edge` — в каноническом порядке;
 - `corner_mm` и `radius_mm`;
 - `references[]` — `reference_id` и `role`: `edge_fillet_face`, два
@@ -558,8 +559,8 @@ Discovery аддитивна: у каждого `bodies[]` появляется 
 - 2 — отказ, ничего не записано;
 - 7 — копия опубликована, но отчёт потерян; её не повторяют и не откатывают.
 
-Для скруглённой копии `fillet_edge.available` равно `false`, а причина
-называет UUID Fillet'а.
+После одного Fillet `fillet_edge` может предлагать три оставшихся угла
+(§28G ниже); после двух — `available: false` с причиной отказа третьему.
 [Контракт §28A и исполняемый рецепт](single-edge-fillet.md).
 
 ### Правка радиуса сохранённого Fillet (§28B)
@@ -732,6 +733,41 @@ Line сменила сторону — `input` с числами; решение
 неверный запрос — `input`. Порядок в stub-сборке прежний: запрос
 разбирается до ядра, корректный запрос — `unsupported` «Open CASCADE».
 [Контракт §28F и исполняемый рецепт](fillet-constrained-plate.md).
+
+### Второе последовательное скругление (§28G)
+
+Прежние `fillet-edge-copy`, request v1, envelope и exit 0/2/7 сохраняются.
+В `bodies[].fillet_edge.target` аддитивно появляются:
+
+- `previous_feature_id`: базовый Extrude на простой плите, сохранённый Fillet
+  на уже скруглённой;
+- `fillets[]`: пустой массив на простой плите либо одна строка с
+  `feature_id`, `edge`, `radius_mm`, `stored_corner_mm` и `corner_mm`.
+  Последнее поле — `null` для размеренной плиты, поскольку inspect не решает
+  Sketch.
+
+`candidates[]` содержит только ещё острые углы, в прежнем порядке Lines:
+четыре до первого скругления, три после него. Новые поля кандидата
+`adjacent_fillet_feature_id` и `shared_line_id` равны UUID соседнего Fillet
+и общей Line; оба `null` для противоположного угла или простой плиты.
+У неограниченной плиты `max_radius_mm` учитывает также пару:
+`min(прежний предел, L_shared − r1 − 0.01)`; на размеренной плите остаётся
+`null`, как и `corner_mm`/`adjacent_lengths_mm`. `stored_*` — сохранённый
+чертёж; существующие поля простой плиты сохраняют типы и значения.
+
+Result второго Fillet называет первый в `previous_feature_id`; `edge`
+по-прежнему адресует базовый Extrude и пару Line UUID. В `references[]`
+восемь строк: прежние семь ролей плюс `origin_fillet_face`, означающая
+цилиндр первого Fillet в результате второго. Fillet 2 сохраняется как
+payload v2 с capability `feature.fillet.sequential.v1`; это не изменение
+JSON schema v1 или SQLite schema.
+
+Повтор угла и нарушение границы радиусов — `input`; третий Fillet и правка
+истории из двух — `unsupported`. В копии с двумя Fillet discovery честно
+отказывает и добавлению третьего, и всем существующим редакторам; строки
+`fillets[]` при этом остаются. Старый reader открывает новую семантику
+только для чтения, не пересобирает её частично и не переписывает файл.
+[Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 

@@ -466,11 +466,16 @@ request.write_text(json.dumps({"request_version": 1, "edge": chosen["edge"],
 refused = run([OP, source, "--body", body["body_id"], "--expect-version",
                catalog["content_version"], "--request", request, "-o", never, "--json"], 2)
 assert refused["error"]["kind"] == "input", refused
+# Since §28G the rounded copy offers a second Fillet on the other three
+# corners; the corner already rounded is refused by name.
 again = inspect(copy)["bodies"][0]["fillet_edge"]
-assert again["available"] is False and result["feature_id"] in again["refusal"], again
+assert again["available"] is True, again
+assert again["target"]["previous_feature_id"] == result["feature_id"], again
+assert chosen["edge"] not in [c["edge"] for c in again["target"]["candidates"]], again
 request.write_text(json.dumps({"request_version": 1, "edge": chosen["edge"], "radius_mm": 1}))
-run([OP, copy, "--body", body["body_id"], "--expect-version",
-     inspect(copy)["content_version"], "--request", request, "-o", never, "--json"], 2)
+twice = run([OP, copy, "--body", body["body_id"], "--expect-version",
+             inspect(copy)["content_version"], "--request", request, "-o", never, "--json"], 2)
+assert twice["error"]["kind"] == "input" and "already rounded" in twice["error"]["message"], twice
 assert sorted(p.name for p in root.iterdir()) == before and not never.exists()
 print("FCAD_28A_RECIPE_OK", f"volume={volume:.6f}", f"exact={exact:.6f}", f"r={r}")
 ```

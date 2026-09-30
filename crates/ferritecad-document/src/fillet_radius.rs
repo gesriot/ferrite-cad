@@ -106,7 +106,8 @@ pub(crate) fn saved_fillet(
         .count();
     if fillets != 1 {
         return Err(CadError::unsupported(format!(
-            "this slice edits a plate with one Fillet, and this document holds {fillets}"
+            "this slice edits a plate with one Fillet, and this document holds {fillets}; \
+             editing a history with two Fillets (§28G) is not supported yet"
         )));
     }
     let history = saved_history_under_fillet(document, objects, fillet)?;

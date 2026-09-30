@@ -32,7 +32,9 @@ use ferritecad_kernel::{
     CutRequest, FilletRequest, GeometryKernel, OperationContext, Profile, ProgressSink,
     ShapeHandle, SketchPlane, SubShapeHandle,
 };
-use ferritecad_topology::{FeatureNames, TopologyMap, archive_feature, restore_feature};
+use ferritecad_topology::{
+    CarriedName, FeatureNames, TopologyMap, archive_feature, restore_feature,
+};
 use ferritecad_types::{CadError, ObjectId, Result};
 
 use crate::cache::{
@@ -559,10 +561,12 @@ fn run<K: GeometryKernel + ?Sized>(
                 // policy, asked of the Lines the predecessor was built from:
                 // the drawing this rebuild already solved for it (§28E), cold
                 // or cached alike, and never a second solve. For an
-                // unconstrained profile those are the stored Lines.
+                // unconstrained profile those are the stored Lines. §28G: the
+                // plate is the feature that swept the edge, which a second
+                // Fillet names while it rounds the first one's result.
                 let saved: Vec<_> = objects.values().cloned().collect();
                 let built: Option<Vec<ferritecad_document::SketchCurve>> =
-                    match objects.get(&previous).map(|o| &o.payload) {
+                    match objects.get(&fillet.edge.feature).map(|o| &o.payload) {
                         Some(ObjectPayload::Extrude(e)) => {
                             state.presentations.get(&e.profile).map(|p| {
                                 p.curves()
@@ -609,18 +613,45 @@ fn run<K: GeometryKernel + ?Sized>(
                         ))
                     })?;
                     // Exactly the edge the payload means, found by its name
-                    // in the predecessor's own output. None, or more than
-                    // one, is a refusal: never the nearest edge.
-                    let edges: Vec<_> = previous_names.sweep_edge(joint).collect();
+                    // in the predecessor's own output: its own sweep edge,
+                    // or (§28G) the plate's edge as the earlier Fillet's
+                    // history carried it. None, or more than one, is a
+                    // refusal: never the nearest edge.
+                    let edge_feature = fillet.edge.feature;
+                    let edges: Vec<_> = if edge_feature == previous {
+                        previous_names.sweep_edge(joint).collect()
+                    } else {
+                        let carried = CarriedName::SweepEdge(joint);
+                        if previous_names.origin_is_deleted(edge_feature, carried) {
+                            return Err(CadError::topology(format!(
+                                "fillet {id} rounds the edge {edge_feature} swept at {joint}, \
+                                 and {previous} already removed it"
+                            )));
+                        }
+                        previous_names
+                            .origin_sweep_edge(edge_feature, joint)
+                            .collect()
+                    };
                     let [edge] = edges.as_slice() else {
                         return Err(CadError::topology(format!(
-                            "fillet {id} rounds the edge {previous} swept at {joint}, and that \
-                             name matches {} edges; it must match exactly one",
+                            "fillet {id} rounds the edge {edge_feature} swept at {joint} on the \
+                             result of {previous}, and that name matches {} edges; it must \
+                             match exactly one",
                             edges.len()
                         )));
                     };
                     let mut track = tracked(&previous_names, &FeatureNames::default());
-                    track.push(*edge);
+                    // §28G: the predecessor's sweep edges and its own fillet
+                    // faces too, so the history says what became of each.
+                    for joint in previous_names.named_joints() {
+                        track.extend(previous_names.sweep_edge(joint));
+                    }
+                    for (made_from, rounded) in previous_names.named_fillet_edges() {
+                        track.extend(previous_names.fillet_face(made_from, rounded));
+                    }
+                    if !track.contains(edge) {
+                        track.push(*edge);
+                    }
                     let request = FilletRequest::new(target_shape, *edge, fillet.radius_mm)?;
                     let result = kernel.fillet_edge(&request, &track, &scoped)?;
                     state.owned.push(result.shape);

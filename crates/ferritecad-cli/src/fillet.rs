@@ -125,6 +125,7 @@ fn role_name(reference: &TopologyRef) -> &'static str {
         SemanticRole::EdgeFilletFace { .. } => "edge_fillet_face",
         SemanticRole::OriginCap { .. } => "origin_cap",
         SemanticRole::OriginSide { .. } => "origin_side",
+        SemanticRole::OriginFilletFace { .. } => "origin_fillet_face",
         _ => "other",
     }
 }

@@ -4039,3 +4039,25 @@ recovery, publication and async Open. GUI/CLI SQL and byte-identical STL/FBX
 were checked independently; ufbx and oriented triangles agreed. Viewer peak
 208.126 MiB, swap 0, exit 0. The actual three-platform CI logs confirmed the
 new named gates and recipe/reader markers; the earlier OOM remains unexplained.
+
+**§28G — a second sequential Fillet, in a new copy.** The existing UI and
+`fillet-edge-copy` can round another vertical corner of the same rectangle,
+unconstrained or dimensioned. Two real features form
+Extrude → Fillet 1 → Fillet 2 → Body tip. Surviving edges and the first
+Fillet's face are carried through OCCT history, qualified by their origins,
+and restored from the v4 named archive. Fillet 2 has payload v2 and requires
+`feature.fillet.sequential.v1`; the SQLite schema is unchanged. Adjacent
+arcs must leave at least 0.01 mm of their shared solved Line flat. Source
+rows and identities are preserved by the shared transaction/copy job.
+The third Fillet, touching arcs, editing a two-Fillet history, Cut with
+Fillet and Chamfer remain outside this slice; milestone 5C remains open.
+[Contract and recipe](sequential-edge-fillets.md),
+[verification](sequential-edge-fillets-verification.md).
+
+Independent review corrected stale public capability statements. Pinned local
+checks executed 865 tests (four build-specific N/A and one old ignored timing
+benchmark separately). Real macOS GUI covered Cancel, solved pair-bound refusal,
+recovery, publication and async Open; SQL and byte-identical GUI/CLI STL/FBX
+were checked, with pinned ufbx and an independent oriented-triangle comparison.
+Viewer peak 202.704 MiB, pressure normal, swap 0, exit 0. Actual CI logs confirmed
+all new gates on three platforms; the old OOM remains unexplained.

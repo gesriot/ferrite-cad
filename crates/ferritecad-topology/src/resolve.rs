@@ -413,6 +413,31 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
             }
         }
 
+        // §28G: an earlier Fillet's face, carried through a later Fillet's
+        // own history and nothing else.
+        SemanticRole::OriginFilletFace {
+            origin_feature,
+            edge_feature,
+            joint,
+        } => {
+            require_kind(reference, EntityKind::Face, "an earlier fillet's face")?;
+            if reference.selection != SelectionRule::Exact {
+                return Err(CadError::input(
+                    "an earlier fillet's face is selected exactly",
+                ));
+            }
+            let faces = origin_faces(
+                map,
+                reference,
+                *origin_feature,
+                CarriedName::FilletFace {
+                    edge_feature: *edge_feature,
+                    joint: *joint,
+                },
+            )?;
+            exactly_one(reference, faces, "the face the named fillet made")
+        }
+
         // A real role, and one this slice cannot answer. The kernel emits no
         // shape for a sketch on its own, so there is no edge handle to hand
         // back; inventing one would be a name with nothing behind it.
