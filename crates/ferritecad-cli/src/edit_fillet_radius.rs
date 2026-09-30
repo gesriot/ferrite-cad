@@ -105,6 +105,10 @@ struct Published {
     corner_mm: [f64; 2],
     previous_radius_mm: f64,
     radius_mm: f64,
+    /// §28H, additive: the feature the edited Fillet rounds and its place in
+    /// the history (1 or 2), both unchanged.
+    previous_feature_id: ObjectId,
+    history_index: usize,
 }
 
 pub fn run(args: EditFilletRadiusArgs) -> Result<ExitCode> {
@@ -124,6 +128,8 @@ pub fn run(args: EditFilletRadiusArgs) -> Result<ExitCode> {
                 corner_mm: r.corner_mm,
                 previous_radius_mm: r.previous_radius_mm,
                 radius_mm: r.radius_mm,
+                previous_feature_id: r.previous,
+                history_index: r.history_index,
             }),
         ))
     } else {

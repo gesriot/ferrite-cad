@@ -763,11 +763,39 @@ payload v2 с capability `feature.fillet.sequential.v1`; это не измен�
 JSON schema v1 или SQLite schema.
 
 Повтор угла и нарушение границы радиусов — `input`; третий Fillet и правка
-истории из двух — `unsupported`. В копии с двумя Fillet discovery честно
-отказывает и добавлению третьего, и всем существующим редакторам; строки
-`fillets[]` при этом остаются. Старый reader открывает новую семантику
+высоты, Sketch или ограничений истории из двух — `unsupported`. В копии с
+двумя Fillet discovery честно отказывает добавлению третьего и этим
+редакторам; строки `fillets[]` остаются, а их `radius_edit` с §28H доступен
+(ниже). Старый reader открывает новую семантику
 только для чтения, не пересобирает её частично и не переписывает файл.
 [Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
+
+### Радиус любого из двух Fillet (§28H)
+
+Команда, request v1, envelope, operation и коды выхода — прежние §28B.
+`--feature` — точный UUID Fillet 1 или Fillet 2. Строки `fillets[]`
+аддитивно получают `history_index` (1 или 2 в истории из двух Fillet, 1 для
+единственного, `null` для Fillet вне класса) и `radius_edit.neighbour` — `null` при одном Fillet, иначе:
+
+```json
+{"feature_id":"…","history_index":2,"edge":{"feature_id":"…","joint":["…","…"]},
+ "stored_corner_mm":[33.0,15.5],"radius_mm":3.0625,
+ "shared_line_id":"…","stored_shared_length_mm":12.25}
+```
+
+`shared_line_id` и `stored_shared_length_mm` — `null` для противоположного
+угла. `radius_edit.available` — `true` для обоих. У неограниченной плиты
+`max_radius_mm` = `min(предел §28A, пара)`: для Fillet 2 пара — `L − r1 −
+0.01`, то же выражение, что проверяет rebuild; для Fillet 1 — наибольшее
+`r1`, при котором тот же предикат принимает сохранённое `r2` (следующий
+float отказывается). У размеренной плиты `max_radius_mm` — `null`, числа
+`stored_*` — сохранённый чертёж, решает rebuild.
+
+Result дополнительно содержит `previous_feature_id` (базовый Extrude для
+Fillet 1, Fillet 1 для Fillet 2) и `history_index`; остальные поля
+описывают выбранный Fillet. Нарушение пары, в том числе при увеличении
+Fillet 1, — `input`, ничего не записано.
+[Контракт §28H и исполняемый рецепт](edit-sequential-fillet-radii.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 

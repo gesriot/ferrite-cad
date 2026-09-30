@@ -79,11 +79,11 @@ pub use cut_edit::{
 pub use fillet::{
     EdgeFillet, ExistingFillet, FilletChoice, FilletCorner, MAX_RADIUS_FRACTION, MIN_RADIUS_MM,
     PreparedEdgeFillet, SavedFilletTarget, check_pair, check_radius_value, corner_for,
-    evaluable_fillet, fillet_choices, pair_bound, prepare_edge_fillet, rectangle_corners,
-    shared_side,
+    evaluable_fillet, fillet_choices, pair_bound, pair_bound_of_first, prepare_edge_fillet,
+    rectangle_corners, shared_side,
 };
 pub use fillet_radius::{
-    FilletRadiusChoice, PreparedFilletRadius, SavedFillet, fillet_radius_choices,
+    FilletRadiusChoice, NeighbourFillet, PreparedFilletRadius, SavedFillet, fillet_radius_choices,
     prepare_fillet_radius,
 };
 pub use polygon::{

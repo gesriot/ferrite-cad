@@ -131,6 +131,9 @@ struct FilletFeatureDiscovery {
     /// `radius_edit.max_radius_mm` is `null`: the bound is the solved plate's,
     /// checked when a copy is rebuilt. `false` when the frame is refused.
     profile_constrained: bool,
+    /// §28H, additive: 1 for the only or first Fillet, 2 for the Fillet that
+    /// rounds the first one's result; `null` when the frame is refused.
+    history_index: Option<usize>,
     radius_edit: FilletRadiusEditDiscovery,
 }
 
@@ -144,7 +147,26 @@ struct FilletRadiusEditDiscovery {
     refusal: Option<String>,
     document_refusal: Option<String>,
     min_radius_mm: f64,
+    /// §28H: for an unconstrained two-Fillet plate also the pair bound
+    /// beside an adjacent Fillet, by the check's own predicate.
     max_radius_mm: Option<f64>,
+    /// §28H, additive: the other Fillet of a two-Fillet history, as saved.
+    neighbour: Option<NeighbourFilletDto>,
+}
+
+/// §28H: the Fillet beside the one a radius edit changes.
+#[derive(Serialize)]
+struct NeighbourFilletDto {
+    feature_id: ObjectId,
+    history_index: usize,
+    edge: FilletEdgeDto,
+    /// Its corner on the stored Lines.
+    stored_corner_mm: [f64; 2],
+    radius_mm: f64,
+    /// The Line the two corners share and its stored length; both `null` for
+    /// the opposite corner. Stored, not solved, when `profile_constrained`.
+    shared_line_id: Option<StableEntityId>,
+    stored_shared_length_mm: Option<f64>,
 }
 
 impl FilletFeatureDiscovery {
@@ -165,14 +187,25 @@ impl FilletFeatureDiscovery {
             corner_mm: saved.map(|s| s.corner.corner_mm),
             radius_mm: choice.stored.radius_mm,
             profile_constrained: saved.is_some_and(|s| s.constrained),
+            history_index: saved.map(|s| s.history_index),
             radius_edit: FilletRadiusEditDiscovery {
                 available: choice.refusal.is_none() && document_refusal.is_none(),
                 refusal: choice.refusal,
                 document_refusal,
                 min_radius_mm: ferritecad_document::MIN_RADIUS_MM,
-                max_radius_mm: saved
-                    .filter(|s| !s.constrained)
-                    .map(|s| s.corner.max_radius_mm),
+                max_radius_mm: saved.and_then(|s| s.max_radius_mm()),
+                neighbour: saved.and_then(|s| s.neighbour).map(|n| NeighbourFilletDto {
+                    feature_id: n.feature,
+                    history_index: n.history_index,
+                    edge: FilletEdgeDto {
+                        feature_id: n.edge.feature,
+                        joint: n.edge.joint.segments(),
+                    },
+                    stored_corner_mm: n.corner.corner_mm,
+                    radius_mm: n.radius_mm,
+                    shared_line_id: n.shared.map(|(line, _)| line),
+                    stored_shared_length_mm: n.shared.map(|(_, length)| length),
+                }),
             },
         }
     }

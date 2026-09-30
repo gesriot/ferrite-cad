@@ -154,8 +154,11 @@ inside its transaction. The SQL allowlist:
   corner). For an unconstrained plate `max_radius_mm` also answers the pair
   policy; for a constrained one it stays `null`. The rebuild decides finally.
 * With two Fillets, `fillet_edge.available` is `false` with the reason; the
-  radius, height, Sketch and constraint editors refuse the two-Fillet history
-  honestly (their rows say so) and keep working for none or one Fillet.
+  height, Sketch and constraint editors refuse the two-Fillet history
+  honestly (their rows say so) and keep working for none or one Fillet. The
+  radius editor refused it too until
+  [§28H](edit-sequential-fillet-radii.md), which offers the radius of either
+  Fillet.
 * The form shows the history (Extrude → Fillet 1 at its corner, r → new
   Fillet), lists only the other corners, marks the adjacent ones with the
   shared-side rule, and refuses at Save what the rebuild refuses, keeping the
@@ -171,7 +174,8 @@ build wrote before still reads and rebuilds.
 ### Out of scope
 
 A third Fillet, the same corner twice, touching or merged arcs, cap edges,
-edge chains, Cut with Fillet, Chamfer, editing a history with two Fillets,
+edge chains, Cut with Fillet, Chamfer, editing a history with two Fillets
+(since [§28H](edit-sequential-fillet-radii.md) its radii can be edited),
 picking, live preview, in-place Save.
 
 ## Recipe: create → first Fillet → second → reopen, measure, export
@@ -359,7 +363,8 @@ second_allowlist(first, second, catalog["bodies"][0]["body_id"])
 v2, e2 = measured(second, [(FIRST, R1), (SECOND, R2)])
 after = inspect(second)
 assert after["bodies"][0]["fillet_edge"]["available"] is False, "a third Fillet"
-assert all(f["radius_edit"]["available"] is False for f in after["fillets"])
+# §28H: either radius is editable; nothing else of this history is.
+assert all(f["radius_edit"]["available"] is True for f in after["fillets"])
 
 # 5. Refusals write nothing: the same corner, a third Fillet, a stale version.
 names = sorted(p.name for p in root.iterdir())
