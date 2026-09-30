@@ -4080,9 +4080,11 @@ with Fillet and Chamfer remain outside; milestone 5C remains open.
 Independent review replaced the unbounded inverse-radius float walk with
 bounded bisection and explicit invalid-input refusal. Pinned local checks
 executed 538 tests before the correction, then the exact boundary gate, six
-CLI radius gates and ten app gates passed after it. The bundled font lacked
-the history arrow glyphs; labels now use ASCII arrows. Window validation is
-still pending: the first memory preflight refused and the second watchdog
-stopped on system pressure, not the viewer's 1536 MiB cap. The old OOM is
-not considered fixed. See the verification record for the CUA relaunch
-deviation and the distinction between native tests and window evidence.
+CLI radius gates and ten app gates passed after it. History labels use
+font-supported ASCII arrows. The complete protected macOS window run passed:
+small-radius refusal, Save Cancel, solved pair refusal, recovery, both radius
+edits, publication/async Open and exports. GUI/CLI SQL and byte-identical
+STL/FBX agreed; pinned ufbx and an independent triangle comparison passed.
+Viewer peak 199.923 MiB, pressure normal, swap unchanged, exit 0. Two earlier
+resource-aborted attempts and a CUA relaunch were recorded separately; the
+old OOM is not considered fixed.

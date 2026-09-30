@@ -594,3 +594,42 @@ a successful protected smoke. No edited document/export was published.
 The form also exposed missing arrow glyphs in the bundled font; the history
 labels now use ASCII arrows. A subsequent attempt must check the guard's
 liveness before every CUA access, including getApp/getAXState.
+
+### Completed protected window run
+
+After pressure remained normal, the fresh bundle at code `c9e5a87` completed
+the full scenario on macOS arm64, PID 64111. Before every CUA access the
+watchdog log had to be recent and contain no refused/aborted/exit event.
+No CUA call was made to this application after Cmd-Q. The earlier failed
+attempts above remain failures; this is a separate successful run.
+
+Observed in the real window: both enabled radius rows; readable history
+labels; 0.005 mm refusal; Apply 7.125 then system Save Cancel preserving the
+draft; Save to `never.fcad` refusing the solved pair 7.125/7.12 on a 14.25 mm
+side, with the error inside the form and no file; recovery to 7.1, publication
+and async Open of `gui-f1.fcad`; then Fillet 2 to 3.5, publication and async
+Open of `gui-f2.fcad`; Top view with both rounded corners; GUI STL and FBX
+exports. The source remained byte-identical.
+
+The extracted comparator printed `FCAD_28H_GUI_COMPARE_OK cells=382`: the
+SQL allowlist held for both copies, all GUI/CLI cells except timestamps
+agreed, and both exports were byte-identical. The independent binary STL
+checks confirmed solved dimensions/corners/radii. Pinned ufbx 0.23.0 strict
+reported six checks and zero failures; the independent oriented-triangle
+comparison matched 156 triangles, worst distance 6.94e-18 m.
+
+Watchdog cap 1536 MiB, sampled peak **199.923 MiB**, pressure always 1, swap
+83.5 MiB before and after this run, normal exit 0 after 193.6 seconds. This
+is not a diagnosis or resolution of the earlier OOM. No foreign process
+was stopped. Native libraries were reused, not rebuilt.
+
+Logs, temporary models and screenshots: `/private/tmp/ferrite-pr72-review/`
+(`smoke1/2/3.jsonl`, `memory-summary.json`, `gui-compare.log`, `gui-ufbx.log`,
+`gui-mesh.log`, `gui-final-*.png`). A durable copy of the review evidence is
+in the task's local artifact directory.
+
+The final code runs are [CI](https://github.com/gesriot/ferrite-cad/actions/runs/36673351029),
+[combined runtime](https://github.com/gesriot/ferrite-cad/actions/runs/36673347559)
+and [PlaneGCS pin](https://github.com/gesriot/ferrite-cad/actions/runs/36673347566)
+on `c9e5a87`. This final evidence update changes only documentation; the
+final remote status and log audit are recorded on PR #72 before merge.
