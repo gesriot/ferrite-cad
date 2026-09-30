@@ -173,7 +173,26 @@ document written by that build is constrained by this one.
 
 ## CI
 
-CI_PLACEHOLDER
+Head `556d02486054d33f593566d38d3c67db2ab6a965` (code head; this record is the only later commit). Base `main` 85953049921ee73bfe62139737477d08fad7e979 was green after its own merge (post-merge runs of #74 are separate from these): CI 36766477200, runtime layout 36766477275, planegcs pin 36766477309.
+
+All runs on the head finished green:
+
+- CI, run 36771197569 (`lint`, `test` on ubuntu, macos and windows, `sbom`, `notices`, `supply-chain`): https://github.com/gesriot/ferrite-cad/actions/runs/36771197569
+- planegcs pin, run 36771168425 (linux, macos, windows, comparison): https://github.com/gesriot/ferrite-cad/actions/runs/36771168425
+- combined runtime layout, run 36771168237 (linux, macos, windows, comparison): https://github.com/gesriot/ferrite-cad/actions/runs/36771168237
+
+Counted in the real job logs (not inferred from a green job):
+
+| job | `sequential::constraints::*` ok | document gates ok | app gates ok | `FCAD_28K_RECIPE_OK` | `FCAD_FILLET_TWO_CONSTRAINTS_UFBX_EXECUTED` |
+|---|---|---|---|---|---|
+| runtime linux | 6 | 3 | 2 | 1 | 1 |
+| runtime macos | 6 | 3 | 2 | 1 | 1 |
+| runtime windows | 6 | 3 | 2 | 1 | 1 |
+| CI ubuntu (mixed, no-solver discovery gate) | 6 | 3 | 1 widget gate | `FCAD_28K_RECIPE_NO_KERNEL` 1 | n/a |
+
+The 6 are `constraint_discovery_and_protocol_without_native`, `native_dimensioning_a_plate_rounded_twice_solves_it_and_keeps_both_fillets`, `native_replacing_removing_and_editing_on_after_constraints`, `native_the_solved_plate_decides_each_radius_and_the_shared_flat`, `native_a_solved_plate_may_outgrow_its_stored_bound_and_not_shrink_below_it` and `native_solver_diagnoses_and_atomic_refusals_under_two_fillets`. The 3 document gates are `constraints_under_two_fillets_change_only_the_sketch_and_keep_both_fillets`, `the_constraint_writer_rederives_both_fillets_and_refuses_forgery` and `the_evaluator_judges_both_fillets_and_the_pair_on_the_built_lines`. The 2 app gates are `two_fillet_base_constraint_widgets_name_both_fillets_and_keep_the_draft` and `native_two_fillet_base_constraint_worker_and_cli_publish_the_same_part`. Every `FCAD_28K_RECIPE_OK` line carries the same values on all three platforms.
+
+Truncation, stated plainly: the log tool used here returns at most the last 5000 lines of a job, so the start of each job (toolchain, cache, OCCT/PlaneGCS build, and the step that prints `FCAD_28K_RECIPE_NO_SOLVER`) is before the window and was not read line by line; the counts above come from the returned tail. That step is a required step of a job that finished green. The full logs exist (`gh run view --log` or the API) and were not downloaded here.
 
 ## Limits
 
