@@ -7722,43 +7722,43 @@ mod sequential {
             assert!(reason.contains("height"), "{reason}");
             assert_eq!(sketch["constraint_edit"]["available"], false);
 
-            // The protocol: nothing written by any refusal.
+            // The protocol: nothing written by any refusal. A build without a
+            // kernel asks for it before any other check (§28C), so every
+            // request is `unsupported` there; with a kernel each is its kind.
             let before = std::fs::read(&h.source).expect("bytes");
             let never = h.root.path().join("never.fcad");
             let names = entries(h.root.path());
             let base = h.base_id().to_owned();
             let sketch_id = sketch["sketch_id"].as_str().expect("UUID").to_owned();
-            for (feature, why) in [
-                (
-                    one["feature_id"].as_str().expect("F1").to_owned(),
-                    "Fillet 1",
-                ),
-                (
-                    two["feature_id"].as_str().expect("F2").to_owned(),
-                    "Fillet 2",
-                ),
-                (sketch_id, "the Sketch"),
+            let foreign = ferritecad_types::ObjectId::new().to_string();
+            let kernel = ferritecad_occt::is_available();
+            let f1 = one["feature_id"].as_str().expect("F1").to_owned();
+            let f2 = two["feature_id"].as_str().expect("F2").to_owned();
+            for (why, feature, height, kind) in [
+                ("zero", &base, "0", "input"),
+                ("negative", &base, "-1", "input"),
+                ("not a number", &base, "NaN", "input"),
+                ("infinite", &base, "inf", "input"),
+                ("Fillet 1", &f1, "9", "unsupported"),
+                ("Fillet 2", &f2, "9", "unsupported"),
+                ("the Sketch", &sketch_id, "9", "unsupported"),
+                ("a foreign UUID", &foreign, "9", "input"),
             ] {
                 let v = reply(
-                    h.raise(&h.source, &feature, "9", &never)
+                    h.raise(&h.source, feature, height, &never)
                         .output()
                         .expect("process"),
                     EDIT,
                     2,
                 );
-                assert!(matches!(refused(&v), "input" | "unsupported"), "{why}: {v}");
+                if kernel {
+                    assert_eq!(refused(&v), kind, "{why}: {v}");
+                } else {
+                    assert_eq!(refused(&v), "unsupported", "{why}: {v}");
+                    assert!(v.to_string().contains("Open CASCADE"), "{why}: {v}");
+                }
             }
-            for bad in ["0", "-1", "NaN", "inf"] {
-                let v = reply(
-                    h.raise(&h.source, &base, bad, &never)
-                        .output()
-                        .expect("process"),
-                    EDIT,
-                    2,
-                );
-                assert_eq!(refused(&v), "input", "{bad}: {v}");
-            }
-            if !ferritecad_occt::is_available() {
+            if !kernel {
                 let v = reply(
                     h.raise(&h.source, &base, "9", &never)
                         .output()

@@ -763,10 +763,10 @@ payload v2 с capability `feature.fillet.sequential.v1`; это не измен�
 JSON schema v1 или SQLite schema.
 
 Повтор угла и нарушение границы радиусов — `input`; третий Fillet и правка
-высоты, Sketch или ограничений истории из двух — `unsupported`. В копии с
-двумя Fillet discovery честно отказывает добавлению третьего и этим
-редакторам; строки `fillets[]` остаются, а их `radius_edit` с §28H доступен
-(ниже). Старый reader открывает новую семантику
+Sketch или ограничений истории из двух — `unsupported`. В копии с двумя
+Fillet discovery честно отказывает добавлению третьего и этим редакторам;
+строки `fillets[]` остаются, а их `radius_edit` с §28H доступен, как и
+высота базы с §28I (ниже). Старый reader открывает новую семантику
 только для чтения, не пересобирает её частично и не переписывает файл.
 [Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
 
@@ -796,6 +796,27 @@ Fillet 1, Fillet 1 для Fillet 2) и `history_index`; остальные по�
 описывают выбранный Fillet. Нарушение пары, в том числе при увеличении
 Fillet 1, — `input`, ничего не записано.
 [Контракт §28H и исполняемый рецепт](edit-sequential-fillet-radii.md).
+
+### Высота плиты под двумя Fillet (§28I)
+
+Команда, аргументы, envelope, result и коды выхода — прежние `edit-extrude`.
+`edit_extrude.available` — `true` и для истории из двух Fillet; строка
+базового Extrude в `features[]` — `editable: true`, а её `fillet_base`
+по-прежнему описывает Fillet на базе (Fillet 1) и аддитивно получает
+`second_fillet` (у плиты с одним Fillet и в `sketches[]` — `null`):
+
+```json
+{"second_fillet":{"fillet_feature_id":"…","previous_feature_id":"…",
+ "history_index":2,"edge":{"feature_id":"…","joint":["…","…"]},
+ "corner_mm":[33.0,15.5],"radius_mm":3.0625}}
+```
+
+`previous_feature_id` — Fillet 1: Fillet 2 скругляет его результат, а не
+базу; `edge.feature_id` по-прежнему базовый Extrude. `corner_mm` —
+сохранённый чертёж. Прочие поля и их типы не меняются. Другой `--feature`
+(любой Fillet, Sketch) — отказ; неположительная или нечисловая высота —
+`input`; высота, которую OCCT не скругляет, — `kernel`; ничего не записано.
+[Контракт §28I и исполняемый рецепт](edit-two-fillet-base-height.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 

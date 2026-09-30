@@ -4088,3 +4088,18 @@ STL/FBX agreed; pinned ufbx and an independent triangle comparison passed.
 Viewer peak 199.923 MiB, pressure normal, swap unchanged, exit 0. Two earlier
 resource-aborted attempts and a CUA relaunch were recorded separately; the
 old OOM is not considered fixed.
+
+**§28I — the height of a plate rounded twice, in a new copy.** The existing
+**Edit extrusion** form and `edit-extrude` change the base Extrude's Blind
+height under Extrude -> Fillet 1 -> Fillet 2 -> Body, unconstrained or
+dimensioned. Only the base row's payload/payload_hash and `meta.modified_at`
+move; both Fillets, their radii and corners, the stored Sketch, every name,
+dependency and identity stay, and nothing is minted. The height edit reads
+both Fillets through the reader §28H uses for two and carries them in
+history order (`fillet` on the base, `second_fillet` on Fillet 1's result);
+the writer re-derives both. The cache misses the plate and both Fillets. The
+Sketch and constraint editors still refuse a two-Fillet history; a third
+Fillet, Cut with Fillet and Chamfer remain outside; milestone 5C remains
+open.
+[Contract and recipe](edit-two-fillet-base-height.md),
+[verification](edit-two-fillet-base-height-verification.md).
