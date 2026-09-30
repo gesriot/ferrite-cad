@@ -2825,5 +2825,20 @@ mod tests {
             |at: [[f64; 2]; 4]| crate::evaluable_fillet(&objects, &two, Some(&built(&lines, at)));
         judge(plate(6.0)).expect("no shared Line, no flat owed");
         assert!(judge(plate(5.99)).is_err());
+
+        // Fillet 2's own radius, on its own corner: r1 = 2 fits 10.9 mm and
+        // r2 = 5.5 does not, and no pair rule is involved (opposite corners).
+        let (_w, mut d, _, second) = sequential(2.0, 3, 5.5);
+        constrained(&mut d);
+        let (_, lines) = plate_lines(&d);
+        let objects = d.objects().expect("objects");
+        let two = stored_fillet(&d, second);
+        let judge = |depth: f64| {
+            crate::evaluable_fillet(&objects, &two, Some(&built(&lines, plate(depth))))
+        };
+        judge(11.0).expect("exactly 2 r2");
+        let e = judge(10.9).expect_err("under 2 r2, over 2 r1");
+        assert_eq!(e.kind(), ErrorKind::Input);
+        assert!(e.to_string().contains(&two.edge.joint.to_string()), "{e}");
     }
 }
