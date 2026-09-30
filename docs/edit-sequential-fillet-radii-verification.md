@@ -108,7 +108,8 @@ App `fillets::tests`:
 
 Solver build (OCCT 8.0.1 + the unpinned PlaneGCS), debug:
 
-* `tests/fillet.rs`: REGRESSION_FILLET; `fillet_radius::` 16 passed;
+* `tests/fillet.rs`: 49 passed — 47 executed, 2 printing `skipped: the mixed gate needs a
+  build without PlaneGCS` (N/A here, counted apart); `fillet_radius::` 16 passed;
   app `fillets::` 10 passed.
 * Every new gate executed by its packed argv (`cargo test … "$gate" --
   --exact --nocapture --test-threads=1`, `test $gate ... ok`, no `skipped:`):
@@ -132,17 +133,41 @@ Solver build (OCCT 8.0.1 + the unpinned PlaneGCS), debug:
 * fmt, workspace clippy (`--all-targets --all-features -D warnings`) and
   `git diff --check`: clean.
 
-REGRESSION_SUMMARY
+Regression of the affected crates, solver build, debug (`--no-fail-fast`):
+`ferritecad-document`, `-jobs`, `-eval` (lib and integration tests), every
+`ferritecad-cli` test target except the heavy ones listed under
+[Limits](#limits), the CLI binaries, and `ferritecad-app`: **1091 passed,
+2 failed, 1 ignored** on the harness. The harness count includes tests that
+return early as build-specific N/A; the Fillet ones are counted above. The
+two failures are the root-only permission tests (`dump_graph`'s
+`read_only_permissions_still_dump_when_the_file_can_be_read`, `validate`'s
+`validation_really_read_only_permissions`), which refuse privileged chmod as
+evidence and fail under this container's root on base too; run as `nobody`
+(`runuser -u nobody`, their own test binaries, a temporary HOME/TMPDIR, the
+solver library copied there) both pass. The ignored one is the pre-existing
+timing test. Topology, kernel and OCCT crates are unchanged and were not
+rerun.
 
 OCCT without PlaneGCS (`--no-default-features`,
 `FERRITECAD_REQUIRE_PLANEGCS=0`, release, the CI argv):
 
-MIXED_SUMMARY
+* the gate `sequential::radius::radius_discovery_and_protocol_without_native`
+  and the recipe (`FCAD_28H_RECIPE_OK`, the same volumes), exactly the lines
+  of the runtime-layout step extracted from the workflow file;
+* the whole `sequential::radius` module: 5 executed and passed; the
+  dimensioned test printed `skipped: constrained geometry requires PlaneGCS`
+  (N/A here, not a success; it runs in the solver build and in CI);
+* all eight recipes: §28A–D, §28G, §28H `…_OK`, §28E/F `…_NO_SOLVER`.
 
 Stub (no OCCT; CMake through an explicit toolchain file, native prefixes
 ignored):
 
-STUB_SUMMARY
+* the `ci.yml` step extracted from the workflow file and run as a script:
+  five gates `test … ok`, no `skipped:`, and `FCAD_28H_RECIPE_NO_KERNEL`;
+* `tests/fillet.rs` 49: 9 executed, 40 N/A (`skipped: this build has no
+  Open CASCADE`); app `fillets::` 10: 5 executed, 5 N/A (workers need OCCT);
+  document `fillet` unit tests: 25 executed;
+* all eight recipes print `FCAD_28x_RECIPE_NO_KERNEL`.
 
 ### Mutations — local, executed, restored byte for byte
 
@@ -197,7 +222,14 @@ scratchpad (`FCAD_28H_COMPAT_OK`):
 
 ## CI
 
-CI_SECTION
+* **Base `6495543`, merge-triggered, checked separately** (read through the
+  API): CI ([36651796414](https://github.com/gesriot/ferrite-cad/actions/runs/36651796414)),
+  planegcs pin ([36651796412](https://github.com/gesriot/ferrite-cad/actions/runs/36651796412)),
+  rust notices, product sbom and rust sbom concluded **success**; the combined
+  runtime layout ([36651796482](https://github.com/gesriot/ferrite-cad/actions/runs/36651796482))
+  was still **in progress** when this was written and is not counted as a
+  success here.
+* This change's runs are recorded in a separate commit once they finish.
 
 ## Limits
 
