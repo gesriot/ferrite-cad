@@ -73,9 +73,17 @@ impl Edits {
                         refusal: f.refusal.clone(),
                         context: f.cut_history.as_ref().map(|h| format!(
                             "Base of {} circular Cuts. Blind depths stay fixed; Through all follows the plate thickness. Saved pocket floors must stay inside the plate.", h.tools.len()))
-                            .or_else(|| f.fillet.as_ref().map(|r| format!(
-                                "Rounded by Fillet {} at ({}, {}), r {} mm. The Fillet keeps its edge and radius; only the plate's height changes.",
-                                r.feature, r.corner.corner_mm[0], r.corner.corner_mm[1], r.radius_mm))),
+                            .or_else(|| f.fillet.as_ref().map(|r| match &f.second_fillet {
+                                // §28I: both Fillets, in history order; the
+                                // second rounds the first one's result.
+                                Some(s) => format!(
+                                    "History: Extrude {} -> Fillet 1 {} at ({}, {}), r {} mm -> Fillet 2 {} at ({}, {}), r {} mm. Both Fillets keep their edges and radii; only the plate's height changes.",
+                                    f.feature, r.feature, r.corner.corner_mm[0], r.corner.corner_mm[1], r.radius_mm,
+                                    s.feature, s.corner.corner_mm[0], s.corner.corner_mm[1], s.radius_mm),
+                                None => format!(
+                                    "Rounded by Fillet {} at ({}, {}), r {} mm. The Fillet keeps its edge and radius; only the plate's height changes.",
+                                    r.feature, r.corner.corner_mm[0], r.corner.corner_mm[1], r.radius_mm),
+                            })),
                     })
                     .collect(),
                 selected: None,

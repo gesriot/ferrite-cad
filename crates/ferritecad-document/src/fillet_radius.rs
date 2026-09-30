@@ -158,7 +158,8 @@ pub(crate) fn saved_fillet(
     if fillets == 2 {
         return Err(CadError::unsupported(
             "this slice edits a plate with one Fillet, and this document holds 2; with two \
-             Fillets (§28G) only their radii can be edited (edit-fillet-radius, §28H)",
+             Fillets (§28G) only their radii (edit-fillet-radius, §28H) and the plate's height \
+             (edit-extrude, §28I) can be edited",
         ));
     }
     if fillets != 1 {
@@ -428,6 +429,44 @@ pub(crate) fn fillet_over_plate(
         return Ok(None);
     };
     saved_fillet(document, objects, fillet).map(Some)
+}
+
+/// §28I: the Fillets over the plate a base height edit changes, as they stand
+/// in the history. `first` rounds the base Extrude; `second`, when present,
+/// rounds `first`'s result (§28G) and is read by the reader the radius edit
+/// uses for two Fillets. A plate with one Fillet is §28C's frame exactly.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FilletsOverPlate {
+    pub first: SavedFillet,
+    pub second: Option<SavedFillet>,
+}
+
+/// §28I: [`fillet_over_plate`] for the base height edit alone, which also
+/// admits the §28G history of two Fillets. The Sketch, constraint and
+/// add-Fillet editors keep reading [`fillet_over_plate`], which does not.
+pub(crate) fn fillets_over_plate(
+    document: &Document,
+    objects: &[ObjectRecord],
+) -> Result<Option<FilletsOverPlate>> {
+    let fillets: Vec<&ObjectRecord> = objects
+        .iter()
+        .filter(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
+        .collect();
+    if fillets.len() != 2 {
+        return Ok(
+            fillet_over_plate(document, objects)?.map(|first| FilletsOverPlate {
+                first,
+                second: None,
+            }),
+        );
+    }
+    let a = saved_sequential_fillet(document, objects, &fillets, fillets[0])?;
+    let b = saved_sequential_fillet(document, objects, &fillets, fillets[1])?;
+    let (first, second) = if a.history_index == 1 { (a, b) } else { (b, a) };
+    Ok(Some(FilletsOverPlate {
+        first,
+        second: Some(second),
+    }))
 }
 
 /// One row per saved Fillet, each editable or with its reason, from one
@@ -884,10 +923,11 @@ mod tests {
             assert_eq!(d.topology_refs().expect("refs"), refs, "no name moved");
             assert!(d.validate().expect("validate").is_ok());
         }
-        // The other editors still refuse the two-Fillet history.
+        // The Sketch editors still refuse the two-Fillet history; the base
+        // height (§28I) does not.
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         assert!(reading.fillet_features.iter().all(|c| c.refusal.is_none()));
-        assert!(reading.features.iter().all(|f| f.refusal.is_some()));
+        assert!(reading.features.iter().all(|f| f.refusal.is_none()));
         assert!(reading.sketches.iter().all(|s| s.refusal.is_some()));
         assert!(
             reading

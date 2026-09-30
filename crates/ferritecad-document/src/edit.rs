@@ -24,6 +24,9 @@ pub struct ExtrudeChoice {
     /// §28C: the saved Fillet over this plate, when this is the base Extrude
     /// under it and the frame holds. Context, not a Cut history.
     pub fillet: Option<crate::SavedFillet>,
+    /// §28I: the second Fillet of a §28G history over this plate. It rounds
+    /// `fillet`'s result, not this Extrude; `None` for a plate with one.
+    pub second_fillet: Option<crate::SavedFillet>,
     pub refusal: Option<String>,
 }
 
@@ -97,8 +100,13 @@ impl ExtrudeEditSource {
             height,
         } = crate::cut_edit::cut_catalog(document, &objects);
         // §28C: the one frame a filleted plate's height is edited in, read
-        // once for every row from this same snapshot.
-        let fillet = crate::fillet_radius::fillet_over_plate(document, &objects);
+        // once for every row from this same snapshot; §28I: or the history of
+        // two Fillets, through the radius edit's reader for two.
+        let (fillet, second) = match crate::fillet_radius::fillets_over_plate(document, &objects) {
+            Ok(Some(over)) => (Ok(Some(over.first)), over.second),
+            Ok(None) => (Ok(None), None),
+            Err(e) => (Err(e), None),
+        };
         let features = objects
             .iter()
             .filter_map(|object| {
@@ -123,6 +131,13 @@ impl ExtrudeEditSource {
                         .and_then(Option::as_ref)
                         .filter(|f| f.previous == object.id)
                         .cloned(),
+                    second_fillet: second.clone().filter(|_| {
+                        fillet
+                            .as_ref()
+                            .ok()
+                            .and_then(Option::as_ref)
+                            .is_some_and(|f| f.previous == object.id)
+                    }),
                     refusal: blind_literal_distance(object)
                         .map_err(|e| e.to_string())
                         .and_then(|distance| {
@@ -861,6 +876,7 @@ mod tests {
                     feature: object.id,
                     cut_history: None,
                     fillet: None,
+                    second_fillet: None,
                     name: object.name.clone(),
                     distance_mm,
                     refusal: editable_extrude(document, object)

@@ -414,7 +414,7 @@ impl Editor {
                          Fillet. It rounds one of the other three corners of the same plate; a \
                          corner sharing a Line with the saved Fillet must leave at least {} mm \
                          of that Line flat between the two arcs. With two Fillets only their \
-                         radii can be edited.",
+                         radii and the plate's height can be edited.",
                         existing.edge.feature,
                         existing.feature,
                         existing.radius_mm,
@@ -1857,7 +1857,7 @@ pub(crate) mod tests {
         ));
         assert!(painted(
             &out,
-            "With two Fillets only their radii can be edited"
+            "With two Fillets only their radii and the plate's height can be edited"
         ));
         assert_eq!(target.corners.len(), 3);
         for corner in &target.corners {

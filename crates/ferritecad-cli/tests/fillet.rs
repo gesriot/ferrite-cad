@@ -2577,6 +2577,8 @@ mod height {
                 "radius_mm": 2.375,
                 // §28E, additive.
                 "profile_constrained": false,
+                // §28I, additive: no second Fillet over this plate.
+                "second_fillet": null,
             })
         );
         // Every other editor still refuses the filleted plate by name.
@@ -6078,7 +6080,8 @@ mod sequential {
         assert_eq!(row["available"], false, "{row}");
         assert!(row["refusal"].as_str().expect("reason").contains("third"));
         assert_eq!(after["fillets"].as_array().map(Vec::len), Some(2));
-        // §28H: each radius is editable, by its own UUID; nothing else is.
+        // §28H: each radius is editable, by its own UUID; §28I: and the
+        // plate's height; the Sketch and its constraints are not.
         for (f, index) in after["fillets"]
             .as_array()
             .expect("fillets")
@@ -6089,7 +6092,19 @@ mod sequential {
             assert!(f["radius_edit"]["refusal"].is_null());
             assert_eq!(f["history_index"], index, "{f}");
         }
-        assert_eq!(after["edit_extrude"]["available"], false, "{after}");
+        assert_eq!(after["edit_extrude"]["available"], true, "{after}");
+        let base_row = after["features"]
+            .as_array()
+            .expect("features")
+            .iter()
+            .find(|f| !f["fillet_base"].is_null())
+            .expect("the base Extrude row");
+        assert_eq!(base_row["refusal"], Value::Null, "{base_row}");
+        assert_eq!(
+            base_row["fillet_base"]["second_fillet"]["previous_feature_id"],
+            base_row["fillet_base"]["fillet_feature_id"],
+            "Fillet 2 rounds Fillet 1's result, not the base"
+        );
         assert_eq!(after["sketches"][0]["editable"], false);
         assert_eq!(after["sketches"][0]["constraint_edit"]["available"], false);
 
@@ -6301,12 +6316,13 @@ mod sequential {
         assert!(row["target"].is_null());
         assert!(row["refusal"].as_str().expect("reason").contains("third"));
         assert_eq!(two["fillets"].as_array().map(Vec::len), Some(2));
-        // §28H: both radii are editable; the other editors still refuse.
+        // §28H: both radii are editable; §28I: and the base height; the
+        // Sketch editors still refuse.
         for fillet in two["fillets"].as_array().expect("fillets") {
             assert_eq!(fillet["radius_edit"]["available"], true, "{fillet}");
             assert!(fillet["radius_edit"]["neighbour"].is_object(), "{fillet}");
         }
-        assert_eq!(two["edit_extrude"]["available"], false);
+        assert_eq!(two["edit_extrude"]["available"], true);
         assert_eq!(two["sketches"][0]["editable"], false);
         assert_eq!(two["sketches"][0]["constraint_edit"]["available"], false);
         assert!(two["bodies"][0]["cut_edit"]["refusal"].is_string());
@@ -6931,7 +6947,8 @@ mod sequential {
                 assert_eq!(theirs[key], other[key], "{key}");
             }
             assert_eq!(after["bodies"][0]["fillet_edge"]["available"], false);
-            assert_eq!(after["edit_extrude"]["available"], false);
+            // §28I: the plate's height is editable under both Fillets.
+            assert_eq!(after["edit_extrude"]["available"], true);
 
             let checked = cli()
                 .arg("validate")
