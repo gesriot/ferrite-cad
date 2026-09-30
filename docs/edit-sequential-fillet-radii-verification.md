@@ -229,7 +229,37 @@ scratchpad (`FCAD_28H_COMPAT_OK`):
   runtime layout ([36651796482](https://github.com/gesriot/ferrite-cad/actions/runs/36651796482))
   was still **in progress** when this was written and is not counted as a
   success here.
-* This change's runs are recorded in a separate commit once they finish.
+* **Head `01a51ef` (code, workflows and this record):**
+  * CI ([36655615291](https://github.com/gesriot/ferrite-cad/actions/runs/36655615291)):
+    lint, test on Ubuntu, macOS and Windows, sbom, notices, supply-chain —
+    **success**. The Ubuntu job log, read in full: the step "Discover and
+    refuse editing either sequential Fillet radius without native geometry"
+    printed `test … ok` for its five gates, no `skipped:`, and
+    `FCAD_28H_RECIPE_NO_KERNEL`. On macOS and Windows that step concluded
+    success; their logs were not read.
+  * planegcs pin ([36655594651](https://github.com/gesriot/ferrite-cad/actions/runs/36655594651)),
+    three platforms and the comparison — **success**.
+  * Combined runtime layout ([36655594658](https://github.com/gesriot/ferrite-cad/actions/runs/36655594658)):
+    Linux and Windows **success** on attempt 1. The macOS job of attempt 1
+    failed six seconds into the OCCT-without-solver step, before any test
+    ran: `Couldn't resolve host name (Could not resolve host:
+    index.crates.io)` while cargo updated the registry — a runner DNS failure.
+    That job was re-run once (attempt 2) and concluded **success**. In the
+    Linux, Windows and macOS (attempt 2) job logs: all eleven native gates of
+    §28H (`sequential::radius::*` 6, `fillet_radius::tests::*` 3,
+    `fillets::tests::*` 2) print `test … ok`, no line starts with
+    `skipped:`, `FCAD_28H_RECIPE_OK` prints the local volumes to the last
+    digit (`f2_up=3038.078618/3038.355417 f1_bound=6.12:2991.862982/2992.271179
+    both_down=3064.995944/3065.189619`), and the FBX step prints
+    `FCAD_FILLET_RADII_UFBX_EXECUTED` after six `checks=6 failures=0` reads
+    (Linux: 140, 140, 104, 160, 172, 132 triangles, STL↔FBX worst 6.94e-18 m).
+    The API returns only the last 5000 lines of a job log, and the
+    OCCT-without-solver step lies before them, so its §28H lines (the
+    discovery gate and `FCAD_28H_RECIPE_OK` without PlaneGCS) were not read in
+    CI; that step concluded success on all three platforms, and its gate
+    lines fail the step when the test is missing or skipped.
+* This record's own commit changes no input of the runtime layout, the pin or
+  the recipes; CI runs on it.
 
 ## Limits
 
