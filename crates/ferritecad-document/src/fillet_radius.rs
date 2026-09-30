@@ -160,8 +160,9 @@ pub(crate) fn saved_fillet(
     if fillets == 2 {
         return Err(CadError::unsupported(
             "this slice edits a plate with one Fillet, and this document holds 2; with two \
-             Fillets (§28G) only their radii (edit-fillet-radius, §28H) and the plate's height \
-             (edit-extrude, §28I) can be edited",
+             Fillets (§28G), edit their radii (edit-fillet-radius, §28H), the plate's height \
+             (edit-extrude, §28I), or the base Sketch's Line coordinates (edit-sketch-copy, \
+             §28J); constraint editing is not supported yet",
         ));
     }
     if fillets != 1 {
@@ -443,9 +444,9 @@ pub(crate) struct FilletsOverPlate {
     pub second: Option<SavedFillet>,
 }
 
-/// §28I: [`fillet_over_plate`] for the base height edit alone, which also
-/// admits the §28G history of two Fillets. The Sketch, constraint and
-/// add-Fillet editors keep reading [`fillet_over_plate`], which does not.
+/// §28I/§28J: [`fillet_over_plate`] for the base height and Sketch coordinate
+/// edits, which also admit the §28G history of two Fillets. The constraint
+/// and add-Fillet editors keep reading [`fillet_over_plate`], which does not.
 pub(crate) fn fillets_over_plate(
     document: &Document,
     objects: &[ObjectRecord],
