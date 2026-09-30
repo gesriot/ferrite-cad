@@ -4139,3 +4139,21 @@ exports. GUI/CLI SQL and byte-identical STL/FBX agreed; pinned ufbx and the
 normal pressure, unchanged swap, exit 0. Runtime logs of the implementation
 head confirm 13 new executions per OS including mixed discovery; the review
 fix's CI must finish before merge. Previous OOM remains unexplained.
+
+**§28K — the constraints of a plate rounded twice, in a new copy.** The
+existing **Edit constraints** form and `edit-sketch-constraints-copy` add,
+replace and remove the Line constraints of the base Sketch under Extrude ->
+Fillet 1 -> Fillet 2 -> Body. The constraint frame reads both Fillets through
+the reader §28H-§28J use for two and carries them in history order; the
+writer re-derives them inside its transaction. Only the Sketch row's schema
+version, payload and hash and the one constraint capability row move; both
+Fillets, their radii, corners and names, the stored coordinates (still the
+solver's starting guess) and every identity stay. The solved plate decides:
+the evaluator's existing `evaluable_fillet` judges each radius on its own
+corner, the sides and the pair on the solved Lines at every rebuild — no
+second check, and the stored bound proves nothing. Removing every user
+constraint leaves the closure links and offers the Sketch's coordinates
+(§28J) again. A third Fillet, Cut with Fillet and Chamfer remain outside;
+milestone 5C remains open.
+[Contract and recipe](edit-two-fillet-base-constraints.md),
+[verification](edit-two-fillet-base-constraints-verification.md).
