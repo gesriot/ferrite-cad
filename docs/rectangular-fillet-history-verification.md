@@ -79,7 +79,7 @@ Fillets are unchanged; a scalar was not turned into an array or null.
 
 ## CI
 
-Code head `4011211fccfb7888f36dc69c3d4c704b14339601` (this record is the only later commit). Base `main` 97be2825496118198df803b80e3ebf7cbad2af84 (PR #75, §28K); its post-merge runs are separate from the runs below.
+Implementation code head `4011211fccfb7888f36dc69c3d4c704b14339601`; later review changes are recorded below. Base `main` 97be2825496118198df803b80e3ebf7cbad2af84 (PR #75, §28K); its post-merge runs are separate from the runs below.
 
 The first push, `06972e8`, failed in the Ubuntu and macOS stub step: the flipped §28G no-kernel check called the `native()` helper, which prints `skipped:` and so trips the exact-name no-skip gate, and the renamed document gate (`…a_third_is_refused` → `…a_third_is_offered`) found 0 tests. Both were real defects of the PR, fixed in `4011211`; before pushing, all twelve fillet steps of the stub job were run locally in the stub build (65 `test … ok`, 12 `FCAD_28*_RECIPE_NO_KERNEL`, exit 0).
 
@@ -181,7 +181,7 @@ facts = {
     "vertices": [{"curve_id": v["curve_id"], "start_mm": v["start_mm"]} for v in sketch["vertices"]],
     "radii_mm": [R1, R2], "saved_corners_mm": [F1_AT, F2_AT], "height_mm": H,
     "content_version": catalog["content_version"],
-    # The window's four publications, and the numbers each is judged by.
+    # The window's five publications, and the numbers each is judged by.
     "third": {"corner_mm": [-4.5, 3.25], "radius_mm": 4.5, "refused_radius_mm": 6.121},
     "fourth": {"corner_mm": [33.0, 15.5], "radius_mm": 3.5, "refused_radius_mm": 6.121},
     "early": {"fillet": "first", "radius_mm": 2.5},
@@ -212,26 +212,29 @@ and watchdog record. Type numbers exactly as written.
 1. **Open** `$FCAD_28L_DIR/two.fcad` (asynchronously). The feature list shows
    Extrude -> Fillet 1 -> Fillet 2; **Fillet edge of …** is offered and lists
    exactly the two unrounded corners (-4.5, 3.25) and (33, 15.5).
-2. **Third.** Choose the corner (-4.5, 3.25), radius `4.5` → **Save** →
+2. **Third.** Choose the corner (-4.5, 3.25), radius `4.5` → **Apply fillet** → **Save fillet copy…** →
    `$FCAD_28L_DIR/gui-third.fcad`; it opens asynchronously. The history names
    Fillet 1, 2 and 3; only (33, 15.5) is offered.
-3. **Fourth.** Choose (33, 15.5), radius `3.5` → **Save** →
+3. **Fourth.** Choose (33, 15.5), radius `3.5` → **Apply fillet** → **Save fillet copy…** →
    `$FCAD_28L_DIR/gui-fourth.fcad`; it opens. No corner is left: the form says
    every corner is already rounded.
 4. **Refusal by the second neighbour.** In `gui-third.fcad`, reopened from
-   disk, choose (33, 15.5), radius `6.121` → **Save** → `never.fcad`: the
+   disk, choose (33, 15.5), radius `6.121` → **Apply fillet**: the
    refusal names Fillet 1 (the closing pair), not only the nearer neighbour.
-   The draft is kept and `never.fcad` does not exist.
-5. **Recovery, Undo/Redo, Save Cancel.** Undo/Redo the request; type `3.5`;
-   **Save** → **Cancel** in the file dialog: nothing starts and the draft
-   stays. (Then close without saving.)
+   The draft is kept; Save is unavailable and no `gui-refused.fcad` is published.
+5. **Recovery and Save Cancel.** Type `3.5`; **Apply fillet** →
+   **Save fillet copy…** → **Cancel** in the file dialog: nothing starts
+   and the draft stays. Then dismiss the draft without saving. The Fillet
+   form has no whole-request Undo/Redo; exercise that in the Sketch step.
 6. **Early radius.** In `gui-fourth.fcad` open **Edit radius** on Fillet 1 and
-   type `2.5`; the form names Fillet 1 and every neighbour; **Save** →
+   type `2.5`; the form names Fillet 1 and every neighbour; **Apply radius** →
+   **Save radius copy…** →
    `$FCAD_28L_DIR/gui-early.fcad`.
 7. **Base height.** **Edit height** `9.5` → **Save** →
    `$FCAD_28L_DIR/gui-height.fcad`.
 8. **Base size.** **Edit Sketch**, drag/type the four corners to the rectangle
-   x `1.5`..`31.5`, y `-2.25`..`10.5` (x₀ 1.5, y₀ -2.25, 30 × 12.75) →
+   x `1.5`..`31.5`, y `-2.25`..`10.5` (x₀ 1.5, y₀ -2.25, 30 × 12.75);
+   use the Sketch editor’s Undo/Redo and confirm the coordinates return →
    **Save** → `$FCAD_28L_DIR/gui-rect.fcad`; it opens.
 9. **Exports.** Export `gui-rect.stl` and `gui-rect.fbx` of `gui-rect.fcad`
    into `$FCAD_28L_DIR`, at the default tessellation.
@@ -513,3 +516,65 @@ for (cx, cy), r in rounded:
     assert all(abs(math.hypot(pt[0] - ax, pt[1] - ay) - r) < 1e-3 for pt in wall), (cx, cy, r)
 print("FCAD_28L_GUI_COMPARE_OK", f"cells={cells}", f"triangles={count}")
 ```
+
+
+## Independent macOS review — 2026-10-01
+
+Reviewed on Apple Silicon at `eed6745a733689cd5c21a4df6b88fa8bb680b56e`
+(the review commit corrects stale reader references, not executable code).
+Pinned OCCT 8.0.1 and PlaneGCS, the reused release target, one local heavy
+process at a time. No native dependency was rebuilt. Fmt and workspace
+clippy, all targets/features with `-D warnings`, passed.
+
+Local tests: 660 actually executed, zero failures. The harness counted 664:
+four explicitly reported no-solver-only cases were N/A in this native build;
+one old timing benchmark was ignored. This covers document/jobs/eval, all
+Fillet CLI tests and the app Fillet/constraints/Sketch/height workers.
+The extracted 28L recipe passed with the fresh bundled CLI.
+
+The full original runtime logs (36842853292) were downloaded and counted:
+21 distinct new named tests, 22 executions per platform (the height widget
+also runs in the earlier edit group), on Linux/macOS/Windows. Native recipe,
+mixed/no-solver recipe and `FCAD_FILLET_FOUR_UFBX_EXECUTED` each occurred on all
+three. This supplies the direct log audit unavailable in the cloud session.
+Review runtime [36878507925](https://github.com/gesriot/ferrite-cad/actions/runs/36878507925)
+and the final-head ordinary CI are separately required before merge.
+
+A fresh ad-hoc signed arm64 bundle passed closure and solver loader probes
+without DYLD variables or loader-failure overrides. The initial locked-screen
+attempt was stopped with SIGTERM and does not count as window verification.
+After unlock, owned PID 87805 ran under the 1536 MiB watchdog:
+
+- Opened the two-Fillet fixture; created the third at (-4.5, 3.25), r4.5.
+- Before the fourth publication, r6.121 at (33, 15.5) refused with the first
+  Fillet UUID and the closing shared Line. The draft survived. Applied r3.5,
+  cancelled the native Save dialog, then saved the retained draft as the
+  fourth Fillet; creation was then disabled because all corners were rounded.
+- Changed the first radius to 2.5, base height to 9.5, and stored clockwise
+  Sketch coordinates to x 1.5..31.5, y -2.25..10.5. Sketch Undo/Redo restored
+  the exact final coordinates. All five copies published and opened
+  asynchronously; STL and FBX were exported from the last accepted scene.
+- The four-Fillet constraints form exposed its history and reachable
+  controls. Added a pending Vertical, opened and cancelled Save, observed
+  the retained request, then explicitly dismissed it without publication.
+
+The original recipe incorrectly promised whole-request Undo/Redo in the
+Fillet form and referred to a Save before Apply. The contract and scenario
+now describe the actual forms: Fillet/radius use Apply, while Sketch and
+constraints have request history. No Fillet request-history feature was
+added by this review.
+
+The strict comparator ran on the real window files: 1554 cells; the source
+was byte-identical, SQL allowlists passed and GUI/CLI STL and FBX were
+byte-identical. An independently generated peer with height 7 instead of 9.5
+was rejected at `objects.payload`. STL: 272 triangles, 13684 bytes, closed and
+consistently oriented, bounds [1.5,31.5] × [-2.25,10.5] × [0,9.5] mm; signed
+mesh volume 3477.608295 mm³ versus analytic 3478.390760 mm³, within the stated
+facet band. FBX: 50024 bytes; pinned ufbx 0.23.0 strict, six checks and zero
+failures, oriented triangle join with the independently parsed STL 272/272.
+
+Peak footprint 204.282 MiB; pressure normal throughout, swap unchanged
+(647299072 bytes), viewer exit 0, watchdog not triggered. After Quit only the
+PID/log was inspected; no automation call relaunched the viewer. The earlier
+OOM remains unexplained. Evidence, temporary models and screenshots were
+kept outside the checkout in `ferrite-pr76-review`; no fixture was committed.

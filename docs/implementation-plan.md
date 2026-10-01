@@ -4195,3 +4195,16 @@ Cut with Fillet, arbitrary edges and in-place Save remain outside; milestone 5C
 remains open.
 [Contract and recipe](rectangular-fillet-history.md),
 [verification](rectangular-fillet-history-verification.md).
+
+
+**Independent review of §28L (2026-10-01).** Corrected stale reader links and
+an overstated Fillet Undo/Redo claim (request history belongs to Sketch and
+constraints; Fillet uses Apply). 660 native tests executed, four explicit N/A,
+one ignored benchmark; fmt/clippy passed. Real arm64 GUI: third/fourth creation,
+closing-pair refusal, Save Cancel/recovery, early-radius/height/Sketch edits,
+Sketch Undo/Redo, five publications/async Open and export. SQL 1554 cells,
+byte-equal STL/FBX, pinned ufbx 6/0 and oriented join 272 triangles. Peak viewer
+204.282 MiB, normal pressure, unchanged swap, exit 0. Original full CI logs
+confirm 21 distinct new gates/22 executions per OS plus native/mixed recipes
+and ufbx; fresh review CI remains a merge prerequisite. The earlier OOM is
+not explained by this passing run.

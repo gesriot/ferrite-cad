@@ -153,8 +153,11 @@ and exit 7 are the shared copy job's, unchanged.
 The existing forms and workers. The candidates are the corners still sharp.
 The history line and the radius editor name the selected Fillet and every
 neighbour present; the form's height is bounded and scrolls, so Save and Cancel
-stay reachable with four Fillets. Whole-request Undo/Redo, Cancel and a worker
-refusal keep the draft; a successful copy opens asynchronously.
+stay reachable with four Fillets. Sketch and constraint editors retain their
+existing whole-request Undo/Redo. Fillet creation and radius forms use Apply;
+they do not have whole-request Undo/Redo. Save-dialog Cancel and a worker
+refusal keep their draft; the explicit Cancel draft button dismisses it. A
+successful copy opens asynchronously.
 
 ## Out of scope
 
