@@ -251,3 +251,56 @@ fn a_chamfer_that_cannot_be_what_it_claims_is_refused_and_keeps_nothing() {
     kernel.release(built.shape);
     assert_eq!(kernel.live_shape_count(), 0);
 }
+
+/// A planar face's centre of mass need not lie on its trimmed material.
+/// In particular, both caps of a ring have their centroid in the bore, so
+/// probing from that point cannot determine the solid's outward normal.
+#[test]
+fn planar_normals_follow_the_solid_when_the_face_centroid_is_in_a_hole() {
+    let mut kernel = kernel_or_skip!();
+    let context = OperationContext::default();
+    let circle = |radius| {
+        ProfileLoop::closed_curve(ProfileSegment::new(
+            StableEntityId::new(),
+            SegmentGeometry::circle(PlanarPoint::new(12., -7.).expect("centre"), radius)
+                .expect("circle"),
+        ))
+        .expect("closed circle")
+    };
+    for reversed in [false, true] {
+        let profile = Profile::new(SketchPlane::world_xy(), circle(10.), vec![circle(4.)])
+            .expect("annular profile");
+        let request =
+            ExtrudeRequest::new(profile, ExtrudeExtent::blind(H).expect("height"), reversed);
+        let built = kernel.extrude(&request, &context).expect("ring");
+        let caps: Vec<_> = built
+            .start_cap
+            .iter()
+            .chain(&built.end_cap)
+            .copied()
+            .collect();
+        assert_eq!(caps.len(), 2);
+        let (blob, slots) = kernel
+            .encode_shape_with(built.shape, &caps)
+            .expect("archive");
+        let (restored, back) = kernel.decode_shape_with(&blob, &slots).expect("restore");
+        for faces in [&caps, &back] {
+            for (index, face) in faces.iter().enumerate() {
+                let (point, normal, area) = kernel.face_plane(*face).expect("cap plane");
+                let direction = if reversed { -1. } else { 1. };
+                let expected_z = if index == 0 { -direction } else { direction };
+                assert_eq!(
+                    normal,
+                    [0., 0., expected_z],
+                    "cap {index}, reversed={reversed}"
+                );
+                let expected_height = if index == 0 { 0. } else { direction * H };
+                assert!((point[2] - expected_height).abs() < 1e-10);
+                assert!((area - std::f64::consts::PI * 84.).abs() < 1e-9);
+            }
+        }
+        kernel.release(restored);
+        kernel.release(built.shape);
+    }
+    assert_eq!(kernel.live_shape_count(), 0);
+}

@@ -570,8 +570,8 @@ FcOcctStatus fc_occt_face_surface(FcOcctSession *session, uint64_t shape,
                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /* Analytic plane of the exact named planar face (§29A): a point on it, its
- * outward unit normal as the solid has the face (the plane's own direction,
- * reversed when the face is used reversed), and its area in square
+ * outward unit normal as the solid has the face (the U/V cross product,
+ * reversed when the solid uses the face reversed), and its area in square
  * millimetres. Arrays have length 3. Diagnostic only, like
  * fc_occt_cylinder_axis: never searches for a face or assigns a topology
  * name, and refuses a face that is not planar. */

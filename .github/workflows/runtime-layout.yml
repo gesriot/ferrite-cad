@@ -2299,7 +2299,8 @@ jobs:
           done
           # The selected-edge chamfer, through the trait and the bridge.
           for gate in one_selected_vertical_edge_is_chamfered_to_the_corner_it_names_and_every_tracked_face_is_accounted_for \
-            a_chamfer_that_cannot_be_what_it_claims_is_refused_and_keeps_nothing
+            a_chamfer_that_cannot_be_what_it_claims_is_refused_and_keeps_nothing \
+            planar_normals_follow_the_solid_when_the_face_centroid_is_in_a_hole
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-occt --test chamfer_edge_occt "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-occt.log

@@ -39,7 +39,7 @@ fn unsupported(message: impl Into<String>) -> CadError {
 ///
 /// Measured on Open CASCADE 8.0.1: a chamfer builds, valid and analytic to
 /// 1.7e-16 relative, at every distance from 1e-7 mm up, and fails at 1e-9 mm.
-/// 0.001 mm is 10⁴ times the kernel's linear tolerance, three orders above the
+/// 0.001 mm is 10⁴ times the kernel's linear tolerance, four orders above the
 /// smallest distance the kernel builds, and leaves a flat 1.4 µm wide — hundreds
 /// of ulps of an f32 STL coordinate at 30 mm, so the face is still a face in an
 /// exported mesh. Chosen for that, never narrowed to make an example pass.

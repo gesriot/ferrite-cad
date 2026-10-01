@@ -71,9 +71,6 @@
 #include <BRepFilletAPI_LocalOperation.hxx>
 #include <memory>
 #include <BRepGProp.hxx>
-#include <BRepBndLib.hxx>
-#include <Bnd_Box.hxx>
-#include <BRepClass3d_SolidClassifier.hxx>
 #include <Precision.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -1967,43 +1964,38 @@ FcOcctStatus fc_occt_face_plane(FcOcctSession *session, uint64_t shape,
       write_error(out_error, "the named face is not planar");
       return FC_OCCT_INVALID_INPUT;
     }
-    const auto &sub = session->shapes.at(shape).sub_shapes[face];
-    const TopoDS_Face planar = TopoDS::Face(sub);
+    const auto &record = session->shapes.at(shape);
+    const auto &sub = record.sub_shapes[face];
+    // A builder's Generated face may have a different orientation from the
+    // occurrence in the solid. Recover that occurrence by exact identity,
+    // as the named archive reader does, never by location or surface shape.
+    TopoDS_Face planar;
+    for (TopExp_Explorer it(record.shape, TopAbs_FACE); it.More(); it.Next()) {
+      if (it.Current().IsSame(sub)) {
+        planar = TopoDS::Face(it.Current());
+        break;
+      }
+    }
+    if (planar.IsNull()) {
+      write_error(out_error, "the named planar face is not part of its solid");
+      return FC_OCCT_KERNEL;
+    }
     const BRepAdaptor_Surface adaptor(planar);
     const gp_Pln plane = adaptor.Plane();
     GProp_GProps properties;
     BRepGProp::SurfaceProperties(planar, properties);
-    // The outward normal as the solid has the face. The orientation a
-    // sub-shape carries depends on how it was reached (as a generated face of
-    // a builder, or explored out of a restored solid), so it is not read:
-    // the plane's own direction is tried a hair off the face's centre of mass,
-    // and flipped when that point is inside the solid.
-    gp_Dir normal = plane.Axis().Direction();
-    Bnd_Box box;
-    BRepBndLib::Add(planar, box);
-    double lo[3], hi[3];
-    box.Get(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
-    double thinnest = std::numeric_limits<double>::infinity();
-    for (int i = 0; i < 3; ++i) {
-      const double extent = hi[i] - lo[i];
-      if (extent > 1e-9 && extent < thinnest) {
-        thinnest = extent;
-      }
-    }
-    if (!std::isfinite(thinnest)) {
-      write_error(out_error, "the named planar face has no extent to probe");
-      return FC_OCCT_KERNEL;
-    }
-    const gp_Pnt centre = properties.CentreOfMass();
-    const gp_Pnt probe(centre.X() + normal.X() * 0.1 * thinnest,
-                       centre.Y() + normal.Y() * 0.1 * thinnest,
-                       centre.Z() + normal.Z() * 0.1 * thinnest);
-    BRepClass3d_SolidClassifier classifier(session->shapes.at(shape).shape, probe,
-                                           1e-9);
-    if (classifier.State() == TopAbs_IN) {
+    // Face orientation is topological. Its centre of mass can lie in a hole
+    // or outside a concave trim, so probing near that point is not a way to
+    // tell which side contains material.
+    // U/V may form an indirect placement: UReverse/VReverse changes the
+    // parametrization without changing gp_Pln's main axis. The surface
+    // normal is dP/du cross dP/dv, before applying the face's orientation.
+    gp_Dir normal =
+        plane.Position().XDirection().Crossed(plane.Position().YDirection());
+    if (planar.Orientation() == TopAbs_REVERSED) {
       normal.Reverse();
-    } else if (classifier.State() != TopAbs_OUT) {
-      write_error(out_error, "the named planar face could not be told from the inside of its solid");
+    } else if (planar.Orientation() != TopAbs_FORWARD) {
+      write_error(out_error, "the named planar face has no boundary orientation");
       return FC_OCCT_KERNEL;
     }
     for (int i = 0; i < 3; ++i) {
@@ -2526,10 +2518,10 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
                                    void *cancel_context, uint64_t *out_shape,
                                    double *out_removed_volume,
                                    FcOcctError *out_error) noexcept {
-  const std::string what = chamfer ? "chamfer" : "fillet";
-  const std::string entry =
-      chamfer ? "fc_occt_chamfer_edge" : "fc_occt_fillet_edge";
   return guarded(out_error, [&]() -> FcOcctStatus {
+    const std::string what = chamfer ? "chamfer" : "fillet";
+    const std::string entry =
+        chamfer ? "fc_occt_chamfer_edge" : "fc_occt_fillet_edge";
     if (session == nullptr || out_shape == nullptr ||
         out_removed_volume == nullptr) {
       write_error(out_error, entry + " was given a null argument");

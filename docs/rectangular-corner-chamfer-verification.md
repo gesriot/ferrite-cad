@@ -10,6 +10,28 @@ Base `main` = `ea4602e4197ca1abbf3f3f57b373282395ae7304`, tree
 back. Runs of #76 on `main` after the merge are told apart from this PR's runs.
 Milestone 5C is **not** declared complete.
 
+## Independent macOS review (2026-10-01)
+
+The review reproduced a defect in the new planar-face diagnostic: the lower
+cap of an annular extrusion returned an upward normal. Its centre of mass is
+inside the bore, so an inside/outside probe there cannot determine the face's
+orientation. The new regression failed on an executed assertion before the
+fix. `face_plane` now finds the same face occurrence in its solid by identity,
+uses the surface U/V cross product (including indirect placements), and applies
+the occurrence's orientation. Both extrusion directions and named archive
+round-trips are covered. This exact regression joins the existing runtime gate
+on all three platforms. String allocation in the common Fillet/Chamfer bridge
+entry is also inside its exception guard.
+
+Local Apple Silicon review used the existing pinned OCCT/PlaneGCS and release
+target, with sequential builds. The initial affected matrix executed 1036 tests;
+four explicit no-solver N/A cases and one old ignored benchmark are separate.
+After the fix, all three OCCT Chamfer tests, eight CLI Chamfer tests, four app
+Chamfer tests, workspace clippy (all targets/features, warnings denied), and
+fmt passed. Deliberate panics caught by the CLI measurement test are its
+negative controls, not failed tests. Native libraries were not rebuilt.
+Window smoke and remote CI for this review commit are still pending here.
+
 ## Where and how this was run
 
 Local, in the cloud container: Linux, Open CASCADE 8.0.1 and PlaneGCS built from

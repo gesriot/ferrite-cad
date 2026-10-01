@@ -126,7 +126,7 @@ Chosen constants (own, not the Fillet's `MIN_RADIUS_MM`/`MAX_RADIUS_FRACTION`):
     MIN_DISTANCE_MM = 0.001 ≤ d ≤ min(len_a, len_b) − MIN_FLAT_MM,   MIN_FLAT_MM = 0.01
 
 * **Finite**, positive, and at least `MIN_DISTANCE_MM`: 10⁴ × the kernel linear
-  tolerance, three orders above the smallest distance OCCT still builds
+  tolerance, four orders above the smallest distance OCCT still builds
   (1e-7), a flat 1.4 µm wide, hundreds of f32 ulps in the STL.
 * **At most the shorter adjacent side less `MIN_FLAT_MM`**: a chamfer of `d`
   leaves `len − d` of each adjacent face; OCCT refuses at `d = len`, and a face
