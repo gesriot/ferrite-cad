@@ -64,6 +64,11 @@ root in this container (`read_only_permissions_still_dump_when_the_file_can_be_r
 `validation_really_read_only_permissions`; they fail on `main` here too).
 App: 376 passed. `cargo fmt --check` and workspace clippy
 (`--all-targets --features planegcs -- -D warnings`) are clean.
+The twelve recipes 28A–28L ran against this build: all `FCAD_28*_RECIPE_OK`.
+Stub build (no Open CASCADE): the discovery/protocol, widget, document, kernel
+and topology gates passed and the recipe printed `FCAD_29A_RECIPE_NO_KERNEL`.
+OCCT without the solver (release, `--no-default-features`): the kernel-free
+gate and two native gates passed and the recipe printed `FCAD_29A_RECIPE_OK`.
 The extracted recipe prints `FCAD_29A_RECIPE_OK` with a kernel and
 `FCAD_29A_RECIPE_NO_KERNEL` without one.
 The FBX artifacts the CI loop reads (six Chamfer FBX/STL pairs) were produced
