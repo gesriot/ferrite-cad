@@ -198,34 +198,51 @@ impl Editor {
                 }
                 // §28E: the Fillet these Lines carry, and what the new copy
                 // has to be before it is saved.
-                if let (Some(first), Some(second)) =
-                    (&draft.choice.fillet, &draft.choice.second_fillet)
-                {
-                    // §28K: both Fillets in history order; the second rounds
-                    // the first one's result. Both radii and the flat between
-                    // adjacent arcs are the solved plate's to satisfy.
-                    let [a1, b1] = first.edge.joint.segments();
-                    let [a2, b2] = second.edge.joint.segments();
-                    ui.label(format!(
-                        "History: Extrude -> Fillet 1 {} at the corner of Lines {a1} | {b1}, \
-                         r {} mm (stored corner ({}, {})) -> Fillet 2 {} at the corner of Lines \
-                         {a2} | {b2}, r {} mm (stored corner ({}, {})). Both Fillets keep their \
-                         corners and radii: the new copy is saved only if the solved plate is \
-                         still a rectangle with every Line on its side, each side at a corner \
-                         at least {} mm (Fillet 1) or {} mm (Fillet 2), and adjacent arcs still \
-                         leave a flat between them.",
-                        first.feature,
-                        first.radius_mm,
-                        first.corner.corner_mm[0],
-                        first.corner.corner_mm[1],
-                        second.feature,
-                        second.radius_mm,
-                        second.corner.corner_mm[0],
-                        second.corner.corner_mm[1],
-                        first.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION,
-                        second.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
+                if let [_, _, ..] = draft.choice.fillets.as_slice() {
+                    // §28K/§28L: every Fillet in history order; each rounds
+                    // the result of the one before it. All radii and the flats
+                    // between adjacent arcs are the solved plate's to satisfy.
+                    let all = &draft.choice.fillets;
+                    egui::ScrollArea::vertical()
+                    .id_salt("fillet-history-note")
+                    .max_height(96.)
+                    .show(ui, |ui| {
+                        ui.label(format!(
+                        "History: Extrude -> {}. {} Fillets keep their corners and radii: the \
+                         new copy is saved only if the solved plate is still a rectangle with \
+                         every Line on its side, each side at a corner at least {}, and \
+                         adjacent arcs still leave a flat between them.",
+                        all.iter()
+                            .map(|f| {
+                                let [a, b] = f.edge.joint.segments();
+                                format!(
+                                    "Fillet {} {} at the corner of Lines {a} | {b}, r {} mm \
+                                     (stored corner ({}, {}))",
+                                    f.history_index,
+                                    f.feature,
+                                    f.radius_mm,
+                                    f.corner.corner_mm[0],
+                                    f.corner.corner_mm[1]
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" -> "),
+                        if all.len() == 2 {
+                            "Both".to_owned()
+                        } else {
+                            format!("All {}", all.len())
+                        },
+                        all.iter()
+                            .map(|f| format!(
+                                "{} mm (Fillet {})",
+                                f.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION,
+                                f.history_index
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(" or ")
                     ));
-                } else if let Some(fillet) = &draft.choice.fillet {
+                    });
+                } else if let Some(fillet) = draft.choice.fillet() {
                     let [a, b] = fillet.edge.joint.segments();
                     ui.label(format!(
                         "Rounded by Fillet {} at the corner of Lines {a} | {b}, r {} mm \
@@ -5061,7 +5078,7 @@ pub(crate) mod tests {
         let (_root, path, source) = crate::fillets::tests::rounded(2.375);
         let choice = source.constraint_sketches[0].clone();
         assert_eq!(choice.refusal, None);
-        let fillet = choice.fillet.clone().expect("the Fillet as context");
+        let fillet = choice.fillet().cloned().expect("the Fillet as context");
         let [a, b] = fillet.edge.joint.segments();
         let mut e = Editor::default();
         assert!(e.begin(&path, &source, choice.sketch));
@@ -5263,8 +5280,8 @@ pub(crate) mod tests {
         let choice = source.constraint_sketches[0].clone();
         assert_eq!(choice.refusal, None);
         let (first, second) = (
-            choice.fillet.clone().expect("Fillet 1 as context"),
-            choice.second_fillet.clone().expect("Fillet 2 as context"),
+            choice.fillet().cloned().expect("Fillet 1 as context"),
+            choice.fillets.get(1).cloned().expect("Fillet 2 as context"),
         );
         assert_eq!(second.previous, first.feature, "Fillet 2 rounds Fillet 1");
         let [a1, b1] = first.edge.joint.segments();

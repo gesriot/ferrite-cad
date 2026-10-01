@@ -77,10 +77,10 @@ pub use cut_edit::{
     cut_plane_placement, prepare_circular_cut, prepare_cut_parameters,
 };
 pub use fillet::{
-    EdgeFillet, ExistingFillet, FilletChoice, FilletCorner, MAX_RADIUS_FRACTION, MIN_RADIUS_MM,
-    PreparedEdgeFillet, SavedFilletTarget, check_pair, check_radius_value, corner_for,
-    evaluable_fillet, fillet_choices, pair_bound, pair_bound_of_first, prepare_edge_fillet,
-    rectangle_corners, shared_side,
+    EdgeFillet, ExistingFillet, FilletChoice, FilletCorner, MAX_PLATE_FILLETS, MAX_RADIUS_FRACTION,
+    MIN_RADIUS_MM, PreparedEdgeFillet, SavedFilletTarget, check_pair, check_radius_value,
+    corner_for, evaluable_fillet, fillet_choices, pair_bound, pair_bound_of_first,
+    prepare_edge_fillet, rectangle_corners, shared_side,
 };
 pub use fillet_radius::{
     FilletRadiusChoice, NeighbourFillet, PreparedFilletRadius, SavedFillet, fillet_radius_choices,

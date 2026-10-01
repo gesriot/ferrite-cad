@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Changing the radius of the one saved Fillet, in a new copy (§28B).
+//! Changing the radius of one saved Fillet, in a new copy (§28B, §28H, §28L).
 //!
 //! The feature stays the feature: the same UUID, the same producer and joint,
 //! the same seven names. The only model change is `radius_mm` in its payload.
@@ -9,7 +9,7 @@
 //! answers to §28A's policy ([`crate::FilletCorner::check_radius`]).
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result, StableEntityId};
 
-use crate::cut_edit::{same_meaning, saved_history_under_fillet};
+use crate::cut_edit::same_meaning;
 use crate::fillet::{corners_of_lines, fillet_references, rectangle_corners};
 use crate::{Document, Fillet, FilletCorner, FilletEdge, ObjectPayload, ObjectRecord};
 
@@ -18,7 +18,8 @@ use crate::{Document, Fillet, FilletCorner, FilletEdge, ObjectPayload, ObjectRec
 pub struct SavedFillet {
     pub feature: ObjectId,
     pub body: ObjectId,
-    /// The base Extrude: the feature consumed and the producer of the edge.
+    /// The feature this Fillet rounds the result of: the base Extrude for the
+    /// first Fillet, the Fillet before it otherwise.
     pub previous: ObjectId,
     pub edge: FilletEdge,
     /// The corner the edge was swept from, with its labels and bound.
@@ -31,17 +32,18 @@ pub struct SavedFillet {
     /// lengths and bound say nothing about the part: the radius bound is asked
     /// of the solved plate by the rebuild, at every rebuild.
     pub constrained: bool,
-    /// §28H: 1 for the only or the first Fillet, 2 for the Fillet that rounds
-    /// the first one's result.
+    /// §28H/§28L: the place in the history, 1 for the only or the first
+    /// Fillet, up to [`crate::MAX_PLATE_FILLETS`]. Each Fillet rounds the
+    /// result of the one before it.
     pub history_index: usize,
-    /// §28H: the plate's base Extrude, the producer of the edge. `previous`
-    /// for the first Fillet; the first Fillet is `previous` of the second.
+    /// §28H: the plate's base Extrude, the producer of every Fillet's edge.
     pub base_feature: ObjectId,
-    /// §28H: the other Fillet of a two-Fillet history, as saved.
-    pub neighbour: Option<NeighbourFillet>,
+    /// §28L: every **other** Fillet of the history, in history order, each
+    /// with the Line it shares with this one if the corners are adjacent.
+    pub neighbours: Vec<NeighbourFillet>,
 }
 
-/// §28H: the other Fillet of a two-Fillet history, beside the one edited.
+/// §28H/§28L: another Fillet of the history, beside the one edited.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NeighbourFillet {
     pub feature: ObjectId,
@@ -55,6 +57,21 @@ pub struct NeighbourFillet {
 }
 
 impl SavedFillet {
+    /// How many Fillets the whole history holds, this one included.
+    pub fn history_len(&self) -> usize {
+        self.neighbours.len() + 1
+    }
+
+    /// §28H, kept as a projection for histories of exactly two Fillets: the
+    /// other one. `None` for one Fillet and — never describing it falsely — for
+    /// three or four, whose neighbours are [`Self::neighbours`].
+    pub fn neighbour(&self) -> Option<&NeighbourFillet> {
+        match self.neighbours.as_slice() {
+            [only] => Some(only),
+            _ => None,
+        }
+    }
+
     /// The radius policy this Fillet's corner answers to. For a constrained
     /// plate only the corner-free part of it ([`crate::check_radius_value`]):
     /// the stored lengths are not the part's, in either direction.
@@ -63,37 +80,56 @@ impl SavedFillet {
             return crate::fillet::check_radius_value(radius_mm);
         }
         self.corner.check_radius(radius_mm)?;
-        // §28H: the pair policy, in history order, with the other radius as
-        // saved: the very check the rebuild applies at the second Fillet.
-        if let Some(n) = &self.neighbour {
+        // §28H/§28L: the pair policy, in history order, against **every**
+        // other radius as saved: the very check the rebuild applies at the
+        // later Fillet of each pair. The first refusal is the earliest
+        // neighbour in the history.
+        for n in &self.neighbours {
+            let beside = (n.feature, n.edge.joint);
             if n.history_index < self.history_index {
-                crate::fillet::check_pair(&n.corner, n.radius_mm, &self.corner, radius_mm)?;
+                crate::fillet::check_pair_beside(
+                    beside,
+                    &n.corner,
+                    n.radius_mm,
+                    &self.corner,
+                    radius_mm,
+                )?;
             } else {
-                crate::fillet::check_pair(&self.corner, radius_mm, &n.corner, n.radius_mm)?;
+                crate::fillet::check_pair_beside(
+                    beside,
+                    &self.corner,
+                    radius_mm,
+                    &n.corner,
+                    n.radius_mm,
+                )?;
             }
         }
         Ok(())
     }
 
     /// The largest radius this Fillet takes without a solve: §28A's bound
-    /// and, beside an adjacent Fillet, the pair bound by the same predicate
-    /// [`Self::check_radius`] applies. `None` for a constrained plate.
+    /// and, beside **each** adjacent Fillet, the pair bound by the same
+    /// predicate [`Self::check_radius`] applies. The minimum of all of them,
+    /// so the radius offered satisfies every neighbour, not the first found.
+    /// `None` for a constrained plate.
     pub fn max_radius_mm(&self) -> Option<f64> {
         if self.constrained {
             return None;
         }
-        let pair = self
-            .neighbour
-            .as_ref()
-            .and_then(|n| n.shared.map(|(_, length)| (n, length)))
-            .map_or(f64::INFINITY, |(n, length)| {
-                if n.history_index < self.history_index {
-                    crate::fillet::pair_bound(length, n.radius_mm)
-                } else {
-                    crate::fillet::pair_bound_of_first(length, n.radius_mm)
-                }
-            });
-        Some(self.corner.max_radius_mm.min(pair))
+        let mut bound = self.corner.max_radius_mm;
+        for n in &self.neighbours {
+            let Some((_, length)) = n.shared else {
+                continue;
+            };
+            let pair = if n.history_index < self.history_index {
+                crate::fillet::pair_bound(length, n.radius_mm)
+            } else {
+                crate::fillet::pair_bound_of_first(length, n.radius_mm)
+            };
+            // No radius fits beside a neighbour this wide: nothing is offered.
+            bound = bound.min(if pair.is_nan() { 0.0 } else { pair });
+        }
+        Some(bound)
     }
 
     /// §28D: this Fillet's corner on a candidate profile of the same Lines,
@@ -108,7 +144,8 @@ impl SavedFillet {
             constraints: Vec::new(),
         };
         // §28J: the edge was swept by the base Extrude, which is `previous`
-        // only for the first Fillet; Fillet 2's `previous` is Fillet 1.
+        // only for the first Fillet; a later Fillet's `previous` is the Fillet
+        // before it.
         let corners = rectangle_corners(self.base_feature, &candidate)?;
         let corner = crate::corner_for(&corners, self.edge)?;
         corner.check_radius(self.radius_mm)?;
@@ -138,177 +175,80 @@ impl FilletRadiusChoice {
     }
 }
 
-/// The class, read from the saved history around one Fillet object. Shared
-/// by the radius edit and the base height edit (§28C), which change different
-/// rows of the same frame.
-pub(crate) fn saved_fillet(
+/// §28L: the Fillets of the document's plate, in history order, as the one
+/// reader reads them — `n` from 1 to [`crate::MAX_PLATE_FILLETS`].
+///
+/// The exact history (one Body, one base Extrude, an unbranched chain of
+/// Fillets over it, no Cut, exactly the plane, profile, predecessor and
+/// body-tip dependencies), every Fillet's payload and corner, the radii by the
+/// one policy, and every name by meaning (seven per Fillet and one origin face
+/// per earlier Fillet) with no other name owned by any of them. Shared by the
+/// radius edit, the height, coordinate and constraint edits and the add-Fillet
+/// editor; the older one- and two-Fillet shapes are projections of its list.
+pub(crate) fn saved_fillets(
     document: &Document,
     objects: &[ObjectRecord],
-    fillet: &ObjectRecord,
-) -> Result<SavedFillet> {
-    let ObjectPayload::Fillet(stored) = &fillet.payload else {
-        return Err(CadError::input(format!(
-            "object {} is {}, not a Fillet",
-            fillet.id,
-            fillet.payload.type_name()
-        )));
-    };
-    let fillets = objects
+) -> Result<Vec<SavedFillet>> {
+    let records: Vec<&ObjectRecord> = objects
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
-        .count();
-    if fillets == 2 {
-        return Err(CadError::unsupported(
-            "this slice edits a plate with one Fillet, and this document holds 2; with two \
-             Fillets (§28G), edit their radii (edit-fillet-radius, §28H), the plate's height \
-             (edit-extrude, §28I), the base Sketch's Line coordinates (edit-sketch-copy, \
-             §28J) or its Line constraints (edit-sketch-constraints-copy, §28K)",
-        ));
+        .collect();
+    if records.is_empty() {
+        return Ok(Vec::new());
     }
-    if fillets != 1 {
+    if records.len() > crate::MAX_PLATE_FILLETS {
         return Err(CadError::unsupported(format!(
-            "this slice edits a plate with one Fillet, and this document holds {fillets}"
+            "this build edits a plate with at most {} Fillets, one per vertical corner, and \
+             this document holds {}",
+            crate::MAX_PLATE_FILLETS,
+            records.len()
         )));
     }
-    let history = saved_history_under_fillet(document, objects, fillet)?;
-    if !history.cuts.is_empty() {
-        return Err(CadError::unsupported(
-            "this slice edits a plate with a Fillet and no Cut",
-        ));
-    }
-    let target = history.target;
-    if stored.previous != target.base_feature || stored.edge.feature != target.base_feature {
-        return Err(CadError::unsupported(
-            "this slice edits a Fillet that rounds an edge of the plate's own Extrude",
-        ));
-    }
-    let profile = objects
-        .iter()
-        .find(|o| o.id == target.profile)
-        .ok_or_else(|| CadError::unsupported("the part's profile is missing"))?;
-    let ObjectPayload::Sketch(sketch) = &profile.payload else {
-        return Err(CadError::unsupported("the part's profile is not a Sketch"));
-    };
-    // The stored Lines are the rectangle the Fillet was made on, and they say
-    // which two Lines meet at its corner. Only for an unconstrained plate are
-    // they also the part, so only then is the radius bound asked of them.
-    let constrained = !sketch.constraints.is_empty();
-    let corners = corners_of_lines(target.base_feature, &sketch.curves)?;
-    let corner = crate::corner_for(&corners, stored.edge)?;
-    if constrained {
-        crate::fillet::check_radius_value(stored.radius_mm)?;
-    } else {
-        corner.check_radius(stored.radius_mm)?;
-    }
-    // Exactly the seven names §28A gives this Fillet, by meaning, and no other
-    // name owned by it. Their UUIDs are what the copy keeps.
-    let wanted = fillet_references(
-        fillet.id,
-        target.base_feature,
-        stored.edge.joint,
-        &target.profile_segments,
-    );
-    let mut owned: Vec<_> = document
-        .topology_refs()?
-        .into_iter()
-        .filter(|r| r.owner == fillet.id || r.producer_feature == fillet.id)
-        .collect();
-    for want in &wanted {
-        let at = owned
-            .iter()
-            .position(|r| same_meaning(r, want))
-            .ok_or_else(|| {
-                CadError::unsupported(
-                    "the saved Fillet does not name the faces this build gives a Fillet",
-                )
-            })?;
-        owned.remove(at);
-    }
-    if !owned.is_empty() {
-        return Err(CadError::unsupported(
-            "the saved Fillet names more faces than this build gives a Fillet",
-        ));
-    }
-    Ok(SavedFillet {
-        feature: fillet.id,
-        body: target.body,
-        previous: stored.previous,
-        edge: stored.edge,
-        corner,
-        profile: target.profile,
-        height_mm: target.height_mm,
-        radius_mm: stored.radius_mm,
-        constrained,
-        history_index: 1,
-        base_feature: target.base_feature,
-        neighbour: None,
-    })
-}
-
-/// §28H: the Fillet whose radius an edit changes — the one Fillet of a §28B
-/// frame, or either Fillet of the §28G history. The one-Fillet path, and the
-/// frame every other editor reads through [`fillet_over_plate`], are
-/// unchanged.
-pub(crate) fn saved_fillet_for_radius(
-    document: &Document,
-    objects: &[ObjectRecord],
-    fillet: &ObjectRecord,
-) -> Result<SavedFillet> {
-    let fillets: Vec<&ObjectRecord> = objects
-        .iter()
-        .filter(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
-        .collect();
-    if fillets.len() != 2 {
-        return saved_fillet(document, objects, fillet);
-    }
-    saved_sequential_fillet(document, objects, &fillets, fillet)
-}
-
-/// §28H: either Fillet of Extrude → Fillet 1 → Fillet 2 → Body tip, read in
-/// full: the exact history, both payloads, both corners and all fifteen
-/// names by meaning, and the radii as saved by the one rule.
-fn saved_sequential_fillet(
-    document: &Document,
-    objects: &[ObjectRecord],
-    fillets: &[&ObjectRecord],
-    selected: &ObjectRecord,
-) -> Result<SavedFillet> {
-    let ObjectPayload::Fillet(_) = &selected.payload else {
-        return Err(CadError::input(format!(
-            "object {} is {}, not a Fillet",
-            selected.id,
-            selected.payload.type_name()
-        )));
-    };
     let payload = |o: &ObjectRecord| match &o.payload {
         ObjectPayload::Fillet(f) => f.clone(),
         _ => unreachable!("filtered Fillets"),
     };
-    // The first rounds the plate; the second rounds the first's result.
-    let (first, second) = match (payload(fillets[0]), payload(fillets[1])) {
-        (_, b) if b.previous == fillets[0].id => (fillets[0], fillets[1]),
-        (a, _) if a.previous == fillets[1].id => (fillets[1], fillets[0]),
-        _ => {
-            return Err(CadError::unsupported(
-                "this slice edits two Fillets only when the second rounds the first one's result",
-            ));
-        }
+    // The tip of the chain: the one Fillet no other Fillet rounds the result
+    // of. The chain below it is then read by `previous`, never by position.
+    let tops: Vec<&&ObjectRecord> = records
+        .iter()
+        .filter(|f| {
+            !records
+                .iter()
+                .any(|o| matches!(&o.payload, ObjectPayload::Fillet(x) if x.previous == f.id))
+        })
+        .collect();
+    let [top] = tops.as_slice() else {
+        return Err(CadError::unsupported(
+            "this slice edits Fillets that round one plate one after the other, and the \
+             Fillets of this document do not form one chain",
+        ));
     };
-    let history =
-        crate::cut_edit::saved_history_under_fillets(document, objects, &[first, second])?;
+    let (base, earlier) = crate::fillet::chain_below(objects, payload(top).previous)?;
+    crate::fillet::refuse_branch(objects, base, &earlier)?;
+    let mut chain: Vec<&ObjectRecord> = earlier;
+    chain.push(top);
+    if chain.len() != records.len() {
+        return Err(CadError::unsupported(format!(
+            "this slice edits the chain of Fillets under the Body's tip, and {} of the {} \
+             Fillets of this document are not in it",
+            records.len() - chain.len(),
+            records.len()
+        )));
+    }
+    let history = crate::cut_edit::saved_history_under_fillets(document, objects, &chain)?;
     if !history.cuts.is_empty() {
         return Err(CadError::unsupported(
             "this slice edits a plate with Fillets and no Cut",
         ));
     }
     let target = history.target;
-    let (one, two) = (payload(first), payload(second));
-    if one.previous != target.base_feature
-        || one.edge.feature != target.base_feature
-        || two.edge.feature != target.base_feature
+    let stored: Vec<Fillet> = chain.iter().map(|o| payload(o)).collect();
+    if stored[0].previous != target.base_feature
+        || stored.iter().any(|f| f.edge.feature != target.base_feature)
     {
         return Err(CadError::unsupported(
-            "this slice edits two Fillets that both round an edge of the plate's own Extrude",
+            "this slice edits Fillets that each round an edge of the plate's own Extrude",
         ));
     }
     let profile = objects
@@ -318,55 +258,68 @@ fn saved_sequential_fillet(
     let ObjectPayload::Sketch(sketch) = &profile.payload else {
         return Err(CadError::unsupported("the part's profile is not a Sketch"));
     };
+    // The stored Lines are the rectangle the Fillets were made on, and they say
+    // which two Lines meet at each corner. Only for an unconstrained plate are
+    // they also the part, so only then is the radius bound asked of them.
     let constrained = !sketch.constraints.is_empty();
     let corners = corners_of_lines(target.base_feature, &sketch.curves)?;
-    let c1 = crate::corner_for(&corners, one.edge)?;
-    let c2 = crate::corner_for(&corners, two.edge)?;
-    if c1.joint == c2.joint {
-        return Err(CadError::unsupported(
-            "the two saved Fillets round the same corner",
-        ));
+    let found: Vec<FilletCorner> = stored
+        .iter()
+        .map(|f| crate::corner_for(&corners, f.edge))
+        .collect::<Result<_>>()?;
+    for (k, corner) in found.iter().enumerate() {
+        if let Some(j) = found[..k].iter().position(|c| c.joint == corner.joint) {
+            return Err(CadError::unsupported(format!(
+                "Fillets {} and {} round the same corner {}",
+                chain[j].id, chain[k].id, corner.joint
+            )));
+        }
     }
     // The saved radii by the one rule; for a constrained plate only their
     // value, the rest being the solved plate's.
-    if constrained {
-        crate::fillet::check_radius_value(one.radius_mm)?;
-        crate::fillet::check_radius_value(two.radius_mm)?;
-    } else {
-        c1.check_radius(one.radius_mm)?;
-        c2.check_radius(two.radius_mm)?;
-        crate::fillet::check_pair(&c1, one.radius_mm, &c2, two.radius_mm)?;
+    for (k, f) in stored.iter().enumerate() {
+        if constrained {
+            crate::fillet::check_radius_value(f.radius_mm)?;
+        } else {
+            found[k].check_radius(f.radius_mm)?;
+            for j in 0..k {
+                crate::fillet::check_pair_beside(
+                    (chain[j].id, stored[j].edge.joint),
+                    &found[j],
+                    stored[j].radius_mm,
+                    &found[k],
+                    f.radius_mm,
+                )?;
+            }
+        }
     }
-    // Exactly §28A's seven names for the first and §28G's eight for the
-    // second, by meaning, and no other name owned by either.
-    let mut wanted = fillet_references(
-        first.id,
-        target.base_feature,
-        one.edge.joint,
-        &target.profile_segments,
-    );
-    wanted.extend(fillet_references(
-        second.id,
-        target.base_feature,
-        two.edge.joint,
-        &target.profile_segments,
-    ));
-    wanted.push(crate::fillet::origin_fillet_reference(
-        second.id,
-        &crate::ExistingFillet {
-            feature: first.id,
-            edge: one.edge,
-            radius_mm: one.radius_mm,
-            corner: c1,
-        },
-    ));
+    // Exactly §28A's seven names for every Fillet and one origin face of every
+    // earlier Fillet, by meaning, and no other name owned by any of them.
+    let mut wanted = Vec::new();
+    for (k, f) in stored.iter().enumerate() {
+        wanted.extend(fillet_references(
+            chain[k].id,
+            target.base_feature,
+            f.edge.joint,
+            &target.profile_segments,
+        ));
+        for j in 0..k {
+            wanted.push(crate::fillet::origin_fillet_reference(
+                chain[k].id,
+                &crate::ExistingFillet {
+                    feature: chain[j].id,
+                    edge: stored[j].edge,
+                    radius_mm: stored[j].radius_mm,
+                    corner: found[j],
+                },
+            ));
+        }
+    }
+    let mine = |id: ObjectId| chain.iter().any(|o| o.id == id);
     let mut owned: Vec<_> = document
         .topology_refs()?
         .into_iter()
-        .filter(|r| {
-            [first.id, second.id].contains(&r.owner)
-                || [first.id, second.id].contains(&r.producer_feature)
-        })
+        .filter(|r| mine(r.owner) || mine(r.producer_feature))
         .collect();
     for want in &wanted {
         let at = owned
@@ -374,102 +327,99 @@ fn saved_sequential_fillet(
             .position(|r| same_meaning(r, want))
             .ok_or_else(|| {
                 CadError::unsupported(
-                    "the saved Fillets do not name the faces this build gives two Fillets",
+                    "the saved Fillets do not name the faces this build gives a history of Fillets",
                 )
             })?;
         owned.remove(at);
     }
     if !owned.is_empty() {
         return Err(CadError::unsupported(
-            "the saved Fillets name more faces than this build gives two Fillets",
+            "the saved Fillets name more faces than this build gives a history of Fillets",
         ));
     }
-    let shared = crate::fillet::shared_side(&c1, &c2);
-    let entry = |id: ObjectId, f: &Fillet, corner: FilletCorner, index: usize| NeighbourFillet {
-        feature: id,
-        history_index: index,
-        edge: f.edge,
-        corner,
-        radius_mm: f.radius_mm,
-        shared,
-    };
-    let (mine, other, index, corner) = if selected.id == first.id {
-        (&one, entry(second.id, &two, c2, 2), 1, c1)
-    } else if selected.id == second.id {
-        (&two, entry(first.id, &one, c1, 1), 2, c2)
-    } else {
-        return Err(CadError::input(format!(
-            "object {} is not one of this plate's Fillets",
-            selected.id
-        )));
-    };
-    Ok(SavedFillet {
-        feature: selected.id,
-        body: target.body,
-        previous: mine.previous,
-        edge: mine.edge,
-        corner,
-        profile: target.profile,
-        height_mm: target.height_mm,
-        radius_mm: mine.radius_mm,
-        constrained,
-        history_index: index,
-        base_feature: target.base_feature,
-        neighbour: Some(other),
-    })
+    Ok(chain
+        .iter()
+        .enumerate()
+        .map(|(k, record)| SavedFillet {
+            feature: record.id,
+            body: target.body,
+            previous: stored[k].previous,
+            edge: stored[k].edge,
+            corner: found[k],
+            profile: target.profile,
+            height_mm: target.height_mm,
+            radius_mm: stored[k].radius_mm,
+            constrained,
+            history_index: k + 1,
+            base_feature: target.base_feature,
+            neighbours: chain
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != k)
+                .map(|(j, other)| NeighbourFillet {
+                    feature: other.id,
+                    history_index: j + 1,
+                    edge: stored[j].edge,
+                    corner: found[j],
+                    radius_mm: stored[j].radius_mm,
+                    shared: crate::fillet::shared_side(&found[k], &found[j]),
+                })
+                .collect(),
+        })
+        .collect())
 }
 
-/// The Fillet that tips the document's plate: `None` when the document holds
-/// no Fillet, the §28B frame when it holds, and the frame's reason otherwise.
-pub(crate) fn fillet_over_plate(
+/// §28H: the Fillet whose radius an edit changes: any Fillet of the history
+/// the one reader reads, selected by its UUID.
+pub(crate) fn saved_fillet_for_radius(
     document: &Document,
     objects: &[ObjectRecord],
-) -> Result<Option<SavedFillet>> {
-    let Some(fillet) = objects
-        .iter()
-        .find(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
-    else {
-        return Ok(None);
+    fillet: &ObjectRecord,
+) -> Result<SavedFillet> {
+    let ObjectPayload::Fillet(_) = &fillet.payload else {
+        return Err(CadError::input(format!(
+            "object {} is {}, not a Fillet",
+            fillet.id,
+            fillet.payload.type_name()
+        )));
     };
-    saved_fillet(document, objects, fillet).map(Some)
+    saved_fillets(document, objects)?
+        .into_iter()
+        .find(|s| s.feature == fillet.id)
+        .ok_or_else(|| {
+            CadError::input(format!(
+                "object {} is not one of this plate's Fillets",
+                fillet.id
+            ))
+        })
 }
 
-/// §28I: the Fillets over the plate a base height edit changes, as they stand
-/// in the history. `first` rounds the base Extrude; `second`, when present,
-/// rounds `first`'s result (§28G) and is read by the reader the radius edit
-/// uses for two Fillets. A plate with one Fillet is §28C's frame exactly.
+/// The Fillets over the plate a base height, coordinate or constraint edit
+/// keeps, as they stand in the history, bottom first: the first rounds the
+/// base Extrude and each later one rounds the result of the one before it.
+/// A plate with one Fillet is §28C's frame exactly.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FilletsOverPlate {
-    pub first: SavedFillet,
-    pub second: Option<SavedFillet>,
+    pub fillets: Vec<SavedFillet>,
 }
 
-/// §28I/§28J/§28K: [`fillet_over_plate`] for the base height, Sketch coordinate
-/// and constraint edits, which also admit the §28G history of two Fillets.
-/// The add-Fillet editor keeps reading [`fillet_over_plate`], which does not.
+impl FilletsOverPlate {
+    pub fn first(&self) -> &SavedFillet {
+        &self.fillets[0]
+    }
+    pub fn last(&self) -> &SavedFillet {
+        &self.fillets[self.fillets.len() - 1]
+    }
+}
+
+/// §28C–§28L: the Fillets of the plate, `None` when the document holds none,
+/// the history when the one reader admits it, and its reason otherwise.
 pub(crate) fn fillets_over_plate(
     document: &Document,
     objects: &[ObjectRecord],
 ) -> Result<Option<FilletsOverPlate>> {
-    let fillets: Vec<&ObjectRecord> = objects
-        .iter()
-        .filter(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
-        .collect();
-    if fillets.len() != 2 {
-        return Ok(
-            fillet_over_plate(document, objects)?.map(|first| FilletsOverPlate {
-                first,
-                second: None,
-            }),
-        );
-    }
-    let a = saved_sequential_fillet(document, objects, &fillets, fillets[0])?;
-    let b = saved_sequential_fillet(document, objects, &fillets, fillets[1])?;
-    let (first, second) = if a.history_index == 1 { (a, b) } else { (b, a) };
-    Ok(Some(FilletsOverPlate {
-        first,
-        second: Some(second),
-    }))
+    let fillets = saved_fillets(document, objects)?;
+    Ok((!fillets.is_empty()).then_some(FilletsOverPlate { fillets }))
 }
 
 /// One row per saved Fillet, each editable or with its reason, from one
@@ -595,6 +545,27 @@ mod tests {
     }
 
     fn filleted_on(plate: [[f64; 2]; 4], radius: f64) -> (tempfile::TempDir, Document, ObjectId) {
+        let (root, mut d, body) = bare_on(plate);
+        let target = crate::fillet_choices(&d, &d.objects().expect("objects"))[0]
+            .target
+            .clone()
+            .expect("a target");
+        let fillet = EdgeFillet {
+            edge: FilletEdge {
+                feature: target.base_feature,
+                joint: target.corners[1].joint,
+            },
+            radius_mm: radius,
+        };
+        let prepared = crate::prepare_edge_fillet(&d, body, &fillet).expect("prepared");
+        let id = prepared.feature().id;
+        d.write_edge_fillet(&prepared).expect("written");
+        (root, d, id)
+    }
+
+    /// §28L: the plate alone — plane, profile, Extrude, Body and the Extrude's
+    /// two caps — written without a kernel, with the Body's id.
+    fn bare_on(plate: [[f64; 2]; 4]) -> (tempfile::TempDir, Document, ObjectId) {
         let root = tempfile::tempdir().expect("dir");
         let mut d = Document::create(root.path().join("plate.fcad")).expect("document");
         let [plane, profile, extrude, body] = std::array::from_fn(|_| ObjectId::new());
@@ -682,21 +653,7 @@ mod tests {
             Ok(())
         })
         .expect("plate");
-        let target = crate::fillet_choices(&d, &d.objects().expect("objects"))[0]
-            .target
-            .clone()
-            .expect("a target");
-        let fillet = EdgeFillet {
-            edge: FilletEdge {
-                feature: target.base_feature,
-                joint: target.corners[1].joint,
-            },
-            radius_mm: radius,
-        };
-        let prepared = crate::prepare_edge_fillet(&d, body, &fillet).expect("prepared");
-        let id = prepared.feature().id;
-        d.write_edge_fillet(&prepared).expect("written");
-        (root, d, id)
+        (root, d, body)
     }
 
     type Rows = Vec<Vec<rusqlite::types::Value>>;
@@ -896,7 +853,7 @@ mod tests {
             let saved = choice.saved.as_ref().expect("editable");
             assert_eq!(saved.feature, id);
             assert_eq!(saved.history_index, index);
-            let n = saved.neighbour.expect("the other Fillet");
+            let n = saved.neighbour().expect("the other Fillet");
             assert_eq!((n.feature, n.history_index), (other, 3 - index));
             let (_, length) = n.shared.expect("adjacent");
             assert_eq!(length, 12.25);
@@ -1089,7 +1046,7 @@ mod tests {
         let (_root, d, first, second) = sequential(6.125, 3, 6.125);
         for c in fillet_radius_choices(&d, &d.objects().expect("objects")) {
             let saved = c.saved.as_ref().expect("editable");
-            assert_eq!(saved.neighbour.expect("other").shared, None);
+            assert_eq!(saved.neighbour().expect("other").shared, None);
             assert_eq!(saved.max_radius_mm(), Some(6.125));
             c.validate(6.125)
                 .expect("the per-corner bound is inclusive");
@@ -1130,7 +1087,7 @@ mod tests {
                 let objects = d.objects().expect("objects");
                 let p = crate::prepare_extrude_height(&d, base, height).expect("prepared");
                 let one = p.fillet().expect("Fillet 1");
-                let two = p.second_fillet().expect("Fillet 2");
+                let two = p.fillets().get(1).expect("Fillet 2");
                 assert_eq!((one.feature, one.previous), (first, base));
                 assert_eq!(
                     (two.feature, two.previous),
@@ -1176,11 +1133,11 @@ mod tests {
             let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
             for s in &reading.sketches {
                 assert_eq!(s.refusal, None);
-                assert!(s.second_fillet.is_some());
+                assert!(s.fillets.len() == 2);
             }
             for s in &reading.constraint_sketches {
                 assert_eq!(s.refusal, None);
-                assert!(s.second_fillet.is_some());
+                assert!(s.fillets.len() == 2);
             }
         }
     }
@@ -1196,24 +1153,23 @@ mod tests {
         let honest = crate::prepare_extrude_height(&d, base, 9.5).expect("prepared");
         let mut forged = Vec::new();
         let mut p = honest.clone();
-        p.second_fillet = None;
+        p.fillets.truncate(1);
         forged.push(("a preparation without Fillet 2", p));
         let mut p = honest.clone();
-        if let Some(f) = &mut p.second_fillet {
+        if let Some(f) = p.fillets.get_mut(1) {
             f.radius_mm = 4.0;
         }
         forged.push(("another radius of Fillet 2", p));
         let mut p = honest.clone();
-        if let Some(f) = &mut p.second_fillet {
+        if let Some(f) = p.fillets.get_mut(1) {
             f.previous = base;
         }
         forged.push(("Fillet 2 on the base", p));
         let mut p = honest.clone();
-        std::mem::swap(&mut p.fillet, &mut p.second_fillet);
+        p.fillets.swap(0, 1);
         forged.push(("the two swapped", p));
         let mut p = honest.clone();
-        p.fillet = None;
-        p.second_fillet = None;
+        p.fillets.clear();
         forged.push(("no Fillet at all (the legacy writer)", p));
         let mut p = honest.clone();
         p.feature.id = second;
@@ -1483,7 +1439,7 @@ mod tests {
             .expect("the base row");
         assert_eq!(choice.refusal, None);
         assert_eq!(choice.cut_history, None, "a Fillet is not a Cut history");
-        let context = choice.fillet.clone().expect("the Fillet as context");
+        let context = choice.fillet().cloned().expect("the Fillet as context");
         assert_eq!(context.feature, fillet);
         assert_eq!(context.radius_mm, 2.375);
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
@@ -1553,15 +1509,15 @@ mod tests {
         let honest = crate::prepare_extrude_height(&d, base, 9.5).expect("prepared");
         let mut forged = Vec::new();
         let mut p = honest.clone();
-        p.fillet = None;
+        p.fillets.clear();
         forged.push(("a preparation without the Fillet", p));
         let mut p = honest.clone();
-        if let Some(f) = &mut p.fillet {
+        if let Some(f) = p.fillets.get_mut(0) {
             f.radius_mm = 3.0;
         }
         forged.push(("another Fillet radius", p));
         let mut p = honest.clone();
-        if let Some(f) = &mut p.fillet {
+        if let Some(f) = p.fillets.get_mut(0) {
             f.feature = ObjectId::new();
         }
         forged.push(("another Fillet", p));
@@ -1642,10 +1598,12 @@ mod tests {
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         // The base Sketch is the Sketch edit's (§28D) and the constraint
         // editor's (§28E), with this Fillet as context.
-        assert!(reading.sketches.iter().all(|s| s.fillet.is_some()));
-        assert!(reading.constraint_sketches.iter().all(|s| {
-            s.refusal.is_none() && s.fillet.as_ref().is_some_and(|f| f.feature == fillet)
-        }));
+        assert!(reading.sketches.iter().all(|s| s.fillet().is_some()));
+        assert!(
+            reading.constraint_sketches.iter().all(|s| {
+                s.refusal.is_none() && s.fillet().is_some_and(|f| f.feature == fillet)
+            })
+        );
         assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
 
         // An extra name owned by the Fillet: the height is refused too, by
@@ -1679,7 +1637,7 @@ mod tests {
             .iter()
             .find(|f| f.feature == base)
             .expect("row");
-        assert!(row.fillet.is_none() && row.refusal.is_some());
+        assert!(row.fillets.is_empty() && row.refusal.is_some());
 
         // A Body whose tip is not the Fillet.
         let (_root, mut d, fillet) = filleted(2.375);
@@ -1724,8 +1682,7 @@ mod tests {
     fn corner_now(d: &Document) -> [f64; 2] {
         let reading = crate::ExtrudeEditSource::read(d).expect("catalogue");
         reading.sketches[0]
-            .fillet
-            .as_ref()
+            .fillet()
             .expect("the Fillet as context")
             .corner
             .corner_mm
@@ -1743,7 +1700,7 @@ mod tests {
         let choice = reading.sketches[0].clone();
         assert_eq!(choice.refusal, None);
         assert_eq!(choice.cut_history, None, "a Fillet is not a Cut history");
-        let context = choice.fillet.clone().expect("the Fillet as context");
+        let context = choice.fillet().cloned().expect("the Fillet as context");
         assert_eq!((context.feature, context.radius_mm), (fillet, 2.375));
         assert_eq!(context.corner.corner_mm, [33., 3.25]);
         let refs = d.topology_refs().expect("refs");
@@ -1961,7 +1918,7 @@ mod tests {
         .expect("extra name");
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         let row = &reading.sketches[0];
-        assert!(row.vertices.is_none() && row.fillet.is_none());
+        assert!(row.vertices.is_none() && row.fillets.is_empty());
         let reason = row.refusal.as_deref().expect("refused");
         assert!(
             reason.contains(&fillet.to_string()) && reason.contains("more faces"),
@@ -2065,7 +2022,7 @@ mod tests {
 
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         let choice = &reading.constraint_sketches[0];
-        let saved = choice.fillet.as_ref().expect("the Fillet as context");
+        let saved = choice.fillet().expect("the Fillet as context");
         assert!(saved.constrained);
         assert_eq!(saved.feature, fillet);
         assert_eq!(saved.corner.corner_mm, [33., 3.25], "the stored corner");
@@ -2234,8 +2191,8 @@ mod tests {
     fn both(d: &Document) -> (crate::SketchChoice, crate::SavedFillet, crate::SavedFillet) {
         let reading = crate::ExtrudeEditSource::read(d).expect("catalogue");
         let choice = reading.sketches[0].clone();
-        let one = choice.fillet.clone().expect("Fillet 1 as context");
-        let two = choice.second_fillet.clone().expect("Fillet 2 as context");
+        let one = choice.fillet().cloned().expect("Fillet 1 as context");
+        let two = choice.fillets.get(1).cloned().expect("Fillet 2 as context");
         (choice, one, two)
     }
 
@@ -2507,7 +2464,7 @@ mod tests {
         put(&mut d, &payload);
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         let row = &reading.sketches[0];
-        assert!(row.vertices.is_none() && row.second_fillet.is_none());
+        assert!(row.vertices.is_none() && row.fillets.get(1).is_none());
         let reason = row.refusal.as_deref().expect("refused");
         assert!(reason.contains("edit-sketch-constraints-copy"), "{reason}");
         let before = cells(&d);
@@ -2603,8 +2560,8 @@ mod tests {
             let choice = &reading.constraint_sketches[0];
             assert_eq!(choice.refusal, None, "{choice:?}");
             let (one, two) = (
-                choice.fillet.as_ref().expect("Fillet 1"),
-                choice.second_fillet.as_ref().expect("Fillet 2"),
+                choice.fillet().expect("Fillet 1"),
+                choice.fillets.get(1).expect("Fillet 2"),
             );
             assert_eq!((one.feature, one.previous), (first, base));
             assert_eq!(
@@ -2654,7 +2611,7 @@ mod tests {
             let p = crate::prepare_sketch_constraints(&d, sketch, &swap).expect("replace");
             assert_eq!((p.added.len(), p.removed.clone()), (1, user.clone()));
             assert_eq!(p.fillet().map(|f| f.feature), Some(first));
-            assert_eq!(p.second_fillet().map(|f| f.feature), Some(second));
+            assert_eq!(p.fillets().get(1).map(|f| f.feature), Some(second));
             let before = cells(&d);
             d.write_sketch_constraints(&p).expect("replaced");
             only_the_constraints_moved(&before, &cells(&d), sketch, 0);
@@ -2688,10 +2645,7 @@ mod tests {
             let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
             let coords = &reading.sketches[0];
             assert_eq!(coords.refusal, None, "{coords:?}");
-            assert_eq!(
-                coords.second_fillet.as_ref().map(|f| f.feature),
-                Some(second)
-            );
+            assert_eq!(coords.fillets.get(1).map(|f| f.feature), Some(second));
             assert_eq!(reading.constraint_sketches[0].refusal, None);
             assert!(d.validate().expect("validate").is_ok());
         }
@@ -2841,4 +2795,6 @@ mod tests {
         assert_eq!(e.kind(), ErrorKind::Input);
         assert!(e.to_string().contains(&two.edge.joint.to_string()), "{e}");
     }
+
+    mod history;
 }

@@ -229,18 +229,20 @@ pub struct ConstraintSketchChoice {
     /// policy its solved drawing must satisfy. Present exactly when `stored`
     /// is.
     pub profile_use: Option<SketchProfileUse>,
-    /// §28E: the one saved Fillet over this plate, when this is its base
-    /// Sketch. Its `corner` is read from the stored Lines; the part's corner,
-    /// and whether the radius fits it, are the solved plate's, checked when a
-    /// copy is rebuilt.
-    pub fillet: Option<crate::SavedFillet>,
-    /// §28K: present only beside `fillet`, for the base Sketch of a §28G
-    /// history: Fillet 2, which rounds Fillet 1's result (`previous` is
-    /// Fillet 1, never the base) at another corner the base Extrude swept.
-    /// Its corner is read from the stored Lines like Fillet 1's; both radii
-    /// and their pair are the solved plate's to satisfy at every rebuild.
-    pub second_fillet: Option<crate::SavedFillet>,
+    /// §28E/§28K/§28L: the saved Fillets over this plate in history order,
+    /// when this is its base Sketch; empty otherwise. Each `corner` is read
+    /// from the stored Lines; the part's corners, every radius and every
+    /// shared flat are the solved plate's to satisfy at every rebuild. Each
+    /// later Fillet rounds the result of the one before it.
+    pub fillets: Vec<crate::SavedFillet>,
     pub refusal: Option<String>,
+}
+
+impl ConstraintSketchChoice {
+    /// The first Fillet, the one that rounds the plate (§28E).
+    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
+        self.fillets.first()
+    }
 }
 
 pub fn constraint_sketch_choices(
@@ -255,18 +257,14 @@ pub fn constraint_sketch_choices(
                 let ObjectPayload::Sketch(sketch) = &o.payload else {
                     unreachable!("checked")
                 };
-                let (fillet, second_fillet) = match over {
-                    Some(over) => (Some(over.first), over.second),
-                    None => (None, None),
-                };
+                let fillets = over.map(|o| o.fillets).unwrap_or_default();
                 ConstraintSketchChoice {
                     sketch: o.id,
                     name: o.name.clone(),
                     stored: Some(sketch.clone()),
                     height_mm: extrusion_height(&profile_use),
                     profile_use: Some(profile_use),
-                    fillet,
-                    second_fillet,
+                    fillets,
                     refusal: None,
                 }
             }
@@ -276,8 +274,7 @@ pub fn constraint_sketch_choices(
                 stored: None,
                 height_mm: None,
                 profile_use: None,
-                fillet: None,
-                second_fillet: None,
+                fillets: Vec::new(),
                 refusal: Some(e.to_string()),
             },
         })
@@ -860,10 +857,9 @@ pub struct PreparedSketchConstraints {
     /// payload, so no caller can swap the policy a copy is judged by.
     profile_use: SketchProfileUse,
     roles: Option<(StableEntityId, StableEntityId)>,
-    /// §28E: the Fillet the frame read with this Sketch, if any.
-    fillet: Option<crate::SavedFillet>,
-    /// §28K: Fillet 2 of a §28G history, read with it.
-    second_fillet: Option<crate::SavedFillet>,
+    /// §28E/§28L: the Fillets the frame read with this Sketch, in history
+    /// order; empty for a Sketch no Fillet rounds.
+    fillets: Vec<crate::SavedFillet>,
 }
 impl PreparedSketchConstraints {
     pub fn object(&self) -> &ObjectRecord {
@@ -888,16 +884,15 @@ impl PreparedSketchConstraints {
         self.roles
     }
 
-    /// §28E: the saved Fillet over the plate this Sketch bounds, as read with
-    /// the frame.
-    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
-        self.fillet.as_ref()
+    /// §28E/§28L: the saved Fillets over the plate this Sketch bounds, in
+    /// history order, as read with the frame.
+    pub fn fillets(&self) -> &[crate::SavedFillet] {
+        &self.fillets
     }
 
-    /// §28K: Fillet 2 of the two-Fillet history, as read with the frame; it
-    /// rounds Fillet 1's result.
-    pub fn second_fillet(&self) -> Option<&crate::SavedFillet> {
-        self.second_fillet.as_ref()
+    /// The first Fillet, which rounds the plate (§28E).
+    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
+        self.fillets.first()
     }
 }
 
@@ -926,10 +921,7 @@ pub fn prepare_sketch_constraints(
         .cloned()
         .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
     let (family, profile_use, over) = supported_family(document, &objects, &object)?;
-    let (fillet, second_fillet) = match over {
-        Some(over) => (Some(over.first), over.second),
-        None => (None, None),
-    };
+    let fillets = over.map(|o| o.fillets).unwrap_or_default();
     let ObjectPayload::Sketch(sketch) = &mut object.payload else {
         unreachable!("checked")
     };
@@ -1044,8 +1036,7 @@ pub fn prepare_sketch_constraints(
         removed: edits.remove.clone(),
         profile_use,
         roles,
-        fillet,
-        second_fillet,
+        fillets,
     })
 }
 
@@ -1065,14 +1056,8 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedSketchConstraints
         .find(|o| o.id == prepared.object.id)
         .ok_or_else(|| CadError::input("selected Sketch disappeared before constraint write"))?;
     let (family, profile_use, over) = supported_family(document, &objects, current)?;
-    let (fillet, second_fillet) = match over {
-        Some(over) => (Some(over.first), over.second),
-        None => (None, None),
-    };
-    if profile_use != prepared.profile_use
-        || fillet != prepared.fillet
-        || second_fillet != prepared.second_fillet
-    {
+    let fillets = over.map(|o| o.fillets).unwrap_or_default();
+    if profile_use != prepared.profile_use || fillets != prepared.fillets {
         return Err(CadError::input(
             "the feature or the Fillet around this Sketch changed after constraint preparation",
         ));

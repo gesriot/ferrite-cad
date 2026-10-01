@@ -73,16 +73,22 @@ impl Edits {
                         refusal: f.refusal.clone(),
                         context: f.cut_history.as_ref().map(|h| format!(
                             "Base of {} circular Cuts. Blind depths stay fixed; Through all follows the plate thickness. Saved pocket floors must stay inside the plate.", h.tools.len()))
-                            .or_else(|| f.fillet.as_ref().map(|r| match &f.second_fillet {
-                                // §28I: both Fillets, in history order; the
-                                // second rounds the first one's result.
-                                Some(s) => format!(
-                                    "History: Extrude {} -> Fillet 1 {} at ({}, {}), r {} mm -> Fillet 2 {} at ({}, {}), r {} mm. Both Fillets keep their edges and radii; only the plate's height changes.",
-                                    f.feature, r.feature, r.corner.corner_mm[0], r.corner.corner_mm[1], r.radius_mm,
-                                    s.feature, s.corner.corner_mm[0], s.corner.corner_mm[1], s.radius_mm),
-                                None => format!(
+                            .or_else(|| f.fillet().map(|r| match f.fillets.as_slice() {
+                                [_] | [] => format!(
                                     "Rounded by Fillet {} at ({}, {}), r {} mm. The Fillet keeps its edge and radius; only the plate's height changes.",
                                     r.feature, r.corner.corner_mm[0], r.corner.corner_mm[1], r.radius_mm),
+                                // §28I/§28L: every Fillet in history order; each
+                                // rounds the result of the one before it.
+                                all => format!(
+                                    "History: Extrude {} -> {}. {} Fillets keep their edges and radii; only the plate's height changes.",
+                                    f.feature,
+                                    all.iter()
+                                        .map(|s| format!(
+                                            "Fillet {} {} at ({}, {}), r {} mm",
+                                            s.history_index, s.feature, s.corner.corner_mm[0], s.corner.corner_mm[1], s.radius_mm))
+                                        .collect::<Vec<_>>()
+                                        .join(" -> "),
+                                    if all.len() == 2 { "Both".to_owned() } else { format!("All {}", all.len()) }),
                             })),
                     })
                     .collect(),
@@ -1667,9 +1673,9 @@ mod tests {
         let base = reading
             .features
             .iter()
-            .find(|f| f.fillet.is_some())
+            .find(|f| f.fillet().is_some())
             .expect("the base under the Fillet");
-        let fillet = base.fillet.clone().expect("context");
+        let fillet = base.fillet().cloned().expect("context");
         let mut e = Edits::default();
         assert!(
             e.begin(&path, &reading),
@@ -1777,7 +1783,7 @@ mod tests {
         let base = reading
             .features
             .iter()
-            .find(|f| f.fillet.is_some())
+            .find(|f| f.fillet().is_some())
             .expect("base")
             .clone();
         let mut e = Edits::default();
@@ -1829,8 +1835,8 @@ mod tests {
             .expect("the same base");
         assert_eq!(current.distance_mm, Some(11.4375));
         assert_eq!(
-            current.fillet.as_ref().map(|f| (f.feature, f.radius_mm)),
-            base.fillet.as_ref().map(|f| (f.feature, f.radius_mm))
+            current.fillet().map(|f| (f.feature, f.radius_mm)),
+            base.fillet().map(|f| (f.feature, f.radius_mm))
         );
         e.cancel();
         e.draft_load_finished(&ui, true);
@@ -1876,10 +1882,10 @@ mod tests {
         let base = reading
             .features
             .iter()
-            .find(|f| f.fillet.is_some())
+            .find(|f| f.fillet().is_some())
             .expect("the base under the Fillets");
-        let one = base.fillet.clone().expect("Fillet 1");
-        let two = base.second_fillet.clone().expect("Fillet 2");
+        let one = base.fillet().cloned().expect("Fillet 1");
+        let two = base.fillets.get(1).cloned().expect("Fillet 2");
         assert_eq!(
             two.previous, one.feature,
             "Fillet 2 rounds Fillet 1's result"
@@ -1955,7 +1961,7 @@ mod tests {
         let base = reading
             .features
             .iter()
-            .find(|f| f.fillet.is_some())
+            .find(|f| f.fillet().is_some())
             .expect("base")
             .clone();
         let mut e = Edits::default();
@@ -2005,17 +2011,16 @@ mod tests {
             .expect("the same base");
         assert_eq!(current.distance_mm, Some(3.3125));
         // Both Fillets as they were; only the plate's height under them moved.
-        let kept = |f: &Option<ferritecad_document::SavedFillet>| {
-            f.as_ref()
-                .map(|f| (f.feature, f.previous, f.edge, f.radius_mm, f.history_index))
+        let kept = |f: Option<&ferritecad_document::SavedFillet>| {
+            f.map(|f| (f.feature, f.previous, f.edge, f.radius_mm, f.history_index))
         };
-        assert_eq!(kept(&current.fillet), kept(&base.fillet), "Fillet 1");
+        assert_eq!(kept(current.fillet()), kept(base.fillet()), "Fillet 1");
         assert_eq!(
-            kept(&current.second_fillet),
-            kept(&base.second_fillet),
+            kept(current.fillets.get(1)),
+            kept(base.fillets.get(1)),
             "Fillet 2"
         );
-        assert_eq!(current.fillet.as_ref().map(|f| f.height_mm), Some(3.3125));
+        assert_eq!(current.fillet().map(|f| f.height_mm), Some(3.3125));
         e.cancel();
         e.draft_load_finished(&ui, true);
 

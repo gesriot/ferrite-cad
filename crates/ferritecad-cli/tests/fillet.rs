@@ -6077,8 +6077,10 @@ mod sequential {
         // The copy as the catalogue and the editors see it.
         let after = inspect(&copy);
         let row = &after["bodies"][0]["fillet_edge"];
-        assert_eq!(row["available"], false, "{row}");
-        assert!(row["refusal"].as_str().expect("reason").contains("third"));
+        // §28L: a third Fillet is offered on the two corners still sharp.
+        assert_eq!(row["available"], true, "{row}");
+        assert_eq!(row["target"]["candidates"].as_array().map(Vec::len), Some(2));
+        assert_eq!(row["target"]["fillets"].as_array().map(Vec::len), Some(2));
         assert_eq!(after["fillets"].as_array().map(Vec::len), Some(2));
         // §28H: each radius is editable, by its own UUID; §28I: and the
         // plate's height; the Sketch and its constraints are not.
@@ -6327,9 +6329,9 @@ mod sequential {
         doc.close().expect("close");
         let two = inspect(&f.source);
         let row = &two["bodies"][0]["fillet_edge"];
-        assert_eq!(row["available"], false);
-        assert!(row["target"].is_null());
-        assert!(row["refusal"].as_str().expect("reason").contains("third"));
+        // §28L: a third Fillet is offered on the two corners still sharp.
+        assert_eq!(row["available"], true, "{row}");
+        assert_eq!(row["target"]["candidates"].as_array().map(Vec::len), Some(2));
         assert_eq!(two["fillets"].as_array().map(Vec::len), Some(2));
         // §28H: both radii are editable; §28I: and the base height; §28J:
         // and the free plate's Sketch coordinates; the constraint editor
@@ -6344,15 +6346,22 @@ mod sequential {
         assert!(two["bodies"][0]["cut_edit"]["refusal"].is_string());
         let version = two["content_version"].as_str().expect("version");
         f.ask_edge(&opposite["edge"], 1.0);
-        let v = reply(
-            f.fillet_from(&f.source, f.body_id(), version, &never)
-                .output()
-                .expect("process"),
-            OP,
-            2,
-        );
-        assert_eq!(refused(&v), "unsupported", "a third Fillet: {v}");
-        assert!(!never.exists());
+        // §28L: a third Fillet is now in the class. A build with a kernel
+        // publishes it; one without refuses it as every Fillet is refused,
+        // typed, before anything is written.
+        let out = f
+            .fillet_from(&f.source, f.body_id(), version, &never)
+            .output()
+            .expect("process");
+        if native() {
+            let v = reply(out, OP, 0);
+            assert_eq!(v["result"]["references"].as_array().map(Vec::len), Some(9));
+            assert!(never.exists());
+        } else {
+            let v = reply(out, OP, 2);
+            assert_eq!(refused(&v), "unsupported", "no kernel: {v}");
+            assert!(!never.exists());
+        }
         let valid = cli()
             .arg("validate")
             .arg(&f.source)
@@ -6629,7 +6638,7 @@ mod sequential {
         assert!(lost.exists(), "the published copy is kept");
         let kept = inspect(&lost);
         assert_eq!(kept["fillets"].as_array().map(Vec::len), Some(2));
-        assert_eq!(kept["bodies"][0]["fillet_edge"]["available"], false);
+        assert_eq!(kept["bodies"][0]["fillet_edge"]["available"], true);
         assert_eq!(std::fs::read(&g.source).expect("bytes"), before);
     }
 
@@ -6962,7 +6971,8 @@ mod sequential {
                 assert_eq!(mine[key], row[key], "{key}");
                 assert_eq!(theirs[key], other[key], "{key}");
             }
-            assert_eq!(after["bodies"][0]["fillet_edge"]["available"], false);
+            // §28L: two corners are still sharp, so a third Fillet is offered.
+            assert_eq!(after["bodies"][0]["fillet_edge"]["available"], true);
             // §28I: the plate's height is editable under both Fillets.
             assert_eq!(after["edit_extrude"]["available"], true);
 

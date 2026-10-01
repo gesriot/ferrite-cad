@@ -1039,23 +1039,10 @@ pub(crate) fn saved_plate_for_fillet(
     read_history(document, objects, &[], true)
 }
 
-/// §28B: the same reader, asked about the history under one saved Fillet
-/// that is the Body's tip. The Fillet is part of the exact object and
-/// dependency sets checked here — its row, its predecessor edge and the
-/// Body's tip edge to it — and the chain below it is read exactly as
-/// [`saved_history`] reads a plate. Its own payload, names and radius are the
-/// caller's to check.
-pub(crate) fn saved_history_under_fillet(
-    document: &Document,
-    objects: &[ObjectRecord],
-    fillet: &ObjectRecord,
-) -> Result<CutHistory> {
-    read_history(document, objects, &[fillet], true)
-}
-
-/// §28H: the same reader, asked about the history under a chain of saved
-/// Fillets, bottom first, the last of which is the Body's tip and each of
-/// which rounds the result of the one before (the first rounds the plate).
+/// §28B/§28H/§28L: the same reader, asked about the history under a chain of
+/// saved Fillets (one to four), bottom first, the last of which is the Body's
+/// tip and each of which rounds the result of the one before (the first rounds
+/// the plate).
 /// Every Fillet row, predecessor edge and the tip edge are part of the exact
 /// sets checked; their payloads and names are the caller's to check.
 pub(crate) fn saved_history_under_fillets(

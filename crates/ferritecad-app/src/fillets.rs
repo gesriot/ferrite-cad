@@ -208,14 +208,16 @@ impl Editor {
                     "Edit Fillet radius {} — {}{}…",
                     choice.name.as_deref().unwrap_or("Unnamed fillet"),
                     choice.feature,
-                    // §28H: which of two sequential Fillets, and its radius.
+                    // §28H/§28L: which of the sequential Fillets, and its radius.
                     choice
                         .saved
                         .as_ref()
-                        .filter(|s| s.neighbour.is_some())
+                        .filter(|s| s.history_len() > 1)
                         .map_or(String::new(), |s| format!(
-                            " (Fillet {} of 2, r{} mm)",
-                            s.history_index, s.radius_mm
+                            " (Fillet {} of {}, r{} mm)",
+                            s.history_index,
+                            s.history_len(),
+                            s.radius_mm
                         ))
                 )),
             );
@@ -251,61 +253,96 @@ impl Editor {
                     saved.base_feature,
                     draft.source.display()
                 ));
-                // §28H: which of two sequential Fillets this is, and the other.
-                if let Some(other) = &saved.neighbour {
-                    let (first, second) = if saved.history_index == 1 {
-                        (saved.feature, other.feature)
-                    } else {
-                        (other.feature, saved.feature)
-                    };
-                    ui.label(format!(
-                        "Editing Fillet {} of 2: Extrude {} -> Fillet {first} -> Fillet {second}. \
-                         The other Fillet ({}) keeps r{} mm at ({}, {}).",
-                        saved.history_index,
-                        saved.base_feature,
-                        other.feature,
-                        other.radius_mm,
-                        other.corner.corner_mm[0],
-                        other.corner.corner_mm[1]
-                    ));
-                    match other.shared {
-                        Some((line, length)) => ui.small(format!(
-                            "Shares Line {line} ({length} mm {}) with the other Fillet: the two \
-                             radii must leave at least {} mm of it flat.",
-                            if saved.constrained {
-                                "as stored"
-                            } else {
-                                "long"
-                            },
-                            ferritecad_document::MIN_RADIUS_MM
-                        )),
-                        None => ui.small("The other Fillet is at the opposite corner."),
-                    };
-                }
-                ui.small(format!(
-                    "Edge: {}",
-                    describe(&saved.corner, saved.constrained)
-                ));
-                if saved.constrained {
-                    // §28E: the stored corner is the solver's starting guess.
-                    // The bound is the solved plate's and is checked when the
-                    // copy is built, never read off the stored lengths.
-                    ui.small(format!(
-                        "Saved radius {} mm; at least {} mm. The plate's Sketch has \
-                         constraints: the corner shown is its stored position, and the new \
-                         copy is saved only if the radius is at most half of each side \
-                         meeting at the corner of the solved plate.",
-                        saved.radius_mm,
-                        ferritecad_document::MIN_RADIUS_MM,
-                    ));
-                } else {
-                    ui.small(format!(
-                        "Saved radius {} mm; from {} mm to {} mm here.",
-                        saved.radius_mm,
-                        ferritecad_document::MIN_RADIUS_MM,
-                        saved.max_radius_mm().unwrap_or(saved.corner.max_radius_mm)
-                    ));
-                }
+                // §28H/§28L: which of the sequential Fillets this is and the
+                // others, in a bounded area so the buttons below stay in
+                // reach with four Fillets.
+                egui::ScrollArea::vertical()
+                    .id_salt("fillet-radius-history")
+                    .max_height(150.)
+                    .show(ui, |ui| {
+                        if !saved.neighbours.is_empty() {
+                            let mut chain: Vec<(usize, ObjectId)> = saved
+                                .neighbours
+                                .iter()
+                                .map(|n| (n.history_index, n.feature))
+                                .collect();
+                            chain.push((saved.history_index, saved.feature));
+                            chain.sort_unstable();
+                            let steps: Vec<String> =
+                                chain.iter().map(|(_, f)| format!("Fillet {f}")).collect();
+                            ui.label(format!(
+                                "Editing Fillet {} of {}: Extrude {} -> {}.",
+                                saved.history_index,
+                                saved.history_len(),
+                                saved.base_feature,
+                                steps.join(" -> ")
+                            ));
+                            let several = saved.neighbours.len() > 1;
+                            for other in &saved.neighbours {
+                                let who = if several {
+                                    format!("Fillet {} ({})", other.history_index, other.feature)
+                                } else {
+                                    format!("The other Fillet ({})", other.feature)
+                                };
+                                ui.label(format!(
+                                    "{who} keeps r{} mm at ({}, {}).",
+                                    other.radius_mm,
+                                    other.corner.corner_mm[0],
+                                    other.corner.corner_mm[1]
+                                ));
+                                match other.shared {
+                                    Some((line, length)) => ui.small(format!(
+                                        "Shares Line {line} ({length} mm {}) with {}: the two \
+                                         radii must leave at least {} mm of it flat.",
+                                        if saved.constrained {
+                                            "as stored"
+                                        } else {
+                                            "long"
+                                        },
+                                        if several {
+                                            format!("Fillet {}", other.history_index)
+                                        } else {
+                                            "the other Fillet".to_owned()
+                                        },
+                                        ferritecad_document::MIN_RADIUS_MM
+                                    )),
+                                    None => ui.small(if several {
+                                        format!(
+                                            "Fillet {} is at the opposite corner.",
+                                            other.history_index
+                                        )
+                                    } else {
+                                        "The other Fillet is at the opposite corner.".to_owned()
+                                    }),
+                                };
+                            }
+                        }
+                        ui.small(format!(
+                            "Edge: {}",
+                            describe(&saved.corner, saved.constrained)
+                        ));
+                        if saved.constrained {
+                            // §28E: the stored corner is the solver's starting
+                            // guess. The bound is the solved plate's and is
+                            // checked when the copy is built, never read off the
+                            // stored lengths.
+                            ui.small(format!(
+                                "Saved radius {} mm; at least {} mm. The plate's Sketch has \
+                                 constraints: the corner shown is its stored position, and the \
+                                 new copy is saved only if the radius is at most half of each \
+                                 side meeting at the corner of the solved plate.",
+                                saved.radius_mm,
+                                ferritecad_document::MIN_RADIUS_MM,
+                            ));
+                        } else {
+                            ui.small(format!(
+                                "Saved radius {} mm; from {} mm to {} mm here.",
+                                saved.radius_mm,
+                                ferritecad_document::MIN_RADIUS_MM,
+                                saved.max_radius_mm().unwrap_or(saved.corner.max_radius_mm)
+                            ));
+                        }
+                    });
                 ui.add_enabled_ui(!running, |ui| {
                     if ui.button("Cancel radius draft").clicked() {
                         cancel = true;
@@ -406,20 +443,36 @@ impl Editor {
                     ferritecad_document::MIN_RADIUS_MM,
                     ferritecad_document::MAX_RADIUS_FRACTION
                 ));
-                // §28G: the history the new Fillet goes on the end of.
-                for existing in &target.fillets {
-                    let [a, b] = existing.edge.joint.segments();
-                    ui.label(format!(
-                        "History: Extrude {} -> Fillet {} (Lines {a} | {b}, r{} mm) -> new \
-                         Fillet. It rounds one of the other three corners of the same plate; a \
-                         corner sharing a Line with the saved Fillet must leave at least {} mm \
-                         of that Line flat between the two arcs. With two Fillets only their \
-                         radii and the plate's height can be edited.",
-                        existing.edge.feature,
-                        existing.feature,
-                        existing.radius_mm,
-                        ferritecad_document::MIN_RADIUS_MM
-                    ));
+                // §28G/§28L: the history the new Fillet goes on the end of,
+                // in a bounded area so Save and Cancel stay in reach.
+                if !target.fillets.is_empty() {
+                    let steps: Vec<String> = target
+                        .fillets
+                        .iter()
+                        .map(|f| {
+                            let [a, b] = f.edge.joint.segments();
+                            format!(
+                                "Fillet {} (Lines {a} | {b}, r{} mm)",
+                                f.feature, f.radius_mm
+                            )
+                        })
+                        .collect();
+                    egui::ScrollArea::vertical()
+                        .id_salt("fillet-history")
+                        .max_height(96.)
+                        .show(ui, |ui| {
+                            ui.label(format!(
+                                "History: Extrude {} -> {} -> new Fillet. It rounds one of the \
+                                 other corners of the same plate; a corner sharing a Line with a \
+                                 saved Fillet must leave at least {} mm of that Line flat \
+                                 between the two arcs. With several Fillets their radii, the \
+                                 plate's height, its base Sketch's coordinates and its \
+                                 constraints can be edited.",
+                                target.base_feature,
+                                steps.join(" -> "),
+                                ferritecad_document::MIN_RADIUS_MM
+                            ));
+                        });
                 }
                 if target.constrained {
                     ui.label(format!(
@@ -436,13 +489,18 @@ impl Editor {
                         cancel = true;
                     }
                     ui.label("Edge:");
-                    for (i, corner) in target.corners.iter().enumerate() {
-                        ui.radio_value(
-                            &mut draft.typed.corner,
-                            Some(i),
-                            describe_candidate(corner, &target),
-                        );
-                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("fillet-candidates")
+                        .max_height(120.)
+                        .show(ui, |ui| {
+                            for (i, corner) in target.corners.iter().enumerate() {
+                                ui.radio_value(
+                                    &mut draft.typed.corner,
+                                    Some(i),
+                                    describe_candidate(corner, &target),
+                                );
+                            }
+                        });
                     ui.horizontal(|ui| {
                         ui.label("Radius (mm):");
                         ui.add(
@@ -539,17 +597,24 @@ fn describe(corner: &FilletCorner, constrained: bool) -> String {
     )
 }
 
-/// One candidate of a target: [`describe`], and (§28G) the saved Fillet it
-/// shares a Line with, with the bound that pair leaves.
+/// One candidate of a target: [`describe`], and (§28G/§28L) every saved Fillet
+/// it shares a Line with, with the bound those pairs leave.
 fn describe_candidate(corner: &FilletCorner, target: &SavedFilletTarget) -> String {
-    let Some((existing, line, _)) = target.adjacent_fillet(corner) else {
+    let adjacent = target.adjacent_fillets(corner);
+    if adjacent.is_empty() {
         return describe(corner, target.constrained);
-    };
+    }
     let [a, b] = corner.joint.segments();
-    let beside = format!(
-        "shares Line {line} with Fillet {} (r{} mm)",
-        existing.feature, existing.radius_mm
-    );
+    let beside = adjacent
+        .iter()
+        .map(|(existing, line, _)| {
+            format!(
+                "shares Line {line} with Fillet {} (r{} mm)",
+                existing.feature, existing.radius_mm
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
     match target.max_radius_mm(corner) {
         Some(max) => format!(
             "Corner ({}, {}) — Lines {a} | {b}; sides {} × {} mm; {beside}; r ≤ {max} mm",
@@ -1857,7 +1922,7 @@ pub(crate) mod tests {
         ));
         assert!(painted(
             &out,
-            "With two Fillets only their radii and the plate's height can be edited"
+            "With several Fillets their radii, the plate's height, its base Sketch's coordinates and its constraints can be edited"
         ));
         assert_eq!(target.corners.len(), 3);
         for corner in &target.corners {
@@ -1878,7 +1943,7 @@ pub(crate) mod tests {
                     .iter()
                     .find(|c| c.corner_mm == [33., 15.5])
                     .expect("that corner");
-                target.adjacent_fillet(short).expect("adjacent").1
+                target.adjacent_fillets(short)[0].1
             })
         ));
 

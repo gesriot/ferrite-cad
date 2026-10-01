@@ -131,8 +131,9 @@ struct FilletFeatureDiscovery {
     /// `radius_edit.max_radius_mm` is `null`: the bound is the solved plate's,
     /// checked when a copy is rebuilt. `false` when the frame is refused.
     profile_constrained: bool,
-    /// §28H, additive: 1 for the only or first Fillet, 2 for the Fillet that
-    /// rounds the first one's result; `null` when the frame is refused.
+    /// §28H, additive: the place in the history, 1 for the only or first
+    /// Fillet and up to 4 (§28L), each Fillet rounding the result of the one
+    /// before it; `null` when the frame is refused.
     history_index: Option<usize>,
     radius_edit: FilletRadiusEditDiscovery,
 }
@@ -150,8 +151,13 @@ struct FilletRadiusEditDiscovery {
     /// §28H: for an unconstrained two-Fillet plate also the pair bound
     /// beside an adjacent Fillet, by the check's own predicate.
     max_radius_mm: Option<f64>,
-    /// §28H, additive: the other Fillet of a two-Fillet history, as saved.
+    /// §28H, additive: the other Fillet of a history of **exactly two**
+    /// Fillets, as saved. `null` for one Fillet and for three or four, whose
+    /// neighbours are `neighbours`; a scalar never stands for several.
     neighbour: Option<NeighbourFilletDto>,
+    /// §28L, additive: every other Fillet of the history (none to three), in
+    /// history order, as saved, each with the Line it shares with this one.
+    neighbours: Vec<NeighbourFilletDto>,
 }
 
 /// §28H: the Fillet beside the one a radius edit changes.
@@ -194,19 +200,30 @@ impl FilletFeatureDiscovery {
                 document_refusal,
                 min_radius_mm: ferritecad_document::MIN_RADIUS_MM,
                 max_radius_mm: saved.and_then(|s| s.max_radius_mm()),
-                neighbour: saved.and_then(|s| s.neighbour).map(|n| NeighbourFilletDto {
-                    feature_id: n.feature,
-                    history_index: n.history_index,
-                    edge: FilletEdgeDto {
-                        feature_id: n.edge.feature,
-                        joint: n.edge.joint.segments(),
-                    },
-                    stored_corner_mm: n.corner.corner_mm,
-                    radius_mm: n.radius_mm,
-                    shared_line_id: n.shared.map(|(line, _)| line),
-                    stored_shared_length_mm: n.shared.map(|(_, length)| length),
-                }),
+                neighbour: saved
+                    .and_then(|s| s.neighbour())
+                    .map(NeighbourFilletDto::of),
+                neighbours: saved
+                    .map(|s| s.neighbours.iter().map(NeighbourFilletDto::of).collect())
+                    .unwrap_or_default(),
             },
+        }
+    }
+}
+
+impl NeighbourFilletDto {
+    fn of(n: &ferritecad_document::NeighbourFillet) -> Self {
+        Self {
+            feature_id: n.feature,
+            history_index: n.history_index,
+            edge: FilletEdgeDto {
+                feature_id: n.edge.feature,
+                joint: n.edge.joint.segments(),
+            },
+            stored_corner_mm: n.corner.corner_mm,
+            radius_mm: n.radius_mm,
+            shared_line_id: n.shared.map(|(line, _)| line),
+            stored_shared_length_mm: n.shared.map(|(_, length)| length),
         }
     }
 }
@@ -369,8 +386,12 @@ struct Sketch {
     /// §28D, additive: the saved Fillet over the plate this Sketch profiles,
     /// when `edit-sketch-copy` may move or resize it; the same object
     /// `features[].fillet_base` carries. The Fillet keeps its corner and
-    /// radius. `null` on every other row.
+    /// radius. `null` on every other row, and (§28L) for a history of three or
+    /// four Fillets, which `fillet_history` describes.
     fillet_base: Option<FilletBaseDiscovery>,
+    /// §28L, additive: every saved Fillet over this plate in history order,
+    /// one to four; `null` on every other row.
+    fillet_history: Option<FilletHistoryDiscovery>,
 }
 
 /// The feature a coordinate-editable profile feeds, stated by kind.
@@ -645,10 +666,11 @@ struct FilletTarget {
     /// §28G, additive: the feature whose result the new Fillet rounds — the
     /// base Extrude of a plain plate, or the plate's one Fillet.
     previous_feature_id: ObjectId,
-    /// §28G, additive: the Fillets the plate already has (at most one).
+    /// §28G, additive: the Fillets the plate already has, in history order
+    /// (none to three; §28L).
     fillets: Vec<ExistingFilletDto>,
     /// The vertical edges still sharp, in stored segment order: four on a
-    /// plain plate, three beside one Fillet.
+    /// plain plate, three beside one Fillet, and so on down to none.
     candidates: Vec<FilletCandidate>,
 }
 
@@ -682,10 +704,23 @@ struct FilletCandidate {
     stored_adjacent_lengths_mm: [f64; 2],
     /// §28G, additive: the saved Fillet at a corner sharing a Line with this
     /// one, and that Line. Both `null` for the opposite corner or a plain
-    /// plate. For an unconstrained plate `max_radius_mm` also keeps the
-    /// shared Line's flat of at least `min_radius_mm`.
+    /// plate — and, §28L, when **two** saved Fillets are adjacent, which
+    /// `adjacent_fillets` lists: a scalar never stands for several. For an
+    /// unconstrained plate `max_radius_mm` also keeps every shared Line's flat
+    /// of at least `min_radius_mm`.
     adjacent_fillet_feature_id: Option<ObjectId>,
     shared_line_id: Option<StableEntityId>,
+    /// §28L, additive: every saved Fillet at a corner sharing a Line with this
+    /// one (none to two), each with that Line and its stored length.
+    adjacent_fillets: Vec<AdjacentFilletDto>,
+}
+
+/// §28L: a saved Fillet beside a candidate corner.
+#[derive(Serialize)]
+struct AdjacentFilletDto {
+    feature_id: ObjectId,
+    shared_line_id: StableEntityId,
+    stored_shared_length_mm: f64,
 }
 
 /// An edge as a request states it: the feature that swept it and the two
@@ -730,16 +765,19 @@ impl FilletDiscovery {
                 .map(|c| {
                     let [a, b] = c.joint.segments();
                     let part = (!t.constrained).then_some(c);
-                    let adjacent = t.adjacent_fillet(c);
-                    let beside = adjacent.map_or(String::new(), |(f, line, _)| {
-                        format!(
-                            "; shares Line {line} with Fillet {} (r {} mm), whose flat must stay \
-                             at least {} mm",
-                            f.feature,
-                            f.radius_mm,
-                            ferritecad_document::MIN_RADIUS_MM
-                        )
-                    });
+                    let adjacent = t.adjacent_fillets(c);
+                    let beside: String = adjacent
+                        .iter()
+                        .map(|(f, line, _)| {
+                            format!(
+                                "; shares Line {line} with Fillet {} (r {} mm), whose flat must \
+                                 stay at least {} mm",
+                                f.feature,
+                                f.radius_mm,
+                                ferritecad_document::MIN_RADIUS_MM
+                            )
+                        })
+                        .collect();
                     FilletCandidate {
                         edge: FilletEdgeDto {
                             feature_id: c.feature,
@@ -763,8 +801,22 @@ impl FilletDiscovery {
                         max_radius_mm: t.max_radius_mm(c),
                         stored_corner_mm: c.corner_mm,
                         stored_adjacent_lengths_mm: c.adjacent_lengths_mm,
-                        adjacent_fillet_feature_id: adjacent.map(|(f, _, _)| f.feature),
-                        shared_line_id: adjacent.map(|(_, line, _)| line),
+                        adjacent_fillet_feature_id: match adjacent.as_slice() {
+                            [(f, _, _)] => Some(f.feature),
+                            _ => None,
+                        },
+                        shared_line_id: match adjacent.as_slice() {
+                            [(_, line, _)] => Some(*line),
+                            _ => None,
+                        },
+                        adjacent_fillets: adjacent
+                            .iter()
+                            .map(|(f, line, length)| AdjacentFilletDto {
+                                feature_id: f.feature,
+                                shared_line_id: *line,
+                                stored_shared_length_mm: *length,
+                            })
+                            .collect(),
                     }
                 })
                 .collect(),
@@ -1141,8 +1193,60 @@ struct Feature {
     /// §28C, additive: the saved Fillet over this plate when this is the base
     /// Extrude under it and `edit-extrude` may change its height. The Fillet
     /// keeps its edge and radius. `null` on every other row. Not a Cut
-    /// history: the `base_height_edit*` fields stay `null`.
+    /// history: the `base_height_edit*` fields stay `null`. §28L: `null` for a
+    /// history of three or four Fillets; see `fillet_history`.
     fillet_base: Option<FilletBaseDiscovery>,
+    /// §28L, additive: every saved Fillet over this plate in history order,
+    /// one to four; `null` on every other row.
+    fillet_history: Option<FilletHistoryDiscovery>,
+}
+
+/// The whole Fillet history a base edit keeps (§28L), additive: every saved
+/// Fillet in history order, one to four, whatever the count. `fillet_base`
+/// below is the older projection of one or two of them and is `null` for three
+/// or four, so this is the form that never describes a plate falsely.
+#[derive(Serialize)]
+struct FilletHistoryDiscovery {
+    count: usize,
+    fillets: Vec<FilletHistoryEntry>,
+}
+
+#[derive(Serialize)]
+struct FilletHistoryEntry {
+    fillet_feature_id: ObjectId,
+    /// The feature whose result this Fillet rounds: the base Extrude for the
+    /// first, the Fillet before it otherwise.
+    previous_feature_id: ObjectId,
+    history_index: usize,
+    edge: FilletEdgeDto,
+    /// The corner in the stored coordinates; the solved plate's when
+    /// `profile_constrained` is false only.
+    corner_mm: [f64; 2],
+    radius_mm: f64,
+    profile_constrained: bool,
+}
+
+impl FilletHistoryDiscovery {
+    pub(crate) fn of(fillets: &[ferritecad_document::SavedFillet]) -> Option<Self> {
+        (!fillets.is_empty()).then(|| Self {
+            count: fillets.len(),
+            fillets: fillets
+                .iter()
+                .map(|f| FilletHistoryEntry {
+                    fillet_feature_id: f.feature,
+                    previous_feature_id: f.previous,
+                    history_index: f.history_index,
+                    edge: FilletEdgeDto {
+                        feature_id: f.edge.feature,
+                        joint: f.edge.joint.segments(),
+                    },
+                    corner_mm: f.corner.corner_mm,
+                    radius_mm: f.radius_mm,
+                    profile_constrained: f.constrained,
+                })
+                .collect(),
+        })
+    }
 }
 
 /// The Fillet a height edit keeps, as the pinned reading found it (§28C).
@@ -1176,6 +1280,17 @@ struct SecondFilletDiscovery {
 }
 
 impl FilletBaseDiscovery {
+    /// The older projection of a history of one or two Fillets; `None` for
+    /// none, and for three or four, which it cannot describe (§28L): those are
+    /// `fillet_history`'s.
+    pub(crate) fn of_history(fillets: &[ferritecad_document::SavedFillet]) -> Option<Self> {
+        match fillets {
+            [one] => Some(Self::of(one)),
+            [one, two] => Some(Self::with_second(one, Some(two))),
+            _ => None,
+        }
+    }
+
     fn with_second(
         saved: &ferritecad_document::SavedFillet,
         second: Option<&ferritecad_document::SavedFillet>,
@@ -1546,10 +1661,8 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 cut_history_v2: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 cut_history_v3: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 profile_feature: s.profile_use.map(ProfileFeature::of),
-                fillet_base: s
-                    .fillet
-                    .as_ref()
-                    .map(|f| FilletBaseDiscovery::with_second(f, s.second_fillet.as_ref())),
+                fillet_base: FilletBaseDiscovery::of_history(&s.fillets),
+                fillet_history: FilletHistoryDiscovery::of(&s.fillets),
                 vertices: s.vertices.map(|vs| {
                     vs.into_iter()
                         .map(|v| SketchVertex {
@@ -1595,9 +1708,8 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                         .cut_history
                         .as_ref()
                         .and_then(BaseHeightDiscovery::of),
-                    fillet_base: feature.fillet.as_ref().map(|f| {
-                        FilletBaseDiscovery::with_second(f, feature.second_fillet.as_ref())
-                    }),
+                    fillet_base: FilletBaseDiscovery::of_history(&feature.fillets),
+                    fillet_history: FilletHistoryDiscovery::of(&feature.fillets),
                     feature_id: feature.feature,
                     name: feature.name,
                     distance_mm: feature.distance_mm,
