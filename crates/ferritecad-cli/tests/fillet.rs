@@ -16,6 +16,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
+#[path = "fillet/history.rs"]
+mod history;
 #[path = "support/pipe.rs"]
 mod pipe;
 
@@ -6079,7 +6081,10 @@ mod sequential {
         let row = &after["bodies"][0]["fillet_edge"];
         // §28L: a third Fillet is offered on the two corners still sharp.
         assert_eq!(row["available"], true, "{row}");
-        assert_eq!(row["target"]["candidates"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            row["target"]["candidates"].as_array().map(Vec::len),
+            Some(2)
+        );
         assert_eq!(row["target"]["fillets"].as_array().map(Vec::len), Some(2));
         assert_eq!(after["fillets"].as_array().map(Vec::len), Some(2));
         // §28H: each radius is editable, by its own UUID; §28I: and the
@@ -6331,7 +6336,10 @@ mod sequential {
         let row = &two["bodies"][0]["fillet_edge"];
         // §28L: a third Fillet is offered on the two corners still sharp.
         assert_eq!(row["available"], true, "{row}");
-        assert_eq!(row["target"]["candidates"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            row["target"]["candidates"].as_array().map(Vec::len),
+            Some(2)
+        );
         assert_eq!(two["fillets"].as_array().map(Vec::len), Some(2));
         // §28H: both radii are editable; §28I: and the base height; §28J:
         // and the free plate's Sketch coordinates; the constraint editor
