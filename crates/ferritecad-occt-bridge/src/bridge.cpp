@@ -71,6 +71,9 @@
 #include <BRepFilletAPI_LocalOperation.hxx>
 #include <memory>
 #include <BRepGProp.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
 #include <Precision.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -1968,14 +1971,41 @@ FcOcctStatus fc_occt_face_plane(FcOcctSession *session, uint64_t shape,
     const TopoDS_Face planar = TopoDS::Face(sub);
     const BRepAdaptor_Surface adaptor(planar);
     const gp_Pln plane = adaptor.Plane();
-    // The outward normal of the face as the solid has it: the plane's own
-    // direction, flipped when the face is used reversed.
-    gp_Dir normal = plane.Axis().Direction();
-    if (planar.Orientation() == TopAbs_REVERSED) {
-      normal.Reverse();
-    }
     GProp_GProps properties;
     BRepGProp::SurfaceProperties(planar, properties);
+    // The outward normal as the solid has the face. The orientation a
+    // sub-shape carries depends on how it was reached (as a generated face of
+    // a builder, or explored out of a restored solid), so it is not read:
+    // the plane's own direction is tried a hair off the face's centre of mass,
+    // and flipped when that point is inside the solid.
+    gp_Dir normal = plane.Axis().Direction();
+    Bnd_Box box;
+    BRepBndLib::Add(planar, box);
+    double lo[3], hi[3];
+    box.Get(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    double thinnest = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < 3; ++i) {
+      const double extent = hi[i] - lo[i];
+      if (extent > 1e-9 && extent < thinnest) {
+        thinnest = extent;
+      }
+    }
+    if (!std::isfinite(thinnest)) {
+      write_error(out_error, "the named planar face has no extent to probe");
+      return FC_OCCT_KERNEL;
+    }
+    const gp_Pnt centre = properties.CentreOfMass();
+    const gp_Pnt probe(centre.X() + normal.X() * 0.1 * thinnest,
+                       centre.Y() + normal.Y() * 0.1 * thinnest,
+                       centre.Z() + normal.Z() * 0.1 * thinnest);
+    BRepClass3d_SolidClassifier classifier(session->shapes.at(shape).shape, probe,
+                                           1e-9);
+    if (classifier.State() == TopAbs_IN) {
+      normal.Reverse();
+    } else if (classifier.State() != TopAbs_OUT) {
+      write_error(out_error, "the named planar face could not be told from the inside of its solid");
+      return FC_OCCT_KERNEL;
+    }
     for (int i = 0; i < 3; ++i) {
       out_origin[i] = plane.Location().Coord(i + 1);
       out_normal[i] = normal.Coord(i + 1);

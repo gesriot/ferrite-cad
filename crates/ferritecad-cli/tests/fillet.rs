@@ -16,6 +16,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
+#[path = "fillet/chamfer.rs"]
+mod chamfer;
 #[path = "fillet/history.rs"]
 mod history;
 #[path = "support/pipe.rs"]
