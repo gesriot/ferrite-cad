@@ -37,13 +37,14 @@ constraint is removed, §28E). Such links reference curve UUIDs and endpoint
 selectors, not coordinates, and the coordinate editor keeps the loop exactly
 closed, so they stay satisfied and are kept byte for byte. A Sketch with any
 other constraint (length, H/V, equal, Parallel/Perpendicular, Fixed) keeps
-refusing coordinate editing: constraints under two Fillets are a later slice.
+refusing coordinate editing; such constraints are edited with the constraint
+editor ([§28K](edit-two-fillet-base-constraints.md)).
 The selected Sketch must be the plate's base Sketch.
 
 The one-Fillet frame (§28D) is unchanged, including its refusal of every
-constrained Sketch. The constraint editor and add-Fillet keep reading
-`fillet_over_plate`, which admits exactly one Fillet, and keep refusing a
-two-Fillet history.
+constrained Sketch. The add-Fillet editor keeps reading `fillet_over_plate`,
+which admits exactly one Fillet, and keeps refusing a two-Fillet history (the
+constraint editor reads it since §28K).
 
 ### Typed context
 
@@ -111,8 +112,7 @@ hits.
 
 ### Out of scope
 
-Dimensional or geometric constraints under two Fillets, a third Fillet,
-arbitrary edges, Cut with Fillet, Chamfer, reselecting a corner, in-place
+A third Fillet, arbitrary edges, Cut with Fillet, Chamfer, reselecting a corner, in-place
 Save.
 
 ## Recipe: inspect -> exact UUIDs -> move and resize -> the bound -> height and radius after -> refusals
@@ -285,7 +285,7 @@ assert ctx["fillet_feature_id"] == done1["feature_id"] and ctx["radius_mm"] == R
 two = ctx["second_fillet"]
 assert two["fillet_feature_id"] == done2["feature_id"] and two["radius_mm"] == R2, two
 assert two["previous_feature_id"] == done1["feature_id"] and two["history_index"] == 2, two
-assert row["constraint_edit"]["available"] is False, "the constraint editor keeps refusing"
+assert row["constraint_edit"]["available"] is True, "§28K: the constraint editor reads both Fillets"
 refs = tables(twice)["topology_refs"]
 
 def redraw(source, rect, name, code=0, starts=None):

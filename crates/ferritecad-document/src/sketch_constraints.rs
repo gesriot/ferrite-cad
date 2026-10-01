@@ -234,6 +234,12 @@ pub struct ConstraintSketchChoice {
     /// and whether the radius fits it, are the solved plate's, checked when a
     /// copy is rebuilt.
     pub fillet: Option<crate::SavedFillet>,
+    /// §28K: present only beside `fillet`, for the base Sketch of a §28G
+    /// history: Fillet 2, which rounds Fillet 1's result (`previous` is
+    /// Fillet 1, never the base) at another corner the base Extrude swept.
+    /// Its corner is read from the stored Lines like Fillet 1's; both radii
+    /// and their pair are the solved plate's to satisfy at every rebuild.
+    pub second_fillet: Option<crate::SavedFillet>,
     pub refusal: Option<String>,
 }
 
@@ -245,9 +251,13 @@ pub fn constraint_sketch_choices(
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
         .map(|o| match supported_family(document, objects, o) {
-            Ok((_, profile_use, fillet)) => {
+            Ok((_, profile_use, over)) => {
                 let ObjectPayload::Sketch(sketch) = &o.payload else {
                     unreachable!("checked")
+                };
+                let (fillet, second_fillet) = match over {
+                    Some(over) => (Some(over.first), over.second),
+                    None => (None, None),
                 };
                 ConstraintSketchChoice {
                     sketch: o.id,
@@ -256,6 +266,7 @@ pub fn constraint_sketch_choices(
                     height_mm: extrusion_height(&profile_use),
                     profile_use: Some(profile_use),
                     fillet,
+                    second_fillet,
                     refusal: None,
                 }
             }
@@ -266,6 +277,7 @@ pub fn constraint_sketch_choices(
                 height_mm: None,
                 profile_use: None,
                 fillet: None,
+                second_fillet: None,
                 refusal: Some(e.to_string()),
             },
         })
@@ -284,15 +296,19 @@ fn supported_family(
     document: &Document,
     objects: &[ObjectRecord],
     object: &ObjectRecord,
-) -> Result<(Family, SketchProfileUse, Option<crate::SavedFillet>)> {
+) -> Result<(
+    Family,
+    SketchProfileUse,
+    Option<crate::fillet_radius::FilletsOverPlate>,
+)> {
     // The frame every copy edit of a saved profile requires is checked once,
     // in the one place that owns it, before either family is considered. It
     // also says which feature uses the profile (§27G): an Extrude and its
     // height, or a Revolve with a bore and its stated turn.
-    let (sketch, profile_use, fillet) =
+    let (sketch, profile_use, over) =
         crate::sketch_edit::constraint_frame(document, objects, object)?;
     let family = classify(sketch)?;
-    if fillet.is_some() && family != Family::Lines {
+    if over.is_some() && family != Family::Lines {
         return Err(CadError::unsupported(
             "the plate under a Fillet is four Lines, and this Sketch holds something else",
         ));
@@ -329,7 +345,7 @@ fn supported_family(
         }
     }
     managed(sketch, family)?;
-    Ok((family, profile_use, fillet))
+    Ok((family, profile_use, over))
 }
 
 /// §28E: the managed Line family, asked of a Sketch whose other readers — the
@@ -846,6 +862,8 @@ pub struct PreparedSketchConstraints {
     roles: Option<(StableEntityId, StableEntityId)>,
     /// §28E: the Fillet the frame read with this Sketch, if any.
     fillet: Option<crate::SavedFillet>,
+    /// §28K: Fillet 2 of a §28G history, read with it.
+    second_fillet: Option<crate::SavedFillet>,
 }
 impl PreparedSketchConstraints {
     pub fn object(&self) -> &ObjectRecord {
@@ -875,6 +893,12 @@ impl PreparedSketchConstraints {
     pub fn fillet(&self) -> Option<&crate::SavedFillet> {
         self.fillet.as_ref()
     }
+
+    /// §28K: Fillet 2 of the two-Fillet history, as read with the frame; it
+    /// rounds Fillet 1's result.
+    pub fn second_fillet(&self) -> Option<&crate::SavedFillet> {
+        self.second_fillet.as_ref()
+    }
 }
 
 /// Which of a managed profile's circles bounds the part and which is the bore,
@@ -901,7 +925,11 @@ pub fn prepare_sketch_constraints(
         .find(|o| o.id == id)
         .cloned()
         .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
-    let (family, profile_use, fillet) = supported_family(document, &objects, &object)?;
+    let (family, profile_use, over) = supported_family(document, &objects, &object)?;
+    let (fillet, second_fillet) = match over {
+        Some(over) => (Some(over.first), over.second),
+        None => (None, None),
+    };
     let ObjectPayload::Sketch(sketch) = &mut object.payload else {
         unreachable!("checked")
     };
@@ -1017,6 +1045,7 @@ pub fn prepare_sketch_constraints(
         profile_use,
         roles,
         fillet,
+        second_fillet,
     })
 }
 
@@ -1035,8 +1064,15 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedSketchConstraints
         .iter()
         .find(|o| o.id == prepared.object.id)
         .ok_or_else(|| CadError::input("selected Sketch disappeared before constraint write"))?;
-    let (family, profile_use, fillet) = supported_family(document, &objects, current)?;
-    if profile_use != prepared.profile_use || fillet != prepared.fillet {
+    let (family, profile_use, over) = supported_family(document, &objects, current)?;
+    let (fillet, second_fillet) = match over {
+        Some(over) => (Some(over.first), over.second),
+        None => (None, None),
+    };
+    if profile_use != prepared.profile_use
+        || fillet != prepared.fillet
+        || second_fillet != prepared.second_fillet
+    {
         return Err(CadError::input(
             "the feature or the Fillet around this Sketch changed after constraint preparation",
         ));

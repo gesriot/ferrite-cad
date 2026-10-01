@@ -198,7 +198,34 @@ impl Editor {
                 }
                 // §28E: the Fillet these Lines carry, and what the new copy
                 // has to be before it is saved.
-                if let Some(fillet) = &draft.choice.fillet {
+                if let (Some(first), Some(second)) =
+                    (&draft.choice.fillet, &draft.choice.second_fillet)
+                {
+                    // §28K: both Fillets in history order; the second rounds
+                    // the first one's result. Both radii and the flat between
+                    // adjacent arcs are the solved plate's to satisfy.
+                    let [a1, b1] = first.edge.joint.segments();
+                    let [a2, b2] = second.edge.joint.segments();
+                    ui.label(format!(
+                        "History: Extrude -> Fillet 1 {} at the corner of Lines {a1} | {b1}, \
+                         r {} mm (stored corner ({}, {})) -> Fillet 2 {} at the corner of Lines \
+                         {a2} | {b2}, r {} mm (stored corner ({}, {})). Both Fillets keep their \
+                         corners and radii: the new copy is saved only if the solved plate is \
+                         still a rectangle with every Line on its side, each side at a corner \
+                         at least {} mm (Fillet 1) or {} mm (Fillet 2), and adjacent arcs still \
+                         leave a flat between them.",
+                        first.feature,
+                        first.radius_mm,
+                        first.corner.corner_mm[0],
+                        first.corner.corner_mm[1],
+                        second.feature,
+                        second.radius_mm,
+                        second.corner.corner_mm[0],
+                        second.corner.corner_mm[1],
+                        first.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION,
+                        second.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
+                    ));
+                } else if let Some(fillet) = &draft.choice.fillet {
                     let [a, b] = fillet.edge.joint.segments();
                     ui.label(format!(
                         "Rounded by Fillet {} at the corner of Lines {a} | {b}, r {} mm \
@@ -5215,6 +5242,215 @@ pub(crate) mod tests {
             .shape_stats(built.shape(body.id).expect("built"))
             .expect("stats");
         let exact = (41. * 14.25 - (1. - std::f64::consts::PI / 4.) * 2.375 * 2.375) * 6.75;
+        assert!(
+            (volume - exact).abs() < 1e-9 * exact,
+            "{volume} is not {exact}"
+        );
+        built.release_all(&mut k);
+        d.close().expect("close");
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
+    /// §28K: the form on the base Sketch of a plate rounded twice names both
+    /// Fillets in history order with their Lines, radii and stored corners,
+    /// says what the solved plate must be, builds the usual requests with
+    /// Undo/Redo over the whole request, and keeps the draft through a
+    /// cancelled Save and a worker refusal naming either radius or the flat
+    /// between the arcs. No kernel is involved.
+    #[test]
+    fn two_fillet_base_constraint_widgets_name_both_fillets_and_keep_the_draft() {
+        let (_root, path, source) = crate::fillets::tests::rounded_twice(2.375, 3.0625);
+        let choice = source.constraint_sketches[0].clone();
+        assert_eq!(choice.refusal, None);
+        let (first, second) = (
+            choice.fillet.clone().expect("Fillet 1 as context"),
+            choice.second_fillet.clone().expect("Fillet 2 as context"),
+        );
+        assert_eq!(second.previous, first.feature, "Fillet 2 rounds Fillet 1");
+        let [a1, b1] = first.edge.joint.segments();
+        let [a2, b2] = second.edge.joint.segments();
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        let context = format!(
+            "History: Extrude -> Fillet 1 {} at the corner of Lines {a1} | {b1}, r 2.375 mm \
+             (stored corner (33, 3.25)) -> Fillet 2 {} at the corner of Lines {a2} | {b2}, \
+             r 3.0625 mm (stored corner (33, 15.5)).",
+            first.feature, second.feature
+        );
+        assert!(
+            out.shapes.iter().any(|s| matches!(&s.shape,
+                egui::Shape::Text(t) if t.galley.text().starts_with(&context)
+                    && t.galley.text().contains("at least 4.75 mm (Fillet 1) or 6.125 mm (Fillet 2)")
+                    && t.galley.text().contains("leave a flat between them"))),
+            "{context}"
+        );
+        assert!(painted(
+            &out,
+            "Coordinates below are stored inputs, not the solved drawing."
+        ));
+        click(&ctx, &mut e, "Segment 2");
+        click(&ctx, &mut e, "Add Horizontal");
+        enter_length(&ctx, &mut e, "30.5", false);
+        click(&ctx, &mut e, "Add length");
+        let kept = history_state(&e).0;
+        assert_eq!(kept.add.len(), 2);
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(history_state(&e).0.add.len(), 1);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, kept);
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("the widgets' request");
+        assert!(e.take_request().is_none(), "one press, one request");
+        assert_eq!(request.sketch, choice.sketch);
+        assert_eq!(request.expected, source.version);
+        assert_eq!(request.edits, kept);
+        assert_eq!(
+            history_state(&e).0,
+            kept,
+            "a cancelled Save started nothing"
+        );
+        let mut state = crate::edits::Edits::default();
+        for reason in [
+            "as its constraints solve it, the rounded plate has sides of 30.5 and 4 mm at the \
+             rounded corner, too short for the saved radius: a fillet of 2.375 mm is too large",
+            "as the plate is built, fillets of 2.375 mm and 3.0625 mm at the two ends of a Line \
+             would leave 0.001 mm of it flat",
+        ] {
+            let generation = state
+                .start_constraints(request.clone(), |_, _, _| std::thread::spawn(|| {}))
+                .expect("started");
+            let refusal = ferritecad_types::CadError::input(reason);
+            assert!(finish_edit(&mut e, &mut state, generation, Err(refusal)).is_none());
+            assert!(e.active(), "a refusal keeps the draft");
+            assert_eq!(history_state(&e).0, kept);
+        }
+    }
+
+    /// §28K, native with PlaneGCS: the widgets' request on the plate rounded
+    /// twice through the app's worker and the same request through the shipped
+    /// `edit-sketch-constraints-copy` publish one document — every SQL row
+    /// equal once the newly minted constraint UUIDs are matched off, the
+    /// stored guess unchanged — and byte-identical STL and FBX.
+    #[test]
+    fn native_two_fillet_base_constraint_worker_and_cli_publish_the_same_part() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+        }
+        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
+            eprintln!("skipped: the constraint worker needs OCCT and PlaneGCS");
+            return;
+        }
+        let (root, path, source) = crate::fillets::tests::rounded_twice(2.375, 3.0625);
+        let before = std::fs::read(&path).expect("source");
+        let choice = source.constraint_sketches[0].clone();
+        let stored = choice.stored.clone().expect("stored").curves;
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        for (segment, rule) in [
+            ("Segment 1", "Add Vertical"),
+            ("Segment 2", "Add Horizontal"),
+            ("Segment 3", "Add Vertical"),
+            ("Segment 4", "Add Horizontal"),
+        ] {
+            click(&ctx, &mut e, segment);
+            click(&ctx, &mut e, rule);
+        }
+        click(&ctx, &mut e, "Segment 2");
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "36.5", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "1.25", false);
+        click(&ctx, &mut e, "Add Fixed point");
+        enter_length(&ctx, &mut e, "41", false);
+        click(&ctx, &mut e, "Add length");
+        click(&ctx, &mut e, "Segment 1");
+        enter_length(&ctx, &mut e, "14.25", false);
+        click(&ctx, &mut e, "Add length");
+        click(&ctx, &mut e, "Save constraints copy…");
+        let mut request = e.take_request().expect("widget request");
+        assert_eq!(request.edits.add.len(), 7, "{:?}", request.edits);
+        let additions = request
+            .edits
+            .add
+            .iter()
+            .map(peer_addition)
+            .collect::<Vec<_>>()
+            .join(",");
+        let ui = root.path().join("worker.fcad");
+        request.destination = ui.clone();
+        let mut state = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_constraints(request, move |r, g, c| {
+                crate::edits::spawn_constraint_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (g, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("worker response");
+        assert_eq!(
+            result
+                .as_ref()
+                .expect("published")
+                .solve
+                .as_ref()
+                .expect("solve")
+                .degrees_of_freedom(),
+            0
+        );
+        assert_eq!(finish_edit(&mut e, &mut state, g, result), Some(ui.clone()));
+        let input = root.path().join("request.json");
+        std::fs::write(
+            &input,
+            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+        )
+        .expect("input");
+        let peer = root.path().join("peer.fcad");
+        let result = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("edit-sketch-constraints-copy")
+            .arg(&path)
+            .arg("--sketch")
+            .arg(choice.sketch.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(result.status.success(), "{result:?}");
+        // Four closure links, four H/V, the pin and two lengths.
+        same_publication(&ui, &peer, &stored, 11);
+        // The solved plate: 41 x 14.25, rounded at both solved corners.
+        let d = Document::open_read_only(&ui).expect("worker copy");
+        let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+        let built = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default())
+            .expect("cold rebuild");
+        let objects = d.objects().expect("objects");
+        let body = objects
+            .iter()
+            .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+            .expect("Body");
+        let (_, volume) = k
+            .shape_stats(built.shape(body.id).expect("built"))
+            .expect("stats");
+        let cut = 1. - std::f64::consts::PI / 4.;
+        let exact = (41. * 14.25 - cut * (2.375 * 2.375 + 3.0625 * 3.0625)) * 6.75;
         assert!(
             (volume - exact).abs() < 1e-9 * exact,
             "{volume} is not {exact}"

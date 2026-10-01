@@ -32,12 +32,12 @@ refused by name, as before.
 
 The one-Fillet path is unchanged: a document with one Fillet goes through the
 §28B frame exactly as it did, with the same wire. The guard that the base
-height, Sketch and constraint editors apply (exactly one Fillet) is **not**
-lifted: with two Fillets they still refuse, now saying that only the radius
-edit is offered. (Since [§28I](edit-two-fillet-base-height.md) the base
-height, and since [§28J](edit-two-fillet-base-sketch.md) the base Sketch's
-coordinates, are edited through the two-Fillet reader; the constraint guard
-still holds.)
+height, Sketch and constraint editors applied (exactly one Fillet) was **not**
+lifted by this slice: with two Fillets they refused, saying that only the
+radius edit was offered. (Since [§28I](edit-two-fillet-base-height.md) the
+base height, since [§28J](edit-two-fillet-base-sketch.md) the base Sketch's
+coordinates and since [§28K](edit-two-fillet-base-constraints.md) its
+constraints are edited through the two-Fillet reader.)
 
 ### What an edit is
 

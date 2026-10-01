@@ -188,6 +188,21 @@ struct FilletContext {
     edge: super::FilletEdgeDto,
     radius_mm: f64,
     stored_corner_mm: [f64; 2],
+    /// §28K, additive: Fillet 2 of a §28G history, which rounds Fillet 1's
+    /// result (not the base Extrude); `null` with one Fillet. Its corner is
+    /// in the stored coordinates too.
+    second_fillet: Option<SecondFilletContext>,
+}
+/// §28K: Fillet 2 of Extrude -> Fillet 1 -> Fillet 2, as a constraint edit keeps it.
+#[derive(Serialize)]
+struct SecondFilletContext {
+    fillet_feature_id: ObjectId,
+    /// Fillet 1: the feature whose result this Fillet rounds.
+    previous_feature_id: ObjectId,
+    history_index: usize,
+    edge: super::FilletEdgeDto,
+    radius_mm: f64,
+    stored_corner_mm: [f64; 2],
 }
 impl Discovery {
     pub(crate) fn new(choice: ConstraintSketchChoice, document_refusal: Option<String>) -> Self {
@@ -248,6 +263,17 @@ impl Discovery {
                 },
                 radius_mm: f.radius_mm,
                 stored_corner_mm: f.corner.corner_mm,
+                second_fillet: choice.second_fillet.as_ref().map(|s| SecondFilletContext {
+                    fillet_feature_id: s.feature,
+                    previous_feature_id: s.previous,
+                    history_index: s.history_index,
+                    edge: super::FilletEdgeDto {
+                        feature_id: s.edge.feature,
+                        joint: s.edge.joint.segments(),
+                    },
+                    radius_mm: s.radius_mm,
+                    stored_corner_mm: s.corner.corner_mm,
+                }),
             }),
         }
     }
