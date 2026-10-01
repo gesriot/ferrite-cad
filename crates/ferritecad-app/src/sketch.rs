@@ -6490,6 +6490,64 @@ mod tests {
         assert!(painted(&out, "Cancel cut draft"));
         assert!(!painted(&out, "Restore saved vertices"));
     }
+
+    /// §28L, kernel-free: the existing Sketch editor opens the base of a plate
+    /// rounded four times, names every Fillet in history order, refuses a
+    /// rectangle whose adjacent arcs — the first and the fourth are the pair —
+    /// would leave no flat, and keeps Save on the screen.
+    #[test]
+    fn four_fillet_base_sketch_widgets_name_every_fillet_and_keep_save_in_reach() {
+        let (_root, path, reading) = crate::fillets::tests::rounded_n(&[
+            ([33., 3.25], 2.375),
+            ([-4.5, 15.5], 3.0625),
+            ([-4.5, 3.25], 1.5),
+            ([33., 15.5], 6.0),
+        ]);
+        let choice = reading.sketches[0].clone();
+        assert_eq!(choice.refusal, None);
+        assert_eq!(choice.fillets.len(), 4);
+        let mut e = Editor::default();
+        assert!(e.begin_edit(&path, &reading, choice.sketch));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        for f in &choice.fillets {
+            assert!(
+                painted(&out, &format!("Fillet {} {}", f.history_index, f.feature)),
+                "{}",
+                f.history_index
+            );
+        }
+        assert!(painted(&out, "All 4 Fillets keep their corners and radii"));
+        assert!(painted(
+            &out,
+            "no side may be shorter than 4.75 mm (Fillet 1) or 6.125 mm (Fillet 2) or 3 mm (Fillet 3) or 12 mm (Fillet 4)"
+        ));
+        let save = text_at(&out, "Save edited copy…");
+        assert!(save.y > 0. && save.y < 768., "Save at {save:?}");
+        assert!(
+            ctx.globally_used_rect().max.y <= 768.,
+            "{:?}",
+            ctx.globally_used_rect()
+        );
+        // 6 mm deep: the first and the fourth (2.375 + 6 > 6) leave no flat,
+        // and the fourth alone needs 12 mm; refused naming a Fillet.
+        replace_field(&ctx, &mut e, "15.5", "9.255");
+        replace_field(&ctx, &mut e, "15.5", "9.255");
+        let error = e.edit_request().expect_err("too small");
+        assert!(
+            error.to_string().contains("too large") || error.to_string().contains("flat"),
+            "{error}"
+        );
+        assert!(
+            choice
+                .fillets
+                .iter()
+                .any(|f| error.to_string().contains(&f.feature.to_string()))
+                || error.to_string().contains("too large"),
+            "{error}"
+        );
+    }
 }
 
 #[cfg(test)]

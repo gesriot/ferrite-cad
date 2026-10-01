@@ -2040,4 +2040,85 @@ mod tests {
         crate::fillets::tests::same_radius_publication(&path, &ui, &peer);
         assert_eq!(std::fs::read(&path).expect("source"), original);
     }
+
+    /// §28L, kernel-free: on a plate rounded four times the same form names
+    /// every Fillet in history order, scrolls that history in a bounded area,
+    /// keeps Save and Cancel on the screen and hands over the base Extrude's
+    /// request.
+    #[test]
+    fn four_fillet_base_height_widgets_name_every_fillet_and_keep_save_in_reach() {
+        let (_root, path, reading) = crate::fillets::tests::rounded_n(&[
+            ([33., 3.25], 2.375),
+            ([-4.5, 15.5], 3.0625),
+            ([-4.5, 3.25], 1.5),
+            ([33., 15.5], 6.0),
+        ]);
+        assert_eq!(reading.unavailable_reason(), None);
+        let base = reading
+            .features
+            .iter()
+            .find(|f| f.fillet().is_some())
+            .expect("the base under the Fillets");
+        assert_eq!(base.fillets.len(), 4);
+        let mut e = Edits::default();
+        assert!(e.begin(&path, &reading), "the form opens");
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        }
+        let row = e
+            .form
+            .as_ref()
+            .expect("form")
+            .shown
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("row")
+            .clone();
+        assert_eq!(row.refusal, None);
+        height_click(&ctx, &mut e, &path, &reading, &row.label);
+        let out = height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        let steps: Vec<String> = base
+            .fillets
+            .iter()
+            .map(|f| {
+                format!(
+                    "Fillet {} {} at ({}, {}), r {} mm",
+                    f.history_index,
+                    f.feature,
+                    f.corner.corner_mm[0],
+                    f.corner.corner_mm[1],
+                    f.radius_mm
+                )
+            })
+            .collect();
+        assert!(painted(
+            &out,
+            &format!(
+                "History: Extrude {} -> {}. All 4 Fillets keep their edges and radii; only the \
+                 plate's height changes.",
+                base.feature,
+                steps.join(" -> ")
+            )
+        ));
+        for label in ["Save new file…", "Cancel"] {
+            let at = out
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text().starts_with(label) => {
+                        Some(t.visual_bounding_rect().center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("not painted: {label}"));
+            assert!(at.y > 0. && at.y < 768., "{label} at {at:?}");
+        }
+        type_height(&ctx, &mut e, &path, &reading, "6.75", "12.125");
+        height_click(&ctx, &mut e, &path, &reading, "Save new file…");
+        let request = e.request(PathBuf::from("ui.fcad")).expect("valid request");
+        assert_eq!(request.feature, base.feature);
+        assert_eq!(request.distance_mm, 12.125);
+    }
 }

@@ -5476,4 +5476,73 @@ pub(crate) mod tests {
         d.close().expect("close");
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
+
+    /// §28L, kernel-free: the constraint form on the base Sketch of a plate
+    /// rounded four times names every Fillet in history order with its Lines,
+    /// radius and stored corner, says what the solved plate must be, and keeps
+    /// Save on the screen.
+    #[test]
+    fn four_fillet_base_constraint_widgets_name_every_fillet_and_keep_save_in_reach() {
+        let (_root, path, source) = crate::fillets::tests::rounded_n(&[
+            ([33., 3.25], 2.375),
+            ([-4.5, 15.5], 3.0625),
+            ([-4.5, 3.25], 1.5),
+            ([33., 15.5], 6.0),
+        ]);
+        let choice = source.constraint_sketches[0].clone();
+        assert_eq!(choice.refusal, None);
+        assert_eq!(choice.fillets.len(), 4);
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        let has = |label: &str| {
+            out.shapes.iter().any(
+                |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(label)),
+            )
+        };
+        for f in &choice.fillets {
+            let [a, b] = f.edge.joint.segments();
+            assert!(
+                has(&format!(
+                    "Fillet {} {} at the corner of Lines {a} | {b}, r {} mm (stored corner ({}, {}))",
+                    f.history_index,
+                    f.feature,
+                    f.radius_mm,
+                    f.corner.corner_mm[0],
+                    f.corner.corner_mm[1]
+                )),
+                "{}",
+                f.history_index
+            );
+        }
+        assert!(has("All 4 Fillets keep their corners and radii"));
+        assert!(has(
+            "at least 4.75 mm (Fillet 1) or 6.125 mm (Fillet 2) or 3 mm (Fillet 3) or 12 mm (Fillet 4)"
+        ));
+        assert!(
+            ctx.globally_used_rect().max.y <= 768.,
+            "{:?}",
+            ctx.globally_used_rect()
+        );
+        click(&ctx, &mut e, "Segment 2");
+        click(&ctx, &mut e, "Add Horizontal");
+        let out = frame(&ctx, &mut e, vec![]);
+        let save = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().starts_with("Save constraints copy…") => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("Save is painted");
+        assert!(save.y > 0. && save.y < 768., "Save at {save:?}");
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("the widgets' request");
+        assert_eq!(request.sketch, choice.sketch);
+        assert_eq!(request.edits.add.len(), 1);
+    }
 }
