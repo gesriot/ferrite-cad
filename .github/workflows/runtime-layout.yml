@@ -2303,7 +2303,8 @@ jobs:
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-occt --test chamfer_edge_occt "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-occt.log
-            if grep -q 'skipped:' chamfer-occt.log || ! grep -Fq "test $gate ... ok" chamfer-occt.log; then exit 1; fi
+            if grep -q 'skipped:' chamfer-occt.log || ! grep -Fq "test $gate ... " chamfer-occt.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-occt.log; then exit 1; fi
           done
           for gate in request::tests::a_chamfer_request_names_an_edge_of_its_target_and_a_real_distance \
             result::tests::a_chamfer_result_is_held_to_one_deleted_edge_one_face_and_real_removal \
@@ -2311,7 +2312,8 @@ jobs:
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-kernel --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-kernel.log
-            if grep -q 'skipped:' chamfer-kernel.log || ! grep -Fq "test $gate ... ok" chamfer-kernel.log; then exit 1; fi
+            if grep -q 'skipped:' chamfer-kernel.log || ! grep -Fq "test $gate ... " chamfer-kernel.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-kernel.log; then exit 1; fi
           done
           for gate in chamfer::tests::the_chamfer_payload_round_trips_and_refuses_what_it_cannot_mean \
             chamfer::tests::the_distance_policy_is_exact_at_its_bounds_and_the_same_everywhere \
@@ -2324,14 +2326,16 @@ jobs:
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --features planegcs -p ferritecad-document --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-document.log
-            if grep -q 'skipped:' chamfer-document.log || ! grep -Fq "test $gate ... ok" chamfer-document.log; then exit 1; fi
+            if grep -q 'skipped:' chamfer-document.log || ! grep -Fq "test $gate ... " chamfer-document.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-document.log; then exit 1; fi
           done
           for gate in map::tests::a_chamfer_is_named_by_its_edge_in_its_own_map_and_carries_only_what_its_history_says \
             codec::tests::an_edge_chamfer_face_survives_its_byte_form_and_is_not_a_fillet_face
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-topology --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-topology.log
-            if grep -q 'skipped:' chamfer-topology.log || ! grep -Fq "test $gate ... ok" chamfer-topology.log; then exit 1; fi
+            if grep -q 'skipped:' chamfer-topology.log || ! grep -Fq "test $gate ... " chamfer-topology.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-topology.log; then exit 1; fi
           done
           for gate in chamfers::history_tests::the_request_history_steps_back_and_forward_and_forgets_a_discarded_future \
             chamfers::tests::chamfer_widgets_list_corners_refuse_like_the_document_and_keep_the_draft \
@@ -2340,7 +2344,8 @@ jobs:
           do
             cargo test --release --features planegcs -p ferritecad-app "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-ui.log
-            if grep -q 'skipped:' chamfer-ui.log || ! grep -Fq "test $gate ... ok" chamfer-ui.log; then exit 1; fi
+            if grep -q 'skipped:' chamfer-ui.log || ! grep -Fq "test $gate ... " chamfer-ui.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-ui.log; then exit 1; fi
           done
           py="$(command -v python3 || command -v python)"
           recipe_cli="$PWD/target/release/ferritecad"
