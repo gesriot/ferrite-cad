@@ -104,23 +104,29 @@ constraints** form or `edit-sketch-constraints-copy` (H/V, lengths, one fixed
 point, equal length, Parallel/Perpendicular): the part is built from the
 solved sketch, and the new copy is saved only if the solved plate still has
 room for the radius at the same corner. The same **Fillet edge of …** form or
-`fillet-edge-copy` can then round a second, different vertical corner as its
-own Fillet. Adjacent corners must leave at least 0.01 mm flat between their
-arcs; on a dimensioned plate this is checked on the solved sides. The first
-Fillet's cylinder keeps its origin in the final Body. The same **Edit Fillet
-radius** form or `edit-fillet-radius` then changes the radius of either of
-the two Fillets, named by its exact UUID, under the same pair rule, checked in
-history order, and the existing **Edit extrusion** form or `edit-extrude`
-changes the plate's height under both Fillets, keeping each one's radius,
-corner and names, and the existing **Edit Sketch** form or `edit-sketch-copy`
-moves or resizes the plate's free rectangle, keeping both Fillets on the same
-named corners and judging both radii and the flat between adjacent arcs on the
+`fillet-edge-copy` can then round a second, a third and a fourth, different
+vertical corner as its own Fillet: the history is Extrude → Fillet 1 → … →
+Fillet *n* → Body tip, *n* from 0 to 4, each Fillet a real fillet of its
+predecessor's result and each corner rounded once. Adjacent corners must leave
+at least 0.01 mm flat between their arcs, **whatever Fillets lie between them
+in the history** (the fourth closes the pair with the first); a radius is
+bounded by every neighbour, and on a dimensioned plate this is checked on the
+solved sides. Each earlier Fillet's cylinder keeps its origin in the final
+Body. The same **Edit Fillet radius** form or `edit-fillet-radius` then changes
+the radius of any of the Fillets, named by its exact UUID, under the same pair
+rule, and the existing **Edit extrusion** form or `edit-extrude` changes the
+plate's height under all of them, keeping each one's radius, corner and
+names, and the existing **Edit Sketch** form or `edit-sketch-copy` moves or
+resizes the plate's free rectangle, keeping the Fillets on the same named
+corners and judging every radius and every flat between adjacent arcs on the
 new sides, and the existing **Edit constraints** form or
 `edit-sketch-constraints-copy` adds, replaces or removes its Line constraints,
-the solved rectangle being the new plate with both radii and the flat between
-adjacent arcs judged on the solved Lines at every rebuild. A third Fillet,
-touching arcs, chains, cap edges, Cut with Fillet and Chamfer are not
-supported yet.
+the solved rectangle being the new plate with every radius and every flat
+judged on the solved Lines at every rebuild. A document with three or four
+Fillets is read by the previous build as a typed refusal, never a partial
+Body. A fifth Fillet, touching arcs, cap edges, Cut with Fillet, Chamfer and
+arbitrary edges are not supported yet.
+[All four corners: contract and recipe](docs/rectangular-fillet-history.md).
 [Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
 [Fillet radius edit contract and recipe](docs/edit-fillet-radius.md).
 [Rounded-plate height contract and recipe](docs/edit-fillet-base-height.md).

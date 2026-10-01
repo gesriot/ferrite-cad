@@ -95,8 +95,15 @@ pub fn edit_extrude_panel(
                 .iter()
                 .find(|f| Some(f.feature) == form.selected)
             {
+                // §28L: the history of up to four Fillets is long; it scrolls in
+                // a bounded area so Save and Cancel below stay in reach.
                 if let Some(context) = &selected.context {
-                    ui.label(context);
+                    egui::ScrollArea::vertical()
+                        .id_salt("height-context")
+                        .max_height(96.)
+                        .show(ui, |ui| {
+                            ui.label(context);
+                        });
                 }
                 if let Some(value) = selected.distance_mm {
                     ui.label(format!("Current distance: {value} mm"));
@@ -109,7 +116,12 @@ pub fn edit_extrude_panel(
             }
             ui.label("The source stays unchanged. The new file keeps this model’s identities.");
             if let Some(reason) = &form.refusal {
-                ui.colored_label(ui.visuals().error_fg_color, reason);
+                egui::ScrollArea::vertical()
+                    .id_salt("height-refusal")
+                    .max_height(72.)
+                    .show(ui, |ui| {
+                        ui.colored_label(ui.visuals().error_fg_color, reason);
+                    });
             }
             ui.horizontal(|ui| {
                 if ui

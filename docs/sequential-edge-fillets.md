@@ -30,7 +30,7 @@ The new Fillet rounds one of the **three other** corners of the same plate,
 named as before by the base Extrude and the unordered pair of Line UUIDs that
 meet there. Refused, typed, before anything is written: the corner the first
 Fillet rounded (`input`), a document that already holds two Fillets
-(`unsupported`: a third Fillet is out of scope), and everything §28A refuses.
+(`unsupported`: a third Fillet was out of scope here; §28L adds the third and the fourth), and everything §28A refuses.
 
 ### The stored model
 
@@ -175,7 +175,7 @@ build wrote before still reads and rebuilds.
 
 ### Out of scope
 
-A third Fillet, the same corner twice, touching or merged arcs, cap edges,
+A third Fillet (§28L now supports a third and a fourth), the same corner twice, touching or merged arcs, cap edges,
 edge chains, Cut with Fillet, Chamfer, editing a history with two Fillets
 (since [§28H](edit-sequential-fillet-radii.md) its radii can be edited),
 picking, live preview, in-place Save.
@@ -364,20 +364,22 @@ assert sorted(r["role"] for r in done2["references"]).count("origin_fillet_face"
 second_allowlist(first, second, catalog["bodies"][0]["body_id"])
 v2, e2 = measured(second, [(FIRST, R1), (SECOND, R2)])
 after = inspect(second)
-assert after["bodies"][0]["fillet_edge"]["available"] is False, "a third Fillet"
+# §28L: two corners are still sharp, so a third Fillet is offered.
+assert after["bodies"][0]["fillet_edge"]["available"] is True, "a third Fillet is offered (§28L)"
+assert len(after["bodies"][0]["fillet_edge"]["target"]["candidates"]) == 2
 # §28H: either radius is editable; nothing else of this history is.
 assert all(f["radius_edit"]["available"] is True for f in after["fillets"])
 
-# 5. Refusals write nothing: the same corner, a third Fillet, a stale version.
+# 5. Refusals write nothing: the same corner (twice), a stale version.
 names = sorted(p.name for p in root.iterdir())
 never = root / "never.fcad"
 error = fillet(first, catalog, ask({"edge": saved["edge"]}, 1.0), never, 2)["error"]
 assert error["kind"] == "input" and "already rounded" in error["message"], error
 request = ask(at(catalog, [X0, Y0 + D]), 1.0)
 error = run(["fillet-edge-copy", second, "--body", after["bodies"][0]["body_id"],
-             "--expect-version", after["content_version"], "--request", request,
+             "--expect-version", after["content_version"], "--request", ask({"edge": saved["edge"]}, 1.0),
              "-o", never, "--json"], 2)["error"]
-assert error["kind"] == "unsupported" and "third" in error["message"], error
+assert error["kind"] == "input" and "already rounded" in error["message"], error
 error = run(["fillet-edge-copy", second, "--body", after["bodies"][0]["body_id"],
              "--expect-version", catalog["content_version"], "--request", request,
              "-o", never, "--json"], 2)["error"]

@@ -73,16 +73,22 @@ impl Edits {
                         refusal: f.refusal.clone(),
                         context: f.cut_history.as_ref().map(|h| format!(
                             "Base of {} circular Cuts. Blind depths stay fixed; Through all follows the plate thickness. Saved pocket floors must stay inside the plate.", h.tools.len()))
-                            .or_else(|| f.fillet.as_ref().map(|r| match &f.second_fillet {
-                                // §28I: both Fillets, in history order; the
-                                // second rounds the first one's result.
-                                Some(s) => format!(
-                                    "History: Extrude {} -> Fillet 1 {} at ({}, {}), r {} mm -> Fillet 2 {} at ({}, {}), r {} mm. Both Fillets keep their edges and radii; only the plate's height changes.",
-                                    f.feature, r.feature, r.corner.corner_mm[0], r.corner.corner_mm[1], r.radius_mm,
-                                    s.feature, s.corner.corner_mm[0], s.corner.corner_mm[1], s.radius_mm),
-                                None => format!(
+                            .or_else(|| f.fillet().map(|r| match f.fillets.as_slice() {
+                                [_] | [] => format!(
                                     "Rounded by Fillet {} at ({}, {}), r {} mm. The Fillet keeps its edge and radius; only the plate's height changes.",
                                     r.feature, r.corner.corner_mm[0], r.corner.corner_mm[1], r.radius_mm),
+                                // §28I/§28L: every Fillet in history order; each
+                                // rounds the result of the one before it.
+                                all => format!(
+                                    "History: Extrude {} -> {}. {} Fillets keep their edges and radii; only the plate's height changes.",
+                                    f.feature,
+                                    all.iter()
+                                        .map(|s| format!(
+                                            "Fillet {} {} at ({}, {}), r {} mm",
+                                            s.history_index, s.feature, s.corner.corner_mm[0], s.corner.corner_mm[1], s.radius_mm))
+                                        .collect::<Vec<_>>()
+                                        .join(" -> "),
+                                    if all.len() == 2 { "Both".to_owned() } else { format!("All {}", all.len()) }),
                             })),
                     })
                     .collect(),
@@ -1667,9 +1673,9 @@ mod tests {
         let base = reading
             .features
             .iter()
-            .find(|f| f.fillet.is_some())
+            .find(|f| f.fillet().is_some())
             .expect("the base under the Fillet");
-        let fillet = base.fillet.clone().expect("context");
+        let fillet = base.fillet().cloned().expect("context");
         let mut e = Edits::default();
         assert!(
             e.begin(&path, &reading),
@@ -1777,7 +1783,7 @@ mod tests {
         let base = reading
             .features
             .iter()
-            .find(|f| f.fillet.is_some())
+            .find(|f| f.fillet().is_some())
             .expect("base")
             .clone();
         let mut e = Edits::default();
@@ -1829,8 +1835,8 @@ mod tests {
             .expect("the same base");
         assert_eq!(current.distance_mm, Some(11.4375));
         assert_eq!(
-            current.fillet.as_ref().map(|f| (f.feature, f.radius_mm)),
-            base.fillet.as_ref().map(|f| (f.feature, f.radius_mm))
+            current.fillet().map(|f| (f.feature, f.radius_mm)),
+            base.fillet().map(|f| (f.feature, f.radius_mm))
         );
         e.cancel();
         e.draft_load_finished(&ui, true);
@@ -1876,10 +1882,10 @@ mod tests {
         let base = reading
             .features
             .iter()
-            .find(|f| f.fillet.is_some())
+            .find(|f| f.fillet().is_some())
             .expect("the base under the Fillets");
-        let one = base.fillet.clone().expect("Fillet 1");
-        let two = base.second_fillet.clone().expect("Fillet 2");
+        let one = base.fillet().cloned().expect("Fillet 1");
+        let two = base.fillets.get(1).cloned().expect("Fillet 2");
         assert_eq!(
             two.previous, one.feature,
             "Fillet 2 rounds Fillet 1's result"
@@ -1955,7 +1961,7 @@ mod tests {
         let base = reading
             .features
             .iter()
-            .find(|f| f.fillet.is_some())
+            .find(|f| f.fillet().is_some())
             .expect("base")
             .clone();
         let mut e = Edits::default();
@@ -2005,17 +2011,16 @@ mod tests {
             .expect("the same base");
         assert_eq!(current.distance_mm, Some(3.3125));
         // Both Fillets as they were; only the plate's height under them moved.
-        let kept = |f: &Option<ferritecad_document::SavedFillet>| {
-            f.as_ref()
-                .map(|f| (f.feature, f.previous, f.edge, f.radius_mm, f.history_index))
+        let kept = |f: Option<&ferritecad_document::SavedFillet>| {
+            f.map(|f| (f.feature, f.previous, f.edge, f.radius_mm, f.history_index))
         };
-        assert_eq!(kept(&current.fillet), kept(&base.fillet), "Fillet 1");
+        assert_eq!(kept(current.fillet()), kept(base.fillet()), "Fillet 1");
         assert_eq!(
-            kept(&current.second_fillet),
-            kept(&base.second_fillet),
+            kept(current.fillets.get(1)),
+            kept(base.fillets.get(1)),
             "Fillet 2"
         );
-        assert_eq!(current.fillet.as_ref().map(|f| f.height_mm), Some(3.3125));
+        assert_eq!(current.fillet().map(|f| f.height_mm), Some(3.3125));
         e.cancel();
         e.draft_load_finished(&ui, true);
 
@@ -2034,5 +2039,86 @@ mod tests {
         ]);
         crate::fillets::tests::same_radius_publication(&path, &ui, &peer);
         assert_eq!(std::fs::read(&path).expect("source"), original);
+    }
+
+    /// §28L, kernel-free: on a plate rounded four times the same form names
+    /// every Fillet in history order, scrolls that history in a bounded area,
+    /// keeps Save and Cancel on the screen and hands over the base Extrude's
+    /// request.
+    #[test]
+    fn four_fillet_base_height_widgets_name_every_fillet_and_keep_save_in_reach() {
+        let (_root, path, reading) = crate::fillets::tests::rounded_n(&[
+            ([33., 3.25], 2.375),
+            ([-4.5, 15.5], 3.0625),
+            ([-4.5, 3.25], 1.5),
+            ([33., 15.5], 6.0),
+        ]);
+        assert_eq!(reading.unavailable_reason(), None);
+        let base = reading
+            .features
+            .iter()
+            .find(|f| f.fillet().is_some())
+            .expect("the base under the Fillets");
+        assert_eq!(base.fillets.len(), 4);
+        let mut e = Edits::default();
+        assert!(e.begin(&path, &reading), "the form opens");
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        }
+        let row = e
+            .form
+            .as_ref()
+            .expect("form")
+            .shown
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("row")
+            .clone();
+        assert_eq!(row.refusal, None);
+        height_click(&ctx, &mut e, &path, &reading, &row.label);
+        let out = height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        let steps: Vec<String> = base
+            .fillets
+            .iter()
+            .map(|f| {
+                format!(
+                    "Fillet {} {} at ({}, {}), r {} mm",
+                    f.history_index,
+                    f.feature,
+                    f.corner.corner_mm[0],
+                    f.corner.corner_mm[1],
+                    f.radius_mm
+                )
+            })
+            .collect();
+        assert!(painted(
+            &out,
+            &format!(
+                "History: Extrude {} -> {}. All 4 Fillets keep their edges and radii; only the \
+                 plate's height changes.",
+                base.feature,
+                steps.join(" -> ")
+            )
+        ));
+        for label in ["Save new file…", "Cancel"] {
+            let at = out
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text().starts_with(label) => {
+                        Some(t.visual_bounding_rect().center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("not painted: {label}"));
+            assert!(at.y > 0. && at.y < 768., "{label} at {at:?}");
+        }
+        type_height(&ctx, &mut e, &path, &reading, "6.75", "12.125");
+        height_click(&ctx, &mut e, &path, &reading, "Save new file…");
+        let request = e.request(PathBuf::from("ui.fcad")).expect("valid request");
+        assert_eq!(request.feature, base.feature);
+        assert_eq!(request.distance_mm, 12.125);
     }
 }

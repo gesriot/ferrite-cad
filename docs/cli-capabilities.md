@@ -274,9 +274,9 @@ Discovery предлагает три оставшихся угла и исто�
 Fillet 2 — payload v2 с `feature.fillet.sequential.v1`; восемь новых имён
 включают `origin_fillet_face` — цилиндр первого Fillet в конечном Body.
 Исходник, Sketch, первая фича и прежние UUID/refs сохраняются. Старый reader
-отказывает новой семантике безопасно. Третий Fillet, повтор того же угла,
-и касание дуг пока недоступны; радиусы — §28H, высота — §28I, координаты
-Sketch — §28J, ограничения Sketch — §28K.
+отказывает новой семантике безопасно. Третий и четвёртый Fillet добавляет
+§28L; повтор того же угла и касание дуг недоступны; радиусы — §28H, высота —
+§28I, координаты Sketch — §28J, ограничения Sketch — §28K.
 [Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
 
 §28H: прежний `edit-fillet-radius` с тем же request v1, envelope и exit 0/2/7
@@ -356,6 +356,24 @@ rebuild тем же `evaluable_fillet`, что и раньше (стороны, 
 `second_fillet` (`null` при одном Fillet); `constraint_edit.available` —
 `true` для этого класса.
 [Контракт §28K и исполняемый рецепт](edit-two-fillet-base-constraints.md).
+
+§28L: те же `fillet-edge-copy`, `edit-fillet-radius`, `edit-extrude`,
+`edit-sketch-copy` и `edit-sketch-constraints-copy` (request v1, envelope,
+exit 0/2/7 — прежние) работают на истории Extrude → Fillet 1 → … → Fillet *n* →
+Body tip, *n* от 0 до 4: третий и четвёртый разные угол прямоугольной плиты —
+отдельные настоящие Fillet на результате предшественника; угол округляется один
+раз, пятый, ветвление и чужой предшественник — типизированный `unsupported`.
+Радиус любого Fillet ограничен **каждым** соседом по общей Line в порядке
+истории (последний Fillet замыкает пару с первым): предложенный максимум
+принимается, ближайший больший float отказывает; противоположные углы друг
+друга не ограничивают. Новый payload, capability и версия архива не нужны —
+Fillet 3 и 4 хранятся как Fillet 2; предыдущая сборка открывает документ и
+отказывает в rebuild/правках типизированно. JSON v1 аддитивно:
+`fillets[].radius_edit.neighbours` (все прочие Fillet), `fillet_history` на
+строках базового Extrude, Sketch и в контексте редактора ограничений; прежние
+`radius_edit.neighbour` (только для ровно двух) и `fillet_base` (для одного
+или двух) для трёх и четырёх — `null`.
+[Контракт §28L и исполняемый рецепт](rectangular-fillet-history.md).
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`

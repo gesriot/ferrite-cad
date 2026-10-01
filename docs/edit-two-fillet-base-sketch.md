@@ -112,7 +112,7 @@ hits.
 
 ### Out of scope
 
-A third Fillet, arbitrary edges, Cut with Fillet, Chamfer, reselecting a corner, in-place
+A third Fillet (§28L now supports a third and a fourth), arbitrary edges, Cut with Fillet, Chamfer, reselecting a corner, in-place
 Save.
 
 ## Recipe: inspect -> exact UUIDs -> move and resize -> the bound -> height and radius after -> refusals

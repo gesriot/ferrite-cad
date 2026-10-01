@@ -1402,29 +1402,45 @@ impl Editor {
                     None => "Part with a bore: every point stays at X > 0.".to_owned(),
                 });
             }
-            if let (Some(first), Some(second)) = (&choice.fillet, &choice.second_fillet) {
-                // §28J: both Fillets in history order; the second rounds the
-                // first one's result and both keep their corners and radii.
-                let [a1, b1] = first.edge.joint.segments();
-                let [a2, b2] = second.edge.joint.segments();
-                ui.label(format!(
-                    "History: Extrude -> Fillet 1 {} at the corner of Lines {} | {}, r {} mm -> \
-                     Fillet 2 {} at the corner of Lines {} | {}, r {} mm. Both Fillets keep \
-                     their corners and radii: every Line keeps its side, no side may be shorter \
-                     than {} mm (Fillet 1) or {} mm (Fillet 2), and Lines shared by adjacent \
-                     corners must leave a flat between the arcs.",
-                    first.feature,
-                    a1,
-                    b1,
-                    first.radius_mm,
-                    second.feature,
-                    a2,
-                    b2,
-                    second.radius_mm,
-                    first.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION,
-                    second.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
+            if let [_, _, ..] = choice.fillets.as_slice() {
+                // §28J/§28L: every Fillet in history order; each rounds the
+                // result of the one before it, and all keep their corners and
+                // radii.
+                let all = &choice.fillets;
+                egui::ScrollArea::vertical()
+                    .id_salt("fillet-history-note")
+                    .max_height(96.)
+                    .show(ui, |ui| {
+                        ui.label(format!(
+                    "History: Extrude -> {}. {} Fillets keep their corners and radii: every Line \
+                     keeps its side, no side may be shorter than {}, and Lines shared by \
+                     adjacent corners must leave a flat between the arcs.",
+                    all.iter()
+                        .map(|f| {
+                            let [a, b] = f.edge.joint.segments();
+                            format!(
+                                "Fillet {} {} at the corner of Lines {a} | {b}, r {} mm",
+                                f.history_index, f.feature, f.radius_mm
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" -> "),
+                    if all.len() == 2 {
+                        "Both".to_owned()
+                    } else {
+                        format!("All {}", all.len())
+                    },
+                    all.iter()
+                        .map(|f| format!(
+                            "{} mm (Fillet {})",
+                            f.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION,
+                            f.history_index
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(" or ")
                 ));
-            } else if let Some(fillet) = &choice.fillet {
+                    });
+            } else if let Some(fillet) = choice.fillet() {
                 ui.label(format!(
                     "Rounded by Fillet {} at the corner of Lines {} | {}, r {} mm. The Fillet \
                      keeps its corner and radius: every Line keeps its side, and no side \
@@ -5514,8 +5530,8 @@ mod tests {
         let (_root, path, reading) = crate::fillets::tests::rounded_twice(3.0, 3.0);
         let choice = reading.sketches[0].clone();
         let (first, second) = (
-            choice.fillet.clone().expect("Fillet 1 as context"),
-            choice.second_fillet.clone().expect("Fillet 2 as context"),
+            choice.fillet().cloned().expect("Fillet 1 as context"),
+            choice.fillets.get(1).cloned().expect("Fillet 2 as context"),
         );
         assert_eq!(second.previous, first.feature, "Fillet 2 rounds Fillet 1");
         let mut e = Editor::default();
@@ -5690,7 +5706,7 @@ mod tests {
     fn fillet_base_sketch_widgets_show_the_corner_and_keep_the_draft() {
         let (_root, path, reading) = crate::fillets::tests::rounded(2.375);
         let choice = reading.sketches[0].clone();
-        let fillet = choice.fillet.clone().expect("the Fillet as context");
+        let fillet = choice.fillet().cloned().expect("the Fillet as context");
         let mut e = Editor::default();
         assert!(e.begin_edit(&path, &reading, choice.sketch));
         let ctx = egui::Context::default();
@@ -6020,7 +6036,7 @@ mod tests {
             saved_ids
         );
         assert_eq!(request.vertices, identity.0.vertices);
-        assert_eq!(kept_choice.fillet, choice.fillet);
+        assert_eq!(kept_choice.fillets, choice.fillets);
         let built = e.edit_request().expect("the snapshot is editable");
         assert_eq!(built.source, path);
         assert_eq!(built.expected, reading.version);
@@ -6473,6 +6489,64 @@ mod tests {
         let out = document_frame(&ctx, &mut e, &path, &reading, vec![]);
         assert!(painted(&out, "Cancel cut draft"));
         assert!(!painted(&out, "Restore saved vertices"));
+    }
+
+    /// §28L, kernel-free: the existing Sketch editor opens the base of a plate
+    /// rounded four times, names every Fillet in history order, refuses a
+    /// rectangle whose adjacent arcs — the first and the fourth are the pair —
+    /// would leave no flat, and keeps Save on the screen.
+    #[test]
+    fn four_fillet_base_sketch_widgets_name_every_fillet_and_keep_save_in_reach() {
+        let (_root, path, reading) = crate::fillets::tests::rounded_n(&[
+            ([33., 3.25], 2.375),
+            ([-4.5, 15.5], 3.0625),
+            ([-4.5, 3.25], 1.5),
+            ([33., 15.5], 6.0),
+        ]);
+        let choice = reading.sketches[0].clone();
+        assert_eq!(choice.refusal, None);
+        assert_eq!(choice.fillets.len(), 4);
+        let mut e = Editor::default();
+        assert!(e.begin_edit(&path, &reading, choice.sketch));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        for f in &choice.fillets {
+            assert!(
+                painted(&out, &format!("Fillet {} {}", f.history_index, f.feature)),
+                "{}",
+                f.history_index
+            );
+        }
+        assert!(painted(&out, "All 4 Fillets keep their corners and radii"));
+        assert!(painted(
+            &out,
+            "no side may be shorter than 4.75 mm (Fillet 1) or 6.125 mm (Fillet 2) or 3 mm (Fillet 3) or 12 mm (Fillet 4)"
+        ));
+        let save = text_at(&out, "Save edited copy…");
+        assert!(save.y > 0. && save.y < 768., "Save at {save:?}");
+        assert!(
+            ctx.globally_used_rect().max.y <= 768.,
+            "{:?}",
+            ctx.globally_used_rect()
+        );
+        // 6 mm deep: the first and the fourth (2.375 + 6 > 6) leave no flat,
+        // and the fourth alone needs 12 mm; refused naming a Fillet.
+        replace_field(&ctx, &mut e, "15.5", "9.255");
+        replace_field(&ctx, &mut e, "15.5", "9.255");
+        let error = e.edit_request().expect_err("too small");
+        assert!(
+            error.to_string().contains("too large") || error.to_string().contains("flat"),
+            "{error}"
+        );
+        assert!(
+            choice
+                .fillets
+                .iter()
+                .any(|f| error.to_string().contains(&f.feature.to_string()))
+                || error.to_string().contains("too large"),
+            "{error}"
+        );
     }
 }
 

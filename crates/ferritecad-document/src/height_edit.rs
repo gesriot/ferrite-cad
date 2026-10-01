@@ -154,12 +154,10 @@ impl ExtrudeChoice {
 pub struct PreparedExtrudeHeight {
     pub(crate) feature: ObjectRecord,
     pub(crate) history: Option<BaseHeightContext>,
-    /// §28C: the saved Fillet over this plate, exactly as the radius edit
-    /// reads it. It keeps its row; only the plate under it changes.
-    pub(crate) fillet: Option<crate::SavedFillet>,
-    /// §28I: the second Fillet of a §28G history, which rounds `fillet`'s
-    /// result rather than the plate; kept as it is, like `fillet`.
-    pub(crate) second_fillet: Option<crate::SavedFillet>,
+    /// §28C/§28L: the saved Fillets over this plate in history order, exactly
+    /// as the radius edit reads them. They keep their rows; only the plate
+    /// under them changes.
+    pub(crate) fillets: Vec<crate::SavedFillet>,
     pub(crate) added_references: Vec<TopologyRef>,
     // Covers current tool data, refs and SQL facts even if the selected row did
     // not change. A backup keeps this version; any intervening edit does not.
@@ -172,12 +170,13 @@ impl PreparedExtrudeHeight {
     pub fn history(&self) -> Option<&BaseHeightContext> {
         self.history.as_ref()
     }
-    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
-        self.fillet.as_ref()
+    /// The Fillets the height edit keeps, in history order.
+    pub fn fillets(&self) -> &[crate::SavedFillet] {
+        &self.fillets
     }
-    /// §28I: the Fillet that rounds [`Self::fillet`]'s result, if any.
-    pub fn second_fillet(&self) -> Option<&crate::SavedFillet> {
-        self.second_fillet.as_ref()
+    /// The first Fillet, which rounds the plate.
+    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
+        self.fillets.first()
     }
     pub fn added_references(&self) -> &[TopologyRef] {
         &self.added_references
@@ -199,15 +198,15 @@ pub fn prepare_extrude_height(
             CadError::input(format!("feature {feature} does not exist in this document"))
         })?;
     crate::editable_extrude(document, &record)?;
-    let (history, fillet, second_fillet) = if !has_history(document, &objects)? {
-        (None, None, None)
+    let (history, fillets) = if !has_history(document, &objects)? {
+        (None, Vec::new())
     } else if let Some(over) = crate::fillet_radius::fillets_over_plate(document, &objects)? {
         // §28C: the plate under the one saved Fillet, through the frame the
         // radius edit reads; §28I: or under both Fillets of a §28G history,
         // through the reader the radius edit uses for two. The Fillets add no
         // bound on the height: OCCT rounds a vertical edge at any height the
         // plate can have that it can round at all, and refuses the rest itself.
-        let saved = over.first;
+        let saved = over.first();
         if saved.previous != feature {
             return Err(CadError::unsupported(format!(
                 "select the base Extrude {} under Fillet {}; only the rounded plate's height \
@@ -215,7 +214,7 @@ pub fn prepare_extrude_height(
                 saved.previous, saved.feature
             )));
         }
-        (None, Some(saved), over.second)
+        (None, over.fillets)
     } else {
         let history = crate::cut_edit::saved_history(document, &objects)?;
         if history.target.base_feature != feature || history.target.tools.is_empty() {
@@ -225,7 +224,7 @@ pub fn prepare_extrude_height(
         }
         let context = history.height_context();
         context.validate_height(height_mm)?;
-        (Some(context), None, None)
+        (Some(context), Vec::new())
     };
     let ObjectPayload::Extrude(extrude) = &mut record.payload else {
         unreachable!("checked extrusion")
@@ -240,8 +239,7 @@ pub fn prepare_extrude_height(
     Ok(PreparedExtrudeHeight {
         feature: record,
         history,
-        fillet,
-        second_fillet,
+        fillets,
         added_references,
         source_version: document.content_version()?,
     })

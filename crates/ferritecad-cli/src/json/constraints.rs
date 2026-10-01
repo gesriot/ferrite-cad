@@ -179,6 +179,10 @@ pub(crate) struct Discovery {
     /// part's: whether the radius fits the solved plate is checked when a copy
     /// is rebuilt.
     fillet_base: Option<FilletContext>,
+    /// §28L, additive: every saved Fillet over the plate in history order,
+    /// one to four, when this is its base Sketch; `null` on every other row.
+    /// `fillet_base` is `null` for three or four.
+    fillet_history: Option<super::FilletHistoryDiscovery>,
 }
 /// The Fillet a constraint edit of its base Sketch keeps (§28E).
 #[derive(Serialize)]
@@ -194,6 +198,35 @@ struct FilletContext {
     second_fillet: Option<SecondFilletContext>,
 }
 /// §28K: Fillet 2 of Extrude -> Fillet 1 -> Fillet 2, as a constraint edit keeps it.
+impl FilletContext {
+    /// The older projection of a history of one or two Fillets (§28E, §28K).
+    fn of(
+        f: &ferritecad_document::SavedFillet,
+        second: Option<&ferritecad_document::SavedFillet>,
+    ) -> Self {
+        Self {
+            fillet_feature_id: f.feature,
+            body_id: f.body,
+            edge: super::FilletEdgeDto {
+                feature_id: f.edge.feature,
+                joint: f.edge.joint.segments(),
+            },
+            radius_mm: f.radius_mm,
+            stored_corner_mm: f.corner.corner_mm,
+            second_fillet: second.map(|s| SecondFilletContext {
+                fillet_feature_id: s.feature,
+                previous_feature_id: s.previous,
+                history_index: s.history_index,
+                edge: super::FilletEdgeDto {
+                    feature_id: s.edge.feature,
+                    joint: s.edge.joint.segments(),
+                },
+                radius_mm: s.radius_mm,
+                stored_corner_mm: s.corner.corner_mm,
+            }),
+        }
+    }
+}
 #[derive(Serialize)]
 struct SecondFilletContext {
     fillet_feature_id: ObjectId,
@@ -254,27 +287,12 @@ impl Discovery {
                 .as_ref()
                 .map(|s| s.constraints.iter().map(Constraint::from).collect()),
             profile_feature: choice.profile_use.map(super::ProfileFeature::of),
-            fillet_base: choice.fillet.as_ref().map(|f| FilletContext {
-                fillet_feature_id: f.feature,
-                body_id: f.body,
-                edge: super::FilletEdgeDto {
-                    feature_id: f.edge.feature,
-                    joint: f.edge.joint.segments(),
-                },
-                radius_mm: f.radius_mm,
-                stored_corner_mm: f.corner.corner_mm,
-                second_fillet: choice.second_fillet.as_ref().map(|s| SecondFilletContext {
-                    fillet_feature_id: s.feature,
-                    previous_feature_id: s.previous,
-                    history_index: s.history_index,
-                    edge: super::FilletEdgeDto {
-                        feature_id: s.edge.feature,
-                        joint: s.edge.joint.segments(),
-                    },
-                    radius_mm: s.radius_mm,
-                    stored_corner_mm: s.corner.corner_mm,
-                }),
-            }),
+            fillet_base: match choice.fillets.as_slice() {
+                [one] => Some(FilletContext::of(one, None)),
+                [one, two] => Some(FilletContext::of(one, Some(two))),
+                _ => None,
+            },
+            fillet_history: super::FilletHistoryDiscovery::of(&choice.fillets),
         }
     }
 }

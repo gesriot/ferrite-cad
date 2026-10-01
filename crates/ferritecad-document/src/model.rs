@@ -1275,8 +1275,8 @@ impl Fillet {
     ///
     /// A Fillet that rounds its own predecessor's edge is the §28A v1 feature.
     /// One whose edge was swept by an earlier feature than the one it rounds
-    /// (§28G: the second Fillet, rounding the first one's result at a corner
-    /// of the plate) is v2: a v1 reader would take that edge as belonging to
+    /// (§28G/§28L: the second, third or fourth Fillet, rounding the previous
+    /// Fillet's result at a corner of the plate) is v2: a v1 reader would take that edge as belonging to
     /// the feature it rounds.
     pub fn schema_version(&self) -> u32 {
         if self.edge.feature == self.previous {

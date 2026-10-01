@@ -21,13 +21,19 @@ pub struct ExtrudeChoice {
     pub name: Option<String>,
     pub distance_mm: Option<f64>,
     pub cut_history: Option<crate::BaseHeightContext>,
-    /// §28C: the saved Fillet over this plate, when this is the base Extrude
-    /// under it and the frame holds. Context, not a Cut history.
-    pub fillet: Option<crate::SavedFillet>,
-    /// §28I: the second Fillet of a §28G history over this plate. It rounds
-    /// `fillet`'s result, not this Extrude; `None` for a plate with one.
-    pub second_fillet: Option<crate::SavedFillet>,
+    /// §28C/§28L: the saved Fillets over this plate, in history order, when
+    /// this is the base Extrude under them and the frame holds; empty
+    /// otherwise. The first rounds this Extrude and each later one rounds the
+    /// result of the one before. Context, not a Cut history.
+    pub fillets: Vec<crate::SavedFillet>,
     pub refusal: Option<String>,
+}
+
+impl ExtrudeChoice {
+    /// The first Fillet, the one that rounds this Extrude (§28C).
+    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
+        self.fillets.first()
+    }
 }
 
 /// Facts carried alongside the accepted picture, never re-read by a form.
@@ -101,12 +107,9 @@ impl ExtrudeEditSource {
         } = crate::cut_edit::cut_catalog(document, &objects);
         // §28C: the one frame a filleted plate's height is edited in, read
         // once for every row from this same snapshot; §28I: or the history of
-        // two Fillets, through the radius edit's reader for two.
-        let (fillet, second) = match crate::fillet_radius::fillets_over_plate(document, &objects) {
-            Ok(Some(over)) => (Ok(Some(over.first)), over.second),
-            Ok(None) => (Ok(None), None),
-            Err(e) => (Err(e), None),
-        };
+        // up to four Fillets, through the one reader the radius edit uses.
+        let fillets = crate::fillet_radius::fillets_over_plate(document, &objects)
+            .map(|over| over.map(|o| o.fillets).unwrap_or_default());
         let features = objects
             .iter()
             .filter_map(|object| {
@@ -125,19 +128,12 @@ impl ExtrudeEditSource {
                     distance_mm,
                     cut_history: height.as_ref().ok().and_then(|h| h.as_ref())
                         .filter(|h| h.base_feature == object.id).cloned(),
-                    fillet: fillet
+                    fillets: fillets
                         .as_ref()
                         .ok()
-                        .and_then(Option::as_ref)
-                        .filter(|f| f.previous == object.id)
-                        .cloned(),
-                    second_fillet: second.clone().filter(|_| {
-                        fillet
-                            .as_ref()
-                            .ok()
-                            .and_then(Option::as_ref)
-                            .is_some_and(|f| f.previous == object.id)
-                    }),
+                        .filter(|f| f.first().is_some_and(|f| f.previous == object.id))
+                        .cloned()
+                        .unwrap_or_default(),
                     refusal: blind_literal_distance(object)
                         .map_err(|e| e.to_string())
                         .and_then(|distance| {
@@ -146,7 +142,7 @@ impl ExtrudeEditSource {
                                 .map_err(|e| e.to_string())
                         })
                         .and_then(|_| {
-                            if let Ok(Some(saved)) = &fillet {
+                            if let Some(saved) = fillets.as_ref().ok().and_then(|f| f.first()) {
                                 if saved.previous == object.id {
                                     return Ok(());
                                 }
@@ -181,7 +177,7 @@ impl ExtrudeEditSource {
             revolve_angles: crate::revolve_angle_choices(document, &objects),
             fillet_bodies: crate::fillet_choices(document, &objects),
             fillet_features: crate::fillet_radius_choices(document, &objects),
-            filleted: fillet
+            filleted: fillets
                 .err()
                 .map(|reason| crate::fillet::filleted_outside_frame(&objects, &reason).to_string()),
             refusal,
@@ -875,8 +871,7 @@ mod tests {
                 Some(ExtrudeChoice {
                     feature: object.id,
                     cut_history: None,
-                    fillet: None,
-                    second_fillet: None,
+                    fillets: Vec::new(),
                     name: object.name.clone(),
                     distance_mm,
                     refusal: editable_extrude(document, object)
