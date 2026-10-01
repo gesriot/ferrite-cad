@@ -2324,7 +2324,7 @@ jobs:
             chamfer::tests::a_dimensioned_plate_is_refused_with_the_constraint_named \
             chamfer::tests::the_evaluator_judges_the_chamfer_on_the_built_lines
           do
-            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --features planegcs -p ferritecad-document --lib "$gate" \
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-document.log
             if grep -q 'skipped:' chamfer-document.log || ! grep -Fq "test $gate ... " chamfer-document.log \
               || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-document.log; then exit 1; fi
