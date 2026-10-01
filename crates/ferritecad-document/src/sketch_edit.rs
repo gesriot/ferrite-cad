@@ -195,7 +195,7 @@ fn coordinate_choice(
                     feature: saved.previous,
                     height_mm: saved.height_mm,
                 };
-                // §28J: under two Fillets the Sketch may keep the closure
+                // §28J/§28L: under several Fillets the Sketch may keep the closure
                 // links §28E leaves; they name endpoints, and the loop stays
                 // exactly closed. Any other constraint is edited with the
                 // constraint editor (§28K) before its coordinates are.
@@ -273,10 +273,10 @@ fn unsupported(message: &str) -> CadError {
 /// own policy in the rebuild. Any other Sketch of a filleted part, and a
 /// Fillet outside that frame, are refused naming the Fillet.
 ///
-/// §28K: the §28G history of two Fillets is read by the reader the radius,
-/// height and coordinate edits use for two (`fillets_over_plate`); both
-/// Fillets come back in history order, and their radii and pair are judged on
-/// the solved Lines by the rebuild, as for one.
+/// §28K/§28L: the history of up to four Fillets is read by the reader the
+/// radius, height and coordinate edits use (`fillets_over_plate`); every Fillet
+/// comes back in history order, and their radii and every adjacent pair are
+/// judged on the solved Lines by the rebuild, as for one.
 pub(crate) fn constraint_frame<'a>(
     document: &Document,
     objects: &'a [ObjectRecord],

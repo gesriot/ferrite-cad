@@ -148,8 +148,9 @@ struct FilletRadiusEditDiscovery {
     refusal: Option<String>,
     document_refusal: Option<String>,
     min_radius_mm: f64,
-    /// §28H: for an unconstrained two-Fillet plate also the pair bound
-    /// beside an adjacent Fillet, by the check's own predicate.
+    /// §28H/§28L: for an unconstrained plate rounded more than once also the
+    /// pair bound beside **every** adjacent Fillet, earlier or later, by the
+    /// check's own predicate: the minimum of them all.
     max_radius_mm: Option<f64>,
     /// §28H, additive: the other Fillet of a history of **exactly two**
     /// Fillets, as saved. `null` for one Fillet and for three or four, whose
@@ -1260,7 +1261,7 @@ struct FilletBaseDiscovery {
     /// §28E, additive: whether the base Sketch carries constraints; then
     /// `corner_mm` is in the stored coordinates, not the solved part's.
     profile_constrained: bool,
-    /// §28I, additive: the second Fillet of a §28G history, which rounds this
+    /// §28I, additive: the second Fillet of a history of exactly two (§28G), which rounds this
     /// Fillet's result (not the base Extrude) and which the height edit also
     /// keeps; `null` for a plate with one Fillet. §28J: the base Sketch's `sketches[]`
     /// row carries it too.

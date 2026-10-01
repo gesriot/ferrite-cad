@@ -107,7 +107,7 @@ impl ExtrudeEditSource {
         } = crate::cut_edit::cut_catalog(document, &objects);
         // §28C: the one frame a filleted plate's height is edited in, read
         // once for every row from this same snapshot; §28I: or the history of
-        // two Fillets, through the radius edit's reader for two.
+        // up to four Fillets, through the one reader the radius edit uses.
         let fillets = crate::fillet_radius::fillets_over_plate(document, &objects)
             .map(|over| over.map(|o| o.fillets).unwrap_or_default());
         let features = objects

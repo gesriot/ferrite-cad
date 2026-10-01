@@ -109,7 +109,7 @@ impl FilletCorner {
     }
 }
 
-/// §28G: whether two Fillets at `first` and `second` of one plate leave the
+/// §28G/§28L: whether two Fillets at `first` and `second` of one plate leave the
 /// Line they share a flat of at least [`MIN_RADIUS_MM`].
 ///
 /// Measured on Open CASCADE 8.0.1: two arcs that meet (`r1 + r2` equal to the
@@ -130,7 +130,7 @@ pub fn check_pair(
 ) -> Result<()> {
     if first.joint == second.joint {
         return Err(CadError::input(format!(
-            "corner {} is already rounded; a second Fillet rounds another corner",
+            "corner {} is already rounded; another Fillet rounds another corner",
             second.joint
         )));
     }
@@ -465,7 +465,7 @@ impl SavedFilletTarget {
     pub fn corner_for(&self, edge: FilletEdge) -> Result<FilletCorner> {
         if let Some(existing) = self.fillets.iter().find(|f| f.edge == edge) {
             return Err(CadError::input(format!(
-                "corner {} is already rounded by Fillet {}; a second Fillet rounds another \
+                "corner {} is already rounded by Fillet {}; another Fillet rounds another \
                  corner",
                 edge.joint, existing.feature
             )));
@@ -534,9 +534,9 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
         "this Body ends in Fillet {} (§28A); only its radius (edit-fillet-radius, §28B), the \
          rounded plate's height (edit-extrude, §28C), its base Sketch's coordinates \
          (edit-sketch-copy, §28D) and that Sketch's Line constraints \
-         (edit-sketch-constraints-copy, §28E) can be edited, and a second Fillet added on \
-         another corner (fillet-edge-copy, §28G). Editing the rest of a filleted part, and \
-         adding a Cut after a Fillet, are not supported yet",
+         (edit-sketch-constraints-copy, §28E) can be edited, and another Fillet added on \
+         another corner (fillet-edge-copy, §28G, up to four, §28L). Editing the rest of a \
+         filleted part, and adding a Cut after a Fillet, are not supported yet",
         tip.id
     )))
 }
@@ -1626,8 +1626,8 @@ mod tests {
 
     /// §28G: a second Fillet rounds the first one's result at another corner,
     /// named by the base; the writer re-derives it; the pair policy is one
-    /// rule for discovery, preparation and the evaluator; a third Fillet and
-    /// every editor of a two-Fillet history refuse by name.
+    /// rule for discovery, preparation and the evaluator; a third Fillet is
+    /// offered (§28L) and a plate with every corner rounded refuses by name.
     #[test]
     fn a_second_fillet_is_written_on_the_first_and_a_third_is_offered() {
         let (_root, mut d, body) = plate(PLATE);

@@ -106,7 +106,7 @@ struct Published {
     previous_radius_mm: f64,
     radius_mm: f64,
     /// §28H, additive: the feature the edited Fillet rounds and its place in
-    /// the history (1 or 2), both unchanged.
+    /// the history (1 to 4), both unchanged.
     previous_feature_id: ObjectId,
     history_index: usize,
 }
