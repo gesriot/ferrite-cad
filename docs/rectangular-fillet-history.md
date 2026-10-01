@@ -161,7 +161,7 @@ successful copy opens asynchronously.
 
 ## Out of scope
 
-Chamfer, Cut with Fillet, arbitrary edges, a Fillet of a Fillet's edge, a
+Chamfer (§29A adds one Chamfer on a plate with nothing else over it), Cut with Fillet, arbitrary edges, a Fillet of a Fillet's edge, a
 profile other than the rectangle, new constraint kinds, in-place Save, live
 preview, a window run from the cloud.
 

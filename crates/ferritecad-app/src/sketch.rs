@@ -127,6 +127,10 @@ pub(crate) struct Editor {
     /// §28A: the single-edge fillet form, beside the cut one for the same
     /// reason: it adds to a Body's history and reads its own catalogue.
     pub(crate) fillets: crate::fillets::Editor,
+    /// §29A: the single-edge chamfer forms, beside the fillet one for the same
+    /// reason: they add to a Body's history (or change its one number) and read
+    /// their own catalogue.
+    pub(crate) chamfers: crate::chamfers::Editor,
     draft: Option<State>,
     undo: Vec<State>,
     redo: Vec<State>,
@@ -188,6 +192,7 @@ impl Editor {
             || self.constraints.active()
             || self.cuts.active()
             || self.fillets.active()
+            || self.chamfers.active()
     }
     pub(crate) fn dismiss(&mut self) {
         *self = Self::default();
@@ -286,6 +291,14 @@ impl Editor {
         &mut self,
     ) -> Option<ferritecad_jobs::EditFilletRadiusRequest> {
         self.fillets.take_radius_request()
+    }
+    pub(crate) fn take_chamfer_request(&mut self) -> Option<ferritecad_jobs::EdgeChamferRequest> {
+        self.chamfers.take_request()
+    }
+    pub(crate) fn take_chamfer_distance_request(
+        &mut self,
+    ) -> Option<ferritecad_jobs::EditChamferDistanceRequest> {
+        self.chamfers.take_distance_request()
     }
     /// Begin editing one saved pair of concentric circles of the accepted scene.
     ///
@@ -562,6 +575,7 @@ impl Editor {
             self.constraints.choices(ui, can_begin, path, source);
             self.cuts.choices(ui, can_begin, path, source);
             self.fillets.choices(ui, can_begin, path, source);
+            self.chamfers.choices(ui, can_begin, path, source);
         }
         if self.active() {
             return;
@@ -870,6 +884,10 @@ impl Editor {
         }
         if self.fillets.active() {
             self.fillets.draw(ui, running);
+            return;
+        }
+        if self.chamfers.active() {
+            self.chamfers.draw(ui, running);
             return;
         }
         if !self.active() {

@@ -189,6 +189,13 @@ pub const FEATURE_REVOLVE_PARTIAL_CAPABILITY: &str = "feature.revolve.partial.v1
 /// reader, which is what earns the name.
 pub const FEATURE_FILLET_CAPABILITY: &str = "feature.fillet.v1";
 
+/// The capability a [`Chamfer`] and the name it raises depend on (§29A).
+///
+/// A new kind of feature, so its own capability: a build that predates it keeps
+/// a `feature.chamfer` object verbatim, cannot build a Body whose tip it is, and
+/// opens the document read-only instead of showing a plate without its Chamfer.
+pub const FEATURE_CHAMFER_CAPABILITY: &str = "feature.chamfer.v1";
+
 /// The capability a [`Fillet`] built on another Fillet depends on (§28G), and
 /// the name that carries the earlier Fillet's face into it
 /// ([`SemanticRole::OriginFilletFace`]).
@@ -239,6 +246,9 @@ pub enum ObjectKind {
     Revolve,
     /// One edge of an earlier feature's result, rounded (§28A).
     Fillet,
+    /// One edge of an earlier feature's result, cut away at equal distances
+    /// along its two faces (§29A).
+    Chamfer,
 }
 
 impl ObjectKind {
@@ -253,6 +263,7 @@ impl ObjectKind {
             Self::ImportedStep => "exchange.step.imported",
             Self::Revolve => "feature.revolve",
             Self::Fillet => "feature.fillet",
+            Self::Chamfer => "feature.chamfer",
         }
     }
 
@@ -268,6 +279,7 @@ impl ObjectKind {
             "exchange.step.imported" => Some(Self::ImportedStep),
             "feature.revolve" => Some(Self::Revolve),
             "feature.fillet" => Some(Self::Fillet),
+            "feature.chamfer" => Some(Self::Chamfer),
             _ => None,
         }
     }
@@ -335,6 +347,11 @@ impl ObjectKind {
                 FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
                 FEATURE_FILLET_CAPABILITY.to_owned(),
             ],
+            (Self::Chamfer, _) => vec![
+                CORE_CAPABILITY.to_owned(),
+                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
+                FEATURE_CHAMFER_CAPABILITY.to_owned(),
+            ],
             _ => vec![CORE_CAPABILITY.to_owned()],
         }
     }
@@ -370,6 +387,11 @@ impl ObjectKind {
                 FEATURE_PREDECESSOR_CAPABILITY,
                 FEATURE_FILLET_CAPABILITY,
                 FEATURE_FILLET_SEQUENTIAL_CAPABILITY,
+            ],
+            Self::Chamfer => &[
+                CORE_CAPABILITY,
+                FEATURE_PREDECESSOR_CAPABILITY,
+                FEATURE_CHAMFER_CAPABILITY,
             ],
             _ => &[CORE_CAPABILITY],
         }
@@ -427,7 +449,10 @@ impl ObjectKind {
 
     /// Whether an object of this kind participates in the rebuild as a feature.
     pub fn is_feature(self) -> bool {
-        matches!(self, Self::Extrude | Self::Revolve | Self::Fillet)
+        matches!(
+            self,
+            Self::Extrude | Self::Revolve | Self::Fillet | Self::Chamfer
+        )
     }
 }
 
@@ -1240,7 +1265,9 @@ impl Revolve {
     }
 }
 
-/// The one edge a [`Fillet`] rounds, by what it means.
+/// The one edge a [`Fillet`] rounds or a [`Chamfer`] cuts, by what it means
+/// (§29A: the neutral name of what §28A called `FilletEdge`; the fields, and so
+/// the stored and wire form of a Fillet, are unchanged).
 ///
 /// The feature that made the edge and the corner of that feature's profile it
 /// was swept from: the same unordered pair of Line UUIDs
@@ -1249,11 +1276,51 @@ impl Revolve {
 /// the producer's output or refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FilletEdge {
+pub struct SweptEdge {
     /// The feature whose output the edge belongs to.
     pub feature: ObjectId,
     /// The profile corner the edge was swept from.
     pub joint: ProfileJoint,
+}
+
+/// The edge a [`Fillet`] rounds; see [`SweptEdge`].
+pub type FilletEdge = SweptEdge;
+
+/// Cuts one edge of an earlier feature's result away, at one equal distance
+/// along both adjacent faces (§29A).
+///
+/// Modifies a result, so it names the feature it consumes (ADR 0004). The
+/// distance is one literal constant in millimetres and is **not** the width of
+/// the slanted face, which is `distance_mm * sqrt(2)`. In this slice the edge
+/// is swept by the very feature the Chamfer consumes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Chamfer {
+    /// The feature whose result this cuts.
+    pub previous: ObjectId,
+    pub edge: SweptEdge,
+    pub distance_mm: f64,
+}
+
+impl Chamfer {
+    /// The cache key for this feature's own statement; the caller adds the
+    /// predecessor's key and the kernel identity.
+    pub fn cache_key(&self, tolerance: ferritecad_types::Tolerance) -> ContentHash {
+        let mut hasher = CanonicalHasher::new("feature.chamfer");
+        hasher.algorithm_version(1);
+        tolerance.feed(&mut hasher);
+        hasher.field("previous").bytes(&self.previous.to_bytes());
+        let [one, other] = self.edge.joint.segments();
+        hasher
+            .field("edge")
+            .bytes(&self.edge.feature.to_bytes())
+            .bytes(&one.to_bytes())
+            .bytes(&other.to_bytes());
+        hasher
+            .field("distance_mm")
+            .bytes(&self.distance_mm.to_bits().to_le_bytes());
+        hasher.finish()
+    }
 }
 
 /// Rounds one edge of an earlier feature's result (§28A).
@@ -1525,6 +1592,17 @@ pub enum SemanticRole {
         edge_feature: ObjectId,
         joint: ProfileJoint,
     },
+    /// §29A: the planar face the reference's producer — a [`Chamfer`] — made by
+    /// cutting the edge `edge_feature` swept at `joint`.
+    ///
+    /// Its own role, not [`SemanticRole::EdgeFilletFace`]: a plane and a
+    /// cylinder are different meanings and neither may resolve against the
+    /// other's feature. Answered only from the chamfer's own history, never
+    /// from geometry.
+    EdgeChamferFace {
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    },
     /// The cap an earlier feature made, as the feature naming it leaves it.
     ///
     /// Its own role rather than [`SemanticRole::ExtrudeCap`] reused under a
@@ -1775,6 +1853,17 @@ impl TopologyRef {
                 let [one, other] = joint.segments();
                 hasher
                     .str("edge_fillet_face")
+                    .bytes(&edge_feature.to_bytes())
+                    .bytes(&one.to_bytes())
+                    .bytes(&other.to_bytes());
+            }
+            SemanticRole::EdgeChamferFace {
+                edge_feature,
+                joint,
+            } => {
+                let [one, other] = joint.segments();
+                hasher
+                    .str("edge_chamfer_face")
                     .bytes(&edge_feature.to_bytes())
                     .bytes(&one.to_bytes())
                     .bytes(&other.to_bytes());
@@ -2043,6 +2132,8 @@ pub enum ObjectPayload {
     Revolve(Revolve),
     /// One rounded edge of an earlier result (§28A).
     Fillet(Fillet),
+    /// One cut edge of an earlier result (§29A).
+    Chamfer(Chamfer),
     /// A STEP file and the scene one reading of it produced.
     ImportedStep(ImportedStep),
     /// An object of a type this build does not implement, preserved verbatim.
@@ -2061,6 +2152,7 @@ impl ObjectPayload {
             Self::Extrude(_) => ObjectKind::Extrude.as_str(),
             Self::Revolve(_) => ObjectKind::Revolve.as_str(),
             Self::Fillet(_) => ObjectKind::Fillet.as_str(),
+            Self::Chamfer(_) => ObjectKind::Chamfer.as_str(),
             Self::ImportedStep(_) => ObjectKind::ImportedStep.as_str(),
             Self::Unknown(unknown) => &unknown.type_name,
         }
@@ -2120,6 +2212,7 @@ impl ObjectPayload {
             Self::Extrude(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Revolve(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Fillet(v) => Envelope::encode(name, version, capabilities, v)?,
+            Self::Chamfer(v) => Envelope::encode(name, version, capabilities, v)?,
             // Written back at the layout it was read at. A version 1 scene
             // has no keys and a version 2 scene has no placement identities,
             // and inventing either while writing would turn a document that
@@ -2200,6 +2293,7 @@ impl ObjectPayload {
                 Self::Revolve(revolve)
             }
             ObjectKind::Fillet => Self::Fillet(envelope.decode()?),
+            ObjectKind::Chamfer => Self::Chamfer(envelope.decode()?),
             ObjectKind::ImportedStep => Self::ImportedStep(match envelope.schema_version {
                 1 => {
                     let stored: StoredImport<LegacyScene> = envelope.decode()?;
@@ -2338,6 +2432,24 @@ impl ObjectPayload {
                 }
                 Ok(())
             }
+            // One finite positive distance, at the feature's own bounds;
+            // whether it fits the part is `chamfer::ChamferCorner::check_distance`,
+            // asked again by the evaluator. The edge is the previous
+            // feature's own.
+            Self::Chamfer(chamfer) => {
+                let distance = normalize_f64(chamfer.distance_mm)?;
+                if distance <= 0.0 {
+                    return Err(CadError::input(format!(
+                        "a chamfer distance must be positive, found {distance} mm"
+                    )));
+                }
+                if chamfer.edge.feature != chamfer.previous {
+                    return Err(CadError::unsupported(
+                        "this build chamfers an edge of the feature a Chamfer consumes",
+                    ));
+                }
+                Ok(())
+            }
             Self::ImportedStep(imported) => imported.validate(),
             Self::Unknown(_) => Ok(()),
         }
@@ -2352,6 +2464,7 @@ impl ObjectPayload {
         match self {
             Self::Extrude(extrude) => extrude.previous,
             Self::Fillet(fillet) => Some(fillet.previous),
+            Self::Chamfer(chamfer) => Some(chamfer.previous),
             _ => None,
         }
     }

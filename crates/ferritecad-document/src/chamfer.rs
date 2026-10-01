@@ -1,0 +1,1431 @@
+// SPDX-License-Identifier: MIT
+//! Cutting one vertical edge of a saved rectangular plate away at equal
+//! distances, in a new copy (§29A), and changing that distance in another.
+//!
+//! The same history model a Fillet uses (ADR 0004): the new Chamfer names the
+//! feature whose result it cuts, the Body names its tip, and ownership is
+//! derived. The class is the plate the Fillet reads through
+//! [`crate::cut_edit::saved_plate_for_fillet`], with no Cut, no Fillet and no
+//! other Chamfer, and a Sketch that carries no constraint or only the four
+//! Coincident closure links — the Lines are then exactly the stored ones, so
+//! there is no solver and no "starting guess".
+//!
+//! The edge is chosen by what it means — the base Extrude and the corner of its
+//! profile, named by the unordered pair of the two Line UUIDs that meet there —
+//! never by an index or a position. The distance is judged by one measured
+//! policy ([`MIN_DISTANCE_MM`], [`MIN_FLAT_MM`], [`ChamferCorner::max_distance_mm`])
+//! applied by discovery, preparation, the writer's re-derivation and the
+//! evaluator alike. Nothing is clamped.
+//!
+//! The Chamfer's constants are its own. They were measured on Open CASCADE
+//! 8.0.1 for a chamfer, and are not the Fillet's radius bounds: the operation
+//! is analytic to 1.7e-16 relative at every distance it builds, so the lower
+//! bound is about what a mesh and a person can still see, and the upper one is
+//! about what is left of the two adjacent faces.
+use ferritecad_types::{CadError, ContentHash, ObjectId, ProfileJoint, Result, StableEntityId};
+
+use crate::cut_edit::NewObject;
+use crate::fillet::{FilletCorner, corner_for, corners_of_lines};
+use crate::{
+    Body, Chamfer, Dependency, DependencyRole, Document, ObjectPayload, ObjectRecord, SemanticRole,
+    Sketch, SketchConstraintRule, SweptEdge, TopologyRef,
+};
+
+fn unsupported(message: impl Into<String>) -> CadError {
+    CadError::unsupported(message)
+}
+
+/// The smallest distance this build cuts an edge at, in millimetres.
+///
+/// Measured on Open CASCADE 8.0.1: a chamfer builds, valid and analytic to
+/// 1.7e-16 relative, at every distance from 1e-7 mm up, and fails at 1e-9 mm.
+/// 0.001 mm is 10⁴ times the kernel's linear tolerance, four orders above the
+/// smallest distance the kernel builds, and leaves a flat 1.4 µm wide — hundreds
+/// of ulps of an f32 STL coordinate at 30 mm, so the face is still a face in an
+/// exported mesh. Chosen for that, never narrowed to make an example pass.
+pub const MIN_DISTANCE_MM: f64 = 0.001;
+
+/// How much of each adjacent face a chamfer must leave, in millimetres.
+///
+/// A chamfer of `d` leaves `len − d` of each of the two faces meeting at the
+/// edge. Open CASCADE builds up to `d = len − 1e-3` and fails at `d = len`
+/// (measured); a face of a few microns is a sliver nobody asked for. 0.01 mm
+/// is the smallest feature this build keeps (the Fillet's flat is the same).
+pub const MIN_FLAT_MM: f64 = 0.01;
+
+/// The largest distance at a corner whose two adjacent Lines have these
+/// lengths. The one expression discovery reports and every check applies, so
+/// the largest distance offered is exactly one that is accepted, and the next
+/// representable value above it is refused.
+pub fn max_distance_of(adjacent_lengths_mm: [f64; 2]) -> f64 {
+    adjacent_lengths_mm[0].min(adjacent_lengths_mm[1]) - MIN_FLAT_MM
+}
+
+/// The part of the policy that holds at every corner: a finite distance of at
+/// least [`MIN_DISTANCE_MM`]. The bound that depends on the corner is
+/// [`ChamferCorner::check_distance`].
+pub fn check_distance_value(distance_mm: f64) -> Result<()> {
+    if !distance_mm.is_finite() {
+        return Err(CadError::input(format!(
+            "a chamfer distance must be a finite number of millimetres, found {distance_mm}"
+        )));
+    }
+    if distance_mm < MIN_DISTANCE_MM {
+        return Err(CadError::input(format!(
+            "a chamfer distance must be at least {MIN_DISTANCE_MM} mm, found {distance_mm} mm"
+        )));
+    }
+    Ok(())
+}
+
+/// One vertical edge of the plate a Chamfer could cut.
+///
+/// `joint` is the identity. The rest are labels a person can read, recomputed
+/// from the profile every time; none of them names the edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChamferCorner {
+    /// The feature that swept the edge: the plate's base Extrude.
+    pub feature: ObjectId,
+    pub joint: ProfileJoint,
+    /// The corner of the profile the edge was swept from, in sketch mm.
+    pub corner_mm: [f64; 2],
+    /// The lengths of the two Lines meeting there, in the joint's canonical
+    /// order.
+    pub adjacent_lengths_mm: [f64; 2],
+    /// The largest distance this build accepts here; below
+    /// [`MIN_DISTANCE_MM`] when the corner's sides leave no distance at all.
+    pub max_distance_mm: f64,
+}
+
+impl ChamferCorner {
+    fn of(corner: &FilletCorner) -> Self {
+        Self {
+            feature: corner.feature,
+            joint: corner.joint,
+            corner_mm: corner.corner_mm,
+            adjacent_lengths_mm: corner.adjacent_lengths_mm,
+            max_distance_mm: max_distance_of(corner.adjacent_lengths_mm),
+        }
+    }
+
+    /// Whether any distance fits this corner.
+    pub fn is_offerable(&self) -> bool {
+        self.max_distance_mm >= MIN_DISTANCE_MM
+    }
+
+    /// The distance policy, with the numbers in the refusal.
+    pub fn check_distance(&self, distance_mm: f64) -> Result<()> {
+        check_distance_value(distance_mm)?;
+        if distance_mm > self.max_distance_mm {
+            return Err(CadError::input(format!(
+                "a chamfer of {distance_mm} mm at corner {} is too large: this build chamfers up \
+                 to the shorter adjacent side ({} mm) less the {MIN_FLAT_MM} mm it keeps of each \
+                 face, which is {} mm; nothing is clamped",
+                self.joint,
+                self.adjacent_lengths_mm[0].min(self.adjacent_lengths_mm[1]),
+                self.max_distance_mm
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// §29A: a saved Chamfer, if the document holds one, and why every reader of a
+/// plate then refuses: the one sentence each of them says.
+pub(crate) fn refuse_chamfered(objects: &[ObjectRecord]) -> Result<()> {
+    let chamfers: Vec<&ObjectRecord> = objects
+        .iter()
+        .filter(|o| matches!(o.payload, ObjectPayload::Chamfer(_)))
+        .collect();
+    let Some(first) = chamfers.first() else {
+        return Ok(());
+    };
+    if chamfers.len() > 1 {
+        return Err(unsupported(format!(
+            "this document holds {} Chamfers, beginning with {} (§29A); this build holds one \
+             Chamfer on one plate, and only its distance (edit-chamfer-distance) can be edited",
+            chamfers.len(),
+            first.id
+        )));
+    }
+    Err(unsupported(format!(
+        "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance) can be \
+         edited. Its plate's height, Sketch, constraints, a Fillet or a Cut after it, and a \
+         second Chamfer are not supported yet, and no editor changes a chamfered plate without \
+         knowing its Chamfer",
+        first.id
+    )))
+}
+
+fn rule_name(rule: &SketchConstraintRule) -> &'static str {
+    match rule {
+        SketchConstraintRule::Coincident { .. } => "Coincident",
+        SketchConstraintRule::Fixed { .. } => "Fixed",
+        SketchConstraintRule::Distance { .. } => "Distance",
+        SketchConstraintRule::Horizontal { .. } => "Horizontal",
+        SketchConstraintRule::Vertical { .. } => "Vertical",
+        SketchConstraintRule::EqualLength { .. } => "EqualLength",
+        SketchConstraintRule::Perpendicular { .. } => "Perpendicular",
+        SketchConstraintRule::Parallel { .. } => "Parallel",
+        _ => "other",
+    }
+}
+
+/// The plate's Sketch must be free or closure-only. Names the first
+/// constraint that is neither.
+fn require_free_profile(sketch: &Sketch) -> Result<()> {
+    if sketch.constraints.is_empty() || crate::sketch_constraints::closure_links_only(sketch) {
+        return Ok(());
+    }
+    let offending = sketch
+        .constraints
+        .iter()
+        .find(|c| !matches!(c.rule, SketchConstraintRule::Coincident { .. }))
+        .or_else(|| sketch.constraints.first());
+    Err(unsupported(match offending {
+        Some(c) => format!(
+            "this slice chamfers a free or closure-only plate; its profile carries the {} \
+             constraint {}, and a dimensioned plate is not chamfered yet",
+            rule_name(&c.rule),
+            c.id
+        ),
+        None => "this slice chamfers a free or closure-only plate".to_owned(),
+    }))
+}
+
+/// A saved Body a Chamfer can be added to, exactly as stored.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedChamferTarget {
+    pub body: ObjectId,
+    /// The base Extrude: both the feature consumed and the one whose edge is
+    /// cut.
+    pub base_feature: ObjectId,
+    pub profile: ObjectId,
+    pub profile_segments: Vec<StableEntityId>,
+    pub height_mm: f64,
+    /// The four candidates, in stored segment order.
+    pub corners: Vec<ChamferCorner>,
+}
+
+impl SavedChamferTarget {
+    pub fn corner_for(&self, edge: SweptEdge) -> Result<ChamferCorner> {
+        let stored: Vec<FilletCorner> = self
+            .corners
+            .iter()
+            .map(|c| FilletCorner {
+                feature: c.feature,
+                joint: c.joint,
+                corner_mm: c.corner_mm,
+                adjacent_lengths_mm: c.adjacent_lengths_mm,
+                max_radius_mm: 0.0,
+            })
+            .collect();
+        let found = corner_for(&stored, edge)?;
+        self.corners
+            .iter()
+            .find(|c| c.joint == found.joint)
+            .copied()
+            .ok_or_else(|| CadError::input("the corner disappeared from the target"))
+    }
+}
+
+fn saved_target(
+    document: &Document,
+    objects: &[ObjectRecord],
+    body: ObjectId,
+) -> Result<SavedChamferTarget> {
+    // Named first, so a Fillet or a Chamfer already on the plate is refused by
+    // its own sentence rather than reported as a shape mismatch, and a plate
+    // with a dimension by that dimension, whatever the constraint editor would
+    // have made of it.
+    for object in objects {
+        if let ObjectPayload::Sketch(sketch) = &object.payload {
+            require_free_profile(sketch)?;
+        }
+    }
+    let history = crate::cut_edit::saved_plate_for_fillet(document, objects)?;
+    let target = history.target_for_fillet(body)?;
+    let profile = objects
+        .iter()
+        .find(|o| o.id == target.profile)
+        .ok_or_else(|| unsupported("the part's profile is missing"))?;
+    let ObjectPayload::Sketch(sketch) = &profile.payload else {
+        return Err(unsupported("the part's profile is not a Sketch"));
+    };
+    require_free_profile(sketch)?;
+    let corners = corners_of_lines(target.base_feature, &sketch.curves)?
+        .iter()
+        .map(ChamferCorner::of)
+        .collect();
+    Ok(SavedChamferTarget {
+        body,
+        base_feature: target.base_feature,
+        profile: target.profile,
+        profile_segments: target.profile_segments,
+        height_mm: target.height_mm,
+        corners,
+    })
+}
+
+/// A Body row of discovery: a target, or the reason it is not one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChamferChoice {
+    pub body: ObjectId,
+    pub name: Option<String>,
+    pub target: Option<SavedChamferTarget>,
+    pub refusal: Option<String>,
+}
+
+impl ChamferChoice {
+    /// The same check preparation applies, with no SQLite or kernel work.
+    pub fn validate(&self, chamfer: &EdgeChamfer) -> Result<ChamferCorner> {
+        let target = self
+            .target
+            .as_ref()
+            .ok_or_else(|| unsupported(self.refusal.clone().unwrap_or_default()))?;
+        let corner = target.corner_for(chamfer.edge)?;
+        corner.check_distance(chamfer.distance_mm)?;
+        Ok(corner)
+    }
+}
+
+/// What one chamfer asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeChamfer {
+    pub edge: SweptEdge,
+    pub distance_mm: f64,
+}
+
+/// One row per Body, each a target or its reason, from one snapshot.
+pub fn chamfer_choices(document: &Document, objects: &[ObjectRecord]) -> Vec<ChamferChoice> {
+    objects
+        .iter()
+        .filter(|o| matches!(o.payload, ObjectPayload::Body(_)))
+        .map(|o| match saved_target(document, objects, o.id) {
+            Ok(target) => ChamferChoice {
+                body: o.id,
+                name: o.name.clone(),
+                target: Some(target),
+                refusal: None,
+            },
+            Err(e) => ChamferChoice {
+                body: o.id,
+                name: o.name.clone(),
+                target: None,
+                refusal: Some(e.to_string()),
+            },
+        })
+        .collect()
+}
+
+/// A checked Chamfer creation: the new feature, the Body with its new tip, the
+/// dependency changes and the names the finished part needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedEdgeChamfer {
+    pub(crate) body: ObjectRecord,
+    pub(crate) feature: NewObject,
+    pub(crate) added_dependencies: Vec<Dependency>,
+    pub(crate) removed_dependencies: Vec<Dependency>,
+    pub(crate) references: Vec<TopologyRef>,
+    pub(crate) previous: ObjectId,
+    pub(crate) corner: ChamferCorner,
+}
+
+impl PreparedEdgeChamfer {
+    pub fn body(&self) -> &ObjectRecord {
+        &self.body
+    }
+    pub fn feature(&self) -> &NewObject {
+        &self.feature
+    }
+    pub fn previous(&self) -> ObjectId {
+        self.previous
+    }
+    pub fn references(&self) -> &[TopologyRef] {
+        &self.references
+    }
+    /// The corner being cut, with its labels, read from the stored Lines.
+    pub fn corner(&self) -> ChamferCorner {
+        self.corner
+    }
+    pub fn distance_mm(&self) -> f64 {
+        match &self.feature.payload {
+            ObjectPayload::Chamfer(c) => c.distance_mm,
+            _ => f64::NAN,
+        }
+    }
+}
+
+/// What the finished part is called after one chamfer: the new planar face
+/// under the edge it replaced (a role of its own), and every face the plate
+/// had, as the chamfer leaves it, qualified by the plate's own Extrude.
+pub(crate) fn chamfer_references(
+    feature: ObjectId,
+    base: ObjectId,
+    joint: ProfileJoint,
+    profile_segments: &[StableEntityId],
+) -> Vec<TopologyRef> {
+    crate::fillet::edge_operation_references(
+        feature,
+        base,
+        profile_segments,
+        SemanticRole::EdgeChamferFace {
+            edge_feature: base,
+            joint,
+        },
+    )
+}
+
+/// Prepares one chamfer against the saved document.
+pub fn prepare_edge_chamfer(
+    document: &Document,
+    body: ObjectId,
+    chamfer: &EdgeChamfer,
+) -> Result<PreparedEdgeChamfer> {
+    let objects = document.objects()?;
+    let record = objects
+        .iter()
+        .find(|o| o.id == body)
+        .cloned()
+        .ok_or_else(|| CadError::input("selected Body UUID does not exist"))?;
+    if !matches!(record.payload, ObjectPayload::Body(_)) {
+        return Err(CadError::input("the selected object is not a Body"));
+    }
+    let target = saved_target(document, &objects, body)?;
+    let corner = target.corner_for(chamfer.edge)?;
+    corner.check_distance(chamfer.distance_mm)?;
+    let previous = target.base_feature;
+
+    let ordinal = objects
+        .iter()
+        .map(|o| o.ordinal)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| {
+            CadError::input("a new object ordinal cannot fit after the saved objects")
+        })?;
+    let feature_id = ObjectId::new();
+    let feature = NewObject {
+        id: feature_id,
+        ordinal,
+        name: "Chamfer".to_owned(),
+        payload: ObjectPayload::Chamfer(Chamfer {
+            previous,
+            edge: SweptEdge {
+                feature: target.base_feature,
+                joint: corner.joint,
+            },
+            distance_mm: chamfer.distance_mm,
+        }),
+    };
+    let mut moved = record.clone();
+    moved.payload = ObjectPayload::Body(Body {
+        tip_feature: Some(feature_id),
+    });
+    let added_dependencies = vec![
+        Dependency {
+            dependent: feature_id,
+            dependency: previous,
+            role: DependencyRole::Predecessor,
+        },
+        Dependency {
+            dependent: body,
+            dependency: feature_id,
+            role: DependencyRole::BodyTip,
+        },
+    ];
+    let removed_dependencies = vec![Dependency {
+        dependent: body,
+        dependency: previous,
+        role: DependencyRole::BodyTip,
+    }];
+    let references = chamfer_references(
+        feature_id,
+        target.base_feature,
+        corner.joint,
+        &target.profile_segments,
+    );
+    Ok(PreparedEdgeChamfer {
+        body: moved,
+        feature,
+        added_dependencies,
+        removed_dependencies,
+        references,
+        previous,
+        corner,
+    })
+}
+
+/// Re-derives a prepared chamfer from the document it claims to be against:
+/// the writer's guard. Everything but the minted identities is derived again
+/// from the numbers the prepared payload carries, and the whole is compared.
+pub(crate) fn rederive(document: &Document, prepared: &PreparedEdgeChamfer) -> Result<()> {
+    let ObjectPayload::Chamfer(chamfer) = &prepared.feature.payload else {
+        return Err(CadError::input("a prepared chamfer carries a Chamfer"));
+    };
+    let stated = EdgeChamfer {
+        edge: chamfer.edge,
+        distance_mm: chamfer.distance_mm,
+    };
+    let mut checked = prepare_edge_chamfer(document, prepared.body.id, &stated)?;
+    let fresh = checked.feature.id;
+    let swap = |id: ObjectId| {
+        if id == fresh { prepared.feature.id } else { id }
+    };
+    checked.feature.id = prepared.feature.id;
+    if let ObjectPayload::Body(b) = &mut checked.body.payload {
+        b.tip_feature = b.tip_feature.map(swap);
+    }
+    for dependency in checked
+        .added_dependencies
+        .iter_mut()
+        .chain(&mut checked.removed_dependencies)
+    {
+        dependency.dependent = swap(dependency.dependent);
+        dependency.dependency = swap(dependency.dependency);
+    }
+    if checked.references.len() != prepared.references.len() {
+        return Err(CadError::input(
+            "the prepared chamfer names a different number of faces than the document would",
+        ));
+    }
+    for (mine, theirs) in checked.references.iter_mut().zip(&prepared.references) {
+        mine.id = theirs.id;
+        mine.owner = swap(mine.owner);
+        mine.producer_feature = swap(mine.producer_feature);
+    }
+    if checked != *prepared {
+        return Err(CadError::input(
+            "the prepared chamfer does not describe the document it is being written to",
+        ));
+    }
+    Ok(())
+}
+
+/// A Chamfer exactly as saved: the plate under it, its edge and its distance,
+/// read through the one reader the discovery, the edit and the writer share.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedChamfer {
+    pub feature: ObjectId,
+    pub body: ObjectId,
+    pub name: Option<String>,
+    /// The base Extrude it consumes, and the one whose edge it cuts.
+    pub base_feature: ObjectId,
+    pub profile: ObjectId,
+    pub height_mm: f64,
+    pub edge: SweptEdge,
+    pub distance_mm: f64,
+    /// Its corner on the stored Lines, with the labels.
+    pub corner: ChamferCorner,
+}
+
+impl SavedChamfer {
+    /// The distance policy at this Chamfer's own corner.
+    pub fn check_distance(&self, distance_mm: f64) -> Result<()> {
+        self.corner.check_distance(distance_mm)
+    }
+}
+
+/// §29A: the saved Chamfer of this document, if it holds one: `Ok(None)` for
+/// a document with none, and a typed refusal for a second Chamfer or for a
+/// Chamfer outside the exact class — never a partial reading.
+pub fn saved_chamfer(
+    document: &Document,
+    objects: &[ObjectRecord],
+) -> Result<Option<SavedChamfer>> {
+    let chamfers: Vec<&ObjectRecord> = objects
+        .iter()
+        .filter(|o| matches!(o.payload, ObjectPayload::Chamfer(_)))
+        .collect();
+    let Some(record) = chamfers.first() else {
+        return Ok(None);
+    };
+    if chamfers.len() > 1 {
+        return Err(refuse_chamfered(objects).expect_err("two Chamfers are refused"));
+    }
+    saved_chamfer_for_edit(document, objects, record).map(Some)
+}
+
+/// The same reading for one selected feature.
+pub(crate) fn saved_chamfer_for_edit(
+    document: &Document,
+    objects: &[ObjectRecord],
+    record: &ObjectRecord,
+) -> Result<SavedChamfer> {
+    let ObjectPayload::Chamfer(chamfer) = &record.payload else {
+        return Err(unsupported(format!(
+            "object {} is {}, not a Chamfer",
+            record.id,
+            record.payload.type_name()
+        )));
+    };
+    if objects
+        .iter()
+        .filter(|o| matches!(o.payload, ObjectPayload::Chamfer(_)))
+        .count()
+        > 1
+    {
+        return Err(refuse_chamfered(objects).expect_err("two Chamfers are refused"));
+    }
+    let history = crate::cut_edit::saved_history_under_chamfer(document, objects, record)?;
+    if !history.cuts.is_empty() || history.target.base_feature != chamfer.previous {
+        return Err(unsupported(
+            "this build edits a Chamfer directly on the plate's base Extrude, with no Cut",
+        ));
+    }
+    if chamfer.edge.feature != chamfer.previous {
+        return Err(unsupported(
+            "this build edits a Chamfer of an edge of the feature it consumes",
+        ));
+    }
+    let profile = objects
+        .iter()
+        .find(|o| o.id == history.target.profile)
+        .ok_or_else(|| unsupported("the part's profile is missing"))?;
+    let ObjectPayload::Sketch(sketch) = &profile.payload else {
+        return Err(unsupported("the part's profile is not a Sketch"));
+    };
+    require_free_profile(sketch)?;
+    let corners: Vec<ChamferCorner> =
+        corners_of_lines(history.target.base_feature, &sketch.curves)?
+            .iter()
+            .map(ChamferCorner::of)
+            .collect();
+    let corner = corners
+        .iter()
+        .find(|c| c.joint == chamfer.edge.joint)
+        .copied()
+        .ok_or_else(|| {
+            unsupported(format!(
+                "{} is not a corner of the plate this Chamfer cuts",
+                chamfer.edge.joint
+            ))
+        })?;
+    // The names it owns must be exactly the ones a Chamfer of its numbers is
+    // given: no more, no fewer.
+    let owner = record.id;
+    let stored: Vec<TopologyRef> = document
+        .topology_refs()?
+        .into_iter()
+        .filter(|r| r.owner == owner)
+        .collect();
+    let wanted = chamfer_references(
+        owner,
+        history.target.base_feature,
+        chamfer.edge.joint,
+        &history.target.profile_segments,
+    );
+    let mut remaining: Vec<&TopologyRef> = stored.iter().collect();
+    for want in &wanted {
+        let at = remaining
+            .iter()
+            .position(|r| crate::cut_edit::same_meaning(r, want))
+            .ok_or_else(|| {
+                unsupported("the saved Chamfer does not name the faces this build gives a Chamfer")
+            })?;
+        remaining.remove(at);
+    }
+    if !remaining.is_empty() {
+        return Err(unsupported(
+            "the saved Chamfer names more faces than a Chamfer of its numbers gives",
+        ));
+    }
+    Ok(SavedChamfer {
+        feature: owner,
+        body: history.target.body,
+        name: record.name.clone(),
+        base_feature: history.target.base_feature,
+        profile: history.target.profile,
+        height_mm: history.target.height_mm,
+        edge: chamfer.edge,
+        distance_mm: chamfer.distance_mm,
+        corner,
+    })
+}
+
+/// One row per saved Chamfer, editable or with its reason, from one snapshot.
+/// Kernel-free.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChamferDistanceChoice {
+    pub feature: ObjectId,
+    pub name: Option<String>,
+    pub stored: Chamfer,
+    pub saved: Option<SavedChamfer>,
+    pub refusal: Option<String>,
+}
+
+pub fn chamfer_distance_choices(
+    document: &Document,
+    objects: &[ObjectRecord],
+) -> Vec<ChamferDistanceChoice> {
+    objects
+        .iter()
+        .filter_map(|o| match &o.payload {
+            ObjectPayload::Chamfer(stored) => Some((o, stored.clone())),
+            _ => None,
+        })
+        .map(|(o, stored)| {
+            let saved = saved_chamfer_for_edit(document, objects, o).map_err(|e| e.to_string());
+            ChamferDistanceChoice {
+                feature: o.id,
+                name: o.name.clone(),
+                stored,
+                refusal: saved.as_ref().err().cloned(),
+                saved: saved.ok(),
+            }
+        })
+        .collect()
+}
+
+/// A checked distance edit: the selected Chamfer row with only its distance
+/// replaced, the saved facts it was read with, and the complete version of the
+/// document it was read from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedChamferDistance {
+    pub(crate) feature: ObjectRecord,
+    pub(crate) saved: SavedChamfer,
+    pub(crate) source_version: ContentHash,
+}
+
+impl PreparedChamferDistance {
+    pub fn feature(&self) -> &ObjectRecord {
+        &self.feature
+    }
+    /// The Chamfer as saved, before the edit.
+    pub fn saved(&self) -> &SavedChamfer {
+        &self.saved
+    }
+    pub fn distance_mm(&self) -> f64 {
+        match &self.feature.payload {
+            ObjectPayload::Chamfer(c) => c.distance_mm,
+            _ => f64::NAN,
+        }
+    }
+    /// The Line UUIDs of the cut corner, in canonical order.
+    pub fn joint(&self) -> [StableEntityId; 2] {
+        self.saved.edge.joint.segments()
+    }
+}
+
+pub fn prepare_chamfer_distance(
+    document: &Document,
+    feature: ObjectId,
+    distance_mm: f64,
+) -> Result<PreparedChamferDistance> {
+    let objects = document.objects()?;
+    let mut record = objects
+        .iter()
+        .find(|o| o.id == feature)
+        .cloned()
+        .ok_or_else(|| {
+            CadError::input(format!("feature {feature} does not exist in this document"))
+        })?;
+    let saved = saved_chamfer_for_edit(document, &objects, &record)?;
+    saved.check_distance(distance_mm)?;
+    let ObjectPayload::Chamfer(chamfer) = &mut record.payload else {
+        unreachable!("checked Chamfer")
+    };
+    chamfer.distance_mm = distance_mm;
+    Ok(PreparedChamferDistance {
+        feature: record,
+        saved,
+        source_version: document.content_version()?,
+    })
+}
+
+/// The writer's check, against the snapshot the write consumes: the same
+/// document version, and the same prepared value derived again from it.
+pub(crate) fn rederive_distance(
+    document: &Document,
+    prepared: &PreparedChamferDistance,
+) -> Result<()> {
+    if document.content_version()? != prepared.source_version {
+        return Err(CadError::input(
+            "document changed after Chamfer distance preparation",
+        ));
+    }
+    let ObjectPayload::Chamfer(chamfer) = &prepared.feature.payload else {
+        return Err(CadError::input(
+            "prepared Chamfer distance edit must carry a Chamfer",
+        ));
+    };
+    let checked = prepare_chamfer_distance(document, prepared.feature.id, chamfer.distance_mm)?;
+    if checked != *prepared {
+        return Err(CadError::input(
+            "prepared Chamfer distance edit does not describe the current document",
+        ));
+    }
+    Ok(())
+}
+
+/// The Chamfer's class and distance policy, asked by the evaluator at every
+/// cold and cached rebuild.
+///
+/// The **structure** is read from the saved objects: a forward Blind NewBody
+/// Extrude with no other feature over it, whose profile is an axis-aligned
+/// rectangle of four Lines with the saved joint at one of its corners, free or
+/// closure-only. The **geometry** is `built`: the Lines the rebuild actually
+/// built the plate from. On those, the same Lines in stored order must still be
+/// an axis-aligned rectangle, have the saved joint as a corner, and leave room
+/// for the saved distance. The one predicate every discovery and edit that
+/// proposes a distance asks too.
+pub fn evaluable_chamfer(
+    objects: &[ObjectRecord],
+    chamfer: &Chamfer,
+    built: Option<&[crate::SketchCurve]>,
+) -> Result<ChamferCorner> {
+    let base = objects
+        .iter()
+        .find(|o| o.id == chamfer.previous)
+        .ok_or_else(|| CadError::input("the Chamfer's predecessor is missing"))?;
+    let ObjectPayload::Extrude(extrude) = &base.payload else {
+        return Err(unsupported(format!(
+            "this build chamfers an edge of an extruded plate, and the Chamfer's predecessor {} \
+             is {}",
+            base.id,
+            base.payload.type_name()
+        )));
+    };
+    if chamfer.edge.feature != base.id {
+        return Err(unsupported(
+            "this build chamfers an edge of the feature a Chamfer consumes",
+        ));
+    }
+    if extrude.operation != crate::SolidOperation::NewBody
+        || extrude.previous.is_some()
+        || extrude.reversed
+        || !matches!(extrude.end_condition, crate::EndCondition::Blind { .. })
+    {
+        return Err(unsupported(
+            "this build chamfers an edge of a forward Blind NewBody extrusion",
+        ));
+    }
+    // One Chamfer over the plate and nothing else: another feature over the
+    // same result is a branch, and a Chamfer under a Fillet or a Cut is outside
+    // the class.
+    let over: Vec<&ObjectRecord> = objects
+        .iter()
+        .filter(|o| o.payload.previous_feature() == Some(base.id))
+        .collect();
+    if let Some(other) = over
+        .iter()
+        .find(|o| !matches!(&o.payload, ObjectPayload::Chamfer(_)))
+    {
+        return Err(unsupported(format!(
+            "feature {} also consumes the plate a Chamfer cuts; this build holds one Chamfer on \
+             a plate with nothing else over it",
+            other.id
+        )));
+    }
+    if let [first, second, ..] = over.as_slice() {
+        return Err(unsupported(format!(
+            "Chamfers {} and {} both cut this plate; this build holds one Chamfer on one plate",
+            first.id, second.id
+        )));
+    }
+    let profile = objects
+        .iter()
+        .find(|o| o.id == extrude.profile)
+        .ok_or_else(|| CadError::input("the base Extrude's profile is missing"))?;
+    let ObjectPayload::Sketch(sketch) = &profile.payload else {
+        return Err(unsupported("the base Extrude's profile is not a Sketch"));
+    };
+    require_free_profile(sketch)?;
+    let stored = corners_of_lines(base.id, &sketch.curves)?;
+    corner_for(&stored, chamfer.edge)?;
+    let Some(built) = built else {
+        return Err(CadError::input(format!(
+            "the plate the Chamfer cuts was built from no profile {}",
+            extrude.profile
+        )));
+    };
+    let corners = corners_of_lines(base.id, built)?;
+    let found = corner_for(&corners, chamfer.edge)?;
+    let corner = ChamferCorner::of(&found);
+    corner.check_distance(chamfer.distance_mm)?;
+    Ok(corner)
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::{
+        DatumPlane, EndCondition, Expression, Extrude, Point2, SketchCurve, SketchGeometry,
+        SolidOperation,
+    };
+    use ferritecad_types::Transform;
+
+    const PLATE: [[f64; 2]; 4] = [[-4.5, 3.25], [33., 3.25], [33., 15.5], [-4.5, 15.5]];
+
+    fn sketch(corners: &[[f64; 2]]) -> Sketch {
+        let n = corners.len();
+        Sketch {
+            plane: ObjectId::new(),
+            curves: (0..n)
+                .map(|i| crate::SketchCurve {
+                    id: StableEntityId::new(),
+                    construction: false,
+                    geometry: SketchGeometry::Line {
+                        start: Point2::new(corners[i][0], corners[i][1]).expect("point"),
+                        end: Point2::new(corners[(i + 1) % n][0], corners[(i + 1) % n][1])
+                            .expect("point"),
+                    },
+                })
+                .collect(),
+            constraints: Vec::new(),
+        }
+    }
+
+    /// One plate written straight into a document, as a creator would.
+    fn plate(corners: [[f64; 2]; 4]) -> (tempfile::TempDir, Document, ObjectId) {
+        let root = tempfile::tempdir().expect("dir");
+        let mut d = Document::create(root.path().join("plate.fcad")).expect("document");
+        let [plane, profile, extrude, body] = std::array::from_fn(|_| ObjectId::new());
+        let mut drawn = sketch(&corners);
+        drawn.plane = plane;
+        d.write(|w| {
+            w.put_object(
+                plane,
+                None,
+                0,
+                Some("XY"),
+                &ObjectPayload::DatumPlane(DatumPlane {
+                    placement: Transform::IDENTITY,
+                }),
+            )?;
+            w.put_object(
+                profile,
+                None,
+                1,
+                Some("Profile"),
+                &ObjectPayload::Sketch(drawn),
+            )?;
+            w.put_object(
+                extrude,
+                None,
+                2,
+                Some("Extrude1"),
+                &ObjectPayload::Extrude(Extrude {
+                    profile,
+                    end_condition: EndCondition::Blind {
+                        distance: Expression::constant(6.75)?,
+                    },
+                    reversed: false,
+                    operation: SolidOperation::NewBody,
+                    target_body: None,
+                    previous: None,
+                }),
+            )?;
+            w.put_object(
+                body,
+                None,
+                3,
+                Some("Body"),
+                &ObjectPayload::Body(Body {
+                    tip_feature: Some(extrude),
+                }),
+            )?;
+            for (dependent, dependency, role) in [
+                (profile, plane, DependencyRole::Plane),
+                (extrude, profile, DependencyRole::Profile),
+                (body, extrude, DependencyRole::BodyTip),
+            ] {
+                w.add_dependency(Dependency {
+                    dependent,
+                    dependency,
+                    role,
+                })?;
+            }
+            Ok(())
+        })
+        .expect("fixture");
+        (root, d, body)
+    }
+
+    fn target_of(d: &Document, body: ObjectId) -> SavedChamferTarget {
+        let objects = d.objects().expect("objects");
+        saved_target(d, &objects, body).expect("a plate to chamfer")
+    }
+
+    /// Writes one Chamfer through the same prepare/write the CLI uses.
+    fn chamfer_at(d: &mut Document, body: ObjectId, at: usize, distance_mm: f64) -> ObjectId {
+        let t = target_of(d, body);
+        let prepared = prepare_edge_chamfer(
+            d,
+            body,
+            &EdgeChamfer {
+                edge: SweptEdge {
+                    feature: t.base_feature,
+                    joint: t.corners[at].joint,
+                },
+                distance_mm,
+            },
+        )
+        .expect("a chamfer");
+        d.write_edge_chamfer(&prepared).expect("written");
+        prepared.feature().id
+    }
+
+    /// §29A: the stored payload round-trips under its own kind and capability,
+    /// refuses a distance no chamfer has and a field this reader would drop,
+    /// and an edge of a feature the Chamfer does not consume.
+    #[test]
+    fn the_chamfer_payload_round_trips_and_refuses_what_it_cannot_mean() {
+        let [a, b] = [(); 2].map(|_| StableEntityId::new());
+        let base = ObjectId::new();
+        let chamfer = Chamfer {
+            previous: base,
+            edge: SweptEdge {
+                feature: base,
+                joint: ProfileJoint::new(a, b).expect("joint"),
+            },
+            distance_mm: 2.5,
+        };
+        let payload = ObjectPayload::Chamfer(chamfer.clone());
+        assert_eq!(payload.type_name(), "feature.chamfer");
+        assert_eq!(payload.schema_version(), 1);
+        assert_eq!(
+            payload.required_capabilities(),
+            [
+                "core.part.v1",
+                "feature.predecessor.v1",
+                "feature.chamfer.v1"
+            ]
+        );
+        let bytes = payload.to_storage_bytes().expect("encodes");
+        assert_eq!(
+            ObjectPayload::from_storage_bytes(&bytes).expect("decodes"),
+            payload
+        );
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut c = chamfer.clone();
+            c.distance_mm = bad;
+            assert!(
+                ObjectPayload::Chamfer(c).to_storage_bytes().is_err(),
+                "{bad}"
+            );
+        }
+        let mut elsewhere = chamfer.clone();
+        elsewhere.edge.feature = ObjectId::new();
+        assert!(
+            ObjectPayload::Chamfer(elsewhere)
+                .to_storage_bytes()
+                .is_err(),
+            "an edge of another feature"
+        );
+        // A key this reader does not know is refused, not dropped.
+        let mut value: ciborium::Value =
+            ciborium::from_reader(&bytes[..]).expect("an envelope is cbor");
+        let _ = &mut value;
+        assert!(
+            crate::ObjectKind::parse("feature.chamfer").is_some_and(|k| k.is_feature()),
+            "it is a feature of this build"
+        );
+    }
+
+    /// §29A: the policy is one expression: the largest distance offered is
+    /// accepted, the next representable value above it is refused, and
+    /// nothing below the minimum or non-finite is.
+    #[test]
+    fn the_distance_policy_is_exact_at_its_bounds_and_the_same_everywhere() {
+        let (_root, d, body) = plate(PLATE);
+        let t = target_of(&d, body);
+        for corner in &t.corners {
+            let shorter = corner.adjacent_lengths_mm[0].min(corner.adjacent_lengths_mm[1]);
+            assert_eq!(corner.max_distance_mm, shorter - MIN_FLAT_MM);
+            assert_eq!(
+                corner.max_distance_mm,
+                max_distance_of(corner.adjacent_lengths_mm)
+            );
+            assert!(corner.is_offerable());
+            corner
+                .check_distance(corner.max_distance_mm)
+                .expect("the offered maximum is accepted");
+            let next = corner.max_distance_mm.next_up();
+            assert!(next > corner.max_distance_mm);
+            let refusal = corner
+                .check_distance(next)
+                .expect_err("the next float")
+                .to_string();
+            assert!(refusal.contains("too large") && refusal.contains("nothing is clamped"));
+            corner.check_distance(MIN_DISTANCE_MM).expect("the minimum");
+            assert!(corner.check_distance(MIN_DISTANCE_MM.next_down()).is_err());
+            for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e300] {
+                assert!(corner.check_distance(bad).is_err(), "{bad}");
+            }
+        }
+        // A corner whose sides leave no distance at all is listed and refused.
+        let (_r, thin, body) = plate([[0., 0.], [30., 0.], [30., 0.0105], [0., 0.0105]]);
+        let t = target_of(&thin, body);
+        assert!(t.corners.iter().all(|c| !c.is_offerable()));
+        assert!(t.corners[0].check_distance(MIN_DISTANCE_MM).is_err());
+    }
+
+    /// §29A: a Chamfer is created at each of the four corners, on a translated
+    /// fractional plate in either winding, names exactly the seven faces and
+    /// reads back through the one reader with its distance and corner.
+    #[test]
+    fn a_chamfer_is_written_at_every_corner_in_both_windings_and_reads_back() {
+        let ccw = PLATE;
+        let cw = [ccw[3], ccw[2], ccw[1], ccw[0]];
+        for corners in [ccw, cw] {
+            for at in 0..4 {
+                let (_root, mut d, body) = plate(corners);
+                let before = d.content_version().expect("version");
+                let t = target_of(&d, body);
+                let corner = t.corners[at];
+                let id = chamfer_at(&mut d, body, at, 2.375);
+                assert_ne!(d.content_version().expect("version"), before);
+                let objects = d.objects().expect("objects");
+                assert!(d.validate().expect("validates").is_ok());
+                let saved = saved_chamfer(&d, &objects)
+                    .expect("reads")
+                    .expect("a Chamfer");
+                assert_eq!(saved.feature, id);
+                assert_eq!(saved.distance_mm, 2.375);
+                assert_eq!(saved.edge.joint, corner.joint);
+                assert_eq!(saved.corner.corner_mm, corner.corner_mm);
+                assert_eq!(saved.height_mm, 6.75);
+                // Seven names, one in its own role, the rest the plate's.
+                let refs: Vec<_> = d
+                    .topology_refs()
+                    .expect("refs")
+                    .into_iter()
+                    .filter(|r| r.owner == id)
+                    .collect();
+                assert_eq!(refs.len(), 7);
+                assert_eq!(
+                    refs.iter()
+                        .filter(|r| matches!(r.output_role, SemanticRole::EdgeChamferFace { .. }))
+                        .count(),
+                    1
+                );
+                assert!(refs.iter().all(|r| r.producer_feature == id));
+                let tip = match &objects.iter().find(|o| o.id == body).expect("body").payload {
+                    ObjectPayload::Body(b) => b.tip_feature,
+                    _ => None,
+                };
+                assert_eq!(tip, Some(id), "the Body ends in the Chamfer");
+            }
+        }
+    }
+
+    /// §29A: only the Chamfer's distance changes, in its own row, and its
+    /// references keep their UUIDs; a stale or forged preparation is refused.
+    #[test]
+    fn the_distance_edit_changes_one_number_and_the_writer_refuses_forgery() {
+        let (_root, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 1, 2.375);
+        let refs_before = d.topology_refs().expect("refs");
+        let objects_before = d.objects().expect("objects");
+
+        let prepared = prepare_chamfer_distance(&d, id, 4.5).expect("a new distance");
+        assert_eq!(prepared.distance_mm(), 4.5);
+        assert_eq!(prepared.saved().distance_mm, 2.375);
+        d.write_chamfer_distance(&prepared).expect("written");
+        let objects = d.objects().expect("objects");
+        assert_eq!(d.topology_refs().expect("refs"), refs_before);
+        for (was, now) in objects_before.iter().zip(&objects) {
+            assert_eq!(was.id, now.id);
+            if was.id == id {
+                assert_ne!(was.payload, now.payload);
+            } else {
+                assert_eq!(was.payload, now.payload, "{}", was.id);
+            }
+        }
+        // Stale: the document moved on after preparation.
+        let stale = prepare_chamfer_distance(&d, id, 3.0).expect("prepared");
+        let again = prepare_chamfer_distance(&d, id, 5.0).expect("prepared");
+        d.write_chamfer_distance(&again).expect("written");
+        assert!(d.write_chamfer_distance(&stale).is_err());
+        // Forged: a distance the policy refuses, and another feature's row.
+        let mut forged = prepare_chamfer_distance(&d, id, 3.0).expect("prepared");
+        if let ObjectPayload::Chamfer(c) = &mut forged.feature.payload {
+            c.distance_mm = 1.0e6;
+        }
+        let before = d.content_version().expect("version");
+        assert!(d.write_chamfer_distance(&forged).is_err());
+        assert_eq!(
+            d.content_version().expect("version"),
+            before,
+            "nothing written"
+        );
+        let mut other = prepare_chamfer_distance(&d, id, 3.0).expect("prepared");
+        other.feature.id = body;
+        assert!(d.write_chamfer_distance(&other).is_err());
+        // The numbers the policy refuses are refused before any preparation.
+        let max = target_of_saved(&d, id).corner.max_distance_mm;
+        prepare_chamfer_distance(&d, id, max).expect("the maximum");
+        assert!(prepare_chamfer_distance(&d, id, max.next_up()).is_err());
+        assert!(prepare_chamfer_distance(&d, id, f64::NAN).is_err());
+    }
+
+    fn target_of_saved(d: &Document, feature: ObjectId) -> SavedChamfer {
+        let objects = d.objects().expect("objects");
+        let record = objects.iter().find(|o| o.id == feature).expect("feature");
+        saved_chamfer_for_edit(d, &objects, record).expect("saved")
+    }
+
+    /// §29A: the creation writer re-derives everything: a forged corner, a
+    /// distance past the bound, a changed tip and a second Chamfer are refused
+    /// and write nothing.
+    #[test]
+    fn the_creation_writer_rederives_the_chamfer_and_refuses_forgery() {
+        let (_root, mut d, body) = plate(PLATE);
+        let t = target_of(&d, body);
+        let edge = |at: usize| SweptEdge {
+            feature: t.base_feature,
+            joint: t.corners[at].joint,
+        };
+        let good = EdgeChamfer {
+            edge: edge(0),
+            distance_mm: 2.0,
+        };
+        let prepared = prepare_edge_chamfer(&d, body, &good).expect("prepared");
+        let before = d.content_version().expect("version");
+        // A distance past the corner's bound.
+        let mut forged = prepared.clone();
+        if let ObjectPayload::Chamfer(c) = &mut forged.feature.payload {
+            c.distance_mm = 1.0e6;
+        }
+        assert!(d.write_edge_chamfer(&forged).is_err());
+        // Another corner than the one the names were minted for.
+        let mut elsewhere = prepared.clone();
+        if let ObjectPayload::Chamfer(c) = &mut elsewhere.feature.payload {
+            c.edge = edge(1);
+        }
+        assert!(d.write_edge_chamfer(&elsewhere).is_err());
+        // A name that is not the plate's.
+        let mut renamed = prepared.clone();
+        renamed.references[0].output_role = SemanticRole::EdgeFilletFace {
+            edge_feature: t.base_feature,
+            joint: t.corners[0].joint,
+        };
+        assert!(d.write_edge_chamfer(&renamed).is_err());
+        // A dropped name.
+        let mut short = prepared.clone();
+        short.references.pop();
+        assert!(d.write_edge_chamfer(&short).is_err());
+        assert_eq!(
+            d.content_version().expect("version"),
+            before,
+            "nothing written"
+        );
+        d.write_edge_chamfer(&prepared).expect("the honest one");
+        // The same preparation again: the tip moved.
+        assert!(d.write_edge_chamfer(&prepared).is_err());
+        // A second Chamfer, and a Chamfer on a Body that ends in one.
+        let second = prepare_edge_chamfer(
+            &d,
+            body,
+            &EdgeChamfer {
+                edge: edge(2),
+                distance_mm: 1.0,
+            },
+        )
+        .expect_err("a second Chamfer")
+        .to_string();
+        assert!(second.contains("Chamfer"), "{second}");
+    }
+
+    /// §29A: every reader of the plate refuses a chamfered Body by naming the
+    /// Chamfer, and discovery says so: none silently drops, ignores or
+    /// rebuilds it.
+    #[test]
+    fn every_other_editor_refuses_a_chamfered_body_by_name() {
+        let (_root, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 3, 2.0);
+        let objects = d.objects().expect("objects");
+        let base = objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Extrude(_)))
+            .expect("base")
+            .id;
+        let profile = objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("sketch")
+            .id;
+        let named = |what: &str, e: ferritecad_types::CadError| {
+            let text = e.to_string();
+            assert!(
+                text.contains(&id.to_string()) && text.contains("Chamfer"),
+                "{what}: {text}"
+            );
+        };
+        named(
+            "height",
+            crate::prepare_extrude_height(&d, base, 9.0).expect_err("height"),
+        );
+        named(
+            "a Fillet",
+            crate::prepare_edge_fillet(
+                &d,
+                body,
+                &crate::EdgeFillet {
+                    edge: crate::FilletEdge {
+                        feature: base,
+                        joint: target_of_saved(&d, id).edge.joint,
+                    },
+                    radius_mm: 1.0,
+                },
+            )
+            .expect_err("a Fillet"),
+        );
+        named(
+            "a Cut",
+            crate::prepare_circular_cut(
+                &d,
+                body,
+                &crate::CircularCut {
+                    center_mm: [10.0, 8.0],
+                    radius_mm: 1.0,
+                    extent: crate::CutExtent::Blind { depth_mm: 1.0 },
+                },
+            )
+            .expect_err("a Cut"),
+        );
+        named(
+            "constraints",
+            crate::prepare_sketch_constraints(
+                &d,
+                profile,
+                &crate::SketchConstraintEdits::default(),
+            )
+            .expect_err("constraints"),
+        );
+        let fillet_radius = crate::prepare_fillet_radius(&d, id, 1.0).expect_err("not a Fillet");
+        assert!(fillet_radius.to_string().contains("Fillet"));
+        // Discovery reports the saved Chamfer, not an editable plate.
+        let source = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+        let reason = source.filleted.expect("the extrusion editor is refused");
+        assert!(reason.contains(&id.to_string()), "{reason}");
+        assert_eq!(source.chamfer_features.len(), 1);
+        assert!(source.chamfer_features[0].refusal.is_none());
+        assert!(source.chamfer_bodies[0].target.is_none());
+        assert!(
+            source.chamfer_bodies[0]
+                .refusal
+                .as_deref()
+                .is_some_and(|r| r.contains("Chamfer"))
+        );
+    }
+
+    /// §29A: free and closure-only plates are accepted; any other constraint
+    /// is refused with its kind and UUID.
+    #[test]
+    fn a_dimensioned_plate_is_refused_with_the_constraint_named() {
+        let (_root, mut d, body) = plate(PLATE);
+        let objects = d.objects().expect("objects");
+        let record = objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("sketch")
+            .clone();
+        let ObjectPayload::Sketch(mut sketch) = record.payload.clone() else {
+            unreachable!()
+        };
+        let first = sketch.curves[0].id;
+        let second = sketch.curves[1].id;
+        let pin = crate::SketchConstraint {
+            id: StableEntityId::new(),
+            rule: SketchConstraintRule::Distance {
+                a: crate::SketchPointRef::new(first, crate::SketchPointSelector::Start),
+                b: crate::SketchPointRef::new(second, crate::SketchPointSelector::End),
+                distance: 37.5,
+            },
+        };
+        sketch.constraints.push(pin);
+        d.write(|w| {
+            w.put_object(
+                record.id,
+                record.parent,
+                record.ordinal,
+                record.name.as_deref(),
+                &ObjectPayload::Sketch(sketch),
+            )
+        })
+        .expect("constrained");
+        let refusal = prepare_edge_chamfer(
+            &d,
+            body,
+            &EdgeChamfer {
+                edge: SweptEdge {
+                    feature: target_of_base(&d),
+                    joint: ProfileJoint::new(first, second).expect("joint"),
+                },
+                distance_mm: 1.0,
+            },
+        )
+        .expect_err("a dimension")
+        .to_string();
+        assert!(
+            refusal.contains("Distance") && refusal.contains(&pin.id.to_string()),
+            "{refusal}"
+        );
+    }
+
+    fn target_of_base(d: &Document) -> ObjectId {
+        d.objects()
+            .expect("objects")
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Extrude(_)))
+            .expect("base")
+            .id
+    }
+
+    /// §29A: the evaluator's predicate, on the Lines the rebuild built: the
+    /// same bound, the saved joint, a branch or a second feature refused.
+    #[test]
+    fn the_evaluator_judges_the_chamfer_on_the_built_lines() {
+        let (_root, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 0, 2.5);
+        let objects = d.objects().expect("objects");
+        let chamfer = match &objects
+            .iter()
+            .find(|o| o.id == id)
+            .expect("chamfer")
+            .payload
+        {
+            ObjectPayload::Chamfer(c) => c.clone(),
+            _ => unreachable!(),
+        };
+        let built_of = |objects: &[ObjectRecord]| -> Vec<SketchCurve> {
+            objects
+                .iter()
+                .find_map(|o| match &o.payload {
+                    ObjectPayload::Sketch(s) => Some(s.curves.clone()),
+                    _ => None,
+                })
+                .expect("sketch")
+        };
+        let built = built_of(&objects);
+        let corner = evaluable_chamfer(&objects, &chamfer, Some(&built)).expect("accepted");
+        assert_eq!(corner.joint, chamfer.edge.joint);
+        // The Lines as built are shorter than the saved distance allows.
+        let mut thin = built.clone();
+        for curve in &mut thin {
+            if let SketchGeometry::Line { start, end } = &mut curve.geometry {
+                start.y *= 0.2;
+                end.y *= 0.2;
+                start.x *= 0.05;
+                end.x *= 0.05;
+            }
+        }
+        let mut too_much = chamfer.clone();
+        too_much.distance_mm = corner.max_distance_mm;
+        evaluable_chamfer(&objects, &too_much, Some(&built)).expect("at the bound");
+        assert!(evaluable_chamfer(&objects, &too_much, Some(&thin)).is_err());
+        assert!(evaluable_chamfer(&objects, &chamfer, None).is_err());
+        // The built Lines keep the saved corner or the Chamfer refuses.
+        let mut other_joint = chamfer.clone();
+        other_joint.edge.joint =
+            ProfileJoint::new(StableEntityId::new(), StableEntityId::new()).expect("joint");
+        assert!(evaluable_chamfer(&objects, &other_joint, Some(&built)).is_err());
+        let mut foreign = chamfer.clone();
+        foreign.previous = body;
+        assert!(evaluable_chamfer(&objects, &foreign, Some(&built)).is_err());
+    }
+}

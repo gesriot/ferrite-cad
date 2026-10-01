@@ -47,19 +47,19 @@ pub use context::{CancelToken, OperationContext, ProgressSink};
 pub use handle::{FaceSurface, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
 pub use identity::KernelIdentity;
 pub use kernel::{
-    GeometryKernel, cut_cache_key, extrude_cache_key, fillet_cache_key, revolve_cache_key,
-    tessellation_cache_key,
+    GeometryKernel, chamfer_cache_key, cut_cache_key, extrude_cache_key, fillet_cache_key,
+    revolve_cache_key, tessellation_cache_key,
 };
 pub use profile::{
     PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
 };
 pub use refusal::TessellationRefusal;
 pub use request::{
-    CutRequest, ExtrudeExtent, ExtrudeRequest, FilletRequest, PartialTurn, RevolveAxis,
-    RevolveRequest, RevolveTurn, TessellationParams,
+    ChamferRequest, CutRequest, ExtrudeExtent, ExtrudeRequest, FilletRequest, PartialTurn,
+    RevolveAxis, RevolveRequest, RevolveTurn, TessellationParams,
 };
 pub use result::{
-    ArchiveSlot, BrepBlob, CarriedOutcome, CutResult, ExtrudeResult, FilletResult, History,
-    HistoryInput, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange, MeshVertices,
-    OperationResult, RevolveResult,
+    ArchiveSlot, BrepBlob, CarriedOutcome, ChamferResult, CutResult, ExtrudeResult, FilletResult,
+    History, HistoryInput, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange,
+    MeshVertices, OperationResult, RevolveResult,
 };

@@ -310,6 +310,63 @@ fn positive(value: f64, what: &str) -> Result<f64> {
     Ok(value)
 }
 
+/// What cutting one edge away at equal distances asks of a kernel (§29A).
+///
+/// The edge is a sub-shape handle of the target, obtained from the target's
+/// own names, as for [`FilletRequest`]. One edge and one constant distance,
+/// measured from the edge along **each** of the two adjacent faces (so the
+/// slanted flat is `distance_mm * sqrt(2)` wide). There is no reference face,
+/// no second distance and no angle: nothing in this request can depend on which
+/// of the edge's two faces a walk happens to meet first.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChamferRequest {
+    target: ShapeHandle,
+    edge: SubShapeHandle,
+    distance_mm: f64,
+}
+
+impl ChamferRequest {
+    /// Refuses an edge that is not an edge of the target, and a distance that
+    /// is not a finite positive number. Whether the distance fits the part is
+    /// the caller's policy.
+    pub fn new(target: ShapeHandle, edge: SubShapeHandle, distance_mm: f64) -> Result<Self> {
+        if edge.kind() != crate::SubShapeKind::Edge {
+            return Err(CadError::input(format!(
+                "a chamfer cuts an edge, and {edge} is a {}",
+                edge.kind()
+            )));
+        }
+        if edge.shape() != target {
+            return Err(CadError::input(format!(
+                "a chamfer cuts an edge of the shape it modifies, and {edge} belongs to {}",
+                edge.shape()
+            )));
+        }
+        if !distance_mm.is_finite() || distance_mm <= 0.0 {
+            return Err(CadError::input(format!(
+                "a chamfer distance must be finite and positive, found {distance_mm}"
+            )));
+        }
+        Ok(Self {
+            target,
+            edge,
+            distance_mm,
+        })
+    }
+
+    pub fn target(&self) -> ShapeHandle {
+        self.target
+    }
+
+    pub fn edge(&self) -> SubShapeHandle {
+        self.edge
+    }
+
+    pub fn distance_mm(&self) -> f64 {
+        self.distance_mm
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +392,33 @@ mod tests {
             assert!(
                 FilletRequest::new(target, edge, radius).is_err(),
                 "{radius}"
+            );
+        }
+    }
+
+    /// §29A: only an edge of the target, and only a finite positive distance.
+    #[test]
+    fn a_chamfer_request_names_an_edge_of_its_target_and_a_real_distance() {
+        use crate::handle::{SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
+        let target = ShapeHandle::new(SessionId::new(), 0);
+        let edge = SubShapeHandle::new(target, SubShapeKind::Edge, 3);
+        let request = ChamferRequest::new(target, edge, 2.5).expect("valid");
+        assert_eq!(
+            (request.target(), request.edge(), request.distance_mm()),
+            (target, edge, 2.5)
+        );
+        let foreign =
+            SubShapeHandle::new(ShapeHandle::new(SessionId::new(), 0), SubShapeKind::Edge, 3);
+        assert!(ChamferRequest::new(target, foreign, 2.5).is_err());
+        for kind in [SubShapeKind::Face, SubShapeKind::Vertex] {
+            assert!(
+                ChamferRequest::new(target, SubShapeHandle::new(target, kind, 3), 2.5).is_err()
+            );
+        }
+        for distance in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                ChamferRequest::new(target, edge, distance).is_err(),
+                "{distance}"
             );
         }
     }

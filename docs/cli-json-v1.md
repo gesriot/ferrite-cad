@@ -885,6 +885,25 @@ Fillet 1, — `input`, ничего не записано.
 Отказы называют реально виновные Fillet (feature UUID и joint) и общую Line.
 [Контракт §28L и исполняемый рецепт](rectangular-fillet-history.md).
 
+### Chamfer одной вертикальной кромки (§29A)
+
+Новые операции `chamfer-edge-copy` и `edit-chamfer-distance` (envelope и коды
+0/2/7 прежние; строгий request v1 без неизвестных полей, массивов, `NaN`, нуля
+и невалидных UUID). Единица `distance_mm` — мм вдоль **каждой** смежной грани.
+Успех: `body_id`, `feature_id`, `previous_feature_id`, `edge`
+(`feature_id`, `joint`), `corner_mm`, `adjacent_lengths_mm`,
+`distance_unit:"mm"`, `distance_mm`, `references[]` с ролями
+`edge_chamfer_face`/`origin_cap`/`origin_side` (создание) либо
+`previous_distance_mm` (правка). Discovery — только добавлено, прежние поля и
+типы не менялись: `bodies[].chamfer_edge` (`available`, `refusal`,
+`document_refusal`, `target` с `min_distance_mm`, `min_flat_mm`,
+`distance_unit` и `candidates[]` — `edge`, `label`, `corner_mm`,
+`adjacent_lengths_mm`, `max_distance_mm`, `offerable`) и `chamfers[]`
+(`feature_id`, `edge`, `corner_mm`, `distance_mm`, `distance_edit`
+с `available`, `refusal`, `request_versions`, `min_distance_mm`,
+`max_distance_mm`). Отказ называет UUID Chamfer, либо Line/ограничения.
+[Контракт §29A и исполняемый рецепт](rectangular-corner-chamfer.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

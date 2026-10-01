@@ -435,6 +435,62 @@ fn check_semantic_references(
                 }
             }
         }
+        // §29A: a Chamfer consumes an earlier feature's result exactly as a
+        // Fillet does, and cuts an edge of that very feature.
+        ObjectPayload::Chamfer(chamfer) => {
+            let previous = chamfer.previous;
+            if previous == object.id {
+                report.error(
+                    "feature.self-predecessor",
+                    Some(object.id),
+                    format!(
+                        "feature {} names itself as the result it modifies",
+                        object.id
+                    ),
+                );
+            } else {
+                match by_id.get(&previous) {
+                    None => report.error(
+                        "reference.missing-target",
+                        Some(object.id),
+                        format!("feature {} modifies missing feature {previous}", object.id),
+                    ),
+                    Some(found) if !found.payload.kind().is_some_and(ObjectKind::is_feature) => {
+                        report.error(
+                            "reference.wrong-kind",
+                            Some(object.id),
+                            format!(
+                                "feature {} expects {previous} to be a feature, found {}",
+                                object.id,
+                                found.payload.type_name()
+                            ),
+                        );
+                    }
+                    Some(_) => {}
+                }
+                if !edges.contains(&(object.id, previous, DependencyRole::Predecessor)) {
+                    report.error(
+                        "reference.missing-edge",
+                        Some(object.id),
+                        format!(
+                            "feature {} modifies {previous} but no predecessor dependency records it",
+                            object.id
+                        ),
+                    );
+                }
+            }
+            if chamfer.edge.feature != previous {
+                report.error(
+                    "chamfer.edge-outside-history",
+                    Some(object.id),
+                    format!(
+                        "chamfer {} cuts an edge of {}, and this build cuts an edge of the \
+                         feature it consumes, {previous}",
+                        object.id, chamfer.edge.feature
+                    ),
+                );
+            }
+        }
         // A Fillet consumes an earlier feature's result, stated once and
         // recorded by the same Predecessor edge a Cut's is (ADR 0004).
         ObjectPayload::Fillet(fillet) => {
@@ -584,7 +640,7 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
     let mut owners: BTreeMap<ObjectId, Vec<ObjectId>> = BTreeMap::new();
     for object in objects {
         match &object.payload {
-            ObjectPayload::Extrude(_) | ObjectPayload::Fillet(_) => {
+            ObjectPayload::Extrude(_) | ObjectPayload::Fillet(_) | ObjectPayload::Chamfer(_) => {
                 if let Some(previous) = object.payload.previous_feature() {
                     consumers.entry(previous).or_default().push(object.id);
                 }
@@ -638,7 +694,7 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
     let predecessors: BTreeMap<_, _> = objects
         .iter()
         .filter_map(|object| match &object.payload {
-            ObjectPayload::Extrude(_) | ObjectPayload::Fillet(_) => {
+            ObjectPayload::Extrude(_) | ObjectPayload::Fillet(_) | ObjectPayload::Chamfer(_) => {
                 Some((object.id, object.payload.previous_feature()))
             }
             _ => None,

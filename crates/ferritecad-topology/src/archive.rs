@@ -74,6 +74,13 @@ pub enum BoundName {
         edge_feature: ObjectId,
         joint: ProfileJoint,
     },
+    /// §29A: the planar face a Chamfer made by cutting the edge
+    /// `edge_feature` swept at `joint`. Its own name, never
+    /// [`Self::EdgeFilletFace`]: a plane and a cylinder are different meanings.
+    EdgeChamferFace {
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    },
     /// §28G: the edge `origin_feature` swept at `joint`, as this feature
     /// leaves it. What a second Fillet rounds, restored with the geometry.
     OriginSweepEdge {
@@ -151,6 +158,7 @@ impl BoundName {
             | Self::RevolvedStartCap
             | Self::RevolvedEndCap
             | Self::EdgeFilletFace { .. }
+            | Self::EdgeChamferFace { .. }
             | Self::OriginFilletFace { .. } => SubShapeKind::Face,
             Self::StartCapEdge { .. }
             | Self::EndCapEdge { .. }
@@ -397,6 +405,19 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
         }
     }
 
+    // §29A: the faces a Chamfer made, by the edge each replaced.
+    for (edge_feature, joint) in names.named_chamfer_edges() {
+        for face in names.chamfer_face(edge_feature, joint) {
+            wanted.push((
+                BoundName::EdgeChamferFace {
+                    edge_feature,
+                    joint,
+                },
+                face,
+            ));
+        }
+    }
+
     // The edges along the sweep, by the joint that names them.
     for joint in names.named_joints() {
         for edge in names.sweep_edge(joint) {
@@ -565,6 +586,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         let mut revolved_start_cap = Vec::new();
         let mut revolved_end_cap = Vec::new();
         let mut fillet_faces: BTreeMap<(ObjectId, ProfileJoint), Vec<_>> = BTreeMap::new();
+        let mut chamfer_faces: BTreeMap<(ObjectId, ProfileJoint), Vec<_>> = BTreeMap::new();
         let mut claimed = BTreeMap::new();
 
         for (name, face) in names.into_iter().zip(faces) {
@@ -622,6 +644,13 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                     .entry((edge_feature, joint))
                     .or_default()
                     .push(face),
+                BoundName::EdgeChamferFace {
+                    edge_feature,
+                    joint,
+                } => chamfer_faces
+                    .entry((edge_feature, joint))
+                    .or_default()
+                    .push(face),
                 carried_name => {
                     let origin = carried_origin(carried_name, archived.previous)?;
                     carried.entry(origin).or_default().push(face);
@@ -657,6 +686,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 revolved_start_cap,
                 revolved_end_cap,
                 fillet_faces,
+                chamfer_faces,
             },
         )
     })();

@@ -1039,6 +1039,21 @@ pub(crate) fn saved_plate_for_fillet(
     read_history(document, objects, &[], true)
 }
 
+/// §29A: the same reader, asked about the history under the one saved
+/// Chamfer, which is the Body's tip and consumes the base Extrude. Its row,
+/// predecessor edge and the tip edge are part of the exact sets checked; its
+/// payload and names are the caller's to check.
+pub(crate) fn saved_history_under_chamfer(
+    document: &Document,
+    objects: &[ObjectRecord],
+    chamfer: &ObjectRecord,
+) -> Result<CutHistory> {
+    let ObjectPayload::Chamfer(c) = &chamfer.payload else {
+        return Err(unsupported("the selected feature is not a Chamfer"));
+    };
+    read_history(document, objects, &[(chamfer.id, c.previous)], true)
+}
+
 /// §28B/§28H/§28L: the same reader, asked about the history under a chain of
 /// saved Fillets (one to four), bottom first, the last of which is the Body's
 /// tip and each of which rounds the result of the one before (the first rounds
@@ -1050,19 +1065,37 @@ pub(crate) fn saved_history_under_fillets(
     objects: &[ObjectRecord],
     fillets: &[&ObjectRecord],
 ) -> Result<CutHistory> {
-    read_history(document, objects, fillets, true)
+    let mut under = Vec::with_capacity(fillets.len());
+    for (i, fillet) in fillets.iter().enumerate() {
+        let ObjectPayload::Fillet(f) = &fillet.payload else {
+            return Err(unsupported("the selected feature is not a Fillet"));
+        };
+        if i > 0 && f.previous != fillets[i - 1].id {
+            return Err(unsupported(format!(
+                "Fillet {} does not round the result of Fillet {}",
+                fillet.id,
+                fillets[i - 1].id
+            )));
+        }
+        under.push((fillet.id, f.previous));
+    }
+    read_history(document, objects, &under, true)
 }
 
+/// `under`: the features stacked on the base, bottom first, each with the
+/// feature it consumes (Fillets, or the one Chamfer of §29A); the last is the
+/// Body's tip and each consumes the one before it.
+///
 /// `constrained_base`: whether the base Sketch may carry the constraint
 /// editor's managed Line family. Under a Fillet (§28E) and for a Fillet's new
 /// plate (§28F) it may; a Cut history never does.
 fn read_history(
     document: &Document,
     objects: &[ObjectRecord],
-    fillets: &[&ObjectRecord],
+    under: &[(ObjectId, ObjectId)],
     constrained_base: bool,
 ) -> Result<CutHistory> {
-    let own = fillets.len();
+    let own = under.len();
     if objects.len() < 4 + own
         || objects.len() > 4 + own + 2 * MAX_CIRCULAR_CUTS
         || objects.iter().any(|o| o.parent.is_some())
@@ -1104,29 +1137,13 @@ fn read_history(
     let tip = b
         .tip_feature
         .ok_or_else(|| unsupported("Body has no tip"))?;
-    // Each Fillet with the feature it rounds, bottom first. The last one is
-    // the Body's tip and each rounds the result of the one before it.
-    let mut under = Vec::with_capacity(fillets.len());
-    for (i, fillet) in fillets.iter().enumerate() {
-        let ObjectPayload::Fillet(f) = &fillet.payload else {
-            return Err(unsupported("the selected feature is not a Fillet"));
-        };
-        if i > 0 && f.previous != fillets[i - 1].id {
-            return Err(unsupported(format!(
-                "Fillet {} does not round the result of Fillet {}",
-                fillet.id,
-                fillets[i - 1].id
-            )));
-        }
-        under.push((fillet.id, f.previous));
-    }
-    if let Some(last) = fillets.last()
-        && tip != last.id
+    // The last feature stacked on the base is the Body's tip.
+    if let Some((last, _)) = under.last()
+        && tip != *last
     {
         return Err(unsupported(format!(
-            "Fillet {} is not the Body's tip, and this slice edits the Fillet that ends the \
-             Body",
-            last.id
+            "Feature {last} is not the Body's tip, and this slice edits the feature that ends \
+             the Body",
         )));
     }
     let mut cursor = under.first().map_or(tip, |(_, previous)| *previous);
@@ -1181,13 +1198,13 @@ fn read_history(
     // rectangle the Fillet names. §28F: so may the plate a new Fillet rounds.
     // A Cut history stays unconstrained.
     if !part.constraints.is_empty() {
-        if !constrained_base || (fillets.is_empty() && !chain.is_empty()) {
+        if !constrained_base || (under.is_empty() && !chain.is_empty()) {
             return Err(unsupported("this slice edits an unconstrained part"));
         }
         crate::sketch_constraints::managed_lines(part).map_err(|e| {
             unsupported(format!(
                 "the {} constraints are outside what this build edits: {e}",
-                if !fillets.is_empty() {
+                if !under.is_empty() {
                     "rounded plate's"
                 } else {
                     "plate's"
@@ -1223,7 +1240,7 @@ fn read_history(
         },
     ]);
     let mut covered = BTreeSet::from([body.id, base.id, profile.id, plane.id]);
-    for (id, previous) in under {
+    for &(id, previous) in under {
         expected.insert(Dependency {
             dependent: id,
             dependency: previous,

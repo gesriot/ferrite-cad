@@ -569,6 +569,17 @@ FcOcctStatus fc_occt_face_surface(FcOcctSession *session, uint64_t shape,
                                   double *out_radius,
                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
+/* Analytic plane of the exact named planar face (§29A): a point on it, its
+ * outward unit normal as the solid has the face (the U/V cross product,
+ * reversed when the solid uses the face reversed), and its area in square
+ * millimetres. Arrays have length 3. Diagnostic only, like
+ * fc_occt_cylinder_axis: never searches for a face or assigns a topology
+ * name, and refuses a face that is not planar. */
+FcOcctStatus fc_occt_face_plane(FcOcctSession *session, uint64_t shape,
+                                uint64_t face, double *out_origin,
+                                double *out_normal, double *out_area,
+                                FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 /* Analytic axis of the exact named cylindrical or conical face; arrays have
  * length 3. Diagnostic only, like fc_occt_cylinder_axis: never searches for a
  * face or assigns a topology name. */
@@ -751,6 +762,34 @@ FcOcctStatus fc_occt_fillet_faces(FcOcctSession *session, uint64_t shape,
                                   uint64_t *out_ids, size_t capacity,
                                   size_t *out_count,
                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * Cuts exactly one edge of a shape away at one equal distance along both of
+ * its faces (§29A).
+ *
+ * Arguments, success conditions and history are those of fc_occt_fillet_edge,
+ * with `distance` in millimetres, finite and positive, in place of a radius.
+ * The builder is BRepFilletAPI_MakeChamfer's symmetric form, which takes no
+ * reference face, so the two distances are equal by construction and no
+ * arbitrary choice of face can change the result. The faces generated from
+ * the edge are read with fc_occt_chamfer_faces; what became of every
+ * registered sub-shape of the target is read with fc_occt_cut_carried.
+ */
+FcOcctStatus fc_occt_chamfer_edge(FcOcctSession *session, uint64_t target,
+                                  uint64_t edge, double distance,
+                                  FcOcctCancelFn cancel, void *cancel_context,
+                                  uint64_t *out_shape, double *out_removed_volume,
+                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * The faces fc_occt_chamfer_edge reported as generated from the cut edge, as
+ * sub-shape identifiers of `shape`. Refuses a shape that is not the fresh
+ * result of fc_occt_chamfer_edge. Count-then-buffer, as the other queries.
+ */
+FcOcctStatus fc_occt_chamfer_faces(FcOcctSession *session, uint64_t shape,
+                                   uint64_t *out_ids, size_t capacity,
+                                   size_t *out_count,
+                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
  * Rounds every edge of a shape to one radius.

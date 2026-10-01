@@ -77,6 +77,10 @@ impl OcctKernel {
     pub fn surface_axis(&mut self, _face: SubShapeHandle) -> Result<([f64; 3], [f64; 3])> {
         match self.0 {}
     }
+
+    pub fn face_plane(&mut self, _face: SubShapeHandle) -> Result<([f64; 3], [f64; 3], f64)> {
+        match self.0 {}
+    }
 }
 
 impl GeometryKernel for OcctKernel {

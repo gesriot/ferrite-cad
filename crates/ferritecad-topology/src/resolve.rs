@@ -477,6 +477,36 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
             )
         }
 
+        // §29A: the face the producer — a Chamfer — made by cutting the edge
+        // `edge_feature` swept at `joint`. The same rule as the Fillet's face
+        // and a map of its own: a plane made by a chamfer is never answered
+        // from a fillet's cylinder, nor the other way round.
+        SemanticRole::EdgeChamferFace {
+            edge_feature,
+            joint,
+        } => {
+            require_kind(reference, EntityKind::Face, "a chamfer face")?;
+            if reference.selection != SelectionRule::Exact {
+                return Err(CadError::input(format!(
+                    "topology reference {} names the face cut from {joint}, which is one \
+                     face, and must select it exactly",
+                    reference.id
+                )));
+            }
+            let Some(names) = map.feature(reference.producer_feature) else {
+                return Err(CadError::topology(format!(
+                    "topology reference {} names geometry of a feature this rebuild produced \
+                     nothing for",
+                    reference.id
+                )));
+            };
+            exactly_one(
+                reference,
+                names.chamfer_face(*edge_feature, *joint).collect(),
+                &format!("the face cut from the edge {edge_feature} swept at {joint}"),
+            )
+        }
+
         SemanticRole::FilletFace { source_edge } => Err(CadError::unsupported(format!(
             "topology reference {} names a fillet face from edge {source_edge}, and fillets are \
              not implemented",

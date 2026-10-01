@@ -51,6 +51,7 @@
 
 mod annulus_edit;
 mod cache;
+mod chamfer;
 mod circle_edit;
 mod cut_boundary;
 mod cut_edit;
@@ -65,6 +66,12 @@ mod revolve_angle_edit;
 mod sketch_edit;
 pub use annulus_edit::{
     AnnulusChoice, AnnulusEdit, SavedAnnulus, annulus_choices, replace_annulus_geometry,
+};
+pub use chamfer::{
+    ChamferChoice, ChamferCorner, ChamferDistanceChoice, EdgeChamfer, MIN_DISTANCE_MM, MIN_FLAT_MM,
+    PreparedChamferDistance, PreparedEdgeChamfer, SavedChamfer, SavedChamferTarget,
+    chamfer_choices, chamfer_distance_choices, check_distance_value, evaluable_chamfer,
+    max_distance_of, prepare_chamfer_distance, prepare_edge_chamfer, saved_chamfer,
 };
 pub use circle_edit::{
     CircleChoice, CircleEdit, SavedCircle, circle_choices, replace_circle_geometry,
@@ -112,17 +119,18 @@ pub use edit::{DocumentVersion, ExtrudeChoice, ExtrudeEditSource, editable_extru
 pub use envelope::{Envelope, UnknownObject};
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
-    Body, CORE_CAPABILITY, CapSide, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY,
+    Body, CORE_CAPABILITY, CapSide, Chamfer, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY,
     EXTRUDE_CAP_VERTEX_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
-    Expression, Extrude, FEATURE_FILLET_CAPABILITY, FEATURE_FILLET_SEQUENTIAL_CAPABILITY,
-    FEATURE_PREDECESSOR_CAPABILITY, FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
-    FEATURE_REVOLVE_CAPABILITY, FEATURE_REVOLVE_PARTIAL_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY,
-    Fillet, FilletEdge, GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef,
-    ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter, Point2, Revolve,
-    RevolveAngle, RevolveAxis, RevolveExtent, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
-    SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
-    SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
-    SketchPointSelector, SketchSegmentRef, SolidOperation, TOPOLOGY_CARRIED_FACE_CAPABILITY,
+    Expression, Extrude, FEATURE_CHAMFER_CAPABILITY, FEATURE_FILLET_CAPABILITY,
+    FEATURE_FILLET_SEQUENTIAL_CAPABILITY, FEATURE_PREDECESSOR_CAPABILITY,
+    FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY, FEATURE_REVOLVE_CAPABILITY,
+    FEATURE_REVOLVE_PARTIAL_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY, Fillet, FilletEdge,
+    GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
+    ObjectKind, ObjectPayload, Parameter, Point2, Revolve, RevolveAngle, RevolveAxis,
+    RevolveExtent, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY,
+    STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch, SketchConstraint,
+    SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
+    SketchSegmentRef, SolidOperation, SweptEdge, TOPOLOGY_CARRIED_FACE_CAPABILITY,
     TOPOLOGY_ORIGIN_FACE_CAPABILITY, TopologyRef,
 };
 pub use schema::{

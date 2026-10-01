@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_document::CapSide;
 use ferritecad_kernel::{
-    CutResult, ExtrudeResult, FilletResult, HistoryInput, Profile, RevolveResult, RevolveTurn,
-    ShapeHandle, SubShapeHandle, SubShapeKind,
+    ChamferResult, CutResult, ExtrudeResult, FilletResult, HistoryInput, Profile, RevolveResult,
+    RevolveTurn, ShapeHandle, SubShapeHandle, SubShapeKind,
 };
 use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
 
@@ -60,6 +60,12 @@ pub struct FeatureNames {
     /// every name here is one: a kernel that reported two is recorded as it
     /// answered, and the resolver refuses rather than picks.
     fillet_faces: BTreeMap<(ObjectId, ProfileJoint), BTreeSet<SubShapeHandle>>,
+    /// §29A: the planar face a Chamfer made by cutting the edge one feature
+    /// swept at one corner. Apart from `fillet_faces` for the reason
+    /// `revolved` is apart from `sides`: a plane made by a chamfer and a
+    /// cylinder made by a fillet are different meanings, and a name written as
+    /// one must never resolve to the other.
+    chamfer_faces: BTreeMap<(ObjectId, ProfileJoint), BTreeSet<SubShapeHandle>>,
     /// Immediate predecessor, for the unchanged legacy CarriedCap/Side roles.
     previous: Option<ObjectId>,
     /// Original producer and role, never reassigned by an intervening boolean.
@@ -307,6 +313,28 @@ impl FeatureNames {
             .copied()
     }
 
+    /// §29A: the faces cut from the edge `edge_feature` swept at `joint`.
+    pub fn chamfer_face(
+        &self,
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    ) -> impl ExactSizeIterator<Item = SubShapeHandle> + '_ {
+        self.chamfer_faces
+            .get(&(edge_feature, joint))
+            .map(|s| s.iter())
+            .unwrap_or_default()
+            .copied()
+    }
+
+    /// Every cut edge this feature names a face for, in order.
+    pub fn named_chamfer_edges(&self) -> impl ExactSizeIterator<Item = (ObjectId, ProfileJoint)> {
+        self.chamfer_faces
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
     /// Every rounded edge this feature names a face for, in order.
     pub fn named_fillet_edges(&self) -> impl ExactSizeIterator<Item = (ObjectId, ProfileJoint)> {
         self.fillet_faces
@@ -359,6 +387,11 @@ impl FeatureNames {
                 .map(|(_, faces)| faces.len())
                 .sum::<usize>()
             + self.fillet_faces.values().map(BTreeSet::len).sum::<usize>()
+            + self
+                .chamfer_faces
+                .values()
+                .map(BTreeSet::len)
+                .sum::<usize>()
     }
 
     /// Every qualified name, including deleted ancestors, in deterministic order.
@@ -400,6 +433,8 @@ pub struct RestoredNames {
     pub carried_deleted: BTreeSet<(ObjectId, CarriedName)>,
     /// §28A: fillet faces by the edge they replaced.
     pub fillet_faces: BTreeMap<(ObjectId, ProfileJoint), Vec<SubShapeHandle>>,
+    /// §29A: chamfer faces by the edge they replaced.
+    pub chamfer_faces: BTreeMap<(ObjectId, ProfileJoint), Vec<SubShapeHandle>>,
 }
 
 /// What a whole rebuild produced, addressed by feature and role.
@@ -902,6 +937,17 @@ impl TopologyMap {
                 names.fillet_faces.entry(*edge).or_default().insert(*face);
             }
         }
+        if !restored.chamfer_faces.is_empty() && restored.previous.is_none() {
+            return Err(CadError::topology(format!(
+                "feature {producer} restored a chamfer face without the feature it cut"
+            )));
+        }
+        for (edge, faces) in &restored.chamfer_faces {
+            for face in faces {
+                check(*face, shape, producer, "a restored chamfer face")?;
+                names.chamfer_faces.entry(*edge).or_default().insert(*face);
+            }
+        }
         for (name, faces) in &restored.carried {
             if name.0 == producer || restored.previous.is_none() {
                 return Err(CadError::topology(
@@ -1199,31 +1245,98 @@ impl TopologyMap {
         edge: SubShapeHandle,
         result: &FilletResult,
     ) -> Result<()> {
+        self.record_edge_operation(
+            EdgeOperation::Fillet,
+            producer,
+            previous,
+            (edge_feature, joint),
+            previous_names,
+            edge,
+            (result.shape, &result.history, &result.carried),
+            &result.fillet_faces,
+            |shape| result.validate(shape, edge),
+        )
+    }
+
+    /// Records what cutting one edge away produced (§29A).
+    ///
+    /// The same two groups of names as [`Self::record_fillet`], read from the
+    /// chamfer's own history: the new planar face filed under the edge it
+    /// replaced and in its own role, and every face the predecessor was known
+    /// by, as the chamfer leaves it or recorded as removed. Nothing looks at
+    /// geometry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_chamfer(
+        &mut self,
+        producer: ObjectId,
+        previous: ObjectId,
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+        previous_names: &FeatureNames,
+        edge: SubShapeHandle,
+        result: &ChamferResult,
+    ) -> Result<()> {
+        self.record_edge_operation(
+            EdgeOperation::Chamfer,
+            producer,
+            previous,
+            (edge_feature, joint),
+            previous_names,
+            edge,
+            (result.shape, &result.history, &result.carried),
+            &result.chamfer_faces,
+            |shape| result.validate(shape, edge),
+        )
+    }
+
+    /// What the fillet and the chamfer share: one new face under the edge it
+    /// replaced, and the predecessor's names carried through the operation's
+    /// own history.
+    #[allow(clippy::too_many_arguments)]
+    fn record_edge_operation(
+        &mut self,
+        operation: EdgeOperation,
+        producer: ObjectId,
+        previous: ObjectId,
+        (edge_feature, joint): (ObjectId, ProfileJoint),
+        previous_names: &FeatureNames,
+        _edge: SubShapeHandle,
+        (shape, history, result_carried): (
+            ShapeHandle,
+            &ferritecad_kernel::History,
+            &BTreeMap<SubShapeHandle, ferritecad_kernel::CarriedOutcome>,
+        ),
+        new_faces: &[SubShapeHandle],
+        validate: impl FnOnce(ShapeHandle) -> Result<()>,
+    ) -> Result<()> {
+        let (what, verb) = operation.words();
         let Some(previous_shape) = previous_names.shape() else {
             return Err(CadError::topology(format!(
-                "feature {producer} rounds an edge of {previous}, which produced no shape"
+                "feature {producer} {verb} an edge of {previous}, which produced no shape"
             )));
         };
-        result.validate(previous_shape, edge)?;
+        validate(previous_shape)?;
 
         let mut names = FeatureNames {
-            shape: Some(result.shape),
+            shape: Some(shape),
             ..FeatureNames::default()
         };
-        for face in &result.fillet_faces {
-            check(*face, result.shape, producer, "a fillet face")?;
-            names
-                .fillet_faces
+        for face in new_faces {
+            check(*face, shape, producer, &format!("a {what} face"))?;
+            let filed = match operation {
+                EdgeOperation::Fillet => &mut names.fillet_faces,
+                EdgeOperation::Chamfer => &mut names.chamfer_faces,
+            };
+            filed
                 .entry((edge_feature, joint))
                 .or_default()
                 .insert(*face);
         }
 
         let outputs = |input: SubShapeHandle| -> Vec<SubShapeHandle> {
-            result
-                .history
+            history
                 .modified(HistoryInput::SubShape(input))
-                .chain(result.history.generated(HistoryInput::SubShape(input)))
+                .chain(history.generated(HistoryInput::SubShape(input)))
                 .collect()
         };
         names.previous = Some(previous);
@@ -1285,19 +1398,13 @@ impl TopologyMap {
         for (name, faces) in inputs {
             let mut carried = BTreeSet::new();
             for face in faces {
-                if !result.carried.contains_key(&face) {
-                    return Err(CadError::topology(
-                        "fillet history omitted a named input face",
-                    ));
+                if !result_carried.contains_key(&face) {
+                    return Err(CadError::topology(format!(
+                        "{what} history omitted a named input face"
+                    )));
                 }
                 for out in outputs(face) {
-                    check_kind(
-                        out,
-                        result.shape,
-                        producer,
-                        "a carried origin name",
-                        name.1.kind(),
-                    )?;
+                    check_kind(out, shape, producer, "a carried origin name", name.1.kind())?;
                     carried.insert(out);
                 }
             }
@@ -1307,11 +1414,11 @@ impl TopologyMap {
                 names.carried.insert(name, carried);
             }
         }
-        // A face cannot be both the new fillet face and a carried one.
-        for face in &result.fillet_faces {
+        // A face cannot be both the new face and a carried one.
+        for face in new_faces {
             if names.carried.values().any(|set| set.contains(face)) {
                 return Err(CadError::topology(format!(
-                    "feature {producer} reported {face} both as the fillet face and as a carried \
+                    "feature {producer} reported {face} both as the {what} face and as a carried \
                      face"
                 )));
             }
@@ -1323,6 +1430,23 @@ impl TopologyMap {
             )));
         }
         Ok(())
+    }
+}
+
+/// Which of the two single-edge operations a recording is for (§29A): the
+/// names are filed in separate maps and the refusals say the right word.
+#[derive(Clone, Copy)]
+enum EdgeOperation {
+    Fillet,
+    Chamfer,
+}
+
+impl EdgeOperation {
+    fn words(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Fillet => ("fillet", "rounds"),
+            Self::Chamfer => ("chamfer", "cuts"),
+        }
     }
 }
 
@@ -1504,6 +1628,111 @@ mod tests {
         assert!(
             m.record_fillet(
                 fillet,
+                base,
+                base,
+                joint,
+                &FeatureNames::default(),
+                edge,
+                &honest()
+            )
+            .is_err()
+        );
+    }
+
+    /// §29A: a chamfer is named by the edge it replaced, in a map of its own
+    /// that no fillet question reads, and carries only what its history says.
+    #[test]
+    fn a_chamfer_is_named_by_its_edge_in_its_own_map_and_carries_only_what_its_history_says() {
+        use ferritecad_kernel::{CarriedOutcome, ChamferResult, ShapeHandle};
+        let square = square();
+        let mut kernel = MockKernel::new();
+        let result = built(&mut kernel, &square);
+        let base = ObjectId::new();
+        let chamfer = ObjectId::new();
+        let mut map = TopologyMap::new();
+        map.record_extrude(base, square.request.profile(), &result)
+            .expect("the plate");
+        let names = map.feature(base).expect("names").clone();
+        let joint = ProfileJoint::new(square.labels[0], square.labels[1]).expect("joint");
+        let edge = SubShapeHandle::new(result.shape, SubShapeKind::Edge, 999);
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let face = |index| SubShapeHandle::new(shape, SubShapeKind::Face, index);
+        let mut inputs: Vec<SubShapeHandle> = names
+            .cap(CapSide::Start)
+            .into_iter()
+            .flatten()
+            .chain(names.cap(CapSide::End).into_iter().flatten())
+            .collect();
+        for label in &square.labels {
+            inputs.extend(names.side(*label));
+        }
+        let honest = || {
+            let mut history = History::new();
+            let mut carried = BTreeMap::from([(edge, CarriedOutcome::Deleted)]);
+            for (k, input) in inputs.iter().enumerate() {
+                history.record_modified(HistoryInput::SubShape(*input), face(10 + k as u64));
+                carried.insert(*input, CarriedOutcome::Modified);
+            }
+            ChamferResult {
+                shape,
+                history,
+                carried,
+                chamfer_faces: vec![face(1)],
+                removed_volume: 1.0,
+            }
+        };
+
+        let mut good = map.clone();
+        good.record_chamfer(chamfer, base, base, joint, &names, edge, &honest())
+            .expect("an honest chamfer");
+        let recorded = good.feature(chamfer).expect("the chamfer's names");
+        assert_eq!(
+            recorded.chamfer_face(base, joint).collect::<Vec<_>>(),
+            [face(1)]
+        );
+        assert_eq!(
+            recorded.named_chamfer_edges().collect::<Vec<_>>(),
+            [(base, joint)]
+        );
+        // Not a fillet's face: the two meanings are filed apart.
+        assert_eq!(recorded.fillet_face(base, joint).len(), 0);
+        assert_eq!(recorded.named_fillet_edges().len(), 0);
+        assert_eq!(recorded.previous(), Some(base));
+        for label in &square.labels {
+            assert_eq!(
+                recorded.origin_faces(base, CarriedName::Side(*label)).len(),
+                1
+            );
+        }
+        for side in [CapSide::Start, CapSide::End] {
+            assert_eq!(recorded.origin_faces(base, CarriedName::Cap(side)).len(), 1);
+        }
+        assert_eq!(good.feature(base), Some(&names), "nothing was repointed");
+
+        let mut silent = honest();
+        silent.carried.remove(&inputs[0]);
+        let mut twice = honest();
+        twice
+            .history
+            .record_modified(HistoryInput::SubShape(inputs[0]), face(1));
+        for (why, bad) in [("silent", silent), ("twice", twice)] {
+            let mut m = map.clone();
+            let error = m
+                .record_chamfer(chamfer, base, base, joint, &names, edge, &bad)
+                .expect_err(why)
+                .to_string();
+            assert!(error.contains("chamfer"), "{why}: {error}");
+        }
+        let other = SubShapeHandle::new(result.shape, SubShapeKind::Edge, 998);
+        let mut m = map.clone();
+        assert!(
+            m.record_chamfer(chamfer, base, base, joint, &names, other, &honest())
+                .is_err()
+        );
+        let mut m = map.clone();
+        assert!(
+            m.record_chamfer(
+                chamfer,
                 base,
                 base,
                 joint,

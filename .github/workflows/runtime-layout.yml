@@ -741,6 +741,34 @@ jobs:
           FERRITECAD="$recipe_cli" "$py" ferrite-28l-recipe.py | tee fillet-four-recipe-no-solver.log
           grep -q '^FCAD_28L_RECIPE_NO_SOLVER ' fillet-four-recipe-no-solver.log
 
+      - name: Chamfer a plate with Open CASCADE and no solver
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '0'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # §29A: the previous step left the no-solver CLI in target/release.
+          case '${{ matrix.name }}' in
+            windows) export PATH="$FCAD_OCCT_LIB_DIR:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR"; export DYLD_FALLBACK_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
+            linux) export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
+          esac
+          py="$(command -v python3 || command -v python)"
+          recipe_cli="$PWD/target/release/ferritecad"
+          case '${{ matrix.name }}' in
+            windows) recipe_cli="$(cygpath -w "$recipe_cli.exe")" ;;
+          esac
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/rectangular-corner-chamfer.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_29A_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-29a-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-29a-recipe.py | tee chamfer-recipe-no-solver.log
+          grep -q '^FCAD_29A_RECIPE_OK ' chamfer-recipe-no-solver.log
+
       - name: Build the real application and the command line tool against both
         id: build
         env:
@@ -2231,6 +2259,109 @@ jobs:
           grep -q '^FCAD_28L_RECIPE_OK ' fillet-four-recipe.log
           echo "FCAD_FILLET_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
+      - name: Chamfer one vertical edge of a saved plate into a named flat
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/fillet"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_FILLET_ARTIFACTS="$artifacts"
+          # §29A. The peer process must be this build before the app worker gate.
+          cargo build --release --features planegcs -p ferritecad-cli
+          for gate in \
+            chamfer::native_a_chamfer_at_every_corner_in_three_orders_is_what_the_numbers_say \
+            chamfer::native_the_corner_and_the_volume_are_measured_apart \
+            chamfer::native_the_distance_bounds_are_exact_and_the_cache_follows_the_distance \
+            chamfer::native_the_distance_edit_changes_one_number_and_keeps_every_identity \
+            chamfer::native_chamfer_refusals_races_cancellation_and_report_loss_are_atomic \
+            chamfer::native_every_other_editor_refuses_a_chamfered_plate_by_name \
+            chamfer::native_the_evaluator_refuses_a_saved_chamfer_outside_the_class \
+            chamfer::chamfer_discovery_and_protocol_without_native
+          do
+            cargo test --release --features planegcs -p ferritecad-cli --test fillet "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-cli.log
+            # Some gates print the panics they provoke on purpose, so their
+            # "ok" is not on the name's line; one exact test passing is the proof.
+            if grep -q 'skipped:' chamfer-cli.log || ! grep -Fq "test $gate ... " chamfer-cli.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-cli.log; then exit 1; fi
+          done
+          # The selected-edge chamfer, through the trait and the bridge.
+          for gate in one_selected_vertical_edge_is_chamfered_to_the_corner_it_names_and_every_tracked_face_is_accounted_for \
+            a_chamfer_that_cannot_be_what_it_claims_is_refused_and_keeps_nothing \
+            planar_normals_follow_the_solid_when_the_face_centroid_is_in_a_hole
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-occt --test chamfer_edge_occt "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-occt.log
+            if grep -q 'skipped:' chamfer-occt.log || ! grep -Fq "test $gate ... " chamfer-occt.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-occt.log; then exit 1; fi
+          done
+          for gate in request::tests::a_chamfer_request_names_an_edge_of_its_target_and_a_real_distance \
+            result::tests::a_chamfer_result_is_held_to_one_deleted_edge_one_face_and_real_removal \
+            kernel::tests::a_chamfer_keys_by_target_edge_meaning_and_distance_bits
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-kernel --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-kernel.log
+            if grep -q 'skipped:' chamfer-kernel.log || ! grep -Fq "test $gate ... " chamfer-kernel.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-kernel.log; then exit 1; fi
+          done
+          for gate in chamfer::tests::the_chamfer_payload_round_trips_and_refuses_what_it_cannot_mean \
+            chamfer::tests::the_distance_policy_is_exact_at_its_bounds_and_the_same_everywhere \
+            chamfer::tests::a_chamfer_is_written_at_every_corner_in_both_windings_and_reads_back \
+            chamfer::tests::the_distance_edit_changes_one_number_and_the_writer_refuses_forgery \
+            chamfer::tests::the_creation_writer_rederives_the_chamfer_and_refuses_forgery \
+            chamfer::tests::every_other_editor_refuses_a_chamfered_body_by_name \
+            chamfer::tests::a_dimensioned_plate_is_refused_with_the_constraint_named \
+            chamfer::tests::the_evaluator_judges_the_chamfer_on_the_built_lines
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-document.log
+            if grep -q 'skipped:' chamfer-document.log || ! grep -Fq "test $gate ... " chamfer-document.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-document.log; then exit 1; fi
+          done
+          for gate in map::tests::a_chamfer_is_named_by_its_edge_in_its_own_map_and_carries_only_what_its_history_says \
+            codec::tests::an_edge_chamfer_face_survives_its_byte_form_and_is_not_a_fillet_face
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-topology --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-topology.log
+            if grep -q 'skipped:' chamfer-topology.log || ! grep -Fq "test $gate ... " chamfer-topology.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-topology.log; then exit 1; fi
+          done
+          for gate in chamfers::history_tests::the_request_history_steps_back_and_forward_and_forgets_a_discarded_future \
+            chamfers::tests::chamfer_widgets_list_corners_refuse_like_the_document_and_keep_the_draft \
+            chamfers::tests::chamfer_distance_widgets_show_the_saved_edge_and_keep_the_draft \
+            chamfers::tests::native_chamfer_widgets_worker_and_cli_publish_the_same_part
+          do
+            cargo test --release --features planegcs -p ferritecad-app "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-ui.log
+            if grep -q 'skipped:' chamfer-ui.log || ! grep -Fq "test $gate ... " chamfer-ui.log \
+              || ! grep -q '^test result: ok\. 1 passed; 0 failed' chamfer-ui.log; then exit 1; fi
+          done
+          py="$(command -v python3 || command -v python)"
+          recipe_cli="$PWD/target/release/ferritecad"
+          case '${{ matrix.name }}' in
+            windows) recipe_cli="$(cygpath -w "$recipe_cli.exe")" ;;
+          esac
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/rectangular-corner-chamfer.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_29A_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-29a-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-29a-recipe.py | tee chamfer-recipe.log
+          grep -q '^FCAD_29A_RECIPE_OK ' chamfer-recipe.log
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -2351,6 +2482,7 @@ jobs:
           grep -q '^FCAD_FILLET_TWO_SKETCH_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_TWO_CONSTRAINTS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_FOUR_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_CHAMFER_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:
