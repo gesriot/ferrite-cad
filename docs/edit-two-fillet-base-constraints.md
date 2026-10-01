@@ -66,8 +66,9 @@ opposite corners share no Line). Nothing is clamped, reselected or
 approximated, no epsilon is added, and no second check is written. A plate the
 solved Lines make too small for either radius, for the flat, or that loses a
 side is `input`, naming the Fillet's joint UUIDs, and publishes nothing; a
-conflict or redundancy of the solver is its own `constraint` refusal with the
-real constraint UUIDs.
+solver conflict is its own `constraint` refusal with the real constraint
+UUIDs. A redundant but consistent system may publish; the result reports the
+real redundant UUIDs in `solve.redundant_constraint_ids`.
 
 ### SQL allowlist
 

@@ -444,9 +444,9 @@ pub(crate) struct FilletsOverPlate {
     pub second: Option<SavedFillet>,
 }
 
-/// §28I/§28J: [`fillet_over_plate`] for the base height and Sketch coordinate
-/// edits, which also admit the §28G history of two Fillets. The constraint
-/// and add-Fillet editors keep reading [`fillet_over_plate`], which does not.
+/// §28I/§28J/§28K: [`fillet_over_plate`] for the base height, Sketch coordinate
+/// and constraint edits, which also admit the §28G history of two Fillets.
+/// The add-Fillet editor keeps reading [`fillet_over_plate`], which does not.
 pub(crate) fn fillets_over_plate(
     document: &Document,
     objects: &[ObjectRecord],
