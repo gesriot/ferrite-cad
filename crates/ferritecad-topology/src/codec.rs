@@ -124,6 +124,12 @@ const TAG_EDGE_FILLET_FACE: u16 = 18;
 const TAG_ORIGIN_SWEEP_EDGE: u16 = 19;
 const TAG_ORIGIN_FILLET_FACE: u16 = 20;
 
+/// §29A: the planar face a Chamfer made from one producer's edge at one corner.
+/// Appended in the same vocabulary-only way as [`TAG_EDGE_FILLET_FACE`]: the
+/// layout of an entry is unchanged, so the format version is not, and a reader
+/// that predates the tag refuses the whole entry as malformed and rebuilds.
+const TAG_EDGE_CHAMFER_FACE: u16 = 21;
+
 /// Writes a §28G origin name, which may be bound or removed alike. Answers
 /// whether `name` was one.
 fn put_sequential_origin(payload: &mut Vec<u8>, name: BoundName) -> bool {
@@ -296,6 +302,16 @@ impl ArchivedFeature {
                         payload.extend_from_slice(&segment.to_bytes());
                     }
                 }
+                BoundName::EdgeChamferFace {
+                    edge_feature,
+                    joint,
+                } => {
+                    payload.extend_from_slice(&TAG_EDGE_CHAMFER_FACE.to_le_bytes());
+                    payload.extend_from_slice(&edge_feature.to_bytes());
+                    for segment in joint.segments() {
+                        payload.extend_from_slice(&segment.to_bytes());
+                    }
+                }
                 BoundName::OriginSweepEdge { .. } | BoundName::OriginFilletFace { .. } => {
                     put_sequential_origin(&mut payload, name);
                 }
@@ -445,6 +461,13 @@ impl ArchivedFeature {
                 TAG_REVOLVED_START_CAP => BoundName::RevolvedStartCap,
                 TAG_REVOLVED_END_CAP => BoundName::RevolvedEndCap,
                 TAG_EDGE_FILLET_FACE => BoundName::EdgeFilletFace {
+                    edge_feature: ObjectId::from_bytes(reader.array("edge feature")?)?,
+                    joint: ProfileJoint::from_canonical([
+                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
+                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
+                    ])?,
+                },
+                TAG_EDGE_CHAMFER_FACE => BoundName::EdgeChamferFace {
                     edge_feature: ObjectId::from_bytes(reader.array("edge feature")?)?,
                     joint: ProfileJoint::from_canonical([
                         StableEntityId::from_bytes(reader.array("first profile segment")?)?,
@@ -988,6 +1011,7 @@ mod tests {
             ("edge fillet face", TAG_EDGE_FILLET_FACE),
             ("origin sweep edge", TAG_ORIGIN_SWEEP_EDGE),
             ("origin fillet face", TAG_ORIGIN_FILLET_FACE),
+            ("edge chamfer face", TAG_EDGE_CHAMFER_FACE),
         ];
         for (index, (what, tag)) in tags.iter().enumerate() {
             for (other_what, other) in &tags[index + 1..] {
@@ -1024,6 +1048,7 @@ mod tests {
             [19, 20],
             "§28G appends; it never reuses"
         );
+        assert_eq!(TAG_EDGE_CHAMFER_FACE, 21, "§29A appends; it never reuses");
         assert_eq!(
             FORMAT_VERSION, 4,
             "carried sweep edges and fillet faces require v4"
@@ -1117,6 +1142,67 @@ mod tests {
     /// §28A: a Fillet's face comes back under its producer and its joint, a
     /// swapped joint is refused rather than sorted, and a reader that does not
     /// know the tag refuses the entry rather than restoring part of it.
+    /// §29A: a chamfer face survives its byte form under its own tag, and the
+    /// same bytes under a fillet's tag are a different name.
+    #[test]
+    fn an_edge_chamfer_face_survives_its_byte_form_and_is_not_a_fillet_face() {
+        let kernel = MockKernel::new();
+        let identity = kernel.identity().clone();
+        let blob = BrepBlob::new(identity.clone(), vec![5, 5, 5, 5]);
+        let hash = blob.content_hash();
+        let producer = ObjectId::new();
+        let base = ObjectId::new();
+        let joint = a_joint();
+        let name = BoundName::EdgeChamferFace {
+            edge_feature: base,
+            joint,
+        };
+        let mut archive = ArchivedFeature::from_parts_with_removed(
+            producer,
+            blob,
+            hash,
+            [
+                (name, ArchiveSlot::new(1)),
+                (
+                    BoundName::OriginCap {
+                        origin_feature: base,
+                        side: ferritecad_document::CapSide::Start,
+                    },
+                    ArchiveSlot::new(2),
+                ),
+            ],
+            [],
+        )
+        .expect("parts");
+        archive.previous = Some(base);
+        let bytes = archive.encode().expect("encodes");
+        let restored = ArchivedFeature::decode(&bytes, producer, &identity).expect("reads back");
+        assert_eq!(restored, archive);
+        assert_eq!(restored.slot(name).map(|s| s.index()), Some(1));
+        assert_eq!(
+            restored.slot(BoundName::EdgeFilletFace {
+                edge_feature: base,
+                joint,
+            }),
+            None,
+            "a chamfer face is not a fillet face"
+        );
+        assert_eq!(name.kind(), SubShapeKind::Face);
+        let mut needle = TAG_EDGE_CHAMFER_FACE.to_le_bytes().to_vec();
+        needle.extend_from_slice(&base.to_bytes());
+        let at = bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("the face is written under its own tag and its producer");
+        let mut as_fillet = bytes.clone();
+        as_fillet[at..at + 2].copy_from_slice(&TAG_EDGE_FILLET_FACE.to_le_bytes());
+        let read = ArchivedFeature::decode(&as_fillet, producer, &identity);
+        assert!(
+            read.is_err() || read.expect("decoded").slot(name).is_none(),
+            "the same bytes under a fillet's tag are not a chamfer face"
+        );
+    }
+
     #[test]
     fn an_edge_fillet_face_survives_its_byte_form_and_nothing_else_reads_as_it() {
         let kernel = MockKernel::new();
