@@ -740,7 +740,26 @@ jobs:
           EXTRACT
           FERRITECAD="$recipe_cli" "$py" ferrite-28l-recipe.py | tee fillet-four-recipe-no-solver.log
           grep -q '^FCAD_28L_RECIPE_NO_SOLVER ' fillet-four-recipe-no-solver.log
-          # §29A: the public recipe, with a kernel and no solver one Chamfer created and edited through the same commands.
+
+      - name: Chamfer a plate with Open CASCADE and no solver
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '0'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # §29A: the previous step left the no-solver CLI in target/release.
+          case '${{ matrix.name }}' in
+            windows) export PATH="$FCAD_OCCT_LIB_DIR:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR"; export DYLD_FALLBACK_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
+            linux) export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
+          esac
+          py="$(command -v python3 || command -v python)"
+          recipe_cli="$PWD/target/release/ferritecad"
+          case '${{ matrix.name }}' in
+            windows) recipe_cli="$(cygpath -w "$recipe_cli.exe")" ;;
+          esac
           "$py" - <<'EXTRACT'
           from pathlib import Path
           text = Path("docs/rectangular-corner-chamfer.md").read_text(encoding="utf-8")
