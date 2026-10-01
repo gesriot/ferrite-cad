@@ -67,6 +67,9 @@
 #include <fstream>
 #include <mutex>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepFilletAPI_LocalOperation.hxx>
+#include <memory>
 #include <BRepGProp.hxx>
 #include <Precision.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
@@ -186,6 +189,10 @@ struct ShapeRecord {
   /// True for the fresh result of fc_occt_fillet_edge; only such a record
   /// answers fc_occt_fillet_faces.
   bool filleted = false;
+  /// True for the fresh result of fc_occt_chamfer_edge (§29A); only such a
+  /// record answers fc_occt_chamfer_faces. The faces both operations
+  /// generated are kept in `fillet_faces`.
+  bool chamfered = false;
   /// The faces generated from the rounded edge, read from the builder's own
   /// history while it was alive.
   std::vector<uint64_t> fillet_faces;
@@ -1939,6 +1946,45 @@ FcOcctStatus fc_occt_cylinder_axis(FcOcctSession *session, uint64_t shape,
   });
 }
 
+FcOcctStatus fc_occt_face_plane(FcOcctSession *session, uint64_t shape,
+                                uint64_t face, double *out_origin,
+                                double *out_normal, double *out_area,
+                                FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (out_origin == nullptr || out_normal == nullptr || out_area == nullptr) {
+      write_error(out_error, "face plane needs two length-3 output arrays and an area");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    int32_t kind = FC_OCCT_SURFACE_OTHER;
+    double radius = 0.0;
+    const auto status =
+        fc_occt_face_surface(session, shape, face, &kind, &radius, out_error);
+    if (status != FC_OCCT_OK) return status;
+    if (kind != FC_OCCT_SURFACE_PLANE) {
+      write_error(out_error, "the named face is not planar");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto &sub = session->shapes.at(shape).sub_shapes[face];
+    const TopoDS_Face planar = TopoDS::Face(sub);
+    const BRepAdaptor_Surface adaptor(planar);
+    const gp_Pln plane = adaptor.Plane();
+    // The outward normal of the face as the solid has it: the plane's own
+    // direction, flipped when the face is used reversed.
+    gp_Dir normal = plane.Axis().Direction();
+    if (planar.Orientation() == TopAbs_REVERSED) {
+      normal.Reverse();
+    }
+    GProp_GProps properties;
+    BRepGProp::SurfaceProperties(planar, properties);
+    for (int i = 0; i < 3; ++i) {
+      out_origin[i] = plane.Location().Coord(i + 1);
+      out_normal[i] = normal.Coord(i + 1);
+    }
+    *out_area = properties.Mass();
+    return FC_OCCT_OK;
+  });
+}
+
 FcOcctStatus fc_occt_surface_axis(FcOcctSession *session, uint64_t shape,
                                   uint64_t face, double *out_origin,
                                   double *out_direction,
@@ -2438,19 +2484,31 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
   });
 }
 
-FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
-                                 uint64_t edge, double radius,
-                                 FcOcctCancelFn cancel, void *cancel_context,
-                                 uint64_t *out_shape, double *out_removed_volume,
-                                 FcOcctError *out_error) noexcept {
+/// §29A: the fillet and the chamfer of one edge share everything after the
+/// builder is chosen: the checks of the argument, the cancellation boundaries,
+/// the validation of the result and the account of every sub-shape of the
+/// target, asked while the builder is alive. `chamfer` selects the builder and
+/// the words of the refusals; the fillet's behaviour and messages are
+/// unchanged.
+static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
+                                   uint64_t target, uint64_t edge,
+                                   double amount, FcOcctCancelFn cancel,
+                                   void *cancel_context, uint64_t *out_shape,
+                                   double *out_removed_volume,
+                                   FcOcctError *out_error) noexcept {
+  const std::string what = chamfer ? "chamfer" : "fillet";
+  const std::string entry =
+      chamfer ? "fc_occt_chamfer_edge" : "fc_occt_fillet_edge";
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr || out_shape == nullptr ||
         out_removed_volume == nullptr) {
-      write_error(out_error, "fc_occt_fillet_edge was given a null argument");
+      write_error(out_error, entry + " was given a null argument");
       return FC_OCCT_INVALID_INPUT;
     }
-    if (!std::isfinite(radius) || radius <= 0.0) {
-      write_error(out_error, "a fillet radius must be positive and finite");
+    if (!std::isfinite(amount) || amount <= 0.0) {
+      write_error(out_error, chamfer
+                                 ? "a chamfer distance must be positive and finite"
+                                 : "a fillet radius must be positive and finite");
       return FC_OCCT_INVALID_INPUT;
     }
     const auto found = session->shapes.find(target);
@@ -2474,36 +2532,51 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
       return FC_OCCT_INVALID_INPUT;
     }
     if (cancelled(cancel, cancel_context)) {
-      write_error(out_error, "the fillet was cancelled before it began");
+      write_error(out_error, "the " + what + " was cancelled before it began");
       return FC_OCCT_CANCELLED;
     }
 
     GProp_GProps before;
     BRepGProp::VolumeProperties(source.shape, before);
 
-    BRepFilletAPI_MakeFillet fillet(source.shape);
-    fillet.Add(radius, TopoDS::Edge(selected));
+    // The chamfer is the symmetric form, which takes no reference face: the
+    // two distances are equal by construction and cannot depend on which of
+    // the edge's faces a walk meets first.
+    std::unique_ptr<BRepFilletAPI_LocalOperation> builder;
+    if (chamfer) {
+      auto made = std::make_unique<BRepFilletAPI_MakeChamfer>(source.shape);
+      made->Add(amount, TopoDS::Edge(selected));
+      builder = std::move(made);
+    } else {
+      auto made = std::make_unique<BRepFilletAPI_MakeFillet>(source.shape);
+      made->Add(amount, TopoDS::Edge(selected));
+      builder = std::move(made);
+    }
+    BRepFilletAPI_LocalOperation &fillet = *builder;
     Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
     fillet.Build(indicator->Start());
 
     if (cancelled(cancel, cancel_context)) {
-      write_error(out_error, "the fillet was cancelled");
+      write_error(out_error, "the " + what + " was cancelled");
       return FC_OCCT_CANCELLED;
     }
     if (!fillet.IsDone()) {
-      write_error(out_error, "Open CASCADE could not round this edge at radius " +
-                                 std::to_string(radius));
+      write_error(out_error, chamfer
+                                 ? "Open CASCADE could not chamfer this edge at distance " +
+                                       std::to_string(amount)
+                                 : "Open CASCADE could not round this edge at radius " +
+                                       std::to_string(amount));
       return FC_OCCT_KERNEL;
     }
     const TopoDS_Shape produced = fillet.Shape();
     if (produced.IsNull()) {
-      write_error(out_error, "the fillet produced nothing");
+      write_error(out_error, "the " + what + " produced nothing");
       return FC_OCCT_KERNEL;
     }
     TopTools_IndexedMapOfShape solids;
     TopExp::MapShapes(produced, TopAbs_SOLID, solids);
     if (solids.Extent() != 1) {
-      write_error(out_error, "a fillet must leave exactly one solid, and this left " +
+      write_error(out_error, "a " + what + " must leave exactly one solid, and this left " +
                                  std::to_string(solids.Extent()));
       return FC_OCCT_KERNEL;
     }
@@ -2511,7 +2584,9 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
     // history speaks about `produced`, and that is the shape kept.
     if (!well_formed(produced)) {
       write_error(out_error,
-                  "rounding this edge at radius " + std::to_string(radius) +
+                  std::string(chamfer ? "chamfering this edge at distance "
+                                      : "rounding this edge at radius ") +
+                      std::to_string(amount) +
                       " produced a shape Open CASCADE reports as invalid; it "
                       "is refused rather than returned");
       return FC_OCCT_KERNEL;
@@ -2520,14 +2595,16 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
     BRepGProp::VolumeProperties(produced, after);
     const double removed = before.Mass() - after.Mass();
     if (!std::isfinite(removed) || removed <= 0.0) {
-      write_error(out_error, "the fillet removed no material, so it rounded nothing");
+      write_error(out_error, "the " + what + " removed no material, so it " +
+                                 (chamfer ? "cut" : "rounded") + " nothing");
       return FC_OCCT_KERNEL;
     }
 
     ShapeRecord record;
     record.shape = produced;
     record.decoded = true;
-    record.filleted = true;
+    record.filleted = !chamfer;
+    record.chamfered = chamfer;
 
     TopTools_IndexedMapOfShape result_faces;
     TopExp::MapShapes(produced, TopAbs_FACE, result_faces);
@@ -2557,7 +2634,8 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
       }
     }
     if (record.fillet_faces.empty()) {
-      write_error(out_error, "the fillet reported no face generated from the rounded edge");
+      write_error(out_error, "the " + what + " reported no face generated from the " +
+                                 (chamfer ? "cut" : "rounded") + " edge");
       return FC_OCCT_KERNEL;
     }
 
@@ -2586,7 +2664,8 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
           // filed under it.
           if (it.Value().ShapeType() != sub.ShapeType()) {
             write_error(out_error,
-                        "the fillet reported a modified sub-shape of another type");
+                        "the " + what +
+                            " reported a modified sub-shape of another type");
             return FC_OCCT_KERNEL;
           }
           if (in_result(it.Value())) {
@@ -2609,6 +2688,55 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
     *out_shape = id;
     *out_removed_volume = removed;
     return FC_OCCT_OK;
+  });
+}
+
+
+
+FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
+                                 uint64_t edge, double radius,
+                                 FcOcctCancelFn cancel, void *cancel_context,
+                                 uint64_t *out_shape, double *out_removed_volume,
+                                 FcOcctError *out_error) noexcept {
+  return edge_operation(false, session, target, edge, radius, cancel,
+                        cancel_context, out_shape, out_removed_volume,
+                        out_error);
+}
+
+FcOcctStatus fc_occt_chamfer_edge(FcOcctSession *session, uint64_t target,
+                                  uint64_t edge, double distance,
+                                  FcOcctCancelFn cancel, void *cancel_context,
+                                  uint64_t *out_shape,
+                                  double *out_removed_volume,
+                                  FcOcctError *out_error) noexcept {
+  return edge_operation(true, session, target, edge, distance, cancel,
+                        cancel_context, out_shape, out_removed_volume,
+                        out_error);
+}
+
+FcOcctStatus fc_occt_chamfer_faces(FcOcctSession *session, uint64_t shape,
+                                   uint64_t *out_ids, size_t capacity,
+                                   size_t *out_count,
+                                   FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr) {
+      write_error(out_error, "no session");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (!found->second.chamfered) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " is not a fresh chamfer, so it has no chamfer "
+                                 "history to report");
+      return FC_OCCT_UNSUPPORTED;
+    }
+    return copy_ids(found->second.fillet_faces, out_ids, capacity, out_count,
+                    out_error);
   });
 }
 

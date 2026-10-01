@@ -3,12 +3,12 @@ use std::collections::BTreeMap;
 
 use ferritecad_exchange::Import;
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, CarriedOutcome, CutRequest, CutResult, ExtrudeExtent, ExtrudeRequest,
-    ExtrudeResult, FaceSurface, FilletRequest, FilletResult, GeometryKernel, History, HistoryInput,
-    KernelIdentity, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange, MeshVertices,
-    OperationContext, ProfileLoop, ProfileSegment, RevolveAxis, RevolveRequest, RevolveResult,
-    RevolveTurn, SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle,
-    SubShapeKind, TessellationParams,
+    ArchiveSlot, BrepBlob, CarriedOutcome, ChamferRequest, ChamferResult, CutRequest, CutResult,
+    ExtrudeExtent, ExtrudeRequest, ExtrudeResult, FaceSurface, FilletRequest, FilletResult,
+    GeometryKernel, History, HistoryInput, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges,
+    MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext, ProfileLoop, ProfileSegment,
+    RevolveAxis, RevolveRequest, RevolveResult, RevolveTurn, SegmentGeometry, SessionId,
+    ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, Transform};
 
@@ -99,6 +99,78 @@ impl OcctKernel {
     pub fn import_step(&mut self, step: &[u8]) -> Result<Import> {
         let encoded = self.session.import_step(step)?;
         ferritecad_exchange::decode(&encoded, self.session_id)
+    }
+
+    /// §29A: what the fillet and the chamfer require of the names they are
+    /// asked about: every one, the edge included, is the target's and was
+    /// handed out by this session. The bridge answers by (shape, index), and a
+    /// handle from elsewhere would describe another face.
+    fn check_edge_operation_names(
+        &mut self,
+        request_target: ShapeHandle,
+        target: u64,
+        edge: SubShapeHandle,
+        track: &[SubShapeHandle],
+        what: &str,
+        verb: &str,
+    ) -> Result<()> {
+        for sub in track.iter().chain(std::iter::once(&edge)) {
+            if sub.shape() != request_target {
+                return Err(CadError::input(format!(
+                    "{sub} is not a sub-shape of the shape this {what} {verb}"
+                )));
+            }
+            if sub.index() >= self.session.sub_shape_count(target)? as u64 {
+                return Err(CadError::input(format!(
+                    "{sub} was never handed out by this session"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// What became of every name asked about (and of the edge), read from the
+    /// operation's own history, in the same four-fact vocabulary a Cut uses.
+    #[allow(clippy::too_many_arguments)]
+    fn account_for_edge_operation(
+        &mut self,
+        raw: u64,
+        target: u64,
+        shape: ShapeHandle,
+        edge: SubShapeHandle,
+        track: &[SubShapeHandle],
+        what: &str,
+        context: &OperationContext,
+    ) -> Result<(History, BTreeMap<SubShapeHandle, CarriedOutcome>)> {
+        context.check_cancelled()?;
+        let mut history = History::new();
+        let mut carried = BTreeMap::new();
+        let mut asked: Vec<SubShapeHandle> = track.to_vec();
+        if !asked.contains(&edge) {
+            asked.push(edge);
+        }
+        for sub in &asked {
+            let (kind, ids) = self.session.cut_carried(raw, target, sub.index())?;
+            let outcome = match kind {
+                ffi::CARRIED_KEPT => CarriedOutcome::Kept,
+                ffi::CARRIED_MODIFIED => CarriedOutcome::Modified,
+                ffi::CARRIED_DELETED => CarriedOutcome::Deleted,
+                other => {
+                    return Err(CadError::kernel(format!(
+                        "the bridge described a {what} outcome as {other}, which this build \
+                         has no reading of"
+                    )));
+                }
+            };
+            for id in ids {
+                history.record_modified(
+                    HistoryInput::SubShape(*sub),
+                    SubShapeHandle::new(shape, sub.kind(), id),
+                );
+            }
+            carried.insert(*sub, outcome);
+        }
+        Ok((history, carried))
     }
 
     /// Rounds every edge of a shape to one radius.
@@ -204,6 +276,17 @@ impl OcctKernel {
         }
         let raw = self.raw(face.shape())?;
         self.session.surface_axis(raw, face.index())
+    }
+
+    /// Analytic plane of one named planar face (§29A): a point on it (mm), its
+    /// outward unit normal as the solid has the face, and its area (mm²). A
+    /// measurement of an already resolved handle, never an identity search.
+    pub fn face_plane(&mut self, face: SubShapeHandle) -> Result<([f64; 3], [f64; 3], f64)> {
+        if face.kind() != SubShapeKind::Face {
+            return Err(CadError::input("only a planar face has a plane"));
+        }
+        let raw = self.raw(face.shape())?;
+        self.session.face_plane(raw, face.index())
     }
 
     /// Wraps a kernel payload in FerriteCAD's framing.
@@ -748,21 +831,7 @@ impl GeometryKernel for OcctKernel {
         context.check_cancelled()?;
         let target = self.raw(request.target())?;
         let edge = request.edge();
-        // Every name asked about, the rounded edge included, is the target's,
-        // and was handed out by this session: the bridge answers by (shape,
-        // index), and a handle from elsewhere would describe another face.
-        for sub in track.iter().chain(std::iter::once(&edge)) {
-            if sub.shape() != request.target() {
-                return Err(CadError::input(format!(
-                    "{sub} is not a sub-shape of the shape this fillet rounds"
-                )));
-            }
-            if sub.index() >= self.session.sub_shape_count(target)? as u64 {
-                return Err(CadError::input(format!(
-                    "{sub} was never handed out by this session"
-                )));
-            }
-        }
+        self.check_edge_operation_names(request.target(), target, edge, track, "fillet", "rounds")?;
 
         context.progress().report(0.0);
         let (raw, removed_volume) = self.session.fillet_edge(
@@ -775,34 +844,8 @@ impl GeometryKernel for OcctKernel {
 
         let shape = ShapeHandle::new(self.session_id, raw);
         let assembled = (|| -> Result<FilletResult> {
-            context.check_cancelled()?;
-            let mut history = History::new();
-            let mut carried = BTreeMap::new();
-            let mut asked: Vec<SubShapeHandle> = track.to_vec();
-            if !asked.contains(&edge) {
-                asked.push(edge);
-            }
-            for sub in &asked {
-                let (kind, ids) = self.session.cut_carried(raw, target, sub.index())?;
-                let outcome = match kind {
-                    ffi::CARRIED_KEPT => CarriedOutcome::Kept,
-                    ffi::CARRIED_MODIFIED => CarriedOutcome::Modified,
-                    ffi::CARRIED_DELETED => CarriedOutcome::Deleted,
-                    other => {
-                        return Err(CadError::kernel(format!(
-                            "the bridge described a fillet outcome as {other}, which this build \
-                             has no reading of"
-                        )));
-                    }
-                };
-                for id in ids {
-                    history.record_modified(
-                        HistoryInput::SubShape(*sub),
-                        SubShapeHandle::new(shape, sub.kind(), id),
-                    );
-                }
-                carried.insert(*sub, outcome);
-            }
+            let (history, carried) = self
+                .account_for_edge_operation(raw, target, shape, edge, track, "fillet", context)?;
             let fillet_faces = self
                 .session
                 .fillet_faces(raw)?
@@ -817,6 +860,56 @@ impl GeometryKernel for OcctKernel {
                 history,
                 carried,
                 fillet_faces,
+                removed_volume,
+            };
+            result.validate(request.target(), edge)?;
+            Ok(result)
+        })();
+
+        match assembled {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                self.session.release(raw);
+                Err(error)
+            }
+        }
+    }
+
+    fn chamfer_edge(
+        &mut self,
+        request: &ChamferRequest,
+        track: &[SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<ChamferResult> {
+        context.check_cancelled()?;
+        let target = self.raw(request.target())?;
+        let edge = request.edge();
+        self.check_edge_operation_names(request.target(), target, edge, track, "chamfer", "cuts")?;
+
+        context.progress().report(0.0);
+        let (raw, removed_volume) = self.session.chamfer_edge(
+            target,
+            edge.index(),
+            request.distance_mm(),
+            context.cancel(),
+        )?;
+        context.progress().report(1.0);
+
+        let shape = ShapeHandle::new(self.session_id, raw);
+        let assembled = (|| -> Result<ChamferResult> {
+            let (history, carried) = self
+                .account_for_edge_operation(raw, target, shape, edge, track, "chamfer", context)?;
+            let chamfer_faces = self
+                .session
+                .chamfer_faces(raw)?
+                .into_iter()
+                .map(|id| SubShapeHandle::new(shape, SubShapeKind::Face, id))
+                .collect::<Vec<_>>();
+            let result = ChamferResult {
+                shape,
+                history,
+                carried,
+                chamfer_faces,
                 removed_volume,
             };
             result.validate(request.target(), edge)?;

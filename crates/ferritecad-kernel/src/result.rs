@@ -942,6 +942,56 @@ mod tests {
         }
     }
 
+    /// §29A: a chamfer is held to the same four facts as a fillet — about its
+    /// target only, the cut edge gone, exactly one face of its own result,
+    /// and real removal — and its refusals say "chamfer".
+    #[test]
+    fn a_chamfer_result_is_held_to_one_deleted_edge_one_face_and_real_removal() {
+        let target = ShapeHandle::new(SessionId::new(), 0);
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let edge = SubShapeHandle::new(target, SubShapeKind::Edge, 7);
+        let side = SubShapeHandle::new(target, SubShapeKind::Face, 1);
+        let out = |kind, index| SubShapeHandle::new(shape, kind, index);
+        let good = || {
+            let mut history = History::new();
+            history.record_modified(HistoryInput::SubShape(side), out(SubShapeKind::Face, 2));
+            ChamferResult {
+                shape,
+                history,
+                carried: BTreeMap::from([
+                    (side, CarriedOutcome::Modified),
+                    (edge, CarriedOutcome::Deleted),
+                ]),
+                chamfer_faces: vec![out(SubShapeKind::Face, 3)],
+                removed_volume: 1.5,
+            }
+        };
+        assert!(good().validate(target, edge).is_ok());
+        let mut broken: Vec<(&str, ChamferResult)> = Vec::new();
+        let mut r = good();
+        r.carried.insert(edge, CarriedOutcome::Modified);
+        broken.push(("the edge kept", r));
+        let mut r = good();
+        r.chamfer_faces.clear();
+        broken.push(("no face", r));
+        let mut r = good();
+        r.chamfer_faces.push(out(SubShapeKind::Face, 4));
+        broken.push(("two faces", r));
+        let mut r = good();
+        r.chamfer_faces = vec![out(SubShapeKind::Edge, 3)];
+        broken.push(("an edge for a face", r));
+        let mut r = good();
+        r.removed_volume = 0.0;
+        broken.push(("no removal", r));
+        for (why, result) in broken {
+            let error = result.validate(target, edge).expect_err(why).to_string();
+            assert!(
+                error.contains("chamfer") || error.contains("chamfering"),
+                "{why}: {error}"
+            );
+        }
+    }
+
     /// §27D: a revolution's caps are none (a full turn) or one of each,
     /// faces of its own result, distinct, and never a segment's face.
     #[test]
@@ -1941,79 +1991,128 @@ impl FilletResult {
     /// the rounded edge is gone and exactly one face replaced it; and material
     /// was removed.
     pub fn validate(&self, target: ShapeHandle, edge: SubShapeHandle) -> Result<()> {
-        for input in self.history.inputs() {
-            let HistoryInput::SubShape(sub) = input else {
-                return Err(CadError::kernel(
-                    "a fillet's history is about sub-shapes of its target, not profile segments",
-                ));
-            };
-            if sub.shape() != target {
-                return Err(CadError::kernel(format!(
-                    "the fillet history names {sub}, which is not a sub-shape of its target"
-                )));
-            }
-            for output in self
-                .history
-                .generated(input)
-                .chain(self.history.modified(input))
-            {
-                if output.shape() != self.shape {
-                    return Err(CadError::kernel(format!(
-                        "the fillet reported {output} for {sub}, which belongs to another shape"
-                    )));
-                }
-            }
-        }
-        for (sub, outcome) in &self.carried {
-            if sub.shape() != target {
-                return Err(CadError::kernel(format!(
-                    "the fillet reported an outcome for {sub}, which is not a sub-shape of its \
-                     target"
-                )));
-            }
-            let input = HistoryInput::SubShape(*sub);
-            let produced =
-                self.history.modified(input).count() + self.history.generated(input).count();
-            match outcome {
-                CarriedOutcome::Deleted if produced != 0 => {
-                    return Err(CadError::kernel(format!(
-                        "the fillet called {sub} deleted and also reported {produced} outputs"
-                    )));
-                }
-                CarriedOutcome::Kept | CarriedOutcome::Modified if produced == 0 => {
-                    return Err(CadError::kernel(format!(
-                        "the fillet called {sub} {} and reported no geometry for it",
-                        outcome.as_str()
-                    )));
-                }
-                _ => {}
-            }
-        }
-        if self.carried.get(&edge) != Some(&CarriedOutcome::Deleted) {
+        validate_edge_operation(
+            ("fillet", "rounding"),
+            (self.shape, &self.history, &self.carried),
+            (&self.fillet_faces, self.removed_volume),
+            target,
+            edge,
+        )
+    }
+}
+
+/// The result of cutting one edge away at equal distances (§29A).
+///
+/// The same four facts as [`FilletResult`] — `history` and `carried` about
+/// sub-shapes of the target only, the one planar face the kernel reported as
+/// generated from the cut edge, and the volume it removed — read from the
+/// operation's own history while it was alive.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChamferResult {
+    pub shape: ShapeHandle,
+    pub history: History,
+    pub carried: BTreeMap<SubShapeHandle, CarriedOutcome>,
+    /// The faces generated from the cut edge, as sub-shapes of `shape`.
+    pub chamfer_faces: Vec<SubShapeHandle>,
+    /// Material the chamfer removed, in cubic millimetres.
+    pub removed_volume: f64,
+}
+
+impl ChamferResult {
+    /// Every account is about the target; every output belongs to the result;
+    /// the cut edge is gone and exactly one face replaced it; and material was
+    /// removed.
+    pub fn validate(&self, target: ShapeHandle, edge: SubShapeHandle) -> Result<()> {
+        validate_edge_operation(
+            ("chamfer", "chamfering"),
+            (self.shape, &self.history, &self.carried),
+            (&self.chamfer_faces, self.removed_volume),
+            target,
+            edge,
+        )
+    }
+}
+
+/// What a naming layer may assume about an operation that replaced one edge of
+/// its target by one face of its own result: the fillet and the chamfer.
+fn validate_edge_operation(
+    (what, doing): (&str, &str),
+    (shape, history, carried): (
+        ShapeHandle,
+        &History,
+        &BTreeMap<SubShapeHandle, CarriedOutcome>,
+    ),
+    (faces, removed_volume): (&[SubShapeHandle], f64),
+    target: ShapeHandle,
+    edge: SubShapeHandle,
+) -> Result<()> {
+    for input in history.inputs() {
+        let HistoryInput::SubShape(sub) = input else {
             return Err(CadError::kernel(format!(
-                "the fillet did not report the rounded edge {edge} as gone"
-            )));
-        }
-        let [face] = self.fillet_faces.as_slice() else {
-            return Err(CadError::kernel(format!(
-                "rounding one edge generated {} faces; this slice names exactly one",
-                self.fillet_faces.len()
+                "a {what}'s history is about sub-shapes of its target, not profile segments"
             )));
         };
-        if face.shape() != self.shape || face.kind() != SubShapeKind::Face {
+        if sub.shape() != target {
             return Err(CadError::kernel(format!(
-                "the fillet face {face} is not a face of the result {}",
-                self.shape
+                "the {what} history names {sub}, which is not a sub-shape of its target"
             )));
         }
-        if !self.removed_volume.is_finite() || self.removed_volume <= 0.0 {
-            return Err(CadError::kernel(format!(
-                "the fillet removed {} mm³, so it rounded nothing",
-                self.removed_volume
-            )));
+        for output in history.generated(input).chain(history.modified(input)) {
+            if output.shape() != shape {
+                return Err(CadError::kernel(format!(
+                    "the {what} reported {output} for {sub}, which belongs to another shape"
+                )));
+            }
         }
-        Ok(())
     }
+    for (sub, outcome) in carried {
+        if sub.shape() != target {
+            return Err(CadError::kernel(format!(
+                "the {what} reported an outcome for {sub}, which is not a sub-shape of its \
+                 target"
+            )));
+        }
+        let input = HistoryInput::SubShape(*sub);
+        let produced = history.modified(input).count() + history.generated(input).count();
+        match outcome {
+            CarriedOutcome::Deleted if produced != 0 => {
+                return Err(CadError::kernel(format!(
+                    "the {what} called {sub} deleted and also reported {produced} outputs"
+                )));
+            }
+            CarriedOutcome::Kept | CarriedOutcome::Modified if produced == 0 => {
+                return Err(CadError::kernel(format!(
+                    "the {what} called {sub} {} and reported no geometry for it",
+                    outcome.as_str()
+                )));
+            }
+            _ => {}
+        }
+    }
+    if carried.get(&edge) != Some(&CarriedOutcome::Deleted) {
+        return Err(CadError::kernel(format!(
+            "the {what} did not report the {} edge {edge} as gone",
+            if what == "fillet" { "rounded" } else { "cut" }
+        )));
+    }
+    let [face] = faces else {
+        return Err(CadError::kernel(format!(
+            "{doing} one edge generated {} faces; this slice names exactly one",
+            faces.len()
+        )));
+    };
+    if face.shape() != shape || face.kind() != SubShapeKind::Face {
+        return Err(CadError::kernel(format!(
+            "the {what} face {face} is not a face of the result {shape}"
+        )));
+    }
+    if !removed_volume.is_finite() || removed_volume <= 0.0 {
+        return Err(CadError::kernel(format!(
+            "the {what} removed {removed_volume} mm³, so it {} nothing",
+            if what == "fillet" { "rounded" } else { "cut" }
+        )));
+    }
+    Ok(())
 }
 
 impl CutResult {

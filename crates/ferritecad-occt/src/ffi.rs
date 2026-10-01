@@ -220,6 +220,15 @@ unsafe extern "C" {
         out_count: *mut usize,
         out_error: *mut RawError,
     ) -> i32;
+    fn fc_occt_face_plane(
+        session: *mut RawSession,
+        shape: u64,
+        face: u64,
+        out_origin: *mut f64,
+        out_normal: *mut f64,
+        out_area: *mut f64,
+        out_error: *mut RawError,
+    ) -> i32;
     fn fc_occt_surface_axis(
         session: *mut RawSession,
         shape: u64,
@@ -363,6 +372,27 @@ unsafe extern "C" {
         out_error: *mut RawError,
     ) -> i32;
     fn fc_occt_fillet_faces(
+        session: *mut RawSession,
+        shape: u64,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_chamfer_edge(
+        session: *mut RawSession,
+        target: u64,
+        edge: u64,
+        distance: f64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_removed_volume: *mut f64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_chamfer_faces(
         session: *mut RawSession,
         shape: u64,
         out_ids: *mut u64,
@@ -810,6 +840,33 @@ impl Session {
         )
     }
 
+    /// The analytic plane of one named planar face (§29A): a point on it, its
+    /// outward unit normal and its area.
+    pub(crate) fn face_plane(
+        &mut self,
+        shape: u64,
+        face: u64,
+    ) -> Result<([f64; 3], [f64; 3], f64)> {
+        let mut origin = [0.; 3];
+        let mut normal = [0.; 3];
+        let mut area = 0.0f64;
+        let mut error = RawError::empty();
+        // SAFETY: both output arrays hold exactly three doubles for this call.
+        let status = unsafe {
+            fc_occt_face_plane(
+                self.raw,
+                shape,
+                face,
+                origin.as_mut_ptr(),
+                normal.as_mut_ptr(),
+                &mut area,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "reading a named face's analytic plane")?;
+        Ok((origin, normal, area))
+    }
+
     /// The analytic axis of one named cylindrical or conical face.
     pub(crate) fn surface_axis(&mut self, shape: u64, face: u64) -> Result<([f64; 3], [f64; 3])> {
         let mut origin = [0.; 3];
@@ -1212,6 +1269,50 @@ impl Session {
             |s, ids, cap, count, err| {
                 // SAFETY: pointers are valid for the call; see `collect_ids`.
                 unsafe { fc_occt_fillet_faces(s, shape, ids, cap, count, err) }
+            },
+        )
+    }
+
+    /// Cuts exactly one edge of `target` away at one equal distance (§29A):
+    /// the new shape and the volume removed, measured by the bridge as a
+    /// difference.
+    pub(crate) fn chamfer_edge(
+        &mut self,
+        target: u64,
+        edge: u64,
+        distance: f64,
+        cancel: &CancelToken,
+    ) -> Result<(u64, f64)> {
+        let mut shape = 0u64;
+        let mut removed = 0.0f64;
+        let mut error = RawError::empty();
+        let context = cancel as *const CancelToken as *mut c_void;
+        // SAFETY: the out-parameters are valid for the call, the token is
+        // borrowed for exactly its duration, and the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_chamfer_edge(
+                self.raw,
+                target,
+                edge,
+                distance,
+                Some(cancel_trampoline),
+                context,
+                &mut shape,
+                &mut removed,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "chamfering one edge")?;
+        Ok((shape, removed))
+    }
+
+    /// The faces the chamfer generated from the cut edge.
+    pub(crate) fn chamfer_faces(&mut self, shape: u64) -> Result<Vec<u64>> {
+        self.collect_ids(
+            "reading the face a chamfer generated from its edge",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe { fc_occt_chamfer_faces(s, shape, ids, cap, count, err) }
             },
         )
     }
@@ -2530,6 +2631,31 @@ mod tests {
                     "void *cancel_context",
                     "uint64_t *out_shape",
                     "double *out_removed_volume",
+                    "FcOcctError *out_error",
+                ][..],
+            ),
+            (
+                "FcOcctStatus fc_occt_chamfer_edge(",
+                &[
+                    "FcOcctSession *session",
+                    "uint64_t target",
+                    "uint64_t edge",
+                    "double distance",
+                    "FcOcctCancelFn cancel",
+                    "void *cancel_context",
+                    "uint64_t *out_shape",
+                    "double *out_removed_volume",
+                    "FcOcctError *out_error",
+                ][..],
+            ),
+            (
+                "FcOcctStatus fc_occt_chamfer_faces(",
+                &[
+                    "FcOcctSession *session",
+                    "uint64_t shape",
+                    "uint64_t *out_ids",
+                    "size_t capacity",
+                    "size_t *out_count",
                     "FcOcctError *out_error",
                 ][..],
             ),
