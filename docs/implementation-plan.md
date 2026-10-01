@@ -4178,7 +4178,7 @@ and constraint editors work on the whole history Extrude -> Fillet 1 -> ... ->
 Fillet *n* -> Body tip, *n* from 0 to 4. One bounded reader
 (`fillets_over_plate`, over the real predecessor chain) serves discovery,
 preparation, every writer's in-transaction re-derivation and, through the same
-`fillet_chain`, the evaluator; each Fillet carries every other as a neighbour,
+`fillet::chain_below`, the evaluator; each Fillet carries every other as a neighbour,
 and no `second`/`third`/`fourth` field or object count exists. Each Fillet is
 a real Open CASCADE fillet of its predecessor's result, stored exactly as
 Fillet 2 is (payload v2, `feature.fillet.sequential.v1`, archive v4): no new

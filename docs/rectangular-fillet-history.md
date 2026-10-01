@@ -47,7 +47,7 @@ dependency sets (`cut_edit::read_history`, already general in the chain) and
 the exact names by meaning: 7 per Fillet and one `OriginFilletFace` per
 earlier Fillet, so `7k + k(k−1)/2` in all (7, 15, 24, 34).
 
-`fillet_chain` is its pure structural half, which `evaluable_fillet` uses too:
+`fillet::chain_below` is its pure structural half, which `evaluable_fillet` uses too:
 the chain below a Fillet, walked by `previous`, bounded, cycle-safe, each
 member a Fillet that rounds an edge of the base Extrude, joints distinct. There
 is no `second`/`third`/`fourth` field and no check by the number of objects.

@@ -5,7 +5,7 @@
 //! the same seven names. The only model change is `radius_mm` in its payload.
 //! The history is read again from the saved document on every discovery,
 //! preparation and write, through the one frame reader the Cut editors and
-//! §28A share ([`crate::cut_edit::saved_history_under_fillet`]); the radius
+//! §28A share ([`crate::cut_edit::saved_history_under_fillets`]); the radius
 //! answers to §28A's policy ([`crate::FilletCorner::check_radius`]).
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result, StableEntityId};
 
