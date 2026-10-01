@@ -4227,3 +4227,23 @@ byte-equal STL/FBX, pinned ufbx 6/0 and oriented join 272 triangles. Peak viewer
 confirm 21 distinct new gates/22 executions per OS plus native/mixed recipes
 and ufbx; fresh review CI remains a merge prerequisite. The earlier OOM is
 not explained by this passing run.
+
+
+**Independent review of §29A (2026-10-01).** Corrected the new planar-face
+normal diagnostic: a ring's bottom cap cannot be oriented by probing near its
+centre of mass in the bore. It now uses the same face in the solid and the
+surface U/V orientation; regression covers both extrusion directions and named
+archive restore. The new exact gate is required by the three-platform runtime
+workflow. Local affected matrix: 1036 executed, four explicit N/A, one old
+ignored benchmark; targeted tests/fmt/clippy passed after the fix. Fresh arm64
+GUI passed create/edit, exact bound/refusal, request Undo/Redo, Save Cancel,
+publication/async Open and export. Retry: SQL 256 cells, byte-equal STL/FBX,
+pinned ufbx 6/0, 16 oriented triangles, peak 333.283 MiB, pressure normal,
+unchanged swap, exit 0. The earlier pressure-aborted attempt is not counted as
+a guarded GUI success; full details are in the verification record.
+
+**§29B — next, not implemented:** edit the base Extrude's height below one
+saved rectangular-corner Chamfer through the existing Edit extrusion /
+`edit-extrude` copy operation, preserving its distance, edge and all names.
+Sketch/constraint editing below Chamfer, another Chamfer and mixed histories
+remain outside this planned slice.

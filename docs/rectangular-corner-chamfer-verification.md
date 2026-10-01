@@ -30,7 +30,38 @@ After the fix, all three OCCT Chamfer tests, eight CLI Chamfer tests, four app
 Chamfer tests, workspace clippy (all targets/features, warnings denied), and
 fmt passed. Deliberate panics caught by the CLI measurement test are its
 negative controls, not failed tests. Native libraries were not rebuilt.
-Window smoke and remote CI for this review commit are still pending here.
+The review recipe ran from the Markdown with the staged, signed arm64 bundle.
+The first window attempt is **not** a passing guarded run: system memory
+pressure changed to warning after 16 seconds, the watchdog terminated its
+original PID, and a subsequent automation call relaunched the app. That instance
+was closed normally. Its published files pass the 256-cell SQL comparison,
+byte-equal STL/FBX, the independent 16-triangle STL measurements, strict ufbx
+(6 checks, 0 failures) and the oriented STL/FBX join; these facts do not provide
+a valid memory measurement. Separate wrong-distance, wrong-corner and unrelated
+SQL-cell controls all failed the comparator on executed assertions.
+
+The fresh retry used new models and one continuously guarded PID (40755).
+Open, choose corner (33, 3.25), create d=2.375, async Open, edit d=4.5,
+refuse 12.240000000000002, accept 12.24 without publishing, Undo/Redo,
+Save Cancel with draft preserved, publish d=4.5, async Open, STL/FBX export
+and Quit all ran in the actual window. The Mac locked before creation and was
+unlocked by the user; the guard stayed active. No app automation call was made
+after Quit. The exact child exited 0: 1399 samples, peak physical footprint
+333.283 MiB, pressure normal throughout, swap unchanged at 630521856 bytes.
+This does not establish the cause or resolution of the earlier OOM.
+
+The retry comparator independently passed: 256 SQL cells, unchanged source,
+same Chamfer UUID across the edit, 16 closed oriented STL triangles, measured
+chosen corner/normal/area/volume, byte-equal GUI/CLI STL and FBX. Pinned ufbx
+0.23.0 passed 6 checks with 0 failures; its oriented triangle join matched all
+16 triangles (worst coordinate difference 8.67e-19 m). The ordinary and native
+CI runs for review code `e924ffa` are tracked separately:
+[CI](https://github.com/gesriot/ferrite-cad/actions/runs/36933893573),
+[runtime layout](https://github.com/gesriot/ferrite-cad/actions/runs/36933885862).
+Their successful completion remains a merge prerequisite, separate from these
+local results. This subsequent evidence-only commit changes no executed recipe.
+Local logs, screenshots, scripts and models are retained under the reviewer’s
+`ferrite-pr77-review` evidence directory outside the repository.
 
 ## Where and how this was run
 
