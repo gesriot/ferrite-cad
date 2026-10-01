@@ -543,6 +543,58 @@ jobs:
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28l-recipe.py | tee fillet-four-recipe-stub.log
           grep -q '^FCAD_28L_RECIPE_NO_KERNEL ' fillet-four-recipe-stub.log
 
+      - name: Discover and refuse one Chamfer without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §29A: discovery lists the four edges and the bounds, a saved Chamfer
+          # is read with its distance, every other editor refuses it by name and
+          # the strict request protocol is exercised; an unsupported kernel
+          # creates no file. Nothing is built here.
+          gate=chamfer::chamfer_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-discovery.log
+          if grep -q 'skipped:' chamfer-discovery.log || ! grep -Fq "test $gate ... ok" chamfer-discovery.log; then exit 1; fi
+          for gate in chamfers::history_tests::the_request_history_steps_back_and_forward_and_forgets_a_discarded_future \
+            chamfers::tests::chamfer_widgets_list_corners_refuse_like_the_document_and_keep_the_draft \
+            chamfers::tests::chamfer_distance_widgets_show_the_saved_edge_and_keep_the_draft
+          do
+            cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-widgets.log
+            if grep -q 'skipped:' chamfer-widgets.log || ! grep -Fq "test $gate ... ok" chamfer-widgets.log; then exit 1; fi
+          done
+          for gate in chamfer::tests::the_chamfer_payload_round_trips_and_refuses_what_it_cannot_mean \
+            chamfer::tests::the_distance_policy_is_exact_at_its_bounds_and_the_same_everywhere \
+            chamfer::tests::a_chamfer_is_written_at_every_corner_in_both_windings_and_reads_back \
+            chamfer::tests::the_distance_edit_changes_one_number_and_the_writer_refuses_forgery \
+            chamfer::tests::the_creation_writer_rederives_the_chamfer_and_refuses_forgery \
+            chamfer::tests::every_other_editor_refuses_a_chamfered_body_by_name \
+            chamfer::tests::a_dimensioned_plate_is_refused_with_the_constraint_named \
+            chamfer::tests::the_evaluator_judges_the_chamfer_on_the_built_lines
+          do
+            cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-writer.log
+            if grep -q 'skipped:' chamfer-writer.log || ! grep -Fq "test $gate ... ok" chamfer-writer.log; then exit 1; fi
+          done
+          for gate in request::tests::a_chamfer_request_names_an_edge_of_its_target_and_a_real_distance \
+            result::tests::a_chamfer_result_is_held_to_one_deleted_edge_one_face_and_real_removal \
+            kernel::tests::a_chamfer_keys_by_target_edge_meaning_and_distance_bits
+          do
+            cargo test -p ferritecad-kernel --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-kernel.log
+            if grep -q 'skipped:' chamfer-kernel.log || ! grep -Fq "test $gate ... ok" chamfer-kernel.log; then exit 1; fi
+          done
+          for gate in map::tests::a_chamfer_is_named_by_its_edge_in_its_own_map_and_carries_only_what_its_history_says \
+            codec::tests::an_edge_chamfer_face_survives_its_byte_form_and_is_not_a_fillet_face
+          do
+            cargo test -p ferritecad-topology --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-topology.log
+            if grep -q 'skipped:' chamfer-topology.log || ! grep -Fq "test $gate ... ok" chamfer-topology.log; then exit 1; fi
+          done
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/rectangular-corner-chamfer.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_29A_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-29a-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-29a-recipe.py | tee chamfer-recipe-stub.log
+          grep -q '^FCAD_29A_RECIPE_NO_KERNEL ' chamfer-recipe-stub.log
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |

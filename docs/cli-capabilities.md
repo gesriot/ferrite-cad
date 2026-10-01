@@ -375,6 +375,26 @@ Fillet 3 и 4 хранятся как Fillet 2; предыдущая сборк�
 или двух) для трёх и четырёх — `null`.
 [Контракт §28L и исполняемый рецепт](rectangular-fillet-history.md).
 
+§29A: первая настоящая Chamfer — равные отступы на одной вертикальной кромке
+прямоугольной плиты, в новой копии. UI: `Chamfer edge of <Body> — <UUID>…` и
+`Edit Chamfer distance …`; CLI: `chamfer-edge-copy` (request v1
+`{"request_version":1,"edge":{"feature_id":…,"joint":[Line,Line]},"distance_mm":d}`)
+и `edit-chamfer-distance` (`{"request_version":1,"distance_mm":d}`; имя по
+параметру, как `edit-fillet-radius`). Единица — **мм**, расстояние от кромки по
+**каждой** из двух смежных граней, а не ширина наклонной площадки (`d·√2`).
+Класс: одна собственная плита, free или closure-only Sketch, forward Blind
+NewBody Extrude; без Cut/Fillet/Chamfer перед ней; ровно одна Chamfer. Хранится
+`feature.chamfer` (payload v1, capability `feature.chamfer.v1`), у новой грани
+своя роль `EdgeChamferFace`; в архиве один добавленный тег, версия 4 прежняя.
+Политика: `0.001 мм ≤ d ≤ min(смежных сторон) − 0.01 мм`; предложенный максимум
+принимается, ближайший больший float отказывает. Измерено: объём
+`(W·D − d²/2)·h`, плоскость с нормалью выбранного угла и площадью `d·√2·h`.
+Остальные редакторы (высота, Sketch, constraints, Fillet, Cut, вторая Chamfer)
+отказывают типизированно с UUID Chamfer; `main` открывает документ только для
+чтения и отказывает в rebuild/экспорте (`feature.chamfer.v1`), частичной плиты
+нет. Discovery аддитивно: `bodies[].chamfer_edge` и верхнеуровневые `chamfers[]`.
+[Контракт §29A и исполняемый рецепт](rectangular-corner-chamfer.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

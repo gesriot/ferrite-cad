@@ -4197,6 +4197,25 @@ remains open.
 [verification](rectangular-fillet-history-verification.md).
 
 
+**§29A — one equal-distance Chamfer on one vertical edge of a rectangular plate,
+in a new copy.** `chamfer-edge-copy` / **Chamfer edge of …** create a real
+`feature.chamfer` (payload v1, capability `feature.chamfer.v1`) over the plate's
+Extrude through `previous` + `Predecessor` + `BodyTip` (ADR 0004, no cycle), and
+`edit-chamfer-distance` / **Edit Chamfer distance …** change its one number in a
+new copy through the same shared copy job. A real Open CASCADE chamfer of the
+predecessor's B-Rep (`BRepFilletAPI_MakeChamfer` symmetric form, no reference
+face), kernel trait `chamfer_edge`, shim `fc_occt_chamfer_edge`/`_faces`
+(plus the diagnostic `fc_occt_face_plane`). Its own role `EdgeChamferFace`
+(`TAG_EDGE_CHAMFER_FACE = 21`, archive version unchanged), its own cache key
+`eval.chamfer.named`, and its own measured policy
+`0.001 mm ≤ d ≤ min(adjacent sides) − 0.01 mm`, exact at the bound. Measured on
+the B-Rep: volume `(W·D − d²/2)·h`, one plane whose outward normal and position
+say which corner, area `d·√2·h`; the independent STL and the pinned ufbx agree.
+Every other editor refuses a chamfered Body by the Chamfer's UUID; `main` opens
+such a document read-only and refuses to rebuild it. Milestone 5C remains open.
+[Contract and recipe](rectangular-corner-chamfer.md),
+[verification](rectangular-corner-chamfer-verification.md).
+
 **Independent review of §28L (2026-10-01).** Corrected stale reader links and
 an overstated Fillet Undo/Redo claim (request history belongs to Sketch and
 constraints; Fillet uses Apply). 660 native tests executed, four explicit N/A,

@@ -239,13 +239,16 @@ nothing; Open CASCADE without the solver works for this class.
 
 ## UI
 
-`Chamfer edge of <Body> — <UUID>…` and `Edit chamfer distance of <feature>…` open
-bounded forms with the same worker as the CLI: a list of the four corners
-(coordinates and the two side lengths as labels), a distance field in mm with
-the allowed range, **Apply**/**Save**/**Cancel**; the draft survives a refusal
-and **Save Cancel**; a published copy opens asynchronously. The Chamfer's
-distance form has no whole-request Undo/Redo — this form is one number, as the
-Fillet radius form is, and none is claimed.
+`Chamfer edge of <Body> — <UUID>…` and `Edit Chamfer distance <feature> — <name> (d… mm)…`
+open bounded forms ("Chamfer one vertical edge — new copy", "Edit Chamfer distance —
+new copy") with the same worker as the CLI: the four corners as buttons
+(`Corner (x, y) — Lines a | b; sides L1 × L2 mm; d ≤ max mm`), a distance field
+in mm, **Apply** / **Save…** / **Cancel … draft**. Each form keeps a whole-request
+history (`Undo request` / `Redo request`, one entry per applied request, in the
+form itself): this is implemented and tested here, and it is *not* inherited from
+the Fillet forms, which have none. The draft survives a refusal and **Save
+Cancel**; a published copy opens asynchronously. No write goes from the UI
+directly to a file.
 
 ## Recipe
 
@@ -371,7 +374,7 @@ request = root / "plate.json"
 request.write_text(json.dumps({"request_version": 1, "height_mm": H,
                                "points_mm": [[X0, Y0], [X0 + W, Y0], [X0 + W, Y0 + D], [X0, Y0 + D]]}))
 plate = root / "plate.fcad"
-run(["create-sketch-extrude", request, "-o", plate, "--json"])
+geometry(["create-sketch-extrude", request, "-o", plate, "--json"], plate)
 
 # 2. Discovery: four candidates, each by the two Line UUIDs of its corner, and the
 #    bounds the policy states — never a guess.

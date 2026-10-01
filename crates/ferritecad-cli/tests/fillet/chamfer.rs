@@ -719,7 +719,14 @@ fn chamfer_discovery_and_protocol_without_native() {
         )
         .expect("request");
         let v = reply(chamfer(&f, &never).output().expect("process"), OPC, 2);
-        assert_eq!(refused(&v), "input", "{why}: {v}");
+        // A build with no kernel answers `unsupported` before it reaches the
+        // geometry; the decoder alone refuses what is not a number.
+        let want = if ferritecad_occt::is_available() || text == "NaN" {
+            "input"
+        } else {
+            "unsupported"
+        };
+        assert_eq!(refused(&v), want, "{why}: {v}");
         assert!(!never.exists());
     }
     // A bound-exact request is accepted or refused only for the kernel.
@@ -876,7 +883,18 @@ fn chamfer_discovery_and_protocol_without_native() {
             OPE,
             2,
         );
-        assert_eq!(refused(&v), code, "{why}: {v}");
+        // A build with no kernel answers `unsupported` before the geometry.
+        let want = if code == "input"
+            && !ferritecad_occt::is_available()
+            && v["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("no Open CASCADE"))
+        {
+            "unsupported"
+        } else {
+            code
+        };
+        assert_eq!(refused(&v), want, "{why}: {v}");
         assert!(!out.exists(), "{why}");
     }
     // An edit of a feature that is not a Chamfer.
@@ -1169,10 +1187,7 @@ fn native_the_distance_edit_changes_one_number_and_keeps_every_identity() {
             edit_from(
                 &one,
                 &id.to_string(),
-                &inspect(&one)["content_version"]
-                    .as_str()
-                    .expect("v")
-                    .to_owned(),
+                inspect(&one)["content_version"].as_str().expect("v"),
                 &request,
                 &out,
             )
@@ -1745,7 +1760,7 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         let v = edit_from(path, &id.to_string(), &version, &request, &out)
             .output()
             .expect("process");
-        assert!(!v.status.success() || out.exists() == false, "{v:?}");
+        assert!(!v.status.success() || !out.exists(), "{v:?}");
         assert!(!out.exists(), "a forged document was edited");
     }
 }

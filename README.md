@@ -124,8 +124,21 @@ new sides, and the existing **Edit constraints** form or
 the solved rectangle being the new plate with every radius and every flat
 judged on the solved Lines at every rebuild. A document with three or four
 Fillets is read by the previous build as a typed refusal, never a partial
-Body. A fifth Fillet, touching arcs, cap edges, Cut with Fillet, Chamfer and
-arbitrary edges are not supported yet.
+Body. A fifth Fillet, touching arcs, cap edges, Cut with Fillet and arbitrary
+edges are not supported yet.
+
+A plate with nothing else on it can instead have one vertical edge cut away by
+a **Chamfer** with **Chamfer edge of …** or `chamfer-edge-copy`: one equal
+distance in millimetres from the edge along each of its two faces (the slanted
+flat is that × √2 wide), from 0.001 mm to the shorter adjacent side less
+0.01 mm. The copy's Body ends in a real, named `feature.chamfer` whose face is
+a plane, measured on the B-Rep (volume `(W·D − d²/2)·h`, area `d·√2·h`, the
+normal of the chosen corner). Its distance changes in a new copy with
+**Edit Chamfer distance** or `edit-chamfer-distance`, every name kept. Every
+other editor refuses a chamfered Body by the Chamfer's UUID, a second Chamfer
+or a Fillet after one is not supported, and the previous build opens such a
+document read-only and refuses to rebuild it.
+[One Chamfer: contract and recipe](docs/rectangular-corner-chamfer.md).
 [All four corners: contract and recipe](docs/rectangular-fillet-history.md).
 [Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
 [Fillet radius edit contract and recipe](docs/edit-fillet-radius.md).

@@ -1337,7 +1337,7 @@ mod tests {
                 distance: 37.5,
             },
         };
-        sketch.constraints.push(pin.clone());
+        sketch.constraints.push(pin);
         d.write(|w| {
             w.put_object(
                 record.id,
