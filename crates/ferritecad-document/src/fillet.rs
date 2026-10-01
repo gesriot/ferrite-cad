@@ -506,6 +506,9 @@ pub struct EdgeFillet {
 /// Why a document that already holds a Fillet is not a target for anything
 /// this build edits. One sentence, used by every editor that reads the plate.
 pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
+    // §29A: a Chamfer is refused by its own sentence, first: every editor of
+    // the plate asks this question before it reads anything else.
+    crate::chamfer::refuse_chamfered(objects)?;
     let fillets: Vec<&ObjectRecord> = objects
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
@@ -724,15 +727,33 @@ pub(crate) fn fillet_references(
     joint: ProfileJoint,
     profile_segments: &[StableEntityId],
 ) -> Vec<TopologyRef> {
+    edge_operation_references(
+        feature,
+        base,
+        profile_segments,
+        SemanticRole::EdgeFilletFace {
+            edge_feature: base,
+            joint,
+        },
+    )
+}
+
+/// §29A: what a single-edge operation on a plate names: its own new face (the
+/// role says what kind), and every cap and side the plate had, as the
+/// operation leaves it, qualified by the plate's own Extrude. The Fillet and
+/// the Chamfer differ only in the first.
+pub(crate) fn edge_operation_references(
+    feature: ObjectId,
+    base: ObjectId,
+    profile_segments: &[StableEntityId],
+    new_face: SemanticRole,
+) -> Vec<TopologyRef> {
     let mut references = vec![TopologyRef {
         id: StableEntityId::new(),
         owner: feature,
         producer_feature: feature,
         expected_kind: EntityKind::Face,
-        output_role: SemanticRole::EdgeFilletFace {
-            edge_feature: base,
-            joint,
-        },
+        output_role: new_face,
         selection: SelectionRule::Exact,
         fallback_signature: None,
     }];
@@ -951,6 +972,12 @@ pub(crate) fn chain_below(
                 }
                 earlier.push(record);
                 cursor = f.previous;
+            }
+            ObjectPayload::Chamfer(_) => {
+                return Err(unsupported(format!(
+                    "this build adds nothing after a Chamfer (§29A), and the predecessor \
+                     {cursor} is one"
+                )));
             }
             _ => {
                 return Err(unsupported(format!(

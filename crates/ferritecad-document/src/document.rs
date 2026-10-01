@@ -999,31 +999,73 @@ impl Document {
     /// the predecessor and tip edges, the Fillet's own references and the
     /// capabilities those new rows need. Nothing else.
     pub fn write_edge_fillet(&mut self, prepared: &crate::PreparedEdgeFillet) -> Result<()> {
-        let current = self
-            .object(prepared.body().id)?
-            .ok_or_else(|| CadError::input("selected Body disappeared before the fillet"))?;
+        self.write_edge_feature(
+            "fillet",
+            (prepared.body(), prepared.feature()),
+            prepared.previous(),
+            (
+                &prepared.added_dependencies,
+                &prepared.removed_dependencies,
+                &prepared.references,
+            ),
+            |document| crate::fillet::rederive(document, prepared),
+        )
+    }
+
+    /// §29A: writes one prepared Chamfer — the same transaction a Fillet's is:
+    /// one new feature row, the Body's new tip, the dependency moves, the
+    /// names, the capabilities they need and the stamp. The guard re-derives
+    /// the whole prepared value from the document the write consumes.
+    pub fn write_edge_chamfer(&mut self, prepared: &crate::PreparedEdgeChamfer) -> Result<()> {
+        self.write_edge_feature(
+            "chamfer",
+            (prepared.body(), prepared.feature()),
+            prepared.previous(),
+            (
+                &prepared.added_dependencies,
+                &prepared.removed_dependencies,
+                &prepared.references,
+            ),
+            |document| crate::chamfer::rederive(document, prepared),
+        )
+    }
+
+    /// What a single-edge feature's creation writes, whichever feature it is.
+    fn write_edge_feature(
+        &mut self,
+        what: &str,
+        (prepared_body, prepared_feature): (&ObjectRecord, &crate::cut_edit::NewObject),
+        previous: ObjectId,
+        (added, removed, references): (&[Dependency], &[Dependency], &[TopologyRef]),
+        guard: impl FnOnce(&Self) -> Result<()>,
+    ) -> Result<()> {
+        let current = self.object(prepared_body.id)?.ok_or_else(|| {
+            CadError::input(format!("selected Body disappeared before the {what}"))
+        })?;
         let ObjectPayload::Body(stored) = &current.payload else {
             return Err(CadError::input("the selected object is not a Body"));
         };
-        if stored.tip_feature != Some(prepared.previous()) {
-            return Err(CadError::input(
-                "the Body's tip changed after the fillet was prepared",
-            ));
+        if stored.tip_feature != Some(previous) {
+            return Err(CadError::input(format!(
+                "the Body's tip changed after the {what} was prepared"
+            )));
         }
-        if self.object(prepared.feature().id)?.is_some() {
-            return Err(CadError::input(
-                "a fillet may not overwrite an object that already exists",
-            ));
+        if self.object(prepared_feature.id)?.is_some() {
+            return Err(CadError::input(format!(
+                "a {what} may not overwrite an object that already exists"
+            )));
         }
-        let body = prepared.body().clone();
-        let feature = prepared.feature().clone();
-        let added = prepared.added_dependencies.clone();
-        let removed = prepared.removed_dependencies.clone();
-        let references = prepared.references.clone();
+        let body = prepared_body.clone();
+        let feature = prepared_feature.clone();
+        let added = added.to_vec();
+        let removed = removed.to_vec();
+        let references = references.to_vec();
         let body_bytes = body.payload.to_storage_bytes()?;
         let body_hash = ContentHash::of_bytes(&body_bytes);
+        let recording = format!("recording {what} capability");
+        let stamping = format!("stamping {what}");
         self.write_checked_transaction(
-            |document| crate::fillet::rederive(document, prepared),
+            guard,
             move |writer| {
                 require_fresh_cut_ids(
                     writer.tx,
@@ -1070,7 +1112,7 @@ impl Document {
                              DO UPDATE SET required=1 WHERE required<>1",
                             params![name],
                         )
-                        .map_err(|e| CadError::io("recording fillet capability", e))?;
+                        .map_err(|e| CadError::io(&recording, e))?;
                 }
                 writer
                     .tx
@@ -1078,7 +1120,7 @@ impl Document {
                         &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
                         [],
                     )
-                    .map_err(|e| CadError::io("stamping fillet", e))?;
+                    .map_err(|e| CadError::io(&stamping, e))?;
                 Ok(())
             },
             false,
@@ -1348,6 +1390,48 @@ impl Document {
                         [],
                     )
                     .map_err(|e| CadError::io("stamping Fillet radius edit", e))?;
+                Ok(())
+            },
+            false,
+        )
+    }
+
+    /// §29A: writes one prepared Chamfer distance edit: that row's payload
+    /// and hash and the stamp, nothing else. Its UUID, every reference UUID and
+    /// every other cell are untouched.
+    pub fn write_chamfer_distance(
+        &mut self,
+        prepared: &crate::PreparedChamferDistance,
+    ) -> Result<()> {
+        let record = prepared.feature();
+        let bytes = record.payload.to_storage_bytes()?;
+        let hash = ContentHash::of_bytes(&bytes);
+        self.write_checked_transaction(
+            |document| crate::chamfer::rederive_distance(document, prepared),
+            |writer| {
+                let changed = writer
+                    .tx
+                    .execute(
+                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                        params![
+                            bytes,
+                            hash.as_bytes().as_slice(),
+                            record.id.to_bytes().as_slice()
+                        ],
+                    )
+                    .map_err(|e| CadError::io("writing Chamfer distance", e))?;
+                if changed != 1 {
+                    return Err(CadError::input(
+                        "selected Chamfer disappeared before distance write",
+                    ));
+                }
+                writer
+                    .tx
+                    .execute(
+                        &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
+                        [],
+                    )
+                    .map_err(|e| CadError::io("stamping Chamfer distance edit", e))?;
                 Ok(())
             },
             false,
@@ -2414,6 +2498,9 @@ fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
     }
     if matches!(role, SemanticRole::EdgeFilletFace { .. }) {
         names.push(crate::FEATURE_FILLET_CAPABILITY.to_owned());
+    }
+    if matches!(role, SemanticRole::EdgeChamferFace { .. }) {
+        names.push(crate::FEATURE_CHAMFER_CAPABILITY.to_owned());
     }
     if matches!(role, SemanticRole::OriginFilletFace { .. }) {
         names.push(crate::FEATURE_FILLET_CAPABILITY.to_owned());

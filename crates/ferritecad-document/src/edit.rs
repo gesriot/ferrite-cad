@@ -72,6 +72,12 @@ pub struct ExtrudeEditSource {
     /// §28B: every saved Fillet, with whether its radius can be edited, from
     /// that same pinned reading.
     pub fillet_features: Vec<crate::FilletRadiusChoice>,
+    /// §29A: which saved Bodies a Chamfer can cut one vertical edge of, and
+    /// their candidate edges, from that same pinned reading.
+    pub chamfer_bodies: Vec<crate::ChamferChoice>,
+    /// §29A: every saved Chamfer, with whether its distance can be edited, from
+    /// that same pinned reading.
+    pub chamfer_features: Vec<crate::ChamferDistanceChoice>,
     /// §28A: why the extrusion editor refuses the document, when a Body ends
     /// in a Fillet whose plate it cannot change (§28C). Kept apart from
     /// `refusal`, which is about the file being written at all: discovery
@@ -177,9 +183,19 @@ impl ExtrudeEditSource {
             revolve_angles: crate::revolve_angle_choices(document, &objects),
             fillet_bodies: crate::fillet_choices(document, &objects),
             fillet_features: crate::fillet_radius_choices(document, &objects),
+            chamfer_bodies: crate::chamfer_choices(document, &objects),
+            chamfer_features: crate::chamfer_distance_choices(document, &objects),
             filleted: fillets
                 .err()
-                .map(|reason| crate::fillet::filleted_outside_frame(&objects, &reason).to_string()),
+                .map(|reason| crate::fillet::filleted_outside_frame(&objects, &reason).to_string())
+                .or_else(|| {
+                    // §29A: a Chamfer is a part the extrusion editor does not
+                    // know; discovery says so rather than offering an edit
+                    // that prepare would refuse.
+                    crate::chamfer::refuse_chamfered(&objects)
+                        .err()
+                        .map(|e| e.to_string())
+                }),
             refusal,
         })
     }
@@ -891,6 +907,8 @@ mod tests {
             revolve_angles: crate::revolve_angle_choices(document, &objects),
             fillet_bodies: crate::fillet_choices(document, &objects),
             fillet_features: crate::fillet_radius_choices(document, &objects),
+            chamfer_bodies: crate::chamfer_choices(document, &objects),
+            chamfer_features: crate::chamfer_distance_choices(document, &objects),
             filleted: crate::fillet::refuse_filleted(&objects)
                 .err()
                 .map(|e| e.to_string()),
