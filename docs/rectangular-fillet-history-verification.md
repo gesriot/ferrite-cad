@@ -79,7 +79,17 @@ Fillets are unchanged; a scalar was not turned into an array or null.
 
 ## CI
 
-(filled in after the runs)
+Code head `4011211fccfb7888f36dc69c3d4c704b14339601` (this record is the only later commit). Base `main` 97be2825496118198df803b80e3ebf7cbad2af84 (PR #75, §28K); its post-merge runs are separate from the runs below.
+
+The first push, `06972e8`, failed in the Ubuntu and macOS stub step: the flipped §28G no-kernel check called the `native()` helper, which prints `skipped:` and so trips the exact-name no-skip gate, and the renamed document gate (`…a_third_is_refused` → `…a_third_is_offered`) found 0 tests. Both were real defects of the PR, fixed in `4011211`; before pushing, all twelve fillet steps of the stub job were run locally in the stub build (65 `test … ok`, 12 `FCAD_28*_RECIPE_NO_KERNEL`, exit 0).
+
+All runs on `4011211` finished green:
+
+- CI, run 36842858820 (`lint`, `test` on ubuntu, macos and windows, `sbom`, `notices`, `supply-chain`): https://github.com/gesriot/ferrite-cad/actions/runs/36842858820
+- combined runtime layout, run 36842853292 (linux, macos, windows, comparison): https://github.com/gesriot/ferrite-cad/actions/runs/36842853292
+- planegcs pin: its paths were not touched by the second push; the run on `06972e8` (36841756742) was green, and `06972e8..4011211` changed only a test file and the two workflows.
+
+Limit of this record: the full job logs could not be downloaded here (the log archive host answered 403 to the session's egress policy), so the per-step `test … ok` and marker counts were **not** recounted from saved logs. What holds instead is that each of these steps fails its job unless the exact test name printed `ok` without `skipped:` (loops over named gates) and each marker (`FCAD_28L_RECIPE_OK`, `FCAD_28L_RECIPE_NO_SOLVER`, `FCAD_28L_RECIPE_NO_KERNEL`, `FCAD_FILLET_FOUR_UFBX_EXECUTED`) is grepped; a green job therefore executed them. That is an inference, not a count.
 
 ## Limits
 
