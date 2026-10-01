@@ -371,7 +371,7 @@ jobs:
           gate=fillets::tests::second_fillet_widgets_show_the_history_and_keep_the_draft
           cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-second-widgets.log
           if grep -q 'skipped:' fillet-second-widgets.log || ! grep -Fq "test $gate ... ok" fillet-second-widgets.log; then exit 1; fi
-          for gate in fillet::tests::a_second_fillet_is_written_on_the_first_and_a_third_is_refused \
+          for gate in fillet::tests::a_second_fillet_is_written_on_the_first_and_a_third_is_offered \
             fillet::tests::the_validator_refuses_an_edge_outside_the_fillets_history
           do
             cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-second-writer.log

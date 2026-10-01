@@ -6361,7 +6361,7 @@ mod sequential {
             .fillet_from(&f.source, f.body_id(), version, &never)
             .output()
             .expect("process");
-        if native() {
+        if ferritecad_occt::is_available() {
             let v = reply(out, OP, 0);
             assert_eq!(v["result"]["references"].as_array().map(Vec::len), Some(9));
             assert!(never.exists());
