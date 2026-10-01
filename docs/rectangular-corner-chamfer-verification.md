@@ -100,7 +100,16 @@ field. The file's SHA-256 is unchanged; no partial plate is ever shown
 
 ## CI
 
-(filled in after the PR's checks)
+Pull request [#77](https://github.com/gesriot/ferrite-cad/pull/77), code head
+`292ed48e06fdb9b03355e8b24ebf9e7904cc8ee8` (later commits change only this
+record). These are the PR's runs, not post-merge runs of `main`.
+
+- Ordinary CI [36918611868](https://github.com/gesriot/ferrite-cad/actions/runs/36918611868): success (includes the stub step with the Chamfer discovery/protocol, widget, document, kernel and topology gates and the `FCAD_29A_RECIPE_NO_KERNEL` recipe).
+- Combined runtime layout [36918605041](https://github.com/gesriot/ferrite-cad/actions/runs/36918605041): success on Linux, macOS and Windows plus the three-platform comparison. Its steps ran: the OCCT-without-solver Chamfer recipe, the native Chamfer step (8 CLI, 2 OCCT, 3 kernel, 8 document, 2 topology, 4 app gates and the recipe) and the pinned-ufbx step with `FCAD_CHAMFER_UFBX_EXECUTED`.
+- planegcs pin [36906833039](https://github.com/gesriot/ferrite-cad/actions/runs/36906833039): success on `1c78bb7`; later commits changed only workflows, a test file and docs.
+- Two earlier pushes failed and were fixed, not retried: a runtime step over GitHub's 21 000-character limit (the workflow failed in 0 s with no jobs), then a gate that prints deliberate panics before its `ok`, then a `--features planegcs` the document crate does not have.
+
+The full job logs were not downloaded (only the step conclusions and the tails of the failing logs were read), so per-step test counts are an inference from the gates, as stated under Limits.
 
 ## Limits
 
