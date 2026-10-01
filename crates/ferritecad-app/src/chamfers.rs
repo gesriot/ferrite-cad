@@ -639,3 +639,667 @@ mod history_tests {
         assert_eq!(h.redo(), None);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+    use ferritecad_document::Document;
+    use ferritecad_types::StableEntityId;
+
+    fn run(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        events: Vec<egui::Event>,
+        running: bool,
+    ) -> egui::FullOutput {
+        let mut o = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(988., 768.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| e.draw(ui, running),
+        );
+        o.textures_delta.clear();
+        o
+    }
+    fn frame(ctx: &egui::Context, e: &mut Editor, running: bool) -> egui::FullOutput {
+        run(ctx, e, Vec::new(), running)
+    }
+    fn press(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2, running: bool) {
+        run(ctx, e, vec![egui::Event::PointerMoved(at)], running);
+        for pressed in [true, false] {
+            run(
+                ctx,
+                e,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+                running,
+            );
+        }
+    }
+    fn find(out: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+        out.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text().starts_with(label) => {
+                Some(t.visual_bounding_rect().center())
+            }
+            _ => None,
+        })
+    }
+    fn click_while(ctx: &egui::Context, e: &mut Editor, label: &str, running: bool) {
+        let out = frame(ctx, e, running);
+        let at = find(&out, label).unwrap_or_else(|| panic!("not painted: {label}"));
+        press(ctx, e, at, running);
+    }
+    fn click(ctx: &egui::Context, e: &mut Editor, label: &str) {
+        click_while(ctx, e, label, false);
+    }
+    fn painted(out: &egui::FullOutput, label: &str) -> bool {
+        out.shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(label)))
+    }
+    fn enter(ctx: &egui::Context, e: &mut Editor, field: &str, value: &str) {
+        let out = frame(ctx, e, false);
+        let label = find(&out, field).unwrap_or_else(|| panic!("label {field}"));
+        press(ctx, e, egui::pos2(label.x + 90., label.y), false);
+        run(
+            ctx,
+            e,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+                egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+                egui::Event::Text(value.into()),
+            ],
+            false,
+        );
+    }
+    fn distance(ctx: &egui::Context, e: &mut Editor, value: &str) {
+        enter(ctx, e, "Distance (mm):", value);
+    }
+    fn new_distance(ctx: &egui::Context, e: &mut Editor, value: &str) {
+        enter(ctx, e, "New distance (mm):", value);
+    }
+    /// Opens the form through its own button, as a person would.
+    fn begin_by(e: &mut Editor, path: &Path, source: &ExtrudeEditSource, button: &str) {
+        let ctx = egui::Context::default();
+        let layout = |e: &mut Editor, events| {
+            let mut o = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(988., 768.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| e.choices(ui, true, Some(path), Some(source)),
+            );
+            o.textures_delta.clear();
+            o
+        };
+        let out = layout(e, Vec::new());
+        let at = find(&out, button).unwrap_or_else(|| panic!("button {button}"));
+        layout(e, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            layout(
+                e,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+            );
+        }
+        assert!(e.active(), "the button opened the form");
+    }
+
+    /// [`crate::fillets::tests::plate`] with one Chamfer at its corner
+    /// (33, 3.25), written by the shipped preparation and writer, no kernel.
+    fn chamfered(distance_mm: f64) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+        let (root, path, source) = crate::fillets::tests::plate();
+        let target = source.chamfer_bodies[0].target.clone().expect("a target");
+        let corner = target
+            .corners
+            .iter()
+            .find(|c| c.corner_mm == [33., 3.25])
+            .expect("that corner");
+        let mut d = Document::open(&path).expect("writable");
+        let prepared = ferritecad_document::prepare_edge_chamfer(
+            &d,
+            source.chamfer_bodies[0].body,
+            &EdgeChamfer {
+                edge: SweptEdge {
+                    feature: corner.feature,
+                    joint: corner.joint,
+                },
+                distance_mm,
+            },
+        )
+        .expect("prepared");
+        d.write_edge_chamfer(&prepared).expect("written");
+        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        d.close().expect("close");
+        (root, path, source)
+    }
+
+    fn published_stub() -> ferritecad_jobs::AddedEdgeChamfer {
+        let corner = ferritecad_document::ChamferCorner {
+            feature: ObjectId::new(),
+            joint: ferritecad_types::ProfileJoint::new(
+                StableEntityId::new(),
+                StableEntityId::new(),
+            )
+            .expect("joint"),
+            corner_mm: [0., 0.],
+            adjacent_lengths_mm: [1., 1.],
+            max_distance_mm: 0.5,
+        };
+        ferritecad_jobs::AddedEdgeChamfer {
+            destination: PathBuf::from("stale.fcad"),
+            document_id: ferritecad_types::DocumentId::new(),
+            body: ObjectId::new(),
+            feature: ObjectId::new(),
+            previous: ObjectId::new(),
+            corner,
+            distance_mm: 0.25,
+            references: Vec::new(),
+        }
+    }
+
+    /// The form lists the four corners the document names, refuses what the
+    /// document would, steps through the whole request with Undo and Redo, keeps
+    /// Save and Cancel on the screen, and keeps its draft through a cancelled
+    /// Save, a worker refusal and a stale reply. No kernel is involved.
+    #[test]
+    fn chamfer_widgets_list_corners_refuse_like_the_document_and_keep_the_draft() {
+        let (_root, path, source) = crate::fillets::tests::plate();
+        let choice = source.chamfer_bodies[0].clone();
+        let target = choice.target.clone().expect("a target");
+        let mut e = Editor::default();
+        begin_by(&mut e, &path, &source, "Chamfer edge of Plate");
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        let out = frame(&ctx, &mut e, false);
+        for corner in &target.corners {
+            let [a, b] = corner.joint.segments();
+            assert!(painted(
+                &out,
+                &format!(
+                    "Corner ({}, {}) — Lines {a} | {b}",
+                    corner.corner_mm[0], corner.corner_mm[1]
+                )
+            ));
+        }
+        assert!(painted(&out, &target.base_feature.to_string()));
+        assert!(painted(&out, "measured along each face"));
+        assert!(painted(&out, "× √2"));
+        assert!(!painted(&out, "Save chamfer copy…"), "nothing applied yet");
+        // Undo and Redo exist and are inert while the history is empty.
+        assert!(painted(&out, "Undo request") && painted(&out, "Redo request"));
+        let before = e.draft.as_ref().expect("draft").typed.clone();
+        click(&ctx, &mut e, "Undo request");
+        click(&ctx, &mut e, "Redo request");
+        assert_eq!(e.draft.as_ref().expect("draft").typed, before);
+
+        // Nothing chosen, then text that is no distance, then distances the
+        // document refuses: each refused, none recorded.
+        click(&ctx, &mut e, "Apply chamfer");
+        assert!(
+            e.draft
+                .as_ref()
+                .expect("draft")
+                .refusal
+                .as_deref()
+                .expect("refused")
+                .contains("choose one vertical edge")
+        );
+        click(&ctx, &mut e, "Corner (33, 3.25)");
+        let chosen = target
+            .corners
+            .iter()
+            .position(|c| c.corner_mm == [33., 3.25])
+            .expect("that corner");
+        assert_eq!(e.draft.as_ref().expect("draft").typed.corner, Some(chosen));
+        let max = target.corners[chosen].max_distance_mm;
+        let past = max.next_up().to_string();
+        for (text, why) in [
+            ("banana", "finite"),
+            ("0", "at least"),
+            ("0.0009", "at least"),
+            (past.as_str(), "too large"),
+            ("12.25", "too large"),
+            ("inf", "finite"),
+        ] {
+            distance(&ctx, &mut e, text);
+            click(&ctx, &mut e, "Apply chamfer");
+            let draft = e.draft.as_ref().expect("draft");
+            assert!(!draft.history.can_undo(), "{text} was recorded");
+            assert!(
+                draft.refusal.as_deref().expect("a refusal").contains(why),
+                "{text}: {:?}",
+                draft.refusal
+            );
+        }
+        // The exact maximum is accepted and the next float was not.
+        distance(&ctx, &mut e, &max.to_string());
+        click(&ctx, &mut e, "Apply chamfer");
+        assert!(e.draft.as_ref().expect("draft").history.can_undo());
+        distance(&ctx, &mut e, "2.375");
+        click(&ctx, &mut e, "Apply chamfer");
+        let out = frame(&ctx, &mut e, false);
+        assert!(painted(
+            &out,
+            "Ready: chamfer the edge at (33, 3.25) with d2.375 mm"
+        ));
+        assert!(painted(&out, "Save chamfer copy…"));
+        // An unapplied change un-readies the request.
+        distance(&ctx, &mut e, "3");
+        assert!(!painted(&frame(&ctx, &mut e, false), "Save chamfer copy…"));
+        distance(&ctx, &mut e, "2.375");
+        assert!(painted(&frame(&ctx, &mut e, false), "Save chamfer copy…"));
+
+        // Whole-request Undo and Redo: the corner and the distance come back
+        // together, a new request after an Undo drops the Redo tail.
+        click(&ctx, &mut e, "Corner (-4.5, 15.5)");
+        distance(&ctx, &mut e, "1.5");
+        click(&ctx, &mut e, "Apply chamfer");
+        let third = e.draft.as_ref().expect("draft").typed.clone();
+        assert_eq!(third.distance, "1.5");
+        click(&ctx, &mut e, "Undo request");
+        let second = e.draft.as_ref().expect("draft").typed.clone();
+        assert_eq!(
+            (second.corner, second.distance.as_str()),
+            (Some(chosen), "2.375")
+        );
+        assert!(painted(
+            &frame(&ctx, &mut e, false),
+            "Ready: chamfer the edge at (33, 3.25) with d2.375 mm"
+        ));
+        click(&ctx, &mut e, "Undo request");
+        assert_eq!(
+            e.draft.as_ref().expect("draft").typed.distance,
+            max.to_string()
+        );
+        click(&ctx, &mut e, "Undo request");
+        assert_eq!(e.draft.as_ref().expect("draft").typed, Typed::default());
+        assert!(!painted(&frame(&ctx, &mut e, false), "Save chamfer copy…"));
+        click(&ctx, &mut e, "Redo request");
+        click(&ctx, &mut e, "Redo request");
+        assert_eq!(e.draft.as_ref().expect("draft").typed, second);
+        click(&ctx, &mut e, "Redo request");
+        assert_eq!(e.draft.as_ref().expect("draft").typed, third);
+        click(&ctx, &mut e, "Undo request");
+        distance(&ctx, &mut e, "2.375");
+        click(&ctx, &mut e, "Apply chamfer");
+        assert_eq!(
+            e.draft.as_ref().expect("draft").history.states.len(),
+            4,
+            "an unchanged request is not a new entry"
+        );
+        click(&ctx, &mut e, "Redo request");
+        assert_eq!(
+            e.draft.as_ref().expect("draft").typed,
+            third,
+            "the future was not discarded by a request that changed nothing"
+        );
+        click(&ctx, &mut e, "Undo request");
+        assert_eq!(e.draft.as_ref().expect("draft").typed, second);
+
+        // Save and Cancel are on the screen, whatever the form holds.
+        let out = frame(&ctx, &mut e, false);
+        for label in ["Save chamfer copy…", "Cancel chamfer draft"] {
+            let at = find(&out, label).unwrap_or_else(|| panic!("{label} is not painted"));
+            assert!(
+                at.y > 0. && at.y < 768. && at.x > 0. && at.x < 988.,
+                "{label} at {at:?}"
+            );
+        }
+
+        click(&ctx, &mut e, "Save chamfer copy…");
+        let request = e.take_request().expect("the widgets' request");
+        assert!(e.take_request().is_none(), "one press, one request");
+        assert_eq!(request.source, path);
+        assert_eq!(request.expected, source.version);
+        assert_eq!(request.body, choice.body);
+        assert_eq!(request.chamfer.edge.feature, target.base_feature);
+        assert_eq!(request.chamfer.edge.joint, target.corners[chosen].joint);
+        assert_eq!(request.chamfer.distance_mm, 2.375);
+        let typed = e.draft.as_ref().expect("draft").typed.clone();
+
+        // The Save dialog was cancelled: nothing ran, and the draft is as it was.
+        assert!(e.active());
+        assert_eq!(e.draft.as_ref().expect("draft").typed, typed);
+        // While a job runs the form is inert, and says the draft is kept.
+        let out = frame(&ctx, &mut e, true);
+        assert!(painted(&out, "Draft retained until publication"));
+        click_while(&ctx, &mut e, "Cancel chamfer draft", true);
+        assert!(e.active(), "Cancel is disabled while saving");
+
+        // A worker refusal and a stale reply both leave the draft in place.
+        let mut editor = crate::sketch::Editor::default();
+        editor.chamfers = e;
+        let mut edits = crate::edits::Edits::default();
+        let mut refused = request.clone();
+        refused.destination = PathBuf::from("refused.fcad");
+        let generation = edits
+            .start_chamfer(refused, |_, _, _| std::thread::spawn(|| {}))
+            .expect("started");
+        assert_eq!(
+            finish_chamfer(
+                &mut editor,
+                &mut edits,
+                generation + 1,
+                Ok(published_stub())
+            ),
+            None,
+            "a stale reply is ignored"
+        );
+        assert!(editor.chamfers.active());
+        assert_eq!(
+            finish_chamfer(
+                &mut editor,
+                &mut edits,
+                generation,
+                Err(ferritecad_types::CadError::kernel("refused by the worker"))
+            ),
+            None
+        );
+        assert!(editor.chamfers.active(), "a refusal keeps the draft");
+        let draft = editor.chamfers.draft.as_ref().expect("draft");
+        assert_eq!(draft.typed, typed);
+        assert!(
+            draft
+                .refusal
+                .as_deref()
+                .is_some_and(|r| r.contains("refused by the worker")),
+            "the form shows why: {:?}",
+            draft.refusal
+        );
+        let mut e = std::mem::take(&mut editor.chamfers);
+        click(&ctx, &mut e, "Cancel chamfer draft");
+        assert!(!e.active());
+        assert!(e.take_request().is_none());
+    }
+
+    /// The distance form shows the saved edge, never chooses one, steps through
+    /// the requests, refuses what the document would and keeps its draft.
+    #[test]
+    fn chamfer_distance_widgets_show_the_saved_edge_and_keep_the_draft() {
+        let (_root, path, source) = chamfered(2.375);
+        let choice = source.chamfer_features[0].clone();
+        let saved = choice.saved.clone().expect("a saved Chamfer");
+        let mut e = Editor::default();
+        // The plate's own creation button is refused: it ends in a Chamfer.
+        assert!(source.chamfer_bodies[0].target.is_none());
+        begin_by(&mut e, &path, &source, "Edit Chamfer distance Chamfer");
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        let out = frame(&ctx, &mut e, false);
+        assert!(painted(&out, &saved.feature.to_string()));
+        assert!(painted(&out, "Saved distance 2.375 mm along each face"));
+        assert!(painted(
+            &out,
+            &format!(
+                "Corner ({}, {})",
+                saved.corner.corner_mm[0], saved.corner.corner_mm[1]
+            )
+        ));
+        assert!(painted(&out, "the edge cannot be changed here"));
+        assert!(
+            !painted(&out, "Corner (-4.5, 15.5)"),
+            "no other edge is offered"
+        );
+        assert!(painted(&out, "Apply a distance before saving."));
+        let max = saved.corner.max_distance_mm;
+        for (text, why) in [
+            ("banana", "finite"),
+            ("0.0005", "at least"),
+            (max.next_up().to_string().as_str(), "too large"),
+        ] {
+            new_distance(&ctx, &mut e, text);
+            click(&ctx, &mut e, "Apply distance");
+            let draft = e.distance.as_ref().expect("draft");
+            assert!(!draft.history.can_undo(), "{text} was recorded");
+            assert!(
+                draft.refusal.as_deref().expect("refusal").contains(why),
+                "{text}"
+            );
+        }
+        new_distance(&ctx, &mut e, "4.5");
+        click(&ctx, &mut e, "Apply distance");
+        assert!(painted(
+            &frame(&ctx, &mut e, false),
+            &format!(
+                "Ready: distance 2.375 mm -> 4.5 mm at ({}, {})",
+                saved.corner.corner_mm[0], saved.corner.corner_mm[1]
+            )
+        ));
+        new_distance(&ctx, &mut e, "6");
+        click(&ctx, &mut e, "Apply distance");
+        click(&ctx, &mut e, "Undo request");
+        assert_eq!(e.distance.as_ref().expect("draft").typed, "4.5");
+        click(&ctx, &mut e, "Undo request");
+        assert_eq!(e.distance.as_ref().expect("draft").typed, "2.375");
+        assert!(painted(
+            &frame(&ctx, &mut e, false),
+            "Apply a distance before saving."
+        ));
+        click(&ctx, &mut e, "Redo request");
+        click(&ctx, &mut e, "Redo request");
+        assert_eq!(e.distance.as_ref().expect("draft").typed, "6");
+        click(&ctx, &mut e, "Save distance copy…");
+        let request = e.take_distance_request().expect("the widgets' request");
+        assert!(e.take_distance_request().is_none());
+        assert_eq!(request.source, path);
+        assert_eq!(request.expected, source.version);
+        assert_eq!(request.feature, saved.feature);
+        assert_eq!(request.distance_mm, 6.0);
+        assert!(e.active(), "a cancelled Save keeps the draft");
+
+        let mut editor = crate::sketch::Editor::default();
+        editor.chamfers = e;
+        let mut edits = crate::edits::Edits::default();
+        let mut refused = request.clone();
+        refused.destination = PathBuf::from("refused.fcad");
+        let generation = edits
+            .start_chamfer_distance(refused, |_, _, _| std::thread::spawn(|| {}))
+            .expect("started");
+        assert_eq!(
+            finish_chamfer_distance(
+                &mut editor,
+                &mut edits,
+                generation,
+                Err(ferritecad_types::CadError::kernel("refused by the worker"))
+            ),
+            None
+        );
+        let draft = editor.chamfers.distance.as_ref().expect("draft kept");
+        assert_eq!(draft.typed, "6");
+        assert!(
+            draft
+                .refusal
+                .as_deref()
+                .is_some_and(|r| r.contains("refused by the worker"))
+        );
+        let mut e = std::mem::take(&mut editor.chamfers);
+        click(&ctx, &mut e, "Cancel distance draft");
+        assert!(!e.active());
+    }
+
+    /// The worker and the shipped command line publish one part, for both the
+    /// creation and the distance edit: every SQL cell is the same once the
+    /// identifiers this operation minted are matched, and the STL and FBX bytes
+    /// are the same.
+    #[test]
+    fn native_chamfer_widgets_worker_and_cli_publish_the_same_part() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: the chamfer worker needs OCCT");
+            return;
+        }
+        let (root, path, source) = crate::fillets::tests::plate();
+        let before = std::fs::read(&path).expect("source");
+        let mut e = Editor::default();
+        begin_by(&mut e, &path, &source, "Chamfer edge of Plate");
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        click(&ctx, &mut e, "Corner (-4.5, 15.5)");
+        distance(&ctx, &mut e, "3.0625");
+        click(&ctx, &mut e, "Apply chamfer");
+        click(&ctx, &mut e, "Save chamfer copy…");
+        let mut request = e.take_request().expect("widget request");
+        let chamfer = request.chamfer;
+
+        let ui = root.path().join("worker.fcad");
+        request.destination = ui.clone();
+        let mut edits = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        edits
+            .start_chamfer(request, move |r, g, c| {
+                crate::edits::spawn_chamfer(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (generation, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("worker response");
+        let published = result.as_ref().expect("published").clone();
+        assert_eq!(published.corner.corner_mm, [-4.5, 15.5]);
+        let typed = e.draft.as_ref().expect("draft").typed.clone();
+        let mut editor = crate::sketch::Editor::default();
+        editor.chamfers = e;
+        assert_eq!(
+            finish_chamfer(&mut editor, &mut edits, generation, result),
+            Some(ui.clone()),
+            "publication goes to the ordinary async Open"
+        );
+        assert!(!editor.active());
+        editor.draft_load_finished(&ui, false);
+        assert!(
+            editor.chamfers.active(),
+            "a refused Open restores the draft"
+        );
+        assert_eq!(editor.chamfers.draft.as_ref().expect("draft").typed, typed);
+        editor.draft_published(&ui);
+        editor.draft_load_finished(&ui, true);
+        assert!(!editor.active());
+
+        // The same request through the shipped command line.
+        let input = root.path().join("request.json");
+        let [a, b] = chamfer.edge.joint.segments();
+        std::fs::write(
+            &input,
+            format!(
+                r#"{{"request_version":1,"edge":{{"feature_id":"{}","joint":["{b}","{a}"]}},"distance_mm":{}}}"#,
+                chamfer.edge.feature, chamfer.distance_mm
+            ),
+        )
+        .expect("input");
+        let peer = root.path().join("peer.fcad");
+        let out = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("chamfer-edge-copy")
+            .arg(&path)
+            .arg("--body")
+            .arg(source.chamfer_bodies[0].body.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(out.status.success(), "{out:?}");
+        crate::fillets::tests::same_publication(&ui, &peer);
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+
+        // The distance edit of the published copy: the worker and the CLI.
+        let copy = Document::open_read_only(&ui).expect("copy");
+        let reading = ExtrudeEditSource::read(&copy).expect("snapshot");
+        copy.close().expect("close");
+        let mut e = Editor::default();
+        begin_by(&mut e, &ui, &reading, "Edit Chamfer distance Chamfer");
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        new_distance(&ctx, &mut e, "5.25");
+        click(&ctx, &mut e, "Apply distance");
+        click(&ctx, &mut e, "Save distance copy…");
+        let mut request = e.take_distance_request().expect("widget request");
+        let feature = request.feature;
+        let edited = root.path().join("worker-edit.fcad");
+        request.destination = edited.clone();
+        let mut edits = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        edits
+            .start_chamfer_distance(request, move |r, g, c| {
+                crate::edits::spawn_chamfer_distance(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (generation, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("worker response");
+        let done = result.as_ref().expect("published").clone();
+        assert_eq!(
+            (done.previous_distance_mm, done.distance_mm),
+            (3.0625, 5.25)
+        );
+        let mut editor = crate::sketch::Editor::default();
+        editor.chamfers = e;
+        assert_eq!(
+            finish_chamfer_distance(&mut editor, &mut edits, generation, result),
+            Some(edited.clone())
+        );
+        let input = root.path().join("distance.json");
+        std::fs::write(&input, r#"{"request_version":1,"distance_mm":5.25}"#).expect("input");
+        let peer_edit = root.path().join("peer-edit.fcad");
+        let out = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("edit-chamfer-distance")
+            .arg(&ui)
+            .arg("--feature")
+            .arg(feature.to_string())
+            .arg("--expect-version")
+            .arg(reading.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&peer_edit)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(out.status.success(), "{out:?}");
+        crate::fillets::tests::same_radius_publication(&ui, &edited, &peer_edit);
+    }
+}
