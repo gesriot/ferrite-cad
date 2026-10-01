@@ -7,9 +7,11 @@
 //! here first.
 
 mod annulus;
+mod chamfer;
 mod circle;
 mod cut;
 mod edit_annular;
+mod edit_chamfer_distance;
 mod edit_circle;
 mod edit_constraints;
 mod edit_cut;
@@ -142,6 +144,13 @@ enum Command {
     /// Change the radius of the saved Fillet in a new identity-preserving
     /// FCAD copy. The edge, every UUID and every name are kept.
     EditFilletRadius(edit_fillet_radius::EditFilletRadiusArgs),
+    /// Cut one vertical edge of a saved rectangular plate away at one equal
+    /// distance (millimetres along each of its two faces), publishing a new
+    /// FCAD copy whose Body ends in a named Chamfer.
+    ChamferEdgeCopy(chamfer::ChamferArgs),
+    /// Change the distance of the saved Chamfer in a new identity-preserving
+    /// FCAD copy. The edge, every UUID and every name are kept.
+    EditChamferDistance(edit_chamfer_distance::EditChamferDistanceArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes, migration or a geometry kernel.
@@ -374,6 +383,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::EditRevolveAngle(args) => edit_revolve_angle::run(args),
         Command::FilletEdgeCopy(args) => fillet::run(args),
         Command::EditFilletRadius(args) => edit_fillet_radius::run(args),
+        Command::ChamferEdgeCopy(args) => chamfer::run(args),
+        Command::EditChamferDistance(args) => edit_chamfer_distance::run(args),
         Command::EditCircle(args) => edit_circle::run(args),
         Command::EditAnnular(args) => edit_annular::run(args),
         Command::CutCircularCopy(args) => cut::run(args),

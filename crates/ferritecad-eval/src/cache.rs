@@ -27,8 +27,8 @@
 
 use ferritecad_document::CacheStore;
 use ferritecad_kernel::{
-    ExtrudeRequest, KernelIdentity, OperationContext, RevolveRequest, cut_cache_key,
-    extrude_cache_key, fillet_cache_key, revolve_cache_key,
+    ExtrudeRequest, KernelIdentity, OperationContext, RevolveRequest, chamfer_cache_key,
+    cut_cache_key, extrude_cache_key, fillet_cache_key, revolve_cache_key,
 };
 use ferritecad_topology::{ARCHIVE_CACHE_KIND, ArchivedFeature};
 use ferritecad_types::{CanonicalHasher, ContentHash, ObjectId, Result};
@@ -114,6 +114,39 @@ pub fn fillet_archive_key(
             &edge_feature.to_bytes(),
             joint,
             radius_mm,
+            context,
+        )
+        .as_bytes(),
+    );
+    hasher.finish()
+}
+
+/// Where a Chamfer's archive lives in the sidecar (§29A).
+///
+/// As [`fillet_archive_key`]: the predecessor's identity and key, the edge's
+/// producer and canonical joint, the exact bits of the distance, the kernel and
+/// the tolerance. Another distance, another corner, another predecessor — or an
+/// upstream change that moves the predecessor's key — is another entry, and the
+/// archive of a Fillet with the same numbers is never found.
+pub fn chamfer_archive_key(
+    kernel: &KernelIdentity,
+    previous: ObjectId,
+    target_key: &ContentHash,
+    edge_feature: ObjectId,
+    joint: ferritecad_types::ProfileJoint,
+    distance_mm: f64,
+    context: &OperationContext,
+) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("eval.chamfer.named");
+    hasher.algorithm_version(1);
+    hasher.field("previous").bytes(&previous.to_bytes());
+    hasher.field("geometry").bytes(
+        chamfer_cache_key(
+            kernel,
+            target_key,
+            &edge_feature.to_bytes(),
+            joint,
+            distance_mm,
             context,
         )
         .as_bytes(),

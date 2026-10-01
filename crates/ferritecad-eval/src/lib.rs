@@ -39,8 +39,9 @@ mod presentation;
 mod solve;
 
 pub use cache::{
-    cut_archive_key, extrude_archive_key, fillet_archive_key, load_extrude_archive,
-    load_feature_archive, revolve_archive_key, store_extrude_archive, store_feature_archive,
+    chamfer_archive_key, cut_archive_key, extrude_archive_key, fillet_archive_key,
+    load_extrude_archive, load_feature_archive, revolve_archive_key, store_extrude_archive,
+    store_feature_archive,
 };
 pub use cold::{CacheEvent, CacheOutcome, RebuildResult, rebuild_cached, rebuild_cold};
 pub use convert::{

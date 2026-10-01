@@ -29,8 +29,8 @@ use std::collections::BTreeMap;
 use ferritecad_document::TopologyRef;
 use ferritecad_document::{CacheStore, Document, EndCondition, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
-    CutRequest, FilletRequest, GeometryKernel, OperationContext, Profile, ProgressSink,
-    ShapeHandle, SketchPlane, SubShapeHandle,
+    ChamferRequest, CutRequest, FilletRequest, GeometryKernel, OperationContext, Profile,
+    ProgressSink, ShapeHandle, SketchPlane, SubShapeHandle,
 };
 use ferritecad_topology::{
     CarriedName, FeatureNames, TopologyMap, archive_feature, restore_feature,
@@ -38,8 +38,8 @@ use ferritecad_topology::{
 use ferritecad_types::{CadError, ObjectId, Result};
 
 use crate::cache::{
-    cut_archive_key, extrude_archive_key, fillet_archive_key, load_feature_archive,
-    revolve_archive_key, store_feature_archive,
+    chamfer_archive_key, cut_archive_key, extrude_archive_key, fillet_archive_key,
+    load_feature_archive, revolve_archive_key, store_feature_archive,
 };
 use crate::convert::{
     Reach, cut_tool_request, extrude_request, plane_from_datum, profile_from_sketch,
@@ -660,6 +660,101 @@ fn run<K: GeometryKernel + ?Sized>(
                         *id,
                         previous,
                         fillet.edge.feature,
+                        joint,
+                        &previous_names,
+                        *edge,
+                        &result,
+                    )?;
+                    state.shapes.insert(*id, result.shape);
+                    if let Some(cache) = cache.as_deref_mut() {
+                        store(kernel, cache, key, *id, state, events);
+                    }
+                }
+                state.keys.insert(*id, key);
+            }
+
+            // §29A: one edge of the result this feature consumes, cut away at
+            // one equal distance. The same cold and cached path as a Fillet,
+            // keyed by its own meaning, naming its own face under its own role.
+            ObjectPayload::Chamfer(chamfer) => {
+                let previous = chamfer.previous;
+                let joint = chamfer.edge.joint;
+                // The class, asked of the saved objects, and the distance
+                // policy, asked of the Lines the plate was built from.
+                let saved: Vec<_> = objects.values().cloned().collect();
+                let built: Option<Vec<ferritecad_document::SketchCurve>> =
+                    match objects.get(&chamfer.edge.feature).map(|o| &o.payload) {
+                        Some(ObjectPayload::Extrude(e)) => {
+                            state.presentations.get(&e.profile).map(|p| {
+                                p.curves()
+                                    .iter()
+                                    .map(|c| ferritecad_document::SketchCurve {
+                                        id: c.id(),
+                                        construction: c.is_construction(),
+                                        geometry: c.geometry().clone(),
+                                    })
+                                    .collect()
+                            })
+                        }
+                        _ => None,
+                    };
+                ferritecad_document::evaluable_chamfer(&saved, chamfer, built.as_deref())?;
+                let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
+                    CadError::input(format!(
+                        "chamfer {id} cuts an edge of {previous}, which produced no result"
+                    ))
+                })?;
+                let key = chamfer_archive_key(
+                    kernel.identity(),
+                    previous,
+                    &target_key,
+                    chamfer.edge.feature,
+                    joint,
+                    chamfer.distance_mm,
+                    &scoped,
+                );
+                let restored = match cache.as_deref_mut() {
+                    Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
+                    None => false,
+                };
+                if !restored {
+                    let previous_names =
+                        state.topology.feature(previous).cloned().ok_or_else(|| {
+                            CadError::topology(format!(
+                                "chamfer {id} cuts an edge of {previous}, which named nothing"
+                            ))
+                        })?;
+                    let target_shape = previous_names.shape().ok_or_else(|| {
+                        CadError::topology(format!(
+                            "chamfer {id} cuts an edge of {previous}, which built no shape"
+                        ))
+                    })?;
+                    // Exactly the edge the payload means, found by its name in
+                    // the plate's own output: none, or more than one, is a
+                    // refusal, never the nearest edge.
+                    let edges: Vec<_> = previous_names.sweep_edge(joint).collect();
+                    let [edge] = edges.as_slice() else {
+                        return Err(CadError::topology(format!(
+                            "chamfer {id} cuts the edge {previous} swept at {joint}, and that \
+                             name matches {} edges; it must match exactly one",
+                            edges.len()
+                        )));
+                    };
+                    let mut track = tracked(&previous_names, &FeatureNames::default());
+                    for joint in previous_names.named_joints() {
+                        track.extend(previous_names.sweep_edge(joint));
+                    }
+                    if !track.contains(edge) {
+                        track.push(*edge);
+                    }
+                    let request = ChamferRequest::new(target_shape, *edge, chamfer.distance_mm)?;
+                    let result = kernel.chamfer_edge(&request, &track, &scoped)?;
+                    state.owned.push(result.shape);
+                    context.check_cancelled()?;
+                    state.topology.record_chamfer(
+                        *id,
+                        previous,
+                        chamfer.edge.feature,
                         joint,
                         &previous_names,
                         *edge,

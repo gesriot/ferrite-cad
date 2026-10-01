@@ -256,6 +256,10 @@ fn describe_role(role: &SemanticRole) -> String {
             edge_feature,
             joint,
         } => format!("fillet face rounded from the edge {edge_feature} swept at {joint}"),
+        SemanticRole::EdgeChamferFace {
+            edge_feature,
+            joint,
+        } => format!("chamfer face cut from the edge {edge_feature} swept at {joint}"),
         other => format!("{other:?}"),
     }
 }

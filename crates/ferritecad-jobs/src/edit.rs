@@ -220,6 +220,79 @@ pub fn edit_fillet_radius_copy<K: GeometryKernel + ?Sized>(
     )
 }
 
+/// §29A: a new distance for the one saved Chamfer. The edge is the saved one
+/// and cannot be named here.
+#[derive(Debug, Clone)]
+pub struct EditChamferDistanceRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub feature: ObjectId,
+    pub distance_mm: f64,
+    pub destination: PathBuf,
+}
+
+/// What one published distance edit is, from the prepared edit itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditedChamferDistance {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    pub body: ObjectId,
+    pub feature: ObjectId,
+    /// The saved edge and corner, unchanged by this edit.
+    pub edge: ferritecad_document::SweptEdge,
+    pub corner_mm: [f64; 2],
+    pub previous_distance_mm: f64,
+    pub distance_mm: f64,
+    /// The feature the Chamfer cuts, unchanged by the edit.
+    pub previous: ObjectId,
+}
+
+/// Change the distance of the one saved Chamfer in a new copy (§29A).
+///
+/// The same snapshot, baseline rebuild, reference check, version recheck and
+/// atomic publication every other copy edit uses. Nothing is minted, so every
+/// saved name, and only those, must resolve after the edit.
+pub fn edit_chamfer_distance_copy<K: GeometryKernel + ?Sized>(
+    request: &EditChamferDistanceRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<EditedChamferDistance> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::prepare_chamfer_distance(
+                source,
+                request.feature,
+                request.distance_mm,
+            )
+            .map(Box::new)
+            .map(CopyWrite::ChamferDistance)
+        },
+        |prepared, _| {
+            let CopyWrite::ChamferDistance(prepared) = prepared else {
+                return Err(CadError::input("missing prepared Chamfer distance edit"));
+            };
+            let saved = prepared.saved();
+            Ok(EditedChamferDistance {
+                destination: request.destination.clone(),
+                document_id: request.expected.document_id,
+                body: saved.body,
+                feature: saved.feature,
+                edge: saved.edge,
+                corner_mm: saved.corner.corner_mm,
+                previous_distance_mm: saved.distance_mm,
+                distance_mm: prepared.distance_mm(),
+                previous: saved.base_feature,
+            })
+        },
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct EditCircleRequest {
     pub source: PathBuf,
@@ -529,6 +602,75 @@ pub fn fillet_edge_copy<K: GeometryKernel + ?Sized>(
     )
 }
 
+/// What one chamfer asks for, in identities (§29A).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeChamferRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub body: ObjectId,
+    pub chamfer: ferritecad_document::EdgeChamfer,
+    pub destination: PathBuf,
+}
+
+/// What one published chamfer is, in identities.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddedEdgeChamfer {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    /// The Body whose tip the Chamfer now is; its identity is the source's.
+    pub body: ObjectId,
+    pub feature: ObjectId,
+    /// The feature cut, which was the tip before.
+    pub previous: ObjectId,
+    /// The corner cut, with its labels, read from the stored Lines (which are
+    /// exactly the Lines the plate was built from: the profile is free or
+    /// closure-only).
+    pub corner: ferritecad_document::ChamferCorner,
+    pub distance_mm: f64,
+    /// The new references the Chamfer persisted, by role, for a report.
+    pub references: Vec<ferritecad_document::TopologyRef>,
+}
+
+/// Cuts one vertical edge of a saved plate away, publishing a new copy (§29A).
+///
+/// The same snapshot, version guard, read-only source, baseline rebuild,
+/// reference check (every baseline and every minted name must resolve),
+/// SQLite close and atomic no-clobber publication every copy operation uses.
+pub fn chamfer_edge_copy<K: GeometryKernel + ?Sized>(
+    request: &EdgeChamferRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<AddedEdgeChamfer> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::prepare_edge_chamfer(source, request.body, &request.chamfer)
+                .map(Box::new)
+                .map(CopyWrite::Chamfer)
+        },
+        |prepared, _| {
+            let CopyWrite::Chamfer(prepared) = prepared else {
+                return Err(CadError::input("missing prepared chamfer"));
+            };
+            Ok(AddedEdgeChamfer {
+                destination: request.destination.clone(),
+                document_id: request.expected.document_id,
+                body: request.body,
+                feature: prepared.feature().id,
+                previous: prepared.previous(),
+                corner: prepared.corner(),
+                distance_mm: prepared.distance_mm(),
+                references: prepared.references().to_vec(),
+            })
+        },
+    )
+}
+
 /// What one published parameter edit of a saved cut is, in identities.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditCircularCutRequest {
@@ -622,6 +764,10 @@ enum CopyWrite {
     Fillet(Box<ferritecad_document::PreparedEdgeFillet>),
     /// §28B; boxed for the reason Cut is.
     FilletRadius(Box<ferritecad_document::PreparedFilletRadius>),
+    /// §29A; boxed for the reason Cut is.
+    Chamfer(Box<ferritecad_document::PreparedEdgeChamfer>),
+    /// §29A; boxed for the reason Cut is.
+    ChamferDistance(Box<ferritecad_document::PreparedChamferDistance>),
 }
 impl CopyWrite {
     fn object(&self) -> &ferritecad_document::ObjectRecord {
@@ -630,12 +776,14 @@ impl CopyWrite {
             Self::Height(p) => p.feature(),
             Self::RevolveAngle(p) => p.feature(),
             Self::FilletRadius(p) => p.feature(),
+            Self::ChamferDistance(p) => p.feature(),
             Self::Constraints(p) => p.object(),
             // The body is the one object a cut changes; the two it adds did
             // not exist to be read.
             Self::Cut(p) => p.body(),
             // The Body is the one saved object a fillet changes.
             Self::Fillet(p) => p.body(),
+            Self::Chamfer(p) => p.body(),
             // Two objects change here, and this is the one a generic write
             // would name. Nothing but that generic write uses it, and this
             // variant does not take it.
@@ -725,6 +873,8 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::RevolveAngle(p) => document.write_revolve_angle(p)?,
         CopyWrite::Fillet(p) => document.write_edge_fillet(p)?,
         CopyWrite::FilletRadius(p) => document.write_fillet_radius(p)?,
+        CopyWrite::Chamfer(p) => document.write_edge_chamfer(p)?,
+        CopyWrite::ChamferDistance(p) => document.write_chamfer_distance(p)?,
     }
     // A solve is asked for only when the edited sketch still has something to
     // solve. Taking the last constraint off a circle leaves a drawing with no
@@ -749,6 +899,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::Height(p) => p.added_references().iter().map(|r| r.id).collect(),
         CopyWrite::Cut(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::Fillet(p) => p.references().iter().map(|r| r.id).collect(),
+        CopyWrite::Chamfer(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::CutParameters(p) => p.added_references().iter().map(|r| r.id).collect(),
         _ => BTreeSet::new(),
     };

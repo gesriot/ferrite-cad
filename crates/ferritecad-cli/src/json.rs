@@ -12,6 +12,7 @@ use ferritecad_document::{Document, ExtrudeEditSource};
 use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result, StableEntityId};
 use serde::{Deserialize, Serialize};
 
+mod chamfer;
 pub(crate) mod constraints;
 mod fbx;
 mod import;
@@ -38,6 +39,8 @@ pub enum Operation {
     EditRevolveAngle,
     FilletEdgeCopy,
     EditFilletRadius,
+    ChamferEdgeCopy,
+    EditChamferDistance,
     Create,
     CreateSketchExtrude,
     CreateSketchRevolve,
@@ -110,6 +113,9 @@ pub struct Inspection {
     /// §28B, additive: every saved Fillet, with whether `edit-fillet-radius`
     /// accepts it. Not a `features` entry, for the reason `revolves` is not.
     fillets: Vec<FilletFeatureDiscovery>,
+    /// §29A, additive: every saved Chamfer, with whether
+    /// `edit-chamfer-distance` accepts it. Not a `features` entry either.
+    chamfers: Vec<chamfer::ChamferFeatureDiscovery>,
 }
 
 /// One saved Fillet (§28A), as the pinned reading found it, and what
@@ -637,6 +643,9 @@ struct Body {
     /// of this Body, and which edges. Structural only: it promises neither an
     /// installed kernel nor that the geometry will build.
     fillet_edge: FilletDiscovery,
+    /// §29A, additive: whether `chamfer-edge-copy` can cut one vertical edge of
+    /// this Body away, and which edges. Structural only, like `fillet_edge`.
+    chamfer_edge: chamfer::ChamferDiscovery,
 }
 
 /// What `fillet-edge-copy` would accept about one Body, from the same reading.
@@ -1593,6 +1602,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .into_iter()
         .map(|c| (c.body, c))
         .collect();
+    let mut chamfer_choices: std::collections::BTreeMap<_, _> = source
+        .chamfer_bodies
+        .into_iter()
+        .map(|c| (c.body, c))
+        .collect();
     let mut cut_parameter_choices: std::collections::BTreeMap<_, _> = source
         .cut_features
         .into_iter()
@@ -1617,6 +1631,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .fillet_features
         .into_iter()
         .map(|c| FilletFeatureDiscovery::new(c, source.refusal.clone()))
+        .collect();
+    let chamfers = source
+        .chamfer_features
+        .into_iter()
+        .map(|c| chamfer::ChamferFeatureDiscovery::new(c, source.refusal.clone()))
         .collect();
     let result = Inspection {
         document_id: source.version.document_id,
@@ -1740,12 +1759,19 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                                 .expect("same snapshot Body catalogue"),
                             source.refusal.clone(),
                         ),
+                        chamfer_edge: chamfer::ChamferDiscovery::new(
+                            &chamfer_choices
+                                .remove(&body.id)
+                                .expect("same snapshot Body catalogue"),
+                            source.refusal.clone(),
+                        ),
                     }
                 })
                 .collect()
         },
         revolves,
         fillets,
+        chamfers,
     };
     document.close()?;
     Ok(result)
