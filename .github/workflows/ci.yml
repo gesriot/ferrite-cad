@@ -506,6 +506,43 @@ jobs:
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28k-recipe.py | tee fillet-two-constraints-recipe-stub.log
           grep -q '^FCAD_28K_RECIPE_NO_KERNEL ' fillet-two-constraints-recipe-stub.log
 
+      - name: Discover and refuse four rounded corners without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §28L: one bounded reader of a 0-4 Fillet history: discovery lists
+          # every Fillet and only the unrounded corners, the forged and the
+          # fifth are refused by name; nothing is built or solved here.
+          gate=history::history_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-four-discovery.log
+          if grep -q 'skipped:' fillet-four-discovery.log || ! grep -Fq "test $gate ... ok" fillet-four-discovery.log; then exit 1; fi
+          for gate in the_fourth_fillet_widgets_name_the_history_and_keep_save_in_reach \
+            four_fillet_radius_widgets_name_every_neighbour_and_keep_save_in_reach
+          do
+            cargo test -p ferritecad-app "fillets::tests::$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-four-widgets.log
+            if grep -q 'skipped:' fillet-four-widgets.log || ! grep -Fq "test fillets::tests::$gate ... ok" fillet-four-widgets.log; then exit 1; fi
+          done
+          for gate in the_reader_reads_none_to_four_fillets_in_history_order \
+            every_neighbour_bounds_the_radius_and_the_bound_is_exact \
+            all_orders_of_the_four_corners_answer_to_one_policy \
+            the_fourth_fillet_closes_the_pair_with_the_first \
+            a_duplicate_a_fifth_a_branch_and_a_foreign_predecessor_are_refused \
+            the_height_the_rectangle_and_the_constraints_keep_all_four_fillets \
+            every_writer_rederives_four_fillets_and_refuses_forgery_and_stale_radii \
+            the_evaluator_judges_four_fillets_and_every_pair_on_the_built_lines
+          do
+            cargo test -p ferritecad-document --lib "fillet_radius::tests::history::$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-four-writer.log
+            if grep -q 'skipped:' fillet-four-writer.log || ! grep -Fq "test fillet_radius::tests::history::$gate ... ok" fillet-four-writer.log; then exit 1; fi
+          done
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/rectangular-fillet-history.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28L_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28l-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28l-recipe.py | tee fillet-four-recipe-stub.log
+          grep -q '^FCAD_28L_RECIPE_NO_KERNEL ' fillet-four-recipe-stub.log
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |

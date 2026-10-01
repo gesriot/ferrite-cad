@@ -856,6 +856,35 @@ Fillet 1, — `input`, ничего не записано.
 ограничений. Прочие поля и их типы не меняются.
 [Контракт §28K и исполняемый рецепт](edit-two-fillet-base-constraints.md).
 
+### История из трёх и четырёх Fillet (§28L)
+
+Команды, request, envelope и коды выхода прежние. Всё аддитивно, ни один
+прежний скаляр не меняет смысл и не становится массивом или `null`:
+
+* `fillets[].history_index` — место Fillet в истории, теперь 1…4;
+* `fillets[].radius_edit.neighbours` — все прочие Fillet истории по порядку,
+  каждый с `feature_id`, `history_index`, `edge`, `stored_corner_mm`,
+  `radius_mm`, `shared_line_id` и `stored_shared_length_mm` (оба `null` для
+  противоположного угла); `radius_edit.max_radius_mm` — минимум по **всем**
+  соседям (по соседним float по предикату проверки);
+* `features[].fillet_history`, `sketches[].fillet_history` и
+  `sketches[].constraint_edit.fillet_history` — вся история,
+  `{"count":n,"fillets":[{"fillet_feature_id","previous_feature_id",
+  "history_index","edge","corner_mm","radius_mm","profile_constrained"}]}`
+  для 1…4 Fillet, `null` без Fillet;
+* прежние формы остаются проекциями своего класса: `radius_edit.neighbour` —
+  объект только при ровно двух Fillet, иначе `null`; `fillet_base` (и
+  `second_fillet`) описывают один или два Fillet и `null` при трёх и четырёх;
+* `bodies[].fillet_edge.target.fillets` — от нуля до трёх, `candidates` — угол
+  на каждый ещё острый; у кандидата `adjacent_fillets` перечисляет каждый
+  соседний Fillet (`feature_id`, `shared_line_id`,
+  `stored_shared_length_mm`), а скаляры `adjacent_fillet_feature_id` и
+  `shared_line_id` заполнены только при ровно одном соседе. Плита с четырьмя
+  углами — `available:false` с причиной «every corner … rounded».
+
+Отказы называют реально виновные Fillet (feature UUID и joint) и общую Line.
+[Контракт §28L и исполняемый рецепт](rectangular-fillet-history.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

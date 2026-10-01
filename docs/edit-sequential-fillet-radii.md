@@ -103,7 +103,7 @@ line.
 
 ### Out of scope
 
-A third Fillet, editing the base height (since
+A third Fillet (§28L now supports a third and a fourth), editing the base height (since
 [§28I](edit-two-fillet-base-height.md) it can be), the Sketch's coordinates
 (since [§28J](edit-two-fillet-base-sketch.md)) or constraints of a
 two-Fillet history, retargeting a corner, Cut with Fillet, Chamfer, picking, preview,
@@ -281,7 +281,7 @@ for me, other, r in ((1, 2, R2), (2, 1, R1)):
     assert n["shared_line_id"] is not None, n
 assert by[1]["radius_edit"]["max_radius_mm"] == D / 2   # §28A's bound; the pair is looser
 assert by[2]["radius_edit"]["max_radius_mm"] == D / 2
-assert catalog["bodies"][0]["fillet_edge"]["available"] is False, "a third Fillet"
+assert catalog["bodies"][0]["fillet_edge"]["available"] is True, "a third Fillet is offered (§28L)"
 refs = tables(twice)["topology_refs"]
 request = root / "radius.json"
 

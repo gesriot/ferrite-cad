@@ -4170,3 +4170,28 @@ GUI/CLI SQL and byte-identical STL/FBX agreed; pinned ufbx and the independent
 unchanged swap, exit 0. Full original runtime logs confirm 12 new executions
 per OS including mixed discovery. Fresh review CI must finish before merge;
 the earlier OOM remains unexplained.
+
+**§28L — all four vertical corners of a rectangular plate, in a new copy.** The
+existing **Fillet edge of …** form and `fillet-edge-copy` round a third and a
+fourth, different corner, and the existing radius, height, Sketch-coordinate
+and constraint editors work on the whole history Extrude -> Fillet 1 -> ... ->
+Fillet *n* -> Body tip, *n* from 0 to 4. One bounded reader
+(`fillets_over_plate`, over the real predecessor chain) serves discovery,
+preparation, every writer's in-transaction re-derivation and, through the same
+`fillet_chain`, the evaluator; each Fillet carries every other as a neighbour,
+and no `second`/`third`/`fourth` field or object count exists. Each Fillet is
+a real Open CASCADE fillet of its predecessor's result, stored exactly as
+Fillet 2 is (payload v2, `feature.fillet.sequential.v1`, archive v4): no new
+payload, capability or archive version. The pair policy and the bounded
+bisection of #72 are unchanged and apply to **every** adjacent pair in history
+order — the fourth closes the pair with the first — and the offered maximum is
+the minimum over all neighbours, accepted to the float. On a dimensioned plate
+the evaluator alone judges every radius and pair on the solved Lines at every
+rebuild. JSON v1 is additive (`neighbours`, `fillet_history`, `adjacent_fillets`);
+the older single-neighbour and `second_fillet` forms are projections of their
+class and `null` for three or four. The previous build opens such a document
+and refuses to rebuild or edit it, typed, never as a partial Body. Chamfer,
+Cut with Fillet, arbitrary edges and in-place Save remain outside; milestone 5C
+remains open.
+[Contract and recipe](rectangular-fillet-history.md),
+[verification](rectangular-fillet-history-verification.md).

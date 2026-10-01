@@ -731,6 +731,15 @@ jobs:
           EXTRACT
           FERRITECAD="$recipe_cli" "$py" ferrite-28k-recipe.py | tee fillet-two-constraints-recipe-no-solver.log
           grep -q '^FCAD_28K_RECIPE_NO_SOLVER ' fillet-two-constraints-recipe-no-solver.log
+          # §28L: with a kernel and no solver the free plate is rounded four times and the recipe stops at the constraints.
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/rectangular-fillet-history.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28L_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28l-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-28l-recipe.py | tee fillet-four-recipe-no-solver.log
+          grep -q '^FCAD_28L_RECIPE_NO_SOLVER ' fillet-four-recipe-no-solver.log
 
       - name: Build the real application and the command line tool against both
         id: build
@@ -2016,7 +2025,14 @@ jobs:
             sequential::constraints::native_replacing_removing_and_editing_on_after_constraints \
             sequential::constraints::native_the_solved_plate_decides_each_radius_and_the_shared_flat \
             sequential::constraints::native_a_solved_plate_may_outgrow_its_stored_bound_and_not_shrink_below_it \
-            sequential::constraints::native_solver_diagnoses_and_atomic_refusals_under_two_fillets
+            sequential::constraints::native_solver_diagnoses_and_atomic_refusals_under_two_fillets \
+            history::native_four_corners_in_several_orders_are_what_the_numbers_say \
+            history::native_the_fourth_fillet_refusals_races_cancellation_and_report_loss_are_atomic \
+            history::native_early_middle_and_last_radii_answer_to_every_neighbour \
+            history::native_the_last_radius_answers_to_the_first_across_the_closing_line \
+            history::native_height_coordinates_and_constraints_keep_four_fillets \
+            history::native_the_solved_plate_decides_every_radius_of_four \
+            history::history_discovery_and_protocol_without_native
           do
             cargo test --release --features planegcs -p ferritecad-cli --test fillet "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-cli.log
@@ -2058,6 +2074,14 @@ jobs:
             fillet_radius::tests::a_fillet_outside_the_frame_is_refused_with_its_reason \
             fillet_radius::tests::the_base_height_changes_alone_and_interleaves_with_the_radius \
             fillet_radius::tests::the_height_writer_refuses_a_forged_or_stale_preparation \
+            fillet_radius::tests::history::the_reader_reads_none_to_four_fillets_in_history_order \
+            fillet_radius::tests::history::every_neighbour_bounds_the_radius_and_the_bound_is_exact \
+            fillet_radius::tests::history::all_orders_of_the_four_corners_answer_to_one_policy \
+            fillet_radius::tests::history::the_fourth_fillet_closes_the_pair_with_the_first \
+            fillet_radius::tests::history::a_duplicate_a_fifth_a_branch_and_a_foreign_predecessor_are_refused \
+            fillet_radius::tests::history::the_height_the_rectangle_and_the_constraints_keep_all_four_fillets \
+            fillet_radius::tests::history::every_writer_rederives_four_fillets_and_refuses_forgery_and_stale_radii \
+            fillet_radius::tests::history::the_evaluator_judges_four_fillets_and_every_pair_on_the_built_lines \
             fillet_radius::tests::a_height_under_a_fillet_outside_the_frame_is_refused_with_its_reason \
             fillet_radius::tests::the_base_rectangle_moves_and_resizes_alone_and_interleaves \
             fillet_radius::tests::a_candidate_rectangle_that_does_not_keep_the_rounded_corner_is_refused \
@@ -2116,7 +2140,13 @@ jobs:
             sketch::tests::two_fillet_base_sketch_widgets_show_both_fillets_and_keep_the_draft \
             sketch::tests::native_two_fillet_base_sketch_worker_and_cli_publish_the_same_part \
             constraints::tests::two_fillet_base_constraint_widgets_name_both_fillets_and_keep_the_draft \
-            constraints::tests::native_two_fillet_base_constraint_worker_and_cli_publish_the_same_part
+            constraints::tests::native_two_fillet_base_constraint_worker_and_cli_publish_the_same_part \
+            fillets::tests::the_fourth_fillet_widgets_name_the_history_and_keep_save_in_reach \
+            fillets::tests::four_fillet_radius_widgets_name_every_neighbour_and_keep_save_in_reach \
+            fillets::tests::native_third_and_fourth_fillet_worker_and_cli_publish_the_same_part \
+            edits::tests::four_fillet_base_height_widgets_name_every_fillet_and_keep_save_in_reach \
+            sketch::tests::four_fillet_base_sketch_widgets_name_every_fillet_and_keep_save_in_reach \
+            constraints::tests::four_fillet_base_constraint_widgets_name_every_fillet_and_keep_save_in_reach
           do
             cargo test --release --features planegcs -p ferritecad-app "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-ui.log
@@ -2190,6 +2220,15 @@ jobs:
           EXTRACT
           FERRITECAD="$recipe_cli" "$py" ferrite-28k-recipe.py | tee fillet-two-constraints-recipe.log
           grep -q '^FCAD_28K_RECIPE_OK ' fillet-two-constraints-recipe.log
+          # §28L: the public recipe, four corners rounded and edited through the same commands.
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/rectangular-fillet-history.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28L_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28l-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-28l-recipe.py | tee fillet-four-recipe.log
+          grep -q '^FCAD_28L_RECIPE_OK ' fillet-four-recipe.log
           echo "FCAD_FILLET_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
       - name: Create, discover, edit and export through the JSON v1 CLI contract
@@ -2311,6 +2350,7 @@ jobs:
           grep -q '^FCAD_FILLET_TWO_HEIGHT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_TWO_SKETCH_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_TWO_CONSTRAINTS_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_FILLET_FOUR_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

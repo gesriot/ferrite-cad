@@ -94,7 +94,7 @@ height misses the Extrude and both Fillets; a second rebuild hits all three.
 
 ### Out of scope
 
-A third Fillet, arbitrary edges, Cut with Fillet, Chamfer, in-place Save.
+A third Fillet (§28L now supports a third and a fourth), arbitrary edges, Cut with Fillet, Chamfer, in-place Save.
 (The Sketch's coordinates are [§28J](edit-two-fillet-base-sketch.md) and its
 constraints [§28K](edit-two-fillet-base-constraints.md).)
 

@@ -117,7 +117,7 @@ Sketch-coordinate edit is offered again.
 
 ### Out of scope
 
-A third Fillet, arbitrary edges, Cut with Fillet, Chamfer, new constraint
+A third Fillet (§28L now supports a third and a fourth), arbitrary edges, Cut with Fillet, Chamfer, new constraint
 kinds, automatic radius fitting, retargeting a corner, saving solved
 coordinates, in-place Save, live preview.
 
