@@ -10,7 +10,7 @@ const LONG: f64 = 37.5;
 const SHORT: f64 = 12.25;
 
 fn side(line: usize) -> f64 {
-    if line % 2 == 0 { LONG } else { SHORT }
+    if line.is_multiple_of(2) { LONG } else { SHORT }
 }
 
 /// The Line two stored corners share, if they are adjacent: corner `j` is

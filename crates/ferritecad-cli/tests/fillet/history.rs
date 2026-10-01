@@ -163,7 +163,7 @@ fn chain(
             .find(|f| !f["fillet_history"].is_null())
             .expect("the base Extrude row");
         assert_eq!(base["fillet_history"]["count"], k + 1);
-        assert_eq!(base["fillet_base"].is_object(), k + 1 <= 2, "{base}");
+        assert_eq!(base["fillet_base"].is_object(), k < 2, "{base}");
         let row = &after["bodies"][0]["fillet_edge"];
         assert_eq!(row["available"], k + 1 < 4, "{row}");
         let checked = cli()
