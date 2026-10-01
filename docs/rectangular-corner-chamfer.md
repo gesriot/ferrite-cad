@@ -249,6 +249,192 @@ Fillet radius form is, and none is claimed.
 
 ## Recipe
 
-[The extractable recipe](rectangular-corner-chamfer-verification.md) runs these
-commands for real and prints `FCAD_29A_RECIPE_OK` (`…_NO_KERNEL` without Open
-CASCADE).
+Extract the code between the markers and run it with the real command line:
+
+```sh
+python3 - <<'EXTRACT'
+from pathlib import Path
+text = Path("docs/rectangular-corner-chamfer.md").read_text(encoding="utf-8")
+code = text.split("# FCAD_29A_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+Path("ferrite-29a-recipe.py").write_text(code, encoding="utf-8")
+EXTRACT
+FERRITECAD=/path/to/ferritecad python3 ferrite-29a-recipe.py
+```
+
+A build without Open CASCADE stops at the first geometry step and prints
+`FCAD_29A_RECIPE_NO_KERNEL`; Open CASCADE alone (no solver) runs it to the end,
+because the class is free or closure-only. It prints `FCAD_29A_RECIPE_OK` with
+the exact and the measured volumes.
+
+```python
+# FCAD_29A_AGENT_RECIPE
+import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+cli = os.environ["FERRITECAD"]
+root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29a-"))
+
+def run(args, code=0):
+    p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
+    if p.returncode == 7:
+        raise RuntimeError("report lost: inspect the destination; do not retry blindly")
+    assert p.returncode == code, (args, p.returncode, p.stdout, p.stderr)
+    return json.loads(p.stdout) if "--json" in args else p.stdout
+
+def inspect(path):
+    return run(["inspect", path, "--json"])["result"]
+
+def geometry(args, out):
+    """A step that needs the kernel: a build without one refuses typed."""
+    p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
+    if p.returncode == 2 and not out.exists():
+        error = json.loads(p.stdout)["error"]
+        if error["kind"] == "unsupported" and "Open CASCADE" in error["message"]:
+            print("FCAD_29A_RECIPE_NO_KERNEL", json.dumps(error))
+            sys.exit(0)
+    assert p.returncode == 0, (args, p.returncode, p.stdout, p.stderr)
+    return json.loads(p.stdout)
+
+def tables(path):
+    db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    out = {}
+    for (t,) in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+        cur = db.execute(f'SELECT * FROM "{t}"')
+        out[t] = ([d[0] for d in cur.description], sorted(cur.fetchall(), key=repr))
+    db.close()
+    return out
+
+def only_row(source, copy, row_id):
+    """One object row's payload and hash (and the stamp) may differ; nothing else."""
+    rid = bytes.fromhex(row_id.replace("-", ""))
+    a, b = tables(source), tables(copy)
+    assert a.keys() == b.keys()
+    for t in a:
+        (ac, arows), (bc, brows) = a[t], b[t]
+        assert ac == bc and len(arows) == len(brows), t
+        if t == "objects":
+            k = ac.index("id")
+            arows, brows = sorted(arows, key=lambda r: r[k]), sorted(brows, key=lambda r: r[k])
+        for x, y in zip(arows, brows):
+            for c, u, v in zip(ac, x, y):
+                assert u == v or (t == "objects" and c in ("payload", "payload_hash")
+                                  and x[ac.index("id")] == rid) \
+                    or (t == "meta" and c == "modified_at"), f"{t}.{c} moved"
+
+def stl(path):
+    data = path.read_bytes()
+    (count,) = struct.unpack_from("<I", data, 80)
+    assert len(data) == 84 + 50 * count
+    tri = [[struct.unpack_from("<3f", data, 84 + 50 * i + 12 + 12 * k) for k in range(3)]
+           for i in range(count)]
+    six = sum(a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2])
+              + a[2] * (b[0] * c[1] - b[1] * c[0]) for a, b, c in tri)
+    return six / 6, tri
+
+X0, Y0, W, D, H = -4.5, 3.25, 37.5, 12.25, 6.75
+CORNER = [X0 + W, Y0]                      # the lower right corner of a counter-clockwise plate
+
+def measured(copy, distance):
+    """After reopening: valid, a cold rebuild resolves every name, the exact
+    analytic volume (W*D - d*d/2)*h, and the independently read mesh has the
+    corner cut by one planar face facing out of it whose triangles add up to
+    d*sqrt(2)*h, with the two new vertex columns d along each adjacent side."""
+    assert run(["validate", copy, "--json"])["result"]["valid"] is True
+    n = len(tables(copy)["topology_refs"][1])
+    text = run(["rebuild", copy, "--cold"])
+    assert "tip Chamfer" in text and f"{n} of {n} stored references resolved" in text, text
+    out = copy.with_suffix(".stl")
+    run(["export-stl", copy, "-o", out, "--json"])
+    volume, tri = stl(out)
+    exact = (W * D - distance * distance / 2) * H
+    assert abs(volume - exact) < 1e-3, (volume, exact)
+    flat = 0.0
+    for a, b, c in tri:
+        # The plane of the cut at the lower right corner: (x - cx) - (y - cy) = -d.
+        if all(abs(-(p[0] - CORNER[0]) + (p[1] - CORNER[1]) - distance) < 1e-4 for p in (a, b, c)):
+            u = [b[i] - a[i] for i in range(3)]
+            v = [c[i] - a[i] for i in range(3)]
+            n_ = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+            length = math.sqrt(sum(x * x for x in n_))
+            assert (n_[0] - n_[1]) / length / math.sqrt(2) > 1 - 1e-4, "the flat faces the plate"
+            flat += length / 2
+    assert abs(flat - distance * math.sqrt(2) * H) < 1e-3, flat
+    pts = [p for t in tri for p in t]
+    for z in (0.0, H):
+        for x, y in ([CORNER[0] - distance, CORNER[1]], [CORNER[0], CORNER[1] + distance]):
+            assert any(abs(p[0] - x) < 1e-4 and abs(p[1] - y) < 1e-4 and abs(p[2] - z) < 1e-4
+                       for p in pts), (x, y, z)
+        assert not any(abs(p[0] - CORNER[0]) < 1e-4 and abs(p[1] - CORNER[1]) < 1e-4
+                       and abs(p[2] - z) < 1e-4 for p in pts), "the cut corner still has a vertex"
+    return volume
+
+# 1. A plate, drawn offset and fractional.
+request = root / "plate.json"
+request.write_text(json.dumps({"request_version": 1, "height_mm": H,
+                               "points_mm": [[X0, Y0], [X0 + W, Y0], [X0 + W, Y0 + D], [X0, Y0 + D]]}))
+plate = root / "plate.fcad"
+run(["create-sketch-extrude", request, "-o", plate, "--json"])
+
+# 2. Discovery: four candidates, each by the two Line UUIDs of its corner, and the
+#    bounds the policy states — never a guess.
+catalog = inspect(plate)
+row = catalog["bodies"][0]["chamfer_edge"]
+assert row["available"] is True and catalog["chamfers"] == []
+target = row["target"]
+assert target["distance_unit"] == "mm" and target["min_distance_mm"] == 0.001
+assert target["min_flat_mm"] == 0.01 and len(target["candidates"]) == 4
+candidate = next(c for c in target["candidates"] if c["corner_mm"] == CORNER)
+assert candidate["max_distance_mm"] == D - 0.01 and candidate["offerable"] is True
+
+# 3. Create. The pair may be written in either order; it is one edge.
+d1 = 2.375
+edge = candidate["edge"]
+request.write_text(json.dumps({"request_version": 1, "distance_mm": d1,
+                               "edge": {"feature_id": edge["feature_id"],
+                                        "joint": [edge["joint"][1], edge["joint"][0]]}}))
+one = root / "one.fcad"
+body, version = catalog["bodies"][0]["body_id"], catalog["content_version"]
+done = geometry(["chamfer-edge-copy", plate, "--body", body, "--expect-version", version,
+                 "--request", request, "-o", one, "--json"], one)["result"]
+assert done["body_id"] == body and done["distance_mm"] == d1 and done["distance_unit"] == "mm"
+assert done["edge"] == edge and done["corner_mm"] == CORNER
+roles = sorted(r["role"] for r in done["references"])
+assert roles == ["edge_chamfer_face"] + ["origin_cap"] * 2 + ["origin_side"] * 4, roles
+exact_one = measured(one, d1)
+
+# 4. The saved Chamfer, and every other editor's honest refusal.
+saved = inspect(one)
+chamfer = saved["chamfers"][0]
+assert chamfer["feature_id"] == done["feature_id"] and chamfer["distance_mm"] == d1
+assert chamfer["distance_edit"]["available"] is True
+assert chamfer["distance_edit"]["max_distance_mm"] == D - 0.01
+assert saved["bodies"][0]["chamfer_edge"]["available"] is False, "a second Chamfer"
+assert saved["edit_extrude"]["available"] is False and "Chamfer" in saved["edit_extrude"]["refusal"]
+assert saved["bodies"][0]["fillet_edge"]["available"] is False
+request.write_text(json.dumps({"request_version": 1, "radius_mm": 1.0, "edge": edge}))
+never = root / "never.fcad"
+for args in (["edit-extrude", one, "--feature", saved["features"][0]["feature_id"], "--distance-mm", "9",
+              "--expect-version", saved["content_version"], "-o", never, "--json"],):
+    p = run(args, code=2)
+    assert "Chamfer" in p["error"]["message"] and not never.exists()
+
+# 5. The distance is edited in another copy: one row, one cell pair.
+version = saved["content_version"]
+for d2 in (4.5, D - 0.01):
+    request.write_text(json.dumps({"request_version": 1, "distance_mm": d2}))
+    two = root / f"two-{d2}.fcad"
+    edited = geometry(["edit-chamfer-distance", one, "--feature", chamfer["feature_id"],
+                       "--expect-version", version, "--request", request, "-o", two, "--json"], two)["result"]
+    assert edited["previous_distance_mm"] == d1 and edited["distance_mm"] == d2
+    assert edited["feature_id"] == chamfer["feature_id"]
+    only_row(one, two, chamfer["feature_id"])
+    assert [r[0] for r in tables(two)["topology_refs"][1]] == [r[0] for r in tables(one)["topology_refs"][1]], \
+        "every name keeps its UUID"
+    measured(two, d2)
+
+# 6. The bound is exact: the largest distance was accepted above, the next
+#    representable value is refused with nothing written.
+request.write_text(json.dumps({"request_version": 1, "distance_mm": math.nextafter(D - 0.01, 1e9)}))
+refusal = run(["edit-chamfer-distance", one, "--feature", chamfer["feature_id"],
+               "--expect-version", version, "--request", request, "-o", never, "--json"], code=2)
+assert refusal["error"]["kind"] == "input" and not never.exists()
+print("FCAD_29A_RECIPE_OK", f"d={d1} volume={exact_one:.6f}/{(W * D - d1 * d1 / 2) * H:.6f}")
+```
