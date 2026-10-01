@@ -1031,8 +1031,9 @@ fn native_the_distance_bounds_are_exact_and_the_cache_follows_the_distance() {
         check_mesh_c(&m, RECT, corner, d, H);
     }
 
-    // The cache follows the distance: another distance misses the Chamfer and
-    // hits the plate it cuts; the same document hits everything.
+    // Another Chamfer over the same plate misses by its own entry and hits the
+    // plate it cuts. (That the same Chamfer at another distance misses is the
+    // edit test's: there the producer is the same and only the distance moved.)
     let (three, id, _) = chamfer_at(&f, &f.source, corner, 3.0, "three");
     let (four, id_four, _) = chamfer_at(&f, &f.source, corner, 4.0, "four");
     assert_ne!(id, id_four);
