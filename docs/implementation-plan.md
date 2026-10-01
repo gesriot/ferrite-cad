@@ -4157,3 +4157,16 @@ constraint leaves the closure links and offers the Sketch's coordinates
 milestone 5C remains open.
 [Contract and recipe](edit-two-fillet-base-constraints.md),
 [verification](edit-two-fillet-base-constraints-verification.md).
+
+Independent PR #75 review (2026-09-30): clarified the shared reader comment
+and redundancy contract; strengthened the GUI comparator, whose old broad
+payload exclusion accepted an independently changed Extrude height. The
+corrected check refuses it and compares 570 cells on the real window copies.
+629 local native tests executed (four N/A, one ignored); fmt/clippy passed.
+The protected window run covered both radius refusals, the shared flat,
+history/Cancel, three publications/async Open, replacement/removal and exports.
+GUI/CLI SQL and byte-identical STL/FBX agreed; pinned ufbx and the independent
+140-triangle join passed. Peak footprint 210.720 MiB, normal pressure,
+unchanged swap, exit 0. Full original runtime logs confirm 12 new executions
+per OS including mixed discovery. Fresh review CI must finish before merge;
+the earlier OOM remains unexplained.

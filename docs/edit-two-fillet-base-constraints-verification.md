@@ -194,6 +194,67 @@ The 6 are `constraint_discovery_and_protocol_without_native`, `native_dimensioni
 
 Truncation, stated plainly: the log tool used here returns at most the last 5000 lines of a job, so the start of each job (toolchain, cache, OCCT/PlaneGCS build, and the step that prints `FCAD_28K_RECIPE_NO_SOLVER`) is before the window and was not read line by line; the counts above come from the returned tail. That step is a required step of a job that finished green. The full logs exist (`gh run view --log` or the API) and were not downloaded here.
 
+## Independent PR #75 review on macOS arm64 (2026-09-30)
+
+Reviewed the frame, writer re-derivation, solved-radius/pair checks, JSON and
+widget route. No execution logic needed changing. Corrected the stale
+one-Fillet reader comment and the contract's claim that redundancy always
+refuses: a consistent redundant request can publish with its real redundant
+UUIDs in the solve report.
+
+The GUI comparator had a real coverage hole: it excluded payload/hash/schema
+for every object, not just the edited Sketch. It now compares all non-Sketch
+cells and every schema version exactly, and compares the selected Sketch's
+raw CBOR after matching only constraint UUIDs by their complete rules. A
+control changed the peer Extrude from 6.75 to 7 mm through the real CLI:
+the previous comparator accepted it; the corrected comparator refused
+`objects.payload`. The unchanged GUI/CLI comparison still passed, 570 cells.
+
+Local native release, pinned OCCT 8.0.1 and PlaneGCS, existing target reused:
+
+- Fresh CLI/viewer build; document/jobs/eval: 481 harness passes, including
+  two no-solver-only N/A cases; one old timing benchmark ignored.
+- CLI fillet suite: 66 harness passes, including two mixed-only N/A cases.
+- App constraints/sketch/edits: 27/46/13 executed passes, no skips.
+- Total: **629 executed**, four explicit N/A, one ignored. No failures.
+- Fmt, workspace clippy all targets/features `-D warnings`, diff whitespace:
+  pass. No large STEP/pixel campaign duplicated locally.
+- Fresh relocatable bundle from the reviewed release binaries, strict deep
+  ad-hoc signature check and solver provenance probe passed without DYLD
+  variables. The public §28K recipe printed the five expected volume pairs.
+
+**Real window test passed**, PID 21914 under the 1536 MiB watchdog. The
+fixture came from the bundle's CLI; every `gui-*` file came from native
+window actions. Observed the two-Fillet context and disabled third-Fillet
+action; H/V, pin and length additions; the three solved-depth refusals
+(7.9 mm names Fillet 1's joint, 8 mm names Fillet 2's joint, 8.012 mm names
+the shared Line and 0.007 mm flat); draft preservation; Undo/Redo; Save
+Cancel; publication/async Open; replacement of both lengths and the pin;
+STL/FBX exports; removal of all seven user constraints with four closure
+UUIDs retained; and the available coordinate editor on the resulting copy.
+
+The stricter comparator passed on all three window copies: SQL allowlists,
+source SHA-256, stored coordinates, constraints/UUIDs, both Fillets,
+validation and cold rebuild, plus byte-identical GUI/CLI STL and FBX.
+Pinned ufbx read the actual window FBX with six checks and no failures;
+the independent oriented-triangle join matched all **140 triangles**, worst
+error **3.47e-18 m**. The viewer exited normally, code 0, after 318 seconds:
+peak footprint **210.720 MiB**, pressure normal throughout, swap unchanged
+at 665.3125 MiB. No CUA call addressed it after Quit. This does not explain
+or close the earlier OOM report.
+
+Downloaded the complete original runtime logs (36771168237), including the
+previously unread start: each OS executed the 11 new distinct gates plus the
+mixed discovery repeat (12 executions), the no-solver recipe, the native
+recipe with matching values and the new ufbx marker. The review-comment
+commit 05609d1 started fresh CI 36813819661 and runtime 36813814395; these
+must complete before merge. This final record is documentation only.
+
+Small local evidence (logs, models, screenshots, memory record) is retained
+outside the checkout in `ferrite-pr75-review` under the user's Codex
+visualization artifacts. No foreign worktree, installation or process was
+changed.
+
 ## Limits
 
 * The local PlaneGCS is unpinned; authoritative CI is Linux, macOS arm64 and
@@ -396,9 +457,10 @@ capability row and the stamp only), the constraints each copy holds (kinds,
 values, closure UUIDs kept through every step, untouched H/V UUIDs kept,
 replaced rules re-minted), both Fillets and their stored corners, the stored
 coordinates unchanged, validation and a cold rebuild, makes the CLI peers
-(only if absent), compares every SQL cell but the stamp and the Sketch row's
-payload — this edit mints only constraint UUIDs, mapped by position — and the
-constraint lists, and requires byte-equal STL/FBX, then reads the window's STL
+(only if absent), compares every SQL cell except the stamp and the selected
+Sketch's payload hash, comparing that payload byte-for-byte after matching
+constraint UUIDs by their complete rules (and preserving any source UUIDs),
+and requires byte-equal STL/FBX, then reads the window's STL
 itself: the solved narrow plate's bounds and volume, exactly the two saved
 corners rounded, each wall at its own radius about its own axis. It prints
 `FCAD_28K_GUI_COMPARE_OK cells=N`.
@@ -529,33 +591,49 @@ for fmt in ("stl", "fbx"):
     if not (out / f"peer-narrow.{fmt}").exists():
         run(f"export-{fmt}", peer_nar, "-o", out / f"peer-narrow.{fmt}", "--json")
 def same(gui, other):
-    """Every SQL cell equal but the stamp and the Sketch row's payload, hash and
-    schema version (which hold the newly minted constraint UUIDs); the
-    constraints themselves are then compared with only the new UUIDs mapped."""
+    """All cells except the stamp and the selected Sketch's payload hash;
+    compare that payload byte-for-byte after matching only constraint UUIDs
+    by their complete rules. Every other object's payload/hash stays exact."""
+    a, b = constraints(gui)[0], constraints(other)[0]
+    assert len(a) == len(b)
+    old = {c["constraint_id"] for c in constraints(source)[0]}
+    ordered_a, ordered_b = [sorted(items, key=shape) for items in (a, b)]
+    assert [shape(c) for c in ordered_a] == [shape(c) for c in ordered_b]
+    assert len({c["constraint_id"] for c in a}) == len(a)
+    assert len({c["constraint_id"] for c in b}) == len(b)
+    def normalized(payload, listed):
+        # The document ID serializer uses CBOR byte strings of length 16.
+        # Refuse an unexpected encoding or extra occurrence, not a broad
+        # JSON normalization that could discard a stored field.
+        for i, c in enumerate(listed):
+            u = c["constraint_id"]
+            encoded = b"\x50" + bytes.fromhex(u.replace("-", ""))
+            assert payload.count(encoded) == 1, ("constraint UUID encoding", u)
+            if u not in old:
+                payload = payload.replace(encoded, b"\x50" + i.to_bytes(16, "big"))
+        return payload
     left, right = tables(gui), tables(other)
     assert left.keys() == right.keys()
     cells = 0
     for t in left:
-        (cols, lrows), (_, rrows) = left[t], right[t]
-        skip = {"payload", "payload_hash", "schema_version"} if t == "objects" else set()
-        keep = [k for k, c in enumerate(cols) if not (t == "meta" and c == "modified_at") and c not in skip]
-        norm = lambda rows: sorted((tuple(r[k] for k in keep) for r in rows), key=repr)
-        assert norm(lrows) == norm(rrows), t
-        cells += len(keep) * len(lrows)
-    a, b = constraints(gui)[0], constraints(other)[0]
-    assert len(a) == len(b)
-    old = {c["constraint_id"] for c in constraints(source)[0]}
-    def tokens(listed):
-        seen = {}
-        out = []
-        for c in sorted(listed, key=lambda c: shape(c)):
-            u = c["constraint_id"]
-            out.append((shape(c), u if u in old or u in closure_ids else seen.setdefault(u, f"new{len(seen)}")))
-        return out
-    da = [(s, "kept" if u in closure_ids else ("new" if u.startswith("new") else u)) for s, u in tokens(a)]
-    db = [(s, "kept" if u in closure_ids else ("new" if u.startswith("new") else u)) for s, u in tokens(b)]
-    assert [s for s, _ in da] == [s for s, _ in db], "the constraints differ"
-    return cells + len(a)
+        (cols, lrows), (other_cols, rrows) = left[t], right[t]
+        assert cols == other_cols and len(lrows) == len(rrows), t
+        if t == "objects":
+            k = cols.index("id")
+            lrows, rrows = [sorted(rows, key=lambda r: r[k]) for rows in (lrows, rrows)]
+        for lrow, rrow in zip(lrows, rrows):
+            for col, lval, rval in zip(cols, lrow, rrow):
+                if t == "meta" and col == "modified_at":
+                    continue
+                selected = t == "objects" and lrow[cols.index("id")] == SK
+                if selected and col == "payload_hash":
+                    continue
+                if selected and col == "payload":
+                    lval, rval = normalized(lval, ordered_a), normalized(rval, ordered_b)
+                assert lval == rval, (t, col)
+                cells += 1
+    return cells
+
 cells = same(g_dim, peer_dim) + same(g_nar, peer_nar) + same(g_clo, peer_clo)
 for fmt in ("stl", "fbx"):
     assert (out / f"gui-narrow.{fmt}").read_bytes() == (out / f"peer-narrow.{fmt}").read_bytes(), fmt
