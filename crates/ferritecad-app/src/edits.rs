@@ -295,6 +295,44 @@ impl Edits {
     ) -> Option<PathBuf> {
         self.finish_path(generation, result.map(|r| r.destination))
     }
+    pub(crate) fn start_chamfer(
+        &mut self,
+        request: ferritecad_jobs::EdgeChamferRequest,
+        spawn: impl FnOnce(ferritecad_jobs::EdgeChamferRequest, u64, CancelToken) -> JoinHandle<()>,
+    ) -> Option<u64> {
+        let destination = request.destination.clone();
+        self.start_at(&destination, |generation, cancel| {
+            spawn(request, generation, cancel)
+        })
+    }
+    pub(crate) fn finish_chamfer(
+        &mut self,
+        generation: u64,
+        result: Result<ferritecad_jobs::AddedEdgeChamfer>,
+    ) -> Option<PathBuf> {
+        self.finish_path(generation, result.map(|r| r.destination))
+    }
+    pub(crate) fn start_chamfer_distance(
+        &mut self,
+        request: ferritecad_jobs::EditChamferDistanceRequest,
+        spawn: impl FnOnce(
+            ferritecad_jobs::EditChamferDistanceRequest,
+            u64,
+            CancelToken,
+        ) -> JoinHandle<()>,
+    ) -> Option<u64> {
+        let destination = request.destination.clone();
+        self.start_at(&destination, |generation, cancel| {
+            spawn(request, generation, cancel)
+        })
+    }
+    pub(crate) fn finish_chamfer_distance(
+        &mut self,
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedChamferDistance>,
+    ) -> Option<PathBuf> {
+        self.finish_path(generation, result.map(|r| r.destination))
+    }
     pub(crate) fn start_cut_edit(
         &mut self,
         request: ferritecad_jobs::EditCircularCutRequest,
@@ -518,6 +556,34 @@ pub(crate) fn spawn_fillet_radius(
         move |context| {
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ferritecad_jobs::edit_fillet_radius_copy(&request, &mut kernel, context)
+        },
+        deliver,
+    )
+}
+pub(crate) fn spawn_chamfer(
+    request: ferritecad_jobs::EdgeChamferRequest,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ferritecad_jobs::AddedEdgeChamfer>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn_job(
+        cancel,
+        move |context| {
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ferritecad_jobs::chamfer_edge_copy(&request, &mut kernel, context)
+        },
+        deliver,
+    )
+}
+pub(crate) fn spawn_chamfer_distance(
+    request: ferritecad_jobs::EditChamferDistanceRequest,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ferritecad_jobs::EditedChamferDistance>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn_job(
+        cancel,
+        move |context| {
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ferritecad_jobs::edit_chamfer_distance_copy(&request, &mut kernel, context)
         },
         deliver,
     )

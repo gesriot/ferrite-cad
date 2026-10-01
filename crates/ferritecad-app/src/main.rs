@@ -27,6 +27,7 @@
 //! its own thread and comes back as one more event. The window opens on an
 //! empty scene and gains the model when the model is ready.
 
+mod chamfers;
 mod constraints;
 mod creates;
 mod cuts;
@@ -262,6 +263,14 @@ enum AppEvent {
     FilletRadiusEdited {
         generation: u64,
         result: Result<ferritecad_jobs::EditedFilletRadius>,
+    },
+    Chamfered {
+        generation: u64,
+        result: Result<ferritecad_jobs::AddedEdgeChamfer>,
+    },
+    ChamferDistanceEdited {
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedChamferDistance>,
     },
     Edited {
         generation: u64,
@@ -2446,6 +2455,30 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
+            AppEvent::Chamfered { generation, result } => {
+                if let Some(path) = chamfers::finish_chamfer(
+                    &mut self.creates.sketch,
+                    &mut self.edits,
+                    generation,
+                    result,
+                ) {
+                    self.open(path);
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
+            AppEvent::ChamferDistanceEdited { generation, result } => {
+                if let Some(path) = chamfers::finish_chamfer_distance(
+                    &mut self.creates.sketch,
+                    &mut self.edits,
+                    generation,
+                    result,
+                ) {
+                    self.open(path);
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
             AppEvent::CutEdited { generation, result } => {
                 if let Some(path) = cuts::finish_cut_edit(
                     &mut self.creates.sketch,
@@ -2709,6 +2742,12 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.take_fillet_radius_request() {
                             self.ask_where_to_edit_fillet_radius(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_chamfer_request() {
+                            self.ask_where_to_chamfer(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_chamfer_distance_request() {
+                            self.ask_where_to_edit_chamfer_distance(request);
                         }
                         if let Some(content) = self.creates.sketch.take_request() {
                             self.ask_where_to_create(content);
@@ -3317,6 +3356,68 @@ impl App {
             .start_fillet_radius(request, move |request, generation, cancel| {
                 edits::spawn_fillet_radius(request, cancel, move |result| {
                     let _ = proxy.send_event(AppEvent::FilletRadiusEdited { generation, result });
+                })
+            });
+        self.input.request_redraw();
+    }
+
+    fn ask_where_to_chamfer(&mut self, mut request: ferritecad_jobs::EdgeChamferRequest) {
+        if self.edits.running() {
+            return;
+        }
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::Edit,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_file_name("chamfer.fcad")
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
+        request.destination = chosen;
+        let proxy = self.proxy.clone();
+        self.edits
+            .start_chamfer(request, move |request, generation, cancel| {
+                edits::spawn_chamfer(request, cancel, move |result| {
+                    let _ = proxy.send_event(AppEvent::Chamfered { generation, result });
+                })
+            });
+        self.input.request_redraw();
+    }
+
+    fn ask_where_to_edit_chamfer_distance(
+        &mut self,
+        mut request: ferritecad_jobs::EditChamferDistanceRequest,
+    ) {
+        if self.edits.running() {
+            return;
+        }
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::Edit,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_file_name("edited-chamfer.fcad")
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
+        request.destination = chosen;
+        let proxy = self.proxy.clone();
+        self.edits
+            .start_chamfer_distance(request, move |request, generation, cancel| {
+                edits::spawn_chamfer_distance(request, cancel, move |result| {
+                    let _ =
+                        proxy.send_event(AppEvent::ChamferDistanceEdited { generation, result });
                 })
             });
         self.input.request_redraw();
