@@ -620,7 +620,26 @@ print("FCAD_29D_GUI_COMPARE_OK", f"cells={cells}", f"triangles={count}")
 
 ## CI
 
-To be filled in from the PR's own runs once they finish.
+PR [#80](https://github.com/gesriot/ferrite-cad/pull/80). The code head is
+`a570035`; the commits after it change only documents (this record included).
+
+- Combined runtime layout on the exact code head `a570035`
+  ([run 37033057353](https://github.com/gesriot/ferrite-cad/actions/runs/37033057353)):
+  Linux, macOS and Windows all succeeded, including the "Chamfer a plate with Open
+  CASCADE and no solver" and "Chamfer one vertical edge of a saved plate into a
+  named flat" steps (the native gates, the §29D recipe, the pinned ufbx loops over
+  `cons-*`).
+- Ordinary CI on the docs head `8ef8ee9`
+  ([run 37033455731](https://github.com/gesriot/ferrite-cad/actions/runs/37033455731)):
+  7/7 success (lint, supply-chain, notices, sbom and `test` on ubuntu, macOS and
+  Windows; the "Discover and refuse one Chamfer without native geometry" stub step
+  is part of it).
+- planegcs pin ([run 37032177881](https://github.com/gesriot/ferrite-cad/actions/runs/37032177881)):
+  success on `1b843ce`, whose code is the code of `a570035` except for the
+  test-only clippy fixes of the commit after it.
+- The runtime-layout run on `1b843ce` was cancelled by the newer push and is not
+  counted. The base `e00d72f` post-merge CI was still in progress when the slice
+  started and is not counted either.
 
 ## Limits
 
