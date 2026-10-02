@@ -294,7 +294,8 @@ assert sketch["chamfer_base"] == saved["features"][0]["chamfer_base"]
 assert sketch["chamfer_base"] == {"chamfer_feature_id": chamfer["feature_id"],
                                   "body_id": saved["bodies"][0]["body_id"], "edge": chamfer["edge"],
                                   "corner_mm": corner_of([X0, Y0, W, D]), "distance_mm": d1,
-                                  "distance_unit": "mm"}
+                                  "distance_unit": "mm",
+                                  "profile_constrained": False}
 assert sketch["fillet_base"] is None and sketch["fillet_history"] is None
 assert inspect(plate)["sketches"][0]["chamfer_base"] is None
 

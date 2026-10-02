@@ -273,7 +273,8 @@ assert saved["edit_extrude"]["available"] is True
 assert base["editable"] is True and base["refusal"] is None and base["distance_mm"] == H
 assert base["chamfer_base"] == {"chamfer_feature_id": chamfer["feature_id"],
                                 "body_id": saved["bodies"][0]["body_id"], "edge": chamfer["edge"],
-                                "corner_mm": CORNER, "distance_mm": d1, "distance_unit": "mm"}
+                                "corner_mm": CORNER, "distance_mm": d1, "distance_unit": "mm",
+                                "profile_constrained": False}
 for key in ("base_height_edit", "fillet_base", "fillet_history"):
     assert base[key] is None, key
 assert inspect(plate)["features"][0]["chamfer_base"] is None
