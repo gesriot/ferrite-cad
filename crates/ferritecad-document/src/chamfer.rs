@@ -647,14 +647,16 @@ pub(crate) fn saved_chamfer_for_edit(
             .iter()
             .position(|r| crate::cut_edit::same_meaning(r, want))
             .ok_or_else(|| {
-                unsupported("the saved Chamfer does not name the faces this build gives a Chamfer")
+                unsupported(format!(
+                    "the saved Chamfer {owner} does not name the faces this build gives a Chamfer"
+                ))
             })?;
         remaining.remove(at);
     }
     if !remaining.is_empty() {
-        return Err(unsupported(
-            "the saved Chamfer names more faces than a Chamfer of its numbers gives",
-        ));
+        return Err(unsupported(format!(
+            "the saved Chamfer {owner} names more faces than a Chamfer of its numbers gives"
+        )));
     }
     Ok(SavedChamfer {
         feature: owner,
@@ -1329,7 +1331,10 @@ mod tests {
         // offered the base Extrude under it, with the Chamfer as its context.
         let source = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         assert!(source.filleted.is_none(), "{:?}", source.filleted);
-        assert_eq!(source.features[0].chamfer.as_ref().map(|c| c.feature), Some(id));
+        assert_eq!(
+            source.features[0].chamfer.as_ref().map(|c| c.feature),
+            Some(id)
+        );
         assert_eq!(source.chamfer_features.len(), 1);
         assert!(source.chamfer_features[0].refusal.is_none());
         assert!(source.chamfer_bodies[0].target.is_none());
@@ -1354,7 +1359,10 @@ mod tests {
         let choice = &source.features[0];
         assert_eq!(choice.feature, base);
         assert!(choice.refusal.is_none(), "{:?}", choice.refusal);
-        assert_eq!(choice.chamfer.as_ref().map(|c| (c.feature, c.distance_mm)), Some((id, 2.375)));
+        assert_eq!(
+            choice.chamfer.as_ref().map(|c| (c.feature, c.distance_mm)),
+            Some((id, 2.375))
+        );
         assert!(choice.cut_history.is_none() && choice.fillets.is_empty());
 
         let objects = d.objects().expect("objects");
@@ -1369,7 +1377,9 @@ mod tests {
             for (was, is) in objects.iter().zip(&now) {
                 assert_eq!(was.id, is.id);
                 if was.id == base {
-                    let ObjectPayload::Extrude(e) = &is.payload else { panic!("not an Extrude") };
+                    let ObjectPayload::Extrude(e) = &is.payload else {
+                        panic!("not an Extrude")
+                    };
                     assert!(matches!(&e.end_condition, EndCondition::Blind { distance }
                         if distance.value() == height));
                 } else {
@@ -1408,10 +1418,17 @@ mod tests {
             assert_ne!(c.edge.joint, target_of_saved(&d, id).edge.joint);
         }
         assert!(d.write_extrude_height(&rejoined).is_err());
-        assert_eq!(d.content_version().expect("version"), before, "nothing written");
+        assert_eq!(
+            d.content_version().expect("version"),
+            before,
+            "nothing written"
+        );
         // The numbers the shared rule refuses are refused before preparation.
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert!(crate::prepare_extrude_height(&d, base, bad).is_err(), "{bad}");
+            assert!(
+                crate::prepare_extrude_height(&d, base, bad).is_err(),
+                "{bad}"
+            );
         }
         // The distance edit still works on the edited plate, and the Chamfer
         // keeps its bound: it depends on the adjacent sides, not on the height.
@@ -1435,11 +1452,16 @@ mod tests {
             .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
             .expect("sketch")
             .clone();
-        let ObjectPayload::Sketch(mut sketch) = record.payload.clone() else { unreachable!() };
+        let ObjectPayload::Sketch(mut sketch) = record.payload.clone() else {
+            unreachable!()
+        };
         let pin = crate::SketchConstraint {
             id: StableEntityId::new(),
             rule: SketchConstraintRule::Distance {
-                a: crate::SketchPointRef::new(sketch.curves[0].id, crate::SketchPointSelector::Start),
+                a: crate::SketchPointRef::new(
+                    sketch.curves[0].id,
+                    crate::SketchPointSelector::Start,
+                ),
                 b: crate::SketchPointRef::new(sketch.curves[1].id, crate::SketchPointSelector::End),
                 distance: 37.5,
             },
@@ -1458,9 +1480,17 @@ mod tests {
         let why = crate::prepare_extrude_height(&d, base, 9.0)
             .expect_err("a dimension")
             .to_string();
-        assert!(why.contains(&pin.id.to_string()) && why.contains("Distance"), "{why}");
+        assert!(
+            why.contains(&pin.id.to_string()) && why.contains("Distance"),
+            "{why}"
+        );
         let source = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        assert!(source.filleted.as_deref().is_some_and(|r| r.contains(&pin.id.to_string())));
+        assert!(
+            source
+                .filleted
+                .as_deref()
+                .is_some_and(|r| r.contains(&pin.id.to_string()))
+        );
         assert!(source.unavailable_reason().is_some());
         assert!(source.features[0].chamfer.is_none() && source.features[0].refusal.is_some());
 
@@ -1499,7 +1529,10 @@ mod tests {
             assert!(why.contains(&intruder.to_string()), "{kind}: {why}");
             let source = crate::ExtrudeEditSource::read(&d).expect("catalogue");
             assert!(source.unavailable_reason().is_some(), "{kind}");
-            assert!(source.features.iter().all(|f| f.chamfer.is_none()), "{kind}");
+            assert!(
+                source.features.iter().all(|f| f.chamfer.is_none()),
+                "{kind}"
+            );
         }
 
         // A second Chamfer: named by the first, both refused.
@@ -1518,7 +1551,10 @@ mod tests {
         let why = crate::prepare_extrude_height(&d, base, 9.0)
             .expect_err("two")
             .to_string();
-        assert!(why.contains(&id.to_string()) && why.contains("2 Chamfers"), "{why}");
+        assert!(
+            why.contains(&id.to_string()) && why.contains("2 Chamfers"),
+            "{why}"
+        );
 
         // Not the base: only the base Extrude under the Chamfer is edited.
         let (_r, mut d, body) = plate(PLATE);

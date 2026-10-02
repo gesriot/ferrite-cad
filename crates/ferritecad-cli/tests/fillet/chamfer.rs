@@ -7,6 +7,8 @@
 //! SQL cell by cell, and the cache outcome feature by feature.
 use super::*;
 use ferritecad_eval::CacheOutcome;
+
+mod base_height;
 use ferritecad_types::ObjectId;
 
 const OPC: &str = "chamfer-edge-copy";
