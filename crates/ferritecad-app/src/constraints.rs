@@ -5288,6 +5288,245 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
+    /// §29D: the form on the base Sketch of a chamfered plate names the
+    /// Chamfer, the two Lines of its corner and its distance, says the
+    /// coordinates are the stored ones and what the solved plate must be; it
+    /// builds the usual requests (H/V, length, Replace length) with bounded
+    /// Undo/Redo, and keeps the draft through a cancelled Save, a worker refusal
+    /// about the solved plate and a stale reply. The form repeats no bound.
+    /// No kernel is involved.
+    #[test]
+    fn chamfer_base_constraint_widgets_name_the_chamfer_and_keep_the_draft() {
+        let (_root, path, source) = crate::chamfers::tests::chamfered(2.375);
+        let choice = source.constraint_sketches[0].clone();
+        assert_eq!(choice.refusal, None);
+        let chamfer = choice.chamfer.clone().expect("the Chamfer as context");
+        assert!(!chamfer.constrained);
+        let [a, b] = chamfer.edge.joint.segments();
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        let context = format!(
+            "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d 2.375 mm (stored \
+             corner (33, 3.25)).",
+            chamfer.feature
+        );
+        assert!(
+            out.shapes.iter().any(|s| matches!(&s.shape,
+                egui::Shape::Text(t) if t.galley.text().starts_with(&context)
+                    && t.galley.text().contains("the coordinates shown are the stored ones")
+                    && t.galley.text().contains("at least 2.385 mm"))),
+            "{context}"
+        );
+        assert!(painted(
+            &out,
+            "Coordinates below are stored inputs, not the solved drawing."
+        ));
+        click(&ctx, &mut e, "Segment 2");
+        click(&ctx, &mut e, "Add Horizontal");
+        enter_length(&ctx, &mut e, "30.5", false);
+        click(&ctx, &mut e, "Add length");
+        let kept = history_state(&e).0;
+        assert_eq!(kept.add.len(), 2);
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(history_state(&e).0.add.len(), 1);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, kept);
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("the widgets' request");
+        assert!(e.take_request().is_none(), "one press, one request");
+        assert_eq!(request.sketch, choice.sketch);
+        assert_eq!(request.expected, source.version);
+        assert_eq!(request.edits, kept);
+        // A cancelled Save started nothing; a refusal about the solved plate
+        // keeps the draft, and so does a stale reply.
+        assert_eq!(history_state(&e).0, kept);
+        let mut state = crate::edits::Edits::default();
+        let generation = state
+            .start_constraints(request, |_, _, _| std::thread::spawn(|| {}))
+            .expect("started");
+        let refusal = ferritecad_types::CadError::input(format!(
+            "Chamfer {} of 2.375 mm does not fit the solved plate: too large",
+            chamfer.feature
+        ));
+        assert!(finish_edit(&mut e, &mut state, generation, Err(refusal)).is_none());
+        assert!(e.active(), "a refusal keeps the draft");
+        assert_eq!(history_state(&e).0, kept);
+
+        // Replace length on a plate that already carries a length: one removal
+        // and one addition, with Undo/Redo over the pair; the form says the
+        // distance's bound is not its to judge.
+        let mut d = Document::open(&path).expect("writable");
+        let lines = choice.stored.clone().expect("stored").curves;
+        let edits = ferritecad_document::SketchConstraintEdits {
+            remove: Vec::new(),
+            add: vec![ferritecad_document::AddSketchConstraint::Line(
+                ferritecad_document::AddLineConstraint::Line {
+                    curve: lines[1].id,
+                    kind: ferritecad_document::LineConstraintKind::Distance(
+                        LineLengthMm::new(12.25).expect("length"),
+                    ),
+                },
+            )],
+        };
+        let prepared = ferritecad_document::prepare_sketch_constraints(&d, choice.sketch, &edits)
+            .expect("prepared");
+        d.write_sketch_constraints(&prepared).expect("written");
+        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        d.close().expect("close");
+        let choice = source.constraint_sketches[0].clone();
+        assert!(choice.chamfer.as_ref().is_some_and(|c| c.constrained));
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        click(&ctx, &mut e, "Segment 2");
+        enter_length(&ctx, &mut e, "20", false);
+        click(&ctx, &mut e, "Replace length");
+        let replaced = history_state(&e).0;
+        assert_eq!((replaced.remove.len(), replaced.add.len()), (1, 1));
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(history_state(&e).0.remove.len(), 0);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, replaced);
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("the widgets' request");
+        assert_eq!(request.edits, replaced);
+    }
+
+    /// §29D, native with PlaneGCS: the widgets' request on the chamfered plate
+    /// through the app's worker and the same request through the shipped
+    /// `edit-sketch-constraints-copy` publish one document — every SQL row equal
+    /// once the newly minted constraint UUIDs are matched off, the stored guess
+    /// unchanged — and byte-identical STL and FBX; the solved plate's volume is
+    /// the analytic one at the chosen corner.
+    #[test]
+    fn native_chamfer_base_constraint_worker_and_cli_publish_the_same_part() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+        }
+        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
+            eprintln!("skipped: the constraint worker needs OCCT and PlaneGCS");
+            return;
+        }
+        let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
+        let before = std::fs::read(&path).expect("source");
+        let choice = source.constraint_sketches[0].clone();
+        let stored = choice.stored.clone().expect("stored").curves;
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        for (segment, rule) in [
+            ("Segment 1", "Add Vertical"),
+            ("Segment 2", "Add Horizontal"),
+            ("Segment 3", "Add Vertical"),
+            ("Segment 4", "Add Horizontal"),
+        ] {
+            click(&ctx, &mut e, segment);
+            click(&ctx, &mut e, rule);
+        }
+        click(&ctx, &mut e, "Segment 2");
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "36.5", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "1.25", false);
+        click(&ctx, &mut e, "Add Fixed point");
+        enter_length(&ctx, &mut e, "41", false);
+        click(&ctx, &mut e, "Add length");
+        click(&ctx, &mut e, "Segment 1");
+        enter_length(&ctx, &mut e, "14.25", false);
+        click(&ctx, &mut e, "Add length");
+        click(&ctx, &mut e, "Save constraints copy…");
+        let mut request = e.take_request().expect("widget request");
+        assert_eq!(request.edits.add.len(), 7, "{:?}", request.edits);
+        let additions = request
+            .edits
+            .add
+            .iter()
+            .map(peer_addition)
+            .collect::<Vec<_>>()
+            .join(",");
+        let ui = root.path().join("worker.fcad");
+        request.destination = ui.clone();
+        let mut state = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_constraints(request, move |r, g, c| {
+                crate::edits::spawn_constraint_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (g, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("worker response");
+        assert_eq!(
+            result
+                .as_ref()
+                .expect("published")
+                .solve
+                .as_ref()
+                .expect("solve")
+                .degrees_of_freedom(),
+            0
+        );
+        assert_eq!(finish_edit(&mut e, &mut state, g, result), Some(ui.clone()));
+        let input = root.path().join("request.json");
+        std::fs::write(
+            &input,
+            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+        )
+        .expect("input");
+        let peer = root.path().join("peer.fcad");
+        let result = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("edit-sketch-constraints-copy")
+            .arg(&path)
+            .arg("--sketch")
+            .arg(choice.sketch.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(result.status.success(), "{result:?}");
+        same_publication(&ui, &peer, &stored, 11);
+        let d = Document::open_read_only(&ui).expect("worker copy");
+        let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+        let built = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default())
+            .expect("cold rebuild");
+        let objects = d.objects().expect("objects");
+        let body = objects
+            .iter()
+            .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+            .expect("Body");
+        let (_, volume) = k
+            .shape_stats(built.shape(body.id).expect("built"))
+            .expect("stats");
+        let exact = (41. * 14.25 - 2.375 * 2.375 / 2.) * 6.75;
+        assert!(
+            (volume - exact).abs() < 1e-9 * exact,
+            "{volume} is not {exact}"
+        );
+        built.release_all(&mut k);
+        d.close().expect("close");
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
     /// §28K: the form on the base Sketch of a plate rounded twice names both
     /// Fillets in history order with their Lines, radii and stored corners,
     /// says what the solved plate must be, builds the usual requests with
