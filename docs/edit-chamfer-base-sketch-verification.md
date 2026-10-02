@@ -307,7 +307,7 @@ and **Restore saved vertices** are the existing buttons.
 
 1. **Open** `$FCAD_29C_DIR/chamfer.fcad` (asynchronously). The feature list shows
    Extrude → Chamfer.
-2. **Form.** **Edit Sketch Sketch1 — <UUID>…** is enabled (before §29C a
+2. **Form.** **Edit Sketch Profile — <UUID>…** is enabled (before §29C a
    chamfered plate refused it). The form shows the four vertices above and
    "Chamfered by Chamfer <UUID> at the corner of Lines <UUID> | <UUID>, d 2.375
    mm. The Chamfer keeps its corner and distance: every Line keeps its side, and
@@ -561,3 +561,74 @@ with tempfile.TemporaryDirectory(prefix="ferrite-29c-compare-") as scratch:
     mesh_checks(stl_of(g["tall"], scratch), RECTS["moved"], H["final"], D["source"])
 print("FCAD_29C_GUI_COMPARE_OK", f"cells={cells}", f"triangles={count}")
 ```
+
+## Independent review on macOS arm64 — 2026-10-02
+
+Reviewed `a5ba39a30716a98cd28b444ca26608caeb8bb48c`, whose code is unchanged
+from `4dbadc936f49c5ee036f11572c72d03e87ef67b2`. No blocking code defect was
+found. Clarified that the seven-name restriction concerns Chamfer-owned names,
+not additional resolving base references, and corrected the fixture's UI name.
+The shared reader, candidate validator, transactional writer re-derivation and
+strict before/after reference check were inspected together; the §29B reference
+regression remains in the native campaign.
+
+Rebuilt the release CLI and viewer with the existing pinned OCCT 8.0.1 and
+PlaneGCS, without rebuilding either dependency. Sequential affected tests:
+90 CLI fillet tests, 50 app sketch tests, 16 app edit tests and 499
+document/jobs/eval tests: **655 executed, zero failures**. Four explicit
+no-solver/mixed-only N/A cases were excluded from that number; one old manual
+benchmark remained ignored. Fmt, workspace clippy with all targets/features and
+`-D warnings`, actionlint, licence headers (401 files), export boundary and
+whitespace checks passed. The Markdown recipe ran against the fresh bundled CLI:
+`FCAD_29C_RECIPE_OK d=2.375 big=7211.056641/7211.056641`.
+
+The full runtime log of run 36995480290 was downloaded and checked, rather than
+inferring execution from workflow definitions. Each of Linux, macOS and Windows
+executed all 48 named Chamfer gates once, with positive test results and no skips,
+plus two §29C recipe markers (native and OCCT without solver), nine strict ufbx
+reads with six checks and zero failures each, and nine oriented 16-triangle
+STL/FBX joins. The planegcs jobs of run 36995480272 and all seven ordinary CI jobs
+of the reviewed docs head, run 37003696268, were successful. This is PR evidence;
+no future post-merge CI is claimed here. Stub/mixed configurations were audited
+remotely and not rebuilt again on this Mac.
+
+A freshly staged arm64 bundle passed its dependency-closure checks, deep strict
+code-signature verification and `--solver-info`. Viewer UUID:
+`AF403A80-C432-37C8-8A52-4AA17E5A0F42`. One viewer, PID 7178, ran under the
+1536 MiB watchdog, using only the temporary fixture directory.
+
+The actual window completed the scenario above: native Open; non-rectangle
+refusal with only one vertex changed; too-short-side refusal naming the Chamfer
+and bound; Undo/Redo/Restore; resize; native Save Cancel with the draft retained;
+four publications and async Opens (size, translation, height, Chamfer distance);
+and both STL and FBX exports through their real Save dialogs. The final model
+was 41 × 10.25 × 9.5 mm, translated to lower-left (8.5, −6.75), with distance
+4.5 mm at the same lower-right Line-UUID corner. The optional mouse drag was
+not executed in this window run: after native Open, CUA coordinate clicks
+returned `noWindowsAvailable` despite a live observable window. Keyboard
+navigation and native accessibility actions completed the scenario in the same
+PID. The headless drag regression passed separately. Numeric typing can create
+intermediate text-history entries; the observed Undo/Redo restored those exact
+strings before Restore returned all saved vertices.
+
+The comparator first consumed the six real window-produced files, then created
+CLI peers: `FCAD_29C_GUI_COMPARE_OK cells=512 triangles=16`. All four SQL
+allowlists, the source hash, UUID/reference preservation, cold rebuilds and
+independent mesh checks passed. The final UI/CLI STL (884 bytes) and FBX
+(5418 bytes) were byte-identical. Pinned ufbx 0.23.0 read the GUI FBX with
+6 checks / 0 failures; the oriented join matched 16 triangles with worst
+coordinate error `4.34e-19 m`. Private negative controls failed as intended for
+a missing GUI file, an unrelated `objects.name` change and a 41.5 mm plate
+instead of the typed 41 mm plate.
+
+Before launch, system pressure had briefly been warning; launch waited until it
+returned to normal. During all 2299 watchdog samples, pressure was normal and
+swap stayed at 715784192 bytes. Peak process footprint was **216.095 MiB**,
+minimum free disk 139.40 GiB. Cmd-Q gave exit 0 after 1256 seconds, without a
+watchdog abort. Only the PID/watchdog was inspected after Quit; the viewer was
+not addressed or relaunched. The older OOM remains unexplained.
+
+Evidence: `/private/tmp/ferrite-pr79-review/` (logs, runtime audit, screenshots,
+models, comparator controls and `memory-summary.json`), also retained in the
+local review-artifact directory. No Linux/Windows window test, heavy local
+STEP rerun or general GPU campaign is implied by this focused macOS run.

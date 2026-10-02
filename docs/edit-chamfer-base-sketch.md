@@ -24,7 +24,9 @@ one untransformed XY datum; one Sketch of four Lines forming an axis-aligned
 rectangle that is free or closure-only (the four Coincident links, kept
 byte-for-byte); one forward literal Blind `Extrude`/`NewBody`; one terminal
 Chamfer on a corner of that rectangle; one Body whose tip is the Chamfer;
-exactly its seven names, and nothing else in the document.
+exactly the Chamfer's seven owned names, and no other model objects.
+Additional base-owned references are allowed when they resolve; every saved
+reference must resolve both before and after the edit.
 
 The request is the existing one: the four `curve_id`s once each in stored
 order with new start points. A candidate is accepted if and only if **all**
@@ -57,7 +59,7 @@ The refusal of rule 5 reads "Chamfer `<uuid>` of `<d>` mm does not fit the new
 plate: … the shorter adjacent side would be … mm, so it may be at most … mm". A
 degenerate or non-rectangular candidate is refused by rule 1 or 2 with the
 reason the shared reader gives; the other Chamfer-class refusals (a Fillet or Cut
-beside it, a second Chamfer, a dimension on the Sketch, an extra name) name the
+beside it, a second Chamfer, a dimension on the Sketch, an extra Chamfer-owned name) name the
 guilty feature or constraint UUID as for the height edit.
 
 Validation is one function, `SketchChoice::validate_coordinates`, used by the
@@ -72,7 +74,8 @@ Line coordinates), plus the established `meta.modified_at` stamp. The Extrude
 dependency, every topology reference, every other payload, names, ordinals and
 parents, the Body tip and every capability row are preserved byte for byte.
 Nothing is minted, deleted or recreated, and no solved geometry is stored. The
-seven names resolve under the same UUIDs on the new solid, with the Chamfer's
+Chamfer's seven names and any additional saved references resolve under the
+same UUIDs on the new solid, with the Chamfer's
 plane now at the new corner position.
 
 ### Mechanism (all shared)

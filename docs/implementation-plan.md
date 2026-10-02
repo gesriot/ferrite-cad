@@ -4294,3 +4294,17 @@ editors, a second Chamfer, a Fillet or Cut beside it stay refused by UUID.
 Milestone 5C remains open.
 [Contract and recipe](edit-chamfer-base-sketch.md),
 [verification](edit-chamfer-base-sketch-verification.md).
+
+**Independent review of §29C (2026-10-02).** No blocking code finding;
+clarified the distinction between seven Chamfer-owned names and additional
+resolving base references. Local affected matrix: 655 executed, four explicit
+N/A and one ignored benchmark; fmt/clippy and supporting checks passed. Full
+runtime logs confirm 48 Chamfer gates, two recipes and nine strict ufbx/oriented
+STL joins on each of the three OSes. Real arm64 GUI completed refusals,
+Undo/Redo/Restore, Save Cancel, resize/translation/height/distance publications,
+async Open and exports. GUI/CLI agree on 512 SQL cells and byte-equal STL/FBX;
+independent geometry and pinned reader passed. Coordinate injection was
+unavailable in CUA, so the run used keyboard navigation; optional window drag
+was not executed. Viewer peak 216.095 MiB, normal pressure, unchanged swap,
+exit 0, no relaunch. Full evidence and limitations are in the verification
+record; Milestone 5C and the older OOM investigation remain open.
