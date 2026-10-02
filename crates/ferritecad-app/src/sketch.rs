@@ -1470,6 +1470,18 @@ impl Editor {
                     fillet.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
                 ));
             }
+            if let Some(chamfer) = &choice.chamfer {
+                // §29C: the one Chamfer keeps its corner and distance.
+                let [a, b] = chamfer.edge.joint.segments();
+                ui.label(format!(
+                    "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d {} mm. The \
+                     Chamfer keeps its corner and distance: every Line keeps its side, and the \
+                     shorter adjacent side may not be shorter than {} mm.",
+                    chamfer.feature,
+                    chamfer.distance_mm,
+                    chamfer.distance_mm + ferritecad_document::MIN_FLAT_MM
+                ));
+            }
             if let Some(history) = &choice.cut_history {
                 ui.label(format!(
                     "Base of {} circular Cuts. Tools stay at their saved XY coordinates.",

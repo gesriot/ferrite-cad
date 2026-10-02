@@ -9,6 +9,7 @@ use super::*;
 use ferritecad_eval::CacheOutcome;
 
 mod base_height;
+mod base_sketch;
 use ferritecad_types::ObjectId;
 
 const OPC: &str = "chamfer-edge-copy";
@@ -844,7 +845,8 @@ fn chamfer_discovery_and_protocol_without_native() {
         "a Chamfer is not a Fillet"
     );
     for sketch in c.catalog["sketches"].as_array().expect("sketches") {
-        assert_eq!(sketch["editable"], false, "{sketch}");
+        assert_eq!(sketch["editable"], true, "{sketch}");
+        assert_eq!(sketch["chamfer_base"], base["chamfer_base"], "{sketch}");
         assert_eq!(sketch["constraint_edit"]["available"], false, "{sketch}");
     }
 
@@ -1490,17 +1492,15 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
         2,
     );
     named("edit-extrude", &v);
-    // edit-sketch-copy: the plate's coordinates.
-    let vertices: Vec<Value> = f.catalog["sketches"][0]["vertices"]
-        .as_array()
-        .expect("vertices")
-        .iter()
-        .map(|p| json!({"curve_id": p["curve_id"], "start_mm": p["start_mm"]}))
-        .collect();
-    write(&request, &json!({"request_version":1,"vertices":vertices}));
+    // The constraint editor still refuses: the coordinates are §29C's.
+    let line = catalog["sketches"][0]["vertices"][0]["curve_id"].clone();
+    write(
+        &request,
+        &json!({"request_version":1,"remove":[],"add":[{"curve_id":line,"rule":"horizontal"}]}),
+    );
     let v = reply(
         cli()
-            .arg("edit-sketch-copy")
+            .arg("edit-sketch-constraints-copy")
             .arg(&copy)
             .args(["--sketch", &sketch, "--expect-version", &version])
             .arg("--request")
@@ -1510,10 +1510,10 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
             .arg("--json")
             .output()
             .expect("process"),
-        "edit-sketch-copy",
+        "edit-sketch-constraints-copy",
         2,
     );
-    named("edit-sketch-copy", &v);
+    named("edit-sketch-constraints-copy", &v);
     // A Fillet on another corner, a second Chamfer and a Fillet radius edit of
     // the Chamfer's own UUID.
     let g = Fixture {

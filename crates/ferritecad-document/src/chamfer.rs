@@ -149,8 +149,9 @@ pub(crate) fn refuse_chamfered(objects: &[ObjectRecord]) -> Result<()> {
         )));
     }
     Err(unsupported(format!(
-        "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance) and its \
-         plate's height (edit-extrude, §29B) can be edited. Its Sketch, constraints, a Fillet \
+        "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance), its plate's \
+         height (edit-extrude, §29B) and its base Sketch's coordinates (edit-sketch-copy, \
+         §29C) can be edited. Its constraints, a Fillet \
          or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
          chamfered plate without knowing its Chamfer",
         first.id
@@ -521,6 +522,22 @@ pub struct SavedChamfer {
 }
 
 impl SavedChamfer {
+    /// §29C: this Chamfer on a candidate drawing of its plate: the rectangle
+    /// read again by the creation reader, the saved joint still one of its
+    /// corners by the two Line UUIDs alone, and the saved distance inside the
+    /// policy on the NEW adjacent sides. Nothing is clamped.
+    pub fn corner_on(&self, curves: &[crate::SketchCurve]) -> Result<ChamferCorner> {
+        let corners = corners_of_lines(self.base_feature, curves)?;
+        let corner = ChamferCorner::of(&corner_for(&corners, self.edge)?);
+        corner.check_distance(self.distance_mm).map_err(|e| {
+            CadError::input(format!(
+                "Chamfer {} of {} mm does not fit the new plate: {e}",
+                self.feature, self.distance_mm
+            ))
+        })?;
+        Ok(corner)
+    }
+
     /// The distance policy at this Chamfer's own corner.
     pub fn check_distance(&self, distance_mm: f64) -> Result<()> {
         self.corner.check_distance(distance_mm)
