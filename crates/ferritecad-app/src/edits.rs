@@ -73,6 +73,9 @@ impl Edits {
                         refusal: f.refusal.clone(),
                         context: f.cut_history.as_ref().map(|h| format!(
                             "Base of {} circular Cuts. Blind depths stay fixed; Through all follows the plate thickness. Saved pocket floors must stay inside the plate.", h.tools.len()))
+                            .or_else(|| f.chamfer.as_ref().map(|c| format!(
+                                "Chamfered by Chamfer {} at ({}, {}), d {} mm. The Chamfer keeps its edge and distance; only the plate's height changes.",
+                                c.feature, c.corner.corner_mm[0], c.corner.corner_mm[1], c.distance_mm)))
                             .or_else(|| f.fillet().map(|r| match f.fillets.as_slice() {
                                 [_] | [] => format!(
                                     "Rounded by Fillet {} at ({}, {}), r {} mm. The Fillet keeps its edge and radius; only the plate's height changes.",

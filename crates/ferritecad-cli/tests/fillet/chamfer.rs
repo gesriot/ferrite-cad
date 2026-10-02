@@ -824,12 +824,17 @@ fn chamfer_discovery_and_protocol_without_native() {
             .expect("reason")
             .contains("Chamfer")
     );
-    // The other editors say so too, by name: none offers an edit.
-    assert_eq!(c.catalog["edit_extrude"]["available"], false);
-    let why = c.catalog["edit_extrude"]["refusal"]
-        .as_str()
-        .expect("a reason");
-    assert!(why.contains(&feature) && why.contains("Chamfer"), "{why}");
+    // §29B: the plate's height is the one thing besides the distance that the
+    // extrusion editor changes under a Chamfer, and it names the Chamfer as
+    // context on the base Extrude.
+    assert_eq!(c.catalog["edit_extrude"]["available"], true);
+    let base = &c.catalog["features"][0];
+    assert_eq!(base["editable"], true, "{base}");
+    assert_eq!(base["chamfer_base"]["chamfer_feature_id"], feature);
+    assert_eq!(base["chamfer_base"]["distance_mm"], row["distance_mm"]);
+    assert_eq!(base["chamfer_base"]["corner_mm"], row["corner_mm"]);
+    assert!(base["fillet_base"].is_null() && base["fillet_history"].is_null());
+    // The other editors keep saying so by name: none offers an edit.
     assert_eq!(c.catalog["bodies"][0]["fillet_edge"]["available"], false);
     assert_eq!(c.catalog["bodies"][0]["cut_edit"]["available"], false);
     assert!(
@@ -1459,11 +1464,9 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
             "{why}: {message}"
         );
     };
-    // edit-extrude: the plate's height.
-    let feature = catalog["features"][0]["feature_id"]
-        .as_str()
-        .expect("feature")
-        .to_owned();
+    // edit-extrude names the Chamfer when it is the feature asked about: the
+    // plate's height (§29B) is edited through the base Extrude only.
+    let feature = id.to_string();
     let v = reply(
         cli()
             .arg("edit-extrude")

@@ -219,11 +219,13 @@ no direct write from the UI.
 
 A chamfered Body is outside every earlier frame. The shared refusal
 (`refuse_filleted`, which every reader of the plate calls first) names the
-Chamfer by UUID; so do the height, Sketch coordinate, constraint, Cut, Fillet,
+Chamfer by UUID; so do the Sketch coordinate, constraint, Cut, Fillet,
 Revolve and radius routes. A Chamfer is never silently dropped, ignored or
 rebuilt on a changed plate by an editor that does not know it. Discovery reports
-the saved Chamfer and which of these are unavailable, with the reason. Editing
-the base of a chamfered plate is a later slice.
+the saved Chamfer and which of these are unavailable, with the reason. (§29B
+since made one exception: the plate's height is edited through `edit-extrude`,
+with the Chamfer kept — [the contract](edit-chamfer-base-height.md); every other
+editor still refuses.)
 
 ## Discovery (additive JSON)
 
@@ -410,11 +412,13 @@ assert chamfer["feature_id"] == done["feature_id"] and chamfer["distance_mm"] ==
 assert chamfer["distance_edit"]["available"] is True
 assert chamfer["distance_edit"]["max_distance_mm"] == D - 0.01
 assert saved["bodies"][0]["chamfer_edge"]["available"] is False, "a second Chamfer"
-assert saved["edit_extrude"]["available"] is False and "Chamfer" in saved["edit_extrude"]["refusal"]
+# §29B: the plate's height is edited through the base Extrude, with the Chamfer as context.
+assert saved["edit_extrude"]["available"] is True
+assert saved["features"][0]["chamfer_base"]["chamfer_feature_id"] == chamfer["feature_id"]
 assert saved["bodies"][0]["fillet_edge"]["available"] is False
 request.write_text(json.dumps({"request_version": 1, "radius_mm": 1.0, "edge": edge}))
 never = root / "never.fcad"
-for args in (["edit-extrude", one, "--feature", saved["features"][0]["feature_id"], "--distance-mm", "9",
+for args in (["edit-extrude", one, "--feature", chamfer["feature_id"], "--distance-mm", "9",
               "--expect-version", saved["content_version"], "-o", never, "--json"],):
     p = run(args, code=2)
     assert "Chamfer" in p["error"]["message"] and not never.exists()

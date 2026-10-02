@@ -149,10 +149,10 @@ pub(crate) fn refuse_chamfered(objects: &[ObjectRecord]) -> Result<()> {
         )));
     }
     Err(unsupported(format!(
-        "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance) can be \
-         edited. Its plate's height, Sketch, constraints, a Fillet or a Cut after it, and a \
-         second Chamfer are not supported yet, and no editor changes a chamfered plate without \
-         knowing its Chamfer",
+        "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance) and its \
+         plate's height (edit-extrude, §29B) can be edited. Its Sketch, constraints, a Fillet \
+         or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
+         chamfered plate without knowing its Chamfer",
         first.id
     )))
 }
@@ -567,6 +567,31 @@ pub(crate) fn saved_chamfer_for_edit(
         > 1
     {
         return Err(refuse_chamfered(objects).expect_err("two Chamfers are refused"));
+    }
+    // Named first, as the creation reader does: a dimension by its own UUID, and
+    // any other feature over the plate or the Chamfer by its UUID, whatever the
+    // general history reader would have made of them.
+    for object in objects {
+        if let ObjectPayload::Sketch(sketch) = &object.payload {
+            require_free_profile(sketch)?;
+        }
+    }
+    if let Some(other) = objects.iter().find(|o| {
+        o.id != record.id
+            && o.id != chamfer.previous
+            && (o
+                .payload
+                .previous_feature()
+                .is_some_and(|p| p == record.id || p == chamfer.previous)
+                || o.payload.kind().is_some_and(|k| k.is_feature()))
+    }) {
+        return Err(unsupported(format!(
+            "feature {} ({}) is part of this document beside the plate and the Chamfer {}; this \
+             build holds one Chamfer on one plate with no other feature",
+            other.id,
+            other.payload.type_name(),
+            record.id
+        )));
     }
     let history = crate::cut_edit::saved_history_under_chamfer(document, objects, record)?;
     if !history.cuts.is_empty() || history.target.base_feature != chamfer.previous {
@@ -1255,10 +1280,12 @@ mod tests {
                 "{what}: {text}"
             );
         };
-        named(
-            "height",
-            crate::prepare_extrude_height(&d, base, 9.0).expect_err("height"),
-        );
+        // §29B: the plate's height is the one edit besides the distance; asked
+        // about the Chamfer itself, the extrusion editor names it.
+        let height = crate::prepare_extrude_height(&d, id, 9.0)
+            .expect_err("height")
+            .to_string();
+        assert!(height.contains(&id.to_string()), "{height}");
         named(
             "a Fillet",
             crate::prepare_edge_fillet(
@@ -1298,10 +1325,11 @@ mod tests {
         );
         let fillet_radius = crate::prepare_fillet_radius(&d, id, 1.0).expect_err("not a Fillet");
         assert!(fillet_radius.to_string().contains("Fillet"));
-        // Discovery reports the saved Chamfer, not an editable plate.
+        // Discovery reports the saved Chamfer; §29B: the extrusion editor is
+        // offered the base Extrude under it, with the Chamfer as its context.
         let source = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        let reason = source.filleted.expect("the extrusion editor is refused");
-        assert!(reason.contains(&id.to_string()), "{reason}");
+        assert!(source.filleted.is_none(), "{:?}", source.filleted);
+        assert_eq!(source.features[0].chamfer.as_ref().map(|c| c.feature), Some(id));
         assert_eq!(source.chamfer_features.len(), 1);
         assert!(source.chamfer_features[0].refusal.is_none());
         assert!(source.chamfer_bodies[0].target.is_none());
@@ -1311,6 +1339,215 @@ mod tests {
                 .as_deref()
                 .is_some_and(|r| r.contains("Chamfer"))
         );
+    }
+
+    /// §29B: the plate's height changes under the Chamfer through the one
+    /// extrusion editor: one row, nothing else, the Chamfer and every name
+    /// as they were; the writer re-derives and refuses stale and forged edits.
+    #[test]
+    fn the_height_of_a_chamfered_plate_changes_one_row_and_the_writer_refuses_forgery() {
+        let (_root, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 2, 2.375);
+        let base = target_of_base(&d);
+        let source = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+        assert!(source.filleted.is_none() && source.unavailable_reason().is_none());
+        let choice = &source.features[0];
+        assert_eq!(choice.feature, base);
+        assert!(choice.refusal.is_none(), "{:?}", choice.refusal);
+        assert_eq!(choice.chamfer.as_ref().map(|c| (c.feature, c.distance_mm)), Some((id, 2.375)));
+        assert!(choice.cut_history.is_none() && choice.fillets.is_empty());
+
+        let objects = d.objects().expect("objects");
+        let refs = d.topology_refs().expect("refs");
+        let deps = d.dependencies().expect("dependencies");
+        for height in [9.5, 0.4, 6.75] {
+            let prepared = crate::prepare_extrude_height(&d, base, height).expect("prepared");
+            assert_eq!(prepared.chamfer().map(|c| c.feature), Some(id));
+            assert!(prepared.added_references().is_empty());
+            d.write_extrude_height(&prepared).expect("written");
+            let now = d.objects().expect("objects");
+            for (was, is) in objects.iter().zip(&now) {
+                assert_eq!(was.id, is.id);
+                if was.id == base {
+                    let ObjectPayload::Extrude(e) = &is.payload else { panic!("not an Extrude") };
+                    assert!(matches!(&e.end_condition, EndCondition::Blind { distance }
+                        if distance.value() == height));
+                } else {
+                    assert_eq!(was.payload, is.payload, "{} moved", was.id);
+                }
+            }
+            assert_eq!(d.topology_refs().expect("refs"), refs, "no name moved");
+            assert_eq!(d.dependencies().expect("dependencies"), deps);
+            assert!(d.validate().expect("validates").is_ok());
+            let saved = saved_chamfer(&d, &now).expect("reads").expect("a Chamfer");
+            assert_eq!((saved.distance_mm, saved.height_mm), (2.375, height));
+        }
+        // Stale: the document moved on after preparation.
+        let stale = crate::prepare_extrude_height(&d, base, 3.0).expect("prepared");
+        let again = crate::prepare_extrude_height(&d, base, 5.0).expect("prepared");
+        d.write_extrude_height(&again).expect("written");
+        assert!(d.write_extrude_height(&stale).is_err());
+        // Forged: another feature's row, the Chamfer taken out, the Chamfer
+        // changed, a joint that is not the saved one. Nothing is written.
+        let before = d.content_version().expect("version");
+        let mut other = crate::prepare_extrude_height(&d, base, 3.0).expect("prepared");
+        other.feature.id = id;
+        assert!(d.write_extrude_height(&other).is_err());
+        let mut without = crate::prepare_extrude_height(&d, base, 3.0).expect("prepared");
+        without.chamfer = None;
+        assert!(d.write_extrude_height(&without).is_err());
+        let mut moved = crate::prepare_extrude_height(&d, base, 3.0).expect("prepared");
+        if let Some(c) = moved.chamfer.as_mut() {
+            c.distance_mm = 1.0;
+        }
+        assert!(d.write_extrude_height(&moved).is_err());
+        let mut rejoined = crate::prepare_extrude_height(&d, base, 3.0).expect("prepared");
+        if let Some(c) = rejoined.chamfer.as_mut() {
+            let lines = &sketch_of(&d).curves;
+            c.edge.joint = ProfileJoint::new(lines[0].id, lines[1].id).expect("joint");
+            assert_ne!(c.edge.joint, target_of_saved(&d, id).edge.joint);
+        }
+        assert!(d.write_extrude_height(&rejoined).is_err());
+        assert_eq!(d.content_version().expect("version"), before, "nothing written");
+        // The numbers the shared rule refuses are refused before preparation.
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(crate::prepare_extrude_height(&d, base, bad).is_err(), "{bad}");
+        }
+        // The distance edit still works on the edited plate, and the Chamfer
+        // keeps its bound: it depends on the adjacent sides, not on the height.
+        let max = target_of_saved(&d, id).corner.max_distance_mm;
+        assert_eq!(max, 12.25 - MIN_FLAT_MM);
+        let edit = prepare_chamfer_distance(&d, id, max).expect("distance after the height");
+        d.write_chamfer_distance(&edit).expect("written");
+    }
+
+    /// §29B: a Chamfer outside the class is refused by the extrusion editor
+    /// with the guilty feature's UUID, and nothing is read as some other history.
+    #[test]
+    fn the_height_edit_refuses_a_chamfer_outside_the_class_naming_the_feature() {
+        // A dimension: the constraint's own UUID.
+        let (_r, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 0, 2.0);
+        let base = target_of_base(&d);
+        let objects = d.objects().expect("objects");
+        let record = objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("sketch")
+            .clone();
+        let ObjectPayload::Sketch(mut sketch) = record.payload.clone() else { unreachable!() };
+        let pin = crate::SketchConstraint {
+            id: StableEntityId::new(),
+            rule: SketchConstraintRule::Distance {
+                a: crate::SketchPointRef::new(sketch.curves[0].id, crate::SketchPointSelector::Start),
+                b: crate::SketchPointRef::new(sketch.curves[1].id, crate::SketchPointSelector::End),
+                distance: 37.5,
+            },
+        };
+        sketch.constraints.push(pin);
+        d.write(|w| {
+            w.put_object(
+                record.id,
+                record.parent,
+                record.ordinal,
+                record.name.as_deref(),
+                &ObjectPayload::Sketch(sketch),
+            )
+        })
+        .expect("constrained");
+        let why = crate::prepare_extrude_height(&d, base, 9.0)
+            .expect_err("a dimension")
+            .to_string();
+        assert!(why.contains(&pin.id.to_string()) && why.contains("Distance"), "{why}");
+        let source = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+        assert!(source.filleted.as_deref().is_some_and(|r| r.contains(&pin.id.to_string())));
+        assert!(source.unavailable_reason().is_some());
+        assert!(source.features[0].chamfer.is_none() && source.features[0].refusal.is_some());
+
+        // Another feature over the Chamfer: a Fillet, and a Cut.
+        for kind in ["Fillet", "Cut"] {
+            let (_r, mut d, body) = plate(PLATE);
+            let id = chamfer_at(&mut d, body, 1, 2.0);
+            let base = target_of_base(&d);
+            let intruder = ObjectId::new();
+            let payload = if kind == "Fillet" {
+                ObjectPayload::Fillet(crate::Fillet {
+                    previous: id,
+                    edge: crate::FilletEdge {
+                        feature: base,
+                        joint: target_of_saved(&d, id).edge.joint,
+                    },
+                    radius_mm: 1.0,
+                })
+            } else {
+                ObjectPayload::Extrude(Extrude {
+                    profile: target_of_saved(&d, id).profile,
+                    end_condition: EndCondition::Blind {
+                        distance: Expression::constant(1.0).expect("distance"),
+                    },
+                    reversed: false,
+                    operation: SolidOperation::Cut,
+                    target_body: None,
+                    previous: Some(id),
+                })
+            };
+            d.write(|w| w.put_object(intruder, None, 9, Some("Intruder"), &payload))
+                .expect("written");
+            let why = crate::prepare_extrude_height(&d, base, 9.0)
+                .expect_err(kind)
+                .to_string();
+            assert!(why.contains(&intruder.to_string()), "{kind}: {why}");
+            let source = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+            assert!(source.unavailable_reason().is_some(), "{kind}");
+            assert!(source.features.iter().all(|f| f.chamfer.is_none()), "{kind}");
+        }
+
+        // A second Chamfer: named by the first, both refused.
+        let (_r, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 1, 2.0);
+        let base = target_of_base(&d);
+        let second = ObjectId::new();
+        let row = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| o.id == id)
+            .expect("chamfer");
+        d.write(|w| w.put_object(second, None, 9, Some("Second"), &row.payload))
+            .expect("written");
+        let why = crate::prepare_extrude_height(&d, base, 9.0)
+            .expect_err("two")
+            .to_string();
+        assert!(why.contains(&id.to_string()) && why.contains("2 Chamfers"), "{why}");
+
+        // Not the base: only the base Extrude under the Chamfer is edited.
+        let (_r, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 1, 2.0);
+        let other = ObjectId::new();
+        let profile = target_of_saved(&d, id).profile;
+        d.write(|w| {
+            w.put_object(
+                other,
+                None,
+                9,
+                Some("Other"),
+                &ObjectPayload::Extrude(Extrude {
+                    profile,
+                    end_condition: EndCondition::Blind {
+                        distance: Expression::constant(3.0).expect("distance"),
+                    },
+                    reversed: false,
+                    operation: SolidOperation::NewBody,
+                    target_body: None,
+                    previous: None,
+                }),
+            )
+        })
+        .expect("written");
+        let why = crate::prepare_extrude_height(&d, other, 9.0)
+            .expect_err("not the base")
+            .to_string();
+        assert!(why.contains(&other.to_string()), "{why}");
     }
 
     /// §29A: free and closure-only plates are accepted; any other constraint
@@ -1365,6 +1602,17 @@ mod tests {
             refusal.contains("Distance") && refusal.contains(&pin.id.to_string()),
             "{refusal}"
         );
+    }
+
+    fn sketch_of(d: &Document) -> Sketch {
+        d.objects()
+            .expect("objects")
+            .into_iter()
+            .find_map(|o| match o.payload {
+                ObjectPayload::Sketch(s) => Some(s),
+                _ => None,
+            })
+            .expect("sketch")
     }
 
     fn target_of_base(d: &Document) -> ObjectId {
