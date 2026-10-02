@@ -458,6 +458,11 @@ fn native_sketch_bounds_and_candidates_are_exact_under_a_chamfer() {
     refuse("a mirrored plate", "input");
     ask_rect(&g, [X0, Y0 + D, W, -D]);
     refuse("a flipped plate", "input");
+    // Turned half a turn: the winding is the saved one, but every Line runs
+    // the other way and the Chamfer would land on the opposite corner.
+    ask_rect(&g, [X0 + W, Y0 + D, -W, -D]);
+    let v = refuse("a plate turned half a turn", "input");
+    assert!(v.to_string().contains("side"), "{v}");
 
     // Not a rectangle, a wrong order, a foreign Line and a missing Line.
     let row = g.sketch_row()["vertices"].clone();

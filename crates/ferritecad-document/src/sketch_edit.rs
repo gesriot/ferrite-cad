@@ -733,7 +733,12 @@ impl SketchChoice {
         if let Some(chamfer) = &self.chamfer {
             let curves = coordinate_curves(vertices, &points);
             chamfer.corner_on(&curves)?;
-            keeps_every_side(original, &points)?;
+            keeps_every_side(original, &points).map_err(|e| {
+                CadError::input(format!(
+                    "Chamfer {} keeps its corner only while every Line keeps its side: {e}",
+                    chamfer.feature
+                ))
+            })?;
         }
         Ok(points)
     }

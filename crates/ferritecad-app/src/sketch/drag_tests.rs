@@ -1934,3 +1934,44 @@ fn restore_saved_vertices_stays_out_of_one_drag() {
     assert!(e.take_edit_request().is_none());
     assert_eq!(std::fs::read(&path).expect("source"), bytes);
 }
+
+/// §29C: the form of a chamfered plate keeps the prior drag semantics. One
+/// gesture is one Undo step; a vertex dragged alone leaves a drawing that is
+/// no plate, which is refused honestly while Undo, Redo and Restore stay
+/// available; no neighbouring vertex is moved to make the gesture succeed.
+#[test]
+fn chamfer_base_drag_is_one_undo_step_and_moves_no_neighbour() {
+    let (_root, path, reading) = crate::chamfers::tests::chamfered(2.375);
+    let id = reading.sketches[0].sketch;
+    let mut e = Editor::default();
+    assert!(e.begin_edit(&path, &reading, id));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut e, vec![]);
+    frame(&ctx, &mut e, vec![]);
+    let saved = e.draft.clone();
+    let at = vertex(&ctx, &mut e, 1);
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, at + egui::vec2(40., 0.));
+    assert!(e.undo.is_empty(), "the preview is not a step");
+    button(&ctx, &mut e, at + egui::vec2(40., 0.), false);
+    assert!(e.gesture_finished());
+    assert_eq!(e.undo.len(), 1, "one gesture, one Undo");
+    let dragged = e.draft.clone().expect("draft");
+    let before = saved.as_ref().expect("draft");
+    assert_ne!(dragged.points[1][0], before.points[1][0]);
+    for i in [0, 2, 3] {
+        assert_eq!(dragged.points[i], before.points[i], "vertex {i} was moved");
+    }
+    let error = e
+        .edit_request()
+        .expect_err("one dragged corner is no plate");
+    assert!(!error.to_string().is_empty());
+    assert!(e.take_edit_request().is_none());
+    choose(&ctx, &mut e, "Undo draft");
+    assert_eq!(e.draft, saved);
+    choose(&ctx, &mut e, "Redo draft");
+    assert_eq!(e.draft.as_ref(), Some(&dragged));
+    choose(&ctx, &mut e, "Restore saved vertices");
+    assert_eq!(e.draft, saved);
+    assert!(e.edit_request().is_ok(), "the saved plate is publishable");
+}

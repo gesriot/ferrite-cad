@@ -1479,7 +1479,12 @@ impl Editor {
                      shorter adjacent side may not be shorter than {} mm.",
                     chamfer.feature,
                     chamfer.distance_mm,
-                    chamfer.distance_mm + ferritecad_document::MIN_FLAT_MM
+                    format!(
+                        "{:.6}",
+                        chamfer.distance_mm + ferritecad_document::MIN_FLAT_MM
+                    )
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
                 ));
             }
             if let Some(history) = &choice.cut_history {
@@ -5817,6 +5822,227 @@ mod tests {
             return;
         }
         let (root, path, reading) = crate::fillets::tests::rounded(2.375);
+        let before = std::fs::read(&path).expect("source");
+        let sketch = reading.sketches[0].sketch;
+        let mut e = Editor::default();
+        assert!(e.begin_edit(&path, &reading, sketch));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        frame(&ctx, &mut e, vec![]);
+        replace_field(&ctx, &mut e, "33", "36.5");
+        replace_field(&ctx, &mut e, "33", "36.5");
+        replace_field(&ctx, &mut e, "-4.5", "-1.25");
+        replace_field(&ctx, &mut e, "-4.5", "-1.25");
+        let kept = e.draft.clone();
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
+        let mut request = e.take_edit_request().expect("widget request");
+        let ui = root.path().join("worker.fcad");
+        request.destination = ui.clone();
+        let mut edits = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        edits
+            .start_sketch(request.clone(), move |r, g, c| {
+                crate::edits::spawn_sketch_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (generation, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("worker response");
+        assert_eq!(
+            finish_edit(&mut e, &mut edits, generation, result),
+            Some(ui.clone())
+        );
+        e.draft_load_finished(&ui, false);
+        assert_eq!(e.draft, kept, "a failed async Open restores the draft");
+        e.draft_published(&ui);
+        e.draft_load_finished(&ui, true);
+        assert!(!e.active());
+
+        let input = root.path().join("request.json");
+        let vertices = request
+            .vertices
+            .iter()
+            .map(|v| {
+                format!(
+                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
+                    v.curve_id, v.start_mm[0], v.start_mm[1]
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(
+            &input,
+            format!(r#"{{"request_version":1,"vertices":[{vertices}]}}"#),
+        )
+        .expect("request");
+        let peer = root.path().join("peer.fcad");
+        let out = std::process::Command::new(ferritecad())
+            .arg("edit-sketch-copy")
+            .arg(&path)
+            .arg("--sketch")
+            .arg(sketch.to_string())
+            .arg("--expect-version")
+            .arg(reading.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(out.status.success(), "{out:?}");
+        let (left, right) = (
+            crate::fillets::tests::tables(&ui),
+            crate::fillets::tests::tables(&peer),
+        );
+        assert_eq!(
+            left.keys().collect::<Vec<_>>(),
+            right.keys().collect::<Vec<_>>()
+        );
+        for (table, (columns, rows)) in &left {
+            let (theirs_columns, theirs) = &right[table];
+            assert_eq!(columns, theirs_columns);
+            assert_eq!(rows.len(), theirs.len(), "{table} rows");
+            for (l, r) in rows.iter().zip(theirs) {
+                for (i, column) in columns.iter().enumerate() {
+                    if table == "meta" && column == "modified_at" {
+                        continue;
+                    }
+                    assert_eq!(l[i], r[i], "{table}.{column} differs");
+                }
+            }
+        }
+        for format in ["stl", "fbx"] {
+            let mut exports = Vec::new();
+            for model in [&ui, &peer] {
+                let output = model.with_extension(format);
+                let p = std::process::Command::new(ferritecad())
+                    .arg(format!("export-{format}"))
+                    .arg(model)
+                    .arg("-o")
+                    .arg(&output)
+                    .arg("--json")
+                    .output()
+                    .expect("export");
+                assert!(p.status.success(), "{p:?}");
+                exports.push(std::fs::read(output).expect("bytes"));
+            }
+            assert_eq!(exports[0], exports[1], "worker and CLI {format}");
+        }
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
+    /// §29C, kernel-free: the existing Sketch editor opens the base of a
+    /// chamfered plate, names the Chamfer, its corner and distance and the
+    /// smallest side it allows. A half-typed draft may be briefly no plate: the
+    /// refusal is shown, Undo, Redo and Restore stay available and nothing is
+    /// requested until the whole candidate is valid. A cancelled Save, a stale
+    /// reply and a worker refusal keep the draft.
+    #[test]
+    fn chamfer_base_sketch_widgets_show_the_corner_and_keep_the_draft() {
+        let (_root, path, reading) = crate::chamfers::tests::chamfered(2.375);
+        let choice = reading.sketches[0].clone();
+        let chamfer = choice.chamfer.clone().expect("the Chamfer as context");
+        let mut e = Editor::default();
+        assert!(e.begin_edit(&path, &reading, choice.sketch));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        let [a, b] = chamfer.edge.joint.segments();
+        assert!(painted(
+            &out,
+            &format!(
+                "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d 2.375 mm.",
+                chamfer.feature
+            )
+        ));
+        assert!(painted(&out, "may not be shorter than 2.385 mm"));
+        let valid = e.draft.clone();
+        // One of the two upper vertices moved: no longer a plate.
+        replace_field(&ctx, &mut e, "15.5", "9");
+        let error = e.edit_request().expect_err("not a rectangle");
+        assert!(!error.to_string().is_empty());
+        assert!(e.take_edit_request().is_none(), "nothing is requested");
+        let out = frame(&ctx, &mut e, vec![]);
+        text_at(&out, "Undo draft");
+        text_at(&out, "Restore saved vertices");
+        // Both moved, too shallow for the saved distance: refused with the
+        // Chamfer and its numbers, and the draft stays as typed until Undo.
+        replace_field(&ctx, &mut e, "15.5", "9");
+        replace_field(&ctx, &mut e, "9", "5");
+        replace_field(&ctx, &mut e, "9", "5");
+        let error = e.edit_request().expect_err("too small");
+        assert!(
+            error.to_string().contains(&chamfer.feature.to_string())
+                && error.to_string().contains("does not fit"),
+            "{error}"
+        );
+        assert_eq!(e.draft.as_ref().expect("draft").points[0][1], "5");
+        click_label(&ctx, &mut e, "Restore saved vertices");
+        assert_eq!(e.draft, valid, "Restore returns the saved plate");
+        click_label(&ctx, &mut e, "Undo draft");
+        assert_eq!(e.draft.as_ref().expect("draft").points[0][1], "5");
+        while e.draft != valid {
+            assert!(!e.undo.is_empty(), "Undo walks back to the saved plate");
+            e.undo();
+        }
+        replace_field(&ctx, &mut e, "33", "36.5");
+        replace_field(&ctx, &mut e, "33", "36.5");
+        let moved = e.draft.clone();
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Undo draft"));
+        assert_ne!(e.draft, moved);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Redo draft"));
+        assert_eq!(e.draft, moved);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
+        let request = e.take_edit_request().expect("the widgets' request");
+        assert!(e.take_edit_request().is_none(), "one press, one request");
+        assert_eq!(request.sketch, choice.sketch);
+        assert_eq!(request.expected, reading.version);
+        assert_eq!(request.vertices[0].start_mm, [36.5, 15.5]);
+        assert_eq!(request.vertices[1].start_mm, [36.5, 3.25]);
+        assert_eq!(e.draft, moved);
+        let mut edits = crate::edits::Edits::default();
+        let generation = edits
+            .start_sketch(request, |_, _, _| std::thread::spawn(|| {}))
+            .expect("started");
+        let stale = ferritecad_jobs::EditedSketch {
+            destination: PathBuf::from("stale.fcad"),
+            document_id: reading.version.document_id,
+            sketch: choice.sketch,
+        };
+        assert!(finish_edit(&mut e, &mut edits, generation + 1, Ok(stale)).is_none());
+        assert_eq!(e.draft, moved);
+        assert!(
+            finish_edit(
+                &mut e,
+                &mut edits,
+                generation,
+                Err(CadError::kernel("refused by the worker"))
+            )
+            .is_none()
+        );
+        assert_eq!(e.draft, moved, "a refusal keeps the draft");
+    }
+
+    /// §29C, native: the widgets' request through the app's worker and the same
+    /// edit through the shipped `edit-sketch-copy` publish one document: every
+    /// SQL cell equal with no identifier mapped, and byte-identical STL and FBX.
+    /// A failed async Open restores the draft.
+    #[test]
+    fn native_chamfer_base_sketch_widgets_worker_and_cli_publish_the_same_part() {
+        use crate::creates::tests::ferritecad;
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: the Sketch worker needs OCCT");
+            return;
+        }
+        let (root, path, reading) = crate::chamfers::tests::chamfered(2.375);
         let before = std::fs::read(&path).expect("source");
         let sketch = reading.sketches[0].sketch;
         let mut e = Editor::default();
