@@ -150,7 +150,7 @@ pub(crate) fn refuse_chamfered(objects: &[ObjectRecord]) -> Result<()> {
     }
     Err(unsupported(format!(
         "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance), its plate's \
-         height (edit-extrude, §29B) and its base Sketch's coordinates (edit-sketch-copy, \
+         height (edit-extrude, §29B), its base Sketch's coordinates (edit-sketch-copy, \
          §29C) and its base Sketch's Line constraints (edit-sketch-constraints-copy, §29D) \
          can be edited. A Fillet or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
          chamfered plate without knowing its Chamfer",

@@ -488,37 +488,15 @@ fn native_after_a_height_edit_every_other_editor_still_names_the_chamfer() {
         .as_str()
         .expect("sketch")
         .to_owned();
-    // §29C: the Sketch's coordinates are editable under the Chamfer; its
-    // constraints still are not.
+    // §29C/§29D: the Sketch's coordinates and its Line constraints are both
+    // editable under the Chamfer.
     assert_eq!(catalog["sketches"][0]["editable"], true);
+    assert_eq!(catalog["sketches"][0]["constraint_edit"]["available"], true);
     assert_eq!(
-        catalog["sketches"][0]["constraint_edit"]["available"],
-        false
+        catalog["sketches"][0]["constraint_edit"]["chamfer_base"],
+        catalog["features"][0]["chamfer_base"]
     );
-    let out = f.root.path().join("never.fcad");
-    let line = catalog["sketches"][0]["vertices"][0]["curve_id"].clone();
-    let request = f.root.path().join("sketch.json");
-    write(
-        &request,
-        &json!({"request_version":1,"remove":[],"add":[{"curve_id":line,"rule":"horizontal"}]}),
-    );
-    let v = reply(
-        cli()
-            .arg("edit-sketch-constraints-copy")
-            .arg(&edited)
-            .args(["--sketch", &sketch, "--expect-version", &version])
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&out)
-            .arg("--json")
-            .output()
-            .expect("process"),
-        "edit-sketch-constraints-copy",
-        2,
-    );
-    assert!(v.to_string().contains(&id.to_string()), "{v}");
-    assert!(!out.exists());
+    let _ = (&sketch, &version, &id);
     // A second height edit of the edited plate is the same operation again.
     let again = f.root.path().join("again.fcad");
     reply(
@@ -588,6 +566,7 @@ fn chamfer_base_height_discovery_and_protocol_without_native() {
             "corner_mm": [X0 + W, Y0 + D],
             "distance_mm": 2.375,
             "distance_unit": "mm",
+            "profile_constrained": false,
         })
     );
     assert_eq!(
