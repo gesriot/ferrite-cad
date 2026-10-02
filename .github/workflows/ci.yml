@@ -554,9 +554,14 @@ jobs:
           gate=chamfer::chamfer_discovery_and_protocol_without_native
           cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-discovery.log
           if grep -q 'skipped:' chamfer-discovery.log || ! grep -Fq "test $gate ... ok" chamfer-discovery.log; then exit 1; fi
+          # §29B: the height of the chamfered plate, discovered and refused the same way.
+          gate=chamfer::base_height::chamfer_base_height_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-height-discovery.log
+          if grep -q 'skipped:' chamfer-height-discovery.log || ! grep -Fq "test $gate ... ok" chamfer-height-discovery.log; then exit 1; fi
           for gate in chamfers::history_tests::the_request_history_steps_back_and_forward_and_forgets_a_discarded_future \
             chamfers::tests::chamfer_widgets_list_corners_refuse_like_the_document_and_keep_the_draft \
-            chamfers::tests::chamfer_distance_widgets_show_the_saved_edge_and_keep_the_draft
+            chamfers::tests::chamfer_distance_widgets_show_the_saved_edge_and_keep_the_draft \
+            edits::tests::chamfer_base_height_widgets_show_the_chamfer_and_keep_the_draft
           do
             cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-widgets.log
             if grep -q 'skipped:' chamfer-widgets.log || ! grep -Fq "test $gate ... ok" chamfer-widgets.log; then exit 1; fi
@@ -568,7 +573,9 @@ jobs:
             chamfer::tests::the_creation_writer_rederives_the_chamfer_and_refuses_forgery \
             chamfer::tests::every_other_editor_refuses_a_chamfered_body_by_name \
             chamfer::tests::a_dimensioned_plate_is_refused_with_the_constraint_named \
-            chamfer::tests::the_evaluator_judges_the_chamfer_on_the_built_lines
+            chamfer::tests::the_evaluator_judges_the_chamfer_on_the_built_lines \
+            chamfer::tests::the_height_of_a_chamfered_plate_changes_one_row_and_the_writer_refuses_forgery \
+            chamfer::tests::the_height_edit_refuses_a_chamfer_outside_the_class_naming_the_feature
           do
             cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-writer.log
             if grep -q 'skipped:' chamfer-writer.log || ! grep -Fq "test $gate ... ok" chamfer-writer.log; then exit 1; fi
@@ -594,6 +601,14 @@ jobs:
           EXTRACT
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-29a-recipe.py | tee chamfer-recipe-stub.log
           grep -q '^FCAD_29A_RECIPE_NO_KERNEL ' chamfer-recipe-stub.log
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-chamfer-base-height.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_29B_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-29b-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-29b-recipe.py | tee chamfer-height-recipe-stub.log
+          grep -q '^FCAD_29B_RECIPE_NO_KERNEL ' chamfer-height-recipe-stub.log
 
       - name: Discover sequential cuts without native geometry
         shell: bash
