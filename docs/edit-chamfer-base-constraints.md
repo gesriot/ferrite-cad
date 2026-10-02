@@ -67,8 +67,10 @@ new constraint families and circles, in-place Save, live preview.
 
 ### Error policy
 
-A real solver conflict or redundancy is the typed `constraint` refusal naming its
-constraint UUIDs (unchanged). A solved plate that is not the rectangle, moves a
+A real solver conflict is the typed `constraint` refusal naming its constraint
+UUIDs (unchanged). A consistent redundant constraint may publish successfully;
+its UUID is reported in `solve.redundant_constraint_ids`, rather than turned into
+a refusal. A solved plate that is not the rectangle, moves a
 Line off its side, loses the corner or leaves no room for the saved distance is a
 separate domain refusal naming the Chamfer UUID and the violated bound. Neither
 publishes anything: the source, the destination and the draft are left as they were.

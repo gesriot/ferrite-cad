@@ -53,8 +53,8 @@ and a **local** PlaneGCS that is not the CI-pinned one; macOS and Windows are CI
   `FCAD_29D_RECIPE_NO_SOLVER`. A build without the solver builds the free plate and
   refuses the constraint copy; it never produces geometry for a constrained plate.
 - **Pinned ufbx**: the `check-fbx-complex.sh` loop over `cons-0-solved`,
-  `cons-1-solved` and `cons-2-solved` (the nine CLI-written FBX/STL pairs of the
-  three drawing orders' constrained copies) was run against the step's artifacts
+  `cons-1-solved` and `cons-2-solved` (the three CLI-written FBX/STL pairs, one for each
+  drawing order's constrained copy) was run against the step's artifacts
   with a trimmed copy of the script: each file read twice (`checks=6 failures=0`),
   joined to its STL (`FCAD_STL_FBX_MATCH triangles=16 worst_m=0`) and
   `FCAD_CHAMFER_CONSTRAINTS_UFBX_EXECUTED`.
@@ -258,7 +258,8 @@ L3 horizontal.
    | <UUID>, d 2.375 mm (stored corner (33, 3.25)). The Chamfer keeps its corner and
    distance: the coordinates shown are the stored ones…" and the four vertices shown
    are the stored ones.
-3. **Dimension.** Add Vertical on L0 and L2, Horizontal on L1 and L3, **Fixed** on
+3. **Dimension.** Add in this order: Vertical on L0, Horizontal on L1, Vertical
+   on L2, Horizontal on L3, **Fixed** on
    L0's start at (33, 15.5), **Length** 41 on L1 and **Length** 10.25 on L0. Then
    **Undo draft** once and **Redo draft** once (the last rule goes and returns).
 4. **Save Cancel.** **Save edited copy…** → **Cancel** in the file dialog: nothing is
@@ -439,7 +440,7 @@ def allowlist(before, after, row, capability=False, schema=False):
             for c, u, v in zip(ac, x, y):
                 if u != v:
                     moved += 1
-                assert u == v or (t == "objects" and c in ("schema_version", "payload", "payload_hash")
+                assert u == v or (t == "objects" and c in (("schema_version", "payload", "payload_hash") if schema else ("payload", "payload_hash"))
                                   and x[ac.index("id")] == rid) \
                     or (t == "meta" and c == "modified_at"), f"{t}.{c} moved"
     assert moved >= 2, "the selected row did not change"
@@ -508,7 +509,7 @@ STORED_OF = {n: (facts["coordinate_rect_mm"] if n == "coords" else STORED_RECT) 
 g = {n: out / f"gui-{n}.fcad" for n in STEPS}
 listed = {n: document(g[n], RECTS[n], HEIGHTS[n], DISTS[n], CONSTRAINED[n], STORED_OF[n]) for n in STEPS}
 # The window's chain moves exactly what each step may.
-allowlist(source, g["dim"], SKETCH, capability=True)
+allowlist(source, g["dim"], SKETCH, capability=True, schema=True)
 allowlist(g["dim"], g["replaced"], SKETCH)
 allowlist(g["replaced"], g["tall"], BASE)
 allowlist(g["tall"], g["distance"], CHAMFER)
@@ -528,7 +529,6 @@ for n in ("tall", "distance", "back"):
     assert {c["constraint_id"] for c in listed[n]} == {c["constraint_id"] for c in listed["replaced"]}, \
         f"{n}: the constraints changed with a height or distance edit"
 assert ids("free", lambda c: True) == CLOSURE == ids("coords", lambda c: True), "closure not kept"
-assert tables(g["tall"])["objects"][0] and True
 # The same chain through the shipped CLI, which also gives each refusal.
 def peer(src, remove, add, dest):
     dest.unlink(missing_ok=True)
@@ -581,27 +581,50 @@ p["coords"].unlink(missing_ok=True)
 run("edit-sketch-copy", p["free"], "--sketch", SKETCH, "--expect-version", version(p["free"]),
     "--request", request, "-o", p["coords"], "--json")
 request.unlink()
-def same(gui, peer_path):
-    """Every SQL cell equal but the stamp and the Sketch row's payload, hash and
-    schema version (which hold the newly minted constraint UUIDs); then the
-    constraints, with only the new UUIDs mapped by their rule."""
-    left, right = tables(gui), tables(peer_path)
+def same(gui, other):
+    """All cells except the stamp and the selected Sketch's payload hash;
+    compare that payload byte-for-byte after matching only constraint UUIDs
+    by their complete rules. Every other object's payload/hash stays exact."""
+    a, b = constraints_of(gui)["constraints"], constraints_of(other)["constraints"]
+    assert len(a) == len(b)
+    old = {c["constraint_id"] for c in constraints_of(source)["constraints"]}
+    ordered_a, ordered_b = [sorted(items, key=shape) for items in (a, b)]
+    assert [shape(c) for c in ordered_a] == [shape(c) for c in ordered_b]
+    assert len({c["constraint_id"] for c in a}) == len(a)
+    assert len({c["constraint_id"] for c in b}) == len(b)
+    def normalized(payload, listed):
+        # The document ID serializer uses CBOR byte strings of length 16.
+        # Refuse an unexpected encoding or extra occurrence, not a broad
+        # JSON normalization that could discard a stored field.
+        for i, c in enumerate(listed):
+            u = c["constraint_id"]
+            encoded = b"\x50" + bytes.fromhex(u.replace("-", ""))
+            assert payload.count(encoded) == 1, ("constraint UUID encoding", u)
+            if u not in old:
+                payload = payload.replace(encoded, b"\x50" + i.to_bytes(16, "big"))
+        return payload
+    left, right = tables(gui), tables(other)
     assert left.keys() == right.keys()
     cells = 0
     for t in left:
-        (cols, lrows), (_, rrows) = left[t], right[t]
-        skip = {"payload", "payload_hash", "schema_version"} if t == "objects" else set()
-        keep = [k for k, c in enumerate(cols) if not (t == "meta" and c == "modified_at") and c not in skip]
-        row_id = cols.index("id") if t == "objects" else None
-        norm = lambda rows: sorted((tuple(r[k] for k in keep) for r in rows), key=repr)
-        assert norm(lrows) == norm(rrows), t
-        cells += len(keep) * len(lrows)
-    a, b = facts_of(gui)[3]["constraint_edit"], facts_of(peer_path)[3]["constraint_edit"]
-    assert a["curves"] == b["curves"] and len(a["constraints"]) == len(b["constraints"])
-    old = set()
-    tag = lambda c: (shape(c), c["constraint_id"] if c["constraint_id"] in old else "new")
-    assert sorted(tag(c) for c in a["constraints"]) == sorted(tag(c) for c in b["constraints"]), "constraints differ"
-    return cells + len(a["constraints"])
+        (cols, lrows), (other_cols, rrows) = left[t], right[t]
+        assert cols == other_cols and len(lrows) == len(rrows), t
+        if t == "objects":
+            k = cols.index("id")
+            lrows, rrows = [sorted(rows, key=lambda r: r[k]) for rows in (lrows, rrows)]
+        for lrow, rrow in zip(lrows, rrows):
+            for col, lval, rval in zip(cols, lrow, rrow):
+                if t == "meta" and col == "modified_at":
+                    continue
+                selected = t == "objects" and lrow[cols.index("id")] == bytes.fromhex(SKETCH.replace("-", ""))
+                if selected and col == "payload_hash":
+                    continue
+                if selected and col == "payload":
+                    lval, rval = normalized(lval, ordered_a), normalized(rval, ordered_b)
+                assert lval == rval, (t, col)
+                cells += 1
+    return cells
+
 cells = sum(same(g[n], p[n]) for n in STEPS)
 for fmt in ("stl", "fbx"):
     target = out / f"peer-coords.{fmt}"
