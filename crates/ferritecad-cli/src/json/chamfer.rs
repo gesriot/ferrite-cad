@@ -110,6 +110,11 @@ pub(super) struct ChamferFeatureDiscovery {
     adjacent_lengths_mm: Option<[f64; 2]>,
     distance_mm: f64,
     distance_unit: &'static str,
+    /// §29D, additive: the base Sketch carries user constraints; `corner_mm`
+    /// and `adjacent_lengths_mm` are then the stored approximation's, and
+    /// `distance_edit.max_distance_mm` is `null`. `null` when the frame is
+    /// refused.
+    profile_constrained: Option<bool>,
     distance_edit: ChamferDistanceEditDiscovery,
 }
 
@@ -124,6 +129,9 @@ struct ChamferDistanceEditDiscovery {
     document_refusal: Option<String>,
     request_versions: &'static [u32],
     min_distance_mm: f64,
+    /// `null` when the frame is refused, and (§29D) `null` for a constrained
+    /// base: the bound is the solved plate's, judged when a copy is rebuilt,
+    /// and a stored dimension is no evidence of it in either direction.
     max_distance_mm: Option<f64>,
 }
 
@@ -146,13 +154,16 @@ impl ChamferFeatureDiscovery {
             adjacent_lengths_mm: saved.map(|s| s.corner.adjacent_lengths_mm),
             distance_mm: choice.stored.distance_mm,
             distance_unit: "mm",
+            profile_constrained: saved.map(|s| s.constrained),
             distance_edit: ChamferDistanceEditDiscovery {
                 available: choice.refusal.is_none() && document_refusal.is_none(),
                 refusal: choice.refusal,
                 document_refusal,
                 request_versions: &[1],
                 min_distance_mm: ferritecad_document::MIN_DISTANCE_MM,
-                max_distance_mm: saved.map(|s| s.corner.max_distance_mm),
+                max_distance_mm: saved
+                    .filter(|s| !s.constrained)
+                    .map(|s| s.corner.max_distance_mm),
             },
         }
     }
@@ -167,9 +178,15 @@ pub(super) struct ChamferBaseDiscovery {
     chamfer_feature_id: ObjectId,
     body_id: ObjectId,
     edge: FilletEdgeDto,
+    /// The corner in the **stored** coordinates when `profile_constrained`
+    /// (§29D): the solver's starting approximation, not the part's corner.
     corner_mm: [f64; 2],
     distance_mm: f64,
     distance_unit: &'static str,
+    /// §29D, additive: the base Sketch carries user constraints, so its
+    /// coordinates, `corner_mm` and every bound derived from them are stored
+    /// facts; the plate is the solver's, judged when a copy is rebuilt.
+    profile_constrained: bool,
 }
 
 impl ChamferBaseDiscovery {
@@ -184,6 +201,7 @@ impl ChamferBaseDiscovery {
             corner_mm: s.corner.corner_mm,
             distance_mm: s.distance_mm,
             distance_unit: "mm",
+            profile_constrained: s.constrained,
         })
     }
 }

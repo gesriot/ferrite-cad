@@ -151,8 +151,8 @@ pub(crate) fn refuse_chamfered(objects: &[ObjectRecord]) -> Result<()> {
     Err(unsupported(format!(
         "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance), its plate's \
          height (edit-extrude, §29B) and its base Sketch's coordinates (edit-sketch-copy, \
-         §29C) can be edited. Its constraints, a Fillet \
-         or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
+         §29C) and its base Sketch's Line constraints (edit-sketch-constraints-copy, §29D) \
+         can be edited. A Fillet or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
          chamfered plate without knowing its Chamfer",
         first.id
     )))
@@ -192,6 +192,26 @@ fn require_free_profile(sketch: &Sketch) -> Result<()> {
         ),
         None => "this slice chamfers a free or closure-only plate".to_owned(),
     }))
+}
+
+/// §29D: the plate's Sketch under a *saved* Chamfer may carry the constraint
+/// editor's managed Line family (free, closure-only, or the family itself);
+/// anything else is refused naming the Chamfer and the constraint editor's reason.
+fn require_managed_profile(sketch: &Sketch, chamfer: ObjectId) -> Result<()> {
+    if sketch.constraints.is_empty() || crate::sketch_constraints::closure_links_only(sketch) {
+        return Ok(());
+    }
+    crate::sketch_constraints::managed_lines(sketch).map_err(|e| {
+        let guilty = crate::sketch_constraints::first_outside_managed_lines(sketch)
+            .or_else(|| sketch.constraints.first())
+            .map_or_else(String::new, |c| {
+                format!(" (the {} constraint {})", rule_name(&c.rule), c.id)
+            });
+        unsupported(format!(
+            "Chamfer {chamfer} sits on a plate whose Sketch carries constraints outside the \
+             constraint editor's Line family{guilty}: {e}"
+        ))
+    })
 }
 
 /// A saved Body a Chamfer can be added to, exactly as stored.
@@ -519,6 +539,11 @@ pub struct SavedChamfer {
     pub distance_mm: f64,
     /// Its corner on the stored Lines, with the labels.
     pub corner: ChamferCorner,
+    /// §29D: the base Sketch carries user constraints (not only the closure
+    /// links). Its Lines are then the solver's starting approximation: `corner`
+    /// is a stored fact, and the distance's upper bound is the rebuild's to judge
+    /// on the solved Lines, never this reading's on the stored ones.
+    pub constrained: bool,
 }
 
 impl SavedChamfer {
@@ -538,8 +563,13 @@ impl SavedChamfer {
         Ok(corner)
     }
 
-    /// The distance policy at this Chamfer's own corner.
+    /// The distance policy at this Chamfer's own corner. On a constrained base
+    /// only the numbers that do not depend on the solved plate are checked here;
+    /// the upper bound is the evaluator's, on the solved sides (§29D).
     pub fn check_distance(&self, distance_mm: f64) -> Result<()> {
+        if self.constrained {
+            return check_distance_value(distance_mm);
+        }
         self.corner.check_distance(distance_mm)
     }
 }
@@ -585,12 +615,14 @@ pub(crate) fn saved_chamfer_for_edit(
     {
         return Err(refuse_chamfered(objects).expect_err("two Chamfers are refused"));
     }
-    // Named first, as the creation reader does: a dimension by its own UUID, and
-    // any other feature over the plate or the Chamfer by its UUID, whatever the
-    // general history reader would have made of them.
+    // Named first, as the creation reader does: a constraint outside the
+    // constraint editor's managed Line family by its own UUID (§29D: the managed
+    // family itself is the plate's to carry), and any other feature over the
+    // plate or the Chamfer by its UUID, whatever the general history reader would
+    // have made of them.
     for object in objects {
         if let ObjectPayload::Sketch(sketch) = &object.payload {
-            require_free_profile(sketch)?;
+            require_managed_profile(sketch, record.id)?;
         }
     }
     if let Some(other) = objects.iter().find(|o| {
@@ -628,7 +660,9 @@ pub(crate) fn saved_chamfer_for_edit(
     let ObjectPayload::Sketch(sketch) = &profile.payload else {
         return Err(unsupported("the part's profile is not a Sketch"));
     };
-    require_free_profile(sketch)?;
+    require_managed_profile(sketch, record.id)?;
+    let constrained =
+        !sketch.constraints.is_empty() && !crate::sketch_constraints::closure_links_only(sketch);
     let corners: Vec<ChamferCorner> =
         corners_of_lines(history.target.base_feature, &sketch.curves)?
             .iter()
@@ -685,6 +719,7 @@ pub(crate) fn saved_chamfer_for_edit(
         edge: chamfer.edge,
         distance_mm: chamfer.distance_mm,
         corner,
+        constrained,
     })
 }
 
@@ -875,7 +910,18 @@ pub fn evaluable_chamfer(
     let ObjectPayload::Sketch(sketch) = &profile.payload else {
         return Err(unsupported("the base Extrude's profile is not a Sketch"));
     };
-    require_free_profile(sketch)?;
+    // §29D: the plate's Sketch may carry the managed Line family, whose Lines
+    // the solver draws; the structure is asked of the stored ones and the
+    // geometry, below, of the ones the rebuild built.
+    let chamfer_id = objects
+        .iter()
+        .find(|o| matches!(&o.payload, ObjectPayload::Chamfer(c) if c == chamfer))
+        .map_or_else(|| "?".to_owned(), |o| o.id.to_string());
+    let owner = objects
+        .iter()
+        .find(|o| matches!(&o.payload, ObjectPayload::Chamfer(c) if c == chamfer))
+        .map_or(chamfer.previous, |o| o.id);
+    require_managed_profile(sketch, owner)?;
     let stored = corners_of_lines(base.id, &sketch.curves)?;
     corner_for(&stored, chamfer.edge)?;
     let Some(built) = built else {
@@ -884,10 +930,47 @@ pub fn evaluable_chamfer(
             extrude.profile
         )));
     };
-    let corners = corners_of_lines(base.id, built)?;
-    let found = corner_for(&corners, chamfer.edge)?;
+    // The Lines the rebuild built: the same Lines in stored order, a rectangle,
+    // every Line on its side, the saved joint still a corner, room for the
+    // saved distance. Each refusal names the Chamfer.
+    let ids: Vec<_> = sketch.curves.iter().map(|c| c.id).collect();
+    if built.iter().map(|c| c.id).collect::<Vec<_>>() != ids {
+        return Err(CadError::input(format!(
+            "Chamfer {chamfer_id}: the plate is not drawn by the same four Lines in their \
+             stored order"
+        )));
+    }
+    let corners = corners_of_lines(base.id, built).map_err(|e| {
+        CadError::input(format!(
+            "Chamfer {chamfer_id}: the solved plate is no longer an axis-aligned rectangle ({e})"
+        ))
+    })?;
+    let start = |c: &crate::SketchCurve| match c.geometry {
+        crate::SketchGeometry::Line { start, .. } => [start.x, start.y],
+        _ => [f64::NAN; 2],
+    };
+    crate::fillet::keeps_every_side(
+        &ids,
+        &sketch.curves.iter().map(start).collect::<Vec<_>>(),
+        &built.iter().map(start).collect::<Vec<_>>(),
+    )
+    .map_err(|e| {
+        CadError::input(format!(
+            "Chamfer {chamfer_id} keeps its corner only while every Line keeps its side: {e}"
+        ))
+    })?;
+    let found = corner_for(&corners, chamfer.edge).map_err(|e| {
+        CadError::input(format!(
+            "Chamfer {chamfer_id}: its corner is not a corner of the solved plate ({e})"
+        ))
+    })?;
     let corner = ChamferCorner::of(&found);
-    corner.check_distance(chamfer.distance_mm)?;
+    corner.check_distance(chamfer.distance_mm).map_err(|e| {
+        CadError::input(format!(
+            "Chamfer {chamfer_id} of {} mm does not fit the solved plate: {e}",
+            chamfer.distance_mm
+        ))
+    })?;
     Ok(corner)
 }
 
@@ -1333,14 +1416,30 @@ mod tests {
             )
             .expect_err("a Cut"),
         );
-        named(
-            "constraints",
+        // §29D: the constraint editor reads the plate through the same reader;
+        // an empty request is still no request, but a Horizontal addition on the
+        // plate's first Line is accepted with the Chamfer as its context.
+        let line = sketch_of(&d).curves[0].id;
+        let edit = crate::SketchConstraintEdits {
+            remove: Vec::new(),
+            add: vec![crate::AddSketchConstraint::Line(
+                crate::AddLineConstraint::Line {
+                    curve: line,
+                    kind: crate::LineConstraintKind::Horizontal,
+                },
+            )],
+        };
+        let prepared = crate::prepare_sketch_constraints(&d, profile, &edit)
+            .expect("the constraint editor accepts the chamfered plate");
+        assert_eq!(prepared.chamfer().map(|c| c.feature), Some(id));
+        assert!(
             crate::prepare_sketch_constraints(
                 &d,
                 profile,
-                &crate::SketchConstraintEdits::default(),
+                &crate::SketchConstraintEdits::default()
             )
-            .expect_err("constraints"),
+            .is_err(),
+            "an empty request is still no request"
         );
         let fillet_radius = crate::prepare_fillet_radius(&d, id, 1.0).expect_err("not a Fillet");
         assert!(fillet_radius.to_string().contains("Fillet"));

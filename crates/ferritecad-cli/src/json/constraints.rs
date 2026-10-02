@@ -183,6 +183,12 @@ pub(crate) struct Discovery {
     /// one to four, when this is its base Sketch; `null` on every other row.
     /// `fillet_base` is `null` for three or four.
     fillet_history: Option<super::FilletHistoryDiscovery>,
+    /// §29D, additive: the saved Chamfer over the plate when this is its base
+    /// Sketch; the same object `features[].chamfer_base` carries. Its
+    /// `corner_mm` is in the stored coordinates — the solver's starting guess —
+    /// and whether the distance fits the solved plate is checked when a copy is
+    /// rebuilt. `null` on every other row.
+    chamfer_base: Option<super::chamfer::ChamferBaseDiscovery>,
 }
 /// The Fillet a constraint edit of its base Sketch keeps (§28E).
 #[derive(Serialize)]
@@ -293,6 +299,7 @@ impl Discovery {
                 _ => None,
             },
             fillet_history: super::FilletHistoryDiscovery::of(&choice.fillets),
+            chamfer_base: super::chamfer::ChamferBaseDiscovery::of(choice.chamfer.as_ref()),
         }
     }
 }

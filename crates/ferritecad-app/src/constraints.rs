@@ -257,6 +257,26 @@ impl Editor {
                         fillet.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
                     ));
                 }
+                if let Some(chamfer) = &draft.choice.chamfer {
+                    // §29D: the one Chamfer keeps its corner and distance; the
+                    // distance's bound is the solved plate's, judged by the
+                    // rebuild, so nothing here repeats it.
+                    let [a, b] = chamfer.edge.joint.segments();
+                    ui.label(format!(
+                        "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d {} mm \
+                         (stored corner ({}, {})). The Chamfer keeps its corner and distance: \
+                         the coordinates shown are the stored ones, and the new copy is saved \
+                         only if the solved plate is still a rectangle with every Line on its \
+                         side and each side at that corner at least {} mm.",
+                        chamfer.feature,
+                        chamfer.distance_mm,
+                        chamfer.corner.corner_mm[0],
+                        chamfer.corner.corner_mm[1],
+                        format!("{:.6}", chamfer.distance_mm + ferritecad_document::MIN_FLAT_MM)
+                            .trim_end_matches('0')
+                            .trim_end_matches('.')
+                    ));
+                }
                 ui.add_enabled_ui(!running, |ui| {
                     ui.horizontal(|ui| {
                         if ui.button("Cancel constraints draft").clicked() {

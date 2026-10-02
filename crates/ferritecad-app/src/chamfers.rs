@@ -315,14 +315,28 @@ impl Editor {
                     draft.source.display()
                 ));
                 ui.small(format!("Edge: {}", describe(&saved.corner)));
-                ui.small(format!(
-                    "Saved distance {} mm along each face; from {} mm to {} mm here. The \
-                     slanted flat is {} × √2 wide.",
-                    saved.distance_mm,
-                    ferritecad_document::MIN_DISTANCE_MM,
-                    saved.corner.max_distance_mm,
-                    saved.distance_mm
-                ));
+                if saved.constrained {
+                    // §29D: the stored sides are the solver's starting guess; the
+                    // largest distance is the solved plate's, judged by the
+                    // rebuild when the copy is saved, so none is shown here.
+                    ui.small(format!(
+                        "Saved distance {} mm along each face, at least {} mm. This plate's \
+                         Sketch carries constraints: the largest distance is judged on the \
+                         solved plate when the copy is saved. The slanted flat is {} × √2 wide.",
+                        saved.distance_mm,
+                        ferritecad_document::MIN_DISTANCE_MM,
+                        saved.distance_mm
+                    ));
+                } else {
+                    ui.small(format!(
+                        "Saved distance {} mm along each face; from {} mm to {} mm here. The \
+                         slanted flat is {} × √2 wide.",
+                        saved.distance_mm,
+                        ferritecad_document::MIN_DISTANCE_MM,
+                        saved.corner.max_distance_mm,
+                        saved.distance_mm
+                    ));
+                }
                 ui.add_enabled_ui(!running, |ui| {
                     if ui.button("Cancel distance draft").clicked() {
                         cancel = true;
