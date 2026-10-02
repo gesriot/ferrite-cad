@@ -1890,10 +1890,10 @@ mod tests {
         )
         .expect("prepared");
         let mut forged = prepared.clone();
-        if let ObjectPayload::Sketch(s) = &mut forged.payload {
-            if let SketchGeometry::Line { start, .. } = &mut s.curves[2].geometry {
-                start.x += 3.0;
-            }
+        if let ObjectPayload::Sketch(s) = &mut forged.payload
+            && let SketchGeometry::Line { start, .. } = &mut s.curves[2].geometry
+        {
+            start.x += 3.0;
         }
         assert!(d.write_sketch_geometry(&forged).is_err());
         let mut small = prepared.clone();
