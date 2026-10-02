@@ -562,12 +562,17 @@ jobs:
           gate=chamfer::base_sketch::chamfer_base_sketch_discovery_and_protocol_without_native
           cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-sketch-discovery.log
           if grep -q 'skipped:' chamfer-sketch-discovery.log || ! grep -Fq "test $gate ... ok" chamfer-sketch-discovery.log; then exit 1; fi
+          # §29D: the constrained chamfered plate, discovered and refused the same way.
+          gate=chamfer::base_constraints::chamfer_constraint_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-constraints-discovery.log
+          if grep -q 'skipped:' chamfer-constraints-discovery.log || ! grep -Fq "test $gate ... ok" chamfer-constraints-discovery.log; then exit 1; fi
           for gate in chamfers::history_tests::the_request_history_steps_back_and_forward_and_forgets_a_discarded_future \
             chamfers::tests::chamfer_widgets_list_corners_refuse_like_the_document_and_keep_the_draft \
             chamfers::tests::chamfer_distance_widgets_show_the_saved_edge_and_keep_the_draft \
             edits::tests::chamfer_base_height_widgets_show_the_chamfer_and_keep_the_draft \
             sketch::tests::chamfer_base_sketch_widgets_show_the_corner_and_keep_the_draft \
-            sketch::drag_tests::chamfer_base_drag_is_one_undo_step_and_moves_no_neighbour
+            sketch::drag_tests::chamfer_base_drag_is_one_undo_step_and_moves_no_neighbour \
+            constraints::tests::chamfer_base_constraint_widgets_name_the_chamfer_and_keep_the_draft
           do
             cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-widgets.log
             if grep -q 'skipped:' chamfer-widgets.log || ! grep -Fq "test $gate ... ok" chamfer-widgets.log; then exit 1; fi
@@ -583,7 +588,10 @@ jobs:
             chamfer::tests::the_height_of_a_chamfered_plate_changes_one_row_and_the_writer_refuses_forgery \
             chamfer::tests::the_height_edit_refuses_a_chamfer_outside_the_class_naming_the_feature \
             chamfer::tests::a_chamfered_plates_sketch_keeps_its_corner_and_distance_exactly \
-            chamfer::tests::the_coordinate_writer_rederives_under_a_chamfer_and_refuses_forgery
+            chamfer::tests::the_coordinate_writer_rederives_under_a_chamfer_and_refuses_forgery \
+            chamfer::tests::a_constrained_plate_is_read_with_stored_facts_and_a_deferred_bound \
+            chamfer::tests::the_evaluator_judges_a_constrained_plate_on_its_solved_lines \
+            chamfer::tests::the_constraint_writer_rederives_under_a_chamfer_and_refuses_forgery
           do
             cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-writer.log
             if grep -q 'skipped:' chamfer-writer.log || ! grep -Fq "test $gate ... ok" chamfer-writer.log; then exit 1; fi
@@ -625,6 +633,14 @@ jobs:
           EXTRACT
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-29c-recipe.py | tee chamfer-sketch-recipe-stub.log
           grep -q '^FCAD_29C_RECIPE_NO_KERNEL ' chamfer-sketch-recipe-stub.log
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-chamfer-base-constraints.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_29D_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-29d-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-29d-recipe.py | tee chamfer-constraints-recipe-stub.log
+          grep -q '^FCAD_29D_RECIPE_NO_KERNEL ' chamfer-constraints-recipe-stub.log
 
       - name: Discover sequential cuts without native geometry
         shell: bash

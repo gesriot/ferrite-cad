@@ -798,4 +798,24 @@ if [ -n "${FCAD_FILLET_FBX_DIR:-}" ]; then
         grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
     done
     echo "FCAD_CHAMFER_SKETCH_UFBX_EXECUTED"
+    # §29D: the chamfered plate dimensioned through edit-sketch-constraints-copy,
+    # in three drawing orders, each read the same two ways and joined against
+    # the STL of the same copy.
+    for name in cons-0-solved cons-1-solved cons-2-solved; do
+        "$reader" --identity "$FCAD_FILLET_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[1-9][0-9]* failures=0$' "$work/$name-reader.txt"; then
+            echo "error: Chamfer constraints FBX was not independently read: $name" >&2
+            exit 1
+        fi
+        "$reader" --triangles "$FCAD_FILLET_FBX_DIR/$name.fbx" > "$work/$name-triangles.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[0-9]* failures=0$' "$work/$name-triangles.txt"; then
+            echo "error: Chamfer constraints FBX triangles were not read: $name" >&2
+            exit 1
+        fi
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$FCAD_FILLET_FBX_DIR/$name.stl" "$(native "$work/$name-triangles.txt")" \
+            | tee "$work/$name-match.txt"
+        grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
+    done
+    echo "FCAD_CHAMFER_CONSTRAINTS_UFBX_EXECUTED"
 fi
