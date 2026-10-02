@@ -44,9 +44,18 @@ mod edit;
 mod fbx;
 mod import;
 mod publish;
+mod save;
+mod session;
 mod stl;
 mod validate;
 
+pub use save::{
+    Conflict, SaveFailure, SaveFailureKind, SaveHooks, SaveKind, SavePlan, SaveTarget, Saved,
+};
+pub use session::{
+    DocumentSession, HistoryLimits, Move, ProducedStep, STALE_STEP, Snapshot, StepCommit,
+    StepTicket,
+};
 pub use validate::{ValidatedDocument, validate_document};
 
 pub use create::{
