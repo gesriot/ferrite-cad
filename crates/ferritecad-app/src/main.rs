@@ -3207,15 +3207,21 @@ impl App {
             return;
         }
         if let Some(live) = &self.live
-            && let Some(document) = &live.scene.document
+            && let Some(shown) = &live.scene.document
         {
+            // What is read is the accepted working model, with its unsaved changes;
+            // what the user knows the document by is its own file.
+            let document = self
+                .sessions
+                .export_source()
+                .unwrap_or_else(|| shown.clone());
             let alias = self
                 .sessions
                 .logical_path()
                 .map(Path::to_path_buf)
-                .unwrap_or_else(|| document.clone());
+                .unwrap_or_else(|| shown.clone());
             self.exports
-                .ask_stl_for(document, &alias, stl_bodies(&live.scene), &mut self.input);
+                .ask_stl_for(&document, &alias, stl_bodies(&live.scene), &mut self.input);
         }
     }
 
@@ -3894,10 +3900,11 @@ impl App {
         if self.creates.busy() || self.edits.busy() {
             return;
         }
-        let document = self
-            .live
-            .as_ref()
-            .and_then(|live| live.scene.document.clone());
+        let document = self.sessions.export_source().or_else(|| {
+            self.live
+                .as_ref()
+                .and_then(|live| live.scene.document.clone())
+        });
         // What an export must never be written over is the user's file, which is
         // not the private file the model is read from.
         let alias = self
@@ -3929,10 +3936,11 @@ impl App {
             );
             return;
         }
-        let document = self
-            .live
-            .as_ref()
-            .and_then(|live| live.scene.document.clone());
+        let document = self.sessions.export_source().or_else(|| {
+            self.live
+                .as_ref()
+                .and_then(|live| live.scene.document.clone())
+        });
         let alias = self
             .sessions
             .logical_path()

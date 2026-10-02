@@ -156,6 +156,16 @@ impl Sessions {
         self.session.as_ref().map(DocumentSession::display_name)
     }
 
+    /// The file an export reads: the current accepted version, which holds unsaved
+    /// changes. Never the user's file on disk, which holds only what was last saved
+    /// (ADR 0005); a window that exported that would hand over a model other than
+    /// the one on screen.
+    pub(crate) fn export_source(&self) -> Option<PathBuf> {
+        self.session
+            .as_ref()
+            .map(|session| session.current().path().to_path_buf())
+    }
+
     pub(crate) fn title(&self) -> String {
         match (self.name(), self.dirty()) {
             (None, _) => PRODUCT_NAME.to_owned(),
@@ -1102,16 +1112,6 @@ mod tests {
         assert!(sessions.finish_scene(generation, Ok(())));
     }
 
-    fn current_path(sessions: &Sessions) -> PathBuf {
-        sessions
-            .session
-            .as_ref()
-            .expect("session")
-            .current()
-            .path()
-            .to_path_buf()
-    }
-
     fn move_native(sessions: &mut Sessions, undo: bool) {
         let (generation, path) = sessions.begin_move(undo).expect("a step");
         let (tx, rx) = mpsc::channel();
@@ -1226,7 +1226,9 @@ mod tests {
         // Export while unsaved: the working model, not the file on disk, and the
         // same bytes the command line exports from its copy.
         let alias = sessions.logical_path().expect("logical").to_path_buf();
-        let (stl, fbx) = export_bytes(&current_path(&sessions), &alias, root, "unsaved");
+        let working = sessions.export_source().expect("an open document exports");
+        assert_ne!(Some(working.as_path()), sessions.logical_path());
+        let (stl, fbx) = export_bytes(&working, &alias, root, "unsaved");
         assert_eq!(stl, peer_stl, "the unsaved STL is not the edited model");
         assert_eq!(fbx, peer_fbx, "the unsaved FBX is not the edited model");
         assert_ne!(stl, original_stl, "the export read the old file");
@@ -1235,7 +1237,8 @@ mod tests {
         // the edit again.
         move_native(&mut sessions, true);
         assert!(!sessions.dirty());
-        let (stl, fbx) = export_bytes(&current_path(&sessions), &alias, root, "undone");
+        let working = sessions.export_source().expect("an open document exports");
+        let (stl, fbx) = export_bytes(&working, &alias, root, "undone");
         assert_eq!(
             (stl, fbx),
             (original_stl, original_fbx),

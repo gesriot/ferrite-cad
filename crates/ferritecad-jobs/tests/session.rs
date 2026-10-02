@@ -391,3 +391,40 @@ fn opening_a_document_that_cannot_be_read_creates_no_session_directory() {
     );
     assert_eq!(files(sessions.path()), Vec::<String>::new());
 }
+
+/// An export in flight holds the version it started on: neither the history's
+/// limits nor an Undo nor a new step can remove the file out from under it, and
+/// the file goes the moment its last reader lets go.
+#[test]
+fn a_reader_holding_a_version_keeps_it_through_eviction_and_undo() {
+    let f = fixture();
+    let sessions = private_root();
+    let mut session = open(
+        &f,
+        sessions.path(),
+        HistoryLimits {
+            max_versions: 2,
+            max_bytes: u64::MAX,
+        },
+    );
+    apply(&mut session, f.feature, 20.0).expect("apply");
+    let reader = session.current(); // an export starts on 20 mm
+    let held = reader.path().to_path_buf();
+    apply(&mut session, f.feature, 21.0).expect("apply");
+    apply(&mut session, f.feature, 22.0).expect("apply"); // evicts 20 mm from the history
+    let undo = session.begin_undo().expect("back");
+    session.commit_move(undo).expect("undo");
+    assert!(
+        held.exists(),
+        "the history removed a version a reader holds"
+    );
+    assert_eq!(height_of(&held), 20.0, "the reader's version changed");
+    assert_eq!(
+        files(session.private_directory()).len(),
+        3,
+        "2 kept + 1 held"
+    );
+    drop(reader);
+    assert!(!held.exists(), "the file outlived its last reader");
+    assert_eq!(files(session.private_directory()).len(), 2);
+}
