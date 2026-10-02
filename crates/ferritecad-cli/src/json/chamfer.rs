@@ -157,3 +157,33 @@ impl ChamferFeatureDiscovery {
         }
     }
 }
+
+/// §29B, additive: the Chamfer a height edit keeps, as the pinned reading found
+/// it — `features[].chamfer_base`, on the base Extrude under it and `null` on
+/// every other row. The Chamfer keeps its edge and distance; only the plate's
+/// height changes. Its edge and distance are the stored ones.
+#[derive(Serialize)]
+pub(super) struct ChamferBaseDiscovery {
+    chamfer_feature_id: ObjectId,
+    body_id: ObjectId,
+    edge: FilletEdgeDto,
+    corner_mm: [f64; 2],
+    distance_mm: f64,
+    distance_unit: &'static str,
+}
+
+impl ChamferBaseDiscovery {
+    pub(super) fn of(saved: Option<&ferritecad_document::SavedChamfer>) -> Option<Self> {
+        saved.map(|s| Self {
+            chamfer_feature_id: s.feature,
+            body_id: s.body,
+            edge: FilletEdgeDto {
+                feature_id: s.edge.feature,
+                joint: s.edge.joint.segments(),
+            },
+            corner_mm: s.corner.corner_mm,
+            distance_mm: s.distance_mm,
+            distance_unit: "mm",
+        })
+    }
+}

@@ -4242,8 +4242,40 @@ pinned ufbx 6/0, 16 oriented triangles, peak 333.283 MiB, pressure normal,
 unchanged swap, exit 0. The earlier pressure-aborted attempt is not counted as
 a guarded GUI success; full details are in the verification record.
 
-**§29B — next, not implemented:** edit the base Extrude's height below one
-saved rectangular-corner Chamfer through the existing Edit extrusion /
-`edit-extrude` copy operation, preserving its distance, edge and all names.
-Sketch/constraint editing below Chamfer, another Chamfer and mixed histories
-remain outside this planned slice.
+**§29B — the base height of a chamfered plate, in a new copy.** The existing
+`edit-extrude` and **Edit extrusion…** now change the Blind height of the base
+Extrude under the one §29A Chamfer. The Chamfer keeps its UUID, edge, distance
+and all seven names; one object row's payload and hash and the stamp are the
+only SQL cells that move. One shared mechanism: the distance edit's own reader
+(`saved_chamfer`) read first, the prepared edit carrying it, the writer
+re-deriving it in its transaction, the existing copy job, strict cold rebuild
+and atomic publication. No new command, request, payload, capability or
+archive/SQLite version; the only wire addition is `features[].chamfer_base`.
+Height policy measured on OCCT 8.0.1: the Chamfer adds no bound (its distance
+bound comes from the adjacent sides); OCCT chamfers from 1.2e-5 mm up and refuses
+1e-5 mm and below, reported as `kernel`, nothing clamped. Measured on the B-Rep
+at the chosen corner and on an independent STL parse; the cache misses for the
+plate and the Chamfer at a new height. Every other editor still refuses by the
+Chamfer's UUID. Milestone 5C remains open.
+[Contract and recipe](edit-chamfer-base-height.md),
+[verification](edit-chamfer-base-height-verification.md).
+
+**Independent review of §29B (2026-10-01).** Fixed the shared height job's
+legacy reference exception: a Chamfer now requires every saved name to resolve
+before and after rebuild, including additional base-owned references. A real
+process regression failed before the fix and preserves a valid extra reference
+as its positive control; it is a new mandatory native gate. Local affected
+matrix: 602 executed, four explicit N/A and one ignored benchmark; fmt/clippy
+and actionlint passed. The guarded arm64 window run completed validation/kernel
+refusals, Save Cancel, two height edits, distance edit, async Open and exports.
+GUI/CLI agree on 384 SQL cells and byte-equal STL/FBX; independent geometry,
+pinned ufbx 6/0 and the oriented 16-triangle join passed. Viewer peak 209.626 MiB,
+normal pressure, unchanged swap, exit 0, no relaunch. Fixed-code native CI must
+finish before merge; the older OOM remains unexplained.
+
+**§29C — next, not implemented:** edit the base Sketch's coordinates below one
+Chamfer through the existing UI/CLI copy job. Preserve Line/edge/corner UUIDs,
+height and distance; judge the saved distance against the edited rectangle's
+adjacent sides. Reuse the saved reader, prepared edit and transactional writer,
+strict names and existing draft history. Constraint editing below Chamfer,
+a second Chamfer and mixed Fillet/Chamfer histories remain outside this slice.

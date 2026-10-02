@@ -158,6 +158,9 @@ pub struct PreparedExtrudeHeight {
     /// as the radius edit reads them. They keep their rows; only the plate
     /// under them changes.
     pub(crate) fillets: Vec<crate::SavedFillet>,
+    /// §29B: the one saved Chamfer over this plate, exactly as the distance
+    /// edit reads it. It keeps its row; only the plate under it changes.
+    pub(crate) chamfer: Option<crate::SavedChamfer>,
     pub(crate) added_references: Vec<TopologyRef>,
     // Covers current tool data, refs and SQL facts even if the selected row did
     // not change. A backup keeps this version; any intervening edit does not.
@@ -177,6 +180,10 @@ impl PreparedExtrudeHeight {
     /// The first Fillet, which rounds the plate.
     pub fn fillet(&self) -> Option<&crate::SavedFillet> {
         self.fillets.first()
+    }
+    /// §29B: the Chamfer the height edit keeps, if the plate has one.
+    pub fn chamfer(&self) -> Option<&crate::SavedChamfer> {
+        self.chamfer.as_ref()
     }
     pub fn added_references(&self) -> &[TopologyRef] {
         &self.added_references
@@ -198,7 +205,25 @@ pub fn prepare_extrude_height(
             CadError::input(format!("feature {feature} does not exist in this document"))
         })?;
     crate::editable_extrude(document, &record)?;
-    let (history, fillets) = if !has_history(document, &objects)? {
+    // §29B: the plate under the one saved Chamfer, through the reader the
+    // distance edit uses. Asked first: a document with no Chamfer answers
+    // `None` without reading anything else, and one with a Chamfer outside its
+    // class (a second one, a Fillet or a Cut beside it, a dimension) is refused
+    // here with the guilty UUID, never read as some other history. The Chamfer
+    // adds no bound on the height: its distance's bound comes from the two
+    // adjacent sides, and OCCT chamfers the edge at any height it can build
+    // the plate at all but 1e-5 mm and below, refusing the rest itself.
+    let chamfer = crate::chamfer::saved_chamfer(document, &objects)?;
+    if let Some(saved) = &chamfer
+        && saved.base_feature != feature
+    {
+        return Err(CadError::unsupported(format!(
+            "select the base Extrude {} under Chamfer {}; only the chamfered plate's height \
+             can be edited",
+            saved.base_feature, saved.feature
+        )));
+    }
+    let (history, fillets) = if chamfer.is_some() || !has_history(document, &objects)? {
         (None, Vec::new())
     } else if let Some(over) = crate::fillet_radius::fillets_over_plate(document, &objects)? {
         // §28C: the plate under the one saved Fillet, through the frame the
@@ -240,6 +265,7 @@ pub fn prepare_extrude_height(
         feature: record,
         history,
         fillets,
+        chamfer,
         added_references,
         source_version: document.content_version()?,
     })

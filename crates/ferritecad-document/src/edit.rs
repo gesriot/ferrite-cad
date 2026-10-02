@@ -26,6 +26,10 @@ pub struct ExtrudeChoice {
     /// otherwise. The first rounds this Extrude and each later one rounds the
     /// result of the one before. Context, not a Cut history.
     pub fillets: Vec<crate::SavedFillet>,
+    /// §29B: the one saved Chamfer over this plate, when this is the base
+    /// Extrude under it and the frame holds; `None` otherwise. Context, not a
+    /// Cut history: the Chamfer keeps its edge and distance.
+    pub chamfer: Option<crate::SavedChamfer>,
     pub refusal: Option<String>,
 }
 
@@ -116,6 +120,10 @@ impl ExtrudeEditSource {
         // up to four Fillets, through the one reader the radius edit uses.
         let fillets = crate::fillet_radius::fillets_over_plate(document, &objects)
             .map(|over| over.map(|o| o.fillets).unwrap_or_default());
+        // §29B: the one saved Chamfer, through the reader the distance edit
+        // uses: `Ok(None)` for a document with none, a typed refusal naming the
+        // guilty feature for one outside its class.
+        let chamfer = crate::chamfer::saved_chamfer(document, &objects);
         let features = objects
             .iter()
             .filter_map(|object| {
@@ -140,6 +148,12 @@ impl ExtrudeEditSource {
                         .filter(|f| f.first().is_some_and(|f| f.previous == object.id))
                         .cloned()
                         .unwrap_or_default(),
+                    chamfer: chamfer
+                        .as_ref()
+                        .ok()
+                        .and_then(|c| c.as_ref())
+                        .filter(|c| c.base_feature == object.id)
+                        .cloned(),
                     refusal: blind_literal_distance(object)
                         .map_err(|e| e.to_string())
                         .and_then(|distance| {
@@ -148,6 +162,21 @@ impl ExtrudeEditSource {
                                 .map_err(|e| e.to_string())
                         })
                         .and_then(|_| {
+                            // §29B: the plate under the one Chamfer is edited
+                            // here; any other Extrude of the document names it.
+                            match &chamfer {
+                                Err(reason) => return Err(reason.to_string()),
+                                Ok(Some(saved)) if saved.base_feature == object.id => {
+                                    return Ok(());
+                                }
+                                Ok(Some(saved)) => {
+                                    return Err(format!(
+                                        "unsupported: select the base Extrude {} under Chamfer {}",
+                                        saved.base_feature, saved.feature
+                                    ));
+                                }
+                                Ok(None) => {}
+                            }
                             if let Some(saved) = fillets.as_ref().ok().and_then(|f| f.first()) {
                                 if saved.previous == object.id {
                                     return Ok(());
@@ -189,12 +218,11 @@ impl ExtrudeEditSource {
                 .err()
                 .map(|reason| crate::fillet::filleted_outside_frame(&objects, &reason).to_string())
                 .or_else(|| {
-                    // §29A: a Chamfer is a part the extrusion editor does not
-                    // know; discovery says so rather than offering an edit
-                    // that prepare would refuse.
-                    crate::chamfer::refuse_chamfered(&objects)
-                        .err()
-                        .map(|e| e.to_string())
+                    // §29B: the plate under the one Chamfer is edited here; a
+                    // Chamfer the shared reader refuses (a second one, a Fillet
+                    // or a Cut beside it, a dimension) is a part the extrusion
+                    // editor does not know, and discovery says which feature.
+                    chamfer.as_ref().err().map(|e| e.to_string())
                 }),
             refusal,
         })
@@ -888,6 +916,7 @@ mod tests {
                     feature: object.id,
                     cut_history: None,
                     fillets: Vec::new(),
+                    chamfer: None,
                     name: object.name.clone(),
                     distance_mm,
                     refusal: editable_extrude(document, object)

@@ -1209,6 +1209,10 @@ struct Feature {
     /// §28L, additive: every saved Fillet over this plate in history order,
     /// one to four; `null` on every other row.
     fillet_history: Option<FilletHistoryDiscovery>,
+    /// §29B, additive: the saved Chamfer over this plate when this is the base
+    /// Extrude under it and `edit-extrude` may change its height. The Chamfer
+    /// keeps its edge and distance. `null` on every other row.
+    chamfer_base: Option<chamfer::ChamferBaseDiscovery>,
 }
 
 /// The whole Fillet history a base edit keeps (§28L), additive: every saved
@@ -1730,6 +1734,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                         .and_then(BaseHeightDiscovery::of),
                     fillet_base: FilletBaseDiscovery::of_history(&feature.fillets),
                     fillet_history: FilletHistoryDiscovery::of(&feature.fillets),
+                    chamfer_base: chamfer::ChamferBaseDiscovery::of(feature.chamfer.as_ref()),
                     feature_id: feature.feature,
                     name: feature.name,
                     distance_mm: feature.distance_mm,

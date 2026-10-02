@@ -134,11 +134,15 @@ flat is that × √2 wide), from 0.001 mm to the shorter adjacent side less
 0.01 mm. The copy's Body ends in a real, named `feature.chamfer` whose face is
 a plane, measured on the B-Rep (volume `(W·D − d²/2)·h`, area `d·√2·h`, the
 normal of the chosen corner). Its distance changes in a new copy with
-**Edit Chamfer distance** or `edit-chamfer-distance`, every name kept. Every
-other editor refuses a chamfered Body by the Chamfer's UUID, a second Chamfer
-or a Fillet after one is not supported, and the previous build opens such a
-document read-only and refuses to rebuild it.
+**Edit Chamfer distance** or `edit-chamfer-distance`, every name kept. The
+plate's height changes under the Chamfer through the existing **Edit extrusion**
+or `edit-extrude` (the Chamfer's corner and distance and all names are kept;
+OCCT refuses a plate thinner than about 1e-5 mm). Every other editor refuses a
+chamfered Body by the Chamfer's UUID, a second Chamfer or a Fillet after one is
+not supported, and a build from before the Chamfer opens such a document
+read-only and refuses to rebuild it.
 [One Chamfer: contract and recipe](docs/rectangular-corner-chamfer.md).
+[A chamfered plate's height: contract and recipe](docs/edit-chamfer-base-height.md).
 [All four corners: contract and recipe](docs/rectangular-fillet-history.md).
 [Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
 [Fillet radius edit contract and recipe](docs/edit-fillet-radius.md).

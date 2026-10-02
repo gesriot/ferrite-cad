@@ -395,6 +395,15 @@ NewBody Extrude; без Cut/Fillet/Chamfer перед ней; ровно одн�
 нет. Discovery аддитивно: `bodies[].chamfer_edge` и верхнеуровневые `chamfers[]`.
 [Контракт §29A и исполняемый рецепт](rectangular-corner-chamfer.md).
 
+§29B: высота базового Extrude плиты с одной Chamfer меняется существующими
+`edit-extrude` / **Edit extrusion…**, в новой копии: Chamfer (UUID, ребро,
+расстояние, семь имён) сохраняется, меняются только payload и hash строки
+Extrude и штамп. Новой команды нет; по границам высоты — общее правило
+(конечное положительное число) плюс измеренный предел самого OCCT: ≤1e-5 мм
+отказ типа `kernel`, 1.2e-5 мм строится. Остальные редакторы по-прежнему
+отказывают с UUID Chamfer. Discovery аддитивно: `features[].chamfer_base`.
+[Контракт §29B и исполняемый рецепт](edit-chamfer-base-height.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.
