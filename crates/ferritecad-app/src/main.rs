@@ -49,11 +49,18 @@ use ferritecad_document::{
     SketchSegmentRef,
 };
 use ferritecad_jobs::NewDocument;
-use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, TessellationParams};
+use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink};
+// What the tests below build their own kernels and scenes from; the shipped Open
+// reads through `sessions::open_for_view`.
+#[cfg(test)]
+use ferritecad_kernel::TessellationParams;
+#[cfg(test)]
 use ferritecad_occt::OcctKernel;
+#[cfg(test)]
+use ferritecad_scene::snapshot_of;
 use ferritecad_scene::{
     CatalogueEntry, EdgeNames, FaceMeaning, FaceNames, LoadedScene, SceneItem, Selection,
-    SketchSolveFacts, VertexNames, snapshot_of,
+    SketchSolveFacts, VertexNames,
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
@@ -971,6 +978,9 @@ struct Sections<'a> {
     /// What the height form may offer: Apply on the open document, and the copy
     /// workflow only while the document has nothing unsaved.
     height: ferritecad_ui::HeightState,
+    /// The other editors are unavailable only because the document has unsaved
+    /// changes (ADR 0005): the form says so rather than leaving buttons grey.
+    held_back: bool,
     /// Why the last attempt to open a document failed, when it failed over
     /// something with parts.
     failure: Option<ferritecad_ui::OpenFailure<'a>>,
@@ -2804,6 +2814,7 @@ impl ApplicationHandler<AppEvent> for App {
                         dialog_failure: self.dialogs.failure(),
                         can_edit,
                         height,
+                        held_back: self.sessions.dirty() && !self.sessions.busy(),
                         stl_form,
                         edits: &mut self.edits,
                         failure,
@@ -3985,26 +3996,8 @@ impl App {
                 let produced = Arc::clone(&opened);
                 spawn_load(
                     move || {
-                        // The file is read once, into the session's private copy;
-                        // what is drawn is read from that copy, so what is shown
-                        // and what Save writes are the same reading, and the file
-                        // on disk is not read again.
-                        let session = ferritecad_jobs::DocumentSession::open(&path)?;
-                        // The kernel is made and dropped inside the worker. An Open
-                        // CASCADE session belongs to the thread that opened it, and
-                        // ending it with the thread means an abandoned load cannot
-                        // outlive the shapes it was holding.
-                        let mut kernel = OcctKernel::new()?;
-                        let scene = snapshot_of(
-                            session.current().path(),
-                            &mut kernel,
-                            // How this kernel re-reads a STEP file the document
-                            // stores. Handed over as a function so one session
-                            // builds both the rebuilt bodies and the imported ones.
-                            |kernel, source| kernel.import_step(source),
-                            &TessellationParams::default(),
-                            &context,
-                        )?;
+                        let (scene, session) =
+                            sessions::open_for_view(&std::env::temp_dir(), &path, &context)?;
                         if let Ok(mut slot) = produced.lock() {
                             *slot = Some(session);
                         }
@@ -4582,6 +4575,7 @@ impl Live {
             edits,
             can_edit,
             height,
+            held_back,
             failure,
             export,
             replacing,
@@ -4595,6 +4589,13 @@ impl Live {
             // place for that is what stops a button and a keystroke drifting
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
+            if held_back {
+                ui.label(
+                    "The other editors (sketch, constraints, Cut, Fillet, Chamfer, circles, \
+                     Revolve) are unavailable while the document has unsaved changes: Save or \
+                     Undo them first. Height can still be changed with Apply.",
+                );
+            }
             sketch.draw_choices(
                 ui,
                 can_edit,

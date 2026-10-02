@@ -243,16 +243,16 @@ fn a_read_only_file_is_refused_by_the_session_not_by_the_account_running_it() {
     let f = fixture();
     let mut session = open(&f);
     apply(&mut session, f.feature, 22.0);
-    let mut permissions = std::fs::metadata(&f.file).expect("stat").permissions();
-    permissions.set_readonly(true);
-    std::fs::set_permissions(&f.file, permissions.clone()).expect("read-only");
+    let original = std::fs::metadata(&f.file).expect("stat").permissions();
+    let mut readonly = original.clone();
+    readonly.set_readonly(true);
+    std::fs::set_permissions(&f.file, readonly).expect("read-only");
     let before = bytes(&f.file);
     let failure = save(&session).expect_err("read-only");
     assert_eq!(failure.kind, SaveFailureKind::Unwritable, "{failure}");
     assert_eq!(bytes(&f.file), before);
     assert!(session.is_dirty());
-    permissions.set_readonly(false);
-    std::fs::set_permissions(&f.file, permissions).expect("writable again");
+    std::fs::set_permissions(&f.file, original).expect("writable again");
     only(&f, &["plate.fcad"]);
 }
 

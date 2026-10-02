@@ -567,10 +567,36 @@ pub(crate) fn spawn_save(
 /// A slot a worker fills with the session it opened, and the event reads out.
 pub(crate) type Opened = Arc<Mutex<Option<DocumentSession>>>;
 
+/// What an Open does on its worker: the file is read once, into a new session's
+/// private copy, and the picture is read from that copy — so what is shown and what
+/// Save writes are one reading, and the file on disk is not read a second time.
+///
+/// A failure at any point drops the session, and with it every private file.
+pub(crate) fn open_for_view(
+    root: &Path,
+    path: &Path,
+    context: &OperationContext,
+) -> Result<(LoadedScene, DocumentSession)> {
+    let session = DocumentSession::open_in(root, path, ferritecad_jobs::HistoryLimits::default())?;
+    // The kernel is made and dropped inside the worker: an Open CASCADE session
+    // belongs to the thread that opened it.
+    let mut kernel = ferritecad_occt::OcctKernel::new()?;
+    let scene = ferritecad_scene::snapshot_of(
+        session.current().path(),
+        &mut kernel,
+        // How this kernel re-reads a STEP file the document stores.
+        |kernel, source| kernel.import_step(source),
+        &TessellationParams::default(),
+        context,
+    )?;
+    Ok((scene, session))
+}
+
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use ferritecad_document::Document;
     use ferritecad_jobs::{
         CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,
         read_extrude_source,
@@ -969,5 +995,605 @@ mod tests {
         );
         assert!(!sessions.has_session() && !sessions.busy());
         assert_eq!(height_of(&f.file), 12.0);
+    }
+
+    // ---- the real route: OCCT, the real worker functions and the peer CLI ----
+
+    fn native() -> bool {
+        if ferritecad_occt::is_available() {
+            return true;
+        }
+        assert_ne!(
+            std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(),
+            Ok("1"),
+            "this build is required to have Open CASCADE"
+        );
+        eprintln!("skipped: the session gates need Open CASCADE");
+        false
+    }
+
+    fn cli(arguments: &[&std::ffi::OsStr]) -> std::process::Output {
+        let output = std::process::Command::new(crate::creates::tests::ferritecad())
+            .args(arguments)
+            .output()
+            .expect("the peer command line");
+        assert!(output.status.success(), "{output:?}");
+        output
+    }
+
+    /// Every cell of every table, with the one stamp every writer refreshes set
+    /// aside: what two documents have to agree on to be the same model.
+    fn cells(path: &Path) -> std::collections::BTreeMap<String, Vec<String>> {
+        let db =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .expect("open");
+        let names: Vec<String> = db
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .expect("tables")
+            .query_map([], |row| row.get(0))
+            .expect("names")
+            .collect::<std::result::Result<_, _>>()
+            .expect("names");
+        let mut all = std::collections::BTreeMap::new();
+        for table in names {
+            let mut statement = db
+                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .expect("select");
+            let columns: Vec<String> = statement
+                .column_names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            let mut rows: Vec<String> = statement
+                .query_map([], |row| {
+                    let mut line = String::new();
+                    for (index, column) in columns.iter().enumerate() {
+                        if table == "meta" && column == "modified_at" {
+                            continue;
+                        }
+                        line.push_str(&format!("{column}={:?};", row.get_ref(index)?));
+                    }
+                    Ok(line)
+                })
+                .expect("rows")
+                .collect::<std::result::Result<_, _>>()
+                .expect("rows");
+            rows.sort();
+            all.insert(table, rows);
+        }
+        all
+    }
+
+    /// The window's own Apply, on the real workers: the edit on the kernel's thread,
+    /// then the picture of the new version, then the version becoming current.
+    fn apply_native(sessions: &mut Sessions, feature: ObjectId, millimetres: f64) {
+        let (tx, rx) = mpsc::channel();
+        let generation = sessions
+            .begin_apply(|ticket, _, cancel| {
+                spawn_apply(
+                    ticket,
+                    feature,
+                    millimetres,
+                    cancel.clone(),
+                    move |result| tx.send(result).expect("deliver"),
+                )
+            })
+            .expect("started");
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("edit");
+        let Edited::Show(path) = sessions.finish_apply(generation, result) else {
+            panic!("the edit was not shown: {}", sessions.status);
+        };
+        let (tx, rx) = mpsc::channel();
+        let token = sessions.scene_token(generation).expect("token");
+        let worker = spawn_scene(path, token, move |scene| tx.send(scene).expect("deliver"));
+        assert!(sessions.attach_scene(generation, worker));
+        let scene = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("scene");
+        assert!(
+            !scene
+                .expect("the picture of the new version")
+                .catalogue
+                .is_empty()
+        );
+        sessions.bind(Bind::Staged).expect("bind");
+        assert!(sessions.finish_scene(generation, Ok(())));
+    }
+
+    fn current_path(sessions: &Sessions) -> PathBuf {
+        sessions
+            .session
+            .as_ref()
+            .expect("session")
+            .current()
+            .path()
+            .to_path_buf()
+    }
+
+    fn move_native(sessions: &mut Sessions, undo: bool) {
+        let (generation, path) = sessions.begin_move(undo).expect("a step");
+        let (tx, rx) = mpsc::channel();
+        let token = sessions.scene_token(generation).expect("token");
+        let worker = spawn_scene(path, token, move |scene| tx.send(scene).expect("deliver"));
+        assert!(sessions.attach_scene(generation, worker));
+        rx.recv_timeout(std::time::Duration::from_secs(120))
+            .expect("scene")
+            .expect("the picture");
+        sessions.bind(Bind::Staged).expect("bind");
+        assert!(sessions.finish_scene(generation, Ok(())));
+    }
+
+    /// What the window exports, on the real export workers, from `document`; and
+    /// what the command line exports from `peer`.
+    fn export_bytes(document: &Path, alias: &Path, root: &Path, tag: &str) -> (Vec<u8>, Vec<u8>) {
+        let fbx = root.join(format!("{tag}.fbx"));
+        crate::exports::run_export(document, &fbx, false, &OperationContext::default())
+            .expect("the window's FBX");
+        let reading = Document::open_read_only(document).expect("document");
+        let body = ferritecad_jobs::stl_bodies(&reading).expect("bodies")[0].id;
+        reading.close().expect("close");
+        let stl = root.join(format!("{tag}.stl"));
+        crate::exports::run_stl_export(
+            &crate::exports::StlIntent {
+                document: document.to_path_buf(),
+                alias: alias.to_path_buf(),
+                body,
+                params: TessellationParams::default(),
+            },
+            &stl,
+            false,
+            &OperationContext::default(),
+        )
+        .expect("the window's STL");
+        (
+            std::fs::read(stl).expect("stl"),
+            std::fs::read(fbx).expect("fbx"),
+        )
+    }
+
+    fn peer_bytes(document: &Path, root: &Path, tag: &str) -> (Vec<u8>, Vec<u8>) {
+        let stl = root.join(format!("{tag}-peer.stl"));
+        let fbx = root.join(format!("{tag}-peer.fbx"));
+        cli(&[
+            "export-stl".as_ref(),
+            document.as_os_str(),
+            "-o".as_ref(),
+            stl.as_os_str(),
+        ]);
+        cli(&[
+            "export-fbx".as_ref(),
+            document.as_os_str(),
+            "-o".as_ref(),
+            fbx.as_os_str(),
+        ]);
+        (
+            std::fs::read(stl).expect("stl"),
+            std::fs::read(fbx).expect("fbx"),
+        )
+    }
+
+    /// Open, Apply, Undo, Redo, export while unsaved and Save on `source`, each
+    /// against the command line doing the same to the same document.
+    fn native_gate(root: &Path, source: &Path, feature: ObjectId, height: f64) {
+        let original = std::fs::read(source).expect("source");
+        let version = ferritecad_jobs::read_extrude_source(source)
+            .expect("reading")
+            .version;
+        let private = tempfile::tempdir().expect("private root");
+        let mut sessions = Sessions::default();
+        sessions.adopt(
+            DocumentSession::open_in(private.path(), source, HistoryLimits::default())
+                .expect("session"),
+        );
+        let name = source
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(sessions.title(), format!("{name} — {PRODUCT_NAME}"));
+
+        // The same change through the command line, which is what the window must
+        // reach: the old `edit-extrude`, unchanged.
+        let peer = root.join("cli-edit.fcad");
+        cli(&[
+            "edit-extrude".as_ref(),
+            source.as_os_str(),
+            "--feature".as_ref(),
+            feature.to_string().as_ref(),
+            "--expect-version".as_ref(),
+            version.content.to_string().as_ref(),
+            "--distance-mm".as_ref(),
+            height.to_string().as_ref(),
+            "-o".as_ref(),
+            peer.as_os_str(),
+        ]);
+        let (original_stl, original_fbx) = peer_bytes(source, root, "original");
+        let (peer_stl, peer_fbx) = peer_bytes(&peer, root, "edited");
+        assert_ne!(original_stl, peer_stl, "the edit must change the part");
+
+        // Apply: accepted into the session, the file on disk untouched.
+        apply_native(&mut sessions, feature, height);
+        assert!(sessions.dirty());
+        assert_eq!(sessions.title(), format!("*{name} — {PRODUCT_NAME}"));
+        assert_eq!(
+            std::fs::read(source).expect("source"),
+            original,
+            "Apply wrote the file"
+        );
+
+        // Export while unsaved: the working model, not the file on disk, and the
+        // same bytes the command line exports from its copy.
+        let alias = sessions.logical_path().expect("logical").to_path_buf();
+        let (stl, fbx) = export_bytes(&current_path(&sessions), &alias, root, "unsaved");
+        assert_eq!(stl, peer_stl, "the unsaved STL is not the edited model");
+        assert_eq!(fbx, peer_fbx, "the unsaved FBX is not the edited model");
+        assert_ne!(stl, original_stl, "the export read the old file");
+
+        // Undo is the saved model again, and exports as the original does; Redo is
+        // the edit again.
+        move_native(&mut sessions, true);
+        assert!(!sessions.dirty());
+        let (stl, fbx) = export_bytes(&current_path(&sessions), &alias, root, "undone");
+        assert_eq!(
+            (stl, fbx),
+            (original_stl, original_fbx),
+            "Undo did not restore the model"
+        );
+        move_native(&mut sessions, false);
+        assert!(sessions.dirty());
+        assert_eq!(
+            std::fs::read(source).expect("source"),
+            original,
+            "Undo/Redo wrote the file"
+        );
+
+        // Save: the file is now the command line's copy, cell for cell, and every
+        // saved name still resolves after a cold reopen.
+        let report = {
+            let (tx, rx) = mpsc::channel();
+            let generation = sessions
+                .begin_save(SaveTarget::InPlace, None, |plan, _, cancel| {
+                    spawn_save(plan, cancel.clone(), move |result| {
+                        tx.send(result).expect("deliver")
+                    })
+                })
+                .expect("started");
+            sessions
+                .finish_save(generation, rx.recv().expect("answer"))
+                .expect("answered")
+        };
+        assert!(report.published && !sessions.dirty());
+        assert_eq!(
+            cells(source),
+            cells(&peer),
+            "Save is not the command line's copy"
+        );
+        let saved = Document::open_read_only(source).expect("saved");
+        let refs = saved.topology_refs().expect("refs").len();
+        assert!(refs > 0, "the plate carries saved names");
+        let built = ferritecad_eval::rebuild_cold(
+            &saved,
+            &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
+            &OperationContext::default(),
+        )
+        .expect("cold rebuild");
+        for reference in saved.topology_refs().expect("refs") {
+            assert!(
+                built
+                    .resolve(&reference)
+                    .is_ok_and(|found| !found.is_empty()),
+                "{} did not resolve after Save",
+                reference.id
+            );
+        }
+        // And the file holds exactly what is shown.
+        let (stl, fbx) = peer_bytes(source, root, "saved");
+        assert_eq!((stl, fbx), (peer_stl, peer_fbx));
+        let _ = sessions;
+    }
+
+    #[test]
+    fn native_an_ordinary_plate_is_applied_undone_exported_and_saved_like_the_command_line() {
+        if !native() {
+            return;
+        }
+        let (root, path, source) = crate::fillets::tests::plate();
+        let feature = source.features[0].feature;
+        // A file whose name is not ASCII: the title and the dialogs keep it as it is.
+        assert!(
+            path.file_name()
+                .expect("name")
+                .to_string_lossy()
+                .contains("плита")
+        );
+        native_gate(root.path(), &path, feature, 21.5);
+    }
+
+    #[test]
+    fn native_a_chamfered_plate_with_constraints_keeps_them_byte_for_byte() {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
+        let choice = source.constraint_sketches[0].clone();
+        let curves = choice.stored.expect("stored").curves;
+        let start = |index: usize| match curves[index % curves.len()].geometry {
+            ferritecad_document::SketchGeometry::Line { start, .. } => start,
+            _ => panic!("a Line"),
+        };
+        let flat = |i: usize| (start(i).y - start(i + 1).y).abs() < 1e-9;
+        let mut additions: Vec<String> = (0..curves.len())
+            .map(|i| {
+                format!(
+                    r#"{{"rule":"{}","curve_id":"{}"}}"#,
+                    if flat(i) { "horizontal" } else { "vertical" },
+                    curves[i].id
+                )
+            })
+            .collect();
+        let first = start(0);
+        additions.push(format!(
+            r#"{{"rule":"fixed","curve_id":"{}","at":"start","x_mm":{},"y_mm":{}}}"#,
+            curves[0].id, first.x, first.y
+        ));
+        let across = (0..curves.len()).find(|i| flat(*i)).expect("a horizontal");
+        let up = (0..curves.len()).find(|i| !flat(*i)).expect("a vertical");
+        additions.push(format!(
+            r#"{{"rule":"distance","curve_id":"{}","distance_mm":41.125}}"#,
+            curves[across].id
+        ));
+        additions.push(format!(
+            r#"{{"rule":"distance","curve_id":"{}","distance_mm":10.5}}"#,
+            curves[up].id
+        ));
+        let request = root.path().join("constraints.json");
+        std::fs::write(
+            &request,
+            format!(
+                r#"{{"request_version":1,"remove":[],"add":[{}]}}"#,
+                additions.join(",")
+            ),
+        )
+        .expect("request");
+        let constrained = root.path().join("constrained.fcad");
+        cli(&[
+            "edit-sketch-constraints-copy".as_ref(),
+            path.as_os_str(),
+            "--sketch".as_ref(),
+            choice.sketch.to_string().as_ref(),
+            "--expect-version".as_ref(),
+            source.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.as_os_str(),
+            "-o".as_ref(),
+            constrained.as_os_str(),
+        ]);
+        let reading = ferritecad_jobs::read_extrude_source(&constrained).expect("reading");
+        assert_eq!(
+            reading.unavailable_reason(),
+            None,
+            "the height editor accepts it"
+        );
+        let feature = reading.features[0].feature;
+        let sketch_before = cells(&constrained)["objects"]
+            .iter()
+            .filter(|row| row.contains(&choice.sketch.to_string()) || row.contains("Sketch"))
+            .cloned()
+            .collect::<Vec<_>>();
+        native_gate(root.path(), &constrained, feature, 9.5);
+        // The constraints are the Sketch's own row, which a height edit never writes.
+        let sketch_after = cells(&constrained)["objects"]
+            .iter()
+            .filter(|row| row.contains(&choice.sketch.to_string()) || row.contains("Sketch"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sketch_before, sketch_after,
+            "the constraints changed with the height"
+        );
+    }
+
+    /// A build with no Open CASCADE cannot apply anything, and says so without
+    /// leaving the document dirty, a file behind or a half-staged step.
+    #[test]
+    fn without_a_kernel_an_apply_is_refused_and_the_document_stays_clean() {
+        if ferritecad_occt::is_available() {
+            return;
+        }
+        let (root, path, source) = crate::fillets::tests::plate();
+        let mut sessions = Sessions::default();
+        let private = tempfile::tempdir().expect("private");
+        sessions.adopt(
+            DocumentSession::open_in(private.path(), &path, HistoryLimits::default())
+                .expect("a document opens into a session without a kernel"),
+        );
+        let before = private_files(&sessions);
+        let feature = source.features[0].feature;
+        let (tx, rx) = mpsc::channel();
+        let generation = sessions
+            .begin_apply(|ticket, _, cancel| {
+                spawn_apply(ticket, feature, 30.0, cancel.clone(), move |result| {
+                    tx.send(result).expect("deliver")
+                })
+            })
+            .expect("started");
+        let result = rx.recv().expect("answer");
+        assert_eq!(
+            result.as_ref().expect_err("no kernel").kind(),
+            ErrorKind::Unsupported
+        );
+        assert_eq!(sessions.finish_apply(generation, result), Edited::Failed);
+        assert!(!sessions.dirty() && !sessions.busy() && !sessions.can_undo());
+        assert!(sessions.status.starts_with("Could not apply the change"));
+        assert_eq!(private_files(&sessions), before);
+        assert_eq!(std::fs::read_dir(root.path()).expect("dir").count(), 1);
+        // Save has nothing to write and Save As still works on the accepted model.
+        assert!(!sessions.can_save() && sessions.can_save_as());
+    }
+
+    /// With a kernel and no sketch solver a constrained plate cannot be rebuilt, so
+    /// an Apply to it is refused the same way: typed, nothing accepted, nothing
+    /// published. (The plate's constraints are written by the document's own
+    /// preparation, which asks no solver.)
+    #[test]
+    fn without_the_solver_an_apply_to_a_constrained_plate_is_refused_and_nothing_changes() {
+        if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+            return;
+        }
+        let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
+        {
+            let mut document = Document::open(&path).expect("writable");
+            let sketch = document
+                .objects()
+                .expect("objects")
+                .into_iter()
+                .find_map(|o| match o.payload {
+                    ferritecad_document::ObjectPayload::Sketch(s) => Some((o.id, s)),
+                    _ => None,
+                })
+                .expect("Sketch");
+            let edits = ferritecad_document::SketchConstraintEdits {
+                remove: Vec::new(),
+                add: vec![ferritecad_document::AddSketchConstraint::Line(
+                    ferritecad_document::AddLineConstraint::Line {
+                        curve: sketch.1.curves[0].id,
+                        kind: ferritecad_document::LineConstraintKind::Vertical,
+                    },
+                )],
+            };
+            let prepared =
+                ferritecad_document::prepare_sketch_constraints(&document, sketch.0, &edits)
+                    .expect("prepared without a solver");
+            document
+                .write_sketch_constraints(&prepared)
+                .expect("written");
+            document.close().expect("closed");
+        }
+        let original = std::fs::read(&path).expect("bytes");
+        let feature = source.features[0].feature;
+        let mut sessions = Sessions::default();
+        let private = tempfile::tempdir().expect("private");
+        sessions.adopt(
+            DocumentSession::open_in(private.path(), &path, HistoryLimits::default())
+                .expect("session"),
+        );
+        let before = private_files(&sessions);
+        let (_, edited) = {
+            let (tx, rx) = mpsc::channel();
+            let generation = sessions
+                .begin_apply(|ticket, _, cancel| {
+                    spawn_apply(ticket, feature, 9.5, cancel.clone(), move |result| {
+                        tx.send(result).expect("deliver")
+                    })
+                })
+                .expect("started");
+            let result = rx.recv().expect("answer");
+            let kind = result.as_ref().err().map(CadError::kind);
+            assert_eq!(kind, Some(ErrorKind::Unsupported), "{result:?}");
+            (generation, sessions.finish_apply(generation, result))
+        };
+        assert_eq!(edited, Edited::Failed);
+        assert!(!sessions.dirty() && !sessions.can_undo());
+        assert_eq!(private_files(&sessions), before);
+        assert_eq!(std::fs::read(&path).expect("bytes"), original);
+        assert_eq!(std::fs::read_dir(root.path()).expect("dir").count(), 1);
+    }
+
+    /// Open reads the file once into a session and draws from that copy; a file that
+    /// cannot be opened leaves no session directory behind.
+    #[test]
+    fn native_open_draws_from_the_sessions_own_copy_and_a_failed_open_leaves_nothing() {
+        if !native() {
+            return;
+        }
+        let (root, path, _) = crate::fillets::tests::plate();
+        let private = tempfile::tempdir().expect("private root");
+        let (scene, session) =
+            open_for_view(private.path(), &path, &OperationContext::default()).expect("opens");
+        assert!(!scene.catalogue.is_empty());
+        assert_ne!(
+            session.current().path(),
+            path,
+            "the picture was read from the file"
+        );
+        assert!(session.current().path().starts_with(private.path()));
+        assert!(!session.is_dirty());
+        // The same picture as reading the file directly (the model is the model).
+        let direct = ferritecad_scene::snapshot_of(
+            &path,
+            &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
+            |kernel, source| kernel.import_step(source),
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("direct");
+        assert_eq!(scene.catalogue.len(), direct.catalogue.len());
+        drop(session);
+        assert_eq!(std::fs::read_dir(private.path()).expect("dir").count(), 0);
+
+        let broken = root.path().join("broken.fcad");
+        std::fs::write(&broken, b"not a document").expect("write");
+        assert!(open_for_view(private.path(), &broken, &OperationContext::default()).is_err());
+        assert!(
+            open_for_view(
+                private.path(),
+                &root.path().join("absent.fcad"),
+                &OperationContext::default()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read_dir(private.path()).expect("dir").count(),
+            0,
+            "a failed Open left a private directory"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_save_changes_nothing_and_says_so() {
+        let f = fixture();
+        let mut sessions = open(&f);
+        accept(&mut sessions, f.feature, 25.0);
+        let before = std::fs::read(&f.file).expect("bytes");
+        let (tx, rx) = mpsc::channel();
+        let generation = sessions
+            .begin_save(
+                SaveTarget::InPlace,
+                Some(Continuation::Quit),
+                |plan, _, cancel| {
+                    // Asked to stop before the file is replaced.
+                    cancel.cancel();
+                    let cancel = cancel.clone();
+                    std::thread::spawn(move || {
+                        tx.send(plan.run(&OperationContext::default().with_cancel(cancel)))
+                            .expect("deliver");
+                    })
+                },
+            )
+            .expect("started");
+        let report = sessions
+            .finish_save(generation, rx.recv().expect("answer"))
+            .expect("answered");
+        assert_eq!(
+            report,
+            SaveReport {
+                published: false,
+                continuation: None
+            },
+            "a cancelled Save must not carry on to closing the window"
+        );
+        assert_eq!(sessions.status, "Save cancelled; the file was not changed.");
+        assert!(sessions.dirty());
+        assert_eq!(std::fs::read(&f.file).expect("bytes"), before);
     }
 }
