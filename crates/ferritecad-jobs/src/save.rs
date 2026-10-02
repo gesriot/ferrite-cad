@@ -356,13 +356,20 @@ impl SavePlan {
         let document = match Document::open_read_only(target) {
             Ok(document) => document,
             Err(error) => {
-                return Err(if !target.exists() {
-                    self.conflict(Conflict::Missing)
-                } else if error.kind() == ErrorKind::Io {
-                    SaveFailure::failed(error)
-                } else {
-                    // Not a document this build reads: somebody replaced it.
-                    self.conflict(Conflict::Replaced)
+                // Why it did not open decides what it is. A file that is gone is
+                // Missing; one that cannot even be read is an I/O failure; one that
+                // can be read but is not a document this build opens has been
+                // replaced by something else.
+                return Err(match std::fs::File::open(target) {
+                    Err(open) if open.kind() == std::io::ErrorKind::NotFound => {
+                        self.conflict(Conflict::Missing)
+                    }
+                    Err(open) => SaveFailure::failed(CadError::io(
+                        format!("reading {}", target.display()),
+                        open,
+                    )),
+                    Ok(_) if error.kind() == ErrorKind::Cancellation => SaveFailure::failed(error),
+                    Ok(_) => self.conflict(Conflict::Replaced),
                 });
             }
         };
