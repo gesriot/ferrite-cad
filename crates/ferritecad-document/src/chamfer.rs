@@ -149,8 +149,9 @@ pub(crate) fn refuse_chamfered(objects: &[ObjectRecord]) -> Result<()> {
         )));
     }
     Err(unsupported(format!(
-        "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance) and its \
-         plate's height (edit-extrude, §29B) can be edited. Its Sketch, constraints, a Fillet \
+        "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance), its plate's \
+         height (edit-extrude, §29B) and its base Sketch's coordinates (edit-sketch-copy, \
+         §29C) can be edited. Its constraints, a Fillet \
          or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
          chamfered plate without knowing its Chamfer",
         first.id
@@ -521,6 +522,22 @@ pub struct SavedChamfer {
 }
 
 impl SavedChamfer {
+    /// §29C: this Chamfer on a candidate drawing of its plate: the rectangle
+    /// read again by the creation reader, the saved joint still one of its
+    /// corners by the two Line UUIDs alone, and the saved distance inside the
+    /// policy on the NEW adjacent sides. Nothing is clamped.
+    pub fn corner_on(&self, curves: &[crate::SketchCurve]) -> Result<ChamferCorner> {
+        let corners = corners_of_lines(self.base_feature, curves)?;
+        let corner = ChamferCorner::of(&corner_for(&corners, self.edge)?);
+        corner.check_distance(self.distance_mm).map_err(|e| {
+            CadError::input(format!(
+                "Chamfer {} of {} mm does not fit the new plate: {e}",
+                self.feature, self.distance_mm
+            ))
+        })?;
+        Ok(corner)
+    }
+
     /// The distance policy at this Chamfer's own corner.
     pub fn check_distance(&self, distance_mm: f64) -> Result<()> {
         self.corner.check_distance(distance_mm)
@@ -1711,5 +1728,194 @@ mod tests {
         let mut foreign = chamfer.clone();
         foreign.previous = body;
         assert!(evaluable_chamfer(&objects, &foreign, Some(&built)).is_err());
+    }
+
+    /// The saved Line starts of the plate's Sketch, each sent to the same
+    /// corner of `rect` (`[x0, y0, width, depth]`), in saved order.
+    fn vertices_in(d: &Document, rect: [f64; 4]) -> Vec<crate::SketchVertex> {
+        let lines = sketch_of(d).curves;
+        let starts: Vec<(StableEntityId, Point2)> = lines
+            .iter()
+            .map(|c| match c.geometry {
+                SketchGeometry::Line { start, .. } => (c.id, start),
+                _ => panic!("a Line"),
+            })
+            .collect();
+        let lx = starts.iter().map(|s| s.1.x).fold(f64::MAX, f64::min);
+        let ly = starts.iter().map(|s| s.1.y).fold(f64::MAX, f64::min);
+        starts
+            .into_iter()
+            .map(|(id, p)| crate::SketchVertex {
+                curve_id: id,
+                start_mm: [
+                    if p.x == lx {
+                        rect[0]
+                    } else {
+                        rect[0] + rect[2]
+                    },
+                    if p.y == ly {
+                        rect[1]
+                    } else {
+                        rect[1] + rect[3]
+                    },
+                ],
+            })
+            .collect()
+    }
+
+    /// §29C: the coordinates of the chamfered plate's Sketch are edited under
+    /// one rule: every Line keeps its side, the saved corner is found again by
+    /// its two Line UUIDs, and the saved distance is checked, exactly and
+    /// without being reduced, on the NEW adjacent sides.
+    #[test]
+    fn a_chamfered_plates_sketch_keeps_its_corner_and_distance_exactly() {
+        let (_root, mut d, body) = plate(PLATE);
+        let distance = 2.5;
+        let id = chamfer_at(&mut d, body, 1, distance);
+        let profile = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("Sketch")
+            .id;
+        let objects = d.objects().expect("objects");
+        let choice = crate::sketch_choices(&d, &objects)
+            .into_iter()
+            .find(|c| c.sketch == profile)
+            .expect("the Sketch is listed");
+        assert!(choice.refusal.is_none(), "{:?}", choice.refusal);
+        assert_eq!(choice.chamfer.as_ref().map(|c| c.feature), Some(id));
+        assert!(choice.fillets.is_empty() && choice.cut_history.is_none());
+
+        // The exact bound of the policy's own expression.
+        let fits = |side: f64| side - MIN_FLAT_MM >= distance;
+        let mut bound = distance + MIN_FLAT_MM;
+        while !fits(bound) {
+            bound = bound.next_up();
+        }
+        while fits(bound.next_down()) {
+            bound = bound.next_down();
+        }
+        let (kept_before, refs, deps) = (
+            d.objects().expect("objects"),
+            d.topology_refs().expect("refs"),
+            d.dependencies().expect("dependencies"),
+        );
+        let mut version = d.content_version().expect("version");
+        let refusal = |d: &Document, rect: [f64; 4]| {
+            crate::replace_sketch_coordinates(d, profile, &vertices_in(d, rect))
+                .expect_err("refused")
+                .to_string()
+        };
+        for (what, rect) in [
+            ("depth", [0.0, 0.0, 40.0, bound.next_down()]),
+            ("width", [0.0, 0.0, bound.next_down(), 40.0]),
+        ] {
+            let text = refusal(&d, rect);
+            assert!(
+                text.contains(&id.to_string()) && text.contains("does not fit"),
+                "{what}: {text}"
+            );
+        }
+        // Not a plate any more, mirrored, flipped, degenerate.
+        assert!(!refusal(&d, [30.0, 0.0, -20.0, 10.0]).is_empty());
+        // Turned half a turn keeps the winding but would move the Chamfer to
+        // the opposite corner of the part: refused by the side rule, naming it.
+        let half = refusal(&d, [30.0, 20.0, -20.0, -10.0]);
+        assert!(
+            half.contains(&id.to_string()) && half.contains("side"),
+            "{half}"
+        );
+        assert!(!refusal(&d, [0.0, 0.0, 40.0, 0.0]).is_empty());
+        let mut crooked = vertices_in(&d, [0.0, 0.0, 40.0, 20.0]);
+        crooked[2].start_mm[0] += 1.0;
+        crooked[2].start_mm[1] += 0.5;
+        assert!(crate::replace_sketch_coordinates(&d, profile, &crooked).is_err());
+        let mut reordered = vertices_in(&d, [0.0, 0.0, 40.0, 20.0]);
+        reordered.swap(0, 1);
+        assert!(crate::replace_sketch_coordinates(&d, profile, &reordered).is_err());
+        assert_eq!(
+            d.content_version().expect("version"),
+            version,
+            "nothing written"
+        );
+
+        // The bound itself is accepted, the distance is kept and only the
+        // Sketch's row moves.
+        for rect in [
+            [0.0, 0.0, 40.0, bound],
+            [0.0, 0.0, bound, 40.0],
+            [7.5, -3.25, 52.0, 30.5],
+        ] {
+            d.write_sketch_coordinates(profile, &vertices_in(&d, rect))
+                .expect("accepted");
+            assert_ne!(d.content_version().expect("version"), version);
+            version = d.content_version().expect("version");
+            let now = d.objects().expect("objects");
+            for (was, is) in kept_before.iter().zip(&now) {
+                assert_eq!(was.id, is.id);
+                if was.id != profile {
+                    assert_eq!(was.payload, is.payload, "{} moved", was.id);
+                }
+            }
+            assert_eq!(d.topology_refs().expect("refs"), refs);
+            assert_eq!(d.dependencies().expect("dependencies"), deps);
+            assert!(d.validate().expect("validates").is_ok());
+            let saved = saved_chamfer(&d, &now).expect("reads").expect("a Chamfer");
+            assert_eq!(saved.distance_mm, distance, "never reduced");
+            assert_eq!(saved.edge.joint, target_of_saved(&d, id).edge.joint);
+        }
+    }
+
+    /// §29C: the writer re-derives a prepared coordinate payload inside its
+    /// transaction: a forged payload (the corner moved to a non-plate) and a
+    /// stale one are refused and write nothing.
+    #[test]
+    fn the_coordinate_writer_rederives_under_a_chamfer_and_refuses_forgery() {
+        let (_root, mut d, body) = plate(PLATE);
+        chamfer_at(&mut d, body, 3, 2.0);
+        let profile = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("Sketch")
+            .id;
+        let before = d.content_version().expect("version");
+        let prepared = crate::replace_sketch_coordinates(
+            &d,
+            profile,
+            &vertices_in(&d, [1.0, 2.0, 50.0, 25.0]),
+        )
+        .expect("prepared");
+        let mut forged = prepared.clone();
+        if let ObjectPayload::Sketch(s) = &mut forged.payload
+            && let SketchGeometry::Line { start, .. } = &mut s.curves[2].geometry
+        {
+            start.x += 3.0;
+        }
+        assert!(d.write_sketch_geometry(&forged).is_err());
+        let mut small = prepared.clone();
+        if let ObjectPayload::Sketch(s) = &mut small.payload {
+            for curve in &mut s.curves {
+                if let SketchGeometry::Line { start, end } = &mut curve.geometry {
+                    start.y *= 0.05;
+                    end.y *= 0.05;
+                }
+            }
+        }
+        assert!(d.write_sketch_geometry(&small).is_err());
+        assert_eq!(d.content_version().expect("version"), before);
+        // Stale: the document moved on after preparation.
+        let other = crate::replace_sketch_coordinates(
+            &d,
+            profile,
+            &vertices_in(&d, [0.0, 0.0, 30.0, 20.0]),
+        )
+        .expect("prepared");
+        d.write_sketch_geometry(&prepared).expect("written");
+        assert!(d.write_sketch_geometry(&other).is_err());
+        assert!(d.validate().expect("validates").is_ok());
     }
 }

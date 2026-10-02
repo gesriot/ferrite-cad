@@ -26,7 +26,13 @@ fn base_and_version(path: &Path) -> (String, String, Value) {
     )
 }
 
-fn raise(source: &Path, feature: &str, height: &str, version: &str, output: &Path) -> Command {
+pub(super) fn raise(
+    source: &Path,
+    feature: &str,
+    height: &str,
+    version: &str,
+    output: &Path,
+) -> Command {
     let mut c = cli();
     c.arg(OP)
         .arg(source)
@@ -482,20 +488,23 @@ fn native_after_a_height_edit_every_other_editor_still_names_the_chamfer() {
         .as_str()
         .expect("sketch")
         .to_owned();
-    assert_eq!(catalog["sketches"][0]["editable"], false);
+    // §29C: the Sketch's coordinates are editable under the Chamfer; its
+    // constraints still are not.
+    assert_eq!(catalog["sketches"][0]["editable"], true);
+    assert_eq!(
+        catalog["sketches"][0]["constraint_edit"]["available"],
+        false
+    );
     let out = f.root.path().join("never.fcad");
-    // The plain plate's catalogue: a refused Sketch lists no vertices.
-    let vertices: Vec<Value> = f.catalog["sketches"][0]["vertices"]
-        .as_array()
-        .expect("vertices")
-        .iter()
-        .map(|p| json!({"curve_id": p["curve_id"], "start_mm": p["start_mm"]}))
-        .collect();
+    let line = catalog["sketches"][0]["vertices"][0]["curve_id"].clone();
     let request = f.root.path().join("sketch.json");
-    write(&request, &json!({"request_version":1,"vertices":vertices}));
+    write(
+        &request,
+        &json!({"request_version":1,"remove":[],"add":[{"curve_id":line,"rule":"horizontal"}]}),
+    );
     let v = reply(
         cli()
-            .arg("edit-sketch-copy")
+            .arg("edit-sketch-constraints-copy")
             .arg(&edited)
             .args(["--sketch", &sketch, "--expect-version", &version])
             .arg("--request")
@@ -505,7 +514,7 @@ fn native_after_a_height_edit_every_other_editor_still_names_the_chamfer() {
             .arg("--json")
             .output()
             .expect("process"),
-        "edit-sketch-copy",
+        "edit-sketch-constraints-copy",
         2,
     );
     assert!(v.to_string().contains(&id.to_string()), "{v}");
@@ -582,8 +591,12 @@ fn chamfer_base_height_discovery_and_protocol_without_native() {
         })
     );
     assert_eq!(
-        f.catalog["sketches"][0]["editable"], false,
-        "the Sketch still names the Chamfer"
+        f.catalog["sketches"][0]["editable"], true,
+        "the Sketch's coordinates are editable under the Chamfer (§29C)"
+    );
+    assert_eq!(
+        f.catalog["sketches"][0]["chamfer_base"], row["chamfer_base"],
+        "the Sketch names the same Chamfer as the base Extrude"
     );
     let chamfer_id = chamfer["feature_id"].as_str().expect("id").to_owned();
     // The request protocol is the existing one; a build without a kernel asks

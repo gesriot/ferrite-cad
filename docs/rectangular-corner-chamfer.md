@@ -224,8 +224,9 @@ Revolve and radius routes. A Chamfer is never silently dropped, ignored or
 rebuilt on a changed plate by an editor that does not know it. Discovery reports
 the saved Chamfer and which of these are unavailable, with the reason. (§29B
 since made one exception: the plate's height is edited through `edit-extrude`,
-with the Chamfer kept — [the contract](edit-chamfer-base-height.md); every other
-editor still refuses.)
+with the Chamfer kept — [the contract](edit-chamfer-base-height.md); §29C then
+made the base Sketch's coordinates a second one,
+[the contract](edit-chamfer-base-sketch.md); every other editor still refuses.)
 
 ## Discovery (additive JSON)
 

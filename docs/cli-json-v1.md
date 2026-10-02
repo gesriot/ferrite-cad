@@ -916,6 +916,18 @@ distance_mm, distance_unit:"mm"}`. Все прежние поля и типы (`
 виновной фичи или ограничения.
 [Контракт §29B и исполняемый рецепт](edit-chamfer-base-height.md).
 
+### Координаты плиты под Chamfer (§29C)
+
+`edit-sketch-copy` (команда, request и коды 0/2/7 прежние) принимает базовый
+Sketch плиты под одной Chamfer. Аддитивно в `sketches[]`: `chamfer_base` — тот же
+объект, что `features[].chamfer_base` (§29B), на базовом Sketch и `null` на всех
+прочих строках; строка `editable: true`, когда общий reader принимает плиту.
+Все прежние поля и типы (`vertices`, `profile_feature`, `fillet_base`,
+`fillet_history`, `constraint_edit`) не менялись; `constraint_edit.available`
+остаётся `false`. Отказ расстояния называет UUID Chamfer и границу; Chamfer вне
+класса — UUID виновной фичи или ограничения.
+[Контракт §29C и исполняемый рецепт](edit-chamfer-base-sketch.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

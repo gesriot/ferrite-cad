@@ -399,6 +399,11 @@ struct Sketch {
     /// §28L, additive: every saved Fillet over this plate in history order,
     /// one to four; `null` on every other row.
     fillet_history: Option<FilletHistoryDiscovery>,
+    /// §29C, additive: the saved Chamfer over the plate this Sketch profiles,
+    /// when `edit-sketch-copy` may move or resize it; the same object
+    /// `features[].chamfer_base` carries. The Chamfer keeps its corner and
+    /// distance. `null` on every other row.
+    chamfer_base: Option<chamfer::ChamferBaseDiscovery>,
 }
 
 /// The feature a coordinate-editable profile feeds, stated by kind.
@@ -1687,6 +1692,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 profile_feature: s.profile_use.map(ProfileFeature::of),
                 fillet_base: FilletBaseDiscovery::of_history(&s.fillets),
                 fillet_history: FilletHistoryDiscovery::of(&s.fillets),
+                chamfer_base: chamfer::ChamferBaseDiscovery::of(s.chamfer.as_ref()),
                 vertices: s.vertices.map(|vs| {
                     vs.into_iter()
                         .map(|v| SketchVertex {

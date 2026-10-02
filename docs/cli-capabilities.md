@@ -404,6 +404,19 @@ Extrude и штамп. Новой команды нет; по границам �
 отказывают с UUID Chamfer. Discovery аддитивно: `features[].chamfer_base`.
 [Контракт §29B и исполняемый рецепт](edit-chamfer-base-height.md).
 
+§29C: четыре вершины базового Sketch плиты с одной Chamfer меняются
+существующими `edit-sketch-copy` / **Edit saved Sketch — new copy**, в новой
+копии: плиту можно увеличить, уменьшить и сдвинуть; Chamfer остаётся на той же
+вершине (по двум UUID Line, не по номеру строки и не по старым координатам) с
+тем же расстоянием, высотой, историей и семью именами. Расстояние проверяется на
+НОВЫХ смежных сторонах (`0.001 ≤ d ≤ min(смежные) − 0.01`, точно на границе,
+никогда не уменьшается); поворот на пол-оборота, зеркало, не-прямоугольник,
+другой порядок/UUID Line отказывают, отказ называет UUID Chamfer. Меняются
+только payload и hash строки Sketch и штамп. Новой команды нет; discovery
+аддитивно: `sketches[].chamfer_base`. Редакторы ограничений по-прежнему
+отказывают с UUID Chamfer.
+[Контракт §29C и исполняемый рецепт](edit-chamfer-base-sketch.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

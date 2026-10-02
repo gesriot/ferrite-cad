@@ -94,6 +94,8 @@ pub struct SketchChoice {
     /// in history order. Each later Fillet rounds the result of the one
     /// before it (`previous`), never the base. Empty otherwise.
     pub fillets: Vec<crate::SavedFillet>,
+    /// §29C: the one Chamfer the plate's base Sketch keeps its corner for.
+    pub chamfer: Option<crate::SavedChamfer>,
     pub refusal: Option<String>,
 }
 
@@ -137,6 +139,7 @@ pub(crate) fn choices_with_history(
                 profile_use: None,
                 cut_history: None,
                 fillets: Vec::new(),
+                chamfer: None,
                 refusal: Some(error.to_string()),
             })
         })
@@ -158,6 +161,7 @@ fn coordinate_choice(
         profile_use: None,
         cut_history: None,
         fillets: Vec::new(),
+        chamfer: None,
         refusal: None,
     };
     let checked = (|| {
@@ -170,6 +174,32 @@ fn coordinate_choice(
         {
             let (sketch, profile_use) = revolve_frame(document, objects, object)?;
             return Ok((lines(sketch, &profile_use, false)?, profile_use));
+        }
+        // §29C: the base of the plate under the one saved Chamfer, read by the
+        // reader the distance and height edits read. A Chamfer outside that
+        // class refuses every Sketch of the document, naming it.
+        if let Some(saved) = crate::chamfer::saved_chamfer(document, objects)? {
+            if object.id != saved.profile {
+                return Err(unsupported(&format!(
+                    "coordinate editing of the plate under Chamfer {} requires its base Sketch {}",
+                    saved.feature, saved.profile
+                )));
+            }
+            require_lossless_payload(object)?;
+            let ObjectPayload::Sketch(sketch) = &object.payload else {
+                return Err(unsupported("selected object is not a Sketch"));
+            };
+            let profile_use = SketchProfileUse::BlindExtrude {
+                feature: saved.base_feature,
+                height_mm: saved.height_mm,
+            };
+            let vertices = lines(
+                sketch,
+                &profile_use,
+                crate::sketch_constraints::closure_links_only(sketch),
+            )?;
+            choice.chamfer = Some(saved);
+            return Ok((vertices, profile_use));
         }
         // §28D: the base of the plate under the one saved Fillet, read by
         // the frame the radius and height edits read. A Fillet outside that
@@ -699,6 +729,16 @@ impl SketchChoice {
                 }
             }
             keeps_every_side(original, &points)?;
+        }
+        if let Some(chamfer) = &self.chamfer {
+            let curves = coordinate_curves(vertices, &points);
+            chamfer.corner_on(&curves)?;
+            keeps_every_side(original, &points).map_err(|e| {
+                CadError::input(format!(
+                    "Chamfer {} keeps its corner only while every Line keeps its side: {e}",
+                    chamfer.feature
+                ))
+            })?;
         }
         Ok(points)
     }
