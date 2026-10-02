@@ -54,7 +54,32 @@ capability or archive/SQLite version. The only wire addition is
 
 ## Local results
 
-(filled in below)
+Full regression (document, jobs, eval, CLI test targets, app, solver info;
+planegcs, one run): 1173 passed, 1 old ignored benchmark, 2 failed — the same two
+tests that need a read-only file to be unreadable and fail as root in this
+container (`read_only_permissions_still_dump_when_the_file_can_be_read`,
+`validation_really_read_only_permissions`; they fail on `main` here too). The
+two mutations above were each restored and this run is after the restore.
+`cargo fmt --check`, workspace clippy (`--all-targets --features planegcs -- -D
+warnings`), the licence-header and export-boundary scripts and `git diff --check`
+are clean. `actionlint` is not installed here; both edited workflows were
+parsed as YAML, and no `run:` step is over GitHub's 21 000-character limit
+(largest 20 431 bytes, unchanged; the Chamfer step is far smaller).
+
+Packed argv, executed: the stub step of `ci.yml` was extracted and run against a
+real no-kernel build (`CARGO_TARGET_DIR=/home/user/stub-target`): all gates `ok`
+and `FCAD_29A_RECIPE_NO_KERNEL`, `FCAD_29B_RECIPE_NO_KERNEL`. The Chamfer step
+of `runtime-layout.yml` was extracted and run on the native debug build (the
+flags `--release`, library paths and artifact directory adapted; nothing else): every
+named gate `ok`, 54 FBX/STL artifacts written. OCCT without the solver
+(release, `--no-default-features`, `FERRITECAD_REQUIRE_PLANEGCS=0`,
+`FCAD_PLANEGCS_DIR` unset): the kernel-free gate and two native gates `ok`, recipe
+`FCAD_29B_RECIPE_OK`. That run found a stale line in the §29A recipe (its
+refusal text now names the UUID); fixed. The twelve recipes 28A–28L and both
+29A and 29B ran against this build: all `…_RECIPE_OK`. Six new FBX/STL pairs were
+read by pinned ufbx (`FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0`) and
+joined with their STL (`FCAD_STL_FBX_MATCH triangles=16`).
+
 
 ### Mutations — local, executed, restored
 
