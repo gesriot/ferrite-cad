@@ -777,6 +777,15 @@ jobs:
           EXTRACT
           FERRITECAD="$recipe_cli" "$py" ferrite-29b-recipe.py | tee chamfer-height-recipe-no-solver.log
           grep -q '^FCAD_29B_RECIPE_OK ' chamfer-height-recipe-no-solver.log
+          # §29C: the same plate moved and resized through edit-sketch-copy, with a kernel and no solver.
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-chamfer-base-sketch.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_29C_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-29c-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-29c-recipe.py | tee chamfer-sketch-recipe-no-solver.log
+          grep -q '^FCAD_29C_RECIPE_OK ' chamfer-sketch-recipe-no-solver.log
 
       - name: Build the real application and the command line tool against both
         id: build
@@ -2303,7 +2312,12 @@ jobs:
             chamfer::base_height::native_height_refusals_races_and_guards_are_atomic_under_a_chamfer \
             chamfer::base_height::native_chamfer_height_requires_every_saved_reference_to_resolve \
             chamfer::base_height::native_after_a_height_edit_every_other_editor_still_names_the_chamfer \
-            chamfer::base_height::chamfer_base_height_discovery_and_protocol_without_native
+            chamfer::base_height::chamfer_base_height_discovery_and_protocol_without_native \
+            chamfer::base_sketch::native_the_sketch_of_a_chamfered_plate_changes_at_every_corner_in_three_orders \
+            chamfer::base_sketch::native_the_sketch_edit_keeps_the_chosen_corner_not_another_with_the_same_volume \
+            chamfer::base_sketch::native_sketch_bounds_and_candidates_are_exact_under_a_chamfer \
+            chamfer::base_sketch::native_sketch_refusals_races_and_guards_are_atomic_under_a_chamfer \
+            chamfer::base_sketch::chamfer_base_sketch_discovery_and_protocol_without_native
           do
             cargo test --release --features planegcs -p ferritecad-cli --test fillet "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-cli.log
@@ -2340,7 +2354,9 @@ jobs:
             chamfer::tests::a_dimensioned_plate_is_refused_with_the_constraint_named \
             chamfer::tests::the_evaluator_judges_the_chamfer_on_the_built_lines \
             chamfer::tests::the_height_of_a_chamfered_plate_changes_one_row_and_the_writer_refuses_forgery \
-            chamfer::tests::the_height_edit_refuses_a_chamfer_outside_the_class_naming_the_feature
+            chamfer::tests::the_height_edit_refuses_a_chamfer_outside_the_class_naming_the_feature \
+            chamfer::tests::a_chamfered_plates_sketch_keeps_its_corner_and_distance_exactly \
+            chamfer::tests::the_coordinate_writer_rederives_under_a_chamfer_and_refuses_forgery
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-document.log
@@ -2360,7 +2376,10 @@ jobs:
             chamfers::tests::chamfer_distance_widgets_show_the_saved_edge_and_keep_the_draft \
             chamfers::tests::native_chamfer_widgets_worker_and_cli_publish_the_same_part \
             edits::tests::chamfer_base_height_widgets_show_the_chamfer_and_keep_the_draft \
-            edits::tests::native_chamfer_base_height_widgets_worker_and_cli_publish_the_same_part
+            edits::tests::native_chamfer_base_height_widgets_worker_and_cli_publish_the_same_part \
+            sketch::tests::chamfer_base_sketch_widgets_show_the_corner_and_keep_the_draft \
+            sketch::tests::native_chamfer_base_sketch_widgets_worker_and_cli_publish_the_same_part \
+            sketch::drag_tests::chamfer_base_drag_is_one_undo_step_and_moves_no_neighbour
           do
             cargo test --release --features planegcs -p ferritecad-app "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee chamfer-ui.log
@@ -2389,6 +2408,15 @@ jobs:
           EXTRACT
           FERRITECAD="$recipe_cli" "$py" ferrite-29b-recipe.py | tee chamfer-height-recipe.log
           grep -q '^FCAD_29B_RECIPE_OK ' chamfer-height-recipe.log
+          # §29C: the same plate moved and resized through edit-sketch-copy.
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-chamfer-base-sketch.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_29C_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-29c-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-29c-recipe.py | tee chamfer-sketch-recipe.log
+          grep -q '^FCAD_29C_RECIPE_OK ' chamfer-sketch-recipe.log
 
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
@@ -2512,6 +2540,7 @@ jobs:
           grep -q '^FCAD_FILLET_FOUR_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_HEIGHT_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_CHAMFER_SKETCH_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:
