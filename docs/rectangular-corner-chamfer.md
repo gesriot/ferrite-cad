@@ -421,7 +421,7 @@ never = root / "never.fcad"
 for args in (["edit-extrude", one, "--feature", chamfer["feature_id"], "--distance-mm", "9",
               "--expect-version", saved["content_version"], "-o", never, "--json"],):
     p = run(args, code=2)
-    assert "Chamfer" in p["error"]["message"] and not never.exists()
+    assert chamfer["feature_id"] in p["error"]["message"] and not never.exists()
 
 # 5. The distance is edited in another copy: one row, one cell pair.
 version = saved["content_version"]

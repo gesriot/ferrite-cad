@@ -1444,7 +1444,7 @@ mod tests {
     fn the_height_edit_refuses_a_chamfer_outside_the_class_naming_the_feature() {
         // A dimension: the constraint's own UUID.
         let (_r, mut d, body) = plate(PLATE);
-        let id = chamfer_at(&mut d, body, 0, 2.0);
+        chamfer_at(&mut d, body, 0, 2.0);
         let base = target_of_base(&d);
         let objects = d.objects().expect("objects");
         let record = objects
