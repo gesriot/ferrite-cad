@@ -4260,6 +4260,22 @@ Chamfer's UUID. Milestone 5C remains open.
 [Contract and recipe](edit-chamfer-base-height.md),
 [verification](edit-chamfer-base-height-verification.md).
 
-**§29C — next, not implemented:** not chosen yet. Sketch/constraint editing
-below a Chamfer, another Chamfer and mixed Fillet/Chamfer histories remain
-outside the slices so far.
+**Independent review of §29B (2026-10-01).** Fixed the shared height job's
+legacy reference exception: a Chamfer now requires every saved name to resolve
+before and after rebuild, including additional base-owned references. A real
+process regression failed before the fix and preserves a valid extra reference
+as its positive control; it is a new mandatory native gate. Local affected
+matrix: 602 executed, four explicit N/A and one ignored benchmark; fmt/clippy
+and actionlint passed. The guarded arm64 window run completed validation/kernel
+refusals, Save Cancel, two height edits, distance edit, async Open and exports.
+GUI/CLI agree on 384 SQL cells and byte-equal STL/FBX; independent geometry,
+pinned ufbx 6/0 and the oriented 16-triangle join passed. Viewer peak 209.626 MiB,
+normal pressure, unchanged swap, exit 0, no relaunch. Fixed-code native CI must
+finish before merge; the older OOM remains unexplained.
+
+**§29C — next, not implemented:** edit the base Sketch's coordinates below one
+Chamfer through the existing UI/CLI copy job. Preserve Line/edge/corner UUIDs,
+height and distance; judge the saved distance against the edited rectangle's
+adjacent sides. Reuse the saved reader, prepared edit and transactional writer,
+strict names and existing draft history. Constraint editing below Chamfer,
+a second Chamfer and mixed Fillet/Chamfer histories remain outside this slice.

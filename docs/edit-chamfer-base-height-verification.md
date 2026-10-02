@@ -451,3 +451,80 @@ with tempfile.TemporaryDirectory(prefix="ferrite-29b-compare-") as scratch:
     mesh_checks(stl_of(g["tall"], scratch), H["tall"], D["source"])
 print("FCAD_29B_GUI_COMPARE_OK", f"cells={cells}", f"triangles={count}")
 ```
+
+## Independent review and macOS window run (2026-10-01)
+
+Review found a publication defect outside the seven Chamfer-owned names:
+`CopyWrite::Height` used the weaker legacy reference policy whenever Cut and
+Fillet were absent, which also admitted a Chamfer. A document with one extra
+base-owned `ExtrudeSide` referring to a nonexistent segment passed structural
+validation and preparation; cold rebuild resolved all but that name, yet
+`edit-extrude --json` published with exit 0. The new process regression first
+failed on that actual exit (expected 2), not on compilation. A positive control
+adds an extra, valid base reference and still publishes and preserves it.
+
+Review fix `8ba7871` adds `p.chamfer().is_none()` to the legacy-only exception.
+Every saved name must resolve before and after a Chamfer height edit. The gate
+`chamfer::base_height::native_chamfer_height_requires_every_saved_reference_to_resolve`
+is required by the existing three-platform Chamfer step (38 exact executions
+now, previously 37). Bare-height compatibility is unchanged.
+
+Local arm64 verification used the existing pinned OCCT 8.0.1 and PlaneGCS,
+release target `/private/tmp/ferrite-24b-native-target`, two build jobs and one
+heavy command at a time. The final affected matrix executed **602 tests**:
+497 document/jobs/eval, 85 CLI Fillet/Chamfer, 16 app edit and four app Chamfer.
+Four explicitly marked no-solver-only cases were N/A in this solver build;
+one old timing benchmark was ignored. The six height tests and 11 shared
+copy-job tests also passed separately after the failing-first reproduction.
+Fmt, workspace clippy all targets/features with `-D warnings`, actionlint,
+licence headers (400 files), export boundary and diff whitespace passed.
+Native libraries were reused, not rebuilt; the large STEP corpus was left to CI.
+
+A fresh arm64 app bundle was staged from the reviewed CLI/viewer, its closure
+contained 50 OCCT libraries and PlaneGCS with no unexpected libraries, and
+`codesign --verify --deep --strict` and bundled `--solver-info` passed with DYLD
+variables unset. The Markdown recipe ran with that bundled CLI:
+`FCAD_29B_RECIPE_OK d=2.375 h=9.5 volume=4337.269531/4337.269531`.
+
+The actual window used the extracted fixture, with no CLI-generated substitutes
+for its outputs. Observed in one guarded process:
+
+- Open `chamfer.fcad`; Edit extrusion enabled and second Chamfer unavailable.
+- Correct saved Chamfer UUID, corner `(33, 3.25)` and distance `2.375` shown.
+- Height `0` refused by the form; `0.000001` refused by OCCT on Save, with the
+  draft and original scene retained and no `gui-refused.fcad` published.
+- Save Cancel at `3.25` retained the draft and created no cancelled output.
+- Height `3.25`, then `9.5`, then Chamfer distance `4.5`: three real Save dialogs,
+  three publications and asynchronous Open, followed by STL and FBX export.
+- Normal Quit; no viewer CUA handle was accessed after Quit.
+
+The unchanged Markdown comparator then checked all three window copies against
+the bundled CLI: **384 SQL cells**, source hash, narrow per-step allowlists,
+all saved identities/names, cold resolution, byte-identical STL and FBX, and
+independently parsed geometry at the selected corner. Its result was
+`FCAD_29B_GUI_COMPARE_OK cells=384 triangles=16`. The final STL is 884 bytes;
+FBX is 5429 bytes. Pinned ufbx 0.23.0 reported six checks and zero failures;
+the independent oriented join reported 16 triangles, worst error
+`8.67e-19` metres. Review controls on private copies rejected a real 3.5-mm
+publication where 3.25 was required, an unrelated `objects.name` change, and
+missing GUI outputs. These controls did not modify the window evidence.
+
+Watchdog PID 87463 exited 0, not aborted. Peak measured physical footprint was
+**209.626 MiB**, pressure stayed 1 (normal), swap stayed 630521856 bytes, free
+disk stayed above 136 GiB. Limit: 1536 MiB. The CUA guard twice paused because
+the latest watchdog record was its periodic compression observation; it then
+checked the latest fresh PID sample while still rejecting exit/abort records.
+No viewer was killed or relaunched. One initial paste into Go To timed out;
+setting the native path field completed the same dialog. Neither incident is
+counted as a product defect. The earlier OOM remains unexplained.
+
+Evidence (logs, screenshots, actual GUI/CLI files, negative controls and audits)
+was retained under `/private/tmp/ferrite-pr78-review`, with a durable review
+copy outside the repository. Full original runtime logs, rather than only
+job conclusions, independently confirm 37 Chamfer executions, two §29B recipe
+markers and six new ufbx reads/oriented joins on each OS. The review fix starts
+fresh [ordinary CI](https://github.com/gesriot/ferrite-cad/actions/runs/36965672343)
+and [native runtime CI](https://github.com/gesriot/ferrite-cad/actions/runs/36965668763).
+Ordinary CI has completed all seven jobs successfully; completion and log audit
+of the fixed-code native run remain mandatory before merge. This record does
+not call a pending run successful.
