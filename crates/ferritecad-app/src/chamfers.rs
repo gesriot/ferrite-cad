@@ -314,15 +314,38 @@ impl Editor {
                     saved.base_feature,
                     draft.source.display()
                 ));
-                ui.small(format!("Edge: {}", describe(&saved.corner)));
-                ui.small(format!(
-                    "Saved distance {} mm along each face; from {} mm to {} mm here. The \
-                     slanted flat is {} × √2 wide.",
-                    saved.distance_mm,
-                    ferritecad_document::MIN_DISTANCE_MM,
-                    saved.corner.max_distance_mm,
-                    saved.distance_mm
-                ));
+                if saved.constrained {
+                    let corner = &saved.corner;
+                    let [a, b] = corner.joint.segments();
+                    ui.small(format!(
+                        "Edge: Corner ({}, {}) — Lines {a} | {b}; stored sides {} × {} mm",
+                        corner.corner_mm[0],
+                        corner.corner_mm[1],
+                        corner.adjacent_lengths_mm[0],
+                        corner.adjacent_lengths_mm[1]
+                    ));
+                    // §29D: the stored sides are the solver's starting guess; the
+                    // largest distance is the solved plate's, judged by the
+                    // rebuild when the copy is saved, so none is shown here.
+                    ui.small(format!(
+                        "Saved distance {} mm along each face, at least {} mm. This plate's \
+                         Sketch carries constraints: the largest distance is judged on the \
+                         solved plate when the copy is saved. The slanted flat is {} × √2 wide.",
+                        saved.distance_mm,
+                        ferritecad_document::MIN_DISTANCE_MM,
+                        saved.distance_mm
+                    ));
+                } else {
+                    ui.small(format!("Edge: {}", describe(&saved.corner)));
+                    ui.small(format!(
+                        "Saved distance {} mm along each face; from {} mm to {} mm here. The \
+                         slanted flat is {} × √2 wide.",
+                        saved.distance_mm,
+                        ferritecad_document::MIN_DISTANCE_MM,
+                        saved.corner.max_distance_mm,
+                        saved.distance_mm
+                    ));
+                }
                 ui.add_enabled_ui(!running, |ui| {
                     if ui.button("Cancel distance draft").clicked() {
                         cancel = true;
@@ -1150,6 +1173,29 @@ pub(crate) mod tests {
         let mut e = std::mem::take(&mut editor.chamfers);
         click(&ctx, &mut e, "Cancel distance draft");
         assert!(!e.active());
+
+        // A constrained profile's stored sides are only the solver's initial
+        // guess. No part of the form may present their bound as the real limit.
+        let mut constrained = source.clone();
+        constrained.chamfer_features[0]
+            .saved
+            .as_mut()
+            .expect("saved Chamfer")
+            .constrained = true;
+        assert!(e.begin_distance(&path, &constrained, saved.feature));
+        let out = frame(&ctx, &mut e, false);
+        assert!(painted(&out, "judged on the solved plate"));
+        assert!(
+            !painted(&out, "d ≤"),
+            "stored geometry is not a solved bound"
+        );
+        assert!(painted(&out, "stored sides"));
+        new_distance(&ctx, &mut e, &(max + 1.0).to_string());
+        click(&ctx, &mut e, "Apply distance");
+        assert_eq!(
+            e.distance.as_ref().expect("draft").confirmed(),
+            Some(max + 1.0)
+        );
     }
 
     /// The worker and the shipped command line publish one part, for both the

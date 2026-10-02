@@ -235,6 +235,10 @@ pub struct ConstraintSketchChoice {
     /// shared flat are the solved plate's to satisfy at every rebuild. Each
     /// later Fillet rounds the result of the one before it.
     pub fillets: Vec<crate::SavedFillet>,
+    /// §29D: the one saved Chamfer over this plate, when this is its base
+    /// Sketch; `None` otherwise. Its `corner` is read from the stored Lines and
+    /// its distance's bound is the solved plate's to satisfy at every rebuild.
+    pub chamfer: Option<crate::SavedChamfer>,
     pub refusal: Option<String>,
 }
 
@@ -253,7 +257,7 @@ pub fn constraint_sketch_choices(
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
         .map(|o| match supported_family(document, objects, o) {
-            Ok((_, profile_use, over)) => {
+            Ok((_, profile_use, over, chamfer)) => {
                 let ObjectPayload::Sketch(sketch) = &o.payload else {
                     unreachable!("checked")
                 };
@@ -265,6 +269,7 @@ pub fn constraint_sketch_choices(
                     height_mm: extrusion_height(&profile_use),
                     profile_use: Some(profile_use),
                     fillets,
+                    chamfer,
                     refusal: None,
                 }
             }
@@ -275,6 +280,7 @@ pub fn constraint_sketch_choices(
                 height_mm: None,
                 profile_use: None,
                 fillets: Vec::new(),
+                chamfer: None,
                 refusal: Some(e.to_string()),
             },
         })
@@ -297,17 +303,19 @@ fn supported_family(
     Family,
     SketchProfileUse,
     Option<crate::fillet_radius::FilletsOverPlate>,
+    Option<crate::SavedChamfer>,
 )> {
     // The frame every copy edit of a saved profile requires is checked once,
     // in the one place that owns it, before either family is considered. It
     // also says which feature uses the profile (§27G): an Extrude and its
     // height, or a Revolve with a bore and its stated turn.
-    let (sketch, profile_use, over) =
+    let (sketch, profile_use, over, chamfer) =
         crate::sketch_edit::constraint_frame(document, objects, object)?;
     let family = classify(sketch)?;
-    if over.is_some() && family != Family::Lines {
+    if (over.is_some() || chamfer.is_some()) && family != Family::Lines {
         return Err(CadError::unsupported(
-            "the plate under a Fillet is four Lines, and this Sketch holds something else",
+            "the plate under a Fillet or a Chamfer is four Lines, and this Sketch holds \
+             something else",
         ));
     }
     let height = extrusion_height(&profile_use);
@@ -342,7 +350,7 @@ fn supported_family(
         }
     }
     managed(sketch, family)?;
-    Ok((family, profile_use, over))
+    Ok((family, profile_use, over, chamfer))
 }
 
 /// §28E: the managed Line family, asked of a Sketch whose other readers — the
@@ -587,6 +595,17 @@ fn slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
     }
     let (curve, kind) = line_of(rule)?;
     Some((line_slot(curve, kind), [curve, curve]))
+}
+/// §29D: the first stored constraint of a Line profile that is neither one the
+/// managed family holds nor one of its adjacent-joint closure links — the
+/// guilty one a refusal names.
+pub(crate) fn first_outside_managed_lines(sketch: &Sketch) -> Option<&SketchConstraint> {
+    let expected: BTreeSet<_> = closures(sketch).into_iter().collect();
+    sketch.constraints.iter().find(|c| {
+        slot_of(c.rule).is_none()
+            && !matches!(c.rule, SketchConstraintRule::Coincident { a, b }
+                if expected.contains(&unordered(a, b)))
+    })
 }
 /// The slot a requested addition occupies, refusing a pair that is not one.
 fn requested(add: &AddSketchConstraint) -> Result<(Slot, [StableEntityId; 2])> {
@@ -860,6 +879,8 @@ pub struct PreparedSketchConstraints {
     /// §28E/§28L: the Fillets the frame read with this Sketch, in history
     /// order; empty for a Sketch no Fillet rounds.
     fillets: Vec<crate::SavedFillet>,
+    /// §29D: the Chamfer the frame read with this Sketch, if any.
+    pub(crate) chamfer: Option<crate::SavedChamfer>,
 }
 impl PreparedSketchConstraints {
     pub fn object(&self) -> &ObjectRecord {
@@ -894,6 +915,12 @@ impl PreparedSketchConstraints {
     pub fn fillet(&self) -> Option<&crate::SavedFillet> {
         self.fillets.first()
     }
+
+    /// §29D: the saved Chamfer over the plate this Sketch bounds, as read with
+    /// the frame; its corner is stored, its bound the rebuild's.
+    pub fn chamfer(&self) -> Option<&crate::SavedChamfer> {
+        self.chamfer.as_ref()
+    }
 }
 
 /// Which of a managed profile's circles bounds the part and which is the bore,
@@ -920,7 +947,7 @@ pub fn prepare_sketch_constraints(
         .find(|o| o.id == id)
         .cloned()
         .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
-    let (family, profile_use, over) = supported_family(document, &objects, &object)?;
+    let (family, profile_use, over, chamfer) = supported_family(document, &objects, &object)?;
     let fillets = over.map(|o| o.fillets).unwrap_or_default();
     let ObjectPayload::Sketch(sketch) = &mut object.payload else {
         unreachable!("checked")
@@ -1037,6 +1064,7 @@ pub fn prepare_sketch_constraints(
         profile_use,
         roles,
         fillets,
+        chamfer,
     })
 }
 
@@ -1055,11 +1083,15 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedSketchConstraints
         .iter()
         .find(|o| o.id == prepared.object.id)
         .ok_or_else(|| CadError::input("selected Sketch disappeared before constraint write"))?;
-    let (family, profile_use, over) = supported_family(document, &objects, current)?;
+    let (family, profile_use, over, chamfer) = supported_family(document, &objects, current)?;
     let fillets = over.map(|o| o.fillets).unwrap_or_default();
-    if profile_use != prepared.profile_use || fillets != prepared.fillets {
+    if profile_use != prepared.profile_use
+        || fillets != prepared.fillets
+        || chamfer != prepared.chamfer
+    {
         return Err(CadError::input(
-            "the feature or the Fillet around this Sketch changed after constraint preparation",
+            "the feature, Fillet or Chamfer around this Sketch changed after constraint \
+             preparation",
         ));
     }
     let (ObjectPayload::Sketch(stored), ObjectPayload::Sketch(written)) =

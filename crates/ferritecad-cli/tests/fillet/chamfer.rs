@@ -8,6 +8,7 @@
 use super::*;
 use ferritecad_eval::CacheOutcome;
 
+mod base_constraints;
 mod base_height;
 mod base_sketch;
 use ferritecad_types::ObjectId;
@@ -847,7 +848,11 @@ fn chamfer_discovery_and_protocol_without_native() {
     for sketch in c.catalog["sketches"].as_array().expect("sketches") {
         assert_eq!(sketch["editable"], true, "{sketch}");
         assert_eq!(sketch["chamfer_base"], base["chamfer_base"], "{sketch}");
-        assert_eq!(sketch["constraint_edit"]["available"], false, "{sketch}");
+        assert_eq!(sketch["constraint_edit"]["available"], true, "{sketch}");
+        assert_eq!(
+            sketch["constraint_edit"]["chamfer_base"], base["chamfer_base"],
+            "{sketch}"
+        );
     }
 
     // The distance request protocol.
@@ -1449,10 +1454,6 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
         .as_str()
         .expect("version")
         .to_owned();
-    let sketch = catalog["sketches"][0]["sketch_id"]
-        .as_str()
-        .expect("sketch")
-        .to_owned();
     let base = catalog["bodies"][0]["chamfer_edge"].clone();
     assert_eq!(base["available"], false);
     let before = std::fs::read(&copy).expect("bytes");
@@ -1492,28 +1493,6 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
         2,
     );
     named("edit-extrude", &v);
-    // The constraint editor still refuses: the coordinates are §29C's.
-    let line = catalog["sketches"][0]["vertices"][0]["curve_id"].clone();
-    write(
-        &request,
-        &json!({"request_version":1,"remove":[],"add":[{"curve_id":line,"rule":"horizontal"}]}),
-    );
-    let v = reply(
-        cli()
-            .arg("edit-sketch-constraints-copy")
-            .arg(&copy)
-            .args(["--sketch", &sketch, "--expect-version", &version])
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&out)
-            .arg("--json")
-            .output()
-            .expect("process"),
-        "edit-sketch-constraints-copy",
-        2,
-    );
-    named("edit-sketch-constraints-copy", &v);
     // A Fillet on another corner, a second Chamfer and a Fillet radius edit of
     // the Chamfer's own UUID.
     let g = Fixture {

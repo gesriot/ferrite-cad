@@ -680,7 +680,7 @@ fn chamfer_base_sketch_discovery_and_protocol_without_native() {
     );
     assert_eq!(
         f.catalog["sketches"][0]["constraint_edit"]["available"],
-        false
+        true
     );
 
     // The request protocol is the existing one: a build without a kernel asks

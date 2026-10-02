@@ -4308,3 +4308,54 @@ unavailable in CUA, so the run used keyboard navigation; optional window drag
 was not executed. Viewer peak 216.095 MiB, normal pressure, unchanged swap,
 exit 0, no relaunch. Full evidence and limitations are in the verification
 record; Milestone 5C and the older OOM investigation remain open.
+
+**§29D — the base Sketch of a chamfered plate, constrained, in a new copy.** The
+existing `edit-sketch-constraints-copy` and **Edit constraints** now add, replace
+and remove the managed Line constraints of the base Sketch under the one §29A
+Chamfer (H/V, length and Replace length, one Fixed endpoint, EqualLength,
+Parallel/Perpendicular, Coincident closure). PlaneGCS decides the rectangle; the
+Chamfer stays on the same corner (found by its two Line UUIDs) with the same
+distance. Stored coordinates stay the solver's starting approximation and are
+never overwritten by a solve. The corner and the distance bound
+`0.001 ≤ d ≤ min(adjacent solved sides) − 0.01` are judged on the same solved Lines
+the rebuild built the Extrude from (the evaluator, at every cold and cached
+rebuild): same rectangle, same Line UUIDs and order, every Line keeps its axis and
+direction, exact at the bound, no clamp or tolerance; the stored sides are no
+evidence in either direction. A solver conflict (`constraint`, with its UUIDs) is
+separate from a solved-plate refusal (`input`, naming the Chamfer and corner);
+nothing is published on either. After constraints, `edit-extrude` and
+`edit-chamfer-distance` keep them byte for byte; the §29C coordinate editor
+refuses while user constraints exist and works again once they are removed
+(closure stays; nothing is baked). One shared mechanism: `constraint_frame` reads
+the Chamfer, `PreparedSketchConstraints` carries it, the writer re-derives the
+whole prepared value in its transaction, the copy job's strict reference rule and
+cold rebuild decide. No new command, request, payload, capability or
+archive/SQLite version; the wire additions are `profile_constrained` and
+`sketches[].constraint_edit.chamfer_base`, and `distance_edit.max_distance_mm` is
+`null` for a constrained plate. Milestone 5C remains open.
+[Contract and recipe](edit-chamfer-base-constraints.md),
+[verification](edit-chamfer-base-constraints-verification.md).
+
+
+**§29D independent review (2026-10-02).** Fixed the constrained distance form's
+stale numeric bound; an executed widget regression failed before the fix and
+passed afterwards. Strengthened GUI SQL comparison to include every other
+object's payload/hash and schema version, with negative controls. Independent
+native matrix: 649 executed, five explicit N/A, one ignored benchmark. Actual
+GUI documents passed the 903-cell comparison, per-step preservation, cold refs,
+independent STL geometry, byte-equal CLI STL/FBX and pinned ufbx. The first GUI run
+was stopped for system pressure (218.392 MiB viewer peak); a fresh corrected
+bundle completed the remaining export/label checks and quit normally at
+252.595 MiB with unchanged swap. See the verification record for limitations and
+exact CI provenance; no claim that the historical OOM is solved.
+
+**Next product priority — §30A, pending: working document session.** Begin the
+normal editing workflow on the existing Extrude height route: Apply updates the
+accepted working document and scene without asking for a new filename; document
+Undo/Redo, dirty state, explicit Save/Save As, guarded atomic publication and
+Save/Discard/Cancel on document transitions. Export uses that accepted working
+version. A library-owned session reuses existing document/jobs operations; CLI
+copy commands retain their contracts. Other editors are migrated in later
+slices and must not silently act on stale disk contents meanwhile. This takes
+priority over more geometry after §29D. It does not complete Milestone 5C,
+recovery, persistent history, the full UI or the wider beta scope.

@@ -413,9 +413,26 @@ Extrude и штамп. Новой команды нет; по границам �
 никогда не уменьшается); поворот на пол-оборота, зеркало, не-прямоугольник,
 другой порядок/UUID Line отказывают, отказ называет UUID Chamfer. Меняются
 только payload и hash строки Sketch и штамп. Новой команды нет; discovery
-аддитивно: `sketches[].chamfer_base`. Редакторы ограничений по-прежнему
-отказывают с UUID Chamfer.
+аддитивно: `sketches[].chamfer_base`.
 [Контракт §29C и исполняемый рецепт](edit-chamfer-base-sketch.md).
+
+§29D: управляемые Line-ограничения базового Sketch плиты с одной Chamfer
+(H/V, длина и Replace length, одна Fixed-конечная точка, EqualLength,
+Parallel/Perpendicular, Coincident-замыкание) добавляются, заменяются и
+удаляются существующими `edit-sketch-constraints-copy` / **Edit constraints** в
+новой копии. Размеры и положение прямоугольника решает PlaneGCS; Chamfer остаётся
+на том же углу (по двум UUID Line) с тем же расстоянием. Сохранённые координаты
+остаются начальным приближением решателя и никогда не перезаписываются решением;
+предел расстояния `0.001 ≤ d ≤ min(смежные РЕШЁННЫЕ стороны) − 0.01` проверяется
+на тех же решённых Line при каждой перестройке (точно на границе, без зажима и
+допуска). `edit-extrude` и `edit-chamfer-distance` работают на такой плите и
+сохраняют ограничения байт в байт; редактор координат (§29C) отказывает, пока
+есть пользовательские ограничения, и снова работает после их удаления
+(замыкание остаётся). Меняются только payload/hash строки Sketch (и нужная
+capability по прежней политике) и штамп. Новой команды нет; discovery
+аддитивно: `sketches[].constraint_edit.chamfer_base`,
+`profile_constrained`, а `distance_edit.max_distance_mm` для такой плиты `null`.
+[Контракт §29D и исполняемый рецепт](edit-chamfer-base-constraints.md).
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`

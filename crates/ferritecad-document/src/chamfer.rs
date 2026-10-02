@@ -150,9 +150,9 @@ pub(crate) fn refuse_chamfered(objects: &[ObjectRecord]) -> Result<()> {
     }
     Err(unsupported(format!(
         "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance), its plate's \
-         height (edit-extrude, §29B) and its base Sketch's coordinates (edit-sketch-copy, \
-         §29C) can be edited. Its constraints, a Fillet \
-         or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
+         height (edit-extrude, §29B), its base Sketch's coordinates (edit-sketch-copy, \
+         §29C) and its base Sketch's Line constraints (edit-sketch-constraints-copy, §29D) \
+         can be edited. A Fillet or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
          chamfered plate without knowing its Chamfer",
         first.id
     )))
@@ -192,6 +192,26 @@ fn require_free_profile(sketch: &Sketch) -> Result<()> {
         ),
         None => "this slice chamfers a free or closure-only plate".to_owned(),
     }))
+}
+
+/// §29D: the plate's Sketch under a *saved* Chamfer may carry the constraint
+/// editor's managed Line family (free, closure-only, or the family itself);
+/// anything else is refused naming the Chamfer and the constraint editor's reason.
+fn require_managed_profile(sketch: &Sketch, chamfer: ObjectId) -> Result<()> {
+    if sketch.constraints.is_empty() || crate::sketch_constraints::closure_links_only(sketch) {
+        return Ok(());
+    }
+    crate::sketch_constraints::managed_lines(sketch).map_err(|e| {
+        let guilty = crate::sketch_constraints::first_outside_managed_lines(sketch)
+            .or_else(|| sketch.constraints.first())
+            .map_or_else(String::new, |c| {
+                format!(" (the {} constraint {})", rule_name(&c.rule), c.id)
+            });
+        unsupported(format!(
+            "Chamfer {chamfer} sits on a plate whose Sketch carries constraints outside the \
+             constraint editor's Line family{guilty}: {e}"
+        ))
+    })
 }
 
 /// A saved Body a Chamfer can be added to, exactly as stored.
@@ -519,6 +539,11 @@ pub struct SavedChamfer {
     pub distance_mm: f64,
     /// Its corner on the stored Lines, with the labels.
     pub corner: ChamferCorner,
+    /// §29D: the base Sketch carries user constraints (not only the closure
+    /// links). Its Lines are then the solver's starting approximation: `corner`
+    /// is a stored fact, and the distance's upper bound is the rebuild's to judge
+    /// on the solved Lines, never this reading's on the stored ones.
+    pub constrained: bool,
 }
 
 impl SavedChamfer {
@@ -538,8 +563,13 @@ impl SavedChamfer {
         Ok(corner)
     }
 
-    /// The distance policy at this Chamfer's own corner.
+    /// The distance policy at this Chamfer's own corner. On a constrained base
+    /// only the numbers that do not depend on the solved plate are checked here;
+    /// the upper bound is the evaluator's, on the solved sides (§29D).
     pub fn check_distance(&self, distance_mm: f64) -> Result<()> {
+        if self.constrained {
+            return check_distance_value(distance_mm);
+        }
         self.corner.check_distance(distance_mm)
     }
 }
@@ -585,12 +615,14 @@ pub(crate) fn saved_chamfer_for_edit(
     {
         return Err(refuse_chamfered(objects).expect_err("two Chamfers are refused"));
     }
-    // Named first, as the creation reader does: a dimension by its own UUID, and
-    // any other feature over the plate or the Chamfer by its UUID, whatever the
-    // general history reader would have made of them.
+    // Named first, as the creation reader does: a constraint outside the
+    // constraint editor's managed Line family by its own UUID (§29D: the managed
+    // family itself is the plate's to carry), and any other feature over the
+    // plate or the Chamfer by its UUID, whatever the general history reader would
+    // have made of them.
     for object in objects {
         if let ObjectPayload::Sketch(sketch) = &object.payload {
-            require_free_profile(sketch)?;
+            require_managed_profile(sketch, record.id)?;
         }
     }
     if let Some(other) = objects.iter().find(|o| {
@@ -628,7 +660,9 @@ pub(crate) fn saved_chamfer_for_edit(
     let ObjectPayload::Sketch(sketch) = &profile.payload else {
         return Err(unsupported("the part's profile is not a Sketch"));
     };
-    require_free_profile(sketch)?;
+    require_managed_profile(sketch, record.id)?;
+    let constrained =
+        !sketch.constraints.is_empty() && !crate::sketch_constraints::closure_links_only(sketch);
     let corners: Vec<ChamferCorner> =
         corners_of_lines(history.target.base_feature, &sketch.curves)?
             .iter()
@@ -685,6 +719,7 @@ pub(crate) fn saved_chamfer_for_edit(
         edge: chamfer.edge,
         distance_mm: chamfer.distance_mm,
         corner,
+        constrained,
     })
 }
 
@@ -875,7 +910,20 @@ pub fn evaluable_chamfer(
     let ObjectPayload::Sketch(sketch) = &profile.payload else {
         return Err(unsupported("the base Extrude's profile is not a Sketch"));
     };
-    require_free_profile(sketch)?;
+    // §29D: the plate's Sketch may carry the managed Line family, whose Lines
+    // the solver draws; the structure is asked of the stored ones and the
+    // geometry, below, of the ones the rebuild built.
+    // The saved row this payload is, by its meaning: the predecessor and the
+    // edge it cuts, so a caller that asks about another distance still names it.
+    let owner = objects
+        .iter()
+        .find(|o| {
+            matches!(&o.payload, ObjectPayload::Chamfer(c)
+                if c.previous == chamfer.previous && c.edge == chamfer.edge)
+        })
+        .map_or(chamfer.previous, |o| o.id);
+    let chamfer_id = owner.to_string();
+    require_managed_profile(sketch, owner)?;
     let stored = corners_of_lines(base.id, &sketch.curves)?;
     corner_for(&stored, chamfer.edge)?;
     let Some(built) = built else {
@@ -884,10 +932,47 @@ pub fn evaluable_chamfer(
             extrude.profile
         )));
     };
-    let corners = corners_of_lines(base.id, built)?;
-    let found = corner_for(&corners, chamfer.edge)?;
+    // The Lines the rebuild built: the same Lines in stored order, a rectangle,
+    // every Line on its side, the saved joint still a corner, room for the
+    // saved distance. Each refusal names the Chamfer.
+    let ids: Vec<_> = sketch.curves.iter().map(|c| c.id).collect();
+    if built.iter().map(|c| c.id).collect::<Vec<_>>() != ids {
+        return Err(CadError::input(format!(
+            "Chamfer {chamfer_id}: the plate is not drawn by the same four Lines in their \
+             stored order"
+        )));
+    }
+    let corners = corners_of_lines(base.id, built).map_err(|e| {
+        CadError::input(format!(
+            "Chamfer {chamfer_id}: the solved plate is no longer an axis-aligned rectangle ({e})"
+        ))
+    })?;
+    let start = |c: &crate::SketchCurve| match c.geometry {
+        crate::SketchGeometry::Line { start, .. } => [start.x, start.y],
+        _ => [f64::NAN; 2],
+    };
+    crate::fillet::keeps_every_side(
+        &ids,
+        &sketch.curves.iter().map(start).collect::<Vec<_>>(),
+        &built.iter().map(start).collect::<Vec<_>>(),
+    )
+    .map_err(|e| {
+        CadError::input(format!(
+            "Chamfer {chamfer_id} keeps its corner only while every Line keeps its side: {e}"
+        ))
+    })?;
+    let found = corner_for(&corners, chamfer.edge).map_err(|e| {
+        CadError::input(format!(
+            "Chamfer {chamfer_id}: its corner is not a corner of the solved plate ({e})"
+        ))
+    })?;
     let corner = ChamferCorner::of(&found);
-    corner.check_distance(chamfer.distance_mm)?;
+    corner.check_distance(chamfer.distance_mm).map_err(|e| {
+        CadError::input(format!(
+            "Chamfer {chamfer_id} of {} mm does not fit the solved plate: {e}",
+            chamfer.distance_mm
+        ))
+    })?;
     Ok(corner)
 }
 
@@ -1333,14 +1418,30 @@ mod tests {
             )
             .expect_err("a Cut"),
         );
-        named(
-            "constraints",
+        // §29D: the constraint editor reads the plate through the same reader;
+        // an empty request is still no request, but a Horizontal addition on the
+        // plate's first Line is accepted with the Chamfer as its context.
+        let line = sketch_of(&d).curves[0].id;
+        let edit = crate::SketchConstraintEdits {
+            remove: Vec::new(),
+            add: vec![crate::AddSketchConstraint::Line(
+                crate::AddLineConstraint::Line {
+                    curve: line,
+                    kind: crate::LineConstraintKind::Horizontal,
+                },
+            )],
+        };
+        let prepared = crate::prepare_sketch_constraints(&d, profile, &edit)
+            .expect("the constraint editor accepts the chamfered plate");
+        assert_eq!(prepared.chamfer().map(|c| c.feature), Some(id));
+        assert!(
             crate::prepare_sketch_constraints(
                 &d,
                 profile,
-                &crate::SketchConstraintEdits::default(),
+                &crate::SketchConstraintEdits::default()
             )
-            .expect_err("constraints"),
+            .is_err(),
+            "an empty request is still no request"
         );
         let fillet_radius = crate::prepare_fillet_radius(&d, id, 1.0).expect_err("not a Fillet");
         assert!(fillet_radius.to_string().contains("Fillet"));
@@ -1916,6 +2017,288 @@ mod tests {
         .expect("prepared");
         d.write_sketch_geometry(&prepared).expect("written");
         assert!(d.write_sketch_geometry(&other).is_err());
+        assert!(d.validate().expect("validates").is_ok());
+    }
+
+    /// Constraints written by the shipped preparation and writer: Horizontal on
+    /// the first Line and a length on the second (both managed).
+    fn constrain_plate(
+        d: &mut Document,
+        length: f64,
+    ) -> (ObjectId, crate::PreparedSketchConstraints) {
+        let lines = sketch_of(d).curves;
+        let profile = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("Sketch")
+            .id;
+        let edits = crate::SketchConstraintEdits {
+            remove: Vec::new(),
+            add: vec![
+                crate::AddSketchConstraint::Line(crate::AddLineConstraint::Line {
+                    curve: lines[0].id,
+                    kind: crate::LineConstraintKind::Horizontal,
+                }),
+                crate::AddSketchConstraint::Line(crate::AddLineConstraint::Line {
+                    curve: lines[1].id,
+                    kind: crate::LineConstraintKind::Distance(
+                        crate::LineLengthMm::new(length).expect("a length"),
+                    ),
+                }),
+            ],
+        };
+        let prepared = crate::prepare_sketch_constraints(d, profile, &edits).expect("prepared");
+        (profile, prepared)
+    }
+
+    /// §29D: the saved Chamfer is read through the one reader on a constrained
+    /// plate, with its corner stored and its distance's upper bound deferred: a
+    /// stored dimension is no evidence of the solved plate in either direction.
+    #[test]
+    fn a_constrained_plate_is_read_with_stored_facts_and_a_deferred_bound() {
+        let (_root, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 1, 2.0);
+        let free = target_of_saved(&d, id);
+        assert!(!free.constrained);
+        assert!(
+            free.check_distance(100.0).is_err(),
+            "the stored bound, free"
+        );
+        let (_, prepared) = constrain_plate(&mut d, 20.0);
+        d.write_sketch_constraints(&prepared).expect("written");
+        let saved = target_of_saved(&d, id);
+        assert!(saved.constrained);
+        assert_eq!(
+            saved.corner, free.corner,
+            "the stored corner is read as stored"
+        );
+        saved
+            .check_distance(100.0)
+            .expect("no stored bound is applied");
+        assert!(saved.check_distance(0.0005).is_err(), "the minimum stays");
+        assert!(saved.check_distance(f64::NAN).is_err(), "finiteness stays");
+        // The distance edit prepares a distance only the solved plate can judge.
+        let edit = prepare_chamfer_distance(&d, id, 100.0).expect("deferred");
+        assert!(edit.saved().constrained);
+        // The height edit reads the same plate; the coordinate editor refuses
+        // it, naming the Chamfer and the constraint editor.
+        crate::prepare_extrude_height(&d, target_of_base(&d), 9.0).expect("height");
+        let lines = sketch_of(&d).curves;
+        let vertices: Vec<crate::SketchVertex> = lines
+            .iter()
+            .map(|c| match c.geometry {
+                SketchGeometry::Line { start, .. } => crate::SketchVertex {
+                    curve_id: c.id,
+                    start_mm: [start.x, start.y],
+                },
+                _ => unreachable!(),
+            })
+            .collect();
+        let profile = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("Sketch")
+            .id;
+        let why = crate::replace_sketch_coordinates(&d, profile, &vertices)
+            .expect_err("a constrained plate")
+            .to_string();
+        assert!(
+            why.contains(&id.to_string()) && why.contains("constraint editor"),
+            "{why}"
+        );
+        // Removing every user constraint leaves the closure links, and the
+        // coordinate editor accepts the plate again.
+        let user: Vec<_> = sketch_of(&d)
+            .constraints
+            .iter()
+            .filter(|c| !matches!(c.rule, SketchConstraintRule::Coincident { .. }))
+            .map(|c| c.id)
+            .collect();
+        assert!(!user.is_empty());
+        let clear = crate::prepare_sketch_constraints(
+            &d,
+            profile,
+            &crate::SketchConstraintEdits {
+                remove: user,
+                add: Vec::new(),
+            },
+        )
+        .expect("prepared");
+        d.write_sketch_constraints(&clear).expect("written");
+        assert!(!target_of_saved(&d, id).constrained);
+        crate::replace_sketch_coordinates(&d, profile, &vertices).expect("closure-only again");
+    }
+
+    /// §29D: the evaluator's predicate on the Lines the rebuild built, with the
+    /// stored ones only as the starting guess: a solved plate larger or smaller
+    /// than stored, a turned side, a slanted plate and the exact bound.
+    #[test]
+    fn the_evaluator_judges_a_constrained_plate_on_its_solved_lines() {
+        let (_root, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 1, 2.5);
+        let (_, prepared) = constrain_plate(&mut d, 20.0);
+        d.write_sketch_constraints(&prepared).expect("written");
+        let objects = d.objects().expect("objects");
+        let chamfer = match &objects
+            .iter()
+            .find(|o| o.id == id)
+            .expect("chamfer")
+            .payload
+        {
+            ObjectPayload::Chamfer(c) => c.clone(),
+            _ => unreachable!(),
+        };
+        let stored = sketch_of(&d).curves;
+        let drawn = |rect: [f64; 4]| -> Vec<SketchCurve> {
+            let [x0, y0, w, dep] = rect;
+            let p = [[x0, y0], [x0 + w, y0], [x0 + w, y0 + dep], [x0, y0 + dep]];
+            // The plate is drawn like the saved one: same Lines, same order.
+            let n = stored.len();
+            let starts: Vec<[f64; 2]> = stored
+                .iter()
+                .map(|c| match c.geometry {
+                    SketchGeometry::Line { start, .. } => {
+                        let lx = stored
+                            .iter()
+                            .map(|c| match c.geometry {
+                                SketchGeometry::Line { start, .. } => start.x,
+                                _ => 0.0,
+                            })
+                            .fold(f64::MAX, f64::min);
+                        let ly = stored
+                            .iter()
+                            .map(|c| match c.geometry {
+                                SketchGeometry::Line { start, .. } => start.y,
+                                _ => 0.0,
+                            })
+                            .fold(f64::MAX, f64::min);
+                        [
+                            if start.x == lx { p[0][0] } else { p[1][0] },
+                            if start.y == ly { p[0][1] } else { p[2][1] },
+                        ]
+                    }
+                    _ => unreachable!(),
+                })
+                .collect();
+            (0..n)
+                .map(|i| SketchCurve {
+                    id: stored[i].id,
+                    construction: false,
+                    geometry: SketchGeometry::Line {
+                        start: Point2::new(starts[i][0], starts[i][1]).expect("point"),
+                        end: Point2::new(starts[(i + 1) % n][0], starts[(i + 1) % n][1])
+                            .expect("point"),
+                    },
+                })
+                .collect()
+        };
+        let ask = |lines: &[SketchCurve]| evaluable_chamfer(&objects, &chamfer, Some(lines));
+        // Larger than stored, and moved: accepted, the corner followed.
+        ask(&drawn([10.0, -5.0, 60.0, 30.0])).expect("a larger solved plate");
+        // Smaller than the stored plate but with room: accepted.
+        ask(&drawn([0.0, 0.0, 9.0, 4.0])).expect("a smaller solved plate with room");
+        // The exact bound on the solved sides, from the evaluator's own number.
+        let corner = ask(&drawn([0.0, 0.0, 30.0, 12.0])).expect("fits");
+        let at = corner.max_distance_mm;
+        assert_eq!(at, 12.0 - MIN_FLAT_MM);
+        let mut edge = chamfer.clone();
+        edge.distance_mm = at;
+        evaluable_chamfer(&objects, &edge, Some(&drawn([0.0, 0.0, 30.0, 12.0]))).expect("at");
+        edge.distance_mm = at.next_up();
+        let why = evaluable_chamfer(&objects, &edge, Some(&drawn([0.0, 0.0, 30.0, 12.0])))
+            .expect_err("the next float")
+            .to_string();
+        assert!(
+            why.contains(&id.to_string()) && why.contains("does not fit the solved plate"),
+            "{why}"
+        );
+        // Too short for the saved distance on the solved sides, though the
+        // stored ones are long.
+        let why = ask(&drawn([0.0, 0.0, 30.0, 2.0])).expect_err("a thin solved plate");
+        assert!(
+            why.to_string().contains("does not fit the solved plate"),
+            "{why}"
+        );
+        // A turned side: the plate is a rectangle, but a Line runs the other way.
+        let mut turned = drawn([0.0, 0.0, 30.0, 12.0]);
+        turned.reverse();
+        let why = ask(&turned)
+            .expect_err("a different Line order")
+            .to_string();
+        assert!(why.contains("same four Lines"), "{why}");
+        let mut flipped = drawn([30.0, 12.0, -30.0, -12.0]);
+        for c in &mut flipped {
+            c.construction = false;
+        }
+        let why = ask(&flipped)
+            .expect_err("every Line the other way")
+            .to_string();
+        assert!(
+            why.contains(&id.to_string())
+                && why.contains("keeps its corner only while every Line keeps its side"),
+            "{why}"
+        );
+        // Slanted: not an axis-aligned rectangle.
+        let mut slanted = drawn([0.0, 0.0, 30.0, 12.0]);
+        if let SketchGeometry::Line { start, .. } = &mut slanted[0].geometry {
+            start.y += 0.5;
+        }
+        let why = ask(&slanted).expect_err("a slanted plate").to_string();
+        assert!(why.contains(&id.to_string()), "{why}");
+        assert!(evaluable_chamfer(&objects, &chamfer, None).is_err());
+    }
+
+    /// §29D: the writer re-derives the constraint edit with the Chamfer's
+    /// context inside its transaction: a forged context and a stale prepared
+    /// edit (the distance edited after preparation) are refused, nothing written.
+    #[test]
+    fn the_constraint_writer_rederives_under_a_chamfer_and_refuses_forgery() {
+        let (_root, mut d, body) = plate(PLATE);
+        let id = chamfer_at(&mut d, body, 1, 2.0);
+        let (_, prepared) = constrain_plate(&mut d, 20.0);
+        let before = d.content_version().expect("version");
+        let mut forged = prepared.clone();
+        if let Some(c) = forged.chamfer.as_mut() {
+            c.distance_mm = 9.0;
+        }
+        assert!(
+            d.write_sketch_constraints(&forged).is_err(),
+            "a forged context"
+        );
+        let mut without = prepared.clone();
+        without.chamfer = None;
+        assert!(d.write_sketch_constraints(&without).is_err(), "no context");
+        let mut moved = prepared.clone();
+        if let Some(c) = moved.chamfer.as_mut() {
+            let lines = &sketch_of(&d).curves;
+            c.edge.joint = ProfileJoint::new(lines[0].id, lines[2].id).expect("joint");
+        }
+        assert!(
+            d.write_sketch_constraints(&moved).is_err(),
+            "another corner"
+        );
+        assert_eq!(
+            d.content_version().expect("version"),
+            before,
+            "nothing written"
+        );
+        // Stale: the Chamfer's distance moves after preparation.
+        let edit = prepare_chamfer_distance(&d, id, 3.0).expect("prepared");
+        d.write_chamfer_distance(&edit).expect("written");
+        assert!(
+            d.write_sketch_constraints(&prepared).is_err(),
+            "a stale edit"
+        );
+        // The honest, fresh one is written and carries the Chamfer unchanged.
+        let (_, fresh) = constrain_plate(&mut d, 20.0);
+        d.write_sketch_constraints(&fresh).expect("written");
+        let saved = target_of_saved(&d, id);
+        assert!(saved.constrained);
+        assert_eq!(saved.distance_mm, 3.0);
         assert!(d.validate().expect("validates").is_ok());
     }
 }

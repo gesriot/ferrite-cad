@@ -189,6 +189,19 @@ fn coordinate_choice(
             let ObjectPayload::Sketch(sketch) = &object.payload else {
                 return Err(unsupported("selected object is not a Sketch"));
             };
+            // §29D: the stored Lines of a constrained plate are the solver's
+            // starting approximation, not its drawing; a coordinate edit of them
+            // would bake numbers the constraints own. The user constraints are
+            // edited, or removed down to the closure links, first.
+            if saved.constrained {
+                return Err(unsupported(&format!(
+                    "coordinate editing of the plate under Chamfer {} is unavailable while its \
+                     Sketch carries user constraints; edit or remove them with the constraint \
+                     editor (edit-sketch-constraints-copy, §29D), which leaves the closure links \
+                     this editor accepts",
+                    saved.feature
+                )));
+            }
             let profile_use = SketchProfileUse::BlindExtrude {
                 feature: saved.base_feature,
                 height_mm: saved.height_mm,
@@ -315,13 +328,35 @@ pub(crate) fn constraint_frame<'a>(
     &'a crate::Sketch,
     SketchProfileUse,
     Option<crate::fillet_radius::FilletsOverPlate>,
+    Option<crate::SavedChamfer>,
 )> {
     if objects
         .iter()
         .any(|o| matches!(&o.payload, ObjectPayload::Revolve(r) if r.profile == object.id))
     {
         let (sketch, profile_use) = revolve_frame(document, objects, object)?;
-        return Ok((sketch, profile_use, None));
+        return Ok((sketch, profile_use, None, None));
+    }
+    // §29D: the base of the plate under the one saved Chamfer, read by the
+    // reader the distance, height and coordinate edits read. The constraint
+    // editor's managed family on that base is the plate's own to carry; a
+    // Chamfer outside the class refuses every Sketch of the document, naming it.
+    if let Some(saved) = crate::chamfer::saved_chamfer(document, objects)? {
+        if object.id != saved.profile {
+            return Err(unsupported(&format!(
+                "constraint editing of the plate under Chamfer {} requires its base Sketch {}",
+                saved.feature, saved.profile
+            )));
+        }
+        require_lossless_payload(object)?;
+        let ObjectPayload::Sketch(sketch) = &object.payload else {
+            return Err(unsupported("selected object is not a Sketch"));
+        };
+        let profile_use = SketchProfileUse::BlindExtrude {
+            feature: saved.base_feature,
+            height_mm: saved.height_mm,
+        };
+        return Ok((sketch, profile_use, None, Some(saved)));
     }
     match crate::fillet_radius::fillets_over_plate(document, objects) {
         Ok(None) => {}
@@ -341,7 +376,7 @@ pub(crate) fn constraint_frame<'a>(
                 feature: saved.previous,
                 height_mm: saved.height_mm,
             };
-            return Ok((sketch, profile_use, Some(over)));
+            return Ok((sketch, profile_use, Some(over), None));
         }
         Err(reason) => return Err(crate::fillet::filleted_outside_frame(objects, &reason)),
     }
@@ -352,6 +387,7 @@ pub(crate) fn constraint_frame<'a>(
             feature,
             height_mm: height,
         },
+        None,
         None,
     ))
 }

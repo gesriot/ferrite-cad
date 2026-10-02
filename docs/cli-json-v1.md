@@ -928,6 +928,25 @@ Sketch плиты под одной Chamfer. Аддитивно в `sketches[]`:
 класса — UUID виновной фичи или ограничения.
 [Контракт §29C и исполняемый рецепт](edit-chamfer-base-sketch.md).
 
+### Ограничения плиты под Chamfer (§29D)
+
+`edit-sketch-constraints-copy` (команда, request и коды 0/2/7 прежние) принимает
+базовый Sketch плиты под одной Chamfer. Аддитивно: `sketches[].constraint_edit.chamfer_base`
+— тот же объект, что `features[].chamfer_base`, на базовом Sketch и `null` на
+всех прочих; в этом объекте и в `chamfers[]` новое поле `profile_constrained`
+(`bool`; в `chamfers[]` — `null`, когда frame отказан). Для плиты с
+пользовательскими ограничениями (`profile_constrained: true`) `corner_mm`,
+`adjacent_lengths_mm` и все показанные координаты — **сохранённые** (начальное
+приближение решателя), а не геометрия детали, и `distance_edit.max_distance_mm`
+равен `null`: настоящая граница — на решённой плите, проверяется при каждой
+перестройке копии, и сохранённый размер не доказательство ни в одну сторону.
+`null` в `max_distance_mm` по-прежнему означает и отказ frame; различайте по
+`profile_constrained` и `distance_edit.available`. Старые поля и типы на
+плитах без ограничений не менялись (`max_distance_mm` — число). Отказы: решатель
+(`kind:"constraint"` с UUID ограничений) отдельно от отказа решённой плиты
+(`kind:"input"`, имя Chamfer и угла).
+[Контракт §29D и исполняемый рецепт](edit-chamfer-base-constraints.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

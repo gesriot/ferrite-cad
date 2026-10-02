@@ -226,7 +226,9 @@ the saved Chamfer and which of these are unavailable, with the reason. (§29B
 since made one exception: the plate's height is edited through `edit-extrude`,
 with the Chamfer kept — [the contract](edit-chamfer-base-height.md); §29C then
 made the base Sketch's coordinates a second one,
-[the contract](edit-chamfer-base-sketch.md); every other editor still refuses.)
+[the contract](edit-chamfer-base-sketch.md), and §29D the base Sketch's managed
+Line constraints a third, [the contract](edit-chamfer-base-constraints.md); every
+other editor still refuses.)
 
 ## Discovery (additive JSON)
 
