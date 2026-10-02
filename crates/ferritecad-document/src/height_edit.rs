@@ -223,9 +223,7 @@ pub fn prepare_extrude_height(
             saved.base_feature, saved.feature
         )));
     }
-    let (history, fillets) = if chamfer.is_some() {
-        (None, Vec::new())
-    } else if !has_history(document, &objects)? {
+    let (history, fillets) = if chamfer.is_some() || !has_history(document, &objects)? {
         (None, Vec::new())
     } else if let Some(over) = crate::fillet_radius::fillets_over_plate(document, &objects)? {
         // §28C: the plate under the one saved Fillet, through the frame the
