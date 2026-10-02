@@ -4335,3 +4335,27 @@ archive/SQLite version; the wire additions are `profile_constrained` and
 `null` for a constrained plate. Milestone 5C remains open.
 [Contract and recipe](edit-chamfer-base-constraints.md),
 [verification](edit-chamfer-base-constraints-verification.md).
+
+
+**§29D independent review (2026-10-02).** Fixed the constrained distance form's
+stale numeric bound; an executed widget regression failed before the fix and
+passed afterwards. Strengthened GUI SQL comparison to include every other
+object's payload/hash and schema version, with negative controls. Independent
+native matrix: 649 executed, five explicit N/A, one ignored benchmark. Actual
+GUI documents passed the 903-cell comparison, per-step preservation, cold refs,
+independent STL geometry, byte-equal CLI STL/FBX and pinned ufbx. The first GUI run
+was stopped for system pressure (218.392 MiB viewer peak); a fresh corrected
+bundle completed the remaining export/label checks and quit normally at
+252.595 MiB with unchanged swap. See the verification record for limitations and
+exact CI provenance; no claim that the historical OOM is solved.
+
+**Next product priority — §30A, pending: working document session.** Begin the
+normal editing workflow on the existing Extrude height route: Apply updates the
+accepted working document and scene without asking for a new filename; document
+Undo/Redo, dirty state, explicit Save/Save As, guarded atomic publication and
+Save/Discard/Cancel on document transitions. Export uses that accepted working
+version. A library-owned session reuses existing document/jobs operations; CLI
+copy commands retain their contracts. Other editors are migrated in later
+slices and must not silently act on stale disk contents meanwhile. This takes
+priority over more geometry after §29D. It does not complete Milestone 5C,
+recovery, persistent history, the full UI or the wider beta scope.

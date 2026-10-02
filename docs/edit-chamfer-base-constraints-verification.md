@@ -5,6 +5,79 @@ record of what was run, where, and what was not. It states the result of one hea
 the CI of the PR that carries it is recorded in the PR, not here, since a document
 cannot name the run of its own commit.
 
+## Independent macOS review — 2026-10-02
+
+Reviewed PR #80 through `e432435`, then fixed the distance-form label and the
+verification below in `c5a448f`. The subject code keeps the existing writer,
+solver, strict references and cache path; the review changed no geometry policy.
+
+The real window exposed a misleading `d ≤ 12.24 mm` in the edge description of a
+constrained plate. The following paragraph correctly deferred the bound, but the
+first label still used the stored approximation. The constrained form now labels
+**stored sides** and gives no numeric maximum; the unconstrained form retains its
+bound. The existing widget test was extended: it failed at an executed assertion
+on the old label, then passed after the fix, including acceptance of a draft above
+the stored bound. All three Chamfer widget/worker tests passed again, with the
+peer CLI and native libraries, followed by fmt and workspace clippy with all
+features/targets and `-D warnings`.
+
+Before that UI-only fix the independent native matrix executed **649 tests**:
+97 CLI Fillet/Chamfer, 30 constraints app, four Chamfer app, 16 edit app and
+502 document/jobs/eval. All passed. Five tests for different build configurations
+were explicit N/A, and one old timing benchmark was ignored. Release CLI/app and
+the arm64 bundle were built locally with pinned OCCT 8.0.1 and PlaneGCS, using
+one build job and the existing target. The extracted public recipe passed on the
+bundled CLI. Actionlint, licence, export boundary and diff checks passed. The
+large STEP campaign and local Windows/Linux GUI were not repeated.
+
+The actual window generated all seven documents in the scenario below:
+Undo/Redo, native Save Cancel, initial constraints, the refused 2.38 mm side,
+replacement at 20.5 mm, height 9.5 mm, Chamfer 15.25 mm, refused removal of the
+constraints, Chamfer back to 3 mm, removal keeping the closure, coordinate edit,
+and STL/FBX export. Each accepted copy opened asynchronously. Coordinate editing
+was unavailable while user constraints existed and available after their removal.
+Both refusals retained the draft and published nothing.
+
+The comparator now compares every SQL cell, with only the modification timestamp
+and the selected Sketch's payload hash excluded; its payload is compared as bytes
+after matching newly minted constraint UUIDs by their complete rules. Other
+objects' payloads, hashes and schema versions remain exact. The previous broad
+payload/hash exclusions and a vacuous assertion were removed. A real CLI height
+edit passed the old SQL comparison despite changing the Extrude; the strengthened
+comparison rejects it at `objects.payload`. A foreign-object hash mutation is
+also rejected. Schema-version changes in the per-step allowlist are permitted
+only at the explicit first constraint step. The fixture's GUI addition order is
+specified to preserve the payload's ordered constraints.
+
+On the actual GUI files the extracted comparator reports
+`FCAD_29D_GUI_COMPARE_OK cells=903 triangles=16`. Source hash, identities, strict
+cold references, all seven per-step SQL allowlists and independent oriented STL
+measurements passed. The GUI and CLI STL/FBX are byte-identical. Pinned ufbx 0.23.0
+read the actual exported FBX (`checks=6 failures=0`); its oriented triangles match
+the STL (`triangles=16`, worst coordinate difference `8.67e-19` metres).
+
+Resource limitation, recorded separately: watchdog stopped the first PID 45396
+on **system memory pressure level 2**, after the final STL and before FBX. Its
+sampled peak was **218.392 MiB**, below the 1536 MiB cap; this is not a viewer OOM
+fix or a clean first-run exit. A subsequent CUA observation relaunched an empty
+PID 47204 outside the watchdog; it was closed immediately and its exit checked.
+Once pressure returned to normal, a fresh corrected bundle ran under a new
+watchdog (PID 57668), showed the corrected label, reopened the actual GUI document
+and completed the FBX export. It quit normally, exit 0, sampled peak **252.595
+MiB**, pressure level 1 throughout. Swap stayed at 734134272 bytes in both watched
+runs. No viewer remained; no observation was made after the final Quit.
+
+Pre-fix CI was independently read, not inferred from workflow definitions:
+runtime run `37033057353` contains all **60 exact Chamfer gates per OS**, no skips,
+one native §29D recipe and **three** new ufbx/STL pairs on each OS. The earlier
+claim of nine new §29D pairs was corrected (nine is the three-OS sum). New runs
+`37061442078` (runtime), `37061441962` (PlaneGCS pin) and `37061446637` (ordinary CI)
+were started for code fix `c5a448f`; their final status is recorded on the PR,
+not presumed here. Later documentation changes do not change the tested binaries.
+Evidence: `/private/tmp/ferrite-pr80-review/` (logs, watch JSONL, extracted scripts,
+actual GUI files and screenshots), with a durable copy outside temporary storage.
+The historical OOM investigation and Milestone 5C remain open.
+
 ## What changed
 
 The existing constraint editor (`edit-sketch-constraints-copy`, **Edit constraints**)
