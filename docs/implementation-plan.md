@@ -4349,13 +4349,32 @@ bundle completed the remaining export/label checks and quit normally at
 252.595 MiB with unchanged swap. See the verification record for limitations and
 exact CI provenance; no claim that the historical OOM is solved.
 
-**Next product priority — §30A, pending: working document session.** Begin the
-normal editing workflow on the existing Extrude height route: Apply updates the
-accepted working document and scene without asking for a new filename; document
-Undo/Redo, dirty state, explicit Save/Save As, guarded atomic publication and
-Save/Discard/Cancel on document transitions. Export uses that accepted working
-version. A library-owned session reuses existing document/jobs operations; CLI
-copy commands retain their contracts. Other editors are migrated in later
-slices and must not silently act on stale disk contents meanwhile. This takes
-priority over more geometry after §29D. It does not complete Milestone 5C,
-recovery, persistent history, the full UI or the wider beta scope.
+**§30A — a working document session on the Extrude height route.** The open
+document now has one library owner, `DocumentSession`: the logical path, the saved
+checkpoint, a bounded accepted history of private immutable snapshots, and the
+rules for Apply, Undo/Redo, dirty, Save and Save As. On the Blind height of an
+Extrude (an ordinary plate, and a plate under one Chamfer with §29D constraints)
+the window now opens a `.fcad`, Apply rebuilds through the same copy operation
+`edit-extrude` uses without asking for a file name, the scene and the accepted
+version are replaced together, the title shows `*name`, Undo/Redo move through
+the accepted versions, and the file changes only on Save (version-guarded,
+atomic) or Save As (no-clobber). Open/New/closing the window ask Save/Discard/
+Cancel when something would be lost. Exports read the accepted working model.
+Dirty is a comparison of model content (`Document::model_version`), not a flag.
+The other editors are disabled, with the reason in words, while the document has
+unsaved changes (they read a file and write a new one) and are unchanged when it
+is clean. No new geometry, no CLI contract change.
+[Contract](document-session.md), [decision](decisions/0005-document-session.md),
+[verification and the GUI handoff](document-session-verification.md).
+
+*Obligations carried forward.* (1) Move the other editors (Sketch, constraints,
+Cut, Fillet, Chamfer radius/distance, circles, Revolve) onto the session one
+family at a time, so they edit the accepted document instead of being disabled
+while it is dirty. (2) Autosave and crash recovery; today a crashed process leaves
+its private directory in the system temporary directory and nothing reopens it.
+(3) Persistent revisions, a revision list, tabs. (4) The AppKit menu hook so that
+`Cmd+Q` takes the Save/Discard/Cancel path (it bypasses the window close request).
+(5) Close the lock-ignoring-writer window only if a platform primitive allows a
+compare-and-replace; until then it is documented, not closed. (6) A real-window
+run on the Mac of the scenario in the verification record. None of this completes
+Milestone 5C, the older OOM investigation or the general beta.

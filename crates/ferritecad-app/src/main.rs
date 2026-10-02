@@ -50,14 +50,6 @@ use ferritecad_document::{
 };
 use ferritecad_jobs::NewDocument;
 use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink};
-// What the tests below build their own kernels and scenes from; the shipped Open
-// reads through `sessions::open_for_view`.
-#[cfg(test)]
-use ferritecad_kernel::TessellationParams;
-#[cfg(test)]
-use ferritecad_occt::OcctKernel;
-#[cfg(test)]
-use ferritecad_scene::snapshot_of;
 use ferritecad_scene::{
     CatalogueEntry, EdgeNames, FaceMeaning, FaceNames, LoadedScene, SceneItem, Selection,
     SketchSolveFacts, VertexNames,
@@ -5023,6 +5015,9 @@ fn named_view(key: &Key) -> Option<StandardView> {
 mod tests {
     use std::time::Duration;
 
+    use ferritecad_kernel::TessellationParams;
+    use ferritecad_occt::OcctKernel;
+    use ferritecad_scene::snapshot_of;
     use ferritecad_viewport::PickId;
 
     use super::*;

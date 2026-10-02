@@ -713,6 +713,70 @@ jobs:
             if grep -q 'skipped:' base-height-writer.log || ! grep -Fq "test $gate ... ok" base-height-writer.log; then exit 1; fi
           done
 
+      - name: Open, edit, Undo, Redo and Save one document without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §30A: the session and the Save guard run on every OS against the
+          # mock kernel; each gate is named exactly and must really have run.
+          for gate in open_apply_undo_redo_save_is_one_state_machine \
+            editing_back_to_the_saved_value_is_clean_and_a_no_op_is_not_a_step \
+            a_new_step_after_undo_drops_redo_only_after_it_succeeded \
+            history_is_bounded_oldest_first_and_removes_its_files \
+            a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file \
+            the_session_removes_everything_it_made_and_a_holder_keeps_its_version \
+            opening_a_document_that_cannot_be_read_creates_no_session_directory \
+            a_reader_holding_a_version_keeps_it_through_eviction_and_undo; do
+            cargo test -p ferritecad-jobs --test session "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-job.log
+            grep -Eq "^test $gate \.\.\. ok$" session-job.log
+          done
+          saves="an_externally_modified_file_is_never_replaced_and_keeps_the_users_work \
+            a_replaced_missing_or_foreign_file_is_a_typed_conflict_not_an_overwrite \
+            save_as_refuses_an_occupied_path_and_succeeds_on_a_free_one \
+            a_read_only_file_is_refused_by_the_session_not_by_the_account_running_it \
+            a_change_between_the_first_compare_and_the_lock_is_caught_by_the_second_compare \
+            two_cooperating_savers_are_serialised_and_the_second_never_overwrites \
+            a_writer_that_ignores_the_lock_can_win_the_instant_before_the_rename \
+            cancellation_is_honoured_until_the_rename_and_late_cancellation_is_a_success \
+            a_failed_save_leaves_the_session_and_the_directory_exactly_as_they_were"
+          if [ "$RUNNER_OS" != Windows ]; then
+            saves="$saves a_symlink_is_saved_through_and_a_hard_linked_file_is_refused"
+          fi
+          for gate in $saves; do
+            cargo test -p ferritecad-jobs --test save "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee save-job.log
+            grep -Eq "^test $gate \.\.\. ok$" save-job.log
+          done
+          gate=model_version_sets_only_the_modified_stamp_aside
+          cargo test -p ferritecad-document --test snapshot "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee model-version.log
+          grep -Eq "^test $gate \.\.\. ok$" model-version.log
+          for gate in sessions::tests::a_version_is_current_only_when_its_picture_is_shown \
+            sessions::tests::a_failed_stale_or_cancelled_apply_changes_nothing \
+            sessions::tests::a_cancelled_edit_that_still_finished_is_dropped_and_leaves_no_file \
+            sessions::tests::a_picture_that_cannot_be_shown_drops_the_version_and_keeps_the_last_good_state \
+            sessions::tests::a_no_op_apply_is_reported_and_adds_nothing \
+            sessions::tests::undo_and_redo_move_only_when_their_picture_is_shown \
+            sessions::tests::save_moves_the_checkpoint_only_when_the_file_was_published \
+            sessions::tests::a_cancelled_save_changes_nothing_and_says_so \
+            sessions::tests::replacing_the_document_asks_only_when_something_would_be_lost \
+            sessions::tests::the_name_is_the_users_never_the_private_file \
+            sessions::tests::stopping_joins_the_worker_and_removes_every_private_file \
+            sessions::tests::without_a_kernel_an_apply_is_refused_and_the_document_stays_clean \
+            tests::document_chords_are_the_platforms_and_leave_text_undo_to_the_field \
+            tests::the_title_marks_unsaved_changes_and_never_names_a_private_file \
+            dialogs::tests::only_a_clear_save_or_discard_is_not_a_cancel \
+            edits::tests::the_height_form_offers_apply_and_withholds_the_copy_workflow_while_dirty \
+            exports::stl::tests::an_export_is_never_written_over_the_users_document_though_the_model_is_read_elsewhere
+          do
+            cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-app.log
+            if grep -q 'skipped:' session-app.log || ! grep -Fq "test $gate ... ok" session-app.log; then exit 1; fi
+          done
+          for gate in panels::tests::the_document_commands_are_offered_exactly_when_they_would_do_something \
+            panels::tests::unsaved_changes_and_the_last_outcome_are_on_the_screen_in_words
+          do
+            cargo test -p ferritecad-ui --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-ui.log
+            if ! grep -Fq "test $gate ... ok" session-ui.log; then exit 1; fi
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |
