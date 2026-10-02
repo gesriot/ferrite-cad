@@ -880,7 +880,7 @@ pub struct PreparedSketchConstraints {
     /// order; empty for a Sketch no Fillet rounds.
     fillets: Vec<crate::SavedFillet>,
     /// §29D: the Chamfer the frame read with this Sketch, if any.
-    chamfer: Option<crate::SavedChamfer>,
+    pub(crate) chamfer: Option<crate::SavedChamfer>,
 }
 impl PreparedSketchConstraints {
     pub fn object(&self) -> &ObjectRecord {
