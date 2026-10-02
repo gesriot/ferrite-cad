@@ -268,10 +268,13 @@ fn native_the_solved_chamfer_is_at_its_own_corner_not_another_with_the_same_volu
         "opposite corners"
     );
     let rect = rect_of(&meshes[0].2);
-    let at_of = |m: &(Mesh, Cham, Vec<[f64; 2]>, Vec<[f64; 2]>, [f64; 2])| {
-        m.2[m.3.iter().position(|v| *v == m.4).expect("corner")]
+    let at_of = |solved: &[[f64; 2]], stored: &[[f64; 2]], corner: [f64; 2]| {
+        solved[stored.iter().position(|v| *v == corner).expect("corner")]
     };
-    let (wrong, right) = (at_of(&meshes[1]), at_of(&meshes[0]));
+    let (wrong, right) = (
+        at_of(&meshes[1].2, &meshes[1].3, meshes[1].4),
+        at_of(&meshes[0].2, &meshes[0].3, meshes[0].4),
+    );
     check_mesh_c(&meshes[0].0, rect, right, 2.5, H);
     let swapped = std::panic::catch_unwind(|| check_mesh_c(&meshes[0].0, rect, wrong, 2.5, H));
     assert!(swapped.is_err(), "the other corner must fail on this mesh");

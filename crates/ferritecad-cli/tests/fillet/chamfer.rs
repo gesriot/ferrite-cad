@@ -1454,10 +1454,6 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
         .as_str()
         .expect("version")
         .to_owned();
-    let sketch = catalog["sketches"][0]["sketch_id"]
-        .as_str()
-        .expect("sketch")
-        .to_owned();
     let base = catalog["bodies"][0]["chamfer_edge"].clone();
     assert_eq!(base["available"], false);
     let before = std::fs::read(&copy).expect("bytes");

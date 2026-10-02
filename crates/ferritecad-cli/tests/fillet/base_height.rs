@@ -484,10 +484,6 @@ fn native_after_a_height_edit_every_other_editor_still_names_the_chamfer() {
     let (copy, id, _) = chamfer_at(&f, &f.source, [X0, Y0 + D], 2.0, "src");
     let (edited, _) = heightened_plain(&f, &copy, 7.25, "edited");
     let (base, version, catalog) = base_and_version(&edited);
-    let sketch = catalog["sketches"][0]["sketch_id"]
-        .as_str()
-        .expect("sketch")
-        .to_owned();
     // §29C/§29D: the Sketch's coordinates and its Line constraints are both
     // editable under the Chamfer.
     assert_eq!(catalog["sketches"][0]["editable"], true);
@@ -496,7 +492,7 @@ fn native_after_a_height_edit_every_other_editor_still_names_the_chamfer() {
         catalog["sketches"][0]["constraint_edit"]["chamfer_base"],
         catalog["features"][0]["chamfer_base"]
     );
-    let _ = (&sketch, &version, &id);
+    let _ = &id;
     // A second height edit of the edited plate is the same operation again.
     let again = f.root.path().join("again.fcad");
     reply(
