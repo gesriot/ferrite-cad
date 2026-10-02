@@ -27,6 +27,15 @@ pub struct Chosen {
     pub view: Option<StandardView>,
     /// The user wants to open a different document.
     pub open: bool,
+    /// The user wants the accepted changes written to the document's file.
+    pub save: bool,
+    /// The user wants the accepted model written under a new name.
+    pub save_as: bool,
+    /// The user wants the last accepted change taken back, or brought back.
+    pub undo_document: bool,
+    pub redo_document: bool,
+    /// The user has stopped waiting for the Apply, Undo, Redo or Save in flight.
+    pub cancel_document: bool,
     /// The user wants to make a new document.
     ///
     /// A request to be asked what it should contain, and nothing more. What
@@ -1142,6 +1151,21 @@ pub struct Activity<'a> {
     pub can_create_document: bool,
     pub can_open: bool,
     pub can_cancel_create: bool,
+    /// Whether the document has accepted changes that are not on disk and no
+    /// operation is running: the one condition under which Save writes anything.
+    pub can_save: bool,
+    /// Whether the open document can be written under a new name.
+    pub can_save_as: bool,
+    /// Whether an accepted change can be taken back, and brought back. The
+    /// document's own history, not the local history of a form being typed.
+    pub can_undo_document: bool,
+    pub can_redo_document: bool,
+    /// Whether an Apply, Undo, Redo or Save is running and can be stopped.
+    pub can_cancel_document: bool,
+    /// Whether the document has changes that are not saved.
+    pub dirty: bool,
+    /// What the last thing done to the document said, in a sentence.
+    pub document_line: &'a str,
     /// Whether there is a document on screen that was accepted and can
     /// therefore be written out. Not "a document was asked for": an Open that
     /// failed or was given up on leaves nothing to export.
@@ -1203,6 +1227,35 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
         if activity.can_cancel_create {
             chosen.cancel_create = ui.button("Cancel creation").clicked();
         }
+        // The document's own actions, together: what is accepted is written by
+        // Save and by nothing else, and each accepted change is one step of
+        // Undo and Redo. Named plainly (the local Undo of a form is "Undo
+        // draft", and the picture's is "Undo visibility"), disabled rather than
+        // hidden, with the keys on the hover text.
+        chosen.save = ui
+            .add_enabled(activity.can_save, egui::Button::new(SAVE))
+            .on_hover_text(format!(
+                "Write the accepted changes to the file ({SHORTCUT_PRIMARY}+S)"
+            ))
+            .clicked();
+        chosen.save_as = ui
+            .add_enabled(activity.can_save_as, egui::Button::new(SAVE_AS))
+            .on_hover_text(format!(
+                "Write the accepted model to a new file ({SHORTCUT_PRIMARY}+Shift+S)"
+            ))
+            .clicked();
+        chosen.undo_document = ui
+            .add_enabled(activity.can_undo_document, egui::Button::new(UNDO_DOCUMENT))
+            .on_hover_text(format!(
+                "Take back the last accepted change ({SHORTCUT_PRIMARY}+Z)"
+            ))
+            .clicked();
+        chosen.redo_document = ui
+            .add_enabled(activity.can_redo_document, egui::Button::new(REDO_DOCUMENT))
+            .on_hover_text(format!(
+                "Bring back the change taken back ({SHORTCUT_PRIMARY}+Shift+Z)"
+            ))
+            .clicked();
         // Beside it, because it is the other thing a person does to a whole
         // document rather than to the view of one. Disabled rather than
         // hidden, on the same terms as every other action here, and disabled
@@ -1312,8 +1365,29 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
         });
     }
     ui.add(egui::Label::new(activity.line).wrap());
+    if activity.dirty {
+        ui.add(
+            egui::Label::new("Unsaved changes: the file on disk is unchanged until you Save.")
+                .wrap(),
+        );
+    }
+    if !activity.document_line.is_empty() {
+        ui.add(egui::Label::new(activity.document_line).wrap());
+    }
     chosen
 }
+
+/// What the buttons that act on the whole open document are called.
+pub const SAVE: &str = "Save";
+pub const SAVE_AS: &str = "Save As…";
+pub const UNDO_DOCUMENT: &str = "Undo";
+pub const REDO_DOCUMENT: &str = "Redo";
+
+/// The modifier the platform's document shortcuts use, as the hover text names it.
+#[cfg(target_os = "macos")]
+pub const SHORTCUT_PRIMARY: &str = "Cmd";
+#[cfg(not(target_os = "macos"))]
+pub const SHORTCUT_PRIMARY: &str = "Ctrl";
 
 /// Every standard view, with what to call it and the key that reaches it.
 ///

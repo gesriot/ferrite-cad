@@ -933,6 +933,7 @@ fn no_native_stl_refuses_geometry_without_touching_files() {
     doc.close().expect("close");
     let intent = StlIntent {
         document: source.clone(),
+        alias: source.clone(),
         body,
         params: TessellationParams::default(),
     };

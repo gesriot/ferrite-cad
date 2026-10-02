@@ -103,11 +103,27 @@ impl Edits {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn draw(
         &mut self,
         ui: &mut egui::Ui,
         can_begin: bool,
         unavailable: Option<&str>,
+    ) -> EditChoice {
+        self.draw_with(
+            ui,
+            can_begin,
+            unavailable,
+            ferritecad_ui::HeightState::default(),
+        )
+    }
+
+    pub(crate) fn draw_with(
+        &mut self,
+        ui: &mut egui::Ui,
+        can_begin: bool,
+        unavailable: Option<&str>,
+        offer: ferritecad_ui::HeightState,
     ) -> EditChoice {
         if let Some(form) = &mut self.form {
             Self::validate_form(form);
@@ -117,12 +133,25 @@ impl Edits {
             can_begin,
             unavailable,
             self.form.as_mut().map(|f| &mut f.shown),
-            self.running.is_some(),
-            self.running
-                .as_ref()
-                .is_some_and(|r| !r.cancel.is_cancelled()),
             &self.status,
+            ferritecad_ui::HeightState {
+                running: self.running.is_some(),
+                can_cancel: self
+                    .running
+                    .as_ref()
+                    .is_some_and(|r| !r.cancel.is_cancelled()),
+                ..offer
+            },
         )
+    }
+
+    /// What Apply asks the session for: the chosen extrusion and its validated new
+    /// height. `None` (and the reason on the form) when the draft is not a request.
+    /// The draft is not consumed: a failed Apply leaves it as it was typed.
+    pub(crate) fn apply_request(&mut self) -> Option<(ferritecad_types::ObjectId, f64)> {
+        let form = self.form.as_mut()?;
+        let distance = Self::validate_form(form)?;
+        Some((form.shown.selected?, distance))
     }
 
     pub(crate) fn cancel(&mut self) {

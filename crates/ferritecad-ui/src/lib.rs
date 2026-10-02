@@ -20,17 +20,17 @@ mod edit;
 mod input;
 mod panels;
 
-pub use edit::{EditChoice, EditExtrudeForm, ExtrusionRow, edit_extrude_panel};
+pub use edit::{EditChoice, EditExtrudeForm, ExtrusionRow, HeightState, edit_extrude_panel};
 pub use input::{Hover, PointerButton, ViewportEvent, ViewportInput};
 pub use panels::{
     Activity, CANCEL_EXPORT, CHOOSE_LOCATION, Chosen, ConflictingRule, EMPTY_DOCUMENT, EXPORT_FBX,
     EdgeName, ExportOutcome, FRAME_ALL_KEY, FRAME_KEY, FaceName, GeometryUnavailable, HIDE_KEY,
     ISOLATE_KEY, LENGTH_UNIT, NEW_DOCUMENT, NEW_DOCUMENT_TITLE, NewChoice, NewContent,
-    NewDocumentForm, OmittedDefinition, OpenFailure, PROJECTION_KEY, PublishedFile,
-    REPLACE_EXISTING, RedundantExplanation, ReplaceChoice, RowVisibility, Rows, SAMPLE_PLATE,
-    SHOW_ALL_KEY, Selected, SolvedSketch, TopologyName, VIEWS, VertexName, create_panel,
-    definitions_panel, export_panel, new_document_form, open_failure_panel, replace_confirmation,
-    selection_inspector, sketch_solves_panel, toolbar,
+    NewDocumentForm, OmittedDefinition, OpenFailure, PROJECTION_KEY, PublishedFile, REDO_DOCUMENT,
+    REPLACE_EXISTING, RedundantExplanation, ReplaceChoice, RowVisibility, Rows, SAMPLE_PLATE, SAVE,
+    SAVE_AS, SHORTCUT_PRIMARY, SHOW_ALL_KEY, Selected, SolvedSketch, TopologyName, UNDO_DOCUMENT,
+    VIEWS, VertexName, create_panel, definitions_panel, export_panel, new_document_form,
+    open_failure_panel, replace_confirmation, selection_inspector, sketch_solves_panel, toolbar,
 };
 
 mod stl;

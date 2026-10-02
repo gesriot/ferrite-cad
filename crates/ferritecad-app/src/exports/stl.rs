@@ -12,13 +12,19 @@ use ferritecad_ui::{StlBodyRow, StlExportForm};
 /// Captured together, from the accepted scene/form, before the Save dialog.
 #[derive(Debug, Clone)]
 pub(crate) struct StlIntent {
+    /// What is read: the file the accepted model lives in.
     pub document: PathBuf,
+    /// What the user calls the document: the dialog's suggested name and folder, and
+    /// the file an export must never be written over. The same as `document`
+    /// unless an open document session keeps the model in a private file.
+    pub alias: PathBuf,
     pub body: ObjectId,
     pub params: TessellationParams,
 }
 
 pub(super) struct StlForm {
     document: PathBuf,
+    alias: PathBuf,
     shown: StlExportForm,
 }
 
@@ -38,9 +44,22 @@ impl Exports {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn ask_stl(
         &mut self,
         document: &Path,
+        bodies: Vec<StlBody>,
+        input: &mut ViewportInput,
+    ) -> bool {
+        self.ask_stl_for(document, document, bodies, input)
+    }
+
+    /// As [`Self::ask_stl`], for a document whose model is read from `document` but
+    /// which the user knows by `alias`.
+    pub(crate) fn ask_stl_for(
+        &mut self,
+        document: &Path,
+        alias: &Path,
         bodies: Vec<StlBody>,
         input: &mut ViewportInput,
     ) -> bool {
@@ -50,6 +69,7 @@ impl Exports {
         super::leave_document(self, input);
         self.stl_form = Some(StlForm {
             document: document.to_path_buf(),
+            alias: alias.to_path_buf(),
             shown: StlExportForm {
                 selected: if bodies.len() == 1 {
                     Some(bodies[0].id)
@@ -91,6 +111,7 @@ impl Exports {
                 })?;
             Ok(StlIntent {
                 document: form.document.clone(),
+                alias: form.alias.clone(),
                 body,
                 params: TessellationParams::new(linear, angular, false)?,
             })
@@ -119,7 +140,7 @@ pub(crate) fn begin_stl_export(
     let started = begin_export_for(
         exports,
         input,
-        Some(&intent.document),
+        Some(&intent.alias),
         chosen,
         STL_SOURCE_IS_DESTINATION,
         spawn,
@@ -140,7 +161,7 @@ pub(crate) fn confirm_stl_export(
     confirm_export_for(
         exports,
         input,
-        Some(&intent.document),
+        Some(&intent.alias),
         choice,
         STL_SOURCE_IS_DESTINATION,
         spawn,
