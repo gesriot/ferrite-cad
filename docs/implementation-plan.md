@@ -4273,9 +4273,24 @@ pinned ufbx 6/0 and the oriented 16-triangle join passed. Viewer peak 209.626 Mi
 normal pressure, unchanged swap, exit 0, no relaunch. Fixed-code native CI must
 finish before merge; the older OOM remains unexplained.
 
-**§29C — next, not implemented:** edit the base Sketch's coordinates below one
-Chamfer through the existing UI/CLI copy job. Preserve Line/edge/corner UUIDs,
-height and distance; judge the saved distance against the edited rectangle's
-adjacent sides. Reuse the saved reader, prepared edit and transactional writer,
-strict names and existing draft history. Constraint editing below Chamfer,
-a second Chamfer and mixed Fillet/Chamfer histories remain outside this slice.
+**§29C — the base Sketch of a chamfered plate, in a new copy.** The existing
+`edit-sketch-copy` and **Edit saved Sketch — new copy** now move and resize the
+four stored vertices of the base Sketch under the one §29A Chamfer. The Chamfer
+stays on the same vertex (found by its two Line UUIDs, never by row or by the old
+coordinates) with the same distance; height, history, Body tip and all seven names
+are kept, and one object row's payload and hash and the stamp are the only SQL
+cells that move. One shared mechanism: the distance edit's own reader
+(`saved_chamfer`) read by `coordinate_choice`, the one validator
+`SketchChoice::validate_coordinates` (still a rectangle, every Line keeps its
+side, the joint still a corner, the saved distance within `0.001 ≤ d ≤
+min(adjacent sides) − 0.01` on the NEW sides, exact at the bound and never
+reduced), the writer's transactional re-derivation, the existing copy job with the
+strict reference rule, cold rebuild and atomic publication. No new command,
+request, payload, capability or archive/SQLite version; the only wire addition is
+`sketches[].chamfer_base`. Measured on the B-Rep (plane, outward normal, area
+`d·√2·h` at the chosen corner of the new plate, volume) and on an independent STL
+parse; the cache misses for the Extrude and the Chamfer on a new plate. Constraint
+editors, a second Chamfer, a Fillet or Cut beside it stay refused by UUID.
+Milestone 5C remains open.
+[Contract and recipe](edit-chamfer-base-sketch.md),
+[verification](edit-chamfer-base-sketch-verification.md).
