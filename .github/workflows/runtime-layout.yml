@@ -2301,6 +2301,7 @@ jobs:
             chamfer::base_height::native_the_height_of_a_chamfered_plate_changes_at_every_corner_in_three_orders \
             chamfer::base_height::native_the_height_edit_keeps_the_chosen_corner_not_another_with_the_same_volume \
             chamfer::base_height::native_height_refusals_races_and_guards_are_atomic_under_a_chamfer \
+            chamfer::base_height::native_chamfer_height_requires_every_saved_reference_to_resolve \
             chamfer::base_height::native_after_a_height_edit_every_other_editor_still_names_the_chamfer \
             chamfer::base_height::chamfer_base_height_discovery_and_protocol_without_native
           do

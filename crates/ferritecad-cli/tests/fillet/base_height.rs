@@ -398,6 +398,75 @@ fn native_height_refusals_races_and_guards_are_atomic_under_a_chamfer() {
     assert_eq!(entries(f.root.path()), names, "a refusal left something");
 }
 
+/// The shared height job must apply the strict reference rule to a Chamfer,
+/// including references owned by its base, not only the Chamfer's own names.
+#[test]
+fn native_chamfer_height_requires_every_saved_reference_to_resolve() {
+    if !native() {
+        return;
+    }
+    for unresolved in [false, true] {
+        let f = chamfered_without_kernel(Plate::new(CCW), [X0 + W, Y0], DIST);
+        let base = uuid(&f.catalog["features"][0]["feature_id"]);
+        let mut document = Document::open(&f.source).expect("source");
+        let mut reference = document
+            .topology_refs()
+            .expect("refs")
+            .into_iter()
+            .find(|r| r.owner == base)
+            .expect("a saved base reference");
+        reference.id = ferritecad_types::StableEntityId::new();
+        if unresolved {
+            reference.output_role = SemanticRole::ExtrudeSide {
+                profile_segment: ferritecad_types::StableEntityId::new(),
+            };
+        }
+        document
+            .write(|writer| writer.put_topology_ref(&reference))
+            .expect("additional base reference");
+        assert!(document.validate().expect("validate").is_ok());
+        // This is a supported Chamfer history; only resolving the reference
+        // against a real rebuild distinguishes it from the positive control.
+        ferritecad_document::prepare_extrude_height(&document, base, 9.5)
+            .expect("structural preparation");
+        document.close().expect("close");
+        let total = stored_count(&f.source);
+        let rebuilt = cli()
+            .arg("rebuild")
+            .arg(&f.source)
+            .arg("--cold")
+            .output()
+            .expect("rebuild");
+        assert!(rebuilt.status.success(), "{rebuilt:?}");
+        let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
+        let resolved = total - usize::from(unresolved);
+        assert!(
+            text.contains(&format!("{resolved} of {total} stored references resolved")),
+            "{text}"
+        );
+        let (base, version, _) = base_and_version(&f.source);
+        let before = std::fs::read(&f.source).expect("bytes");
+        let names = entries(f.root.path());
+        let output = f.root.path().join("height.fcad");
+        let answer = reply(
+            raise(&f.source, &base, "9.5", &version, &output)
+                .output()
+                .expect("edit process"),
+            OP,
+            if unresolved { 2 } else { 0 },
+        );
+        if unresolved {
+            assert_eq!(refused(&answer), "topology", "{answer}");
+            assert!(!output.exists());
+            assert_eq!(entries(f.root.path()), names, "scratch leaked");
+        } else {
+            assert_eq!(stored_refs(&output), stored_refs(&f.source));
+            assert_eq!(inspect(&output)["features"][0]["distance_mm"], 9.5);
+        }
+        assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
+    }
+}
+
 /// After a height edit every other editor still names the Chamfer, and the
 /// evaluator still refuses a saved Chamfer outside its class.
 #[test]
