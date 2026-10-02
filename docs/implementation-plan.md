@@ -4242,8 +4242,24 @@ pinned ufbx 6/0, 16 oriented triangles, peak 333.283 MiB, pressure normal,
 unchanged swap, exit 0. The earlier pressure-aborted attempt is not counted as
 a guarded GUI success; full details are in the verification record.
 
-**§29B — next, not implemented:** edit the base Extrude's height below one
-saved rectangular-corner Chamfer through the existing Edit extrusion /
-`edit-extrude` copy operation, preserving its distance, edge and all names.
-Sketch/constraint editing below Chamfer, another Chamfer and mixed histories
-remain outside this planned slice.
+**§29B — the base height of a chamfered plate, in a new copy.** The existing
+`edit-extrude` and **Edit extrusion…** now change the Blind height of the base
+Extrude under the one §29A Chamfer. The Chamfer keeps its UUID, edge, distance
+and all seven names; one object row's payload and hash and the stamp are the
+only SQL cells that move. One shared mechanism: the distance edit's own reader
+(`saved_chamfer`) read first, the prepared edit carrying it, the writer
+re-deriving it in its transaction, the existing copy job, strict cold rebuild
+and atomic publication. No new command, request, payload, capability or
+archive/SQLite version; the only wire addition is `features[].chamfer_base`.
+Height policy measured on OCCT 8.0.1: the Chamfer adds no bound (its distance
+bound comes from the adjacent sides); OCCT chamfers from 1.2e-5 mm up and refuses
+1e-5 mm and below, reported as `kernel`, nothing clamped. Measured on the B-Rep
+at the chosen corner and on an independent STL parse; the cache misses for the
+plate and the Chamfer at a new height. Every other editor still refuses by the
+Chamfer's UUID. Milestone 5C remains open.
+[Contract and recipe](edit-chamfer-base-height.md),
+[verification](edit-chamfer-base-height-verification.md).
+
+**§29C — next, not implemented:** not chosen yet. Sketch/constraint editing
+below a Chamfer, another Chamfer and mixed Fillet/Chamfer histories remain
+outside the slices so far.

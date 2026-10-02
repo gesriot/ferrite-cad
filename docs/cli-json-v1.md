@@ -904,6 +904,18 @@ Fillet 1, — `input`, ничего не записано.
 `max_distance_mm`). Отказ называет UUID Chamfer, либо Line/ограничения.
 [Контракт §29A и исполняемый рецепт](rectangular-corner-chamfer.md).
 
+### Высота плиты под Chamfer (§29B)
+
+`edit-extrude` (команда, request и коды 0/2/7 прежние) принимает базовый Extrude
+под одной Chamfer; её `feature_id` как `--feature` отказывает с UUID. Аддитивно
+в `features[]`: `chamfer_base` — `null` на всех прочих строках, на базовом
+Extrude `{chamfer_feature_id, body_id, edge:{feature_id,joint}, corner_mm,
+distance_mm, distance_unit:"mm"}`. Все прежние поля и типы (`base_height_edit*`,
+`fillet_base`, `fillet_history`, `distance_mm`) не менялись; `edit_extrude`
+`available:true` для такого документа. Отказ для Chamfer вне класса называет UUID
+виновной фичи или ограничения.
+[Контракт §29B и исполняемый рецепт](edit-chamfer-base-height.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH
