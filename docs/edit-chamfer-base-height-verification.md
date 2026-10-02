@@ -106,7 +106,20 @@ copy, and the copy's bytes are unchanged (`FCAD_29B_COMPAT_OK`). A document
 
 ## CI
 
-(filled in after the PR's checks)
+Pull request [#78](https://github.com/gesriot/ferrite-cad/pull/78), **code head**
+`f05584e4ca42184a6a6b6afee60e38bf580ec3fe` (later commits change only this
+record). These are the PR's runs, not post-merge runs of `main`.
+
+- Ordinary CI [36946074908](https://github.com/gesriot/ferrite-cad/actions/runs/36946074908): success (includes the stub step with the §29B discovery/protocol, widget and document gates and `FCAD_29B_RECIPE_NO_KERNEL`).
+- Combined runtime layout [36946056568](https://github.com/gesriot/ferrite-cad/actions/runs/36946056568): success on Linux, macOS and Windows plus the three-platform comparison (the OCCT-without-solver `FCAD_29B_RECIPE_OK` step, the native Chamfer step with the five `base_height` CLI gates, two document gates, two app gates and the recipe, and the pinned-ufbx step with `FCAD_CHAMFER_HEIGHT_UFBX_EXECUTED`).
+- planegcs pin [36946056443](https://github.com/gesriot/ferrite-cad/actions/runs/36946056443): success.
+- The post-merge runs of `main` at the base `06d1e60` (ordinary CI [36942146644](https://github.com/gesriot/ferrite-cad/actions/runs/36942146644), runtime layout [36942146856](https://github.com/gesriot/ferrite-cad/actions/runs/36942146856), planegcs pin, notices and both SBOMs) were `in_progress` when this work began and have since all completed `success`; they are the base's, not this PR's.
+
+Only step conclusions and job metadata were read; the full job logs were not
+downloaded, so per-step test counts are an inference from the gates (each fails its
+job unless its exact test passed and each marker was grepped). **Final docs
+head:** the CI of the commit that carries this section is reported in the PR
+and not here, since a document cannot name the run of its own commit.
 
 ## Limits
 
