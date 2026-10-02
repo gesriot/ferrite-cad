@@ -117,7 +117,7 @@ draft; a published copy opens asynchronously.
 ### Out of scope, refused
 
 A second Chamfer, a Fillet or Cut beside it, a dimension or any non-closure
-constraint (the constraint editors still refuse a chamfered plate by its UUID), a
+constraint (the constraint editors accept a chamfered plate since §29D, see [its contract](edit-chamfer-base-constraints.md)), a
 different edge, ThroughAll, an arbitrary plane, in-place Save and live preview.
 No new payload, capability, archive or schema version is needed or added.
 Milestone 5C is not complete.

@@ -37,7 +37,8 @@ the height becomes editable here.
 Everything else keeps refusing a chamfered part **by naming the Chamfer UUID**:
 `refuse_chamfered` is not disabled for any other editor — the Sketch
 constraints (the Sketch's coordinates became editable in
-[§29C](edit-chamfer-base-sketch.md)), circle and annulus edits, Cut add and edit,
+[§29C](edit-chamfer-base-sketch.md) and its constraints in
+[§29D](edit-chamfer-base-constraints.md)), circle and annulus edits, Cut add and edit,
 Revolve edits, a Fillet or a second Chamfer, and `chamfer-edge-copy` on a
 chamfered plate. `edit-chamfer-distance` is unchanged and works on the copy
 this edit publishes.
@@ -117,7 +118,7 @@ and **Save Cancel** keep the draft.
 
 ### Out of scope, refused
 
-Sketch or constraint edits under a Chamfer, a second Chamfer, a Fillet or Cut
+Sketch or constraint edits under a Chamfer (both opened later: §29C, §29D), a second Chamfer, a Fillet or Cut
 beside it, changing the Chamfer's edge, ThroughAll, an arbitrary plane, chains,
 in-place Save and live preview. Milestone 5C is not complete.
 

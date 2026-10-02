@@ -141,13 +141,19 @@ OCCT refuses a plate thinner than about 1e-5 mm). The four vertices of its base
 Sketch move in a new copy through the existing **Edit saved Sketch** or
 `edit-sketch-copy`: the plate may be made larger, smaller or moved, the Chamfer
 stays on the same vertex (by its two Line UUIDs) with the same distance, which
-must still fit the new adjacent sides (exact at the bound, never reduced). Every
+must still fit the new adjacent sides (exact at the bound, never reduced). The
+plate under one Chamfer can also be dimensioned with the existing constraint
+editor (**Edit constraints** / `edit-sketch-constraints-copy`): PlaneGCS decides
+the rectangle, the Chamfer stays on the same corner with the same distance, and the
+distance must fit the SOLVED adjacent sides (checked at every rebuild; the stored
+coordinates stay the solver's starting guess). Every
 other editor refuses a chamfered Body by the Chamfer's UUID, a second Chamfer or
 a Fillet after one is not supported, and a build from before the Chamfer opens such a document
 read-only and refuses to rebuild it.
 [One Chamfer: contract and recipe](docs/rectangular-corner-chamfer.md).
 [A chamfered plate's height: contract and recipe](docs/edit-chamfer-base-height.md).
 [A chamfered plate's base Sketch: contract and recipe](docs/edit-chamfer-base-sketch.md).
+[A chamfered plate's constraints: contract and recipe](docs/edit-chamfer-base-constraints.md).
 [All four corners: contract and recipe](docs/rectangular-fillet-history.md).
 [Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
 [Fillet radius edit contract and recipe](docs/edit-fillet-radius.md).
