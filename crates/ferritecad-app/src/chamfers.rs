@@ -642,7 +642,7 @@ mod history_tests {
 
 #[cfg(test)]
 #[allow(clippy::panic)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ferritecad_document::Document;
     use ferritecad_types::StableEntityId;
@@ -777,7 +777,7 @@ mod tests {
 
     /// [`crate::fillets::tests::plate`] with one Chamfer at its corner
     /// (33, 3.25), written by the shipped preparation and writer, no kernel.
-    fn chamfered(distance_mm: f64) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+    pub(crate) fn chamfered(distance_mm: f64) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let (root, path, source) = crate::fillets::tests::plate();
         let target = source.chamfer_bodies[0].target.clone().expect("a target");
         let corner = target

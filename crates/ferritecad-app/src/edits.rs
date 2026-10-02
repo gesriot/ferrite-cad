@@ -1941,6 +1941,244 @@ mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), original);
     }
 
+    /// §29B, kernel-free: the existing Edit extrusion form opens on a chamfered
+    /// plate, shows the Chamfer it keeps as context, refuses what the document
+    /// would, hands over the widgets' request for the base Extrude, and keeps
+    /// its draft through a cancelled Save, a stale reply and a worker refusal.
+    /// This form has no Undo/Redo and the test does not look for one.
+    #[test]
+    fn chamfer_base_height_widgets_show_the_chamfer_and_keep_the_draft() {
+        let (_root, path, reading) = crate::chamfers::tests::chamfered(2.375);
+        assert_eq!(reading.unavailable_reason(), None);
+        let base = reading
+            .features
+            .iter()
+            .find(|f| f.chamfer.is_some())
+            .expect("the base under the Chamfer");
+        let chamfer = base.chamfer.clone().expect("context");
+        let mut e = Edits::default();
+        assert!(
+            e.begin(&path, &reading),
+            "the form opens on a chamfered plate"
+        );
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        }
+        let row = e
+            .form
+            .as_ref()
+            .expect("form")
+            .shown
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("row")
+            .clone();
+        assert_eq!(row.refusal, None);
+        height_click(&ctx, &mut e, &path, &reading, &row.label);
+        let out = height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        assert!(painted(
+            &out,
+            &format!(
+                "Chamfered by Chamfer {} at (33, 3.25), d 2.375 mm. The Chamfer keeps its edge \
+                 and distance; only the plate's height changes.",
+                chamfer.feature
+            )
+        ));
+        assert_eq!(e.form.as_ref().expect("selected").shown.distance, "6.75");
+        for (typed, why) in [
+            ("0", "positive"),
+            ("-3", "positive"),
+            ("banana", "Enter a distance"),
+        ] {
+            e.form.as_mut().expect("form").shown.distance = typed.into();
+            assert!(e.request(PathBuf::from("never.fcad")).is_none(), "{typed}");
+            let refusal = e.form.as_ref().expect("form").shown.refusal.clone();
+            assert!(
+                refusal.as_deref().is_some_and(|r| r.contains(why)),
+                "{typed}: {refusal:?}"
+            );
+        }
+        e.form.as_mut().expect("form").shown.distance = "6.75".into();
+        type_height(&ctx, &mut e, &path, &reading, "6.75", "0.40625");
+        // Save Cancel submits nothing and keeps the form.
+        height_click(&ctx, &mut e, &path, &reading, "Save new file…");
+        assert!(!e.running());
+        let request = e.request(PathBuf::from("ui.fcad")).expect("valid request");
+        assert_eq!(request.feature, base.feature);
+        assert_eq!(
+            request.distance_mm, 0.40625,
+            "h < d is a plate like any other"
+        );
+        assert_eq!(request.expected, reading.version);
+        let g = e
+            .start(request, |_, _, _| std::thread::spawn(|| {}))
+            .expect("started");
+        assert!(
+            e.finish(
+                g + 1,
+                Ok(EditedDocument {
+                    destination: PathBuf::from("stale.fcad"),
+                    document_id: reading.version.document_id,
+                    feature: base.feature,
+                })
+            )
+            .is_none(),
+            "a stale reply is not this job's"
+        );
+        assert!(e.running());
+        assert!(
+            e.finish(g, Err(CadError::kernel("refused by the worker")))
+                .is_none()
+        );
+        assert_eq!(
+            e.form
+                .as_ref()
+                .expect("a refusal keeps the draft")
+                .shown
+                .distance,
+            "0.40625"
+        );
+        e.cancel();
+        assert!(!e.busy());
+    }
+
+    /// §29B, native: the widgets' request through the app's worker and the same
+    /// edit through the shipped CLI publish one document. Every SQL cell is equal
+    /// with no identifier mapped (nothing is minted) except each copy's stamp,
+    /// and the STL and FBX are byte-identical. The accepted scene is the new
+    /// height under the same Chamfer.
+    #[test]
+    fn native_chamfer_base_height_widgets_worker_and_cli_publish_the_same_part() {
+        if !native() {
+            return;
+        }
+        let (root, path, reading) = crate::chamfers::tests::chamfered(2.375);
+        let original = std::fs::read(&path).expect("bytes");
+        let base = reading
+            .features
+            .iter()
+            .find(|f| f.chamfer.is_some())
+            .expect("base")
+            .clone();
+        let mut e = Edits::default();
+        assert!(e.begin(&path, &reading));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        }
+        let label = e
+            .form
+            .as_ref()
+            .expect("form")
+            .shown
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("row")
+            .label
+            .clone();
+        height_click(&ctx, &mut e, &path, &reading, &label);
+        type_height(&ctx, &mut e, &path, &reading, "6.75", "11.4375");
+        let ui = root.path().join("ui.fcad");
+        height_click(&ctx, &mut e, &path, &reading, "Save new file…");
+        assert!(!ui.exists(), "Save Cancel wrote nothing");
+        let request = e.request(ui.clone()).expect("request");
+        let (tx, rx) = mpsc::channel();
+        let g = e
+            .start(request, move |r, g, c| {
+                spawn_edit(r, c, move |v| tx.send((g, v)).expect("reply"))
+            })
+            .expect("start");
+        let (g2, result) = rx.recv().expect("worker result");
+        assert_eq!(g, g2);
+        assert_eq!(e.finish(g, result).expect("published"), ui);
+        e.draft_load_finished(&ui, false);
+        assert_eq!(
+            e.form
+                .as_ref()
+                .expect("a failed Open restores the draft")
+                .shown
+                .distance,
+            "11.4375"
+        );
+        let accepted = opened(&ui).edit_source.expect("the new scene's catalogue");
+        let current = accepted
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("the same base");
+        assert_eq!(current.distance_mm, Some(11.4375));
+        assert_eq!(
+            current
+                .chamfer
+                .as_ref()
+                .map(|c| (c.feature, c.distance_mm, c.corner.corner_mm)),
+            base.chamfer
+                .as_ref()
+                .map(|c| (c.feature, c.distance_mm, c.corner.corner_mm))
+        );
+        e.cancel();
+        e.draft_load_finished(&ui, true);
+
+        let peer = root.path().join("cli.fcad");
+        run(&[
+            "edit-extrude".as_ref(),
+            path.as_os_str(),
+            "--feature".as_ref(),
+            base.feature.to_string().as_ref(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--distance-mm".as_ref(),
+            "11.4375".as_ref(),
+            "-o".as_ref(),
+            peer.as_os_str(),
+        ]);
+        assert_eq!(tables(&ui), tables(&peer), "every SQL cell but the stamp");
+        for format in ["stl", "fbx"] {
+            let mut bytes = Vec::new();
+            for model in [&ui, &peer] {
+                let out = model.with_extension(format);
+                run(&[
+                    format!("export-{format}").as_ref(),
+                    model.as_os_str(),
+                    "-o".as_ref(),
+                    out.as_os_str(),
+                ]);
+                bytes.push(std::fs::read(out).expect("export"));
+            }
+            assert_eq!(bytes[0], bytes[1], "worker/CLI {format}");
+        }
+        assert_eq!(std::fs::read(&path).expect("source"), original);
+        // The distance edit still works on the published copy through the
+        // same CLI.
+        let again = root.path().join("distance.fcad");
+        let request = root.path().join("distance.json");
+        std::fs::write(&request, r#"{"request_version":1,"distance_mm":5.25}"#).expect("input");
+        let copy = ferritecad_document::Document::open_read_only(&ui).expect("copy");
+        let version = copy.content_version().expect("version");
+        copy.close().expect("close");
+        run(&[
+            "edit-chamfer-distance".as_ref(),
+            ui.as_os_str(),
+            "--feature".as_ref(),
+            base.chamfer
+                .as_ref()
+                .expect("chamfer")
+                .feature
+                .to_string()
+                .as_ref(),
+            "--expect-version".as_ref(),
+            version.to_string().as_ref(),
+            "--request".as_ref(),
+            request.as_os_str(),
+            "-o".as_ref(),
+            again.as_os_str(),
+        ]);
+        assert!(again.exists());
+    }
+
     /// §28I, kernel-free: on a plate rounded twice, the same form names both
     /// Fillets in history order, hands over the base Extrude's request and
     /// keeps its draft through Save Cancel and a worker refusal.
