@@ -27,6 +27,33 @@ author.
 * No change to the CLI, its arguments, JSON, exit codes, the archive format,
   geometry, the kernel, the evaluator, the renderer or any other editor.
 
+## Local results
+
+Container: Linux, Open CASCADE 8.0.1 installed locally, a **local** PlaneGCS build
+(not the pinned one), one cargo job at a time, `jobs = 2`, root user. These are not
+the three-OS matrix.
+
+* `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` clean; licence headers (407 files), the export
+  boundary check (whose source greps the window must keep true: the first
+  column-zero `#[cfg(test)]` in `main.rs` is the test module again), `git diff
+  --check` and the YAML syntax of both workflows pass.
+* Regression over document, jobs, eval, every CLI test file (the large STEP
+  corpus and complex-FBX files excluded, as in earlier slices) and the whole app:
+  **1237 passed, 2 failed, 1 ignored**. The two failures are
+  `validate::validation_really_read_only_permissions` and
+  `read_only_permissions_still_dump_when_the_file_can_be_read` in the CLI's
+  untouched read-only-permission tests, which cannot hold for uid 0 (root can
+  read and write a read-only file). They are not counted as passed and are not
+  claimed; non-root CI runs them.
+* The packed steps were extracted from the workflows and executed: the all-OS
+  step on Linux in the stub build (its `exit 0`, every gate named and `ok`);
+  the native step against the local Open CASCADE and PlaneGCS (three native gates
+  `ok`, no `skipped:`); the no-solver tail against the Open CASCADE-without-PlaneGCS
+  build (the refusal and the plain plate `ok`). The local runs used the debug
+  profile; the workflows use `--release`, which was not run here.
+* Not run here: Windows, macOS, the pinned PlaneGCS, `--release`, a real window.
+
 ## Mutations — local, executed, restored
 
 Each mutation was applied to a committed tree, the named tests were run, and the file
