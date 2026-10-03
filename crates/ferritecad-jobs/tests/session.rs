@@ -585,7 +585,11 @@ fn a_vertex_edit_made_from_an_older_version_is_refused_and_changes_nothing() {
         "{refused}"
     );
     assert_eq!(session.undo_depth(), depth);
-    assert_eq!(files(session.private_directory()), listing, "a file was left");
+    assert_eq!(
+        files(session.private_directory()),
+        listing,
+        "a file was left"
+    );
 
     // A vertex edit that changes no coordinate is not a step.
     let current = session.current();

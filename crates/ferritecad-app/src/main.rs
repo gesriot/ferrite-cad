@@ -954,6 +954,15 @@ fn height_state(
     }
 }
 
+/// Whether a form over the picture is open (the height form, or any editor of a
+/// saved object, or a drawing). Document Undo and Redo, by button or by
+/// Cmd/Ctrl+Z, wait while one is: each form has its own draft Undo and Redo
+/// (buttons only, no shortcut), and a document step would end the draft it is
+/// about. Apply or Cancel the form first.
+fn form_open(edits: &edits::Edits, sketch: &sketch::Editor) -> bool {
+    edits.busy() || sketch.active()
+}
+
 /// New is serialized with document loads and exports. Viewing remains available.
 fn can_begin_new(creates: &creates::Creates, loads: &Loads, exports: &exports::Exports) -> bool {
     !creates.busy()
@@ -2756,7 +2765,7 @@ impl ApplicationHandler<AppEvent> for App {
                 // holds: the same two questions `settled` and `document_idle` ask.
                 let settled = can_begin_new(&self.creates, &self.loads, &self.exports)
                     && !self.sessions.busy();
-                let idle = settled && !self.edits.busy() && !self.creates.sketch.active();
+                let idle = settled && !form_open(&self.edits, &self.creates.sketch);
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
@@ -3381,7 +3390,7 @@ impl App {
 
     /// As [`Self::settled`], and no form is open over the picture it describes.
     fn document_idle(&self) -> bool {
-        self.settled() && !self.edits.busy() && !self.creates.sketch.active()
+        self.settled() && !form_open(&self.edits, &self.creates.sketch)
     }
 
     /// Native Quit and window close share the same guarded exit.
@@ -4751,7 +4760,7 @@ impl Live {
                 ui.label(
                     "The other editors (sketch, constraints, Cut, Fillet, Chamfer, circles, \
                      Revolve) are unavailable while the document has unsaved changes: Save or \
-                     Undo them first. Height can still be changed with Apply.",
+                     Undo them first. The height and the vertices of a saved Sketch can still be changed with Apply.",
                 );
             }
             sketch.draw_choices(
@@ -19080,6 +19089,32 @@ mod tests {
         assert!(sessions.finish_scene(generation, Ok(())));
         let dirty = height_state(&edits, &sessions, &creates, &loads, &exports);
         assert!(!dirty.copy && dirty.unsaved && dirty.apply);
+    }
+
+    /// The boundary between a form's own draft Undo/Redo and the document's: while
+    /// any form is open the document's commands wait, so one cannot silently end
+    /// the other's work.
+    #[test]
+    fn document_undo_waits_for_an_open_form() {
+        let edits = edits::Edits::default();
+        let mut sketch = sketch::Editor::default();
+        assert!(!form_open(&edits, &sketch));
+        sketch.dismiss();
+        assert!(!form_open(&edits, &sketch));
+        let (_root, path, reading) = fillets::tests::plate();
+        let id = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("an editable Sketch")
+            .sketch;
+        assert!(sketch.begin_edit(&path, &reading, id));
+        assert!(
+            form_open(&edits, &sketch),
+            "an open Sketch form did not hold Undo"
+        );
+        sketch.dismiss();
+        assert!(!form_open(&edits, &sketch));
     }
 
     /// §30A: the window is named for the user's file with a mark while there are
