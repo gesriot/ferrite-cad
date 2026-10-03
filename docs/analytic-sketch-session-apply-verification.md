@@ -92,7 +92,7 @@ debug profile, root user. `macOS arm64`, Windows and `--release` were not run he
 
 Nothing here was run in a window; the container has none, and headless widget tests are not a window check.
 The generator and the comparator use only the command line; they were exercised with a script standing in for
-the window (CLI calls and file copies), which says nothing about the window: `FCAD_30D_GUI_COMPARE_OK cells=12
+the window (CLI calls and file copies), which says nothing about the window: `FCAD_30D_GUI_COMPARE_OK rows=12
 triangles=324`. Controls on stand-ins: a missing file (`FCAD_30D_GUI_COMPARE_MISSING …`); the generator
 inside a git checkout (`FCAD_30D_GUI_FIXTURE_REFUSED`); an Apply that wrote the user's file; a Save As that changed
 the original; the branch file in place of the saved one; the source in place of the saved one; an export of the
@@ -393,7 +393,7 @@ must_fail("a missing output", lambda: require(work))
 must_fail("a solid measured as a tube", lambda: measure(out / "gui-circle-unsaved.stl", N["centre_mm"],
           N["circle_radius_mm"], N["circle_radius_mm"] / 2, N["height_mm"]))
 must_fail("an old-radius mesh", lambda: measure(work / "original.stl", N["centre_mm"], N["circle_radius_mm"], None, N["height_mm"]))
-print("FCAD_30D_GUI_COMPARE_OK", f"cells={sum(len(r) for _, r in tables(out / 'gui-circle-saved.fcad').values())}",
+print("FCAD_30D_GUI_COMPARE_OK", f"cells={sum(len(row) for _, rows in tables(out / 'gui-circle-saved.fcad').values() for row in rows)}",
       f"triangles={len(mesh(out / 'gui-circle-unsaved.stl'))}")
 ```
 
@@ -413,3 +413,45 @@ gates and the documents). All 15 checks succeeded on it:
 The log lines of the new gates were not read one by one here: each workflow step fails on a `skipped:` line and on a
 missing `test <name> ... ok` line, and the ufbx step fails without its marker, so a green step is the evidence that they
 ran and passed on that system. This commit only records the result; its own checks are tracked in the checks of the PR.
+
+## Independent macOS review (2026-10-03)
+
+Reviewed `96bc06e19c571571a15bda6bef75242d46a9941e`. The difference from the
+code/workflow head `5b08f342` is this verification document only; its 15 successful
+checks therefore cover exactly the reviewed code. Final-head CI `37157694591`
+also passed all seven checks. The actual logs were read: the ten new kernel-free
+exact gates executed on each OS, the four native gates on each OS, and the three
+geometry gates also in each mixed OCCT/no-solver build. The independent-reader
+marker appears in all three runtime logs. No claim is made that the four native
+gates exercised geometry in the ordinary CI stub suite.
+
+Local release CLI/viewer rebuilt against pinned OCCT 8.0.1 and pinned PlaneGCS;
+fmt and workspace/all-targets/all-features clippy with `-D warnings` passed.
+The `analytic` filter reported 14 passes (13 exercised here and one stub-only
+no-op); `sessions::tests::` reported 36 passes (32 exercised here, four
+configuration-specific no-ops). Seven jobs tests matching `session` passed.
+Artifacts/logs: `/private/tmp/ferrite-pr84-review/`.
+
+A fresh arm64 bundle, without DYLD overrides, completed the window scenario
+above through CUA. Circle: height 15.25 → 8.5; edit centre/radius on the dirty
+model; Confirm draft numbers → Undo draft → Redo draft; document Cmd+Z blocked
+while the form stayed open; Apply without a dialog; unsaved STL/FBX; two document
+Undo and two Redo; Save; Undo → height 11.25 → Save As with Redo removed. Annulus:
+inner radius 12 refused visibly without changing the file; centre/radii applied
+without confirming the draft first; the cavity visible from Top; unsaved STL/FBX
+and Save. Quit → Cancel retained a dirty document, then Quit → Discard exited.
+
+The comparator consumed only real GUI artifacts: all SQL cells matched the peer
+CLI except `meta.modified_at`; original files stayed unchanged before Save and
+after refusal, and Save As preserved the earlier saved file. All eight comparator
+negative controls rejected. Both STL/FBX pairs were byte-identical to CLI, and
+the independent STL parser checked closure, orientation, dimensions, volume and
+cavity. Pinned strict ufbx 0.23.0 reported 6 checks / 0 failures for each FBX;
+STL/FBX joins reported 324 and 608 triangles, worst error `1.73e-18` metres.
+The comparator's printed `cells` metric formerly counted rows; review corrected
+the metric, without changing its full-cell assertions.
+
+Owned viewer PID 41446: normal exit 0; watchdog cap 1536 MiB, sampled peak
+210.892 MiB, pressure always 1, swap unchanged at 1,135,607,808 bytes. No viewer
+observation or restart after Quit. This is no claim that the historical OOM is
+fixed. No additional heavy STEP corpus or local Windows/Linux GUI was run.

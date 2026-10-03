@@ -4428,3 +4428,10 @@ no constraint, geometry, solver need, command, JSON or format. The other copy-on
 editors remain (obligation 1 above continues).
 [Contract](analytic-sketch-session-apply.md),
 [verification and the macOS handoff](analytic-sketch-session-apply-verification.md).
+
+Independent macOS review of §30D completed the Circle and annulus window scenario:
+draft and document histories, unsaved export, Save/Save As, refusal and guarded
+Quit. Real GUI outputs matched CLI in SQL and STL/FBX; strict ufbx and mesh joins
+passed. Viewer peak 210.892 MiB, exit 0, swap unchanged. Code/workflow CI and its
+actual new gate executions were verified on all three OSes. The verification
+record distinguishes stub-only no-ops from native execution.
