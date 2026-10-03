@@ -96,3 +96,33 @@ workers against the peer CLI, with Open CASCADE and PlaneGCS, run in
 `runtime-layout.yml` (*Edit, Undo, Redo, export and Save one open document through
 the native window state*), and the Open CASCADE-without-solver refusal runs in the
 no-solver step of the same workflow.
+
+## Review fixes (PR #81)
+
+* **Save lock.** The sidecar is named after the *resolved* file, so every name
+  that reaches it (a symlink, a second window) meets one lock. It is created
+  exclusively and starts with `FERRITECAD-SAVE-LOCK 1`; a file of that name that
+  does not (user data, an empty file, a link) is never written, locked for good,
+  followed or removed, and Save is refused (`Failed`, "Move it away, or use Save
+  As"). A header-bearing sidecar left by a dead saver is taken over. The name is
+  removed only while it still names the very file held. The read-only, link-count
+  and resolution checks are repeated under the lock (after the copy), so a file
+  made read-only, hard-linked or re-pointed in between is refused. A writer that
+  ignores the lock, or one that swaps the file after the last check and before
+  the rename, can still win; that stays documented, not closed.
+* **Cancel.** A picture built before Cancel is not accepted, for Apply, Undo and
+  Redo alike.
+* **Working folder.** Old editors are handed the accepted snapshot as input but the
+  user's folder and file name for dialogs and form text. Any destination inside
+  the session's private folder (Save As, exports, New, every copy editor) is
+  refused before anything is written: that folder is deleted with the session.
+* **Overlap.** Quit/Open/New with unsaved changes wait while an Open, New or
+  export is in flight (the user can cancel it) instead of starting a Save beside
+  it. An operation that belonged to a replaced document is cancelled when the
+  next one is adopted, and its answer never moves the new document's checkpoint.
+* **Exports.** An export (and a waiting replace-question) holds the working
+  snapshot alive until it is done; nothing blocks the window to wait for it.
+* **Height form.** The open form no longer switches off its own *Save new file…*
+  on a clean document; the reason shown is "unsaved changes" only when that is
+  the reason.
+* **Not done here.** The AppKit `Cmd+Q` hook (done separately by the reviewer).

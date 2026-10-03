@@ -54,6 +54,26 @@ the three-OS matrix.
   profile; the workflows use `--release`, which was not run here.
 * Not run here: Windows, macOS, the pinned PlaneGCS, `--release`, a real window.
 
+## Review fixes — local results
+
+Fixes after the independent review of `15a960c`, each with a regression test that
+fails on the previous code (the first four were run against it): the alias/lock
+key, a foreign lock-named file (file, empty, wrong header, link, dangling link),
+late read-only / hard link / re-pointed link, a stale lock of ours, a lock name
+replaced while held, Save As into the private folder, Cancel before binding for
+Apply/Undo/Redo, old-editor folder and name with a copy surviving the old session
+(through adoption and Drop), a Save in flight across adoption, an export's
+working copy kept alive across adoption and a pending replace-question, a public
+export into the working folder refused (FBX and STL), and the height form's copy
+availability computed by the window's own `height_state`. Directed mutations
+M30A-3 (adopt keeps the old operation) and M30A-4 (copy gated on the form being
+closed) fail the named tests. Workspace clippy `-D warnings`, fmt, the export
+boundary check and licence headers pass; app, jobs and UI tests pass locally.
+The all-OS step was run as packed on Linux against the Open CASCADE build
+(52 gates `ok`, `exit 0`); the stub-only refusal ran earlier in the stub build.
+`App::guard` itself (a dialog) is not driven headlessly: its overlap rule is the
+existing `settled()` predicate plus the Sessions-level interleaving test.
+
 ## Mutations — local, executed, restored
 
 Each mutation was applied to a committed tree, the named tests were run, and the file
