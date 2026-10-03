@@ -4852,9 +4852,9 @@ impl Live {
             chosen = ferritecad_ui::toolbar(ui, activity);
             if held_back {
                 ui.label(
-                    "The other editors (constraints, Cut, Fillet, Chamfer, circles, \
+                    "The other editors (Cut, Fillet, Chamfer, circles, \
                      Revolve) are unavailable while the document has unsaved changes: Save or \
-                     Undo them first. The height and the vertices of a saved Sketch can still be changed with Apply.",
+                     Undo them first. The height, vertices and constraints of a saved Sketch can still be changed with Apply.",
                 );
             }
             sketch.draw_choices(

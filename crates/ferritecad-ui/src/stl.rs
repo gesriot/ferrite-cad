@@ -58,7 +58,7 @@ pub fn stl_export_form(ui: &mut egui::Ui, form: Option<&mut StlExportForm>) -> S
             ui.end_row();
         });
         ui.label(
-            "Reads the saved file again. Exports the whole chosen body, including hidden geometry.",
+            "Exports the current model's whole chosen body, including hidden geometry and unsaved changes.",
         );
         if let Some(error) = &form.error {
             ui.colored_label(ui.visuals().error_fg_color, error);

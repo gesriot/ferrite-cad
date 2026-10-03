@@ -88,6 +88,63 @@ pinned one), root user, debug profile, one cargo job at a time. `macOS arm64`, W
   edit_sketch` (14), all passed.
 * Not run here: Windows, macOS, `--release`, the pinned PlaneGCS, any window.
 
+## Independent macOS review — 2026-10-03
+
+The original head `65cd6af` had green CI (`37131163176`) and combined runtime
+(`37131159992`). The logs, not just their check names, show the six new form gates,
+three native session gates, two jobs gates and the mixed no-solver refusal executing
+on Linux, Windows and macOS. These runs do not certify later review changes.
+
+Review commit `921c707` repaired a verification blind spot: the old SQL comparator
+omitted the entire selected Sketch row, so an unintended rename or a changed curve
+could escape the preservation proof. It now compares every cell and the raw CBOR,
+mapping only the newly created constraint UUIDs; only that payload's derived hash
+and `meta.modified_at` are set aside. A deliberate Sketch rename failed the new
+regression on the old comparator (one executed test, not a compile error). The new
+comparator passes the native session tests, and its Python counterpart rejects the
+same negative control. The form title and explanation now describe Apply as well
+as saving a copy.
+
+Local review checks: fmt and workspace/all-target/all-feature clippy with warnings
+as errors; 31 session tests (the three stub/mixed-only cases are N/A in this native
+build), six real-widget constraint Apply tests and 12 jobs session tests. The
+existing native target, OCCT 8.0.1 and pinned PlaneGCS were reused. No new dependency
+build or heavy STEP corpus was needed.
+
+**Actual window, `921c707`, arm64 release bundle.** One owned viewer, PID 88641,
+ran the fixture/scenario below through CUA under the 1536 MiB watchdog. Height
+6.75 → 8.5, Replace length 37.5 → 33.25, draft Undo/Redo, document Undo/Redo,
+unsaved STL/FBX, Save and the post-Undo branch to height 10.25 with Save As all
+worked. Cmd+Z while the form was open did not undo the document. Additionally,
+a width of 1 mm was refused because the 2.375 mm Chamfer would not fit; the form
+kept its draft, the accepted model stayed unchanged, and cancelling the form left
+Redo available. Applying the next height successfully cut the Redo branch.
+On the circle, Radius 6.75 and Fixed centre (-3.5, 4.25) applied together without
+a file dialog, showed a fully constrained result, exported before Save, and saved.
+The optional dirty-Quit/Russian-layout scenario was not repeated in this review.
+
+The comparator consumed actual window artifacts (not stand-ins):
+`FCAD_30C_GUI_COMPARE_OK cells=131 triangles=16`. It checked unchanged disk files
+after Apply, unchanged original after Save As, all SQL cells with the narrow
+normalization above, old/new constraint identities, CLI-equal plate STL/FBX and
+circle STL, closed meshes, bounds and signed volumes; all seven negative controls
+were rejected. Both actual GUI FBX files were read by pinned ufbx 0.23.0 in strict
+mode, each `checks=6 failures=0`.
+
+Measured viewer peak footprint **219.532 MiB**, pressure normal throughout,
+swap unchanged at 1,211,105,280 bytes. Cmd+Q exited 0 after 715 seconds; watchdog
+`aborted=false`. Completion was checked by the owned PID/log only, without a CUA
+query that could restart the application. This does not establish the cause or
+resolution of the historical OOM.
+
+The window also exposed stale copy-only wording in the dirty-state banner,
+Fillet/Chamfer context notes and STL export explanation. The following review
+change corrects those strings only: constraints support Apply, a geometry refusal
+rejects the change, and STL exports the current accepted model including unsaved
+changes. The scenario above tested the functional code at `921c707`; it does not
+claim that the later wording was already visible. Logs, watchdog and artifacts:
+`/private/tmp/ferrite-pr83-review/` (temporary local evidence, not repository files).
+
 ## macOS fixture and window scenario (for Codex on the Mac)
 
 Nothing here was run in a window; the container has none, and headless widget tests are

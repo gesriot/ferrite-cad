@@ -245,7 +245,7 @@ impl Editor {
                     .show(ui, |ui| {
                         ui.label(format!(
                         "History: Extrude -> {}. {} Fillets keep their corners and radii: the \
-                         new copy is saved only if the solved plate is still a rectangle with \
+                         change is accepted only if the solved plate is still a rectangle with \
                          every Line on its side, each side at a corner at least {}, and \
                          adjacent arcs still leave a flat between them.",
                         all.iter()
@@ -283,7 +283,7 @@ impl Editor {
                     ui.label(format!(
                         "Rounded by Fillet {} at the corner of Lines {a} | {b}, r {} mm \
                          (stored corner ({}, {})). The Fillet keeps its corner and radius: \
-                         the new copy is saved only if the solved plate is still a rectangle \
+                         the change is accepted only if the solved plate is still a rectangle \
                          with every Line on its side and each side at that corner at least \
                          {} mm.",
                         fillet.feature,
@@ -301,7 +301,7 @@ impl Editor {
                     ui.label(format!(
                         "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d {} mm \
                          (stored corner ({}, {})). The Chamfer keeps its corner and distance: \
-                         the coordinates shown are the stored ones, and the new copy is saved \
+                         the coordinates shown are the stored ones, and the change is accepted \
                          only if the solved plate is still a rectangle with every Line on its \
                          side and each side at that corner at least {} mm.",
                         chamfer.feature,

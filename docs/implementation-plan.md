@@ -4405,3 +4405,11 @@ accept nothing and keep the draft. No new constraint kind, geometry, solver poli
 command or JSON. The other copy-only editors remain (obligation 1 above continues).
 [Contract](constraint-session-apply.md),
 [verification and the macOS handoff](constraint-session-apply-verification.md).
+
+Independent macOS review of §30C exercised height → constraints → document
+Undo/Redo → Save/Save As, a Chamfer refusal with retained draft/Redo, and circle
+radius/centre Apply. Actual GUI artifacts pass the CLI/SQL/mesh comparison and
+strict ufbx; viewer peak 219.532 MiB, exit 0. The SQL comparator now includes the
+whole Sketch row with only new constraint UUIDs normalized; a failing-first
+rename regression closes the former omission. Stale copy-only UI explanations
+were corrected. Exact provenance and remaining non-claims are in the verification.
