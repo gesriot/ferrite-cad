@@ -534,12 +534,30 @@ impl Document {
     /// are refused, rather than assigned an incomplete version.
     /// Read this from `open_read_only`, whose transaction pins the whole reading.
     pub fn content_version(&self) -> Result<ContentHash> {
+        self.logical_content("document.logical-content", false)
+    }
+
+    /// The same logical content with only `meta.modified_at` set aside (read
+    /// as NULL), under its own domain tag so it can never be mistaken for a
+    /// [`Self::content_version`].
+    ///
+    /// What an open document session means by "the model is the same": the
+    /// stamp every writer refreshes says when something was written, not what
+    /// the model is, so a no-op edit or an edit back to the original value is
+    /// the saved model again. Everything else, including unknown tables and
+    /// implicit row identities, still counts. `content_version` itself is
+    /// unchanged byte for byte.
+    pub fn model_version(&self) -> Result<ContentHash> {
+        self.logical_content("document.model-content", true)
+    }
+
+    fn logical_content(&self, domain: &str, ignore_modified_at: bool) -> Result<ContentHash> {
         fn quoted(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
         }
         let read = || -> Result<ContentHash> {
             let sql_error = |e| CadError::io("reading complete document version", e);
-            let mut hash = CanonicalHasher::new("document.logical-content");
+            let mut hash = CanonicalHasher::new(domain);
             hash.algorithm_version(2);
             let mut schema = self
                 .conn
@@ -603,11 +621,27 @@ impl Document {
                     .conn
                     .prepare(&format!("{select} ORDER BY {order}"))
                     .map_err(sql_error)?;
+                // The result columns by position, so the stamp is found by
+                // name whatever the rowid prefix does to the indices.
+                let statement_columns: Vec<String> = statement
+                    .column_names()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
                 let mut rows = statement.query([]).map_err(sql_error)?;
                 while let Some(row) = rows.next().map_err(sql_error)? {
                     hash.field("row");
                     for column in 0..count {
                         use rusqlite::types::ValueRef;
+                        let stamp = ignore_modified_at
+                            && table == "meta"
+                            && statement_columns
+                                .get(column)
+                                .is_some_and(|name| name == "modified_at");
+                        if stamp {
+                            hash.field("null");
+                            continue;
+                        }
                         match row.get_ref(column).map_err(sql_error)? {
                             ValueRef::Null => {
                                 hash.field("null");

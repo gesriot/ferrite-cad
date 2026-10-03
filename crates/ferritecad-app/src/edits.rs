@@ -103,11 +103,27 @@ impl Edits {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn draw(
         &mut self,
         ui: &mut egui::Ui,
         can_begin: bool,
         unavailable: Option<&str>,
+    ) -> EditChoice {
+        self.draw_with(
+            ui,
+            can_begin,
+            unavailable,
+            ferritecad_ui::HeightState::default(),
+        )
+    }
+
+    pub(crate) fn draw_with(
+        &mut self,
+        ui: &mut egui::Ui,
+        can_begin: bool,
+        unavailable: Option<&str>,
+        offer: ferritecad_ui::HeightState,
     ) -> EditChoice {
         if let Some(form) = &mut self.form {
             Self::validate_form(form);
@@ -117,12 +133,25 @@ impl Edits {
             can_begin,
             unavailable,
             self.form.as_mut().map(|f| &mut f.shown),
-            self.running.is_some(),
-            self.running
-                .as_ref()
-                .is_some_and(|r| !r.cancel.is_cancelled()),
             &self.status,
+            ferritecad_ui::HeightState {
+                running: self.running.is_some(),
+                can_cancel: self
+                    .running
+                    .as_ref()
+                    .is_some_and(|r| !r.cancel.is_cancelled()),
+                ..offer
+            },
         )
+    }
+
+    /// What Apply asks the session for: the chosen extrusion and its validated new
+    /// height. `None` (and the reason on the form) when the draft is not a request.
+    /// The draft is not consumed: a failed Apply leaves it as it was typed.
+    pub(crate) fn apply_request(&mut self) -> Option<(ferritecad_types::ObjectId, f64)> {
+        let form = self.form.as_mut()?;
+        let distance = Self::validate_form(form)?;
+        Some((form.shown.selected?, distance))
     }
 
     pub(crate) fn cancel(&mut self) {
@@ -1349,6 +1378,23 @@ mod tests {
         reading: &ExtrudeEditSource,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
+        height_frame_with(
+            ctx,
+            edits,
+            path,
+            reading,
+            events,
+            ferritecad_ui::HeightState::default(),
+        )
+    }
+    fn height_frame_with(
+        ctx: &egui::Context,
+        edits: &mut Edits,
+        path: &Path,
+        reading: &ExtrudeEditSource,
+        events: Vec<egui::Event>,
+        offer: ferritecad_ui::HeightState,
+    ) -> egui::FullOutput {
         let mut out = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -1368,7 +1414,7 @@ mod tests {
                     },
                 );
                 crate::sketch::Editor::default().draw_choices(ui, false, Some(path), Some(reading));
-                edits.draw(ui, false, None);
+                edits.draw_with(ui, false, None, offer);
             },
         );
         out.textures_delta.clear();
@@ -2427,5 +2473,140 @@ mod tests {
         let request = e.request(PathBuf::from("ui.fcad")).expect("valid request");
         assert_eq!(request.feature, base.feature);
         assert_eq!(request.distance_mm, 12.125);
+    }
+
+    /// §30A: the same form offers Apply on the open document and the copy workflow
+    /// only while nothing is unsaved; a draft that is not a request says why and is
+    /// kept, and Apply never asks for a file.
+    #[test]
+    fn the_height_form_offers_apply_and_withholds_the_copy_workflow_while_dirty() {
+        let (_root, path, reading) = crate::fillets::tests::plate();
+        let feature = reading.features[0].feature;
+        let mut e = Edits::default();
+        assert!(e.begin(&path, &reading));
+        let ctx = egui::Context::default();
+        let open = ferritecad_ui::HeightState {
+            apply: true,
+            copy: true,
+            ..Default::default()
+        };
+        let dirty = ferritecad_ui::HeightState {
+            apply: true,
+            copy: false,
+            unsaved: true,
+            ..Default::default()
+        };
+        let frame = |e: &mut Edits, events, offer| {
+            height_frame_with(&ctx, e, &path, &reading, events, offer)
+        };
+        for _ in 0..3 {
+            frame(&mut e, vec![], open);
+        }
+        let label = e.form.as_ref().expect("form").shown.features[0]
+            .label
+            .clone();
+        let press = |e: &mut Edits, label: &str, offer: ferritecad_ui::HeightState| {
+            let out = frame(e, vec![], offer);
+            let at = out
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == label => {
+                        Some(t.visual_bounding_rect().center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("not painted: {label}"));
+            let mut asked = ferritecad_ui::EditChoice::Waiting;
+            for pressed in [true, false] {
+                let mut out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(988., 768.),
+                        )),
+                        events: vec![
+                            egui::Event::PointerMoved(at),
+                            egui::Event::PointerButton {
+                                pos: at,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::default(),
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    |ui| {
+                        ferritecad_ui::toolbar(ui, ferritecad_ui::Activity::default());
+                        crate::sketch::Editor::default().draw_choices(
+                            ui,
+                            false,
+                            Some(&path),
+                            Some(&reading),
+                        );
+                        let choice = e.draw_with(ui, false, None, offer);
+                        if choice != ferritecad_ui::EditChoice::Waiting {
+                            asked = choice;
+                        }
+                    },
+                );
+                out.textures_delta.clear();
+            }
+            asked
+        };
+        // Choose the extrusion; type a height.
+        height_click(&ctx, &mut e, &path, &reading, &label);
+        let current = reading.features[0]
+            .distance_mm
+            .expect("a height")
+            .to_string();
+        type_height(&ctx, &mut e, &path, &reading, &current, "27.5");
+
+        // Apply is its own choice, and asks for no destination.
+        assert_eq!(
+            press(&mut e, "Apply", open),
+            ferritecad_ui::EditChoice::Apply
+        );
+        assert_eq!(e.apply_request(), Some((feature, 27.5)));
+        assert!(
+            e.form.is_some(),
+            "Apply leaves the draft for the caller to close"
+        );
+        // With unsaved changes the copy workflow is not offered, and says why.
+        let out = frame(&mut e, vec![], dirty);
+        assert!(painted(
+            &out,
+            "unavailable while the document has unsaved changes"
+        ));
+        // Off for another reason, the words do not claim unsaved changes.
+        let busy = ferritecad_ui::HeightState {
+            unsaved: false,
+            ..dirty
+        };
+        let out = frame(&mut e, vec![], busy);
+        assert!(painted(&out, "another operation is running"));
+        assert!(!painted(&out, "unsaved changes"));
+        assert_ne!(
+            press(&mut e, "Save new file…", dirty),
+            ferritecad_ui::EditChoice::Save,
+            "the copy workflow was reachable with unsaved changes"
+        );
+        // Not offered Apply at all: pressing it reports nothing.
+        let none = ferritecad_ui::HeightState {
+            apply: false,
+            copy: true,
+            ..Default::default()
+        };
+        assert_ne!(
+            press(&mut e, "Apply", none),
+            ferritecad_ui::EditChoice::Apply
+        );
+
+        // A draft that is not a request is refused with its reason and kept.
+        type_height(&ctx, &mut e, &path, &reading, "27.5", "-3");
+        assert_eq!(e.apply_request(), None);
+        let shown = e.form.as_ref().expect("form").shown.refusal.clone();
+        assert!(shown.is_some(), "the form says why");
+        assert_eq!(e.form.as_ref().expect("form").shown.distance, "-3");
     }
 }

@@ -1012,7 +1012,7 @@ impl Editor {
         ui.small(format!(
             "Sketch {} · {}",
             request.sketch,
-            request.source.display()
+            crate::sessions::shown_as(&request.source)
         ));
         if let Some(saved) = &choice.circle {
             ui.small(format!(
@@ -1089,7 +1089,7 @@ impl Editor {
         ui.small(format!(
             "Revolve {} · {}",
             request.feature,
-            request.source.display()
+            crate::sessions::shown_as(&request.source)
         ));
         ui.small(format!(
             "Saved angle {}° · {} · profile, axis, direction and every UUID are retained",
@@ -1154,7 +1154,7 @@ impl Editor {
         ui.small(format!(
             "Sketch {} · {}",
             request.sketch,
-            request.source.display()
+            crate::sessions::shown_as(&request.source)
         ));
         if let Some(saved) = &choice.annulus {
             ui.small(format!(
@@ -1497,7 +1497,7 @@ impl Editor {
             ui.small(format!(
                 "Sketch {} · {}",
                 request.sketch,
-                request.source.display()
+                crate::sessions::shown_as(&request.source)
             ));
         }
         ui.add_enabled_ui(!running, |ui| self.edit(ui));

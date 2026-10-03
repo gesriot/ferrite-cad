@@ -932,7 +932,9 @@ fn no_native_stl_refuses_geometry_without_touching_files() {
         .id;
     doc.close().expect("close");
     let intent = StlIntent {
+        lease: None,
         document: source.clone(),
+        alias: source.clone(),
         body,
         params: TessellationParams::default(),
     };
@@ -961,4 +963,50 @@ fn no_native_stl_refuses_geometry_without_touching_files() {
     assert_eq!(std::fs::read(&source).expect("source unchanged"), before);
     assert_eq!(std::fs::read(&output).expect("output unchanged"), b"keep");
     assert_eq!(entries(root.path()).len(), 2);
+}
+
+/// §30A: the model of an open document is read from a private copy, but what an
+/// export must never be written over is the user's file — the alias — and the
+/// dialog's suggested name comes from it too.
+#[test]
+fn an_export_is_never_written_over_the_users_document_though_the_model_is_read_elsewhere() {
+    let root = tempfile::tempdir().expect("root");
+    let private = root.path().join("v3.fcad");
+    let users = root.path().join("plate.fcad");
+    std::fs::write(&private, b"the working model").expect("private");
+    std::fs::write(&users, b"the user's file").expect("users");
+    let intent = StlIntent {
+        lease: None,
+        document: private.clone(),
+        alias: users.clone(),
+        body: ObjectId::new(),
+        params: TessellationParams::default(),
+    };
+    let mut exports = Exports::default();
+    let mut input = ViewportInput::new();
+
+    // The user's own path is refused, nothing starts, and nothing is touched.
+    assert!(
+        begin_stl_export(
+            &mut exports,
+            &mut input,
+            &intent,
+            Some(users.clone()),
+            |_, _, _, _| panic!("an export over the user's document started")
+        )
+        .is_none()
+    );
+    assert_eq!(
+        std::fs::read(&users).expect("users"),
+        b"the user's file",
+        "the user's file was touched"
+    );
+    assert!(
+        exports.pending().is_none(),
+        "the user's own file must not even be offered for replacement"
+    );
+    assert_eq!(
+        std::fs::read(&private).expect("private"),
+        b"the working model"
+    );
 }

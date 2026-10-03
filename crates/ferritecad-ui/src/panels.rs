@@ -27,6 +27,15 @@ pub struct Chosen {
     pub view: Option<StandardView>,
     /// The user wants to open a different document.
     pub open: bool,
+    /// The user wants the accepted changes written to the document's file.
+    pub save: bool,
+    /// The user wants the accepted model written under a new name.
+    pub save_as: bool,
+    /// The user wants the last accepted change taken back, or brought back.
+    pub undo_document: bool,
+    pub redo_document: bool,
+    /// The user has stopped waiting for the Apply, Undo, Redo or Save in flight.
+    pub cancel_document: bool,
     /// The user wants to make a new document.
     ///
     /// A request to be asked what it should contain, and nothing more. What
@@ -1142,6 +1151,21 @@ pub struct Activity<'a> {
     pub can_create_document: bool,
     pub can_open: bool,
     pub can_cancel_create: bool,
+    /// Whether the document has accepted changes that are not on disk and no
+    /// operation is running: the one condition under which Save writes anything.
+    pub can_save: bool,
+    /// Whether the open document can be written under a new name.
+    pub can_save_as: bool,
+    /// Whether an accepted change can be taken back, and brought back. The
+    /// document's own history, not the local history of a form being typed.
+    pub can_undo_document: bool,
+    pub can_redo_document: bool,
+    /// Whether an Apply, Undo, Redo or Save is running and can be stopped.
+    pub can_cancel_document: bool,
+    /// Whether the document has changes that are not saved.
+    pub dirty: bool,
+    /// What the last thing done to the document said, in a sentence.
+    pub document_line: &'a str,
     /// Whether there is a document on screen that was accepted and can
     /// therefore be written out. Not "a document was asked for": an Open that
     /// failed or was given up on leaves nothing to export.
@@ -1202,6 +1226,40 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             .clicked();
         if activity.can_cancel_create {
             chosen.cancel_create = ui.button("Cancel creation").clicked();
+        }
+        // The document's own actions, together: what is accepted is written by
+        // Save and by nothing else, and each accepted change is one step of
+        // Undo and Redo. Named plainly (the local Undo of a form is "Undo
+        // draft", and the picture's is "Undo visibility"), disabled rather than
+        // hidden, with the keys on the hover text.
+        chosen.save = ui
+            .add_enabled(activity.can_save, egui::Button::new(SAVE))
+            .on_hover_text(format!(
+                "Write the accepted changes to the file ({SHORTCUT_PRIMARY}+S)"
+            ))
+            .clicked();
+        chosen.save_as = ui
+            .add_enabled(activity.can_save_as, egui::Button::new(SAVE_AS))
+            .on_hover_text(format!(
+                "Write the accepted model to a new file ({SHORTCUT_PRIMARY}+Shift+S)"
+            ))
+            .clicked();
+        chosen.undo_document = ui
+            .add_enabled(activity.can_undo_document, egui::Button::new(UNDO_DOCUMENT))
+            .on_hover_text(format!(
+                "Take back the last accepted change ({SHORTCUT_PRIMARY}+Z)"
+            ))
+            .clicked();
+        chosen.redo_document = ui
+            .add_enabled(activity.can_redo_document, egui::Button::new(REDO_DOCUMENT))
+            .on_hover_text(format!(
+                "Bring back the change taken back ({SHORTCUT_PRIMARY}+Shift+Z)"
+            ))
+            .clicked();
+        // Only while one of them is running: a button that is there all the time
+        // and does nothing most of the time teaches people not to trust it.
+        if activity.can_cancel_document {
+            chosen.cancel_document = ui.button("Cancel operation").clicked();
         }
         // Beside it, because it is the other thing a person does to a whole
         // document rather than to the view of one. Disabled rather than
@@ -1312,8 +1370,29 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
         });
     }
     ui.add(egui::Label::new(activity.line).wrap());
+    if activity.dirty {
+        ui.add(
+            egui::Label::new("Unsaved changes: the file on disk is unchanged until you Save.")
+                .wrap(),
+        );
+    }
+    if !activity.document_line.is_empty() {
+        ui.add(egui::Label::new(activity.document_line).wrap());
+    }
     chosen
 }
+
+/// What the buttons that act on the whole open document are called.
+pub const SAVE: &str = "Save";
+pub const SAVE_AS: &str = "Save As…";
+pub const UNDO_DOCUMENT: &str = "Undo";
+pub const REDO_DOCUMENT: &str = "Redo";
+
+/// The modifier the platform's document shortcuts use, as the hover text names it.
+#[cfg(target_os = "macos")]
+pub const SHORTCUT_PRIMARY: &str = "Cmd";
+#[cfg(not(target_os = "macos"))]
+pub const SHORTCUT_PRIMARY: &str = "Ctrl";
 
 /// Every standard view, with what to call it and the key that reaches it.
 ///
@@ -1546,6 +1625,91 @@ mod tests {
         }
     }
 
+    /// §30A: the document's own commands are offered exactly when they would do
+    /// something, and pressing them reports exactly what was pressed.
+    #[test]
+    fn the_document_commands_are_offered_exactly_when_they_would_do_something() {
+        let context = egui::Context::default();
+        let all = Activity {
+            can_open: true,
+            can_create_document: true,
+            can_save: true,
+            can_save_as: true,
+            can_undo_document: true,
+            can_redo_document: true,
+            can_cancel_document: true,
+            dirty: true,
+            document_line: "Applied.",
+            ..Default::default()
+        };
+        let output = toolbar_at_width(&context, all, 1600.0);
+        let at = |label: &str| visible_toolbar_text(&output, label, 1600.0).center();
+
+        let chosen = click_on(&context, at(SAVE), all);
+        assert!(chosen.save && !chosen.save_as && !chosen.undo_document && !chosen.redo_document);
+        let chosen = click_on(&context, at(SAVE_AS), all);
+        assert!(chosen.save_as && !chosen.save);
+        let chosen = click_on(&context, at(UNDO_DOCUMENT), all);
+        assert!(chosen.undo_document && !chosen.redo_document && !chosen.undo_visibility);
+        let chosen = click_on(&context, at(REDO_DOCUMENT), all);
+        assert!(chosen.redo_document && !chosen.undo_document);
+        let chosen = click_on(&context, at("Cancel operation"), all);
+        assert!(chosen.cancel_document && !chosen.cancel && !chosen.cancel_export);
+
+        // Disabled means unavailable, not merely greyed: the same presses report
+        // nothing when the commands are not offered.
+        let none = Activity {
+            can_open: true,
+            can_create_document: true,
+            ..Default::default()
+        };
+        for label in [SAVE, SAVE_AS, UNDO_DOCUMENT, REDO_DOCUMENT] {
+            let chosen = click_on(&context, at(label), none);
+            assert!(
+                !(chosen.save || chosen.save_as || chosen.undo_document || chosen.redo_document),
+                "{label} reported a press while not offered"
+            );
+        }
+        // And the document's Undo is not the picture's, nor a form's.
+        assert_ne!(UNDO_DOCUMENT, "Undo visibility");
+        assert_ne!(UNDO_DOCUMENT, "Undo draft");
+    }
+
+    /// §30A: unsaved changes are said in words, with what that means for the file.
+    #[test]
+    fn unsaved_changes_and_the_last_outcome_are_on_the_screen_in_words() {
+        let context = egui::Context::default();
+        let show = |dirty, line| {
+            let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+                toolbar(
+                    ui,
+                    Activity {
+                        dirty,
+                        document_line: line,
+                        ..Default::default()
+                    },
+                );
+            });
+            output.textures_delta.clear();
+            output
+        };
+        let painted = |output: &egui::FullOutput, text: &str| {
+            output.shapes.iter().any(|s| match &s.shape {
+                egui::Shape::Text(t) => t.galley.text().contains(text),
+                _ => false,
+            })
+        };
+        let dirty = show(true, "Applied. Undo is available; Save writes the file.");
+        assert!(painted(&dirty, "Unsaved changes"));
+        assert!(painted(
+            &dirty,
+            "the file on disk is unchanged until you Save"
+        ));
+        assert!(painted(&dirty, "Applied. Undo is available"));
+        let clean = show(false, "");
+        assert!(!painted(&clean, "Unsaved changes"));
+    }
+
     /// An export can be given up on exactly while one is running.
     ///
     /// The button is not there at all otherwise, on the same terms as the
@@ -1570,6 +1734,7 @@ mod tests {
             can_isolate: false,
             can_undo_visibility: false,
             orthographic: false,
+            ..Default::default()
         };
 
         let output = toolbar_at_width(&context, running(true), 1600.0);
@@ -1616,6 +1781,7 @@ mod tests {
             can_isolate: false,
             can_undo_visibility: false,
             orthographic: false,
+            ..Default::default()
         };
 
         let output = toolbar_at_width(&context, showing(true), 1600.0);
@@ -1751,6 +1917,7 @@ mod tests {
             can_isolate: false,
             can_undo_visibility: false,
             orthographic: false,
+            ..Default::default()
         };
 
         // Locate the real button's painted label; do not reconstruct the
@@ -2203,6 +2370,7 @@ mod tests {
             can_isolate: false,
             can_undo_visibility: false,
             orthographic: false,
+            ..Default::default()
         };
 
         // Found by pressing along the real toolbar rather than by rebuilding
@@ -2398,6 +2566,7 @@ mod tests {
             can_isolate,
             can_undo_visibility: false,
             orthographic: false,
+            ..Default::default()
         };
 
         // Found by pressing along the real toolbar rather than by rebuilding
@@ -2466,6 +2635,7 @@ mod tests {
                     can_isolate: true,
                     can_undo_visibility: false,
                     orthographic: false,
+                    ..Default::default()
                 },
             );
         });
@@ -2580,6 +2750,7 @@ mod tests {
             can_isolate: true,
             can_undo_visibility,
             orthographic: false,
+            ..Default::default()
         };
 
         // Found by pressing along the real toolbar rather than by rebuilding
@@ -2632,6 +2803,7 @@ mod tests {
             can_isolate: false,
             can_undo_visibility: false,
             orthographic,
+            ..Default::default()
         };
 
         // What the toolbar draws in each state. A control that only said
@@ -2984,6 +3156,7 @@ mod tests {
             can_isolate: false,
             can_undo_visibility: false,
             orthographic: false,
+            ..Default::default()
         };
 
         let output = toolbar_at_width(&context, can(true), 1600.0);
@@ -3031,6 +3204,7 @@ mod tests {
             can_isolate: false,
             can_undo_visibility: false,
             orthographic: false,
+            ..Default::default()
         };
 
         let output = toolbar_at_width(&context, with(true), 1600.0);

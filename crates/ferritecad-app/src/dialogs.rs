@@ -8,6 +8,7 @@ pub(crate) enum Action {
     Open,
     New,
     Edit,
+    SaveAs,
     ExportFbx,
     ExportStl,
 }
@@ -18,6 +19,7 @@ impl Action {
             Self::Open => "Open a document",
             Self::New => "New document",
             Self::Edit => "Save edited model as a new file",
+            Self::SaveAs => "Save As",
             Self::ExportFbx => "Export FBX",
             Self::ExportStl => "Export STL",
         }
@@ -91,6 +93,7 @@ impl Dialogs {
         action: Action,
         builder: rfd::FileDialog,
         input: &mut ferritecad_ui::ViewportInput,
+        private: Option<&std::path::Path>,
     ) -> Option<PathBuf> {
         let answer = invoke(action, || {
             let builder = builder.set_title(action.title());
@@ -99,7 +102,43 @@ impl Dialogs {
                 _ => builder.save_file(),
             }
         });
-        self.receive(action, answer, input)
+        self.receive(action, answer, input, private)
+    }
+
+    /// Asks what to do with unsaved changes before something replaces the document.
+    ///
+    /// A message dialog, modal like the file dialogs. `None` is "could not ask", which
+    /// the caller treats as Cancel: a question that cannot be asked never loses work.
+    pub(crate) fn ask_unsaved(
+        &mut self,
+        name: &str,
+        parent: &winit::window::Window,
+        request: &str,
+    ) -> Option<crate::sessions::UnsavedChoice> {
+        let buttons = if cfg!(target_os = "macos") {
+            rfd::MessageButtons::YesNoCancelCustom(
+                "Save".to_owned(),
+                "Discard".to_owned(),
+                "Cancel".to_owned(),
+            )
+        } else {
+            rfd::MessageButtons::YesNoCancel
+        };
+        let explanation = if cfg!(target_os = "macos") {
+            String::new()
+        } else {
+            " Yes saves them, No discards them, Cancel keeps the document open.".to_owned()
+        };
+        let answer = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Unsaved changes")
+            .set_description(format!(
+                "{name} has changes that are not saved. {request}{explanation}"
+            ))
+            .set_buttons(buttons)
+            .set_parent(parent)
+            .show();
+        Some(unsaved_choice(&answer))
     }
 
     pub(super) fn receive(
@@ -107,7 +146,25 @@ impl Dialogs {
         action: Action,
         answer: Outcome,
         input: &mut ferritecad_ui::ViewportInput,
+        private: Option<&std::path::Path>,
     ) -> Option<PathBuf> {
+        // Something written for the user to keep (everything but Open) must not be
+        // placed in the working folder that goes away with the document.
+        let answer = match answer {
+            Outcome::Selected(path)
+                if action != Action::Open
+                    && private.is_some_and(|dir| ferritecad_jobs::is_inside(dir, &path)) =>
+            {
+                self.failure = Some(format!(
+                    "{}: {} is inside FerriteCAD's temporary working folder, which is deleted when the document is closed. Nothing was written; choose a folder of your own.",
+                    action.title(),
+                    path.display()
+                ));
+                input.request_redraw();
+                return None;
+            }
+            other => other,
+        };
         let failure = (answer == Outcome::Failed).then(|| {
             format!(
                 "{}: the system file dialog could not be opened. No file was chosen. \
@@ -126,6 +183,20 @@ impl Dialogs {
     }
 }
 
+/// What a message dialog's answer means. Anything that is not a clear Save or
+/// Discard is Cancel: the document stays and nothing is lost.
+pub(crate) fn unsaved_choice(answer: &rfd::MessageDialogResult) -> crate::sessions::UnsavedChoice {
+    use crate::sessions::UnsavedChoice;
+    use rfd::MessageDialogResult as Answer;
+    match answer {
+        Answer::Yes => UnsavedChoice::Save,
+        Answer::No => UnsavedChoice::Discard,
+        Answer::Custom(label) if label == "Save" => UnsavedChoice::Save,
+        Answer::Custom(label) if label == "Discard" => UnsavedChoice::Discard,
+        _ => UnsavedChoice::Cancel,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
@@ -138,6 +209,7 @@ mod tests {
             Action::Open,
             Action::New,
             Action::Edit,
+            Action::SaveAs,
             Action::ExportFbx,
             Action::ExportStl,
         ] {
@@ -189,31 +261,66 @@ mod tests {
             Action::Open,
             Action::New,
             Action::Edit,
+            Action::SaveAs,
             Action::ExportFbx,
             Action::ExportStl,
         ] {
             assert_eq!(
-                dialogs.receive(action, invoke(action, || None), &mut input),
+                dialogs.receive(action, invoke(action, || None), &mut input, None),
                 None
             );
             assert_eq!(dialogs.failure(), None);
             assert!(!input.take_redraw());
-            assert_eq!(dialogs.receive(action, Outcome::Failed, &mut input), None);
+            assert_eq!(
+                dialogs.receive(action, Outcome::Failed, &mut input, None),
+                None
+            );
             let failure = dialogs.failure().expect("a failure must be shown");
             assert!(failure.starts_with(action.title()));
             assert!(failure.contains("could not be opened"));
             assert!(input.take_redraw());
-            assert_eq!(dialogs.receive(action, Outcome::Failed, &mut input), None);
+            assert_eq!(
+                dialogs.receive(action, Outcome::Failed, &mut input, None),
+                None
+            );
             assert!(
                 !input.take_redraw(),
                 "the same failure must not request frames forever"
             );
             assert_eq!(
-                dialogs.receive(action, invoke(action, || Some(path.clone())), &mut input),
+                dialogs.receive(
+                    action,
+                    invoke(action, || Some(path.clone())),
+                    &mut input,
+                    None
+                ),
                 Some(path.clone())
             );
             assert_eq!(dialogs.failure(), None);
             assert!(input.take_redraw());
         }
+    }
+
+    #[test]
+    fn only_a_clear_save_or_discard_is_not_a_cancel() {
+        use crate::sessions::UnsavedChoice;
+        use rfd::MessageDialogResult as Answer;
+        for (answer, expected) in [
+            (Answer::Yes, UnsavedChoice::Save),
+            (Answer::Custom("Save".to_owned()), UnsavedChoice::Save),
+            (Answer::No, UnsavedChoice::Discard),
+            (Answer::Custom("Discard".to_owned()), UnsavedChoice::Discard),
+            (Answer::Cancel, UnsavedChoice::Cancel),
+            (Answer::Custom("Cancel".to_owned()), UnsavedChoice::Cancel),
+            (Answer::Ok, UnsavedChoice::Cancel),
+            (
+                Answer::Custom("anything else".to_owned()),
+                UnsavedChoice::Cancel,
+            ),
+        ] {
+            assert_eq!(unsaved_choice(&answer), expected, "{answer:?}");
+        }
+        // The dialog's own default, which a dialog that could not be shown returns.
+        assert_eq!(unsaved_choice(&Answer::default()), UnsavedChoice::Cancel);
     }
 }

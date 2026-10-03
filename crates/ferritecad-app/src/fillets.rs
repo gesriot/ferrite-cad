@@ -251,7 +251,7 @@ impl Editor {
                     saved.feature,
                     saved.body,
                     saved.base_feature,
-                    draft.source.display()
+                    crate::sessions::shown_as(&draft.source)
                 ));
                 // §28H/§28L: which of the sequential Fillets this is and the
                 // others, in a bounded area so the buttons below stay in
@@ -436,7 +436,7 @@ impl Editor {
                     target.base_feature,
                     target.profile,
                     target.height_mm,
-                    draft.source.display()
+                    crate::sessions::shown_as(&draft.source)
                 ));
                 ui.small(format!(
                     "Radius from {} mm to {} × the shorter adjacent side.",

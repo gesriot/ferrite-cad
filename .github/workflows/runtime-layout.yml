@@ -803,6 +803,15 @@ jobs:
           EXTRACT
           FERRITECAD="$recipe_cli" "$py" ferrite-29d-recipe.py | tee chamfer-constraints-recipe-no-solver.log
           grep -q '^FCAD_29D_RECIPE_NO_SOLVER ' chamfer-constraints-recipe-no-solver.log
+          # §30A: with a kernel and no solver, Apply to a constrained plate is refused
+          # and the document stays clean, and the plain plate still goes through.
+          for gate in sessions::tests::without_the_solver_an_apply_to_a_constrained_plate_is_refused_and_nothing_changes \
+            sessions::tests::native_an_ordinary_plate_is_applied_undone_exported_and_saved_like_the_command_line
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-no-solver.log
+            if grep -q 'skipped:' session-no-solver.log || ! grep -Fq "test $gate ... ok" session-no-solver.log; then exit 1; fi
+          done
 
       - name: Build the real application and the command line tool against both
         id: build
@@ -937,6 +946,35 @@ jobs:
             shutdown_cancels_and_joins_the_edit_worker_before_it_can_publish
           do
             if ! grep -q "^test edits::tests::${gate} \.\.\. ok$" edit-tests.log; then
+              echo "::error::${gate} did not run and pass on this platform"
+              exit 1
+            fi
+          done
+
+      - name: Edit, Undo, Redo, export and Save one open document through the native window state
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # §30A: the window's session, worker and exports against the peer command
+          # line, on a plain plate and on a constrained chamfered plate. Both native
+          # libraries are required; a gate that skips itself fails here.
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          for gate in sessions::tests::native_an_ordinary_plate_is_applied_undone_exported_and_saved_like_the_command_line \
+            sessions::tests::native_a_chamfered_plate_with_constraints_keeps_them_byte_for_byte \
+            sessions::tests::native_open_draws_from_the_sessions_own_copy_and_a_failed_open_leaves_nothing
+          do
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-native.log
+            if grep -q 'skipped:' session-native.log || ! grep -Fq "test $gate ... ok" session-native.log; then
               echo "::error::${gate} did not run and pass on this platform"
               exit 1
             fi

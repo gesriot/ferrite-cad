@@ -434,6 +434,12 @@ capability по прежней политике) и штамп. Новой ко�
 `profile_constrained`, а `distance_edit.max_distance_mm` для такой плиты `null`.
 [Контракт §29D и исполняемый рецепт](edit-chamfer-base-constraints.md).
 
+§30A: CLI не меняется. Окно получает рабочую сессию открытого документа
+([контракт](document-session.md)): на маршруте высоты Extrude Apply, Undo/Redo и
+явные Save/Save As работают без новых имён файлов, а `edit-extrude` приводит к тому
+же сохранённому результату (все ячейки SQL, кроме `meta.modified_at`). Коды выхода
+и форматы команд прежние, включая 7.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

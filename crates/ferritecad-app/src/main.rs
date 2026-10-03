@@ -35,6 +35,9 @@ mod dialogs;
 mod edits;
 mod exports;
 mod fillets;
+#[cfg(target_os = "macos")]
+mod macos_quit;
+mod sessions;
 mod sketch;
 
 use std::ffi::{OsStr, OsString};
@@ -48,11 +51,10 @@ use ferritecad_document::{
     SketchSegmentRef,
 };
 use ferritecad_jobs::NewDocument;
-use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, TessellationParams};
-use ferritecad_occt::OcctKernel;
+use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink};
 use ferritecad_scene::{
     CatalogueEntry, EdgeNames, FaceMeaning, FaceNames, LoadedScene, SceneItem, Selection,
-    SketchSolveFacts, VertexNames, snapshot_of,
+    SketchSolveFacts, VertexNames,
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
@@ -69,6 +71,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
+use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowId};
 
 fn main() -> Result<()> {
@@ -99,7 +102,10 @@ fn main() -> Result<()> {
     // redraw explicitly.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::new(event_loop.create_proxy(), document);
+    let proxy = event_loop.create_proxy();
+    #[cfg(target_os = "macos")]
+    macos_quit::install(proxy.clone())?;
+    let mut app = App::new(proxy, document);
     event_loop
         .run_app(&mut app)
         .map_err(|error| ferritecad_types::CadError::rendering_because("running the window", error))
@@ -205,6 +211,8 @@ fn document_argument(arguments: impl Iterator<Item = OsString>) -> Result<Option
 /// A wake-up requested from outside winit's event-loop thread.
 #[derive(Debug)]
 enum AppEvent {
+    #[cfg(target_os = "macos")]
+    QuitRequested,
     RepaintAt(Instant),
     /// A document has finished loading, or has finished failing to.
     ///
@@ -213,6 +221,24 @@ enum AppEvent {
     Loaded {
         generation: LoadGeneration,
         result: Box<Result<LoadedScene>>,
+        /// The session the reading was made from, when it was an Open: the model
+        /// shown and the model Save writes are one reading of the file.
+        session: Option<Box<ferritecad_jobs::DocumentSession>>,
+    },
+    /// An Apply's edit has finished: a private version, or why not.
+    Applied {
+        generation: u64,
+        result: Box<Result<ferritecad_jobs::ProducedStep>>,
+    },
+    /// The picture of a version an Apply, Undo or Redo is waiting to show.
+    SceneStaged {
+        generation: u64,
+        result: Box<Result<LoadedScene>>,
+    },
+    /// A Save or Save As has finished.
+    Saved {
+        generation: u64,
+        result: Box<std::result::Result<ferritecad_jobs::Saved, ferritecad_jobs::SaveFailure>>,
     },
     /// An export has finished, or has finished failing to.
     ///
@@ -532,6 +558,7 @@ fn suggested_export_name(document: &Path) -> String {
 /// on screen, which is what the invariant below says.
 fn spawner(
     document: Option<PathBuf>,
+    lease: Option<Arc<ferritecad_jobs::Snapshot>>,
     proxy: EventLoopProxy<AppEvent>,
 ) -> impl FnOnce(&Path, bool, exports::ExportGeneration, &CancelToken) -> JoinHandle<()> {
     move |destination, replace, generation, cancel| {
@@ -541,7 +568,12 @@ fn spawner(
         // how to be told to stop.
         let context = OperationContext::default().with_cancel(cancel.clone());
         exports::spawn_export(
-            move || exports::run_export(&document, &destination, replace, &context),
+            move || {
+                // The working copy is held until the export is over, whatever the
+                // window has done to the document in the meantime.
+                let _lease = lease;
+                exports::run_export(&document, &destination, replace, &context)
+            },
             move |result| {
                 // A closed event loop is an ordinary end state, and there is
                 // nowhere useful to report a failed wake-up after it.
@@ -562,7 +594,10 @@ fn stl_spawner(
         let destination = destination.to_path_buf();
         let context = OperationContext::default().with_cancel(cancel.clone());
         exports::spawn_export(
-            move || exports::run_stl_export(&intent, &destination, replace, &context),
+            move || {
+                // `intent` carries the lease on the working copy it reads.
+                exports::run_stl_export(&intent, &destination, replace, &context)
+            },
             move |result| {
                 let _ = proxy.send_event(AppEvent::StlExported { generation, result });
             },
@@ -896,6 +931,29 @@ fn cancel_load(loads: &mut Loads, input: &mut ViewportInput) -> bool {
     changed
 }
 
+/// What the height form may offer this frame, from the state the window really has.
+///
+/// Starting a *new* form needs no form open (`Edits::busy`); the open form's own
+/// buttons must not be switched off by the form being open. The copy workflow
+/// needs a clean, idle document and no copy already running; Apply needs only an
+/// idle one.
+fn height_state(
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+) -> ferritecad_ui::HeightState {
+    let idle = !sessions.busy() && can_begin_new(creates, loads, exports);
+    ferritecad_ui::HeightState {
+        running: false,
+        can_cancel: false,
+        apply: sessions.has_session() && idle,
+        copy: idle && !edits.running() && !sessions.dirty(),
+        unsaved: sessions.dirty(),
+    }
+}
+
 /// New is serialized with document loads and exports. Viewing remains available.
 fn can_begin_new(creates: &creates::Creates, loads: &Loads, exports: &exports::Exports) -> bool {
     !creates.busy()
@@ -949,6 +1007,12 @@ struct Sections<'a> {
     edits: &'a mut edits::Edits,
     stl_form: Option<&'a mut ferritecad_ui::StlExportForm>,
     can_edit: bool,
+    /// What the height form may offer: Apply on the open document, and the copy
+    /// workflow only while the document has nothing unsaved.
+    height: ferritecad_ui::HeightState,
+    /// The other editors are unavailable only because the document has unsaved
+    /// changes (ADR 0005): the form says so rather than leaving buttons grey.
+    held_back: bool,
     /// Why the last attempt to open a document failed, when it failed over
     /// something with parts.
     failure: Option<ferritecad_ui::OpenFailure<'a>>,
@@ -2290,6 +2354,10 @@ struct App {
     exports: exports::Exports,
     creates: creates::Creates,
     edits: edits::Edits,
+    /// The open document's session: the one owner of what is accepted, what is
+    /// saved and what can be undone. The picture in `live` is derived from it.
+    sessions: sessions::Sessions,
+    modifiers: winit::keyboard::ModifiersState,
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -2348,10 +2416,14 @@ impl ApplicationHandler<AppEvent> for App {
         self.creates.stop_all();
         self.loads.stop_all();
         self.exports.stop_all();
+        // Last: it joins the session's workers and removes its private files.
+        self.sessions.stop_all();
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
+            #[cfg(target_os = "macos")]
+            AppEvent::QuitRequested => self.request_quit(event_loop),
             AppEvent::RepaintAt(deadline) => self.request_frame_at(event_loop, deadline),
             AppEvent::Progress { generation } => {
                 advance_load(&mut self.loads, &mut self.input, generation);
@@ -2498,6 +2570,47 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
+            AppEvent::Applied { generation, result } => {
+                match self.sessions.finish_apply(generation, *result) {
+                    sessions::Edited::Show(path) => self.stage_scene(generation, path),
+                    sessions::Edited::Failed
+                    | sessions::Edited::NoChange
+                    | sessions::Edited::Ignore => {}
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
+            AppEvent::SceneStaged { generation, result } => {
+                // The picture of a version that is waiting to become current. A
+                // reply nobody is waiting for (another operation, a stop) shows
+                // nothing and changes nothing.
+                if let Some(staged) = self.sessions.staged_path(generation) {
+                    let outcome = self.show(&staged, *result, sessions::Bind::Staged);
+                    let shown = outcome.is_ok();
+                    if let Err(error) = &outcome {
+                        eprintln!("ferritecad: {error}");
+                    }
+                    if self.sessions.finish_scene(generation, outcome) && shown {
+                        // The form described the picture that was replaced.
+                        self.edits.cancel();
+                        self.refresh_title();
+                    }
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
+            AppEvent::Saved { generation, result } => {
+                if let Some(report) = self.sessions.finish_save(generation, *result) {
+                    if report.published {
+                        self.refresh_title();
+                    }
+                    if let Some(next) = report.continuation {
+                        self.continue_with(next, event_loop);
+                    }
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
             AppEvent::Created { generation, result } => {
                 // An answer to a creation the user has since replaced changes
                 // nothing at all, and above all does not send this window off
@@ -2532,23 +2645,36 @@ impl ApplicationHandler<AppEvent> for App {
                     self.request_frame_now(event_loop);
                 }
             }
-            AppEvent::Loaded { generation, result } => {
+            AppEvent::Loaded {
+                generation,
+                result,
+                session,
+            } => {
                 // An answer to a question the user has since replaced is not
                 // shown and is not announced: "this document could not be
                 // opened", about a document they are no longer opening, is a
                 // complaint about the wrong file arriving after they moved on.
                 // Which of the two this is belongs to `Loads`, so the outcome
                 // is reported the same way whatever it turns out to be.
-                let outcome = match self.loads.accepted_path(generation) {
-                    // Committed together: the picture and the name of the
-                    // document it was read from become current in one
-                    // statement, so nothing can write out a document the
-                    // window is not showing.
-                    Some(path) => {
-                        let path = path.to_path_buf();
-                        self.show(&path, *result)
+                let outcome = match (self.loads.accepted_path(generation), session) {
+                    // Committed together: the picture, the session it was read
+                    // from and the name of the document become current in one
+                    // statement, so nothing can write out a document the window
+                    // is not showing. What is read is the session's private copy
+                    // of the file, never the file again.
+                    (Some(_), Some(session)) => {
+                        let shown = session.current().path().to_path_buf();
+                        self.show(&shown, *result, sessions::Bind::Open(session))
                     }
-                    None => (*result).map(|_| ()),
+                    (Some(_), None) => match *result {
+                        Err(error) => Err(error),
+                        Ok(_) => Err(CadError::input(
+                            "the document could not be opened into a session",
+                        )),
+                    },
+                    // Not the answer anyone is waiting for: dropping the session
+                    // removes its private files.
+                    (None, _) => (*result).map(|_| ()),
                 };
                 let effect = finish_answer(&mut self.loads, &mut self.input, generation, outcome);
                 if let Some(error) = effect.error {
@@ -2573,8 +2699,38 @@ impl ApplicationHandler<AppEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                event_loop.exit();
+                self.request_quit(event_loop);
                 return;
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
+            // The document's own commands. Matched before the single-letter view
+            // keys so a Ctrl/Cmd chord is never also a view command, and with the
+            // interface's claim on the keyboard passed in so Undo in a text field
+            // stays the field's.
+            WindowEvent::KeyboardInput { ref event, .. }
+                if event.state == ElementState::Pressed
+                    && document_command(
+                        &event.logical_key,
+                        event.text_with_all_modifiers(),
+                        self.modifiers,
+                        response.consumed,
+                    )
+                    .is_some() =>
+            {
+                match document_command(
+                    &event.logical_key,
+                    event.text_with_all_modifiers(),
+                    self.modifiers,
+                    response.consumed,
+                ) {
+                    Some(DocumentCommand::Save) => self.save_document(),
+                    Some(DocumentCommand::SaveAs) => self.ask_where_to_save_as(),
+                    Some(DocumentCommand::Undo) => self.move_document(true),
+                    Some(DocumentCommand::Redo) => self.move_document(false),
+                    None => {}
+                }
             }
             WindowEvent::Resized(size) => {
                 // One size, applied to both. The reducer holds the camera and
@@ -2589,7 +2745,18 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 self.frames.frame_started();
-                let line = self.loads.status().line();
+                // Save As changes the logical name without opening a new scene.
+                // Preserve pending/failed Open messages, but name the accepted
+                // session rather than the last successfully opened filename.
+                let line = match (self.loads.status(), self.sessions.logical_path()) {
+                    (Status::Ready { .. }, Some(path)) => short_name(path),
+                    (status, _) => status.line(),
+                };
+                // Read from the fields rather than through `self`, which `live`
+                // holds: the same two questions `settled` and `document_idle` ask.
+                let settled = can_begin_new(&self.creates, &self.loads, &self.exports)
+                    && !self.sessions.busy();
+                let idle = settled && !self.edits.busy();
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
@@ -2599,10 +2766,12 @@ impl ApplicationHandler<AppEvent> for App {
                     can_export: can_export(&live.scene)
                         && !self.creates.busy()
                         && !self.edits.busy()
+                        && !self.sessions.busy()
                         && !self.exports.configuring_stl(),
                     can_export_stl: can_export_stl(&live.scene)
                         && !self.creates.busy()
                         && !self.edits.busy()
+                        && !self.sessions.busy()
                         && !self.exports.configuring_stl(),
                     // And offered a way to stop only while there is one to
                     // stop. Separate from the reading's Cancel: a window can
@@ -2631,9 +2800,17 @@ impl ApplicationHandler<AppEvent> for App {
                     orthographic: self.input.projection() == Projection::Orthographic,
                     // One document-changing action at a time; viewing remains available.
                     can_create_document: !self.edits.busy()
+                        && !self.sessions.busy()
                         && can_begin_new(&self.creates, &self.loads, &self.exports),
-                    can_open: !self.creates.busy() && !self.edits.busy(),
+                    can_open: !self.creates.busy() && !self.edits.busy() && !self.sessions.busy(),
                     can_cancel_create: self.creates.can_cancel(),
+                    can_save: settled && self.sessions.can_save(),
+                    can_save_as: settled && self.sessions.can_save_as(),
+                    can_undo_document: idle && self.sessions.can_undo(),
+                    can_redo_document: idle && self.sessions.can_redo(),
+                    can_cancel_document: self.sessions.busy(),
+                    dirty: self.sessions.dirty(),
+                    document_line: &self.sessions.status,
                 };
                 // The words of the last failed attempt, borrowed for this
                 // frame from the application's own account of it. Nothing is
@@ -2654,8 +2831,20 @@ impl ApplicationHandler<AppEvent> for App {
                 // And what the last New did, on the same terms as the export
                 // beside it: written when its answer arrived and borrowed for
                 // this frame.
-                let can_edit =
-                    !self.edits.busy() && can_begin_new(&self.creates, &self.loads, &self.exports);
+                // The other editors read a source and write a new file, and then open
+                // it as the document: with unsaved changes that would silently
+                // drop them, so they wait for Save or Undo (ADR 0005).
+                let can_edit = !self.edits.busy()
+                    && !self.sessions.busy()
+                    && !self.sessions.dirty()
+                    && can_begin_new(&self.creates, &self.loads, &self.exports);
+                let height = height_state(
+                    &self.edits,
+                    &self.sessions,
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -2669,6 +2858,8 @@ impl ApplicationHandler<AppEvent> for App {
                     Sections {
                         dialog_failure: self.dialogs.failure(),
                         can_edit,
+                        height,
+                        held_back: self.sessions.dirty() && !self.sessions.busy(),
                         stl_form,
                         edits: &mut self.edits,
                         failure,
@@ -2699,7 +2890,10 @@ impl ApplicationHandler<AppEvent> for App {
                         // says where it goes. Both happen after the frame was
                         // published, for the reason opening does — a modal
                         // dialog runs its own event loop.
-                        if chosen.new_document && !self.edits.busy() {
+                        if chosen.new_document
+                            && !self.edits.busy()
+                            && self.guard(sessions::Continuation::New)
+                        {
                             ask_new(
                                 &mut self.creates,
                                 &self.loads,
@@ -2707,8 +2901,25 @@ impl ApplicationHandler<AppEvent> for App {
                                 &mut self.input,
                             );
                         }
+                        if chosen.cancel_document {
+                            self.sessions.cancel();
+                            self.input.request_redraw();
+                        }
+                        if chosen.save {
+                            self.save_document();
+                        }
+                        if chosen.save_as {
+                            self.ask_where_to_save_as();
+                        }
+                        if chosen.undo_document {
+                            self.move_document(true);
+                        }
+                        if chosen.redo_document {
+                            self.move_document(false);
+                        }
                         match chosen.edit {
                             ferritecad_ui::EditChoice::Begin => self.begin_edit(),
+                            ferritecad_ui::EditChoice::Apply => self.apply_height(),
                             ferritecad_ui::EditChoice::Save => self.ask_where_to_edit(),
                             ferritecad_ui::EditChoice::Cancel => {
                                 self.edits.cancel();
@@ -2923,6 +3134,8 @@ impl App {
             exports: exports::Exports::default(),
             creates: creates::Creates::default(),
             edits: edits::Edits::default(),
+            sessions: sessions::Sessions::default(),
+            modifiers: winit::keyboard::ModifiersState::default(),
         }
     }
 
@@ -2936,6 +3149,21 @@ impl App {
     /// A cancelled dialog is an answer, not a failure, and leaves the document
     /// already on screen exactly as it was.
     fn ask_for_a_document(&mut self) {
+        if self.creates.busy() || self.edits.busy() {
+            return;
+        }
+        // With unsaved changes the user is asked first; Cancel (or a question that
+        // could not be asked) stays, and Save goes on to the dialog when it is done.
+        if !self.guard(sessions::Continuation::Open) {
+            return;
+        }
+        self.pick_and_open();
+    }
+
+    /// The Open dialog and what follows it. Reached from [`Self::ask_for_a_document`]
+    /// once nothing is lost by replacing the document, and after a Save the user
+    /// asked for on the way here.
+    fn pick_and_open(&mut self) {
         if self.creates.busy() || self.edits.busy() {
             return;
         }
@@ -2959,6 +3187,7 @@ impl App {
                 )
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -2986,9 +3215,16 @@ impl App {
         let Some(live) = &self.live else {
             return;
         };
-        let Some(document) = live.scene.document.clone() else {
+        let Some(shown) = live.scene.document.clone() else {
             return;
         };
+        // The user's name and folder for the suggestion, not the private file the
+        // model is read from.
+        let document = self
+            .sessions
+            .logical_path()
+            .map(Path::to_path_buf)
+            .unwrap_or(shown);
 
         let Some(chosen) = self.dialogs.choose(
             dialogs::Action::ExportFbx,
@@ -3005,6 +3241,7 @@ impl App {
                 .set_file_name(suggested_export_name(&document))
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3017,10 +3254,26 @@ impl App {
             return;
         }
         if let Some(live) = &self.live
-            && let Some(document) = &live.scene.document
+            && let Some(shown) = &live.scene.document
         {
-            self.exports
-                .ask_stl(document, stl_bodies(&live.scene), &mut self.input);
+            // What is read is the accepted working model, with its unsaved changes;
+            // what the user knows the document by is its own file.
+            let lease = self.sessions.export_source();
+            let document = lease
+                .as_ref()
+                .map_or_else(|| shown.clone(), |snapshot| snapshot.path().to_path_buf());
+            let alias = self
+                .sessions
+                .logical_path()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| shown.clone());
+            self.exports.ask_stl_for(
+                &document,
+                &alias,
+                lease,
+                stl_bodies(&live.scene),
+                &mut self.input,
+            );
         }
     }
 
@@ -3039,17 +3292,18 @@ impl App {
             dialogs::Action::ExportStl,
             rfd::FileDialog::new()
                 .add_filter("Binary STL", &["stl"])
-                .set_directory(intent.document.parent().unwrap_or(Path::new(".")))
+                .set_directory(intent.alias.parent().unwrap_or(Path::new(".")))
                 .set_file_name(format!(
                     "{}.stl",
                     intent
-                        .document
+                        .alias
                         .file_stem()
                         .unwrap_or_default()
                         .to_string_lossy()
                 ))
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3097,11 +3351,211 @@ impl App {
                 .set_file_name(format!("untitled.{DOCUMENT_EXTENSION}"))
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
 
         self.create_at(content, Some(chosen));
+    }
+
+    /// Nothing that reads or replaces the document is running or waiting.
+    ///
+    /// The condition under which Save may start, and the one an Apply meets: a save
+    /// that overlapped an Open could be recorded against the wrong session.
+    fn settled(&self) -> bool {
+        can_begin_new(&self.creates, &self.loads, &self.exports) && !self.sessions.busy()
+    }
+
+    /// As [`Self::settled`], and no form is open over the picture it describes.
+    fn document_idle(&self) -> bool {
+        self.settled() && !self.edits.busy()
+    }
+
+    /// Native Quit and window close share the same guarded exit.
+    fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
+        if self.guard(sessions::Continuation::Quit) {
+            event_loop.exit();
+        } else {
+            self.request_frame_now(event_loop);
+        }
+    }
+
+    /// Whether replacing the open document is allowed right now, asking the user
+    /// about unsaved changes first.
+    ///
+    /// `true` means go on now (nothing is lost, or the user chose Discard: the
+    /// changes stay in the session until the replacement is accepted, so cancelling
+    /// the file dialog afterwards loses nothing). `false` means stay: Cancel, a
+    /// question that could not be asked, an operation still finishing, or Save,
+    /// which goes on by itself when it has succeeded.
+    fn guard(&mut self, next: sessions::Continuation) -> bool {
+        if self.sessions.busy() {
+            self.input.request_redraw();
+            return false;
+        }
+        if !self.sessions.dirty() {
+            return true;
+        }
+        // Something is still replacing or reading the document (an Open or a New on
+        // its way, an export): a Save started now would overlap it. Wait for it, or
+        // cancel it, and ask then.
+        if !self.settled() {
+            self.input.request_redraw();
+            return false;
+        }
+        let request = match next {
+            sessions::Continuation::Open => "Opening another document would replace it.",
+            sessions::Continuation::New => "Making a new document would replace it.",
+            sessions::Continuation::Quit => "Closing the window would lose them.",
+        };
+        let choice = match (self.sessions.name(), self.live.as_ref()) {
+            (Some(name), Some(live)) => self.dialogs.ask_unsaved(&name, &live.window, request),
+            _ => None,
+        };
+        match self.sessions.replacing(choice) {
+            sessions::Replace::Go | sessions::Replace::Discarded => true,
+            sessions::Replace::AfterSave => {
+                self.start_save(ferritecad_jobs::SaveTarget::InPlace, Some(next));
+                false
+            }
+            sessions::Replace::Stay => false,
+        }
+    }
+
+    /// What the user was on their way to when they chose Save: now that the file is
+    /// written, go on.
+    fn continue_with(&mut self, next: sessions::Continuation, event_loop: &ActiveEventLoop) {
+        match next {
+            sessions::Continuation::Open => self.pick_and_open(),
+            sessions::Continuation::New => {
+                ask_new(
+                    &mut self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &mut self.input,
+                );
+            }
+            sessions::Continuation::Quit => event_loop.exit(),
+        }
+    }
+
+    fn start_save(
+        &mut self,
+        target: ferritecad_jobs::SaveTarget,
+        after: Option<sessions::Continuation>,
+    ) -> bool {
+        let proxy = self.proxy.clone();
+        let started = self
+            .sessions
+            .begin_save(target, after, |plan, generation, cancel| {
+                sessions::spawn_save(plan, cancel.clone(), move |result| {
+                    let _ = proxy.send_event(AppEvent::Saved {
+                        generation,
+                        result: Box::new(result),
+                    });
+                })
+            })
+            .is_some();
+        self.input.request_redraw();
+        started
+    }
+
+    /// Writes the accepted changes to the document's own file, when there are any.
+    fn save_document(&mut self) {
+        if self.settled() && self.sessions.can_save() {
+            self.start_save(ferritecad_jobs::SaveTarget::InPlace, None);
+        }
+    }
+
+    /// Asks where to write the accepted model under a new name. A cancelled dialog
+    /// does nothing; an occupied name is refused by the save, keeping the accepted
+    /// scene and any draft.
+    fn ask_where_to_save_as(&mut self) {
+        if !(self.settled() && self.sessions.can_save_as()) {
+            return;
+        }
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(logical) = self.sessions.logical_path().map(Path::to_path_buf) else {
+            return;
+        };
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::SaveAs,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(
+                    logical
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new(".")),
+                )
+                .set_file_name(self.sessions.name().unwrap_or_default())
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+            self.sessions.private_directory(),
+        ) else {
+            return;
+        };
+        self.start_save(ferritecad_jobs::SaveTarget::As(chosen), None);
+    }
+
+    /// Apply the height typed in the form to the open document. No file dialog: the
+    /// change is accepted into the session when its picture is ready, and the file
+    /// on disk is written only by Save.
+    fn apply_height(&mut self) {
+        if !self.settled() || !self.sessions.has_session() {
+            return;
+        }
+        let Some((feature, distance_mm)) = self.edits.apply_request() else {
+            self.input.request_redraw();
+            return;
+        };
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_apply(
+                ticket,
+                feature,
+                distance_mm,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
+    /// One accepted change back or forward. The version becomes current only when
+    /// its picture has been built and shown.
+    fn move_document(&mut self, undo: bool) {
+        if !self.document_idle() {
+            return;
+        }
+        let Some((generation, path)) = self.sessions.begin_move(undo) else {
+            return;
+        };
+        self.stage_scene(generation, path);
+        self.input.request_redraw();
+    }
+
+    /// Builds the picture of a version that is waiting to become current.
+    fn stage_scene(&mut self, generation: u64, path: PathBuf) {
+        let Some(cancel) = self.sessions.scene_token(generation) else {
+            return;
+        };
+        let proxy = self.proxy.clone();
+        let worker = sessions::spawn_scene(path, cancel, move |result| {
+            let _ = proxy.send_event(AppEvent::SceneStaged {
+                generation,
+                result: Box::new(result),
+            });
+        });
+        self.sessions.attach_scene(generation, worker);
     }
 
     /// The form describes only the document whose scene was accepted.
@@ -3131,10 +3585,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("sketch-constraints.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3163,10 +3618,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-sketch.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3192,10 +3648,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-circle.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3224,10 +3681,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-revolve.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3253,10 +3711,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-annulus.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3282,10 +3741,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("cut.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3311,10 +3771,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("fillet.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3343,10 +3804,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-fillet.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3372,10 +3834,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("chamfer.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3404,10 +3867,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-chamfer.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3434,10 +3898,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-cut.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3453,6 +3918,12 @@ impl App {
     }
 
     fn ask_where_to_edit(&mut self) {
+        // The copy workflow opens its output as the document; with unsaved changes
+        // that would drop them (ADR 0005).
+        if self.sessions.dirty() || self.sessions.busy() {
+            self.input.request_redraw();
+            return;
+        }
         let Some(mut request) = self.edits.request(PathBuf::new()) else {
             self.input.request_redraw();
             return;
@@ -3464,10 +3935,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3511,18 +3983,44 @@ impl App {
         if self.creates.busy() || self.edits.busy() {
             return;
         }
-        let document = self
-            .live
+        let lease = self.sessions.export_source();
+        let document = lease
             .as_ref()
-            .and_then(|live| live.scene.document.clone());
+            .map(|snapshot| snapshot.path().to_path_buf())
+            .or_else(|| {
+                self.live
+                    .as_ref()
+                    .and_then(|live| live.scene.document.clone())
+            });
+        // Nothing for the user to keep goes into the folder that is removed with
+        // the document.
+        if let (Some(lease), Some(destination)) = (&lease, &chosen)
+            && exports::inside_working_copy(lease, destination)
+        {
+            exports::refuse_working_folder(&mut self.exports, &mut self.input, destination);
+            return;
+        }
+        // What an export must never be written over is the user's file, which is
+        // not the private file the model is read from.
+        let alias = self
+            .sessions
+            .logical_path()
+            .map(Path::to_path_buf)
+            .or_else(|| document.clone());
         let proxy = self.proxy.clone();
+        // A question about replacing a file is answered later, about this very
+        // working copy.
+        self.exports.hold(lease.clone());
         exports::begin_export(
             &mut self.exports,
             &mut self.input,
-            document.as_deref(),
+            alias.as_deref(),
             chosen,
-            spawner(document.clone(), proxy),
+            spawner(document.clone(), lease, proxy),
         );
+        if self.exports.pending().is_none() {
+            self.exports.hold(None);
+        }
     }
 
     /// Acts on the answer to the window's own replace question.
@@ -3539,17 +4037,29 @@ impl App {
             );
             return;
         }
-        let document = self
-            .live
+        // The working copy the question was asked about, not whatever is current by
+        // the time it is answered.
+        let lease = self.exports.held();
+        let document = lease
             .as_ref()
-            .and_then(|live| live.scene.document.clone());
+            .map(|snapshot| snapshot.path().to_path_buf())
+            .or_else(|| {
+                self.live
+                    .as_ref()
+                    .and_then(|live| live.scene.document.clone())
+            });
+        let alias = self
+            .sessions
+            .logical_path()
+            .map(Path::to_path_buf)
+            .or_else(|| document.clone());
         let proxy = self.proxy.clone();
         exports::confirm_export(
             &mut self.exports,
             &mut self.input,
-            document.as_deref(),
+            alias.as_deref(),
             choice,
-            spawner(document.clone(), proxy),
+            spawner(document.clone(), lease, proxy),
         );
     }
 
@@ -3595,30 +4105,27 @@ impl App {
                             let _ = waking.send_event(AppEvent::Progress { generation });
                         }
                     }));
+                // Filled by the worker with the session it opened, and read out by the
+                // delivery: the picture and the session are one reading of the file.
+                let opened = sessions::Opened::default();
+                let produced = Arc::clone(&opened);
                 spawn_load(
                     move || {
-                        // The kernel is made and dropped inside the worker. An Open
-                        // CASCADE session belongs to the thread that opened it, and
-                        // ending it with the thread means an abandoned load cannot
-                        // outlive the shapes it was holding.
-                        let mut kernel = OcctKernel::new()?;
-                        snapshot_of(
-                            &path,
-                            &mut kernel,
-                            // How this kernel re-reads a STEP file the document
-                            // stores. Handed over as a function so one session
-                            // builds both the rebuilt bodies and the imported ones.
-                            |kernel, source| kernel.import_step(source),
-                            &TessellationParams::default(),
-                            &context,
-                        )
+                        let (scene, session) =
+                            sessions::open_for_view(&std::env::temp_dir(), &path, &context)?;
+                        if let Ok(mut slot) = produced.lock() {
+                            *slot = Some(session);
+                        }
+                        Ok(scene)
                     },
                     move |result| {
+                        let session = opened.lock().ok().and_then(|mut slot| slot.take());
                         // A closed event loop is an ordinary end state, and there
                         // is nowhere useful to report a failed wake-up after it.
                         let _ = proxy.send_event(AppEvent::Loaded {
                             generation,
                             result: Box::new(result),
+                            session: session.map(Box::new),
                         });
                     },
                 )
@@ -3909,7 +4416,12 @@ impl App {
     /// happens: the model already on screen stays on screen, because a viewer
     /// that went blank would lose the drawing the user was reading while they
     /// work out what went wrong.
-    fn show(&mut self, document: &Path, loaded: Result<LoadedScene>) -> Result<()> {
+    fn show(
+        &mut self,
+        document: &Path,
+        loaded: Result<LoadedScene>,
+        bind: sessions::Bind,
+    ) -> Result<()> {
         let Some(live) = self.live.as_mut() else {
             // No window to show it in, which means the loop is already on its
             // way out. The outcome is still the outcome; nothing here changes
@@ -3931,6 +4443,12 @@ impl App {
             let prepared = live.renderer.prepare(snapshot)?;
             live.renderer.prepare_sketches(prepared, drawings)
         });
+        // Between preparing and showing, and the only fallible step between them:
+        // the session change and the scene change are one statement, so the
+        // version a person is looking at is the version Save would write. A
+        // picture that could not be prepared never reaches this point, and one
+        // whose version cannot be made current is not shown either.
+        let next = next.and_then(|next| self.sessions.bind(bind).map(|()| next));
         let committed = commit_scene(&mut live.scene, &mut self.input, next);
         self.creates
             .sketch
@@ -3938,12 +4456,24 @@ impl App {
         self.edits.draft_load_finished(document, committed.is_ok());
         committed?;
         exports::leave_document(&mut self.exports, &mut self.input);
-        // The picture is current; the name on the window is the same fact.
-        // Not asked of `App::document`, which already names the request in
-        // flight, and not said again every frame.
-        live.window
-            .set_title(&window_title(live.scene.document.as_deref()));
+        // The picture is current; the name on the window is the same fact: the
+        // session's logical name (never the private file the picture was read
+        // from) and a mark while there are unsaved changes.
+        self.refresh_title();
         Ok(())
+    }
+
+    /// The window's name, from the session that owns the document.
+    fn refresh_title(&self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let title = if self.sessions.has_session() {
+            self.sessions.title()
+        } else {
+            window_title(live.scene.document.as_deref())
+        };
+        live.window.set_title(&title);
     }
 
     fn request_frame_now(&mut self, event_loop: &ActiveEventLoop) {
@@ -4159,6 +4689,8 @@ impl Live {
             mut stl_form,
             edits,
             can_edit,
+            height,
+            held_back,
             failure,
             export,
             replacing,
@@ -4172,6 +4704,13 @@ impl Live {
             // place for that is what stops a button and a keystroke drifting
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
+            if held_back {
+                ui.label(
+                    "The other editors (sketch, constraints, Cut, Fillet, Chamfer, circles, \
+                     Revolve) are unavailable while the document has unsaved changes: Save or \
+                     Undo them first. Height can still be changed with Apply.",
+                );
+            }
             sketch.draw_choices(
                 ui,
                 can_edit,
@@ -4188,7 +4727,7 @@ impl Live {
                 .as_ref()
                 .map(|source| source.unavailable_reason())
                 .unwrap_or(Some("Open a document to edit an extrusion."));
-            chosen.edit = edits.draw(ui, can_edit, unavailable);
+            chosen.edit = edits.draw_with(ui, can_edit, unavailable, height);
             let stl = ferritecad_ui::stl_export_form(ui, stl_form.as_deref_mut());
             if stl != ferritecad_ui::StlChoice::Waiting {
                 chosen.stl = stl;
@@ -4459,6 +4998,73 @@ fn button_of(button: MouseButton) -> Option<PointerButton> {
     }
 }
 
+/// A command on the open document, reached by a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocumentCommand {
+    Save,
+    SaveAs,
+    Undo,
+    Redo,
+}
+
+/// Which document command a key chord asks for, if any.
+///
+/// The platform's usual chords: Cmd on macOS, Ctrl elsewhere, with S for Save,
+/// Shift+S for Save As, Z for Undo and Shift+Z (or Ctrl+Y off macOS) for Redo.
+/// Undo and Redo are not taken while the interface has the keyboard, because a
+/// focused text field has an Undo of its own and the user typing in it means that
+/// one. Save and Save As are not text commands and are taken regardless.
+fn document_command(
+    key: &Key,
+    text_with_modifiers: Option<&str>,
+    modifiers: winit::keyboard::ModifiersState,
+    claimed_by_ui: bool,
+) -> Option<DocumentCommand> {
+    let primary = if cfg!(target_os = "macos") {
+        modifiers.super_key()
+    } else {
+        modifiers.control_key()
+    };
+    if !primary || modifiers.alt_key() {
+        return None;
+    }
+    let Key::Character(logical_text) = key else {
+        return None;
+    };
+    // macOS maps Command chords through the active layout's command mapping.
+    // For example, Russian logical ы/я have Command text s/z. Respect the OS's
+    // mapping (also for Dvorak) rather than guessing a US physical-key location.
+    // Ctrl text on other platforms can be a control character, so keep their
+    // logical key path unchanged.
+    let text = if cfg!(target_os = "macos") {
+        text_with_modifiers.unwrap_or(logical_text.as_str())
+    } else {
+        logical_text.as_str()
+    };
+    let shift = modifiers.shift_key();
+    if text.eq_ignore_ascii_case("s") {
+        return Some(if shift {
+            DocumentCommand::SaveAs
+        } else {
+            DocumentCommand::Save
+        });
+    }
+    if claimed_by_ui {
+        return None;
+    }
+    if text.eq_ignore_ascii_case("z") {
+        return Some(if shift {
+            DocumentCommand::Redo
+        } else {
+            DocumentCommand::Undo
+        });
+    }
+    if !cfg!(target_os = "macos") && !shift && text.eq_ignore_ascii_case("y") {
+        return Some(DocumentCommand::Redo);
+    }
+    None
+}
+
 /// What one keystroke asks the window to do.
 ///
 /// Named rather than translated into a camera event: where to go depends on
@@ -4535,6 +5141,9 @@ fn named_view(key: &Key) -> Option<StandardView> {
 mod tests {
     use std::time::Duration;
 
+    use ferritecad_kernel::TessellationParams;
+    use ferritecad_occt::OcctKernel;
+    use ferritecad_scene::snapshot_of;
     use ferritecad_viewport::PickId;
 
     use super::*;
@@ -14211,7 +14820,7 @@ mod tests {
         ] {
             for answer in [dialogs::Outcome::Cancelled, dialogs::Outcome::Failed] {
                 let failed = answer == dialogs::Outcome::Failed;
-                let chosen = dialogs.receive(action, answer, &mut input);
+                let chosen = dialogs.receive(action, answer, &mut input, None);
                 assert!(chosen.is_none());
                 assert_eq!(dialogs.failure().is_some(), failed);
                 assert!(
@@ -18251,5 +18860,193 @@ mod tests {
         }
         creates.stop_all();
         loads.stop_all();
+    }
+
+    /// §30A: the document's chords are the platform's, an Undo typed into a text
+    /// field is the field's, and Ctrl/Cmd is required.
+    #[test]
+    fn document_chords_are_the_platforms_and_leave_text_undo_to_the_field() {
+        use winit::keyboard::ModifiersState as Mods;
+        let primary = if cfg!(target_os = "macos") {
+            Mods::SUPER
+        } else {
+            Mods::CONTROL
+        };
+        let other = if cfg!(target_os = "macos") {
+            Mods::CONTROL
+        } else {
+            Mods::SUPER
+        };
+        let key = |c: &str| Key::Character(c.into());
+
+        assert_eq!(
+            document_command(&key("s"), None, primary, false),
+            Some(DocumentCommand::Save)
+        );
+        assert_eq!(
+            document_command(&key("S"), None, primary | Mods::SHIFT, false),
+            Some(DocumentCommand::SaveAs)
+        );
+        assert_eq!(
+            document_command(&key("z"), None, primary, false),
+            Some(DocumentCommand::Undo)
+        );
+        assert_eq!(
+            document_command(&key("Z"), None, primary | Mods::SHIFT, false),
+            Some(DocumentCommand::Redo)
+        );
+        assert_eq!(
+            document_command(&key("y"), None, primary, false),
+            if cfg!(target_os = "macos") {
+                None
+            } else {
+                Some(DocumentCommand::Redo)
+            }
+        );
+
+        // Actual macOS Russian-layout events: logical ы/я, Command text s/z.
+        // Use that OS-provided command mapping, not a US physical-key fallback.
+        for (logical, command, shift, expected) in [
+            ("ы", "s", false, DocumentCommand::Save),
+            ("Ы", "S", true, DocumentCommand::SaveAs),
+            ("я", "z", false, DocumentCommand::Undo),
+            ("Я", "Z", true, DocumentCommand::Redo),
+        ] {
+            let mods = primary | if shift { Mods::SHIFT } else { Mods::empty() };
+            assert_eq!(
+                document_command(&key(logical), Some(command), mods, false),
+                cfg!(target_os = "macos").then_some(expected),
+            );
+        }
+        assert_eq!(document_command(&key("я"), Some("z"), primary, true), None);
+        assert_eq!(
+            document_command(&key("ы"), Some("s"), Mods::empty(), false),
+            None
+        );
+        assert_eq!(
+            document_command(&key("ы"), Some("s"), primary | Mods::ALT, false),
+            None
+        );
+
+        // A text field has the keyboard: its Undo and Redo are its own; Save is not a
+        // text command and still reaches the document.
+        assert_eq!(document_command(&key("z"), None, primary, true), None);
+        assert_eq!(
+            document_command(&key("Z"), None, primary | Mods::SHIFT, true),
+            None
+        );
+        assert_eq!(document_command(&key("y"), None, primary, true), None);
+        assert_eq!(
+            document_command(&key("s"), None, primary, true),
+            Some(DocumentCommand::Save)
+        );
+
+        // Without the platform's modifier, with Alt, or with the other platform's
+        // modifier these are plain letters (the view keys use some of them).
+        for mods in [Mods::empty(), Mods::SHIFT, other, primary | Mods::ALT] {
+            for letter in ["s", "z", "y"] {
+                assert_eq!(
+                    document_command(&key(letter), None, mods, false),
+                    None,
+                    "{mods:?} {letter}"
+                );
+            }
+        }
+        assert_eq!(
+            document_command(&Key::Named(NamedKey::Escape), None, primary, false),
+            None
+        );
+    }
+
+    /// The legacy copy workflow in a clean session: the open height form must not
+    /// switch off its own Save button, and must not claim unsaved changes. Computed
+    /// by the window's own function from real state, not typed in by hand.
+    #[test]
+    fn an_open_height_form_keeps_the_copy_workflow_available_on_a_clean_document() {
+        use ferritecad_jobs::{
+            CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,
+            read_extrude_source,
+        };
+        let root = tempfile::tempdir().expect("directory");
+        let private = tempfile::tempdir().expect("private");
+        let file = root.path().join("plate.fcad");
+        create_document(
+            CreateDocumentRequest::new(
+                &file,
+                NewDocument::SamplePlate(PlateSize {
+                    width: 80.0,
+                    depth: 40.0,
+                    height: 12.0,
+                }),
+                "keep",
+            ),
+            &OperationContext::default(),
+        )
+        .expect("a plate");
+        let reading = read_extrude_source(&file).expect("reading");
+        let mut sessions = sessions::Sessions::default();
+        sessions.adopt(
+            ferritecad_jobs::DocumentSession::open_in(
+                private.path(),
+                &file,
+                HistoryLimits::default(),
+            )
+            .expect("session"),
+        );
+        let (creates, loads, exports) = (
+            creates::Creates::default(),
+            Loads::default(),
+            exports::Exports::default(),
+        );
+        let mut edits = edits::Edits::default();
+
+        let closed = height_state(&edits, &sessions, &creates, &loads, &exports);
+        assert!(closed.copy && closed.apply && !closed.unsaved);
+        // The form is open: a second form may not start, but this one's buttons stay.
+        assert!(edits.begin(&file, &reading));
+        assert!(edits.busy(), "an open form is busy for starting another");
+        let open = height_state(&edits, &sessions, &creates, &loads, &exports);
+        assert!(
+            open.copy,
+            "the open form switched off its own Save new file"
+        );
+        assert!(open.apply && !open.unsaved);
+
+        // Unsaved changes: the copy workflow goes, with the reason.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let feature = reading.features[0].feature;
+        let generation = sessions
+            .begin_apply(|ticket, _, _| {
+                std::thread::spawn(move || {
+                    tx.send(ticket.edit_extrude_height(
+                        feature,
+                        25.0,
+                        &mut ferritecad_kernel::mock::MockKernel::new(),
+                        &OperationContext::default(),
+                    ))
+                    .expect("deliver");
+                })
+            })
+            .expect("started");
+        let produced = rx.recv().expect("answer");
+        assert!(matches!(
+            sessions.finish_apply(generation, produced),
+            sessions::Edited::Show(_)
+        ));
+        sessions.bind(sessions::Bind::Staged).expect("shown");
+        assert!(sessions.finish_scene(generation, Ok(())));
+        let dirty = height_state(&edits, &sessions, &creates, &loads, &exports);
+        assert!(!dirty.copy && dirty.unsaved && dirty.apply);
+    }
+
+    /// §30A: the window is named for the user's file with a mark while there are
+    /// unsaved changes; with no session it is the product name or the old behaviour.
+    #[test]
+    fn the_title_marks_unsaved_changes_and_never_names_a_private_file() {
+        assert_eq!(window_title(None), PRODUCT_NAME);
+        assert_eq!(
+            window_title(Some(Path::new("/work/plate.fcad"))),
+            "plate.fcad — FerriteCAD"
+        );
     }
 }

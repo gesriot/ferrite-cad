@@ -8,8 +8,41 @@ pub enum EditChoice {
     #[default]
     Waiting,
     Begin,
+    /// Apply the height to the open document, with no file dialog: the change is
+    /// accepted into the session and written only by Save.
+    Apply,
+    /// Write the edited model to a new file (the copy workflow). Offered only while
+    /// the document has no unsaved changes: it opens its output as a new document.
     Save,
     Cancel,
+}
+
+/// What the height form may offer this frame, and what is running behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeightState {
+    /// A copy edit is running, and whether it can still be told to stop.
+    pub running: bool,
+    pub can_cancel: bool,
+    pub apply: bool,
+    /// The copy workflow reads a source and writes a new file, then opens that
+    /// file as the document. With unsaved changes that would silently drop them,
+    /// so it is not offered until they are saved or undone.
+    pub copy: bool,
+    /// Why `copy` is off, when it is: unsaved changes (the only reason worth the
+    /// words), or just that something else is running.
+    pub unsaved: bool,
+}
+
+impl Default for HeightState {
+    fn default() -> Self {
+        Self {
+            running: false,
+            can_cancel: false,
+            apply: false,
+            copy: true,
+            unsaved: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -34,10 +67,14 @@ pub fn edit_extrude_panel(
     can_begin: bool,
     unavailable: Option<&str>,
     form: Option<&mut EditExtrudeForm>,
-    running: bool,
-    can_cancel: bool,
     status: &str,
+    offer: HeightState,
 ) -> EditChoice {
+    let HeightState {
+        running,
+        can_cancel,
+        ..
+    } = offer;
     let mut choice = EditChoice::Waiting;
     ui.horizontal_wrapped(|ui| {
         if ui
@@ -65,7 +102,7 @@ pub fn edit_extrude_panel(
     }
     if let Some(form) = form {
         ui.group(|ui| {
-            ui.strong("Edit extrusion — save a new file");
+            ui.strong("Edit extrusion");
             ui.label("Choose the existing extrusion to change:");
             egui::ScrollArea::vertical()
                 .id_salt("height-features")
@@ -114,7 +151,19 @@ pub fn edit_extrude_panel(
                     ui.label("mm");
                 });
             }
-            ui.label("The source stays unchanged. The new file keeps this model’s identities.");
+            ui.label(
+                "Apply changes the open model and keeps this model’s identities; the file on \
+                 disk changes only when you Save.",
+            );
+            if !offer.copy {
+                ui.label(if offer.unsaved {
+                    "Saving a copy as a new file is unavailable while the document has unsaved \
+                     changes: Save or Undo them first."
+                } else {
+                    "Saving a copy as a new file is unavailable while another operation is \
+                     running."
+                });
+            }
             if let Some(reason) = &form.refusal {
                 egui::ScrollArea::vertical()
                     .id_salt("height-refusal")
@@ -126,7 +175,16 @@ pub fn edit_extrude_panel(
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(
-                        form.selected.is_some() && form.refusal.is_none(),
+                        offer.apply && form.selected.is_some() && form.refusal.is_none(),
+                        egui::Button::new("Apply"),
+                    )
+                    .clicked()
+                {
+                    choice = EditChoice::Apply;
+                }
+                if ui
+                    .add_enabled(
+                        offer.copy && form.selected.is_some() && form.refusal.is_none(),
                         egui::Button::new("Save new file…"),
                     )
                     .clicked()

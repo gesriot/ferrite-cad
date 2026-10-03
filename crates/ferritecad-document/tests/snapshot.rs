@@ -320,3 +320,48 @@ fn rollback_header_does_not_allow_writes_to_foreign_wal_sidecars() {
         std::fs::remove_file(sidecar).expect("own sentinel");
     }
 }
+
+/// What a document session means by "the same model": the stamp every writer
+/// refreshes is set aside, nothing else is, and the complete content version a
+/// guard compares keeps seeing the stamp.
+#[test]
+fn model_version_sets_only_the_modified_stamp_aside() {
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("source.fcad");
+    Document::create(&source)
+        .expect("create")
+        .close()
+        .expect("close");
+    let read = || {
+        let document = Document::open_read_only(&source).expect("reading");
+        (
+            document.content_version().expect("content"),
+            document.model_version().expect("model"),
+        )
+    };
+    let (content, model) = read();
+    assert_ne!(content, model, "the two versions have different domains");
+
+    let connection = Connection::open(&source).expect("SQL");
+    connection
+        .execute("UPDATE meta SET modified_at = '2000-01-01T00:00:00Z'", [])
+        .expect("only the stamp changes");
+    let (stamped_content, stamped_model) = read();
+    assert_ne!(content, stamped_content, "a guard still sees the stamp");
+    assert_eq!(model, stamped_model, "the model did not change");
+
+    connection
+        .execute("UPDATE meta SET generator = generator || 'x'", [])
+        .expect("another meta cell changes");
+    let (_, changed_model) = read();
+    assert_ne!(
+        model, changed_model,
+        "only modified_at is set aside, not the rest of meta"
+    );
+
+    connection
+        .execute_batch("CREATE TABLE extension(value BLOB); INSERT INTO extension VALUES (X'01');")
+        .expect("an unknown table appears");
+    let (_, with_table) = read();
+    assert_ne!(changed_model, with_table, "unknown tables count");
+}

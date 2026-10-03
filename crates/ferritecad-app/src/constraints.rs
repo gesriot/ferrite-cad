@@ -188,7 +188,7 @@ impl Editor {
                 ui.small(format!(
                     "Sketch {} · {}",
                     draft.choice.sketch,
-                    draft.source.display()
+                    crate::sessions::shown_as(&draft.source)
                 ));
                 ui.label("Coordinates below are stored inputs, not the solved drawing.");
                 // §27G: a turned profile says which Revolve owns it and what

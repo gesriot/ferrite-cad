@@ -312,7 +312,7 @@ impl Editor {
                     saved.feature,
                     saved.body,
                     saved.base_feature,
-                    draft.source.display()
+                    crate::sessions::shown_as(&draft.source)
                 ));
                 if saved.constrained {
                     let corner = &saved.corner;
@@ -459,7 +459,7 @@ impl Editor {
                     target.base_feature,
                     target.profile,
                     target.height_mm,
-                    draft.source.display()
+                    crate::sessions::shown_as(&draft.source)
                 ));
                 ui.small(format!(
                     "Distance in mm, measured along each face (the slanted flat is that × √2 \
