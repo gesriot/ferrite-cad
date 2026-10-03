@@ -494,3 +494,212 @@ fn a_failed_save_leaves_the_session_and_the_directory_exactly_as_they_were() {
     assert_eq!(session.logical_path(), f.file);
     only(&f, &["plate.fcad"]);
 }
+
+const LOCK_NAME: &str = ".plate.fcad.ferritecad-save-lock";
+
+#[cfg(unix)]
+#[test]
+fn two_names_for_one_file_meet_at_one_lock() {
+    let f = fixture();
+    let alias = f.root.path().join("alias.fcad");
+    std::os::unix::fs::symlink(&f.file, &alias).expect("link");
+    let mut first = open(&f);
+    let mut second = DocumentSession::open_in(f.sessions.path(), &alias, HistoryLimits::default())
+        .expect("a second window on the link");
+    apply(&mut first, f.feature, 22.0);
+    apply(&mut second, f.feature, 31.0);
+
+    let busy_seen = Cell::new(false);
+    let mut interfere = Interfere {
+        after_copy: None,
+        inside_lock: Some(|| {
+            let failure = second
+                .begin_save(SaveTarget::InPlace)
+                .run(&OperationContext::default())
+                .expect_err("the other name for the same file must find the lock held");
+            assert_eq!(failure.kind, SaveFailureKind::Busy, "{failure}");
+            busy_seen.set(true);
+        }),
+    };
+    let saved = first
+        .begin_save(SaveTarget::InPlace)
+        .run_with(&OperationContext::default(), &mut interfere)
+        .expect("the first saver publishes");
+    assert!(busy_seen.get());
+    first.record_saved(&saved);
+    assert_eq!(height_of(&f.file), 22.0);
+
+    let failure = save(&second).expect_err("and then finds the file changed");
+    assert_eq!(failure.kind, SaveFailureKind::Conflict(Conflict::Modified));
+    assert_eq!(height_of(&f.file), 22.0);
+    assert!(
+        std::fs::symlink_metadata(&alias)
+            .expect("alias")
+            .file_type()
+            .is_symlink()
+    );
+    only(&f, &["alias.fcad", "plate.fcad"]);
+}
+
+#[test]
+fn a_file_with_the_lock_name_that_is_not_ours_is_never_changed_or_removed() {
+    for content in [
+        &b"unrelated user data"[..],
+        &b""[..],
+        &b"FERRITECAD-SAVE-LOCK 2\n"[..],
+    ] {
+        let f = fixture();
+        let mut session = open(&f);
+        apply(&mut session, f.feature, 22.0);
+        let foreign = f.root.path().join(LOCK_NAME);
+        std::fs::write(&foreign, content).expect("a user's file");
+        let before = bytes(&f.file);
+        let failure = save(&session).expect_err("Save must not go past somebody's file");
+        assert_eq!(failure.kind, SaveFailureKind::Failed, "{failure}");
+        assert_eq!(bytes(&foreign), content, "the user's file was changed");
+        assert_eq!(bytes(&f.file), before);
+        assert!(session.is_dirty());
+        only(&f, &["plate.fcad", LOCK_NAME]);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_with_the_lock_name_is_neither_followed_nor_removed() {
+    let f = fixture();
+    let mut session = open(&f);
+    apply(&mut session, f.feature, 22.0);
+    let precious = f.root.path().join("precious.txt");
+    std::fs::write(&precious, b"keep me").expect("data");
+    let foreign = f.root.path().join(LOCK_NAME);
+    std::os::unix::fs::symlink(&precious, &foreign).expect("link");
+    let failure = save(&session).expect_err("a link is not our lock");
+    assert_eq!(failure.kind, SaveFailureKind::Failed, "{failure}");
+    assert_eq!(bytes(&precious), b"keep me");
+    assert!(
+        std::fs::symlink_metadata(&foreign)
+            .expect("still there")
+            .file_type()
+            .is_symlink()
+    );
+    // A dangling link is not created through either.
+    std::fs::remove_file(&foreign).expect("remove");
+    std::os::unix::fs::symlink(f.root.path().join("nowhere"), &foreign).expect("link");
+    let failure = save(&session).expect_err("a dangling link is not our lock");
+    assert_eq!(failure.kind, SaveFailureKind::Failed, "{failure}");
+    assert!(!f.root.path().join("nowhere").exists());
+}
+
+#[test]
+fn a_lock_left_by_a_dead_saver_is_taken_over_and_removed() {
+    let f = fixture();
+    let mut session = open(&f);
+    apply(&mut session, f.feature, 22.0);
+    std::fs::write(f.root.path().join(LOCK_NAME), b"FERRITECAD-SAVE-LOCK 1\n").expect("stale");
+    let saved = save(&session).expect("a stale lock of ours does not block Save");
+    session.record_saved(&saved);
+    assert_eq!(height_of(&f.file), 22.0);
+    only(&f, &["plate.fcad"]);
+}
+
+#[test]
+fn a_name_that_was_replaced_while_held_is_left_to_whoever_put_it_there() {
+    let f = fixture();
+    let mut session = open(&f);
+    apply(&mut session, f.feature, 22.0);
+    let foreign = f.root.path().join(LOCK_NAME);
+    let mut interfere = Interfere {
+        after_copy: None,
+        inside_lock: Some(|| {
+            std::fs::remove_file(&foreign).expect("remove ours");
+            std::fs::write(&foreign, b"somebody else's").expect("theirs");
+        }),
+    };
+    session
+        .begin_save(SaveTarget::InPlace)
+        .run_with(&OperationContext::default(), &mut interfere)
+        .expect("saves");
+    assert_eq!(bytes(&foreign), b"somebody else's");
+}
+
+#[test]
+fn a_file_made_read_only_after_the_copy_is_refused_under_the_lock() {
+    let f = fixture();
+    let mut session = open(&f);
+    apply(&mut session, f.feature, 22.0);
+    let file = f.file.clone();
+    let original = std::fs::metadata(&file).expect("stat").permissions();
+    let mut interfere = Interfere {
+        after_copy: Some(|| {
+            let mut readonly = original.clone();
+            readonly.set_readonly(true);
+            std::fs::set_permissions(&file, readonly).expect("read-only");
+        }),
+        inside_lock: None,
+    };
+    let before = bytes(&f.file);
+    let failure = session
+        .begin_save(SaveTarget::InPlace)
+        .run_with(&OperationContext::default(), &mut interfere)
+        .expect_err("read-only by now");
+    assert_eq!(failure.kind, SaveFailureKind::Unwritable, "{failure}");
+    assert_eq!(bytes(&f.file), before);
+    std::fs::set_permissions(&f.file, original).expect("writable again");
+    only(&f, &["plate.fcad"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hard_link_made_after_the_copy_is_refused_under_the_lock() {
+    let f = fixture();
+    let mut session = open(&f);
+    apply(&mut session, f.feature, 22.0);
+    let file = f.file.clone();
+    let twin = f.root.path().join("twin.fcad");
+    let mut interfere = Interfere {
+        after_copy: Some(|| std::fs::hard_link(&file, &twin).expect("link")),
+        inside_lock: None,
+    };
+    let before = bytes(&f.file);
+    let failure = session
+        .begin_save(SaveTarget::InPlace)
+        .run_with(&OperationContext::default(), &mut interfere)
+        .expect_err("hard-linked by now");
+    assert_eq!(failure.kind, SaveFailureKind::Unwritable, "{failure}");
+    assert_eq!(bytes(&f.file), before);
+    assert_eq!(bytes(&twin), before);
+    only(&f, &["plate.fcad", "twin.fcad"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_retargeted_after_the_copy_is_not_saved_through() {
+    let f = fixture();
+    let other = f.root.path().join("other.fcad");
+    make_plate(&other, 50.0);
+    let alias = f.root.path().join("alias.fcad");
+    std::os::unix::fs::symlink(&f.file, &alias).expect("link");
+    let mut session = DocumentSession::open_in(f.sessions.path(), &alias, HistoryLimits::default())
+        .expect("a window on the link");
+    apply(&mut session, f.feature, 22.0);
+    let mut interfere = Interfere {
+        after_copy: Some(|| {
+            std::fs::remove_file(&alias).expect("unlink");
+            std::os::unix::fs::symlink(&other, &alias).expect("retarget");
+        }),
+        inside_lock: None,
+    };
+    let (plate_before, other_before) = (bytes(&f.file), bytes(&other));
+    let failure = session
+        .begin_save(SaveTarget::InPlace)
+        .run_with(&OperationContext::default(), &mut interfere)
+        .expect_err("the link now names another file");
+    assert!(
+        matches!(failure.kind, SaveFailureKind::Conflict(_)),
+        "{failure}"
+    );
+    assert_eq!(bytes(&f.file), plate_before);
+    assert_eq!(bytes(&other), other_before);
+    assert!(session.is_dirty());
+    only(&f, &["alias.fcad", "other.fcad", "plate.fcad"]);
+}

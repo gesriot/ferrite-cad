@@ -21,7 +21,10 @@
 //! * Cooperating FerriteCAD savers are serialised: an advisory lock on a sidecar
 //!   beside the file is held across the second compare and the rename. A second
 //!   saver gets [`SaveFailureKind::Busy`] while the first holds it and a
-//!   `Conflict` once the first has published. A filesystem without advisory
+//!   `Conflict` once the first has published. The sidecar is named after the
+//!   resolved file, so every name that reaches it meets one lock, and it is only
+//!   ever created, taken over or removed if it is ours (see `SaveLock`). The
+//!   readability, link-count and resolution checks are repeated under the lock. A filesystem without advisory
 //!   locks degrades to the compare alone.
 //! * A writer that ignores the lock can still change the file in the instant
 //!   between the compare under the lock and the rename. That window is the cost
@@ -225,26 +228,27 @@ impl SavePlan {
             .into_owned()
     }
 
-    fn in_place(
-        &self,
-        context: &OperationContext,
-        hooks: &mut dyn SaveHooks,
-    ) -> Result<Saved, SaveFailure> {
-        // The path resolved: saving through a symbolic link replaces the file it
-        // points at and leaves the link as it is.
-        let target = match std::fs::canonicalize(&self.logical) {
-            Ok(path) => path,
+    /// The file the logical path resolves to right now: saving through a symbolic
+    /// link replaces the file it points at and leaves the link as it is.
+    fn resolve(&self) -> Result<PathBuf, SaveFailure> {
+        match std::fs::canonicalize(&self.logical) {
+            Ok(path) => Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(self.conflict(Conflict::Missing));
+                Err(self.conflict(Conflict::Missing))
             }
-            Err(error) => {
-                return Err(SaveFailure::failed(CadError::io(
-                    format!("resolving {}", self.logical.display()),
-                    error,
-                )));
-            }
-        };
-        let metadata = std::fs::metadata(&target).map_err(|error| {
+            Err(error) => Err(SaveFailure::failed(CadError::io(
+                format!("resolving {}", self.logical.display()),
+                error,
+            ))),
+        }
+    }
+
+    /// Whether `target` is a file a replacement may take the place of, and its
+    /// metadata. Asked early (before the copy is made) and asked again under the
+    /// lock: a file made read-only, hard-linked or turned into something else in
+    /// between is found by the second asking, not published over.
+    fn replaceable(&self, target: &Path) -> Result<std::fs::Metadata, SaveFailure> {
+        let metadata = std::fs::metadata(target).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 self.conflict(Conflict::Missing)
             } else {
@@ -276,6 +280,16 @@ impl SavePlan {
                 ));
             }
         }
+        Ok(metadata)
+    }
+
+    fn in_place(
+        &self,
+        context: &OperationContext,
+        hooks: &mut dyn SaveHooks,
+    ) -> Result<Saved, SaveFailure> {
+        let target = self.resolve()?;
+        let metadata = self.replaceable(&target)?;
         // Cheap and early: a file that is already not ours is found before the
         // copy is made.
         self.compare(&target)?;
@@ -287,10 +301,23 @@ impl SavePlan {
         hooks.after_copy();
         context.check_cancelled().map_err(SaveFailure::failed)?;
 
+        // One lock per file, not per name: it is keyed by the resolved target, so
+        // a window on `plate.fcad` and a window on a link to it meet at one lock.
         let lock = SaveLock::acquire(&target, &self.name())?;
-        // Again, now that no cooperating saver can be between its own compare and
-        // its own rename.
+        // Everything checked before the copy is checked again, now that no
+        // cooperating saver can be between its own checks and its own rename: the
+        // path still resolves to this file, which is still a plain, writable,
+        // singly-linked file, and still holds the expected version.
+        if self.resolve()? != target {
+            return Err(self.conflict(Conflict::Replaced));
+        }
+        let late = self.replaceable(&target)?;
         self.compare(&target)?;
+        if late.permissions() != metadata.permissions() {
+            std::fs::set_permissions(scratch.path(), late.permissions()).map_err(|e| {
+                SaveFailure::failed(CadError::io("copying the file's permissions", e))
+            })?;
+        }
         hooks.inside_lock();
         // The last place a cancellation is honoured. Past this line the file is
         // replaced, and the answer is a success whatever arrives next.
@@ -409,86 +436,130 @@ impl SavePlan {
     }
 }
 
+/// The first line of every lock file this code makes, and the only proof that a
+/// file with that name is ours to touch.
+const LOCK_HEADER: &[u8] = b"FERRITECAD-SAVE-LOCK 1\n";
+
 /// An advisory lock on a sidecar beside the file being replaced.
 ///
 /// Held across the second compare and the rename, so two cooperating savers cannot
 /// both pass their compare and both rename. Never waited for: a saver that finds
 /// it held is told so ([`SaveFailureKind::Busy`]) and the person decides.
+///
+/// The sidecar is named after the *resolved* target, so every path that reaches
+/// the same file reaches the same lock.
+///
+/// Ownership: a lock file is created exclusively and starts with [`LOCK_HEADER`].
+/// A file of that name that does not start with it is somebody's data: it is never
+/// written to, locked for good, or removed, and the save is refused. A file that
+/// does is a lock of ours left by a saver that died; it is taken over. When the
+/// save is done the name is removed only if it still names the very file held.
 struct SaveLock {
     path: PathBuf,
-    file: Option<File>,
+    file: File,
 }
 
 impl SaveLock {
     fn acquire(target: &Path, name: &str) -> Result<Self, SaveFailure> {
+        use std::io::{Read as _, Write as _};
+
         let parent = target
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        let path = parent.join(format!(".{name}.ferritecad-save-lock"));
+        let sidecar = target.file_name().unwrap_or(target.as_os_str());
+        let mut file_name = std::ffi::OsString::from(".");
+        file_name.push(sidecar);
+        file_name.push(".ferritecad-save-lock");
+        let path = parent.join(file_name);
+        let busy = || {
+            SaveFailure::new(
+                SaveFailureKind::Busy,
+                format!(
+                    "{name} is being saved by another FerriteCAD window or process right now; try again in a moment."
+                ),
+            )
+        };
+        let io = |what: &str, e: std::io::Error| {
+            SaveFailure::failed(CadError::io(format!("{what} {}", path.display()), e))
+        };
         for _ in 0..4 {
-            let file = std::fs::OpenOptions::new()
+            let (mut file, fresh) = match std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .create(true)
-                .truncate(false)
+                .create_new(true)
                 .open(&path)
-                .map_err(|e| {
-                    SaveFailure::failed(CadError::io(format!("locking {}", path.display()), e))
-                })?;
+            {
+                Ok(file) => (file, true),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Whatever is there, it is not followed if it is a link and
+                    // not touched if it is not ours.
+                    let kind = std::fs::symlink_metadata(&path).map_err(|e| io("inspecting", e))?;
+                    if !kind.is_file() {
+                        return Err(unrelated(&path));
+                    }
+                    let file = std::fs::File::open(&path).map_err(|e| io("opening", e))?;
+                    (file, false)
+                }
+                Err(error) => return Err(io("creating", error)),
+            };
             match file.try_lock() {
                 Ok(()) => {}
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    return Err(SaveFailure::new(
-                        SaveFailureKind::Busy,
-                        format!(
-                            "{name} is being saved by another FerriteCAD window or process right now; try again in a moment."
-                        ),
-                    ));
-                }
+                Err(std::fs::TryLockError::WouldBlock) => return Err(busy()),
+                // No advisory locks here: the compare alone, as documented.
                 Err(std::fs::TryLockError::Error(error))
-                    if error.kind() == std::io::ErrorKind::Unsupported =>
-                {
-                    // No advisory locks here: the compare alone, as documented.
-                    return Ok(Self { path, file: None });
+                    if error.kind() == std::io::ErrorKind::Unsupported => {}
+                Err(std::fs::TryLockError::Error(error)) => return Err(io("locking", error)),
+            }
+            if fresh {
+                if let Err(error) = file.write_all(LOCK_HEADER).and_then(|()| file.flush()) {
+                    let _ = std::fs::remove_file(&path);
+                    return Err(io("writing", error));
                 }
-                Err(std::fs::TryLockError::Error(error)) => {
-                    return Err(SaveFailure::failed(CadError::io(
-                        format!("locking {}", path.display()),
-                        error,
-                    )));
+            } else {
+                let mut found = vec![0u8; LOCK_HEADER.len()];
+                let read = file.read_exact(&mut found);
+                if read.is_err() || found != LOCK_HEADER {
+                    return Err(unrelated(&path));
                 }
             }
             // The saver before us removes the name when it finishes. A lock taken
             // on a file that no longer has the name is a lock on nothing.
-            let same =
-                same_file::Handle::from_file(file.try_clone().map_err(|e| {
-                    SaveFailure::failed(CadError::io("duplicating a lock handle", e))
-                })?)
-                .and_then(|held| same_file::Handle::from_path(&path).map(|named| held == named));
-            if matches!(same, Ok(true)) {
-                return Ok(Self {
-                    path,
-                    file: Some(file),
-                });
+            let held = same_file::Handle::from_file(
+                file.try_clone()
+                    .map_err(|e| io("duplicating a handle to", e))?,
+            );
+            let named = same_file::Handle::from_path(&path);
+            if matches!((held, named), (Ok(held), Ok(named)) if held == named) {
+                return Ok(Self { path, file });
             }
         }
-        Err(SaveFailure::new(
-            SaveFailureKind::Busy,
-            format!(
-                "{name} is being saved by another FerriteCAD window or process right now; try again in a moment."
-            ),
-        ))
+        Err(busy())
     }
+}
+
+fn unrelated(path: &Path) -> SaveFailure {
+    SaveFailure::new(
+        SaveFailureKind::Failed,
+        format!(
+            "{} is not a FerriteCAD lock file, so Save will not touch it or go past it. Move it away, or use Save As.",
+            path.display()
+        ),
+    )
 }
 
 impl Drop for SaveLock {
     fn drop(&mut self) {
         // The name goes while the lock is still held, so nobody can lock a stale
-        // name; the lock itself goes when the handle closes.
-        if self.file.is_some() {
+        // name, and only if it still names the file this lock holds: a name that
+        // was replaced by something else belongs to whoever put it there.
+        let still_ours = self
+            .file
+            .try_clone()
+            .and_then(same_file::Handle::from_file)
+            .and_then(|held| same_file::Handle::from_path(&self.path).map(|named| held == named));
+        if matches!(still_ours, Ok(true)) {
             let _ = std::fs::remove_file(&self.path);
         }
-        self.file = None;
     }
 }
