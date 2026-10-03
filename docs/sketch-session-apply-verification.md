@@ -430,3 +430,24 @@ Circle, annulus, Revolve-angle, Cut, Fillet, Chamfer and constraint editors are
 unchanged copy workflows and stay unavailable while the document has unsaved
 changes. Milestone 5C, the historical OOM investigation and the general beta stay
 open.
+
+## Independent macOS review — 2026-10-03
+
+The real window exposed a blocking App integration defect: opening the saved
+Sketch made `Creates::busy()` true, so `can_begin_new` disabled **Apply vertices**
+and the command handler would refuse it as well. The standalone widget/worker
+checks had granted permission directly and did not exercise that composition.
+The initial arm64 window reproduced this with valid coordinates; pressing Apply
+left the form and document unchanged. It quit normally under the 1536 MiB guard.
+
+The corrected button and command use one `can_apply_sketch` predicate. The saved
+vertex form is its caller, while creation, another form, document loading,
+exports and session operations still exclude Apply. New/Open/Save and document
+Undo/Redo retain their existing guards. The executed regression
+`sketch::tests::the_open_sketch_form_can_apply_through_the_windows_busy_guard`
+failed at `the open form must allow Apply` before the correction and passes
+with it; the existing non-native CI step now requires its exact execution.
+The unsaved-editor explanation no longer lists Sketch as unavailable.
+
+Review evidence is being completed in `/private/tmp/ferrite-pr82-review`;
+this paragraph does not claim completion of the corrected window scenario or CI.

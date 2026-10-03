@@ -195,6 +195,10 @@ fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
 }
 
 impl Editor {
+    pub(crate) fn editing_saved_vertices(&self) -> bool {
+        self.editing.is_some()
+    }
+
     pub(crate) fn active(&self) -> bool {
         self.draft.is_some()
             || self.editing_circle.is_some()
@@ -2395,6 +2399,79 @@ pub(crate) mod tests {
             "Apply was offered for a refused draft"
         );
         drop(root);
+    }
+
+    /// Exercise the window's actual availability predicate after opening a form,
+    /// rather than granting Apply directly to a standalone widget.
+    #[test]
+    fn the_open_sketch_form_can_apply_through_the_windows_busy_guard() {
+        use crate::{Loads, can_apply_sketch, creates, edits, exports, sessions};
+        let (_root, path, reading) = crate::fillets::tests::plate();
+        let private = tempfile::tempdir().expect("private root");
+        let mut sessions = sessions::Sessions::default();
+        sessions.adopt(
+            ferritecad_jobs::DocumentSession::open_in(
+                private.path(),
+                &path,
+                ferritecad_jobs::HistoryLimits::default(),
+            )
+            .expect("session"),
+        );
+        let mut creates = creates::Creates::default();
+        let mut loads = Loads::default();
+        let exports = exports::Exports::default();
+        let edits = edits::Edits::default();
+        let id = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("Sketch")
+            .sketch;
+        assert!(creates.sketch.begin_edit(&path, &reading, id));
+        assert!(creates.busy(), "New and Open still wait for this form");
+        let ready = can_apply_sketch(&creates, &loads, &exports, &edits, &sessions);
+        creates.sketch.set_session(false, ready, false);
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut creates.sketch, vec![]);
+        frame(&ctx, &mut creates.sketch, vec![]);
+        replace_field(&ctx, &mut creates.sketch, "33", "41.25");
+        replace_field(&ctx, &mut creates.sketch, "33", "41.25");
+        let out = frame(&ctx, &mut creates.sketch, vec![]);
+        click(&ctx, &mut creates.sketch, text_at(&out, "Apply vertices"));
+        let request = creates
+            .sketch
+            .take_apply_request()
+            .expect("the open form must allow Apply");
+        assert_eq!(request.expected, reading.version);
+        assert!(
+            can_apply_sketch(&creates, &loads, &exports, &edits, &sessions),
+            "the command must allow the same request as its button"
+        );
+
+        // A genuine load and a session operation still prevent another Apply.
+        loads
+            .open(
+                Some(&path),
+                std::sync::Arc::new(crate::ProgressRelay::default()),
+                |_, _| std::thread::spawn(|| {}),
+            )
+            .expect("load");
+        assert!(!can_apply_sketch(
+            &creates, &loads, &exports, &edits, &sessions
+        ));
+        loads.stop_all();
+        let loads = Loads::default();
+        sessions
+            .begin_apply(|_, _, _| std::thread::spawn(|| {}))
+            .expect("operation");
+        assert!(!can_apply_sketch(
+            &creates, &loads, &exports, &edits, &sessions
+        ));
+        sessions.stop_all();
+        creates.sketch.dismiss();
+        assert!(!can_apply_sketch(
+            &creates, &loads, &exports, &edits, &sessions
+        ));
     }
 
     #[test]

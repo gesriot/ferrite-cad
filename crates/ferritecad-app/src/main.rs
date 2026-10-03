@@ -965,11 +965,29 @@ fn form_open(edits: &edits::Edits, sketch: &sketch::Editor) -> bool {
 
 /// New is serialized with document loads and exports. Viewing remains available.
 fn can_begin_new(creates: &creates::Creates, loads: &Loads, exports: &exports::Exports) -> bool {
-    !creates.busy()
-        && loads.current.is_none()
+    !creates.busy() && document_io_idle(loads, exports)
+}
+
+fn document_io_idle(loads: &Loads, exports: &exports::Exports) -> bool {
+    loads.current.is_none()
         && !exports.running()
         && exports.pending().is_none()
         && !exports.configuring_stl()
+}
+
+/// Shared by the Sketch form's Apply button and the command that starts its worker.
+fn can_apply_sketch(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    creates.can_apply_sketch()
+        && document_io_idle(loads, exports)
+        && !edits.busy()
+        && sessions.has_session()
+        && !sessions.busy()
 }
 
 fn ask_new(
@@ -2854,6 +2872,13 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.loads,
                     &self.exports,
                 );
+                let sketch_apply = can_apply_sketch(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -2866,7 +2891,7 @@ impl ApplicationHandler<AppEvent> for App {
                 let session_idle = self.sessions.has_session() && settled;
                 self.creates.sketch.set_session(
                     session_idle && !self.edits.busy(),
-                    session_idle,
+                    sketch_apply,
                     self.sessions.dirty(),
                 );
                 let (form, sketch) = self.creates.forms();
@@ -3555,7 +3580,13 @@ impl App {
     /// dialog; the same session step and two-phase scene as Apply height. A refusal,
     /// a cancellation or a stale form leaves the draft where it is.
     fn apply_sketch(&mut self, request: ferritecad_jobs::EditSketchRequest) {
-        if !self.settled() || !self.sessions.has_session() {
+        if !can_apply_sketch(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
             self.input.request_redraw();
             return;
         }

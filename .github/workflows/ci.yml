@@ -791,6 +791,7 @@ jobs:
             sessions::tests::a_vertex_apply_is_one_document_step_and_a_stale_or_unchanged_form_is_not \
             sessions::tests::a_vertex_apply_cancelled_after_it_was_computed_is_not_accepted \
             sketch::tests::apply_vertices_is_offered_when_it_would_work_and_keeps_the_draft \
+            sketch::tests::the_open_sketch_form_can_apply_through_the_windows_busy_guard \
             sketch::tests::with_unsaved_changes_the_copy_workflow_is_withheld_but_apply_is_not \
             sketch::tests::a_new_accepted_version_ends_the_forms_about_the_old_one_and_only_those \
             tests::document_undo_waits_for_an_open_form \
