@@ -550,6 +550,7 @@ fn suggested_export_name(document: &Path) -> String {
 /// on screen, which is what the invariant below says.
 fn spawner(
     document: Option<PathBuf>,
+    lease: Option<Arc<ferritecad_jobs::Snapshot>>,
     proxy: EventLoopProxy<AppEvent>,
 ) -> impl FnOnce(&Path, bool, exports::ExportGeneration, &CancelToken) -> JoinHandle<()> {
     move |destination, replace, generation, cancel| {
@@ -559,7 +560,12 @@ fn spawner(
         // how to be told to stop.
         let context = OperationContext::default().with_cancel(cancel.clone());
         exports::spawn_export(
-            move || exports::run_export(&document, &destination, replace, &context),
+            move || {
+                // The working copy is held until the export is over, whatever the
+                // window has done to the document in the meantime.
+                let _lease = lease;
+                exports::run_export(&document, &destination, replace, &context)
+            },
             move |result| {
                 // A closed event loop is an ordinary end state, and there is
                 // nowhere useful to report a failed wake-up after it.
@@ -580,7 +586,10 @@ fn stl_spawner(
         let destination = destination.to_path_buf();
         let context = OperationContext::default().with_cancel(cancel.clone());
         exports::spawn_export(
-            move || exports::run_stl_export(&intent, &destination, replace, &context),
+            move || {
+                // `intent` carries the lease on the working copy it reads.
+                exports::run_stl_export(&intent, &destination, replace, &context)
+            },
             move |result| {
                 let _ = proxy.send_event(AppEvent::StlExported { generation, result });
             },
@@ -3205,17 +3214,22 @@ impl App {
         {
             // What is read is the accepted working model, with its unsaved changes;
             // what the user knows the document by is its own file.
-            let document = self
-                .sessions
-                .export_source()
-                .unwrap_or_else(|| shown.clone());
+            let lease = self.sessions.export_source();
+            let document = lease
+                .as_ref()
+                .map_or_else(|| shown.clone(), |snapshot| snapshot.path().to_path_buf());
             let alias = self
                 .sessions
                 .logical_path()
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| shown.clone());
-            self.exports
-                .ask_stl_for(&document, &alias, stl_bodies(&live.scene), &mut self.input);
+            self.exports.ask_stl_for(
+                &document,
+                &alias,
+                lease,
+                stl_bodies(&live.scene),
+                &mut self.input,
+            );
         }
     }
 
@@ -3329,6 +3343,13 @@ impl App {
         }
         if !self.sessions.dirty() {
             return true;
+        }
+        // Something is still replacing or reading the document (an Open or a New on
+        // its way, an export): a Save started now would overlap it. Wait for it, or
+        // cancel it, and ask then.
+        if !self.settled() {
+            self.input.request_redraw();
+            return false;
         }
         let request = match next {
             sessions::Continuation::Open => "Opening another document would replace it.",
@@ -3909,11 +3930,23 @@ impl App {
         if self.creates.busy() || self.edits.busy() {
             return;
         }
-        let document = self.sessions.export_source().or_else(|| {
-            self.live
-                .as_ref()
-                .and_then(|live| live.scene.document.clone())
-        });
+        let lease = self.sessions.export_source();
+        let document = lease
+            .as_ref()
+            .map(|snapshot| snapshot.path().to_path_buf())
+            .or_else(|| {
+                self.live
+                    .as_ref()
+                    .and_then(|live| live.scene.document.clone())
+            });
+        // Nothing for the user to keep goes into the folder that is removed with
+        // the document.
+        if let (Some(lease), Some(destination)) = (&lease, &chosen)
+            && exports::inside_working_copy(lease, destination)
+        {
+            exports::refuse_working_folder(&mut self.exports, &mut self.input, destination);
+            return;
+        }
         // What an export must never be written over is the user's file, which is
         // not the private file the model is read from.
         let alias = self
@@ -3922,13 +3955,19 @@ impl App {
             .map(Path::to_path_buf)
             .or_else(|| document.clone());
         let proxy = self.proxy.clone();
+        // A question about replacing a file is answered later, about this very
+        // working copy.
+        self.exports.hold(lease.clone());
         exports::begin_export(
             &mut self.exports,
             &mut self.input,
             alias.as_deref(),
             chosen,
-            spawner(document.clone(), proxy),
+            spawner(document.clone(), lease, proxy),
         );
+        if self.exports.pending().is_none() {
+            self.exports.hold(None);
+        }
     }
 
     /// Acts on the answer to the window's own replace question.
@@ -3945,11 +3984,17 @@ impl App {
             );
             return;
         }
-        let document = self.sessions.export_source().or_else(|| {
-            self.live
-                .as_ref()
-                .and_then(|live| live.scene.document.clone())
-        });
+        // The working copy the question was asked about, not whatever is current by
+        // the time it is answered.
+        let lease = self.exports.held();
+        let document = lease
+            .as_ref()
+            .map(|snapshot| snapshot.path().to_path_buf())
+            .or_else(|| {
+                self.live
+                    .as_ref()
+                    .and_then(|live| live.scene.document.clone())
+            });
         let alias = self
             .sessions
             .logical_path()
@@ -3961,7 +4006,7 @@ impl App {
             &mut self.input,
             alias.as_deref(),
             choice,
-            spawner(document.clone(), proxy),
+            spawner(document.clone(), lease, proxy),
         );
     }
 

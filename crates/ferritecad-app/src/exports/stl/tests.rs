@@ -932,6 +932,7 @@ fn no_native_stl_refuses_geometry_without_touching_files() {
         .id;
     doc.close().expect("close");
     let intent = StlIntent {
+        lease: None,
         document: source.clone(),
         alias: source.clone(),
         body,
@@ -975,6 +976,7 @@ fn an_export_is_never_written_over_the_users_document_though_the_model_is_read_e
     std::fs::write(&private, b"the working model").expect("private");
     std::fs::write(&users, b"the user's file").expect("users");
     let intent = StlIntent {
+        lease: None,
         document: private.clone(),
         alias: users.clone(),
         body: ObjectId::new(),

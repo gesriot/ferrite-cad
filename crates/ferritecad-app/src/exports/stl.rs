@@ -20,11 +20,15 @@ pub(crate) struct StlIntent {
     pub alias: PathBuf,
     pub body: ObjectId,
     pub params: TessellationParams,
+    /// Keeps the working copy `document` names alive for as long as this intent, or
+    /// any worker started from a clone of it, exists.
+    pub lease: Option<std::sync::Arc<ferritecad_jobs::Snapshot>>,
 }
 
 pub(super) struct StlForm {
     document: PathBuf,
     alias: PathBuf,
+    lease: Option<std::sync::Arc<ferritecad_jobs::Snapshot>>,
     shown: StlExportForm,
 }
 
@@ -51,7 +55,7 @@ impl Exports {
         bodies: Vec<StlBody>,
         input: &mut ViewportInput,
     ) -> bool {
-        self.ask_stl_for(document, document, bodies, input)
+        self.ask_stl_for(document, document, None, bodies, input)
     }
 
     /// As [`Self::ask_stl`], for a document whose model is read from `document` but
@@ -60,6 +64,7 @@ impl Exports {
         &mut self,
         document: &Path,
         alias: &Path,
+        lease: Option<std::sync::Arc<ferritecad_jobs::Snapshot>>,
         bodies: Vec<StlBody>,
         input: &mut ViewportInput,
     ) -> bool {
@@ -70,6 +75,7 @@ impl Exports {
         self.stl_form = Some(StlForm {
             document: document.to_path_buf(),
             alias: alias.to_path_buf(),
+            lease,
             shown: StlExportForm {
                 selected: if bodies.len() == 1 {
                     Some(bodies[0].id)
@@ -114,6 +120,7 @@ impl Exports {
                 alias: form.alias.clone(),
                 body,
                 params: TessellationParams::new(linear, angular, false)?,
+                lease: form.lease.clone(),
             })
         })();
         match parsed {
@@ -136,6 +143,12 @@ pub(crate) fn begin_stl_export(
     chosen: Option<PathBuf>,
     spawn: impl FnOnce(&Path, bool, ExportGeneration, &CancelToken) -> JoinHandle<()>,
 ) -> Option<ExportGeneration> {
+    if let (Some(lease), Some(destination)) = (&intent.lease, &chosen)
+        && super::inside_working_copy(lease, destination)
+    {
+        super::refuse_working_folder(exports, input, destination);
+        return None;
+    }
     let was_chosen = chosen.is_some();
     let started = begin_export_for(
         exports,

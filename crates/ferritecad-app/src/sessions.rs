@@ -135,6 +135,9 @@ pub(crate) struct Sessions {
     pub(crate) status: String,
     /// The private directory this value last told [`shown_as`] about.
     registered: Option<PathBuf>,
+    /// Workers of operations that belonged to a session which has since been
+    /// replaced, cancelled and waiting to be joined. Their answers change nothing.
+    retired: Vec<JoinHandle<()>>,
 }
 
 /// Which user's file each private working directory stands for, so that text
@@ -158,12 +161,22 @@ pub(crate) fn shown_as(path: &Path) -> String {
 
 impl Drop for Sessions {
     fn drop(&mut self) {
-        self.session = None;
-        self.register();
+        self.stop_all();
     }
 }
 
 impl Sessions {
+    /// Joins the retired workers that have finished.
+    fn reap(&mut self) {
+        let (done, running): (Vec<_>, Vec<_>) = std::mem::take(&mut self.retired)
+            .into_iter()
+            .partition(JoinHandle::is_finished);
+        self.retired = running;
+        for worker in done {
+            let _ = worker.join();
+        }
+    }
+
     /// Keeps [`shown_as`] in step with the session: called whenever the session or
     /// its logical path may have changed.
     fn register(&mut self) {
@@ -218,10 +231,19 @@ impl Sessions {
     /// changes. Never the user's file on disk, which holds only what was last saved
     /// (ADR 0005); a window that exported that would hand over a model other than
     /// the one on screen.
-    pub(crate) fn export_source(&self) -> Option<PathBuf> {
-        self.session
-            .as_ref()
-            .map(|session| session.current().path().to_path_buf())
+    pub(crate) fn export_source(&self) -> Option<Arc<ferritecad_jobs::Snapshot>> {
+        self.session.as_ref().map(DocumentSession::current)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_saved_version(&self) -> Option<ferritecad_document::DocumentVersion> {
+        self.session.as_ref().map(DocumentSession::saved_version)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn export_path(&self) -> Option<PathBuf> {
+        self.export_source()
+            .map(|snapshot| snapshot.path().to_path_buf())
     }
 
     pub(crate) fn title(&self) -> String {
@@ -251,6 +273,17 @@ impl Sessions {
     /// The session of the document that was just accepted replaces the old one,
     /// which is dropped here and takes its private files with it.
     pub(crate) fn adopt(&mut self, session: DocumentSession) {
+        // Whatever was in flight belonged to the document being replaced: its
+        // answer must not be applied to this one (a Save's checkpoint above all).
+        // It is cancelled and its worker joined later, not here, so the window
+        // is not made to wait.
+        if let Some(mut operation) = self.operation.take() {
+            operation.cancel.cancel();
+            if let Some(worker) = operation.worker.take() {
+                self.retired.push(worker);
+            }
+        }
+        self.reap();
         self.session = Some(session);
         self.register();
         self.after_save = None;
@@ -540,6 +573,9 @@ impl Sessions {
             if let Some(worker) = operation.worker.take() {
                 let _ = worker.join();
             }
+        }
+        for worker in self.retired.drain(..) {
+            let _ = worker.join();
         }
         self.after_save = None;
         self.session = None;
@@ -906,7 +942,7 @@ mod tests {
                 assert!(sessions.finish_scene(generation, Ok(())));
             }
             let (dirty, undo, redo) = (sessions.dirty(), sessions.can_undo(), sessions.can_redo());
-            let source = sessions.export_source();
+            let source = sessions.export_path();
             let files = private_files(&sessions);
             let generation = match step {
                 Step::Apply => {
@@ -928,11 +964,7 @@ mod tests {
                 (sessions.dirty(), sessions.can_undo(), sessions.can_redo()),
                 (dirty, undo, redo)
             );
-            assert_eq!(
-                sessions.export_source(),
-                source,
-                "the current version moved"
-            );
+            assert_eq!(sessions.export_path(), source, "the current version moved");
             assert_eq!(private_files(&sessions), files, "a staged file was kept");
             assert_eq!(height_of(&f.file), 12.0);
         }
@@ -1131,7 +1163,7 @@ mod tests {
         assert!(!sessions.dirty(), "back at the saved checkpoint");
 
         // What the old editors are handed is the accepted snapshot, which is private...
-        let accepted = sessions.export_source().expect("accepted snapshot");
+        let accepted = sessions.export_path().expect("accepted snapshot");
         let private = sessions.private_directory().expect("private").to_path_buf();
         assert!(accepted.starts_with(&private));
         assert_ne!(Some(accepted.as_path()), sessions.logical_path());
@@ -1219,6 +1251,179 @@ mod tests {
         assert_eq!(sessions.logical_path(), Some(copy.as_path()));
         assert_eq!(shown_as(&accepted), accepted.display().to_string());
         assert_eq!(height_of(&renamed), 25.0);
+    }
+
+    #[test]
+    fn a_save_still_running_when_another_document_is_adopted_never_moves_its_checkpoint() {
+        let f = fixture();
+        let mut sessions = open(&f);
+        accept(&mut sessions, f.feature, 25.0);
+        // A Save of the old document is in flight and does not finish until told to.
+        let (release, wait) = mpsc::channel::<()>();
+        let (answer, answered) = mpsc::channel();
+        let generation = sessions
+            .begin_save(SaveTarget::InPlace, None, |plan, _, _| {
+                std::thread::spawn(move || {
+                    wait.recv().expect("released");
+                    answer
+                        .send(plan.run(&OperationContext::default()))
+                        .expect("deliver");
+                })
+            })
+            .expect("started");
+
+        // Meanwhile the Open of another document is accepted.
+        let other = f.root.path().join("other.fcad");
+        std::fs::copy(&f.file, &other).expect("copy");
+        let mut second =
+            DocumentSession::open_in(f.private.path(), &other, HistoryLimits::default())
+                .expect("the other document");
+        let before = second.saved_version();
+        sessions.adopt(std::mem::replace(
+            &mut second,
+            DocumentSession::open_in(f.private.path(), &other, HistoryLimits::default())
+                .expect("spare"),
+        ));
+        drop(second);
+        assert_eq!(sessions.logical_path(), Some(other.as_path()));
+        assert!(!sessions.dirty());
+
+        // The old Save finishes and publishes the old document, as the user asked...
+        release.send(()).expect("go");
+        let result = answered.recv().expect("answer");
+        assert!(
+            result.is_ok(),
+            "the old document's Save was the user's to ask for"
+        );
+        // ...and its answer is not applied to the document now open.
+        assert_eq!(sessions.finish_save(generation, result), None);
+        assert!(!sessions.dirty(), "the new document's checkpoint moved");
+        assert_eq!(sessions.logical_path(), Some(other.as_path()));
+        assert_eq!(sessions.session_saved_version(), Some(before));
+        assert!(!sessions.busy());
+        assert!(sessions.status.is_empty(), "{:?}", sessions.status);
+        // And the new document can still be edited and saved on its own terms.
+        accept(&mut sessions, f.feature, 31.0);
+        assert!(sessions.dirty());
+        let report = save(&mut sessions, SaveTarget::InPlace, None).expect("report");
+        assert!(report.published);
+        assert!(!sessions.dirty());
+        assert_eq!(height_of(&other), 31.0);
+        assert_eq!(height_of(&f.file), 25.0);
+    }
+
+    #[test]
+    fn an_export_keeps_its_working_copy_alive_without_blocking_the_window() {
+        let f = fixture();
+        let mut sessions = open(&f);
+        accept(&mut sessions, f.feature, 25.0);
+        let lease = sessions.export_source().expect("accepted snapshot");
+        let working = lease.path().to_path_buf();
+        let private = working.parent().expect("folder").to_path_buf();
+
+        // A running export holds its own reference...
+        let (release, wait) = mpsc::channel::<()>();
+        let (read, saw) = mpsc::channel();
+        let mine = Arc::clone(&lease);
+        let worker = std::thread::spawn(move || {
+            wait.recv().expect("released");
+            // Read after the window has moved on.
+            let document = Document::open_read_only(mine.path()).expect("still there");
+            read.send(document.meta().document_id).expect("deliver");
+            document.close().expect("close");
+        });
+        // ...and so does a question waiting to be answered.
+        let mut exports = crate::exports::Exports::default();
+        let mut input = ferritecad_ui::ViewportInput::new();
+        let occupied = f.root.path().join("occupied.fbx");
+        std::fs::write(&occupied, b"theirs").expect("a file");
+        exports.hold(Some(Arc::clone(&lease)));
+        let alias = f.file.clone();
+        assert!(
+            crate::exports::begin_export(
+                &mut exports,
+                &mut input,
+                Some(&alias),
+                Some(occupied.clone()),
+                |_, _, _, _| unreachable!("a question is asked first"),
+            )
+            .is_none()
+        );
+        assert_eq!(exports.pending(), Some(occupied.as_path()));
+        drop(lease);
+
+        // The window opens another document: the old session is dropped, at once.
+        let other = f.root.path().join("other.fcad");
+        std::fs::copy(&f.file, &other).expect("copy");
+        let started = std::time::Instant::now();
+        sessions.adopt(
+            DocumentSession::open_in(f.private.path(), &other, HistoryLimits::default())
+                .expect("another document"),
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(
+            working.is_file(),
+            "the export's working copy was deleted under it"
+        );
+        assert!(exports.held().is_some_and(|held| held.path() == working));
+
+        release.send(()).expect("go");
+        saw.recv().expect("the export read its snapshot");
+        worker.join().expect("worker");
+        assert!(working.is_file(), "the question still holds it");
+        // Leaving the document abandons the question; with the last holder gone the
+        // folder goes too.
+        crate::exports::leave_document(&mut exports, &mut input);
+        assert!(exports.pending().is_none() && exports.held().is_none());
+        assert!(!working.exists());
+        assert!(!private.exists());
+        assert_eq!(std::fs::read(&occupied).expect("untouched"), b"theirs");
+    }
+
+    #[test]
+    fn a_public_export_into_the_working_folder_is_refused_before_anything_is_written() {
+        let f = fixture();
+        let mut sessions = open(&f);
+        accept(&mut sessions, f.feature, 25.0);
+        let lease = sessions.export_source().expect("accepted snapshot");
+        let private = lease.path().parent().expect("folder").to_path_buf();
+        let before = std::fs::read_dir(&private).expect("dir").count();
+        let mut exports = crate::exports::Exports::default();
+        let mut input = ferritecad_ui::ViewportInput::new();
+        for inside in [
+            private.join("out.fbx"),
+            private.join("deeper").join("out.stl"),
+        ] {
+            assert!(crate::exports::inside_working_copy(&lease, &inside));
+            crate::exports::refuse_working_folder(&mut exports, &mut input, &inside);
+            assert!(matches!(
+                exports.status(),
+                crate::exports::ExportStatus::Failed { message, .. }
+                    if message.contains("temporary working folder")
+            ));
+        }
+        assert!(!crate::exports::inside_working_copy(
+            &lease,
+            &f.root.path().join("out.fbx")
+        ));
+        assert_eq!(std::fs::read_dir(&private).expect("dir").count(), before);
+        // The STL path refuses the same way, on the intent it was asked with.
+        let intent = crate::exports::StlIntent {
+            document: lease.path().to_path_buf(),
+            alias: f.file.clone(),
+            body: ObjectId::new(),
+            params: TessellationParams::default(),
+            lease: Some(Arc::clone(&lease)),
+        };
+        let started = crate::exports::begin_stl_export(
+            &mut exports,
+            &mut input,
+            &intent,
+            Some(private.join("out.stl")),
+            |_, _, _, _| unreachable!("refused before any worker"),
+        );
+        assert!(started.is_none());
+        assert!(!private.join("out.stl").exists());
     }
 
     #[test]
@@ -1377,6 +1582,7 @@ mod tests {
                 alias: alias.to_path_buf(),
                 body,
                 params: TessellationParams::default(),
+                lease: None,
             },
             &stl,
             false,
@@ -1462,7 +1668,7 @@ mod tests {
         // Export while unsaved: the working model, not the file on disk, and the
         // same bytes the command line exports from its copy.
         let alias = sessions.logical_path().expect("logical").to_path_buf();
-        let working = sessions.export_source().expect("an open document exports");
+        let working = sessions.export_path().expect("an open document exports");
         assert_ne!(Some(working.as_path()), sessions.logical_path());
         let (stl, fbx) = export_bytes(&working, &alias, root, "unsaved");
         assert_eq!(stl, peer_stl, "the unsaved STL is not the edited model");
@@ -1473,7 +1679,7 @@ mod tests {
         // the edit again.
         move_native(&mut sessions, true);
         assert!(!sessions.dirty());
-        let working = sessions.export_source().expect("an open document exports");
+        let working = sessions.export_path().expect("an open document exports");
         let (stl, fbx) = export_bytes(&working, &alias, root, "undone");
         assert_eq!(
             (stl, fbx),

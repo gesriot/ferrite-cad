@@ -44,10 +44,12 @@ pub(crate) use stl::{
 };
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use ferritecad_exchange::Import;
 use ferritecad_export::{ExportNodeId, ExportOmissionReport, ExportSource, FbxWriteReport};
+use ferritecad_jobs::Snapshot;
 use ferritecad_jobs::{
     Existing, FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx,
     is_same_entry, path_entry_exists,
@@ -358,6 +360,10 @@ pub(crate) struct Exports {
     pending: Option<PathBuf>,
     stl_form: Option<stl::StlForm>,
     pending_stl: Option<StlIntent>,
+    /// The working copy a waiting replace-question will read when it is answered.
+    /// Held so that the file is still there then, whatever the window has done
+    /// since; a running export holds its own.
+    lease: Option<Arc<Snapshot>>,
 }
 
 impl Exports {
@@ -365,6 +371,16 @@ impl Exports {
     #[cfg(test)]
     pub(crate) fn status(&self) -> &ExportStatus {
         &self.status
+    }
+
+    /// Keeps `lease` alive for the replace-question about to be asked.
+    pub(crate) fn hold(&mut self, lease: Option<Arc<Snapshot>>) {
+        self.lease = lease;
+    }
+
+    /// The working copy the waiting question is about.
+    pub(crate) fn held(&self) -> Option<Arc<Snapshot>> {
+        self.lease.clone()
     }
 
     /// The destination waiting to be confirmed, if one is.
@@ -398,6 +414,7 @@ impl Exports {
     /// Takes back the question without answering it.
     fn dismiss(&mut self) -> bool {
         self.pending_stl = None;
+        self.lease = None;
         let form = self.stl_form.take().is_some();
         self.pending.take().is_some() || form
     }
@@ -554,6 +571,8 @@ impl Exports {
 /// outcome is manufactured for a worker whose answer is no longer relevant.
 pub(crate) fn leave_document(exports: &mut Exports, input: &mut ViewportInput) {
     exports.cancel_current();
+    // A question about the document being left is over with it.
+    exports.dismiss();
     exports.current = None;
     exports.status = ExportStatus::Idle;
     input.request_redraw();
@@ -855,6 +874,29 @@ fn existing(replace: bool) -> Existing<'static> {
     } else {
         Existing::Keep { advice: APPEARED }
     }
+}
+
+/// Whether `destination` is inside the folder `lease` lives in. That folder is
+/// removed when the document it belongs to is closed, so nothing for the user to
+/// keep may be written there.
+pub(crate) fn inside_working_copy(lease: &Snapshot, destination: &Path) -> bool {
+    lease
+        .path()
+        .parent()
+        .is_some_and(|folder| ferritecad_jobs::is_inside(folder, destination))
+}
+
+/// Says no, before anything is written.
+pub(crate) fn refuse_working_folder(
+    exports: &mut Exports,
+    input: &mut ViewportInput,
+    destination: &Path,
+) {
+    exports.refuse(
+        display(destination),
+        "That is inside FerriteCAD's temporary working folder, which is deleted when the document is closed. Nothing was written; choose a folder of your own.".to_owned(),
+    );
+    input.request_redraw();
 }
 
 #[cfg(test)]
