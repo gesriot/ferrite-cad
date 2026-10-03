@@ -794,6 +794,7 @@ pub(crate) fn open_for_view(
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    mod analytic;
     use ferritecad_document::Document;
     use ferritecad_jobs::{
         CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,

@@ -131,3 +131,4 @@ no-solver step of the same workflow.
   recorded in the verification document.
 * **Next (§30B).** The vertices of a saved Line Sketch are applied inside the open document: [contract](sketch-session-apply.md).
 * **Next (§30C).** The existing constraints of a saved Sketch are applied inside the open document: [contract](constraint-session-apply.md).
+* **Next (§30D).** The geometry of a saved Circle or annulus is applied inside the open document: [contract](analytic-sketch-session-apply.md).

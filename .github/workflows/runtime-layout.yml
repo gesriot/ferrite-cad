@@ -808,7 +808,10 @@ jobs:
           for gate in sessions::tests::without_the_solver_an_apply_to_a_constrained_plate_is_refused_and_nothing_changes \
             sessions::tests::native_an_ordinary_plate_is_applied_undone_exported_and_saved_like_the_command_line \
             sessions::tests::native_vertices_of_an_ordinary_offset_polygon_are_applied_like_the_command_line \
-            sessions::tests::without_the_solver_a_constraints_apply_is_refused_and_nothing_changes
+            sessions::tests::without_the_solver_a_constraints_apply_is_refused_and_nothing_changes \
+            sessions::tests::analytic::native_a_circle_with_a_fractional_offset_is_applied_like_the_command_line \
+            sessions::tests::analytic::native_an_annulus_with_unequal_fractional_radii_is_applied_like_the_command_line \
+            sessions::tests::analytic::native_an_annulus_stored_bore_first_keeps_its_roles_by_curve_uuid
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee session-no-solver.log
@@ -998,6 +1001,34 @@ jobs:
               exit 1
             fi
           done
+          # §30D: a saved Circle and an annulus (boundary first, and bore first)
+          # applied through the window's real workers against the peer command line,
+          # and the constraint editor's availability following the accepted version.
+          # The saved model's exports go to the pinned independent reader below.
+          analytic_dir="$RUNNER_TEMP/analytic-session"
+          mkdir -p "$analytic_dir"
+          analytic_artifacts="$analytic_dir"
+          case '${{ matrix.name }}' in
+            windows) analytic_artifacts="$(cygpath -w "$analytic_artifacts")" ;;
+          esac
+          export FCAD_ANALYTIC_ARTIFACTS="$analytic_artifacts"
+          for gate in sessions::tests::analytic::native_a_circle_with_a_fractional_offset_is_applied_like_the_command_line \
+            sessions::tests::analytic::native_an_annulus_with_unequal_fractional_radii_is_applied_like_the_command_line \
+            sessions::tests::analytic::native_an_annulus_stored_bore_first_keeps_its_roles_by_curve_uuid \
+            sessions::tests::analytic::native_constraints_applied_through_the_session_withdraw_and_restore_the_circle_editor
+          do
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-analytic.log
+            if grep -q 'skipped:' session-analytic.log || ! grep -Fq "test $gate ... ok" session-analytic.log; then
+              echo "::error::${gate} did not run and pass on this platform"
+              exit 1
+            fi
+          done
+          for name in circle-session annulus-session annulus-swapped-session; do
+            test -s "$analytic_dir/$name.fbx"
+            test -s "$analytic_dir/$name.stl"
+          done
+          echo "FCAD_ANALYTIC_SESSION_FBX_DIR=$analytic_artifacts" >> "$GITHUB_ENV"
 
       - name: Create a saved polygon through the native CLI and sketch worker
         env:
@@ -2637,6 +2668,7 @@ jobs:
           grep -q '^FCAD_CHAMFER_HEIGHT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_SKETCH_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_CONSTRAINTS_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_ANALYTIC_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

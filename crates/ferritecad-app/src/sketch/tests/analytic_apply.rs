@@ -6,6 +6,7 @@
 use super::*;
 use crate::{Loads, can_apply_analytic, creates, edits, exports, sessions};
 use ferritecad_document::ExtrudeEditSource;
+use ferritecad_types::ObjectId;
 
 struct Window {
     _private: tempfile::TempDir,
@@ -753,4 +754,46 @@ fn click_running(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
             true,
         );
     }
+}
+
+/// The Circle form's own widgets, as the window leaves them for an idle session
+/// with unsaved changes: the numbers typed and **Apply circle** pressed.
+pub(crate) fn typed_circle(
+    path: &Path,
+    source: &ExtrudeEditSource,
+    sketch: ObjectId,
+    center: [&str; 2],
+    radius: &str,
+) -> (Editor, EditCircleRequest) {
+    let mut e = Editor::default();
+    e.set_session(true, false, true);
+    e.set_analytic_apply(true);
+    assert!(e.begin_circle_edit(path, source, sketch));
+    let ctx = egui::Context::default();
+    settle(&ctx, &mut e);
+    type_circle(&ctx, &mut e, center[0], center[1], radius);
+    press(&ctx, &mut e, "Apply circle");
+    let request = e.take_apply_circle_request().expect("Apply circle asked");
+    (e, request)
+}
+
+/// The annulus form's own widgets, likewise.
+pub(crate) fn typed_annulus(
+    path: &Path,
+    source: &ExtrudeEditSource,
+    sketch: ObjectId,
+    center: [&str; 2],
+    outer: &str,
+    inner: &str,
+) -> (Editor, EditAnnulusRequest) {
+    let mut e = Editor::default();
+    e.set_session(true, false, true);
+    e.set_analytic_apply(true);
+    assert!(e.begin_annulus_edit(path, source, sketch));
+    let ctx = egui::Context::default();
+    settle(&ctx, &mut e);
+    type_annulus(&ctx, &mut e, center[0], center[1], outer, inner);
+    press(&ctx, &mut e, "Apply annulus");
+    let request = e.take_apply_annulus_request().expect("Apply annulus asked");
+    (e, request)
 }
