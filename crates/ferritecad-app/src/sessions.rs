@@ -347,6 +347,12 @@ impl Sessions {
     /// picture and replacing the shown one, so a version is current exactly when its
     /// picture is on screen.
     pub(crate) fn commit_staged(&mut self) -> Result<()> {
+        // A picture that was ready when the user pressed Cancel is not shown: the
+        // answer to Cancel is "nothing changed", for Apply, Undo and Redo alike.
+        // The staged version stays where it is and `finish_scene` drops it.
+        if let Some(op) = &self.operation {
+            op.cancel.check()?;
+        }
         let session = self
             .session
             .as_mut()
@@ -816,6 +822,59 @@ mod tests {
         // The session still works.
         let (_, again) = apply(&mut sessions, f.feature, 25.0);
         assert!(matches!(again, Edited::Show(_)));
+    }
+
+    #[test]
+    fn a_picture_that_was_ready_when_cancel_was_pressed_is_not_accepted() {
+        // Apply, Undo and Redo each: the scene is built, the user cancels, the
+        // answer arrives. The binding must refuse, and everything stays as it was.
+        let f = fixture();
+        let mut sessions = open(&f);
+        accept(&mut sessions, f.feature, 25.0);
+        accept(&mut sessions, f.feature, 30.0);
+        enum Step {
+            Apply,
+            Undo,
+            Redo,
+        }
+        for step in [Step::Apply, Step::Undo, Step::Redo] {
+            if matches!(step, Step::Redo) {
+                // Something to redo: go back first, for real.
+                let (generation, _) = sessions.begin_move(true).expect("undo");
+                sessions.bind(Bind::Staged).expect("bind");
+                assert!(sessions.finish_scene(generation, Ok(())));
+            }
+            let (dirty, undo, redo) = (sessions.dirty(), sessions.can_undo(), sessions.can_redo());
+            let source = sessions.export_source();
+            let files = private_files(&sessions);
+            let generation = match step {
+                Step::Apply => {
+                    let (generation, edited) = apply(&mut sessions, f.feature, 41.0);
+                    assert!(matches!(edited, Edited::Show(_)), "{edited:?}");
+                    generation
+                }
+                Step::Undo => sessions.begin_move(true).expect("undo").0,
+                Step::Redo => sessions.begin_move(false).expect("redo").0,
+            };
+            assert!(sessions.cancel());
+            let refused = sessions.bind(Bind::Staged).expect_err("cancelled");
+            assert_eq!(refused.kind(), ErrorKind::Cancellation);
+            // The window reports the refusal as a picture that was not shown.
+            assert!(sessions.finish_scene(generation, Err(refused)));
+            assert_eq!(sessions.status, "Cancelled; nothing was changed.");
+            assert!(!sessions.busy());
+            assert_eq!(
+                (sessions.dirty(), sessions.can_undo(), sessions.can_redo()),
+                (dirty, undo, redo)
+            );
+            assert_eq!(
+                sessions.export_source(),
+                source,
+                "the current version moved"
+            );
+            assert_eq!(private_files(&sessions), files, "a staged file was kept");
+            assert_eq!(height_of(&f.file), 12.0);
+        }
     }
 
     #[test]
