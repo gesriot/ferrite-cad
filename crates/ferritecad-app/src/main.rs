@@ -1005,6 +1005,22 @@ fn can_apply_constraints(
         && !sessions.busy()
 }
 
+/// Shared by the saved Circle and annulus forms' Apply button and the commands
+/// that start their workers.
+fn can_apply_analytic(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    creates.can_apply_analytic()
+        && document_io_idle(loads, exports)
+        && !edits.busy()
+        && sessions.has_session()
+        && !sessions.busy()
+}
+
 fn ask_new(
     creates: &mut creates::Creates,
     loads: &Loads,
@@ -1055,6 +1071,9 @@ struct Sections<'a> {
     /// The other editors are unavailable only because the document has unsaved
     /// changes (ADR 0005): the form says so rather than leaving buttons grey.
     held_back: bool,
+    /// The session's own last line (what Apply, Undo or Save last did), shown
+    /// inside the Circle and annulus forms so a refusal is not hidden behind them.
+    document_outcome: &'a str,
     /// Why the last attempt to open a document failed, when it failed over
     /// something with parts.
     failure: Option<ferritecad_ui::OpenFailure<'a>>,
@@ -2901,6 +2920,13 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.edits,
                     &self.sessions,
                 );
+                let analytic_apply = can_apply_analytic(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -2916,6 +2942,7 @@ impl ApplicationHandler<AppEvent> for App {
                     sketch_apply,
                     self.sessions.dirty(),
                 );
+                self.creates.sketch.set_analytic_apply(analytic_apply);
                 self.creates.sketch.constraints.set_session(
                     session_idle && !self.edits.busy(),
                     constraints_apply,
@@ -2930,6 +2957,7 @@ impl ApplicationHandler<AppEvent> for App {
                         can_edit,
                         height,
                         held_back: self.sessions.dirty() && !self.sessions.busy(),
+                        document_outcome: &self.sessions.status,
                         stl_form,
                         edits: &mut self.edits,
                         failure,
@@ -3006,6 +3034,12 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.take_apply_request() {
                             self.apply_sketch(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_apply_circle_request() {
+                            self.apply_circle(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_apply_annulus_request() {
+                            self.apply_annulus(request);
                         }
                         if let Some(request) = self.creates.sketch.take_edit_request() {
                             self.ask_where_to_edit_sketch(request);
@@ -3659,6 +3693,69 @@ impl App {
                 ticket,
                 request.sketch,
                 request.edits,
+                request.expected,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
+    /// Apply the saved Circle form to the open document. No file dialog; the same
+    /// session step and two-phase scene as Apply height.
+    fn apply_circle(&mut self, request: ferritecad_jobs::EditCircleRequest) {
+        if !can_apply_analytic(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
+            self.input.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_apply_circle(
+                ticket,
+                request.sketch,
+                request.edit,
+                request.expected,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
+    /// Apply the saved annulus form to the open document, like the Circle.
+    fn apply_annulus(&mut self, request: ferritecad_jobs::EditAnnulusRequest) {
+        if !can_apply_analytic(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
+            self.input.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_apply_annulus(
+                ticket,
+                request.sketch,
+                request.edit,
                 request.expected,
                 cancel.clone(),
                 move |result| {
@@ -4837,6 +4934,7 @@ impl Live {
             can_edit,
             height,
             held_back,
+            document_outcome,
             failure,
             export,
             replacing,
@@ -4852,9 +4950,10 @@ impl Live {
             chosen = ferritecad_ui::toolbar(ui, activity);
             if held_back {
                 ui.label(
-                    "The other editors (Cut, Fillet, Chamfer, circles, \
-                     Revolve) are unavailable while the document has unsaved changes: Save or \
-                     Undo them first. The height, vertices and constraints of a saved Sketch can still be changed with Apply.",
+                    "The other editors (Cut, Fillet, Chamfer, Revolve) are unavailable while the \
+                     document has unsaved changes: Save or Undo them first. The height, \
+                     vertices, constraints, Circle and annulus of a saved Sketch can still be \
+                     changed with Apply.",
                 );
             }
             sketch.draw_choices(
@@ -4863,7 +4962,7 @@ impl Live {
                 scene.document.as_deref(),
                 scene.edit_source.as_ref(),
             );
-            sketch.draw(ui, can_edit, creating || edits.running());
+            sketch.draw(ui, can_edit, creating || edits.running(), document_outcome);
             if let Some(message) = dialog_failure {
                 ui.colored_label(ui.visuals().error_fg_color, message);
             }

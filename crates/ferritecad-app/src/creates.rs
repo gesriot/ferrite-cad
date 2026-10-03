@@ -186,6 +186,11 @@ impl Creates {
         !self.running() && self.form.is_none() && self.sketch.constraints.active()
     }
 
+    /// The saved Circle or annulus form is the caller of its own Apply.
+    pub(crate) fn can_apply_analytic(&self) -> bool {
+        !self.running() && self.form.is_none() && self.sketch.editing_analytic()
+    }
+
     pub(crate) fn can_cancel(&self) -> bool {
         self.running() && !self.cancel_requested
     }

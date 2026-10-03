@@ -1098,7 +1098,7 @@ fn completed_pointer_gesture_does_not_edit_through_an_overlapping_window() {
                 ..Default::default()
             },
             |ui| {
-                e.draw(ui, true, false);
+                e.draw(ui, true, false, "");
                 egui::Area::new(egui::Id::new("cover-canvas"))
                     .order(egui::Order::Foreground)
                     .fixed_pos(at - egui::vec2(20., 20.))

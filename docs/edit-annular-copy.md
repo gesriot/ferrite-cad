@@ -69,7 +69,7 @@ circle constraints, in-place Save, рисования мышью, новой с�
 
 Форма показывает сохранённый Sketch UUID, **оба** UUID окружностей с их
 сохранёнными центрами и радиусами и неизменяемую высоту. Введите Center X/Y,
-Outer radius и Inner radius, затем нажмите **Apply annulus change**: одно
+Outer radius и Inner radius, затем нажмите **Confirm draft numbers**: одно
 подтверждение всех трёх величин создаёт один шаг Undo/Redo, максимум 128.
 Промежуточный ввод (`-`, пустое поле) в историю не попадает; Undo/Redo не
 обращается ни к одному job. Save доступен после Apply. Пока worker занят, поля

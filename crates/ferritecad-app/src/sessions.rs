@@ -680,6 +680,48 @@ pub(crate) fn spawn_apply_constraints(
     )
 }
 
+/// The circle edit: the reused `edit-circle` copy operation on the worker that
+/// owns the kernel session. `expected` is the version the form was opened from.
+pub(crate) fn spawn_apply_circle(
+    ticket: StepTicket,
+    sketch: ObjectId,
+    edit: ferritecad_document::CircleEdit,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.edit_circle(sketch, edit, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
+/// The annulus edit: the reused `edit-annular` copy operation on the worker that
+/// owns the kernel session. `expected` is the version the form was opened from.
+pub(crate) fn spawn_apply_annulus(
+    ticket: StepTicket,
+    sketch: ObjectId,
+    edit: ferritecad_document::AnnulusEdit,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.edit_annulus(sketch, edit, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
 /// The picture of one private version, read cold exactly as Open reads a file.
 pub(crate) fn spawn_scene(
     path: PathBuf,
