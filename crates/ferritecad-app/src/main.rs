@@ -19127,7 +19127,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut frame = |events| {
             let mut chosen = ferritecad_ui::EditChoice::Waiting;
-            let output = ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -19140,6 +19140,7 @@ mod tests {
                     chosen = edits.draw_with(ui, false, None, dirty);
                 },
             );
+            output.textures_delta.clear();
             (output, chosen)
         };
         frame(vec![]);
