@@ -1,8 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running unittests src/lib.rs (/tmp/claude-0/-home-user-ferrite-cad/162dd891-581c-51dc-908a-49b893101d0b/scratchpad/target-stub30/debug/deps/ferritecad_jobs-2a1d80e100568270)
-
-running 1 test
-test save::tests::cleanup_keeps_a_replacement_symlink_even_if_it_targets_the_held_inode ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 54 filtered out; finished in 0.00s
-
