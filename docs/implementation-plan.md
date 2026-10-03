@@ -4375,6 +4375,8 @@ its private directory in the system temporary directory and nothing reopens it.
 (3) Persistent revisions, a revision list, tabs. The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
 (4) Close the lock-ignoring-writer window only if a platform primitive allows a
-compare-and-replace; until then it is documented, not closed. (5) A real-window
-run on the Mac of the scenario in the verification record. None of this completes
+compare-and-replace; until then it is documented, not closed. The independent Mac window scenario now covers Apply, document Undo/Redo,
+Save/Save As, occupied/external-change refusals, unsaved exports and guarded
+Quit, with actual artifacts compared to CLI (see verification for per-commit
+provenance and the system-pressure-aborted attempt). None of this completes
 Milestone 5C, the older OOM investigation or the general beta.

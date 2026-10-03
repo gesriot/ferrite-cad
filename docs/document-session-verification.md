@@ -532,9 +532,9 @@ The initial pre-test pressure level 2 was waited out without launching a viewer.
 Evidence: `/private/tmp/ferrite-pr81-review/watch-quit.jsonl`, `quit-saved.json`,
 `quit-prompt-ax.txt`, and the failing regression logs in that directory.
 
-The complete Save/Save As/export/conflict GUI scenario on the combined final
-code is still pending at this commit; this focused Quit test does not stand in
-for it. Remote CI of these review changes is also pending.
+The focused Quit test above does not stand in for the complete scenario. The
+subsequent runs and their exact code provenance are recorded below; remote CI
+results are attached to the PR rather than inferred from these local runs.
 
 The full window review additionally reproduced broken Cmd+S/Shift+S/Z/Shift+Z
 with the active Russian keyboard layout. Instrumented winit events carried
@@ -550,3 +550,57 @@ The solver-symbol ban still covers the adapter; an injected `fc_gcs_` symbol was
 rejected, restored, and the positive check repeated. Other app files retain the
 old C/unsafe ban. This fixes the check failure on `fc5a397` without relocating a
 platform callback into the solver crate.
+
+
+### Completed window scenario and independent artifact comparison
+
+The plain-polygon run used the complete review code `fc5a397`: Apply 6.75 →
+9.5 mm left the source unchanged; document Undo/Redo changed the accepted scene;
+STL/FBX exported the unsaved 9.5 mm model; Save wrote that model. Apply 11.25 mm
+and Save As created a separate file and preserved the prior file. A later dirty
+12.5 mm edit survived both an occupied Save As refusal (including the native
+panel's Replace confirmation) and a Save conflict after the current file was
+externally replaced with a 3 mm copy. Cmd+Q → Cancel preserved the dirty scene;
+Cmd+Q → Discard exited normally. A clean height form's old Save-new-file panel
+opened in the logical document directory and was cancelled; that check does not
+claim a copy was published. An initial missed field focus produced an extra
+9.5 mm Save As file; inspection caught it, and the intended 11.25 mm Apply/Save As
+was repeated and independently measured. No incorrect artifact was substituted
+by the comparator.
+
+The final product code `95374ed` fixes the Command-key mapping and Save As label.
+On the active Russian layout, the real window exercised Cmd+Shift+S → Cancel,
+Cmd+Z → clean/Undone, Cmd+Shift+Z → dirty/Redone, and exported the unsaved
+constrained Chamfer model at 8.5 mm to FBX. That run was subsequently stopped by
+the watchdog on **system pressure level 2**, at a sampled viewer peak of
+206.02 MiB, below the 1536 MiB cap. It is not counted as a completed scenario.
+CUA automatically relaunched an empty instance; its exact PID was stopped.
+After pressure returned to normal, a fresh watched process on the same final
+code repeated Apply 6.75 → 8.5 mm, exported unsaved STL, saved with Cmd+S
+(the star disappeared and Saved was visible), and quit cleanly. Coordinate
+interaction worked in this retry; the earlier CUA `noWindowsAvailable` errors
+had required keyboard navigation and were not attributed to the application.
+
+The extracted `FCAD_30A_GUI_COMPARE` script ran with the final bundled CLI over
+all twelve required GUI artifacts, returning
+`FCAD_30A_GUI_COMPARE_OK cells=12 triangles=12`. It checked immutable original
+hashes, every SQL table with the explicit changed-cell allowlist, saved heights,
+Save As/source/conflict preservation, byte-equal CLI STL/FBX, independent closed
+oriented STL bounds/volume, and the negative controls. The two actual GUI FBX
+files were also read by freshly compiled pinned ufbx 0.23.0 in strict mode:
+6 checks / 0 failures each. The constrained STL has 16 triangles / 884 bytes;
+its constraints and Chamfer retain their stored identities.
+
+Watchdog records (one owned viewer per run): plain scenario PID 54315, exit 0,
+peak 269.63 MiB, pressure normal, swap unchanged at 909.06 MiB; final constrained
+retry PID 78241, exit 0, peak 193.88 MiB, pressure normal, swap unchanged at
+1480.56 MiB. The increased system swap **between** these runs is recorded, not
+claimed as zero growth across the whole review. No viewer was queried through
+CUA after the successful Quit; completion came from the watchdog's PID/exit.
+The historical OOM cause remains unknown. No Windows/Linux window smoke or
+crash recovery is claimed.
+
+Review logs, scripts, model artifacts and memory summaries are retained under
+`/private/tmp/ferrite-pr81-review/` and in the local review evidence directory
+`~/.codex/visualizations/2026/09/05/01a0722f-a4b4-7532-b72b-07ef6b78698d/ferrite-pr81-review/`.
+The measured binaries predate this documentation-only update.
