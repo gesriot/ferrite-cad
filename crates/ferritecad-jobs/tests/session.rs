@@ -717,6 +717,24 @@ fn apply_constraints(
     session.commit_step(step)
 }
 
+/// A rebuild of a constrained Sketch needs the sketch solver. Where the build has
+/// none these gates say so and stop, unless the build is required to have one.
+fn without_solver(result: Result<StepCommit, CadError>) -> bool {
+    match result {
+        Ok(_) => false,
+        Err(error) if error.to_string().contains("did not link planegcs") => {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1"),
+                "this build is required to have the sketch solver"
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            true
+        }
+        Err(error) => panic!("height: {error}"),
+    }
+}
+
 #[test]
 fn a_constraint_edit_is_a_session_step_beside_height_with_undo_and_redo() {
     use ferritecad_document::SketchConstraintEdits;
@@ -726,7 +744,9 @@ fn a_constraint_edit_is_a_session_step_beside_height_with_undo_and_redo() {
     let mut session = open(&f, private.path(), HistoryLimits::default());
     let before = bytes(&f.file);
 
-    apply(&mut session, f.feature, 21.5).expect("height");
+    if without_solver(apply(&mut session, f.feature, 21.5)) {
+        return;
+    }
     let expected = session.current().version();
     let remove_two = SketchConstraintEdits {
         remove: vec![ids[2], ids[3]],
@@ -812,7 +832,9 @@ fn a_constraint_edit_from_an_older_version_or_without_edits_changes_nothing() {
     let private = private_root();
     let mut session = open(&f, private.path(), HistoryLimits::default());
     let old = session.current().version();
-    apply(&mut session, f.feature, 30.0).expect("height");
+    if without_solver(apply(&mut session, f.feature, 30.0)) {
+        return;
+    }
     let depth = session.undo_depth();
     let listing = files(session.private_directory());
     let remove = SketchConstraintEdits {
