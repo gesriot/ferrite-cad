@@ -399,5 +399,17 @@ print("FCAD_30D_GUI_COMPARE_OK", f"cells={sum(len(r) for _, r in tables(out / 'g
 
 ## CI of the code and workflow head
 
-Pending: to be recorded here (head, run ids, and the log lines of the new gates on each system) after the
-checks of the pushed head finish. Nothing in this document claims a result that has not run.
+Code and workflow head: `5b08f3422693039d16d94f40ee58bf1bcc93dedb` (the PR's parent commit
+`9861325` carries the forms, the step and the widget tests; this one the native, stub and mixed gates, the workflow
+gates and the documents). All 15 checks succeeded on it:
+
+* CI, run `37153185071`: `lint`, `notices`, `sbom`, `supply-chain`, `test (ubuntu-latest)`, `test (macos-latest)`,
+  `test (windows-latest)` — the stub step with the ten new gates by exact name;
+* Open CASCADE and PlaneGCS runtime layout, run `37153173720`: `linux`, `macos`, `windows` and `Compare what the
+  three platforms measured` — the native step with the four new gates and the strict ufbx block
+  (`FCAD_ANALYTIC_SESSION_UFBX_EXECUTED`, which the step greps for);
+* PlaneGCS pin, run `37153173718`: `linux`, `macos`, `windows` and `Compare what the three platforms concluded`.
+
+The log lines of the new gates were not read one by one here: each workflow step fails on a `skipped:` line and on a
+missing `test <name> ... ok` line, and the ufbx step fails without its marker, so a green step is the evidence that they
+ran and passed on that system. This commit only records the result; its own checks are tracked in the checks of the PR.
