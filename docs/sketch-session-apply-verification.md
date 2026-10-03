@@ -418,7 +418,7 @@ must_fail("a foreign object row changed", lambda: allowlist(S / "polygon.fcad", 
 must_fail("a sketch row outside the allowlist", lambda: allowlist(S / "polygon.fcad", out / "gui-poly-saved.fcad", [PG["feature_id"]]))
 must_fail("a missing output", lambda: require(work))
 must_fail("the old plate in the mesh", lambda: measure(out / "gui-poly-unsaved.stl", PLATE["right"], H["first"], False))
-print("FCAD_30B_GUI_COMPARE_OK", f"cells={sum(len(r) for _, r in tables(out / 'gui-poly-saved.fcad').values())}",
+print("FCAD_30B_GUI_COMPARE_OK", f"cells={sum(len(columns) * len(rows) for columns, rows in tables(out / 'gui-poly-saved.fcad').values())}",
       f"triangles={len(mesh(out / 'gui-poly-unsaved.stl'))}")
 ```
 
@@ -477,10 +477,12 @@ Apply did not. The first saved file remained unchanged by Save As. Quit ended
 the owned process normally; no UI query was made after exit.
 
 The extracted comparator consumed those real window artifacts and printed
-`FCAD_30B_GUI_COMPARE_OK cells=12 triangles=12`. It checked unchanged disk state
+`FCAD_30B_GUI_COMPARE_OK cells=70 triangles=12`. It checked unchanged disk state
 before Save and after refusal, all SQL cells against the CLI and explicit edit
 allowlists, history branching, independent closed/oriented STL measurements, and
-byte-identical GUI/CLI STL/FBX. Its negative controls rejected incorrect artifacts.
+byte-identical GUI/CLI STL/FBX. Its negative controls rejected incorrect artifacts. The review also corrected
+the success counter to count SQL cells (70), rather than label the row count
+(12) as cells; the per-cell comparisons themselves were already present.
 Pinned ufbx 0.23.0 read both GUI FBX files: 6 checks / 0 failures each.
 
 The final watchdog run lasted 719.56 s, peak footprint 207.892 MiB, pressure 1
