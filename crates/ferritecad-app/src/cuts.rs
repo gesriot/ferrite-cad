@@ -286,7 +286,7 @@ impl Editor {
                     "Body {} · plane {} · {}",
                     shown.body,
                     shown.plane,
-                    draft.source.display()
+                    crate::sessions::shown_as(&draft.source)
                 ));
                 ui.small(format!(
                     "Part {}, {} mm tall; the cut modifies feature {}",

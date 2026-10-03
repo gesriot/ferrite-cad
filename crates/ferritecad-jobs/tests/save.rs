@@ -703,3 +703,45 @@ fn a_link_retargeted_after_the_copy_is_not_saved_through() {
     assert!(session.is_dirty());
     only(&f, &["alias.fcad", "other.fcad", "plate.fcad"]);
 }
+
+#[test]
+fn save_as_never_writes_into_the_sessions_own_disposable_directory() {
+    let f = fixture();
+    let mut session = open(&f);
+    apply(&mut session, f.feature, 22.0);
+    let private = session.private_directory().to_path_buf();
+    assert!(session.owns(&private.join("mine.fcad")));
+    assert!(session.owns(&private.join("nested").join("deeper").join("mine.fcad")));
+    assert!(!session.owns(&f.file));
+    let attempt = private.join("mine.fcad");
+    let before = names(&private);
+    let failure = session
+        .begin_save(SaveTarget::As(attempt.clone()))
+        .run(&OperationContext::default())
+        .expect_err("the working folder is not a place to keep a file");
+    assert_eq!(failure.kind, SaveFailureKind::Failed, "{failure}");
+    assert!(!attempt.exists());
+    assert_eq!(names(&private), before);
+    assert!(session.is_dirty());
+
+    // By what the path names, not how it is spelled.
+    #[cfg(unix)]
+    {
+        let door = f.root.path().join("door");
+        std::os::unix::fs::symlink(&private, &door).expect("link");
+        assert!(session.owns(&door.join("mine.fcad")));
+        let failure = session
+            .begin_save(SaveTarget::As(door.join("mine.fcad")))
+            .run(&OperationContext::default())
+            .expect_err("a link into it is still inside it");
+        assert_eq!(failure.kind, SaveFailureKind::Failed, "{failure}");
+        assert_eq!(names(&private), before);
+    }
+    // Next to the user's file it is fine.
+    let ok = f.root.path().join("kept.fcad");
+    session
+        .begin_save(SaveTarget::As(ok.clone()))
+        .run(&OperationContext::default())
+        .expect("a place of the user's own");
+    assert_eq!(height_of(&ok), 22.0);
+}

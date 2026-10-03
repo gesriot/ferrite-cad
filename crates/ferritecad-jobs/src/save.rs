@@ -152,6 +152,7 @@ impl SaveHooks for NoHooks {}
 #[derive(Debug)]
 pub struct SavePlan {
     source: Arc<Snapshot>,
+    private: PathBuf,
     logical: PathBuf,
     expected: DocumentVersion,
     target: SaveTarget,
@@ -161,6 +162,7 @@ pub struct SavePlan {
 impl SavePlan {
     pub(crate) fn new(
         source: Arc<Snapshot>,
+        private: PathBuf,
         logical: PathBuf,
         expected: DocumentVersion,
         target: SaveTarget,
@@ -168,6 +170,7 @@ impl SavePlan {
     ) -> Self {
         Self {
             source,
+            private,
             logical,
             expected,
             target,
@@ -351,6 +354,17 @@ impl SavePlan {
                 ),
             )
         };
+        // The session's private directory goes with the session: a document saved
+        // there would be deleted when the window moves on.
+        if crate::session::is_inside(&self.private, &destination) {
+            return Err(SaveFailure::new(
+                SaveFailureKind::Failed,
+                format!(
+                    "{} is inside FerriteCAD's temporary working folder, which is deleted when the document is closed; choose a folder of your own.",
+                    destination.display()
+                ),
+            ));
+        }
         if path_entry_exists(&destination).map_err(SaveFailure::failed)? {
             return Err(occupied());
         }

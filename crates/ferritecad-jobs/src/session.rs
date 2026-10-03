@@ -310,6 +310,13 @@ impl DocumentSession {
         &self.directory.path
     }
 
+    /// Whether `path` is, or would be, inside this session's private directory.
+    /// The directory is removed with the session, so nothing the user is meant to
+    /// keep may be written there.
+    pub fn owns(&self, path: &Path) -> bool {
+        is_inside(&self.directory.path, path)
+    }
+
     // --- steps -----------------------------------------------------------
 
     /// What an edit needs to run on a worker: the current version to read, where
@@ -411,6 +418,7 @@ impl DocumentSession {
     pub fn begin_save(&self, target: SaveTarget) -> SavePlan {
         SavePlan::new(
             self.current(),
+            self.directory.path.clone(),
             self.logical.clone(),
             self.saved.disk,
             target,
@@ -554,4 +562,30 @@ impl Move {
     pub fn path(&self) -> &Path {
         self.target.path()
     }
+}
+
+/// `path` with every symbolic link and `..` in its existing part resolved, and
+/// the part that does not exist yet appended as written.
+fn resolved(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut tail = Vec::new();
+    let mut head = absolute.as_path();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(head) {
+            return tail.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (head.parent(), head.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_owned());
+                head = parent;
+            }
+            _ => return absolute,
+        }
+    }
+}
+
+/// Whether `path` is `directory` or lies under it, by what each really names
+/// (links followed), whether or not `path` exists yet.
+pub fn is_inside(directory: &Path, path: &Path) -> bool {
+    resolved(path).starts_with(resolved(directory))
 }

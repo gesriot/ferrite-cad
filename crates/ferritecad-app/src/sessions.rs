@@ -133,9 +133,67 @@ pub(crate) struct Sessions {
     /// The last thing that happened to the document, in a sentence. Not state:
     /// nothing is read back from it.
     pub(crate) status: String,
+    /// The private directory this value last told [`shown_as`] about.
+    registered: Option<PathBuf>,
+}
+
+/// Which user's file each private working directory stands for, so that text
+/// written for a person names the document they opened, not the file the window
+/// reads it from. Only ever consulted to *show* a path; no code reads a document
+/// through it.
+static SHOWN_AS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
+
+/// How to name `path` to the user: the document it is the working copy of, or the
+/// path itself when it is not one of ours.
+pub(crate) fn shown_as(path: &Path) -> String {
+    let known = SHOWN_AS.lock().unwrap_or_else(|e| e.into_inner());
+    known
+        .iter()
+        .find(|(private, _)| path.starts_with(private))
+        .map_or_else(
+            || path.display().to_string(),
+            |(_, logical)| logical.display().to_string(),
+        )
+}
+
+impl Drop for Sessions {
+    fn drop(&mut self) {
+        self.session = None;
+        self.register();
+    }
 }
 
 impl Sessions {
+    /// Keeps [`shown_as`] in step with the session: called whenever the session or
+    /// its logical path may have changed.
+    fn register(&mut self) {
+        let mut known = SHOWN_AS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = self.registered.take() {
+            known.retain(|(private, _)| *private != old);
+        }
+        if let Some(session) = &self.session {
+            let private = session.private_directory().to_path_buf();
+            known.push((private.clone(), session.logical_path().to_path_buf()));
+            self.registered = Some(private);
+        }
+    }
+
+    /// Where a file dialog should start: the folder the user's document is in, never
+    /// the working copy's.
+    pub(crate) fn suggested_directory(&self) -> PathBuf {
+        self.logical_path()
+            .and_then(Path::parent)
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    }
+
+    /// The directory that goes away with the session; nothing may be saved in it.
+    pub(crate) fn private_directory(&self) -> Option<&Path> {
+        self.session
+            .as_ref()
+            .map(DocumentSession::private_directory)
+    }
+
     pub(crate) fn has_session(&self) -> bool {
         self.session.is_some()
     }
@@ -194,6 +252,7 @@ impl Sessions {
     /// which is dropped here and takes its private files with it.
     pub(crate) fn adopt(&mut self, session: DocumentSession) {
         self.session = Some(session);
+        self.register();
         self.after_save = None;
         self.status.clear();
     }
@@ -445,6 +504,7 @@ impl Sessions {
                 let session = self.session.as_mut().expect("a save has a session");
                 session.record_saved(&saved);
                 self.status = format!("Saved {}.", session.display_name());
+                self.register();
                 Some(SaveReport {
                     published: true,
                     continuation,
@@ -483,6 +543,7 @@ impl Sessions {
         }
         self.after_save = None;
         self.session = None;
+        self.register();
     }
 
     /// What replacing the document asks of the user.
@@ -1042,6 +1103,122 @@ mod tests {
         assert!(!shown.contains("ferritecad-session"), "{shown}");
         assert!(!shown.contains("v1.fcad"), "{shown}");
         assert_eq!(sessions.logical_path(), Some(f.file.as_path()));
+    }
+
+    fn version_of(path: &Path) -> ferritecad_document::DocumentVersion {
+        let document = Document::open_read_only(path).expect("document");
+        let version = ferritecad_document::DocumentVersion {
+            document_id: document.meta().document_id,
+            content: document.content_version().expect("content"),
+        };
+        document.close().expect("close");
+        version
+    }
+
+    #[test]
+    fn an_old_editor_gets_the_users_folder_and_name_and_its_copy_outlives_the_old_session() {
+        let f = fixture();
+        let mut sessions = open(&f);
+        // Clean, at a checkpoint that is not the first: Save As, edit, Undo.
+        accept(&mut sessions, f.feature, 25.0);
+        let renamed = f.root.path().join("renamed.fcad");
+        let report = save(&mut sessions, SaveTarget::As(renamed.clone()), None).expect("report");
+        assert!(report.published);
+        accept(&mut sessions, f.feature, 30.0);
+        let (generation, _) = sessions.begin_move(true).expect("undo");
+        sessions.bind(Bind::Staged).expect("bind");
+        assert!(sessions.finish_scene(generation, Ok(())));
+        assert!(!sessions.dirty(), "back at the saved checkpoint");
+
+        // What the old editors are handed is the accepted snapshot, which is private...
+        let accepted = sessions.export_source().expect("accepted snapshot");
+        let private = sessions.private_directory().expect("private").to_path_buf();
+        assert!(accepted.starts_with(&private));
+        assert_ne!(Some(accepted.as_path()), sessions.logical_path());
+        // ...and what the person is shown and offered is theirs.
+        assert_eq!(shown_as(&accepted), renamed.display().to_string());
+        assert_eq!(sessions.suggested_directory(), f.root.path());
+        assert!(!sessions.suggested_directory().starts_with(&private));
+
+        // A dialog answer inside the working folder is refused, for everything that
+        // writes something to keep, and nothing is written there.
+        let mut dialogs = crate::dialogs::Dialogs::default();
+        let mut input = ferritecad_ui::ViewportInput::new();
+        let inside = private.join("copy.fcad");
+        for action in [
+            crate::dialogs::Action::Edit,
+            crate::dialogs::Action::SaveAs,
+            crate::dialogs::Action::ExportFbx,
+            crate::dialogs::Action::ExportStl,
+            crate::dialogs::Action::New,
+        ] {
+            assert_eq!(
+                dialogs.receive(
+                    action,
+                    crate::dialogs::Outcome::Selected(inside.clone()),
+                    &mut input,
+                    Some(&private)
+                ),
+                None
+            );
+            assert!(
+                dialogs
+                    .failure()
+                    .expect("said so")
+                    .contains("temporary working folder")
+            );
+        }
+        assert!(!inside.exists());
+        // Opening reads, it does not keep: not refused.
+        assert_eq!(
+            dialogs.receive(
+                crate::dialogs::Action::Open,
+                crate::dialogs::Outcome::Selected(inside.clone()),
+                &mut input,
+                Some(&private)
+            ),
+            Some(inside)
+        );
+
+        // The folder the dialog offers is accepted as it stands: the copy is made
+        // from the accepted snapshot, opened as the new document, and the old
+        // session is dropped by that.
+        let copy = sessions.suggested_directory().join("copy.fcad");
+        assert_eq!(
+            dialogs.receive(
+                crate::dialogs::Action::Edit,
+                crate::dialogs::Outcome::Selected(copy.clone()),
+                &mut input,
+                Some(&private)
+            ),
+            Some(copy.clone())
+        );
+        ferritecad_jobs::edit_extrude_copy(
+            &ferritecad_jobs::EditExtrudeRequest {
+                source: accepted.clone(),
+                expected: version_of(&accepted),
+                feature: f.feature,
+                distance_mm: 41.0,
+                destination: copy.clone(),
+            },
+            &mut MockKernel::new(),
+            &OperationContext::default(),
+        )
+        .expect("the copy");
+        assert_eq!(height_of(&copy), 41.0);
+        sessions.adopt(
+            DocumentSession::open_in(f.private.path(), &copy, HistoryLimits::default())
+                .expect("the copy opens"),
+        );
+        assert!(!private.exists(), "the old session's folder is gone");
+        assert!(
+            copy.is_file(),
+            "the published copy was removed with the old session"
+        );
+        assert_eq!(height_of(&copy), 41.0);
+        assert_eq!(sessions.logical_path(), Some(copy.as_path()));
+        assert_eq!(shown_as(&accepted), accepted.display().to_string());
+        assert_eq!(height_of(&renamed), 25.0);
     }
 
     #[test]

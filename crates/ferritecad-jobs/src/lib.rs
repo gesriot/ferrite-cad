@@ -54,7 +54,7 @@ pub use save::{
 };
 pub use session::{
     DocumentSession, HistoryLimits, Move, ProducedStep, STALE_STEP, Snapshot, StepCommit,
-    StepTicket,
+    StepTicket, is_inside,
 };
 pub use validate::{ValidatedDocument, validate_document};
 

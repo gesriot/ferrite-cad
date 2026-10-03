@@ -3134,6 +3134,7 @@ impl App {
                 )
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3187,6 +3188,7 @@ impl App {
                 .set_file_name(suggested_export_name(&document))
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3243,6 +3245,7 @@ impl App {
                 ))
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3290,6 +3293,7 @@ impl App {
                 .set_file_name(format!("untitled.{DOCUMENT_EXTENSION}"))
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3416,6 +3420,7 @@ impl App {
                 .set_file_name(self.sessions.name().unwrap_or_default())
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3506,10 +3511,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("sketch-constraints.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3538,10 +3544,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-sketch.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3567,10 +3574,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-circle.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3599,10 +3607,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-revolve.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3628,10 +3637,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-annulus.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3657,10 +3667,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("cut.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3686,10 +3697,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("fillet.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3718,10 +3730,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-fillet.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3747,10 +3760,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("chamfer.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3779,10 +3793,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-chamfer.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3809,10 +3824,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited-cut.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -3845,10 +3861,11 @@ impl App {
             dialogs::Action::Edit,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_directory(self.sessions.suggested_directory())
                 .set_file_name("edited.fcad")
                 .set_parent(live.window.as_ref()),
             &mut self.input,
+            self.sessions.private_directory(),
         ) else {
             return;
         };
@@ -14694,7 +14711,7 @@ mod tests {
         ] {
             for answer in [dialogs::Outcome::Cancelled, dialogs::Outcome::Failed] {
                 let failed = answer == dialogs::Outcome::Failed;
-                let chosen = dialogs.receive(action, answer, &mut input);
+                let chosen = dialogs.receive(action, answer, &mut input, None);
                 assert!(chosen.is_none());
                 assert_eq!(dialogs.failure().is_some(), failed);
                 assert!(

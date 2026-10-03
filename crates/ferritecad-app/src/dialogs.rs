@@ -93,6 +93,7 @@ impl Dialogs {
         action: Action,
         builder: rfd::FileDialog,
         input: &mut ferritecad_ui::ViewportInput,
+        private: Option<&std::path::Path>,
     ) -> Option<PathBuf> {
         let answer = invoke(action, || {
             let builder = builder.set_title(action.title());
@@ -101,7 +102,7 @@ impl Dialogs {
                 _ => builder.save_file(),
             }
         });
-        self.receive(action, answer, input)
+        self.receive(action, answer, input, private)
     }
 
     /// Asks what to do with unsaved changes before something replaces the document.
@@ -145,7 +146,25 @@ impl Dialogs {
         action: Action,
         answer: Outcome,
         input: &mut ferritecad_ui::ViewportInput,
+        private: Option<&std::path::Path>,
     ) -> Option<PathBuf> {
+        // Something written for the user to keep (everything but Open) must not be
+        // placed in the working folder that goes away with the document.
+        let answer = match answer {
+            Outcome::Selected(path)
+                if action != Action::Open
+                    && private.is_some_and(|dir| ferritecad_jobs::is_inside(dir, &path)) =>
+            {
+                self.failure = Some(format!(
+                    "{}: {} is inside FerriteCAD's temporary working folder, which is deleted when the document is closed. Nothing was written; choose a folder of your own.",
+                    action.title(),
+                    path.display()
+                ));
+                input.request_redraw();
+                return None;
+            }
+            other => other,
+        };
         let failure = (answer == Outcome::Failed).then(|| {
             format!(
                 "{}: the system file dialog could not be opened. No file was chosen. \
@@ -247,23 +266,34 @@ mod tests {
             Action::ExportStl,
         ] {
             assert_eq!(
-                dialogs.receive(action, invoke(action, || None), &mut input),
+                dialogs.receive(action, invoke(action, || None), &mut input, None),
                 None
             );
             assert_eq!(dialogs.failure(), None);
             assert!(!input.take_redraw());
-            assert_eq!(dialogs.receive(action, Outcome::Failed, &mut input), None);
+            assert_eq!(
+                dialogs.receive(action, Outcome::Failed, &mut input, None),
+                None
+            );
             let failure = dialogs.failure().expect("a failure must be shown");
             assert!(failure.starts_with(action.title()));
             assert!(failure.contains("could not be opened"));
             assert!(input.take_redraw());
-            assert_eq!(dialogs.receive(action, Outcome::Failed, &mut input), None);
+            assert_eq!(
+                dialogs.receive(action, Outcome::Failed, &mut input, None),
+                None
+            );
             assert!(
                 !input.take_redraw(),
                 "the same failure must not request frames forever"
             );
             assert_eq!(
-                dialogs.receive(action, invoke(action, || Some(path.clone())), &mut input),
+                dialogs.receive(
+                    action,
+                    invoke(action, || Some(path.clone())),
+                    &mut input,
+                    None
+                ),
                 Some(path.clone())
             );
             assert_eq!(dialogs.failure(), None);
