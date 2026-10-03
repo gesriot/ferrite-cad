@@ -4413,3 +4413,25 @@ strict ufbx; viewer peak 219.532 MiB, exit 0. The SQL comparator now includes th
 whole Sketch row with only new constraint UUIDs normalized; a failing-first
 rename regression closes the former omission. Stale copy-only UI explanations
 were corrected. Exact provenance and remaining non-claims are in the verification.
+
+**§30D — the geometry of a saved Circle or annulus, inside the open document.** The two
+existing analytic Sketch editors gain **Apply circle** / **Apply annulus**: the reused
+`edit-circle` / `edit-annular` operations as one more session step beside Apply height,
+vertices and constraints, with no file name, the same two-phase scene, Undo/Redo over every
+kind of step, unsaved export, and Save only at Save. The old *Apply … change* (which only
+confirmed the fields into the draft) is renamed **Confirm draft numbers**; the document
+action is the only thing called Apply. Availability is the window's own predicate; a
+refusal, a stale form or a cancellation accept nothing and keep the draft, and the
+session's last line is drawn inside the form so a refusal is readable. No new identity
+(the saved document equals the command line's copy in every cell but the write stamp),
+no constraint, geometry, solver need, command, JSON or format. The other copy-only
+editors remain (obligation 1 above continues).
+[Contract](analytic-sketch-session-apply.md),
+[verification and the macOS handoff](analytic-sketch-session-apply-verification.md).
+
+Independent macOS review of §30D completed the Circle and annulus window scenario:
+draft and document histories, unsaved export, Save/Save As, refusal and guarded
+Quit. Real GUI outputs matched CLI in SQL and STL/FBX; strict ufbx and mesh joins
+passed. Viewer peak 210.892 MiB, exit 0, swap unchanged. Code/workflow CI and its
+actual new gate executions were verified on all three OSes. The verification
+record distinguishes stub-only no-ops from native execution.

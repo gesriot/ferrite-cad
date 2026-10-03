@@ -144,6 +144,12 @@ pub(crate) struct Editor {
     /// Whether the window can apply the draft to the open document right now.
     /// Set by the window each frame; never persisted.
     can_apply: bool,
+    /// §30D: Apply of the saved Circle or annulus form on the open document is
+    /// possible right now, and the requests it has asked for and nobody has taken.
+    /// Set by the window each frame; never persisted.
+    can_apply_analytic: bool,
+    pending_apply_circle: Option<EditCircleRequest>,
+    pending_apply_annulus: Option<EditAnnulusRequest>,
     /// Whether the saved Sketch editor may be opened on the open document even
     /// with unsaved changes (it applies into the session, not into a new file).
     can_begin_sketch: bool,
@@ -199,6 +205,55 @@ impl Editor {
         self.editing.is_some()
     }
 
+    /// §30D: a saved Circle or annulus form is open.
+    pub(crate) fn editing_analytic(&self) -> bool {
+        self.editing_circle.is_some() || self.editing_annulus.is_some()
+    }
+
+    /// What the window tells the saved Circle and annulus forms each frame.
+    pub(crate) fn set_analytic_apply(&mut self, can_apply: bool) {
+        self.can_apply_analytic = can_apply;
+    }
+    /// §30D: the saved Circle the user asked to apply to the open document.
+    pub(crate) fn take_apply_circle_request(&mut self) -> Option<EditCircleRequest> {
+        self.pending_apply_circle.take()
+    }
+    /// §30D: the saved annulus the user asked to apply to the open document.
+    pub(crate) fn take_apply_annulus_request(&mut self) -> Option<EditAnnulusRequest> {
+        self.pending_apply_annulus.take()
+    }
+    /// Whether the typed numbers are not the stored ones, so that Apply would be a
+    /// change. The session still decides on the model itself; this only keeps the
+    /// button from offering what is plainly nothing.
+    fn circle_differs_from_saved(&self, request: &EditCircleRequest) -> bool {
+        self.editing_circle
+            .as_ref()
+            .and_then(|(_, choice)| choice.circle.as_ref())
+            .is_none_or(|saved| {
+                saved.center_mm != request.edit.center_mm
+                    || saved.radius_mm != request.edit.radius_mm
+            })
+    }
+    fn annulus_differs_from_saved(&self, request: &EditAnnulusRequest) -> bool {
+        self.editing_annulus
+            .as_ref()
+            .and_then(|(_, choice)| choice.annulus.as_ref())
+            .is_none_or(|saved| {
+                // The stored circles may not share a centre; applying puts both
+                // at the typed one, which is a change even with the same numbers.
+                saved.center_mm != request.edit.center_mm
+                    || saved.inner_center_mm != request.edit.center_mm
+                    || saved.outer_radius_mm != request.edit.outer_radius_mm
+                    || saved.inner_radius_mm != request.edit.inner_radius_mm
+            })
+    }
+    fn outcome_line(ui: &mut egui::Ui, outcome: &str) {
+        if !outcome.is_empty() {
+            ui.separator();
+            ui.label(format!("Document: {outcome}"));
+        }
+    }
+
     pub(crate) fn active(&self) -> bool {
         self.draft.is_some()
             || self.editing_circle.is_some()
@@ -214,10 +269,12 @@ impl Editor {
         // again every frame, but a draft that is replaced must not forget it for
         // the frame in between.
         let (begin, apply, unsaved) = (self.can_begin_sketch, self.can_apply, self.unsaved);
+        let analytic = self.can_apply_analytic;
         let constraints = self.constraints.session();
         *self = Self::default();
         self.can_begin_sketch = begin;
         self.can_apply = apply;
+        self.can_apply_analytic = analytic;
         self.unsaved = unsaved;
         self.constraints
             .set_session(constraints.0, constraints.1, constraints.2);
@@ -654,7 +711,7 @@ impl Editor {
             for choice in &source.circle_sketches {
                 let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                 let response = ui.add_enabled(
-                    can_begin && refusal.is_none(),
+                    (can_begin || self.can_begin_sketch) && refusal.is_none(),
                     egui::Button::new(format!(
                         "Edit circle {} — {}…",
                         choice.name.as_deref().unwrap_or("Unnamed"),
@@ -671,7 +728,7 @@ impl Editor {
             for choice in &source.annulus_sketches {
                 let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                 let response = ui.add_enabled(
-                    can_begin && refusal.is_none(),
+                    (can_begin || self.can_begin_sketch) && refusal.is_none(),
                     egui::Button::new(format!(
                         "Edit annulus {} — {}…",
                         choice.name.as_deref().unwrap_or("Unnamed"),
@@ -926,7 +983,13 @@ impl Editor {
             }),
         }
     }
-    pub(crate) fn draw(&mut self, ui: &mut egui::Ui, can_begin: bool, running: bool) {
+    pub(crate) fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        can_begin: bool,
+        running: bool,
+        outcome: &str,
+    ) {
         if self.constraints.active() {
             self.constraints.draw(ui, running);
             return;
@@ -955,9 +1018,9 @@ impl Editor {
         egui::Window::new(if self.editing_angle.is_some() {
             "Edit Revolve angle — new copy"
         } else if self.editing_annulus.is_some() {
-            "Edit saved annulus — new copy"
+            "Edit saved annulus"
         } else if self.editing_circle.is_some() {
-            "Edit saved Circle — new copy"
+            "Edit saved Circle"
         } else if self.editing.is_some() {
             "Edit saved Sketch"
         } else {
@@ -965,7 +1028,7 @@ impl Editor {
         })
         .resizable(false)
         .default_width(540.)
-        .show(ui.ctx(), |ui| self.draw_draft(ui, running));
+        .show(ui.ctx(), |ui| self.draw_draft(ui, running, outcome));
     }
 
     /// The circle half of the same window.
@@ -1105,21 +1168,48 @@ impl Editor {
         match self.circle_edit_request() {
             Ok(request) => {
                 let pending = self.circle_applied.as_ref() != Some(&self.circle);
-                if ui
-                    .add_enabled(pending, egui::Button::new("Apply circle change"))
-                    .clicked()
-                {
-                    self.apply_circle().expect("validated circle draft");
-                }
+                let differs = self.circle_differs_from_saved(&request);
+                ui.horizontal(|ui| {
+                    // §30D: into the open document, no file name. The file on disk
+                    // changes only when you Save.
+                    if ui
+                        .add_enabled(
+                            self.can_apply_analytic && differs,
+                            egui::Button::new("Apply circle"),
+                        )
+                        .clicked()
+                    {
+                        self.pending_apply_circle = Some(request.clone());
+                    }
+                    if ui
+                        .add_enabled(pending, egui::Button::new("Confirm draft numbers"))
+                        .clicked()
+                    {
+                        self.apply_circle().expect("validated circle draft");
+                    }
+                });
                 let applied = self.circle_applied.as_ref() == Some(&self.circle);
                 if ui
-                    .add_enabled(applied, egui::Button::new("Save edited circle copy…"))
+                    .add_enabled(
+                        applied && !self.unsaved,
+                        egui::Button::new("Save edited circle copy…"),
+                    )
                     .clicked()
                 {
                     self.pending_circle_edit = Some(request);
                 }
-                if !applied {
-                    ui.small("Apply the numbers before saving the copy.");
+                if !differs {
+                    ui.small("These are the stored numbers: there is nothing to apply.");
+                }
+                if !applied && !self.unsaved {
+                    ui.small("Confirm the draft numbers before saving a copy.");
+                }
+                if self.unsaved {
+                    ui.small(
+                        "Saving a copy as a new file is unavailable while the document has \
+                         unsaved changes: Save or Undo them first. Apply changes this \
+                         document; the file on disk changes only when you Save.",
+                    );
                 }
             }
             Err(error) => {
@@ -1252,21 +1342,48 @@ impl Editor {
         match self.annulus_edit_request() {
             Ok(request) => {
                 let pending = self.annulus_applied.as_ref() != Some(&self.annulus);
-                if ui
-                    .add_enabled(pending, egui::Button::new("Apply annulus change"))
-                    .clicked()
-                {
-                    self.apply_annulus().expect("validated annulus draft");
-                }
+                let differs = self.annulus_differs_from_saved(&request);
+                ui.horizontal(|ui| {
+                    // §30D: into the open document, no file name. The file on disk
+                    // changes only when you Save.
+                    if ui
+                        .add_enabled(
+                            self.can_apply_analytic && differs,
+                            egui::Button::new("Apply annulus"),
+                        )
+                        .clicked()
+                    {
+                        self.pending_apply_annulus = Some(request.clone());
+                    }
+                    if ui
+                        .add_enabled(pending, egui::Button::new("Confirm draft numbers"))
+                        .clicked()
+                    {
+                        self.apply_annulus().expect("validated annulus draft");
+                    }
+                });
                 let applied = self.annulus_applied.as_ref() == Some(&self.annulus);
                 if ui
-                    .add_enabled(applied, egui::Button::new("Save edited annulus copy…"))
+                    .add_enabled(
+                        applied && !self.unsaved,
+                        egui::Button::new("Save edited annulus copy…"),
+                    )
                     .clicked()
                 {
                     self.pending_annulus_edit = Some(request);
                 }
-                if !applied {
-                    ui.small("Apply the numbers before saving the copy.");
+                if !differs {
+                    ui.small("These are the stored numbers: there is nothing to apply.");
+                }
+                if !applied && !self.unsaved {
+                    ui.small("Confirm the draft numbers before saving a copy.");
+                }
+                if self.unsaved {
+                    ui.small(
+                        "Saving a copy as a new file is unavailable while the document has \
+                         unsaved changes: Save or Undo them first. Apply changes this \
+                         document; the file on disk changes only when you Save.",
+                    );
                 }
             }
             Err(error) => {
@@ -1275,7 +1392,7 @@ impl Editor {
         }
     }
 
-    fn draw_draft(&mut self, ui: &mut egui::Ui, running: bool) {
+    fn draw_draft(&mut self, ui: &mut egui::Ui, running: bool, outcome: &str) {
         if self.editing_angle.is_some() {
             ui.add_enabled_ui(!running, |ui| {
                 ui.horizontal(|ui| {
@@ -1339,9 +1456,13 @@ impl Editor {
             }
             ui.add_enabled_ui(!running, |ui| self.draw_annulus_edit(ui));
             if running {
-                ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                ui.label("Working… Draft retained until it is done. Cancel the operation in the toolbar.");
             }
-            ui.small("Undo/redo changes only this draft; history ends at publication.");
+            Self::outcome_line(ui, outcome);
+            ui.small(
+                "Draft Undo/Redo change only this draft; its history ends when the change is \
+                 applied or the document moves to another version.",
+            );
             return;
         }
         if self.editing_circle.is_some() {
@@ -1376,9 +1497,13 @@ impl Editor {
             }
             ui.add_enabled_ui(!running, |ui| self.draw_circle_edit(ui));
             if running {
-                ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                ui.label("Working… Draft retained until it is done. Cancel the operation in the toolbar.");
             }
-            ui.small("Undo/redo changes only this draft; history ends at publication.");
+            Self::outcome_line(ui, outcome);
+            ui.small(
+                "Draft Undo/Redo change only this draft; its history ends when the change is \
+                 applied or the document moves to another version.",
+            );
             return;
         }
         // Editing a saved Sketch is not creating one, so it offers no choice
@@ -2299,6 +2424,7 @@ fn to_document(pos: egui::Pos2, origin: egui::Pos2, scale: f32) -> [f64; 2] {
 #[allow(clippy::panic)]
 pub(crate) mod tests {
     use super::*;
+    pub(crate) mod analytic_apply;
 
     /// The request the saved Sketch form makes when `from` is replaced by `to` in
     /// the two vertex boxes that show it and **Apply vertices** is pressed: the real
@@ -2592,7 +2718,7 @@ pub(crate) mod tests {
                 events,
                 ..Default::default()
             },
-            |ui| e.draw(ui, true, running),
+            |ui| e.draw(ui, true, running, ""),
         );
         output.textures_delta.clear();
         output
@@ -3876,7 +4002,7 @@ pub(crate) mod tests {
             "unapplied numbers cannot publish"
         );
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Apply circle change"));
+        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
         assert_eq!(e.circle_undo.len(), 1, "one Apply, one history step");
         // Undo and redo walk the whole confirmed change.
         let out = frame(&ctx, &mut e, vec![]);
@@ -4598,7 +4724,7 @@ pub(crate) mod tests {
             type_into_grid_row(&ctx, &mut e, &out, label, value);
         }
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Apply circle change"));
+        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
         let out = frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, text_at(&out, "Save edited circle copy…"));
         let request = e.take_circle_edit_request().expect("submit");
@@ -4867,7 +4993,7 @@ pub(crate) mod tests {
 
         // One Apply is one history step for all three numbers together.
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Apply annulus change"));
+        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
         assert_eq!(e.annulus_undo.len(), 1, "one Apply, one history step");
         let out = frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, text_at(&out, "Undo draft"));
@@ -4925,7 +5051,7 @@ pub(crate) mod tests {
         // Back to a request, and the identities come from the reading rather
         // than from anything typed.
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Apply annulus change"));
+        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
         let out = frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, text_at(&out, "Save edited annulus copy…"));
         let request = e.take_annulus_edit_request().expect("submit");
@@ -5018,7 +5144,7 @@ pub(crate) mod tests {
             type_into_annulus_row(&ctx, &mut e, &out, label, value);
         }
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Apply annulus change"));
+        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
         let out = frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, text_at(&out, "Save edited annulus copy…"));
         let request = e.take_annulus_edit_request().expect("submit");
@@ -5458,7 +5584,7 @@ pub(crate) mod tests {
                     },
                 );
                 e.draw_choices(ui, true, Some(path), Some(source));
-                e.draw(ui, true, false);
+                e.draw(ui, true, false, "");
                 crate::edits::Edits::default().draw(ui, true, source.unavailable_reason());
             },
         );

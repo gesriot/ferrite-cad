@@ -58,8 +58,9 @@ Reused: `edit_sketch_constraints_copy` (through `StepTicket::edit_sketch_constra
 the session's two-phase step, its history, dirty-by-comparison, Save, the working-copy
 lease for exports, and the private-folder protections. Not introduced: a second copier,
 solver path, evaluator, history or writer, or any write to the logical file before Save.
-The other copy-only editors (circle, annulus, Revolve angle, Cut, Fillet, Chamfer,
-*Edit extrusion…* copy) stay copy workflows.
+The other copy-only editors (Revolve angle, Cut, Fillet, Chamfer,
+*Edit extrusion…* copy) stay copy workflows; the Circle and annulus editors joined the
+session in [§30D](analytic-sketch-session-apply.md).
 
 ## Review finding fixed here
 

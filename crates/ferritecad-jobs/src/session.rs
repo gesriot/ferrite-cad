@@ -43,7 +43,8 @@ use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
 use crate::edit::{
-    EditExtrudeRequest, EditSketchConstraintsRequest, EditSketchRequest, edit_extrude_copy,
+    EditAnnulusRequest, EditCircleRequest, EditExtrudeRequest, EditSketchConstraintsRequest,
+    EditSketchRequest, edit_annulus_copy, edit_circle_copy, edit_extrude_copy,
     edit_sketch_constraints_copy, edit_sketch_copy,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
@@ -572,6 +573,76 @@ impl StepTicket {
             )
             .map(|_| ())
         })
+    }
+
+    /// Moves and resizes one saved analytic circle: the reused `edit-circle`
+    /// copy operation, reading the current version and writing the next, so the
+    /// result is what the command line's `edit-circle` makes from the same
+    /// document. The height is not part of the request.
+    ///
+    /// `expected` is the version the form that asked for this was opened on; a
+    /// request about any other version is refused, as for the other forms. A
+    /// request that leaves the model as it was is not a step (`changes_model`).
+    pub fn edit_circle<K: GeometryKernel + ?Sized>(
+        self,
+        sketch: ObjectId,
+        edit: ferritecad_document::CircleEdit,
+        expected: DocumentVersion,
+        kernel: &mut K,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        self.check_form_version(expected)?;
+        self.run(|source, expected, destination| {
+            edit_circle_copy(
+                &EditCircleRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    sketch,
+                    edit,
+                    destination: destination.to_path_buf(),
+                },
+                kernel,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Moves and resizes the two circles of one saved annular profile: the reused
+    /// `edit-annular` copy operation, each circle named by its own UUID in the
+    /// role it already holds. Version rule and no-op rule as for the circle.
+    pub fn edit_annulus<K: GeometryKernel + ?Sized>(
+        self,
+        sketch: ObjectId,
+        edit: ferritecad_document::AnnulusEdit,
+        expected: DocumentVersion,
+        kernel: &mut K,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        self.check_form_version(expected)?;
+        self.run(|source, expected, destination| {
+            edit_annulus_copy(
+                &EditAnnulusRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    sketch,
+                    edit,
+                    destination: destination.to_path_buf(),
+                },
+                kernel,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    fn check_form_version(&self, expected: DocumentVersion) -> Result<()> {
+        if expected != self.source.version() {
+            return Err(CadError::input(
+                "the document changed after this form was opened; open it again to edit the current version",
+            ));
+        }
+        Ok(())
     }
 
     /// Runs any copy operation that reads `source` (checking it is still the
