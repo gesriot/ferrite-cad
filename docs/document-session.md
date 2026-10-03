@@ -129,3 +129,4 @@ no-solver step of the same workflow.
   the reason.
 * **macOS review.** The AppKit `Cmd+Q` hook is included; the real-window result is
   recorded in the verification document.
+* **Next (§30B).** The vertices of a saved Line Sketch are applied inside the open document: [contract](sketch-session-apply.md).

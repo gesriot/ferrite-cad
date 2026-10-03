@@ -806,7 +806,8 @@ jobs:
           # §30A: with a kernel and no solver, Apply to a constrained plate is refused
           # and the document stays clean, and the plain plate still goes through.
           for gate in sessions::tests::without_the_solver_an_apply_to_a_constrained_plate_is_refused_and_nothing_changes \
-            sessions::tests::native_an_ordinary_plate_is_applied_undone_exported_and_saved_like_the_command_line
+            sessions::tests::native_an_ordinary_plate_is_applied_undone_exported_and_saved_like_the_command_line \
+            sessions::tests::native_vertices_of_an_ordinary_offset_polygon_are_applied_like_the_command_line
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee session-no-solver.log
@@ -970,7 +971,10 @@ jobs:
           esac
           for gate in sessions::tests::native_an_ordinary_plate_is_applied_undone_exported_and_saved_like_the_command_line \
             sessions::tests::native_a_chamfered_plate_with_constraints_keeps_them_byte_for_byte \
-            sessions::tests::native_open_draws_from_the_sessions_own_copy_and_a_failed_open_leaves_nothing
+            sessions::tests::native_open_draws_from_the_sessions_own_copy_and_a_failed_open_leaves_nothing \
+            sessions::tests::native_vertices_of_an_ordinary_offset_polygon_are_applied_like_the_command_line \
+            sessions::tests::native_vertices_of_a_rectangle_under_a_chamfer_keep_the_chamfer_like_the_command_line \
+            sessions::tests::native_a_refused_vertex_edit_changes_nothing_and_a_constrained_plate_offers_none
           do
             cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee session-native.log

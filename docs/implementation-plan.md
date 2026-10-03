@@ -4380,3 +4380,15 @@ Save/Save As, occupied/external-change refusals, unsaved exports and guarded
 Quit, with actual artifacts compared to CLI (see verification for per-commit
 provenance and the system-pressure-aborted attempt). None of this completes
 Milestone 5C, the older OOM investigation or the general beta.
+
+**§30B — the vertices of a saved Line Sketch, inside the open document.** The
+existing *Edit Sketch…* form gains **Apply vertices**: the reused `edit-sketch-copy`
+operation as one more session step beside Apply height, with no file name, the same
+two-phase scene, Undo/Redo over both kinds of step, unsaved export, and Save only at
+Save. The form can be opened with unsaved changes; *Save edited copy…* stays for a
+clean document. A form applies only to the version it was opened on, forms about a
+replaced picture end, and document Undo/Redo wait while a form is open (draft
+Undo/Redo are the form's own). A dimensioned plate still offers no vertex form. The
+CLI and every JSON are unchanged. The other saved-object editors are still copy
+workflows (obligation 1 above continues). [Contract](sketch-session-apply.md),
+[verification and the macOS handoff](sketch-session-apply-verification.md).
