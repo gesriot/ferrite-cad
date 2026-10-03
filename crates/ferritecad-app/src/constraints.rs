@@ -102,16 +102,50 @@ struct Draft {
 pub(crate) struct Editor {
     draft: Option<Draft>,
     pending: Option<EditSketchConstraintsRequest>,
+    /// §30C: Apply into the open document, asked for and not yet taken.
+    pending_apply: Option<EditSketchConstraintsRequest>,
+    /// Whether the window can apply the draft to the open document right now.
+    /// Set by the window each frame from the production predicate; never stored.
+    can_apply: bool,
+    /// Whether the editor may be opened on the open document even with unsaved
+    /// changes: it applies into the session rather than writing a new file.
+    can_begin: bool,
+    /// The open document has unsaved changes: the copy workflow reads a file and
+    /// writes a new one, so it is withheld, and the form says why.
+    unsaved: bool,
 }
 impl Editor {
     pub(crate) fn active(&self) -> bool {
         self.draft.is_some()
     }
     pub(crate) fn dismiss(&mut self) {
+        // What the window said about the session is not the draft's: it is said
+        // again every frame, but a replaced draft must not forget it meanwhile.
+        let (apply, begin, unsaved) = (self.can_apply, self.can_begin, self.unsaved);
         *self = Self::default();
+        self.can_apply = apply;
+        self.can_begin = begin;
+        self.unsaved = unsaved;
     }
     pub(crate) fn take_request(&mut self) -> Option<EditSketchConstraintsRequest> {
         self.pending.take()
+    }
+    /// §30C: the draft the user asked to apply to the open document.
+    pub(crate) fn take_apply_request(&mut self) -> Option<EditSketchConstraintsRequest> {
+        self.pending_apply.take()
+    }
+    #[cfg(test)]
+    pub(crate) fn draft_edits(&self) -> Option<SketchConstraintEdits> {
+        self.draft.as_ref().map(|d| d.edits.clone())
+    }
+    pub(crate) fn session(&self) -> (bool, bool, bool) {
+        (self.can_begin, self.can_apply, self.unsaved)
+    }
+    /// What the window tells the editor each frame.
+    pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
+        self.can_begin = can_begin;
+        self.can_apply = can_apply;
+        self.unsaved = unsaved;
     }
     fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, id: ObjectId) -> bool {
         if self.active() || source.refusal.is_some() {
@@ -156,7 +190,7 @@ impl Editor {
             for choice in &source.constraint_sketches {
                 let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                 let response = ui.add_enabled(
-                    can_begin && refusal.is_none(),
+                    (can_begin || self.can_begin) && refusal.is_none(),
                     egui::Button::new(format!(
                         "Edit constraints {} — {}…",
                         choice.name.as_deref().unwrap_or("Unnamed"),
@@ -173,17 +207,19 @@ impl Editor {
         }
     }
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, running: bool) {
+        let (apply, unsaved) = (self.can_apply && !running, self.unsaved);
         let Some(draft) = &mut self.draft else {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Sketch constraints — new copy")
+        let mut apply_request = None;
+        egui::Window::new("Sketch constraints")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    "Select a stored Line or Circle. Solver runs only when saving \
-                     the new copy.",
+                    "Select a stored Line or Circle. Apply updates this document; \
+                     Save constraints copy creates a new file. Both run the solver.",
                 );
                 ui.small(format!(
                     "Sketch {} · {}",
@@ -209,7 +245,7 @@ impl Editor {
                     .show(ui, |ui| {
                         ui.label(format!(
                         "History: Extrude -> {}. {} Fillets keep their corners and radii: the \
-                         new copy is saved only if the solved plate is still a rectangle with \
+                         change is accepted only if the solved plate is still a rectangle with \
                          every Line on its side, each side at a corner at least {}, and \
                          adjacent arcs still leave a flat between them.",
                         all.iter()
@@ -247,7 +283,7 @@ impl Editor {
                     ui.label(format!(
                         "Rounded by Fillet {} at the corner of Lines {a} | {b}, r {} mm \
                          (stored corner ({}, {})). The Fillet keeps its corner and radius: \
-                         the new copy is saved only if the solved plate is still a rectangle \
+                         the change is accepted only if the solved plate is still a rectangle \
                          with every Line on its side and each side at that corner at least \
                          {} mm.",
                         fillet.feature,
@@ -265,7 +301,7 @@ impl Editor {
                     ui.label(format!(
                         "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d {} mm \
                          (stored corner ({}, {})). The Chamfer keeps its corner and distance: \
-                         the coordinates shown are the stored ones, and the new copy is saved \
+                         the coordinates shown are the stored ones, and the change is accepted \
                          only if the solved plate is still a rectangle with every Line on its \
                          side and each side at that corner at least {} mm.",
                         chamfer.feature,
@@ -804,14 +840,41 @@ impl Editor {
                     }
                     match draft.choice.validate_edits(&draft.edits) {
                         Ok(()) => {
-                            if ui.button("Save constraints copy…").clicked() {
-                                self.pending = Some(EditSketchConstraintsRequest {
-                                    source: draft.source.clone(),
-                                    expected: draft.version,
-                                    sketch: draft.choice.sketch,
-                                    edits: draft.edits.clone(),
-                                    destination: PathBuf::new(),
-                                });
+                            let request = EditSketchConstraintsRequest {
+                                source: draft.source.clone(),
+                                expected: draft.version,
+                                sketch: draft.choice.sketch,
+                                edits: draft.edits.clone(),
+                                destination: PathBuf::new(),
+                            };
+                            ui.horizontal(|ui| {
+                                // §30C: into the open document, no file name. An empty
+                                // draft changes nothing, so offers nothing to apply.
+                                let something = !draft.edits.add.is_empty()
+                                    || !draft.edits.remove.is_empty();
+                                if ui
+                                    .add_enabled(
+                                        apply && something,
+                                        egui::Button::new("Apply constraints"),
+                                    )
+                                    .clicked()
+                                {
+                                    apply_request = Some(request.clone());
+                                }
+                                if ui
+                                    .add_enabled(!unsaved, egui::Button::new("Save constraints copy…"))
+                                    .clicked()
+                                {
+                                    self.pending = Some(request);
+                                }
+                            });
+                            if unsaved {
+                                ui.small(
+                                    "Saving a copy as a new file is unavailable while the \
+                                     document has unsaved changes: Save or Undo them first. \
+                                     Apply changes this document; the file on disk changes only \
+                                     when you Save.",
+                                );
                             }
                         }
                         Err(e) => {
@@ -820,11 +883,14 @@ impl Editor {
                     }
                 });
                 if running {
-                    ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                    ui.label("Working… Draft retained until it is done. Cancel the operation in the toolbar.");
                 }
             });
         if cancel {
             self.dismiss();
+        }
+        if apply_request.is_some() {
+            self.pending_apply = apply_request;
         }
     }
 }
@@ -994,6 +1060,8 @@ pub(crate) mod tests {
     use ferritecad_kernel::OperationContext;
     /// §27G: the same editor on the profile of a Revolve with a bore.
     pub(crate) mod revolve;
+    /// §30C: the same editor applying into the open document.
+    pub(crate) mod session_apply;
     /// The single-Line halves of a pending request, in the request's own words.
     fn kind_of(add: &AddSketchConstraint) -> LineConstraintKind {
         match *add {

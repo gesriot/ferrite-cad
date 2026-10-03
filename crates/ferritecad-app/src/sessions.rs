@@ -658,6 +658,28 @@ pub(crate) fn spawn_apply_sketch(
     )
 }
 
+/// The constraint edit: the reused `edit-sketch-constraints-copy` operation on the
+/// worker that owns the kernel session. `expected` is the version the form was
+/// opened from.
+pub(crate) fn spawn_apply_constraints(
+    ticket: StepTicket,
+    sketch: ObjectId,
+    edits: ferritecad_document::SketchConstraintEdits,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.edit_sketch_constraints(sketch, edits, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
 /// The picture of one private version, read cold exactly as Open reads a file.
 pub(crate) fn spawn_scene(
     path: PathBuf,
@@ -1666,6 +1688,15 @@ mod tests {
     /// Every cell of every table, with the one stamp every writer refreshes set
     /// aside: what two documents have to agree on to be the same model.
     fn cells(path: &Path) -> std::collections::BTreeMap<String, Vec<String>> {
+        cells_with_sketch_payload(path, None)
+    }
+
+    // Only the selected payload and its derived hash may differ after an explicit
+    // mapping of newly created constraint UUIDs. Keep every other SQL cell.
+    fn cells_with_sketch_payload(
+        path: &Path,
+        normalized: Option<(ObjectId, &[u8])>,
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
         let db =
             rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .expect("open");
@@ -1692,6 +1723,21 @@ mod tests {
                     for (index, column) in columns.iter().enumerate() {
                         if table == "meta" && column == "modified_at" {
                             continue;
+                        }
+                        if table == "objects"
+                            && let Some((id, payload)) = normalized
+                            && row.get_ref(0)?.as_blob()? == id.to_bytes()
+                        {
+                            if column == "payload_hash" {
+                                continue;
+                            }
+                            if column == "payload" {
+                                line.push_str(&format!(
+                                    "{column}={:?};",
+                                    rusqlite::types::ValueRef::Blob(payload)
+                                ));
+                                continue;
+                            }
                         }
                         line.push_str(&format!("{column}={:?};", row.get_ref(index)?));
                     }
@@ -2383,6 +2429,630 @@ mod tests {
             sketch_before, sketch_after,
             "the constraints changed with the height"
         );
+    }
+
+    fn apply_constraints_native(
+        sessions: &mut Sessions,
+        request: &ferritecad_jobs::EditSketchConstraintsRequest,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let (sketch, edits, expected) = (request.sketch, request.edits.clone(), request.expected);
+        let generation = sessions
+            .begin_apply(|ticket, _, cancel| {
+                spawn_apply_constraints(
+                    ticket,
+                    sketch,
+                    edits,
+                    expected,
+                    cancel.clone(),
+                    move |result| tx.send(result).expect("deliver"),
+                )
+            })
+            .expect("started");
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("edit");
+        let Edited::Show(path) = sessions.finish_apply(generation, result) else {
+            panic!("the edit was not shown: {}", sessions.status);
+        };
+        let (tx, rx) = mpsc::channel();
+        let token = sessions.scene_token(generation).expect("token");
+        let worker = spawn_scene(path, token, move |scene| tx.send(scene).expect("deliver"));
+        assert!(sessions.attach_scene(generation, worker));
+        rx.recv_timeout(std::time::Duration::from_secs(120))
+            .expect("scene")
+            .expect("the picture of the new version");
+        sessions.bind(Bind::Staged).expect("bind");
+        assert!(sessions.finish_scene(generation, Ok(())));
+    }
+
+    /// A worker that is refused: the session keeps its version, history and
+    /// checkpoint, and no file is left.
+    fn refused_constraints_native(
+        sessions: &mut Sessions,
+        request: &ferritecad_jobs::EditSketchConstraintsRequest,
+    ) -> String {
+        let before = (sessions.dirty(), sessions.can_undo(), sessions.can_redo());
+        let shown = sessions.export_path().expect("accepted");
+        let files = private_files(sessions);
+        let (tx, rx) = mpsc::channel();
+        let (sketch, edits, expected) = (request.sketch, request.edits.clone(), request.expected);
+        let generation = sessions
+            .begin_apply(|ticket, _, cancel| {
+                spawn_apply_constraints(
+                    ticket,
+                    sketch,
+                    edits,
+                    expected,
+                    cancel.clone(),
+                    move |result| tx.send(result).expect("deliver"),
+                )
+            })
+            .expect("started");
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("edit");
+        assert_eq!(sessions.finish_apply(generation, result), Edited::Failed);
+        assert!(sessions.status.starts_with("Could not apply the change"));
+        assert_eq!(
+            (sessions.dirty(), sessions.can_undo(), sessions.can_redo()),
+            before,
+            "a refused edit moved the session"
+        );
+        assert_eq!(private_files(sessions), files, "a refused edit left a file");
+        assert_eq!(sessions.export_path().expect("accepted"), shown);
+        sessions.status.clone()
+    }
+
+    fn constraint_peer(
+        source: &Path,
+        request: &ferritecad_jobs::EditSketchConstraintsRequest,
+        root: &Path,
+        out: &Path,
+    ) {
+        let file = root.join("constraints-request.json");
+        std::fs::write(
+            &file,
+            crate::constraints::tests::session_apply::peer_request(&request.edits),
+        )
+        .expect("request");
+        let version = ferritecad_jobs::read_extrude_source(source)
+            .expect("reading")
+            .version;
+        cli(&[
+            "edit-sketch-constraints-copy".as_ref(),
+            source.as_os_str(),
+            "--sketch".as_ref(),
+            request.sketch.to_string().as_ref(),
+            "--expect-version".as_ref(),
+            version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            file.as_os_str(),
+            "-o".as_ref(),
+            out.as_os_str(),
+        ]);
+    }
+
+    /// Every stored constraint of the document's Sketch, in stored order.
+    fn stored_constraints(path: &Path) -> Vec<ferritecad_document::SketchConstraint> {
+        ferritecad_jobs::read_extrude_source(path)
+            .expect("reading")
+            .constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("stored")
+            .constraints
+            .clone()
+    }
+
+    /// Two documents are the same model when every cell agrees but the stamp and
+    /// the selected payload hash, and the Sketch's constraints agree rule for rule with
+    /// exactly the new ones (and nothing else) carrying different UUIDs: each new
+    /// UUID of `ours` is paired with the one at the same place in `theirs`.
+    fn same_model_with_explicit_new_ids(
+        ours: &Path,
+        theirs: &Path,
+        sketch: ObjectId,
+        before: &[ferritecad_types::StableEntityId],
+        why: &str,
+    ) -> Vec<(
+        ferritecad_types::StableEntityId,
+        ferritecad_types::StableEntityId,
+    )> {
+        let (a, b) = (stored_constraints(ours), stored_constraints(theirs));
+        assert_eq!(a.len(), b.len(), "{why}: the number of constraints");
+        let mut pairs = Vec::new();
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x.rule, y.rule, "{why}: a rule differs");
+            if before.contains(&x.id) {
+                assert_eq!(x.id, y.id, "{why}: an old UUID changed");
+            } else {
+                assert!(!before.contains(&y.id), "{why}: a new UUID is an old one");
+                pairs.push((x.id, y.id));
+            }
+        }
+        let payload = |path: &Path| {
+            // Document validates the stored hash before the comparison excludes it.
+            Document::open_read_only(path)
+                .expect("document")
+                .object(sketch)
+                .expect("object")
+                .expect("Sketch");
+            let db = rusqlite::Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("database");
+            db.query_row(
+                "SELECT payload FROM objects WHERE id = ?1",
+                [sketch.to_bytes().as_slice()],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .expect("payload")
+        };
+        let mut ours_payload = payload(ours);
+        let theirs_payload = payload(theirs);
+        for (ours_id, theirs_id) in &pairs {
+            let encoded: Vec<_> = std::iter::once(0x50).chain(ours_id.to_bytes()).collect();
+            let positions: Vec<_> = ours_payload
+                .windows(encoded.len())
+                .enumerate()
+                .filter_map(|(i, part)| (part == encoded).then_some(i))
+                .collect();
+            assert_eq!(
+                positions.len(),
+                1,
+                "{why}: new constraint UUID must occur exactly once"
+            );
+            let i = positions[0] + 1;
+            ours_payload[i..i + 16].copy_from_slice(&theirs_id.to_bytes());
+        }
+        assert_eq!(
+            cells_with_sketch_payload(ours, Some((sketch, &ours_payload))),
+            cells_with_sketch_payload(theirs, Some((sketch, &theirs_payload))),
+            "{why}: a SQL cell or another Sketch field differs",
+        );
+        pairs
+    }
+
+    #[test]
+    fn constraint_comparison_keeps_the_sketch_row_metadata() {
+        let (root, source, reading) = crate::fillets::tests::plate();
+        let sketch = reading.constraint_sketches[0].sketch;
+        let other = root.path().join("renamed-sketch.fcad");
+        std::fs::copy(&source, &other).expect("copy");
+        let old: Vec<_> = stored_constraints(&source).iter().map(|c| c.id).collect();
+        assert!(same_model_with_explicit_new_ids(&source, &other, sketch, &old, "same").is_empty());
+        let db = rusqlite::Connection::open(&other).expect("copy database");
+        assert_eq!(
+            db.execute(
+                "UPDATE objects SET name = 'unexpected rename' WHERE hex(id) = upper(?1)",
+                [sketch.to_string().replace('-', "")],
+            )
+            .expect("rename"),
+            1
+        );
+        drop(db);
+        assert!(
+            std::panic::catch_unwind(|| {
+                same_model_with_explicit_new_ids(&source, &other, sketch, &old, "renamed")
+            })
+            .is_err(),
+            "the comparison discarded the Sketch's metadata"
+        );
+    }
+
+    /// Height, then the constraint form's own widgets, then Undo and Redo, an
+    /// unsaved export, Save and a cold reopen on `source`, each against the
+    /// command line doing the same to the same document; then a branch after Undo.
+    fn native_constraint_gate(
+        root: &Path,
+        source: &Path,
+        height: f64,
+        draft: impl FnOnce(
+            &Path,
+            &ferritecad_document::ExtrudeEditSource,
+            ObjectId,
+        ) -> (
+            crate::constraints::Editor,
+            ferritecad_jobs::EditSketchConstraintsRequest,
+        ),
+    ) {
+        let original = std::fs::read(source).expect("source");
+        let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
+        let feature = opened.features[0].feature;
+        let sketch = opened.constraint_sketches[0].sketch;
+        let private = tempfile::tempdir().expect("private root");
+        let mut sessions = Sessions::default();
+        sessions.adopt(
+            DocumentSession::open_in(private.path(), source, HistoryLimits::default())
+                .expect("session"),
+        );
+        let alias = sessions.logical_path().expect("logical").to_path_buf();
+
+        apply_native(&mut sessions, feature, height);
+        let after_height = sessions.export_path().expect("accepted");
+        let reading = ferritecad_jobs::read_extrude_source(&after_height).expect("reading");
+        let old_ids: Vec<_> = stored_constraints(&after_height)
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        let (form, request) = draft(&after_height, &reading, sketch);
+        assert_eq!(request.expected, reading.version, "the form's version");
+        apply_constraints_native(&mut sessions, &request);
+        let mut window_form = crate::sketch::Editor::default();
+        window_form.constraints = form;
+        assert!(window_form.active());
+        window_form.finish_session_change();
+        assert!(
+            !window_form.active(),
+            "the form outlived the picture it described"
+        );
+        assert!(sessions.dirty());
+        assert_eq!(
+            std::fs::read(source).expect("source"),
+            original,
+            "Apply wrote the file"
+        );
+        let applied = sessions.export_path().expect("accepted");
+        let new_ids: Vec<_> = stored_constraints(&applied).iter().map(|c| c.id).collect();
+        assert_ne!(new_ids, old_ids, "the constraints did not change");
+        for removed in &request.edits.remove {
+            assert!(!new_ids.contains(removed), "{removed} was not removed");
+        }
+
+        // The command line, doing the same two things.
+        let peer1 = root.join("peer-height.fcad");
+        let peer2 = root.join("peer-constraints.fcad");
+        cli(&[
+            "edit-extrude".as_ref(),
+            source.as_os_str(),
+            "--feature".as_ref(),
+            feature.to_string().as_ref(),
+            "--expect-version".as_ref(),
+            opened.version.content.to_string().as_ref(),
+            "--distance-mm".as_ref(),
+            height.to_string().as_ref(),
+            "-o".as_ref(),
+            peer1.as_os_str(),
+        ]);
+        constraint_peer(&peer1, &request, root, &peer2);
+        let (original_stl, original_fbx) = peer_bytes(source, root, "c-original");
+        let (h_stl, h_fbx) = peer_bytes(&peer1, root, "c-height");
+        let (c_stl, c_fbx) = peer_bytes(&peer2, root, "c-constraints");
+        assert_eq!(
+            same_model_with_explicit_new_ids(&applied, &peer2, sketch, &old_ids, "Apply").len(),
+            request.edits.add.len(),
+            "every added constraint pairs with the command line's"
+        );
+
+        // Export while unsaved is the working model.
+        let (stl, fbx) = export_bytes(&applied, &alias, root, "c-unsaved");
+        assert_eq!((stl, fbx), (c_stl.clone(), c_fbx.clone()), "unsaved export");
+
+        // Undo is the height step, Undo again the file; Redo comes back with the
+        // very same constraint UUIDs.
+        move_native(&mut sessions, true);
+        let shown = sessions.export_path().expect("accepted");
+        let (stl, fbx) = export_bytes(&shown, &alias, root, "c-undo1");
+        assert_eq!((stl, fbx), (h_stl.clone(), h_fbx.clone()), "Undo: height");
+        let ids: Vec<_> = stored_constraints(&shown).iter().map(|c| c.id).collect();
+        assert_eq!(ids, old_ids, "Undo changed the constraint UUIDs");
+        move_native(&mut sessions, true);
+        assert!(!sessions.dirty());
+        let (stl, fbx) = export_bytes(
+            &sessions.export_path().expect("accepted"),
+            &alias,
+            root,
+            "c-undo2",
+        );
+        assert_eq!(
+            (stl, fbx),
+            (original_stl.clone(), original_fbx.clone()),
+            "Undo did not restore"
+        );
+        move_native(&mut sessions, false);
+        move_native(&mut sessions, false);
+        assert!(sessions.dirty() && !sessions.can_redo());
+        let ids: Vec<_> = stored_constraints(&sessions.export_path().expect("accepted"))
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, new_ids, "Redo made new constraint UUIDs");
+        assert_eq!(std::fs::read(source).expect("source"), original);
+
+        // Save is the command line's second copy, and every saved name resolves
+        // on a cold rebuild of the file.
+        let (tx, rx) = mpsc::channel();
+        let generation = sessions
+            .begin_save(SaveTarget::InPlace, None, |plan, _, cancel| {
+                spawn_save(plan, cancel.clone(), move |result| {
+                    tx.send(result).expect("deliver")
+                })
+            })
+            .expect("started");
+        let report = sessions
+            .finish_save(generation, rx.recv().expect("answer"))
+            .expect("answered");
+        assert!(report.published && !sessions.dirty());
+        same_model_with_explicit_new_ids(source, &peer2, sketch, &old_ids, "Save");
+        let saved = Document::open_read_only(source).expect("saved");
+        let built = ferritecad_eval::rebuild_cold(
+            &saved,
+            &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
+            &OperationContext::default(),
+        )
+        .expect("cold rebuild");
+        let references = saved.topology_refs().expect("refs");
+        assert!(!references.is_empty(), "the plate carries saved names");
+        for reference in references {
+            assert!(
+                built
+                    .resolve(&reference)
+                    .is_ok_and(|found| !found.is_empty()),
+                "{} did not resolve after Save",
+                reference.id
+            );
+        }
+        let (stl, fbx) = peer_bytes(source, root, "c-saved");
+        assert_eq!((stl, fbx), (c_stl, c_fbx));
+
+        // A refused edit past the form changes nothing, and does not cut off the
+        // Redo; a branch that succeeds does.
+        move_native(&mut sessions, true);
+        assert!(sessions.can_redo());
+        let mut forged = request.clone();
+        forged.expected =
+            ferritecad_jobs::read_extrude_source(&sessions.export_path().expect("accepted"))
+                .expect("reading")
+                .version;
+        forged.edits.remove = vec![ferritecad_types::StableEntityId::new()];
+        refused_constraints_native(&mut sessions, &forged);
+        assert!(sessions.can_redo(), "a refusal cut off the Redo");
+        apply_native(&mut sessions, feature, height + 2.0);
+        assert!(!sessions.can_redo());
+        assert_eq!(
+            same_model_with_explicit_new_ids(source, &peer2, sketch, &old_ids, "branch").len(),
+            request.edits.add.len(),
+            "the branch wrote the file"
+        );
+    }
+
+    #[test]
+    fn native_replace_length_of_a_dimensioned_plate_under_a_chamfer_is_applied_like_the_command_line()
+     {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let (root, constrained, _) = constrained_chamfer_plate();
+        native_constraint_gate(root.path(), &constrained, 9.5, |path, source, sketch| {
+            let stored = source.constraint_sketches[0]
+                .stored
+                .as_ref()
+                .expect("stored");
+            let across = stored
+                .curves
+                .iter()
+                .position(|c| {
+                    stored_length_of(stored, c.id).is_some_and(|mm| (mm - 41.125).abs() < 1e-9)
+                })
+                .expect("the width Line");
+            crate::constraints::tests::session_apply::typed_replace_length(
+                path,
+                source,
+                sketch,
+                across + 1,
+                "38.5",
+            )
+        });
+    }
+
+    fn stored_length_of(
+        sketch: &ferritecad_document::Sketch,
+        curve: ferritecad_types::StableEntityId,
+    ) -> Option<f64> {
+        sketch.constraints.iter().find_map(|c| match c.rule {
+            ferritecad_document::SketchConstraintRule::Distance { a, b, distance }
+                if a.curve == curve && b.curve == curve =>
+            {
+                Some(distance)
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn native_radius_and_fixed_centre_of_a_circle_are_applied_like_the_command_line() {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("cylinder.fcad");
+        ferritecad_jobs::create_document_with_kernel(
+            ferritecad_jobs::CreateDocumentRequest::new(
+                &path,
+                ferritecad_jobs::NewDocument::CircleExtrude(
+                    ferritecad_document::CircleExtrusion::new([12., -7.], 10., 15.)
+                        .expect("a circle"),
+                ),
+                "test",
+            ),
+            ferritecad_occt::OcctKernel::new,
+            &OperationContext::default(),
+        )
+        .expect("source");
+        native_constraint_gate(root.path(), &path, 9.5, |path, source, sketch| {
+            crate::constraints::tests::session_apply::typed_circle(
+                path,
+                source,
+                sketch,
+                "6.75",
+                ("-3.5", "4.25"),
+            )
+        });
+    }
+
+    /// What the solver or the Chamfer refuses is refused whole: the session keeps
+    /// its version, history and checkpoint, no file is left, and the form keeps its
+    /// draft because nothing accepted a new version.
+    #[test]
+    fn native_a_solver_conflict_or_a_chamfer_that_no_longer_fits_changes_nothing() {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let (root, constrained, sketch) = constrained_chamfer_plate();
+        let opened = ferritecad_jobs::read_extrude_source(&constrained).expect("reading");
+        let private = tempfile::tempdir().expect("private root");
+        let mut sessions = Sessions::default();
+        sessions.adopt(
+            DocumentSession::open_in(private.path(), &constrained, HistoryLimits::default())
+                .expect("session"),
+        );
+        apply_native(&mut sessions, opened.features[0].feature, 9.5);
+        move_native(&mut sessions, true);
+        assert!(sessions.can_redo());
+        move_native(&mut sessions, false);
+        let accepted = sessions.export_path().expect("accepted");
+        let reading = ferritecad_jobs::read_extrude_source(&accepted).expect("reading");
+        let stored = reading.constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("stored");
+        let width = stored
+            .curves
+            .iter()
+            .position(|c| {
+                stored_length_of(stored, c.id).is_some_and(|mm| (mm - 41.125).abs() < 1e-9)
+            })
+            .expect("the width Line");
+        let height_line = stored
+            .curves
+            .iter()
+            .position(|c| stored_length_of(stored, c.id).is_some_and(|mm| (mm - 10.5).abs() < 1e-9))
+            .expect("the depth Line");
+        let accepted_bytes = std::fs::read(&accepted).expect("accepted bytes");
+
+        // The solver: a horizontal Line parallel to a vertical one. The form cannot
+        // know; the worker says so, and the session did not move. (A session with
+        // a Redo to lose does not lose it.)
+        move_native(&mut sessions, true);
+        let accepted = sessions.export_path().expect("accepted");
+        let reading = ferritecad_jobs::read_extrude_source(&accepted).expect("reading");
+        let (form, request) = crate::constraints::tests::session_apply::typed_parallel(
+            &accepted,
+            &reading,
+            sketch,
+            width + 1,
+            height_line + 1,
+        );
+        assert!(sessions.can_redo());
+        let said = refused_constraints_native(&mut sessions, &request);
+        assert!(!said.is_empty());
+        assert!(form.active(), "the refused draft was discarded");
+        assert!(sessions.can_redo(), "a refusal cut off the Redo");
+        move_native(&mut sessions, false);
+        assert_eq!(
+            std::fs::read(sessions.export_path().expect("accepted")).expect("bytes"),
+            accepted_bytes,
+            "a refused edit changed an accepted version"
+        );
+
+        // The Chamfer: a width that leaves no room for it is refused where it is
+        // typed (the form offers no Apply), and, past the form, by the worker.
+        let accepted = sessions.export_path().expect("accepted");
+        let reading = ferritecad_jobs::read_extrude_source(&accepted).expect("reading");
+        let (form, offered) = crate::constraints::tests::session_apply::replace_length_offers_apply(
+            &accepted,
+            &reading,
+            sketch,
+            width + 1,
+            "1",
+        );
+        assert!(form.active(), "the draft was erased");
+        let mut forged = ferritecad_jobs::EditSketchConstraintsRequest {
+            source: accepted.clone(),
+            expected: reading.version,
+            sketch,
+            edits: form.draft_edits().expect("a draft"),
+            destination: PathBuf::new(),
+        };
+        if offered {
+            // The form leaves the judgement to the document: the worker refuses.
+            refused_constraints_native(&mut sessions, &forged);
+        } else {
+            forged.edits = form.draft_edits().expect("a draft");
+            refused_constraints_native(&mut sessions, &forged);
+        }
+        assert!(form.active());
+        drop(root);
+    }
+
+    /// With a kernel and no solver, an Apply of constraints is refused whole and
+    /// the document stays clean; nothing is accepted, nothing is left behind.
+    #[test]
+    fn without_the_solver_a_constraints_apply_is_refused_and_nothing_changes() {
+        if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+            return;
+        }
+        let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
+        let sketch = source.constraint_sketches[0].sketch;
+        let curves = source.constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("stored")
+            .curves
+            .clone();
+        let original = std::fs::read(&path).expect("bytes");
+        let private = tempfile::tempdir().expect("private");
+        let mut sessions = Sessions::default();
+        sessions.adopt(
+            DocumentSession::open_in(private.path(), &path, HistoryLimits::default())
+                .expect("session"),
+        );
+        let request = ferritecad_jobs::EditSketchConstraintsRequest {
+            source: path.clone(),
+            expected: source.version,
+            sketch,
+            edits: ferritecad_document::SketchConstraintEdits {
+                remove: Vec::new(),
+                add: vec![ferritecad_document::AddSketchConstraint::Line(
+                    ferritecad_document::AddLineConstraint::Line {
+                        curve: curves[0].id,
+                        kind: ferritecad_document::LineConstraintKind::Horizontal,
+                    },
+                )],
+            },
+            destination: PathBuf::new(),
+        };
+        let said = refused_constraints_native(&mut sessions, &request);
+        assert!(said.starts_with("Could not apply the change"), "{said}");
+        assert!(!sessions.dirty() && !sessions.can_undo());
+        assert_eq!(std::fs::read(&path).expect("bytes"), original);
+        drop(root);
     }
 
     /// A build with no Open CASCADE cannot apply anything, and says so without

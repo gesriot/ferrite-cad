@@ -610,3 +610,267 @@ fn a_vertex_edit_made_from_an_older_version_is_refused_and_changes_nothing() {
     assert_eq!(session.undo_depth(), depth);
     assert_eq!(files(session.private_directory()), listing);
 }
+
+/// A plate whose Sketch already stores horizontal, vertical and two length
+/// constraints (the closing coincidences the model adds are not listed). Needs
+/// the sketch solver once a step rebuilds it, so the steps run where one is linked.
+fn constrained() -> (Fixture, ObjectId, Vec<ferritecad_types::StableEntityId>) {
+    use ferritecad_document::{
+        AddLineConstraint, AddSketchConstraint, Document, LineConstraintKind, LineLengthMm,
+        SketchConstraintEdits, prepare_sketch_constraints,
+    };
+    let mut f = fixture();
+    let root = tempfile::tempdir().expect("directory");
+    let file = root.path().join("constrained.fcad");
+    create_document(
+        CreateDocumentRequest::new(
+            &file,
+            NewDocument::SamplePlate(PlateSize {
+                width: 60.0,
+                depth: 30.0,
+                height: 13.0,
+            }),
+            "keep",
+        ),
+        &OperationContext::default(),
+    )
+    .expect("a plate");
+    let mut document = Document::open(&file).expect("document");
+    let source = ferritecad_document::ExtrudeEditSource::read(&document).expect("catalog");
+    let choice = &source.constraint_sketches[0];
+    let curves = &choice.stored.as_ref().expect("stored").curves;
+    let line = |curve, kind| AddSketchConstraint::Line(AddLineConstraint::Line { curve, kind });
+    let prepared = prepare_sketch_constraints(
+        &document,
+        choice.sketch,
+        &SketchConstraintEdits {
+            remove: vec![],
+            add: vec![
+                line(curves[0].id, LineConstraintKind::Horizontal),
+                line(curves[1].id, LineConstraintKind::Vertical),
+                line(
+                    curves[0].id,
+                    LineConstraintKind::Distance(LineLengthMm::new(60.0).expect("60")),
+                ),
+                line(
+                    curves[1].id,
+                    LineConstraintKind::Distance(LineLengthMm::new(30.0).expect("30")),
+                ),
+            ],
+        },
+    )
+    .expect("prepare");
+    document
+        .write_sketch_constraints(&prepared)
+        .expect("write constraints");
+    let sketch = choice.sketch;
+    assert!(
+        choice
+            .stored
+            .as_ref()
+            .expect("stored")
+            .constraints
+            .is_empty(),
+        "the sample plate starts without constraints"
+    );
+    document.close().expect("close");
+    let reading = read_extrude_source(&file).expect("reading");
+    let ids = stored_ids(&file);
+    f.feature = reading.features[0].feature;
+    f.file = file;
+    f.root = root;
+    (f, sketch, ids)
+}
+
+fn stored_ids(path: &Path) -> Vec<ferritecad_types::StableEntityId> {
+    read_extrude_source(path)
+        .expect("reading")
+        .constraint_sketches[0]
+        .stored
+        .as_ref()
+        .expect("stored")
+        .constraints
+        .iter()
+        .filter(|c| {
+            !matches!(
+                c.rule,
+                ferritecad_document::SketchConstraintRule::Coincident { .. }
+            )
+        })
+        .map(|c| c.id)
+        .collect()
+}
+
+fn apply_constraints(
+    session: &mut DocumentSession,
+    sketch: ObjectId,
+    edits: ferritecad_document::SketchConstraintEdits,
+    expected: ferritecad_document::DocumentVersion,
+) -> Result<StepCommit, CadError> {
+    let step = session.begin_step().edit_sketch_constraints(
+        sketch,
+        edits,
+        expected,
+        &mut MockKernel::new(),
+        &OperationContext::default(),
+    )?;
+    session.commit_step(step)
+}
+
+/// A rebuild of a constrained Sketch needs the sketch solver. Where the build has
+/// none these gates say so and stop, unless the build is required to have one.
+fn without_solver(result: Result<StepCommit, CadError>) -> bool {
+    let Err(error) = result else {
+        return false;
+    };
+    assert!(
+        error.to_string().contains("did not link planegcs"),
+        "height: {error}"
+    );
+    assert_ne!(
+        std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+        Ok("1"),
+        "this build is required to have the sketch solver"
+    );
+    eprintln!("skipped: constraints need PlaneGCS");
+    true
+}
+
+#[test]
+fn a_constraint_edit_is_a_session_step_beside_height_with_undo_and_redo() {
+    use ferritecad_document::SketchConstraintEdits;
+    let (f, sketch, ids) = constrained();
+    assert_eq!(ids.len(), 4);
+    let private = private_root();
+    let mut session = open(&f, private.path(), HistoryLimits::default());
+    let before = bytes(&f.file);
+
+    if without_solver(apply(&mut session, f.feature, 21.5)) {
+        return;
+    }
+    let expected = session.current().version();
+    let remove_two = SketchConstraintEdits {
+        remove: vec![ids[2], ids[3]],
+        add: vec![],
+    };
+    assert_eq!(
+        apply_constraints(&mut session, sketch, remove_two, expected).expect("constraints"),
+        StepCommit::Accepted
+    );
+    assert!(session.is_dirty());
+    assert_eq!(session.undo_depth(), 2);
+    assert_eq!(stored_ids(session.current().path()), ids[..2].to_vec());
+    assert_eq!(height_of(session.current().path()), 21.5);
+    assert_eq!(bytes(&f.file), before, "the user's file is only Save's");
+
+    // The command line's operation gives the same model.
+    let one = f.root.path().join("one.fcad");
+    let peer = f.root.path().join("peer.fcad");
+    let version = {
+        let mut other = open(&f, private.path(), HistoryLimits::default());
+        apply(&mut other, f.feature, 21.5).expect("height");
+        let c = other.current();
+        std::fs::copy(c.path(), &one).expect("copy");
+        c.version()
+    };
+    ferritecad_jobs::edit_sketch_constraints_copy(
+        &ferritecad_jobs::EditSketchConstraintsRequest {
+            source: one,
+            expected: version,
+            sketch,
+            edits: SketchConstraintEdits {
+                remove: vec![ids[2], ids[3]],
+                add: vec![],
+            },
+            destination: peer.clone(),
+        },
+        &mut MockKernel::new(),
+        &OperationContext::default(),
+    )
+    .expect("peer");
+    let own = ferritecad_document::Document::open_read_only(session.current().path()).expect("own");
+    let theirs = ferritecad_document::Document::open_read_only(&peer).expect("theirs");
+    assert_eq!(
+        own.model_version().expect("model"),
+        theirs.model_version().expect("model"),
+        "the session and the command line made different models"
+    );
+    own.close().expect("close");
+    theirs.close().expect("close");
+
+    // Undo and Redo pass through height and constraints, by identity.
+    let undo = session.begin_undo().expect("undo");
+    session.commit_move(undo).expect("moved");
+    assert_eq!(stored_ids(session.current().path()), ids);
+    assert_eq!(height_of(session.current().path()), 21.5);
+    let undo = session.begin_undo().expect("undo");
+    session.commit_move(undo).expect("moved");
+    assert!(!session.is_dirty());
+    for _ in 0..2 {
+        let redo = session.begin_redo().expect("redo");
+        session.commit_move(redo).expect("moved");
+    }
+    assert_eq!(stored_ids(session.current().path()), ids[..2].to_vec());
+
+    // A new branch after Undo drops the Redo, once it has succeeded.
+    let undo = session.begin_undo().expect("undo");
+    session.commit_move(undo).expect("moved");
+    assert!(session.can_redo());
+    let expected = session.current().version();
+    let remove_one = SketchConstraintEdits {
+        remove: vec![ids[0]],
+        add: vec![],
+    };
+    apply_constraints(&mut session, sketch, remove_one, expected).expect("a new branch");
+    assert!(!session.can_redo(), "a new branch must drop the old future");
+    assert_eq!(stored_ids(session.current().path()), ids[1..].to_vec());
+}
+
+#[test]
+fn a_constraint_edit_from_an_older_version_or_without_edits_changes_nothing() {
+    use ferritecad_document::SketchConstraintEdits;
+    let (f, sketch, ids) = constrained();
+    let private = private_root();
+    let mut session = open(&f, private.path(), HistoryLimits::default());
+    let old = session.current().version();
+    if without_solver(apply(&mut session, f.feature, 30.0)) {
+        return;
+    }
+    let depth = session.undo_depth();
+    let listing = files(session.private_directory());
+    let remove = SketchConstraintEdits {
+        remove: vec![ids[0]],
+        add: vec![],
+    };
+    let refused = apply_constraints(&mut session, sketch, remove, old)
+        .expect_err("an old form must not apply to a newer version");
+    assert!(
+        refused.to_string().contains("changed after this form"),
+        "{refused}"
+    );
+    assert_eq!(session.undo_depth(), depth);
+    assert_eq!(files(session.private_directory()), listing);
+
+    let expected = session.current().version();
+    // An empty draft is refused by the model's own rule, as the command line does.
+    assert!(
+        apply_constraints(
+            &mut session,
+            sketch,
+            SketchConstraintEdits::default(),
+            expected
+        )
+        .is_err()
+    );
+    assert_eq!(session.undo_depth(), depth);
+
+    // A constraint the document does not hold is refused whole.
+    let absent = SketchConstraintEdits {
+        remove: vec![ferritecad_types::StableEntityId::new()],
+        add: vec![],
+    };
+    assert!(apply_constraints(&mut session, sketch, absent, expected).is_err());
+    assert_eq!(session.undo_depth(), depth);
+    assert_eq!(files(session.private_directory()), listing);
+    assert_eq!(stored_ids(session.current().path()), ids);
+}

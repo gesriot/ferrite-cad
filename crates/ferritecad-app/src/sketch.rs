@@ -214,10 +214,13 @@ impl Editor {
         // again every frame, but a draft that is replaced must not forget it for
         // the frame in between.
         let (begin, apply, unsaved) = (self.can_begin_sketch, self.can_apply, self.unsaved);
+        let constraints = self.constraints.session();
         *self = Self::default();
         self.can_begin_sketch = begin;
         self.can_apply = apply;
         self.unsaved = unsaved;
+        self.constraints
+            .set_session(constraints.0, constraints.1, constraints.2);
     }
     pub(crate) fn take_request(&mut self) -> Option<NewDocument> {
         self.pending.take()

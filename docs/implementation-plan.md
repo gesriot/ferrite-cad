@@ -4392,3 +4392,24 @@ Undo/Redo are the form's own). A dimensioned plate still offers no vertex form. 
 CLI and every JSON are unchanged. The other saved-object editors are still copy
 workflows (obligation 1 above continues). [Contract](sketch-session-apply.md),
 [verification and the macOS handoff](sketch-session-apply-verification.md).
+
+**§30C — the existing constraints of a saved Sketch, inside the open document.** The
+existing *Edit constraints…* form gains **Apply constraints**: the reused
+`edit-sketch-constraints-copy` operation as one more session step beside Apply
+height and Apply vertices, with no file name, the same two-phase scene, Undo/Redo
+over every kind of step (Redo returns the same constraint UUIDs), unsaved export, and
+Save only at Save. The form can be opened with unsaved changes; *Save constraints
+copy…* stays for a clean document. Its availability is the window's own predicate,
+not a hand-set flag; a solver or Chamfer refusal, a stale form or a cancellation
+accept nothing and keep the draft. No new constraint kind, geometry, solver policy,
+command or JSON. The other copy-only editors remain (obligation 1 above continues).
+[Contract](constraint-session-apply.md),
+[verification and the macOS handoff](constraint-session-apply-verification.md).
+
+Independent macOS review of §30C exercised height → constraints → document
+Undo/Redo → Save/Save As, a Chamfer refusal with retained draft/Redo, and circle
+radius/centre Apply. Actual GUI artifacts pass the CLI/SQL/mesh comparison and
+strict ufbx; viewer peak 219.532 MiB, exit 0. The SQL comparator now includes the
+whole Sketch row with only new constraint UUIDs normalized; a failing-first
+rename regression closes the former omission. Stale copy-only UI explanations
+were corrected. Exact provenance and remaining non-claims are in the verification.

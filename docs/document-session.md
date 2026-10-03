@@ -130,3 +130,4 @@ no-solver step of the same workflow.
 * **macOS review.** The AppKit `Cmd+Q` hook is included; the real-window result is
   recorded in the verification document.
 * **Next (§30B).** The vertices of a saved Line Sketch are applied inside the open document: [contract](sketch-session-apply.md).
+* **Next (§30C).** The existing constraints of a saved Sketch are applied inside the open document: [contract](constraint-session-apply.md).

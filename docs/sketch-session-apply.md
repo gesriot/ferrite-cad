@@ -67,9 +67,10 @@ folder (§30A), and nothing can be published inside the session's own folder.
 A **dimensioned** (constrained) plate offers no vertex form — its Lines are the
 solver's; the §29D constraint editor and the height Apply work on it as before
 (constraints stay byte for byte). The other saved-object editors (circle,
-annulus, Revolve angle, Cut, Fillet, Chamfer, constraints) still write a copy and
+annulus, Revolve angle, Cut, Fillet, Chamfer) still write a copy and
 are unavailable while the document has unsaved changes; moving them onto the
-session is later work. `edit-sketch-copy` and every JSON are unchanged.
+session is later work. The constraint editor joined the session in
+[§30C](constraint-session-apply.md). `edit-sketch-copy` and every JSON are unchanged.
 
 ## Not claimed
 
