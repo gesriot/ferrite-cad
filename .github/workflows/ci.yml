@@ -738,9 +738,18 @@ jobs:
             two_cooperating_savers_are_serialised_and_the_second_never_overwrites \
             a_writer_that_ignores_the_lock_can_win_the_instant_before_the_rename \
             cancellation_is_honoured_until_the_rename_and_late_cancellation_is_a_success \
-            a_failed_save_leaves_the_session_and_the_directory_exactly_as_they_were"
+            a_failed_save_leaves_the_session_and_the_directory_exactly_as_they_were \
+            a_file_with_the_lock_name_that_is_not_ours_is_never_changed_or_removed \
+            a_lock_left_by_a_dead_saver_is_taken_over_and_removed \
+            a_name_that_was_replaced_while_held_is_left_to_whoever_put_it_there \
+            a_file_made_read_only_after_the_copy_is_refused_under_the_lock \
+            save_as_never_writes_into_the_sessions_own_disposable_directory"
           if [ "$RUNNER_OS" != Windows ]; then
-            saves="$saves a_symlink_is_saved_through_and_a_hard_linked_file_is_refused"
+            saves="$saves a_symlink_is_saved_through_and_a_hard_linked_file_is_refused \
+              two_names_for_one_file_meet_at_one_lock \
+              a_link_with_the_lock_name_is_neither_followed_nor_removed \
+              a_hard_link_made_after_the_copy_is_refused_under_the_lock \
+              a_link_retargeted_after_the_copy_is_not_saved_through"
           fi
           for gate in $saves; do
             cargo test -p ferritecad-jobs --test save "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee save-job.log
@@ -761,6 +770,11 @@ jobs:
             sessions::tests::the_name_is_the_users_never_the_private_file \
             sessions::tests::stopping_joins_the_worker_and_removes_every_private_file \
             sessions::tests::without_a_kernel_an_apply_is_refused_and_the_document_stays_clean \
+            sessions::tests::a_picture_that_was_ready_when_cancel_was_pressed_is_not_accepted \
+            sessions::tests::an_old_editor_gets_the_users_folder_and_name_and_its_copy_outlives_the_old_session \
+            sessions::tests::a_save_still_running_when_another_document_is_adopted_never_moves_its_checkpoint \
+            sessions::tests::an_export_keeps_its_working_copy_alive_without_blocking_the_window \
+            sessions::tests::a_public_export_into_the_working_folder_is_refused_before_anything_is_written \
             tests::document_chords_are_the_platforms_and_leave_text_undo_to_the_field \
             tests::the_title_marks_unsaved_changes_and_never_names_a_private_file \
             dialogs::tests::only_a_clear_save_or_discard_is_not_a_cancel \
