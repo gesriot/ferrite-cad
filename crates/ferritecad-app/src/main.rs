@@ -19120,6 +19120,57 @@ mod tests {
         assert!(sessions.finish_scene(generation, Ok(())));
         let dirty = height_state(&edits, &sessions, &creates, &loads, &exports);
         assert!(!dirty.copy && dirty.unsaved && dirty.apply);
+
+        // The window withholds the legacy copy entry on a dirty document. The
+        // actual opening button must still offer the session height form.
+        edits.cancel();
+        let ctx = egui::Context::default();
+        let mut frame = |events| {
+            let mut chosen = ferritecad_ui::EditChoice::Waiting;
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900., 600.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    chosen = edits.draw_with(ui, false, None, dirty);
+                },
+            );
+            (output, chosen)
+        };
+        frame(vec![]);
+        let (output, _) = frame(vec![]);
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Edit extrusion…" => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("height opening button");
+        let mut chosen = ferritecad_ui::EditChoice::Waiting;
+        for pressed in [true, false] {
+            (_, chosen) = frame(vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ]);
+        }
+        assert_eq!(
+            chosen,
+            ferritecad_ui::EditChoice::Begin,
+            "unsaved changes must not prevent opening the height Apply form"
+        );
     }
 
     /// The boundary between a form's own draft Undo/Redo and the document's: while

@@ -451,3 +451,12 @@ The unsaved-editor explanation no longer lists Sketch as unavailable.
 
 Review evidence is being completed in `/private/tmp/ferrite-pr82-review`;
 this paragraph does not claim completion of the corrected window scenario or CI.
+
+The same window run also found a previously existing height-entry defect: after
+Undo, the dirty document's **Edit extrusion…** entry still used the copy-only
+`can_edit` condition. The panel now also permits opening when session Apply is
+available, while an existing form/worker still excludes another. The existing
+App regression `an_open_height_form_keeps_the_copy_workflow_available_on_a_clean_document`
+was extended to click the actual opening button after a real accepted step; it
+failed `Waiting != Begin` before this correction. The Sketch form title now says
+*Edit saved Sketch*, since both Apply and saving a copy are supported.

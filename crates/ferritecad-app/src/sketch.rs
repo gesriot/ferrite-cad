@@ -956,7 +956,7 @@ impl Editor {
         } else if self.editing_circle.is_some() {
             "Edit saved Circle — new copy"
         } else if self.editing.is_some() {
-            "Edit saved Sketch — new copy"
+            "Edit saved Sketch"
         } else {
             "Sketch + Extrude — new document"
         })
@@ -6483,10 +6483,7 @@ pub(crate) mod tests {
         frame(&ctx, &mut e, vec![]);
         frame(&ctx, &mut e, vec![]);
         let out = frame(&ctx, &mut e, vec![]);
-        assert!(
-            painted(&out, "Edit saved Sketch — new copy"),
-            "the coordinate editor"
-        );
+        assert!(painted(&out, "Edit saved Sketch"), "the coordinate editor");
         text_at(&out, "Restore saved vertices");
         (ctx, e)
     }
