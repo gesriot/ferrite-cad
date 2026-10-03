@@ -139,6 +139,17 @@ pub(crate) struct Editor {
     canvas: Canvas,
     editing: Option<(EditSketchRequest, SketchChoice)>,
     pending_edit: Option<EditSketchRequest>,
+    /// §30B: Apply on the open document's session, asked for and not yet taken.
+    pending_apply: Option<EditSketchRequest>,
+    /// Whether the window can apply the draft to the open document right now.
+    /// Set by the window each frame; never persisted.
+    can_apply: bool,
+    /// Whether the saved Sketch editor may be opened on the open document even
+    /// with unsaved changes (it applies into the session, not into a new file).
+    can_begin_sketch: bool,
+    /// The open document has unsaved changes: the copy workflow reads a file and
+    /// writes a new one, so it is withheld, and the form says why.
+    unsaved: bool,
     /// Which profile the open window is asking for, and the circle's numbers.
     /// Both outlive a trip through the other mode; only Cancel clears them.
     mode: Mode,
@@ -184,6 +195,10 @@ fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
 }
 
 impl Editor {
+    pub(crate) fn editing_saved_vertices(&self) -> bool {
+        self.editing.is_some()
+    }
+
     pub(crate) fn active(&self) -> bool {
         self.draft.is_some()
             || self.editing_circle.is_some()
@@ -195,13 +210,48 @@ impl Editor {
             || self.chamfers.active()
     }
     pub(crate) fn dismiss(&mut self) {
+        // What the window said about the session is not the draft's: it is said
+        // again every frame, but a draft that is replaced must not forget it for
+        // the frame in between.
+        let (begin, apply, unsaved) = (self.can_begin_sketch, self.can_apply, self.unsaved);
         *self = Self::default();
+        self.can_begin_sketch = begin;
+        self.can_apply = apply;
+        self.unsaved = unsaved;
     }
     pub(crate) fn take_request(&mut self) -> Option<NewDocument> {
         self.pending.take()
     }
     pub(crate) fn take_edit_request(&mut self) -> Option<EditSketchRequest> {
         self.pending_edit.take()
+    }
+    /// §30B: the draft the user asked to apply to the open document.
+    pub(crate) fn take_apply_request(&mut self) -> Option<EditSketchRequest> {
+        self.pending_apply.take()
+    }
+    /// What the window tells the form each frame: whether Apply is possible and
+    /// whether unsaved changes withhold the copy workflow.
+    pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
+        self.can_begin_sketch = can_begin;
+        self.can_apply = can_apply;
+        self.unsaved = unsaved;
+    }
+    /// The document moved to another accepted version, so every form about a saved
+    /// object described the picture that was replaced. Their drafts end here; a
+    /// request made from them could only name the old version. A drawing in
+    /// progress for a new document is not about the open one and stays.
+    pub(crate) fn finish_session_change(&mut self) {
+        let saved_object = self.editing.is_some()
+            || self.editing_circle.is_some()
+            || self.editing_annulus.is_some()
+            || self.editing_angle.is_some()
+            || self.constraints.active()
+            || self.cuts.active()
+            || self.fillets.active()
+            || self.chamfers.active();
+        if saved_object {
+            self.dismiss();
+        }
     }
     pub(crate) fn take_circle_edit_request(&mut self) -> Option<EditCircleRequest> {
         self.pending_circle_edit.take()
@@ -584,7 +634,7 @@ impl Editor {
             for choice in &source.sketches {
                 let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                 let response = ui.add_enabled(
-                    can_begin && refusal.is_none(),
+                    (can_begin || self.can_begin_sketch) && refusal.is_none(),
                     egui::Button::new(format!(
                         "Edit Sketch {} — {}…",
                         choice.name.as_deref().unwrap_or("Unnamed"),
@@ -906,7 +956,7 @@ impl Editor {
         } else if self.editing_circle.is_some() {
             "Edit saved Circle — new copy"
         } else if self.editing.is_some() {
-            "Edit saved Sketch — new copy"
+            "Edit saved Sketch"
         } else {
             "Sketch + Extrude — new document"
         })
@@ -1502,9 +1552,14 @@ impl Editor {
         }
         ui.add_enabled_ui(!running, |ui| self.edit(ui));
         if running {
-            ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+            ui.label(
+                "Working… Draft retained until it is done. Cancel the operation in the toolbar.",
+            );
         }
-        ui.small("Undo/redo changes only this draft; history ends at publication.");
+        ui.small(
+            "Undo/redo changes only this draft; its history ends when the change is applied or \
+             the document moves to another version.",
+        );
     }
 
     fn edit(&mut self, ui: &mut egui::Ui) {
@@ -1671,14 +1726,34 @@ impl Editor {
         if self.editing.is_some() {
             match self.edit_request() {
                 Ok(request) => {
-                    if ui
-                        .add_enabled(
-                            self.canvas.gesture.is_none(),
-                            egui::Button::new("Save edited copy…"),
-                        )
-                        .clicked()
-                    {
-                        self.pending_edit = Some(request);
+                    ui.horizontal(|ui| {
+                        // §30B: into the open document, no file name. The file on
+                        // disk changes only when you Save.
+                        if ui
+                            .add_enabled(
+                                self.can_apply && self.canvas.gesture.is_none(),
+                                egui::Button::new("Apply vertices"),
+                            )
+                            .clicked()
+                        {
+                            self.pending_apply = Some(request.clone());
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.unsaved && self.canvas.gesture.is_none(),
+                                egui::Button::new("Save edited copy…"),
+                            )
+                            .clicked()
+                        {
+                            self.pending_edit = Some(request);
+                        }
+                    });
+                    if self.unsaved {
+                        ui.small(
+                            "Saving a copy as a new file is unavailable while the document has \
+                             unsaved changes: Save or Undo them first. Apply changes this \
+                             document; the file on disk changes only when you Save.",
+                        );
                     }
                 }
                 Err(error) => {
@@ -2219,8 +2294,244 @@ fn to_document(pos: egui::Pos2, origin: egui::Pos2, scale: f32) -> [f64; 2] {
 
 #[cfg(test)]
 #[allow(clippy::panic)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// The request the saved Sketch form makes when `from` is replaced by `to` in
+    /// the two vertex boxes that show it and **Apply vertices** is pressed: the real
+    /// widgets, in the state the window leaves the form in for an idle session.
+    /// Replaces the number `from` by `to` in every box that shows it, through the
+    /// real widgets.
+    pub(crate) fn replace_in_form(ctx: &egui::Context, e: &mut Editor, from: &str, to: &str) {
+        frame(ctx, e, vec![]);
+        frame(ctx, e, vec![]);
+        let shown = e
+            .draft
+            .as_ref()
+            .map_or(0, |d| d.points.iter().filter(|p| p[0] == from).count());
+        for _ in 0..shown {
+            replace_field(ctx, e, from, to);
+        }
+        frame(ctx, e, vec![]);
+    }
+
+    /// Whether the form currently offers **Apply vertices** at all (it does not for
+    /// a draft that is not a request).
+    pub(crate) fn offers_apply(ctx: &egui::Context, e: &mut Editor) -> bool {
+        let out = frame(ctx, e, vec![]);
+        out.shapes.iter().any(
+            |c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == "Apply vertices"),
+        )
+    }
+
+    pub(crate) fn typed_apply(
+        path: &Path,
+        reading: &ExtrudeEditSource,
+        sketch: ferritecad_types::ObjectId,
+        from: &str,
+        to: &str,
+    ) -> (Editor, EditSketchRequest) {
+        let mut e = Editor::default();
+        e.set_session(true, true, false);
+        assert!(e.begin_edit(path, reading, sketch));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        frame(&ctx, &mut e, vec![]);
+        replace_field(&ctx, &mut e, from, to);
+        replace_field(&ctx, &mut e, from, to);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Apply vertices"));
+        let request = e.take_apply_request().expect("Apply vertices asked");
+        (e, request)
+    }
+
+    #[test]
+    fn apply_vertices_is_offered_when_it_would_work_and_keeps_the_draft() {
+        let (root, path, reading) = crate::fillets::tests::plate();
+        let id = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("an editable Sketch")
+            .sketch;
+        let ctx = egui::Context::default();
+
+        // Not offered while the window says the session is busy: pressing does nothing.
+        let mut e = Editor::default();
+        e.set_session(true, false, false);
+        assert!(e.begin_edit(&path, &reading, id));
+        frame(&ctx, &mut e, vec![]);
+        replace_field(&ctx, &mut e, "33", "41.25");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Apply vertices"));
+        assert!(e.take_apply_request().is_none(), "a disabled button asked");
+
+        // Offered: one press, one request, naming the version the form was opened on.
+        let (mut e, request) = typed_apply(&path, &reading, id, "33", "41.25");
+        assert_eq!(request.source, path);
+        assert_eq!(request.expected, reading.version);
+        assert_eq!(request.sketch, id);
+        assert!(
+            request
+                .vertices
+                .iter()
+                .any(|v| v.start_mm[0] == 41.25 && v.start_mm[1] == 15.5)
+        );
+        assert!(e.take_apply_request().is_none(), "one press, one request");
+        // The draft is the user's until the document has accepted it.
+        assert_eq!(
+            e.draft.as_ref().expect("draft").points[0][0],
+            "41.25",
+            "pressing Apply discarded the draft"
+        );
+        assert!(e.editing.is_some());
+
+        // A draft that is not a request offers nothing to apply, and says why.
+        e.draft.as_mut().expect("draft").points[0][0] = "-1000".into();
+        e.draft.as_mut().expect("draft").points[1][0] = "-1000".into();
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(e.edit_request().is_err());
+        assert!(
+            !out.shapes.iter().any(|c| matches!(
+                &c.shape,
+                egui::Shape::Text(t) if t.galley.text() == "Apply vertices"
+            )),
+            "Apply was offered for a refused draft"
+        );
+        drop(root);
+    }
+
+    /// Exercise the window's actual availability predicate after opening a form,
+    /// rather than granting Apply directly to a standalone widget.
+    #[test]
+    fn the_open_sketch_form_can_apply_through_the_windows_busy_guard() {
+        use crate::{Loads, can_apply_sketch, creates, edits, exports, sessions};
+        let (_root, path, reading) = crate::fillets::tests::plate();
+        let private = tempfile::tempdir().expect("private root");
+        let mut sessions = sessions::Sessions::default();
+        sessions.adopt(
+            ferritecad_jobs::DocumentSession::open_in(
+                private.path(),
+                &path,
+                ferritecad_jobs::HistoryLimits::default(),
+            )
+            .expect("session"),
+        );
+        let mut creates = creates::Creates::default();
+        let mut loads = Loads::default();
+        let exports = exports::Exports::default();
+        let edits = edits::Edits::default();
+        let id = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("Sketch")
+            .sketch;
+        assert!(creates.sketch.begin_edit(&path, &reading, id));
+        assert!(creates.busy(), "New and Open still wait for this form");
+        let ready = can_apply_sketch(&creates, &loads, &exports, &edits, &sessions);
+        creates.sketch.set_session(false, ready, false);
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut creates.sketch, vec![]);
+        frame(&ctx, &mut creates.sketch, vec![]);
+        replace_field(&ctx, &mut creates.sketch, "33", "41.25");
+        replace_field(&ctx, &mut creates.sketch, "33", "41.25");
+        let out = frame(&ctx, &mut creates.sketch, vec![]);
+        click(&ctx, &mut creates.sketch, text_at(&out, "Apply vertices"));
+        let request = creates
+            .sketch
+            .take_apply_request()
+            .expect("the open form must allow Apply");
+        assert_eq!(request.expected, reading.version);
+        assert!(
+            can_apply_sketch(&creates, &loads, &exports, &edits, &sessions),
+            "the command must allow the same request as its button"
+        );
+
+        // A genuine load and a session operation still prevent another Apply.
+        loads
+            .open(
+                Some(&path),
+                std::sync::Arc::new(crate::ProgressRelay::default()),
+                |_, _| std::thread::spawn(|| {}),
+            )
+            .expect("load");
+        assert!(!can_apply_sketch(
+            &creates, &loads, &exports, &edits, &sessions
+        ));
+        loads.stop_all();
+        let loads = Loads::default();
+        sessions
+            .begin_apply(|_, _, _| std::thread::spawn(|| {}))
+            .expect("operation");
+        assert!(!can_apply_sketch(
+            &creates, &loads, &exports, &edits, &sessions
+        ));
+        sessions.stop_all();
+        creates.sketch.dismiss();
+        assert!(!can_apply_sketch(
+            &creates, &loads, &exports, &edits, &sessions
+        ));
+    }
+
+    #[test]
+    fn with_unsaved_changes_the_copy_workflow_is_withheld_but_apply_is_not() {
+        let (root, path, reading) = crate::fillets::tests::plate();
+        let id = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("an editable Sketch")
+            .sketch;
+        let ctx = egui::Context::default();
+        let mut e = Editor::default();
+        e.set_session(true, true, true);
+        assert!(e.begin_edit(&path, &reading, id));
+        frame(&ctx, &mut e, vec![]);
+        replace_field(&ctx, &mut e, "33", "41.25");
+        replace_field(&ctx, &mut e, "33", "41.25");
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(
+            out.shapes.iter().any(|c| matches!(
+                &c.shape,
+                egui::Shape::Text(t) if t.galley.text().contains("unsaved changes")
+            )),
+            "the withheld copy workflow was not explained"
+        );
+        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
+        assert!(
+            e.take_edit_request().is_none(),
+            "the copy workflow was reachable with unsaved changes"
+        );
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Apply vertices"));
+        assert!(e.take_apply_request().is_some(), "Apply works while dirty");
+        drop(root);
+    }
+
+    #[test]
+    fn a_new_accepted_version_ends_the_forms_about_the_old_one_and_only_those() {
+        let (root, path, reading) = crate::fillets::tests::plate();
+        let id = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("an editable Sketch")
+            .sketch;
+        // A saved-object form is over once the document moves to another version...
+        let (mut e, _) = typed_apply(&path, &reading, id, "33", "41.25");
+        assert!(e.active());
+        e.finish_session_change();
+        assert!(!e.active(), "a form about the replaced version survived");
+        assert!(e.take_apply_request().is_none());
+        // ...a drawing for a new document is not about it.
+        let mut drawing = Editor::default();
+        drawing.begin();
+        drawing.finish_session_change();
+        assert!(drawing.active(), "a New drawing was discarded");
+        drop(root);
+    }
+
     #[test]
     fn draft_undo_redo_closure_and_shared_validity() {
         let mut e = Editor::default();
@@ -6172,10 +6483,7 @@ mod tests {
         frame(&ctx, &mut e, vec![]);
         frame(&ctx, &mut e, vec![]);
         let out = frame(&ctx, &mut e, vec![]);
-        assert!(
-            painted(&out, "Edit saved Sketch — new copy"),
-            "the coordinate editor"
-        );
+        assert!(painted(&out, "Edit saved Sketch"), "the coordinate editor");
         text_at(&out, "Restore saved vertices");
         (ctx, e)
     }

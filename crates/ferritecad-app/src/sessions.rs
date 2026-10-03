@@ -637,6 +637,27 @@ pub(crate) fn spawn_apply(
     )
 }
 
+/// The vertex edit: the reused `edit-sketch-copy` operation on the worker that
+/// owns the kernel session. `expected` is the version the form was opened from.
+pub(crate) fn spawn_apply_sketch(
+    ticket: StepTicket,
+    sketch: ObjectId,
+    vertices: Vec<ferritecad_document::SketchVertex>,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.edit_sketch_vertices(sketch, vertices, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
 /// The picture of one private version, read cold exactly as Open reads a file.
 pub(crate) fn spawn_scene(
     path: PathBuf,
@@ -1426,6 +1447,176 @@ mod tests {
         assert!(!private.join("out.stl").exists());
     }
 
+    /// What the saved Sketch form asks for when the right-hand vertices of the
+    /// plate it was opened on move `by` millimetres.
+    fn vertex_request(path: &Path, by: f64) -> ferritecad_jobs::EditSketchRequest {
+        let reading = read_extrude_source(path).expect("reading");
+        let choice = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("an editable Sketch");
+        let vertices = choice.vertices.clone().expect("vertices");
+        let right = vertices
+            .iter()
+            .map(|v| v.start_mm[0])
+            .fold(f64::MIN, f64::max);
+        ferritecad_jobs::EditSketchRequest {
+            source: path.to_path_buf(),
+            expected: reading.version,
+            sketch: choice.sketch,
+            vertices: vertices
+                .into_iter()
+                .map(|mut v| {
+                    if v.start_mm[0] == right {
+                        v.start_mm[0] += by;
+                    }
+                    v
+                })
+                .collect(),
+            destination: PathBuf::new(),
+        }
+    }
+
+    fn width_of(path: &Path) -> f64 {
+        let reading = read_extrude_source(path).expect("reading");
+        let vertices = reading.sketches[0].vertices.clone().expect("vertices");
+        let xs = vertices.iter().map(|v| v.start_mm[0]);
+        xs.clone().fold(f64::MIN, f64::max) - xs.fold(f64::MAX, f64::min)
+    }
+
+    /// Apply vertices as the window runs it, on a thread, with the mock kernel.
+    fn apply_vertices(
+        sessions: &mut Sessions,
+        request: ferritecad_jobs::EditSketchRequest,
+    ) -> (u64, Edited) {
+        let (tx, rx) = mpsc::channel();
+        let generation = sessions
+            .begin_apply(|ticket, _, _| {
+                std::thread::spawn(move || {
+                    tx.send(ticket.edit_sketch_vertices(
+                        request.sketch,
+                        request.vertices,
+                        request.expected,
+                        &mut MockKernel::new(),
+                        &OperationContext::default(),
+                    ))
+                    .expect("deliver");
+                })
+            })
+            .expect("started");
+        let result = rx.recv().expect("answer");
+        (generation, sessions.finish_apply(generation, result))
+    }
+
+    fn accept_vertices(sessions: &mut Sessions, request: ferritecad_jobs::EditSketchRequest) {
+        let (generation, edited) = apply_vertices(sessions, request);
+        assert!(matches!(edited, Edited::Show(_)), "{edited:?}");
+        sessions.bind(Bind::Staged).expect("bind");
+        assert!(sessions.finish_scene(generation, Ok(())));
+    }
+
+    #[test]
+    fn a_vertex_apply_is_one_document_step_and_a_stale_or_unchanged_form_is_not() {
+        let f = fixture();
+        let mut sessions = open(&f);
+        let on_disk = std::fs::read(&f.file).expect("file");
+        let width = width_of(&f.file);
+
+        accept(&mut sessions, f.feature, 25.0);
+        let after_height = sessions.export_path().expect("accepted");
+        // A form opened now, and one opened on a version that is about to be replaced.
+        let request = vertex_request(&after_height, 5.25);
+        let stale = request.clone();
+        accept_vertices(&mut sessions, request);
+        assert!(sessions.dirty());
+        assert_eq!(
+            width_of(&sessions.export_path().expect("accepted")),
+            width + 5.25
+        );
+        assert_eq!(
+            std::fs::read(&f.file).expect("file"),
+            on_disk,
+            "Apply wrote the file"
+        );
+        assert!(sessions.status.starts_with("Applied"));
+
+        // The form that was opened before is about a picture that is gone: refused,
+        // and nothing moved, nothing was left behind.
+        let files = private_files(&sessions);
+        let (_, edited) = apply_vertices(&mut sessions, stale);
+        assert_eq!(edited, Edited::Failed);
+        assert!(
+            sessions.status.contains("changed after this form"),
+            "{}",
+            sessions.status
+        );
+        assert_eq!(private_files(&sessions), files);
+        assert!(sessions.dirty() && sessions.can_undo() && !sessions.can_redo());
+        assert!(!sessions.busy());
+
+        // Moving the vertices to where they are is not a step, and Redo survives it.
+        move_back(&mut sessions);
+        assert!(sessions.can_redo());
+        let current = sessions.export_path().expect("accepted");
+        let (_, edited) = apply_vertices(&mut sessions, vertex_request(&current, 0.0));
+        assert_eq!(edited, Edited::NoChange);
+        assert!(sessions.can_redo(), "a no-op dropped the Redo");
+
+        // A new edit from here is a new branch: the old future is gone.
+        accept_vertices(&mut sessions, vertex_request(&current, 1.5));
+        assert!(!sessions.can_redo());
+        assert_eq!(
+            width_of(&sessions.export_path().expect("accepted")),
+            width + 1.5
+        );
+
+        // The user's file changed under us before Save: nothing is overwritten.
+        let theirs = f.root.path().join("theirs.fcad");
+        std::fs::copy(&f.file, &theirs).expect("copy");
+        let mut document = Document::open(&theirs).expect("open");
+        let prepared =
+            ferritecad_document::prepare_extrude_height(&document, f.feature, 99.0).expect("p");
+        document.write_extrude_height(&prepared).expect("written");
+        document.close().expect("closed");
+        std::fs::rename(&theirs, &f.file).expect("lands");
+        let report = save(&mut sessions, SaveTarget::InPlace, None).expect("answered");
+        assert!(!report.published);
+        assert!(sessions.dirty(), "a refused Save moved the checkpoint");
+        assert_eq!(height_of(&f.file), 99.0);
+    }
+
+    fn move_back(sessions: &mut Sessions) {
+        let (generation, _) = sessions.begin_move(true).expect("a step back");
+        sessions.bind(Bind::Staged).expect("bind");
+        assert!(sessions.finish_scene(generation, Ok(())));
+    }
+
+    #[test]
+    fn a_vertex_apply_cancelled_after_it_was_computed_is_not_accepted() {
+        let f = fixture();
+        let mut sessions = open(&f);
+        let width = width_of(&f.file);
+        let request = vertex_request(&f.file, 5.25);
+        let before = private_files(&sessions);
+        let (generation, edited) = apply_vertices(&mut sessions, request);
+        assert!(matches!(edited, Edited::Show(_)));
+        // The picture is ready, the user presses Cancel, then the answer arrives.
+        assert!(sessions.cancel());
+        let refused = sessions.bind(Bind::Staged).expect_err("cancelled");
+        assert_eq!(refused.kind(), ErrorKind::Cancellation);
+        assert!(sessions.finish_scene(generation, Err(refused)));
+        assert!(!sessions.dirty() && !sessions.can_undo() && !sessions.busy());
+        assert_eq!(private_files(&sessions), before, "the staged file was kept");
+        assert_eq!(width_of(&sessions.export_path().expect("accepted")), width);
+        // And a picture that cannot be shown (the device refuses it) is the same.
+        let (generation, edited) = apply_vertices(&mut sessions, vertex_request(&f.file, 5.25));
+        assert!(matches!(edited, Edited::Show(_)));
+        assert!(sessions.finish_scene(generation, Err(CadError::rendering("no device"))));
+        assert!(!sessions.dirty() && !sessions.can_undo());
+        assert_eq!(private_files(&sessions), before);
+    }
+
     #[test]
     fn stopping_joins_the_worker_and_removes_every_private_file() {
         let f = fixture();
@@ -1739,6 +1930,344 @@ mod tests {
         let _ = sessions;
     }
 
+    fn apply_sketch_native(sessions: &mut Sessions, request: ferritecad_jobs::EditSketchRequest) {
+        let (tx, rx) = mpsc::channel();
+        let generation = sessions
+            .begin_apply(|ticket, _, cancel| {
+                spawn_apply_sketch(
+                    ticket,
+                    request.sketch,
+                    request.vertices,
+                    request.expected,
+                    cancel.clone(),
+                    move |result| tx.send(result).expect("deliver"),
+                )
+            })
+            .expect("started");
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("edit");
+        let Edited::Show(path) = sessions.finish_apply(generation, result) else {
+            panic!("the edit was not shown: {}", sessions.status);
+        };
+        let (tx, rx) = mpsc::channel();
+        let token = sessions.scene_token(generation).expect("token");
+        let worker = spawn_scene(path, token, move |scene| tx.send(scene).expect("deliver"));
+        assert!(sessions.attach_scene(generation, worker));
+        rx.recv_timeout(std::time::Duration::from_secs(120))
+            .expect("scene")
+            .expect("the picture of the new version");
+        sessions.bind(Bind::Staged).expect("bind");
+        assert!(sessions.finish_scene(generation, Ok(())));
+    }
+
+    fn sketch_peer(
+        source: &Path,
+        request: &ferritecad_jobs::EditSketchRequest,
+        root: &Path,
+        out: &Path,
+    ) {
+        let body = request
+            .vertices
+            .iter()
+            .map(|v| {
+                format!(
+                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
+                    v.curve_id, v.start_mm[0], v.start_mm[1]
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let file = root.join("vertices.json");
+        std::fs::write(
+            &file,
+            format!(r#"{{"request_version":1,"vertices":[{body}]}}"#),
+        )
+        .expect("request");
+        let version = ferritecad_jobs::read_extrude_source(source)
+            .expect("reading")
+            .version;
+        cli(&[
+            "edit-sketch-copy".as_ref(),
+            source.as_os_str(),
+            "--sketch".as_ref(),
+            request.sketch.to_string().as_ref(),
+            "--expect-version".as_ref(),
+            version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            file.as_os_str(),
+            "-o".as_ref(),
+            out.as_os_str(),
+        ]);
+    }
+
+    /// Height, then vertices, Undo, Redo, an unsaved export, Save and a cold reopen
+    /// on `source`, each against the command line doing the same to the same
+    /// document; then a new branch after Undo.
+    fn native_vertex_gate(root: &Path, source: &Path, from: &str, to: &str, height: f64) {
+        let original = std::fs::read(source).expect("source");
+        let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
+        let feature = opened.features[0].feature;
+        let sketch = opened
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("an editable Sketch")
+            .sketch;
+        let private = tempfile::tempdir().expect("private root");
+        let mut sessions = Sessions::default();
+        sessions.adopt(
+            DocumentSession::open_in(private.path(), source, HistoryLimits::default())
+                .expect("session"),
+        );
+        let alias = sessions.logical_path().expect("logical").to_path_buf();
+
+        // The window: height, then the vertices through the form's own widgets.
+        apply_native(&mut sessions, feature, height);
+        let after_height = sessions.export_path().expect("accepted");
+        let reading = ferritecad_jobs::read_extrude_source(&after_height).expect("reading");
+        let (mut form, request) =
+            crate::sketch::tests::typed_apply(&after_height, &reading, sketch, from, to);
+        assert!(
+            request
+                .vertices
+                .iter()
+                .any(|v| v.start_mm.iter().any(|n| n.to_string() == to)),
+            "the typed number did not reach the request"
+        );
+        apply_sketch_native(&mut sessions, request.clone());
+        form.finish_session_change();
+        assert!(!form.active(), "the form outlived the picture it described");
+        assert!(sessions.dirty());
+        assert_eq!(
+            std::fs::read(source).expect("source"),
+            original,
+            "Apply wrote the file"
+        );
+
+        // The command line, doing the same two things.
+        let peer1 = root.join("peer-height.fcad");
+        let peer2 = root.join("peer-vertices.fcad");
+        cli(&[
+            "edit-extrude".as_ref(),
+            source.as_os_str(),
+            "--feature".as_ref(),
+            feature.to_string().as_ref(),
+            "--expect-version".as_ref(),
+            opened.version.content.to_string().as_ref(),
+            "--distance-mm".as_ref(),
+            height.to_string().as_ref(),
+            "-o".as_ref(),
+            peer1.as_os_str(),
+        ]);
+        sketch_peer(&peer1, &request, root, &peer2);
+        let (original_stl, original_fbx) = peer_bytes(source, root, "v-original");
+        let (h_stl, h_fbx) = peer_bytes(&peer1, root, "v-height");
+        let (v_stl, v_fbx) = peer_bytes(&peer2, root, "v-vertices");
+        assert_ne!(h_stl, v_stl, "moving the vertices must change the part");
+
+        // Export while unsaved is the working model.
+        let working = sessions.export_path().expect("accepted");
+        let (stl, fbx) = export_bytes(&working, &alias, root, "v-unsaved");
+        assert_eq!((stl, fbx), (v_stl.clone(), v_fbx.clone()), "unsaved export");
+
+        // Undo is the height step, Undo again the file; Redo comes back.
+        move_native(&mut sessions, true);
+        let (stl, fbx) = export_bytes(
+            &sessions.export_path().expect("accepted"),
+            &alias,
+            root,
+            "v-undo1",
+        );
+        assert_eq!(
+            (stl, fbx),
+            (h_stl, h_fbx),
+            "Undo did not give the height step"
+        );
+        move_native(&mut sessions, true);
+        assert!(!sessions.dirty());
+        let (stl, fbx) = export_bytes(
+            &sessions.export_path().expect("accepted"),
+            &alias,
+            root,
+            "v-undo2",
+        );
+        assert_eq!(
+            (stl, fbx),
+            (original_stl, original_fbx),
+            "Undo did not restore"
+        );
+        move_native(&mut sessions, false);
+        move_native(&mut sessions, false);
+        assert!(sessions.dirty() && !sessions.can_redo());
+        assert_eq!(std::fs::read(source).expect("source"), original);
+
+        // Save is the command line's second copy, cell for cell, and every saved
+        // name resolves on a cold rebuild of the file.
+        let (tx, rx) = mpsc::channel();
+        let generation = sessions
+            .begin_save(SaveTarget::InPlace, None, |plan, _, cancel| {
+                spawn_save(plan, cancel.clone(), move |result| {
+                    tx.send(result).expect("deliver")
+                })
+            })
+            .expect("started");
+        let report = sessions
+            .finish_save(generation, rx.recv().expect("answer"))
+            .expect("answered");
+        assert!(report.published && !sessions.dirty());
+        assert_eq!(
+            cells(source),
+            cells(&peer2),
+            "Save is not the command line's copy"
+        );
+        let saved = Document::open_read_only(source).expect("saved");
+        let built = ferritecad_eval::rebuild_cold(
+            &saved,
+            &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
+            &OperationContext::default(),
+        )
+        .expect("cold rebuild");
+        for reference in saved.topology_refs().expect("refs") {
+            assert!(
+                built
+                    .resolve(&reference)
+                    .is_ok_and(|found| !found.is_empty()),
+                "{} did not resolve after Save",
+                reference.id
+            );
+        }
+        let (stl, fbx) = peer_bytes(source, root, "v-saved");
+        assert_eq!((stl, fbx), (v_stl, v_fbx));
+
+        // A new branch after Undo drops the Redo it replaces; the file is as saved.
+        move_native(&mut sessions, true);
+        assert!(sessions.can_redo());
+        apply_native(&mut sessions, feature, height + 2.0);
+        assert!(!sessions.can_redo());
+        assert_eq!(cells(source), cells(&peer2), "the branch wrote the file");
+    }
+
+    #[test]
+    fn native_vertices_of_an_ordinary_offset_polygon_are_applied_like_the_command_line() {
+        if !native() {
+            return;
+        }
+        let (root, path, _) = crate::fillets::tests::plate();
+        native_vertex_gate(root.path(), &path, "33", "41.25", 9.5);
+    }
+
+    #[test]
+    fn native_vertices_of_a_rectangle_under_a_chamfer_keep_the_chamfer_like_the_command_line() {
+        if !native() {
+            return;
+        }
+        let (root, path, _) = crate::chamfers::tests::chamfered(2.375);
+        native_vertex_gate(root.path(), &path, "33", "41.25", 9.5);
+    }
+
+    /// What the document refuses it refuses whole: the form keeps its draft, the
+    /// session keeps its version, history and checkpoint, and no file is left.
+    #[test]
+    fn native_a_refused_vertex_edit_changes_nothing_and_a_constrained_plate_offers_none() {
+        if !native() {
+            return;
+        }
+        // A rectangle under a Chamfer: a plate the Chamfer no longer fits is refused.
+        let (root, path, _) = crate::chamfers::tests::chamfered(2.375);
+        let opened = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+        let sketch = opened
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("an editable Sketch")
+            .sketch;
+        let private = tempfile::tempdir().expect("private root");
+        let mut sessions = Sessions::default();
+        sessions.adopt(
+            DocumentSession::open_in(private.path(), &path, HistoryLimits::default())
+                .expect("session"),
+        );
+        apply_native(&mut sessions, opened.features[0].feature, 9.5);
+        let accepted = sessions.export_path().expect("accepted");
+        let reading = ferritecad_jobs::read_extrude_source(&accepted).expect("reading");
+
+        // Through the form: the shortened plate is refused where it is typed, and the
+        // typed number stays; nothing is asked of the session.
+        let mut form = crate::sketch::Editor::default();
+        form.set_session(true, true, true);
+        assert!(form.begin_edit(&accepted, &reading, sketch));
+        let ctx = egui::Context::default();
+        crate::sketch::tests::replace_in_form(&ctx, &mut form, "33", "-4.4");
+        assert!(
+            !crate::sketch::tests::offers_apply(&ctx, &mut form),
+            "Apply was offered for a draft the Chamfer does not fit"
+        );
+        assert!(form.take_apply_request().is_none());
+        assert!(form.active(), "the refused draft was discarded");
+
+        // Past the form (a request the form would not make): the worker refuses it.
+        let mut forged = ferritecad_jobs::EditSketchRequest {
+            source: accepted.clone(),
+            expected: reading.version,
+            sketch,
+            vertices: reading.sketches[0].vertices.clone().expect("vertices"),
+            destination: PathBuf::new(),
+        };
+        for vertex in &mut forged.vertices {
+            if vertex.start_mm[0] == 33. {
+                vertex.start_mm[0] = -4.4;
+            }
+        }
+        let before = (sessions.dirty(), sessions.can_undo(), sessions.can_redo());
+        let files = private_files(&sessions);
+        let (tx, rx) = mpsc::channel();
+        let generation = sessions
+            .begin_apply(|ticket, _, cancel| {
+                spawn_apply_sketch(
+                    ticket,
+                    forged.sketch,
+                    forged.vertices,
+                    forged.expected,
+                    cancel.clone(),
+                    move |result| tx.send(result).expect("deliver"),
+                )
+            })
+            .expect("started");
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("edit");
+        assert_eq!(sessions.finish_apply(generation, result), Edited::Failed);
+        assert!(sessions.status.starts_with("Could not apply the change"));
+        assert_eq!(
+            (sessions.dirty(), sessions.can_undo(), sessions.can_redo()),
+            before
+        );
+        assert_eq!(
+            private_files(&sessions),
+            files,
+            "a refused edit left a file"
+        );
+        assert_eq!(sessions.export_path().expect("accepted"), accepted);
+        drop(root);
+
+        // A dimensioned plate offers no vertex form at all (its Lines are the
+        // solver's); the height still applies and the constraints stay.
+        if ferritecad_sketch_solver::is_available() {
+            let (root, constrained, _) = constrained_chamfer_plate();
+            let reading = ferritecad_jobs::read_extrude_source(&constrained).expect("reading");
+            let mut form = crate::sketch::Editor::default();
+            form.set_session(true, true, false);
+            let editable = reading
+                .sketches
+                .iter()
+                .any(|choice| form.begin_edit(&constrained, &reading, choice.sketch));
+            assert!(!editable, "a dimensioned plate offered a vertex form");
+            assert!(!form.active());
+            drop(root);
+        }
+    }
+
     #[test]
     fn native_an_ordinary_plate_is_applied_undone_exported_and_saved_like_the_command_line() {
         if !native() {
@@ -1756,19 +2285,10 @@ mod tests {
         native_gate(root.path(), &path, feature, 21.5);
     }
 
-    #[test]
-    fn native_a_chamfered_plate_with_constraints_keeps_them_byte_for_byte() {
-        if !native() {
-            return;
-        }
-        if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
-            return;
-        }
+    /// The free chamfered plate, dimensioned through the command line: every Line
+    /// horizontal or vertical, one corner pinned, a width and a depth. Returns the
+    /// directory, the constrained file, its Sketch and the Sketch's own row text.
+    fn constrained_chamfer_plate() -> (tempfile::TempDir, PathBuf, ObjectId) {
         let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
         let choice = source.constraint_sketches[0].clone();
         let curves = choice.stored.expect("stored").curves;
@@ -1823,6 +2343,23 @@ mod tests {
             "-o".as_ref(),
             constrained.as_os_str(),
         ]);
+        (root, constrained, choice.sketch)
+    }
+
+    #[test]
+    fn native_a_chamfered_plate_with_constraints_keeps_them_byte_for_byte() {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let (root, constrained, sketch) = constrained_chamfer_plate();
         let reading = ferritecad_jobs::read_extrude_source(&constrained).expect("reading");
         assert_eq!(
             reading.unavailable_reason(),
@@ -1832,14 +2369,14 @@ mod tests {
         let feature = reading.features[0].feature;
         let sketch_before = cells(&constrained)["objects"]
             .iter()
-            .filter(|row| row.contains(&choice.sketch.to_string()) || row.contains("Sketch"))
+            .filter(|row| row.contains(&sketch.to_string()) || row.contains("Sketch"))
             .cloned()
             .collect::<Vec<_>>();
         native_gate(root.path(), &constrained, feature, 9.5);
         // The constraints are the Sketch's own row, which a height edit never writes.
         let sketch_after = cells(&constrained)["objects"]
             .iter()
-            .filter(|row| row.contains(&choice.sketch.to_string()) || row.contains("Sketch"))
+            .filter(|row| row.contains(&sketch.to_string()) || row.contains("Sketch"))
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(

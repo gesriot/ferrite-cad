@@ -42,7 +42,7 @@ use ferritecad_document::{Document, DocumentVersion};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
-use crate::edit::{EditExtrudeRequest, edit_extrude_copy};
+use crate::edit::{EditExtrudeRequest, EditSketchRequest, edit_extrude_copy, edit_sketch_copy};
 use crate::save::{SavePlan, SaveTarget, Saved};
 
 /// How much accepted history a session keeps.
@@ -485,6 +485,43 @@ impl StepTicket {
                     expected,
                     feature,
                     distance_mm,
+                    destination: destination.to_path_buf(),
+                },
+                kernel,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Moves the vertices of one saved Line Sketch: the reused `edit-sketch-copy`
+    /// operation, reading the current version and writing the next, so the result
+    /// is what the command line makes from the same document.
+    ///
+    /// `expected` is the version the form that asked for this was opened from. If
+    /// the session has moved on since (an Apply, an Undo, a Redo), the request is
+    /// about a picture that is no longer the document and is refused, so an old
+    /// form can never be applied to a newer version.
+    pub fn edit_sketch_vertices<K: GeometryKernel + ?Sized>(
+        self,
+        sketch: ObjectId,
+        vertices: Vec<ferritecad_document::SketchVertex>,
+        expected: DocumentVersion,
+        kernel: &mut K,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        if expected != self.source.version() {
+            return Err(CadError::input(
+                "the document changed after this form was opened; open it again to edit the current version",
+            ));
+        }
+        self.run(|source, expected, destination| {
+            edit_sketch_copy(
+                &EditSketchRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    sketch,
+                    vertices,
                     destination: destination.to_path_buf(),
                 },
                 kernel,

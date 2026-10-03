@@ -175,6 +175,12 @@ impl Creates {
         self.running() || self.form.is_some() || self.sketch.active()
     }
 
+    /// The saved Sketch form is the caller of Apply, not an operation blocking it.
+    /// New and the other Sketch-family forms retain their existing exclusion.
+    pub(crate) fn can_apply_sketch(&self) -> bool {
+        !self.running() && self.form.is_none() && self.sketch.editing_saved_vertices()
+    }
+
     pub(crate) fn can_cancel(&self) -> bool {
         self.running() && !self.cancel_requested
     }

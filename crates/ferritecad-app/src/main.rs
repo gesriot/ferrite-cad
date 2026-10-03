@@ -954,13 +954,40 @@ fn height_state(
     }
 }
 
+/// Whether a form over the picture is open (the height form, or any editor of a
+/// saved object, or a drawing). Document Undo and Redo, by button or by
+/// Cmd/Ctrl+Z, wait while one is: each form has its own draft Undo and Redo
+/// (buttons only, no shortcut), and a document step would end the draft it is
+/// about. Apply or Cancel the form first.
+fn form_open(edits: &edits::Edits, sketch: &sketch::Editor) -> bool {
+    edits.busy() || sketch.active()
+}
+
 /// New is serialized with document loads and exports. Viewing remains available.
 fn can_begin_new(creates: &creates::Creates, loads: &Loads, exports: &exports::Exports) -> bool {
-    !creates.busy()
-        && loads.current.is_none()
+    !creates.busy() && document_io_idle(loads, exports)
+}
+
+fn document_io_idle(loads: &Loads, exports: &exports::Exports) -> bool {
+    loads.current.is_none()
         && !exports.running()
         && exports.pending().is_none()
         && !exports.configuring_stl()
+}
+
+/// Shared by the Sketch form's Apply button and the command that starts its worker.
+fn can_apply_sketch(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    creates.can_apply_sketch()
+        && document_io_idle(loads, exports)
+        && !edits.busy()
+        && sessions.has_session()
+        && !sessions.busy()
 }
 
 fn ask_new(
@@ -2591,7 +2618,7 @@ impl ApplicationHandler<AppEvent> for App {
                         eprintln!("ferritecad: {error}");
                     }
                     if self.sessions.finish_scene(generation, outcome) && shown {
-                        // The form described the picture that was replaced.
+                        // The forms described the picture that was replaced.
                         self.edits.cancel();
                         self.refresh_title();
                     }
@@ -2756,7 +2783,7 @@ impl ApplicationHandler<AppEvent> for App {
                 // holds: the same two questions `settled` and `document_idle` ask.
                 let settled = can_begin_new(&self.creates, &self.loads, &self.exports)
                     && !self.sessions.busy();
-                let idle = settled && !self.edits.busy();
+                let idle = settled && !form_open(&self.edits, &self.creates.sketch);
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
@@ -2845,12 +2872,28 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.loads,
                     &self.exports,
                 );
+                let sketch_apply = can_apply_sketch(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
                 let create_line = creates::words(self.creates.status());
                 let created = creates::shown(self.creates.status(), &create_line);
-                let creating = self.creates.running();
+                let creating = self.creates.running() || self.sessions.busy();
+                // The saved Sketch editor applies into the open document: it may be
+                // opened while there are unsaved changes, and it applies whenever
+                // nothing else is replacing or reading the document.
+                let session_idle = self.sessions.has_session() && settled;
+                self.creates.sketch.set_session(
+                    session_idle && !self.edits.busy(),
+                    sketch_apply,
+                    self.sessions.dirty(),
+                );
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
@@ -2929,6 +2972,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.constraints.take_request() {
                             self.ask_where_to_edit_constraints(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_apply_request() {
+                            self.apply_sketch(request);
                         }
                         if let Some(request) = self.creates.sketch.take_edit_request() {
                             self.ask_where_to_edit_sketch(request);
@@ -3369,7 +3415,7 @@ impl App {
 
     /// As [`Self::settled`], and no form is open over the picture it describes.
     fn document_idle(&self) -> bool {
-        self.settled() && !self.edits.busy()
+        self.settled() && !form_open(&self.edits, &self.creates.sketch)
     }
 
     /// Native Quit and window close share the same guarded exit.
@@ -3518,6 +3564,39 @@ impl App {
                 ticket,
                 feature,
                 distance_mm,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
+    /// Apply the vertices of the saved Sketch form to the open document. No file
+    /// dialog; the same session step and two-phase scene as Apply height. A refusal,
+    /// a cancellation or a stale form leaves the draft where it is.
+    fn apply_sketch(&mut self, request: ferritecad_jobs::EditSketchRequest) {
+        if !can_apply_sketch(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
+            self.input.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_apply_sketch(
+                ticket,
+                request.sketch,
+                request.vertices,
+                request.expected,
                 cancel.clone(),
                 move |result| {
                     let _ = proxy.send_event(AppEvent::Applied {
@@ -4455,6 +4534,10 @@ impl App {
             .draft_load_finished(document, committed.is_ok());
         self.edits.draft_load_finished(document, committed.is_ok());
         committed?;
+        // Whatever the picture was replaced by (Apply, Undo, Redo, another
+        // document), forms about the saved objects of the old one are over: a
+        // request made from them could only name the version that was replaced.
+        self.creates.sketch.finish_session_change();
         exports::leave_document(&mut self.exports, &mut self.input);
         // The picture is current; the name on the window is the same fact: the
         // session's logical name (never the private file the picture was read
@@ -4706,9 +4789,9 @@ impl Live {
             chosen = ferritecad_ui::toolbar(ui, activity);
             if held_back {
                 ui.label(
-                    "The other editors (sketch, constraints, Cut, Fillet, Chamfer, circles, \
+                    "The other editors (constraints, Cut, Fillet, Chamfer, circles, \
                      Revolve) are unavailable while the document has unsaved changes: Save or \
-                     Undo them first. Height can still be changed with Apply.",
+                     Undo them first. The height and the vertices of a saved Sketch can still be changed with Apply.",
                 );
             }
             sketch.draw_choices(
@@ -19037,6 +19120,84 @@ mod tests {
         assert!(sessions.finish_scene(generation, Ok(())));
         let dirty = height_state(&edits, &sessions, &creates, &loads, &exports);
         assert!(!dirty.copy && dirty.unsaved && dirty.apply);
+
+        // The window withholds the legacy copy entry on a dirty document. The
+        // actual opening button must still offer the session height form.
+        edits.cancel();
+        let ctx = egui::Context::default();
+        let mut frame = |events| {
+            let mut chosen = ferritecad_ui::EditChoice::Waiting;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900., 600.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    chosen = edits.draw_with(ui, false, None, dirty);
+                },
+            );
+            output.textures_delta.clear();
+            (output, chosen)
+        };
+        frame(vec![]);
+        let (output, _) = frame(vec![]);
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Edit extrusion…" => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("height opening button");
+        let mut chosen = ferritecad_ui::EditChoice::Waiting;
+        for pressed in [true, false] {
+            (_, chosen) = frame(vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ]);
+        }
+        assert_eq!(
+            chosen,
+            ferritecad_ui::EditChoice::Begin,
+            "unsaved changes must not prevent opening the height Apply form"
+        );
+    }
+
+    /// The boundary between a form's own draft Undo/Redo and the document's: while
+    /// any form is open the document's commands wait, so one cannot silently end
+    /// the other's work.
+    #[test]
+    fn document_undo_waits_for_an_open_form() {
+        let edits = edits::Edits::default();
+        let mut sketch = sketch::Editor::default();
+        assert!(!form_open(&edits, &sketch));
+        sketch.dismiss();
+        assert!(!form_open(&edits, &sketch));
+        let (_root, path, reading) = fillets::tests::plate();
+        let id = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("an editable Sketch")
+            .sketch;
+        assert!(sketch.begin_edit(&path, &reading, id));
+        assert!(
+            form_open(&edits, &sketch),
+            "an open Sketch form did not hold Undo"
+        );
+        sketch.dismiss();
+        assert!(!form_open(&edits, &sketch));
     }
 
     /// §30A: the window is named for the user's file with a mark while there are

@@ -125,6 +125,9 @@ impl Edits {
         unavailable: Option<&str>,
         offer: ferritecad_ui::HeightState,
     ) -> EditChoice {
+        // The legacy copy entry needs a clean document; the session Apply entry
+        // does not. Neither may open another form over an edit already in progress.
+        let can_begin = (can_begin || offer.apply) && !self.busy();
         if let Some(form) = &mut self.form {
             Self::validate_form(form);
         }
