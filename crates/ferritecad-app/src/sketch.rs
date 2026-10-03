@@ -139,6 +139,17 @@ pub(crate) struct Editor {
     canvas: Canvas,
     editing: Option<(EditSketchRequest, SketchChoice)>,
     pending_edit: Option<EditSketchRequest>,
+    /// §30B: Apply on the open document's session, asked for and not yet taken.
+    pending_apply: Option<EditSketchRequest>,
+    /// Whether the window can apply the draft to the open document right now.
+    /// Set by the window each frame; never persisted.
+    can_apply: bool,
+    /// Whether the saved Sketch editor may be opened on the open document even
+    /// with unsaved changes (it applies into the session, not into a new file).
+    can_begin_sketch: bool,
+    /// The open document has unsaved changes: the copy workflow reads a file and
+    /// writes a new one, so it is withheld, and the form says why.
+    unsaved: bool,
     /// Which profile the open window is asking for, and the circle's numbers.
     /// Both outlive a trip through the other mode; only Cancel clears them.
     mode: Mode,
@@ -202,6 +213,34 @@ impl Editor {
     }
     pub(crate) fn take_edit_request(&mut self) -> Option<EditSketchRequest> {
         self.pending_edit.take()
+    }
+    /// §30B: the draft the user asked to apply to the open document.
+    pub(crate) fn take_apply_request(&mut self) -> Option<EditSketchRequest> {
+        self.pending_apply.take()
+    }
+    /// What the window tells the form each frame: whether Apply is possible and
+    /// whether unsaved changes withhold the copy workflow.
+    pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
+        self.can_begin_sketch = can_begin;
+        self.can_apply = can_apply;
+        self.unsaved = unsaved;
+    }
+    /// The document moved to another accepted version, so every form about a saved
+    /// object described the picture that was replaced. Their drafts end here; a
+    /// request made from them could only name the old version. A drawing in
+    /// progress for a new document is not about the open one and stays.
+    pub(crate) fn finish_session_change(&mut self) {
+        let saved_object = self.editing.is_some()
+            || self.editing_circle.is_some()
+            || self.editing_annulus.is_some()
+            || self.editing_angle.is_some()
+            || self.constraints.active()
+            || self.cuts.active()
+            || self.fillets.active()
+            || self.chamfers.active();
+        if saved_object {
+            self.dismiss();
+        }
     }
     pub(crate) fn take_circle_edit_request(&mut self) -> Option<EditCircleRequest> {
         self.pending_circle_edit.take()
@@ -584,7 +623,7 @@ impl Editor {
             for choice in &source.sketches {
                 let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                 let response = ui.add_enabled(
-                    can_begin && refusal.is_none(),
+                    (can_begin || self.can_begin_sketch) && refusal.is_none(),
                     egui::Button::new(format!(
                         "Edit Sketch {} — {}…",
                         choice.name.as_deref().unwrap_or("Unnamed"),
@@ -1502,9 +1541,14 @@ impl Editor {
         }
         ui.add_enabled_ui(!running, |ui| self.edit(ui));
         if running {
-            ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+            ui.label(
+                "Working… Draft retained until it is done. Cancel the operation in the toolbar.",
+            );
         }
-        ui.small("Undo/redo changes only this draft; history ends at publication.");
+        ui.small(
+            "Undo/redo changes only this draft; its history ends when the change is applied or \
+             the document moves to another version.",
+        );
     }
 
     fn edit(&mut self, ui: &mut egui::Ui) {
@@ -1671,14 +1715,34 @@ impl Editor {
         if self.editing.is_some() {
             match self.edit_request() {
                 Ok(request) => {
-                    if ui
-                        .add_enabled(
-                            self.canvas.gesture.is_none(),
-                            egui::Button::new("Save edited copy…"),
-                        )
-                        .clicked()
-                    {
-                        self.pending_edit = Some(request);
+                    ui.horizontal(|ui| {
+                        // §30B: into the open document, no file name. The file on
+                        // disk changes only when you Save.
+                        if ui
+                            .add_enabled(
+                                self.can_apply && self.canvas.gesture.is_none(),
+                                egui::Button::new("Apply vertices"),
+                            )
+                            .clicked()
+                        {
+                            self.pending_apply = Some(request.clone());
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.unsaved && self.canvas.gesture.is_none(),
+                                egui::Button::new("Save edited copy…"),
+                            )
+                            .clicked()
+                        {
+                            self.pending_edit = Some(request);
+                        }
+                    });
+                    if self.unsaved {
+                        ui.small(
+                            "Saving a copy as a new file is unavailable while the document has \
+                             unsaved changes: Save or Undo them first. Apply changes this \
+                             document; the file on disk changes only when you Save.",
+                        );
                     }
                 }
                 Err(error) => {

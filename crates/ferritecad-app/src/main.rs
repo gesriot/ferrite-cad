@@ -2591,7 +2591,7 @@ impl ApplicationHandler<AppEvent> for App {
                         eprintln!("ferritecad: {error}");
                     }
                     if self.sessions.finish_scene(generation, outcome) && shown {
-                        // The form described the picture that was replaced.
+                        // The forms described the picture that was replaced.
                         self.edits.cancel();
                         self.refresh_title();
                     }
@@ -2756,7 +2756,7 @@ impl ApplicationHandler<AppEvent> for App {
                 // holds: the same two questions `settled` and `document_idle` ask.
                 let settled = can_begin_new(&self.creates, &self.loads, &self.exports)
                     && !self.sessions.busy();
-                let idle = settled && !self.edits.busy();
+                let idle = settled && !self.edits.busy() && !self.creates.sketch.active();
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
@@ -2850,7 +2850,16 @@ impl ApplicationHandler<AppEvent> for App {
                 let export = exports::shown(export_status, &export_line, &export_omissions);
                 let create_line = creates::words(self.creates.status());
                 let created = creates::shown(self.creates.status(), &create_line);
-                let creating = self.creates.running();
+                let creating = self.creates.running() || self.sessions.busy();
+                // The saved Sketch editor applies into the open document: it may be
+                // opened while there are unsaved changes, and it applies whenever
+                // nothing else is replacing or reading the document.
+                let session_idle = self.sessions.has_session() && settled;
+                self.creates.sketch.set_session(
+                    session_idle && !self.edits.busy(),
+                    session_idle,
+                    self.sessions.dirty(),
+                );
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
@@ -2929,6 +2938,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.constraints.take_request() {
                             self.ask_where_to_edit_constraints(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_apply_request() {
+                            self.apply_sketch(request);
                         }
                         if let Some(request) = self.creates.sketch.take_edit_request() {
                             self.ask_where_to_edit_sketch(request);
@@ -3369,7 +3381,7 @@ impl App {
 
     /// As [`Self::settled`], and no form is open over the picture it describes.
     fn document_idle(&self) -> bool {
-        self.settled() && !self.edits.busy()
+        self.settled() && !self.edits.busy() && !self.creates.sketch.active()
     }
 
     /// Native Quit and window close share the same guarded exit.
@@ -3518,6 +3530,33 @@ impl App {
                 ticket,
                 feature,
                 distance_mm,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
+    /// Apply the vertices of the saved Sketch form to the open document. No file
+    /// dialog; the same session step and two-phase scene as Apply height. A refusal,
+    /// a cancellation or a stale form leaves the draft where it is.
+    fn apply_sketch(&mut self, request: ferritecad_jobs::EditSketchRequest) {
+        if !self.settled() || !self.sessions.has_session() {
+            self.input.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_apply_sketch(
+                ticket,
+                request.sketch,
+                request.vertices,
+                request.expected,
                 cancel.clone(),
                 move |result| {
                     let _ = proxy.send_event(AppEvent::Applied {
@@ -4455,6 +4494,10 @@ impl App {
             .draft_load_finished(document, committed.is_ok());
         self.edits.draft_load_finished(document, committed.is_ok());
         committed?;
+        // Whatever the picture was replaced by (Apply, Undo, Redo, another
+        // document), forms about the saved objects of the old one are over: a
+        // request made from them could only name the version that was replaced.
+        self.creates.sketch.finish_session_change();
         exports::leave_document(&mut self.exports, &mut self.input);
         // The picture is current; the name on the window is the same fact: the
         // session's logical name (never the private file the picture was read

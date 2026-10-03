@@ -428,3 +428,181 @@ fn a_reader_holding_a_version_keeps_it_through_eviction_and_undo() {
     assert!(!held.exists(), "the file outlived its last reader");
     assert_eq!(files(session.private_directory()).len(), 2);
 }
+
+/// The saved Sketch's vertices with the right-hand side moved by `by` millimetres:
+/// a wider plate, offset and fractional, the same Lines.
+fn widened(path: &Path, by: f64) -> (ObjectId, Vec<ferritecad_document::SketchVertex>) {
+    let reading = read_extrude_source(path).expect("reading");
+    let sketch = reading
+        .sketches
+        .iter()
+        .find(|s| s.refusal.is_none())
+        .expect("an editable Sketch");
+    let vertices = sketch.vertices.clone().expect("vertices");
+    let right = vertices
+        .iter()
+        .map(|v| v.start_mm[0])
+        .fold(f64::MIN, f64::max);
+    let moved = vertices
+        .into_iter()
+        .map(|mut v| {
+            if v.start_mm[0] == right {
+                v.start_mm[0] += by;
+            }
+            v
+        })
+        .collect();
+    (sketch.sketch, moved)
+}
+
+fn width_of(path: &Path) -> f64 {
+    let reading = read_extrude_source(path).expect("reading");
+    let vertices = reading
+        .sketches
+        .iter()
+        .find(|s| s.refusal.is_none())
+        .and_then(|s| s.vertices.clone())
+        .expect("vertices");
+    let xs = vertices.iter().map(|v| v.start_mm[0]);
+    xs.clone().fold(f64::MIN, f64::max) - xs.fold(f64::MAX, f64::min)
+}
+
+fn apply_vertices(
+    session: &mut DocumentSession,
+    sketch: ObjectId,
+    vertices: Vec<ferritecad_document::SketchVertex>,
+    expected: ferritecad_document::DocumentVersion,
+) -> Result<StepCommit, CadError> {
+    let step = session.begin_step().edit_sketch_vertices(
+        sketch,
+        vertices,
+        expected,
+        &mut MockKernel::new(),
+        &OperationContext::default(),
+    )?;
+    session.commit_step(step)
+}
+
+#[test]
+fn a_vertex_edit_is_a_session_step_that_reaches_the_command_lines_result() {
+    let f = fixture();
+    let private = private_root();
+    let mut session = open(&f, private.path(), HistoryLimits::default());
+    let before = bytes(&f.file);
+    let width = width_of(&f.file);
+
+    // Height, then vertices: two steps on one history.
+    apply(&mut session, f.feature, 21.5).expect("height");
+    let current = session.current();
+    let (sketch, vertices) = widened(current.path(), 5.25);
+    let expected = current.version();
+    drop(current);
+    assert_eq!(
+        apply_vertices(&mut session, sketch, vertices.clone(), expected).expect("vertices"),
+        StepCommit::Accepted
+    );
+    assert!(session.is_dirty());
+    assert_eq!(session.undo_depth(), 2);
+    assert_eq!(width_of(session.current().path()), width + 5.25);
+    assert_eq!(height_of(session.current().path()), 21.5);
+    assert_eq!(bytes(&f.file), before, "the user's file is only Save's");
+
+    // The same edit through the command line's operation gives the same model.
+    let peer = f.root.path().join("peer.fcad");
+    let one = f.root.path().join("one.fcad");
+    let ticket_source = {
+        let mut other = open(&f, private.path(), HistoryLimits::default());
+        apply(&mut other, f.feature, 21.5).expect("height");
+        let c = other.current();
+        std::fs::copy(c.path(), &one).expect("copy");
+        c.version()
+    };
+    ferritecad_jobs::edit_sketch_copy(
+        &ferritecad_jobs::EditSketchRequest {
+            source: one.clone(),
+            expected: ticket_source,
+            sketch,
+            vertices,
+            destination: peer.clone(),
+        },
+        &mut MockKernel::new(),
+        &OperationContext::default(),
+    )
+    .expect("peer");
+    let own = ferritecad_document::Document::open_read_only(session.current().path()).expect("own");
+    let theirs = ferritecad_document::Document::open_read_only(&peer).expect("theirs");
+    assert_eq!(
+        own.model_version().expect("model"),
+        theirs.model_version().expect("model"),
+        "the session and the command line made different models"
+    );
+    own.close().expect("close");
+    theirs.close().expect("close");
+
+    // Undo / Redo move over both kinds of step.
+    let undo = session.begin_undo().expect("undo");
+    session.commit_move(undo).expect("moved");
+    assert_eq!(width_of(session.current().path()), width);
+    assert_eq!(height_of(session.current().path()), 21.5);
+    let undo = session.begin_undo().expect("undo");
+    session.commit_move(undo).expect("moved");
+    assert!(!session.is_dirty());
+    let redo = session.begin_redo().expect("redo");
+    session.commit_move(redo).expect("moved");
+    let redo = session.begin_redo().expect("redo");
+    session.commit_move(redo).expect("moved");
+    assert_eq!(width_of(session.current().path()), width + 5.25);
+
+    // A new branch after Undo drops the Redo it replaces, once it has succeeded.
+    let undo = session.begin_undo().expect("undo");
+    session.commit_move(undo).expect("moved");
+    assert!(session.can_redo());
+    let current = session.current();
+    let (sketch, vertices) = widened(current.path(), 2.5);
+    let expected = current.version();
+    drop(current);
+    apply_vertices(&mut session, sketch, vertices, expected).expect("a new branch");
+    assert!(!session.can_redo(), "a new branch must drop the old future");
+}
+
+#[test]
+fn a_vertex_edit_made_from_an_older_version_is_refused_and_changes_nothing() {
+    let f = fixture();
+    let private = private_root();
+    let mut session = open(&f, private.path(), HistoryLimits::default());
+    let opened = session.current();
+    let (sketch, vertices) = widened(opened.path(), 5.25);
+    let old = opened.version();
+    drop(opened);
+    // The document moves on: the form that was opened on `old` is now stale.
+    apply(&mut session, f.feature, 30.0).expect("height");
+    let depth = session.undo_depth();
+    let listing = files(session.private_directory());
+    let refused = apply_vertices(&mut session, sketch, vertices.clone(), old)
+        .expect_err("an old form must not apply to a newer version");
+    assert!(
+        refused.to_string().contains("changed after this form"),
+        "{refused}"
+    );
+    assert_eq!(session.undo_depth(), depth);
+    assert_eq!(files(session.private_directory()), listing, "a file was left");
+
+    // A vertex edit that changes no coordinate is not a step.
+    let current = session.current();
+    let (sketch, same) = widened(current.path(), 0.0);
+    let expected = current.version();
+    drop(current);
+    assert_eq!(
+        apply_vertices(&mut session, sketch, same, expected).expect("a no-op"),
+        StepCommit::NoChange
+    );
+    assert_eq!(session.undo_depth(), depth);
+    // A request the document refuses (a collapsed plate) is refused whole.
+    let current = session.current();
+    let (sketch, collapsed) = widened(current.path(), -1000.0);
+    let expected = current.version();
+    drop(current);
+    assert!(apply_vertices(&mut session, sketch, collapsed, expected).is_err());
+    assert_eq!(session.undo_depth(), depth);
+    assert_eq!(files(session.private_directory()), listing);
+}
