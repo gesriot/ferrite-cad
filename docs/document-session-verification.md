@@ -497,9 +497,41 @@ step runs the solver refusal and the plain-plate gate. Run steps stay under the
 
 ## Limits
 
-Not run in this container: the window itself, macOS, Windows, a second GPU, Cmd+Q
-(AppKit terminates without a close request; the in-app commands and closing the
-window are guarded, `Cmd+Q` is not), a lock-ignoring external writer (the window is
-tested and documented, not closed), crash recovery (none exists), history above the
+Not run in the original cloud container: the window itself, macOS, Windows, a
+second GPU or Cmd+Q. The later macOS review below supplies Quit evidence. The
+lock-ignoring external-writer interval remains tested and documented, not closed;
+crash recovery does not exist. History above the
 bounds in a window (the bound is tested in the library). Milestone 5C, the older OOM
 investigation and the general beta remain open.
+
+
+## Independent macOS review follow-up (PR #81)
+
+The reviewer reproduced the original alias-lock race, deletion of an unrelated
+lock-name file, and acceptance after scene-phase cancellation with executed
+assertion failures. The cloud corrections are code `1731ccf`, followed by docs
+`44ed231`. Review then caught three further failures: an outward leaf symlink
+inside the working folder bypassed the publication guard; a failed first advisory
+lock left an empty, unrecoverable sidecar; cleanup removed a replacement symlink
+that pointed back to the held inode. Each compiled and failed an executed test
+before correction. The guard now checks both the resolved target and the location
+of the directory entry, including filesystem identity of ancestors. A lock's
+cleanup ownership starts at exclusive creation or validated header, and cleanup
+requires a regular directory entry still naming the held inode. The existing
+non-cooperating-writer interval is not claimed closed.
+
+The macOS-only Quit adapter registers the previously absent
+`applicationShouldTerminate:` delegate method, declines immediate AppKit
+termination and queues the normal guarded exit. No delegate method is replaced,
+no dependency added. On `15a960c` plus this isolated fix, a fresh arm64 bundle
+under watchdog performed a real window run: Apply 6.75 → 9.5 mm, Cmd+Q → Cancel
+kept the dirty title and left the source byte-identical; a second Cmd+Q → Save
+closed with exit 0, and the bundled CLI reopened the saved 9.5 mm model. Owned
+PID 35973, peak footprint 190.83 MiB, pressure normal, swap unchanged at 909 MiB.
+The initial pre-test pressure level 2 was waited out without launching a viewer.
+Evidence: `/private/tmp/ferrite-pr81-review/watch-quit.jsonl`, `quit-saved.json`,
+`quit-prompt-ax.txt`, and the failing regression logs in that directory.
+
+The complete Save/Save As/export/conflict GUI scenario on the combined final
+code is still pending at this commit; this focused Quit test does not stand in
+for it. Remote CI of these review changes is also pending.

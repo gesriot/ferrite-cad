@@ -76,15 +76,17 @@ the typed draft, never a second copy of those facts.
 ## Honest limits
 
 * An external writer that ignores the sidecar advisory lock can change the file in
-  the microseconds between Save's last compare and the rename. Cooperating
+  the interval between Save's last compare and the rename. Cooperating
   FerriteCAD savers are serialised and the second gets `Busy`/`Conflict`. The window
   is tested (`a_writer_that_ignores_the_lock_can_win_the_instant_before_the_rename`)
   and is not claimed closed.
 * A crashed process leaves its private directory in the system temporary directory;
   nothing recovers it. No autosave, no persistent revisions, no tabs.
-* On macOS `Cmd+Q` terminates through AppKit without a winit close request, so only
-  closing the window and the in-app commands are guarded; the AppKit menu hook is a
-  later slice.
+* On macOS, AppKit Quit (including `Cmd+Q` and the Quit menu) queues the same
+  Save/Discard/Cancel decision as closing the window. The native callback declines
+  immediate termination; the event loop owns the guarded exit and worker cleanup.
+  It adds only the previously absent delegate decision method and refuses startup
+  if a future winit already supplies one, rather than overriding it.
 * Only the Extrude height is on the session. The other editors join in later slices.
 * This does not complete Milestone 5C or the general beta.
 
@@ -125,4 +127,5 @@ no-solver step of the same workflow.
 * **Height form.** The open form no longer switches off its own *Save new file…*
   on a clean document; the reason shown is "unsaved changes" only when that is
   the reason.
-* **Not done here.** The AppKit `Cmd+Q` hook (done separately by the reviewer).
+* **macOS review.** The AppKit `Cmd+Q` hook is included; the real-window result is
+  recorded in the verification document.

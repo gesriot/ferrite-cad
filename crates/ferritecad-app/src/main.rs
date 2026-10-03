@@ -35,6 +35,8 @@ mod dialogs;
 mod edits;
 mod exports;
 mod fillets;
+#[cfg(target_os = "macos")]
+mod macos_quit;
 mod sessions;
 mod sketch;
 
@@ -99,7 +101,10 @@ fn main() -> Result<()> {
     // redraw explicitly.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::new(event_loop.create_proxy(), document);
+    let proxy = event_loop.create_proxy();
+    #[cfg(target_os = "macos")]
+    macos_quit::install(proxy.clone())?;
+    let mut app = App::new(proxy, document);
     event_loop
         .run_app(&mut app)
         .map_err(|error| ferritecad_types::CadError::rendering_because("running the window", error))
@@ -205,6 +210,8 @@ fn document_argument(arguments: impl Iterator<Item = OsString>) -> Result<Option
 /// A wake-up requested from outside winit's event-loop thread.
 #[derive(Debug)]
 enum AppEvent {
+    #[cfg(target_os = "macos")]
+    QuitRequested,
     RepaintAt(Instant),
     /// A document has finished loading, or has finished failing to.
     ///
@@ -2414,6 +2421,8 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
+            #[cfg(target_os = "macos")]
+            AppEvent::QuitRequested => self.request_quit(event_loop),
             AppEvent::RepaintAt(deadline) => self.request_frame_at(event_loop, deadline),
             AppEvent::Progress { generation } => {
                 advance_load(&mut self.loads, &mut self.input, generation);
@@ -2689,11 +2698,7 @@ impl ApplicationHandler<AppEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                // With unsaved changes the user is asked first. Cancel keeps the
-                // window; Save closes it once the save has succeeded.
-                if self.guard(sessions::Continuation::Quit) {
-                    event_loop.exit();
-                }
+                self.request_quit(event_loop);
                 return;
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -3348,6 +3353,15 @@ impl App {
     /// As [`Self::settled`], and no form is open over the picture it describes.
     fn document_idle(&self) -> bool {
         self.settled() && !self.edits.busy()
+    }
+
+    /// Native Quit and window close share the same guarded exit.
+    fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
+        if self.guard(sessions::Continuation::Quit) {
+            event_loop.exit();
+        } else {
+            self.request_frame_now(event_loop);
+        }
     }
 
     /// Whether replacing the open document is allowed right now, asking the user

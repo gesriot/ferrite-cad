@@ -471,10 +471,21 @@ const LOCK_HEADER: &[u8] = b"FERRITECAD-SAVE-LOCK 1\n";
 struct SaveLock {
     path: PathBuf,
     file: File,
+    // Fresh creation proves ownership even before its header is written. An
+    // existing file becomes ours only after its header has been verified.
+    remove_on_drop: bool,
 }
 
 impl SaveLock {
     fn acquire(target: &Path, name: &str) -> Result<Self, SaveFailure> {
+        Self::acquire_with(target, name, |_, _| {})
+    }
+
+    fn acquire_with(
+        target: &Path,
+        name: &str,
+        mut after_open: impl FnMut(&Path, bool),
+    ) -> Result<Self, SaveFailure> {
         use std::io::{Read as _, Write as _};
 
         let parent = target
@@ -498,7 +509,7 @@ impl SaveLock {
             SaveFailure::failed(CadError::io(format!("{what} {}", path.display()), e))
         };
         for _ in 0..4 {
-            let (mut file, fresh) = match std::fs::OpenOptions::new()
+            let (file, fresh) = match std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
@@ -517,7 +528,13 @@ impl SaveLock {
                 }
                 Err(error) => return Err(io("creating", error)),
             };
-            match file.try_lock() {
+            let mut lock = Self {
+                path: path.clone(),
+                file,
+                remove_on_drop: fresh,
+            };
+            after_open(&path, fresh);
+            match lock.file.try_lock() {
                 Ok(()) => {}
                 Err(std::fs::TryLockError::WouldBlock) => return Err(busy()),
                 // No advisory locks here: the compare alone, as documented.
@@ -526,26 +543,28 @@ impl SaveLock {
                 Err(std::fs::TryLockError::Error(error)) => return Err(io("locking", error)),
             }
             if fresh {
-                if let Err(error) = file.write_all(LOCK_HEADER).and_then(|()| file.flush()) {
-                    let _ = std::fs::remove_file(&path);
-                    return Err(io("writing", error));
-                }
+                lock.file
+                    .write_all(LOCK_HEADER)
+                    .and_then(|()| lock.file.flush())
+                    .map_err(|error| io("writing", error))?;
             } else {
                 let mut found = vec![0u8; LOCK_HEADER.len()];
-                let read = file.read_exact(&mut found);
+                let read = lock.file.read_exact(&mut found);
                 if read.is_err() || found != LOCK_HEADER {
                     return Err(unrelated(&path));
                 }
+                lock.remove_on_drop = true;
             }
             // The saver before us removes the name when it finishes. A lock taken
             // on a file that no longer has the name is a lock on nothing.
             let held = same_file::Handle::from_file(
-                file.try_clone()
+                lock.file
+                    .try_clone()
                     .map_err(|e| io("duplicating a handle to", e))?,
             );
             let named = same_file::Handle::from_path(&path);
             if matches!((held, named), (Ok(held), Ok(named)) if held == named) {
-                return Ok(Self { path, file });
+                return Ok(lock);
             }
         }
         Err(busy())
@@ -564,6 +583,11 @@ fn unrelated(path: &Path) -> SaveFailure {
 
 impl Drop for SaveLock {
     fn drop(&mut self) {
+        if !self.remove_on_drop
+            || !std::fs::symlink_metadata(&self.path).is_ok_and(|metadata| metadata.is_file())
+        {
+            return;
+        }
         // The name goes while the lock is still held, so nobody can lock a stale
         // name, and only if it still names the file this lock holds: a name that
         // was replaced by something else belongs to whoever put it there.
@@ -575,5 +599,61 @@ impl Drop for SaveLock {
         if matches!(still_ours, Ok(true)) {
             let _ = std::fs::remove_file(&self.path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_first_lock_does_not_leave_an_empty_unrecoverable_sidecar() {
+        let root = tempfile::tempdir().expect("directory");
+        let target = root.path().join("model.fcad");
+        std::fs::write(&target, b"source").expect("file");
+        let lock_path = root.path().join(".model.fcad.ferritecad-save-lock");
+        let mut contender = None;
+        let failed = SaveLock::acquire_with(&target, "model.fcad", |path, fresh| {
+            assert!(fresh);
+            // Another saver opened the newly created, still-empty name and
+            // reached its advisory lock first. It has not read the header yet.
+            let file = File::open(path).expect("contender");
+            file.try_lock().expect("first to lock");
+            contender = Some(file);
+        });
+        assert!(matches!(
+            failed,
+            Err(SaveFailure {
+                kind: SaveFailureKind::Busy,
+                ..
+            })
+        ));
+        drop(contender);
+        assert!(
+            !lock_path.exists(),
+            "failed creator left an empty unowned file that blocks every later Save"
+        );
+        drop(SaveLock::acquire(&target, "model.fcad").expect("retry works"));
+        assert!(!lock_path.exists());
+        assert_eq!(std::fs::read(target).expect("source"), b"source");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_keeps_a_replacement_symlink_even_if_it_targets_the_held_inode() {
+        let root = tempfile::tempdir().expect("directory");
+        let target = root.path().join("model.fcad");
+        let lock = SaveLock::acquire(&target, "model.fcad").expect("lock");
+        let path = lock.path.clone();
+        let moved = root.path().join("moved-lock");
+        std::fs::rename(&path, &moved).expect("move held inode");
+        std::os::unix::fs::symlink(&moved, &path).expect("someone else's directory entry");
+        drop(lock);
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .expect("replacement is preserved")
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(moved).expect("held file"), LOCK_HEADER);
     }
 }

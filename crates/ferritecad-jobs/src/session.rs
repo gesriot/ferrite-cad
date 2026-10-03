@@ -587,5 +587,16 @@ fn resolved(path: &Path) -> PathBuf {
 /// Whether `path` is `directory` or lies under it, by what each really names
 /// (links followed), whether or not `path` exists yet.
 pub fn is_inside(directory: &Path, path: &Path) -> bool {
-    resolved(path).starts_with(resolved(directory))
+    let directory = resolved(directory);
+    let inside = |candidate: PathBuf| {
+        candidate.starts_with(&directory)
+            || candidate
+                .ancestors()
+                .any(|ancestor| same_file::is_same_file(&directory, ancestor).unwrap_or(false))
+    };
+    // Canonical spelling alone is not filesystem identity: APFS and Windows
+    // can resolve differently cased names to the same directory. Also check the
+    // entry's parent, since replacing an outward leaf symlink writes *here*,
+    // even when following that symlink resolves outside the disposable folder.
+    inside(resolved(path)) || path.parent().is_some_and(|parent| inside(resolved(parent)))
 }

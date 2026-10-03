@@ -111,7 +111,7 @@ one filesystem operation. Cooperating FerriteCAD savers are serialised by an
 advisory lock beside the file held across the compare and the rename, and the
 second one gets a typed `Busy`, or `Conflict` once the first has published. An
 external writer that ignores the lock can still change the file between the
-compare and the rename; that window is microseconds wide, it is tested, and it is
+compare and the rename; that interval has no promised duration, it is tested, and it is
 not claimed to be closed.
 
 ## Not in this slice
@@ -119,5 +119,5 @@ not claimed to be closed.
 Autosave and crash recovery (a crashed process leaves its private directory in the
 system temporary directory; nothing reopens it), persistent revisions, multiple
 documents or tabs, a feature tree and inspector, the other editors joining the
-session, the AppKit `Cmd+Q` menu hook. Milestone 5C and the general beta are not
-complete.
+session. AppKit Quit now enters the same guarded event-loop route as window
+close. Milestone 5C and the general beta are not complete.

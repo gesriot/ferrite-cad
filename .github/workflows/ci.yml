@@ -743,17 +743,27 @@ jobs:
             a_lock_left_by_a_dead_saver_is_taken_over_and_removed \
             a_name_that_was_replaced_while_held_is_left_to_whoever_put_it_there \
             a_file_made_read_only_after_the_copy_is_refused_under_the_lock \
-            save_as_never_writes_into_the_sessions_own_disposable_directory"
+            save_as_never_writes_into_the_sessions_own_disposable_directory \
+            the_working_folder_guard_uses_filesystem_identity_for_case_aliases"
           if [ "$RUNNER_OS" != Windows ]; then
             saves="$saves a_symlink_is_saved_through_and_a_hard_linked_file_is_refused \
               two_names_for_one_file_meet_at_one_lock \
               a_link_with_the_lock_name_is_neither_followed_nor_removed \
               a_hard_link_made_after_the_copy_is_refused_under_the_lock \
-              a_link_retargeted_after_the_copy_is_not_saved_through"
+              a_link_retargeted_after_the_copy_is_not_saved_through \
+              an_outward_leaf_symlink_still_occupies_the_working_folder"
           fi
           for gate in $saves; do
             cargo test -p ferritecad-jobs --test save "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee save-job.log
             grep -Eq "^test $gate \.\.\. ok$" save-job.log
+          done
+          locks="save::tests::failed_first_lock_does_not_leave_an_empty_unrecoverable_sidecar"
+          if [ "$RUNNER_OS" != Windows ]; then
+            locks="$locks save::tests::cleanup_keeps_a_replacement_symlink_even_if_it_targets_the_held_inode"
+          fi
+          for gate in $locks; do
+            cargo test -p ferritecad-jobs --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee save-lock.log
+            grep -Fq "test $gate ... ok" save-lock.log
           done
           gate=model_version_sets_only_the_modified_stamp_aside
           cargo test -p ferritecad-document --test snapshot "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee model-version.log

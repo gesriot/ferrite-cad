@@ -4372,9 +4372,9 @@ Cut, Fillet, Chamfer radius/distance, circles, Revolve) onto the session one
 family at a time, so they edit the accepted document instead of being disabled
 while it is dirty. (2) Autosave and crash recovery; today a crashed process leaves
 its private directory in the system temporary directory and nothing reopens it.
-(3) Persistent revisions, a revision list, tabs. (4) The AppKit menu hook so that
-`Cmd+Q` takes the Save/Discard/Cancel path (it bypasses the window close request).
-(5) Close the lock-ignoring-writer window only if a platform primitive allows a
-compare-and-replace; until then it is documented, not closed. (6) A real-window
+(3) Persistent revisions, a revision list, tabs. The macOS review added the AppKit
+Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
+(4) Close the lock-ignoring-writer window only if a platform primitive allows a
+compare-and-replace; until then it is documented, not closed. (5) A real-window
 run on the Mac of the scenario in the verification record. None of this completes
 Milestone 5C, the older OOM investigation or the general beta.

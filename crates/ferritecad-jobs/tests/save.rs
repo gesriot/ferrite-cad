@@ -745,3 +745,53 @@ fn save_as_never_writes_into_the_sessions_own_disposable_directory() {
         .expect("a place of the user's own");
     assert_eq!(height_of(&ok), 22.0);
 }
+
+#[test]
+fn the_working_folder_guard_uses_filesystem_identity_for_case_aliases() {
+    let f = fixture();
+    let session = open(&f);
+    let private = session.private_directory();
+    let alias = private.with_file_name(
+        private
+            .file_name()
+            .expect("directory name")
+            .to_string_lossy()
+            .to_uppercase(),
+    );
+    let attempt = alias.join("must-not-disappear.fcad");
+    if same_file::is_same_file(private, &alias).unwrap_or(false) {
+        let before = names(private);
+        assert!(
+            session.owns(&attempt),
+            "a differently cased name is the same working folder"
+        );
+        let failure = session
+            .begin_save(SaveTarget::As(attempt.clone()))
+            .run(&OperationContext::default())
+            .expect_err("no publication into the working folder");
+        assert_eq!(failure.kind, SaveFailureKind::Failed);
+        assert!(!attempt.exists());
+        assert_eq!(names(private), before);
+    } else {
+        // A case-sensitive filesystem treats this as an unrelated sibling.
+        assert!(!session.owns(&attempt));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_outward_leaf_symlink_still_occupies_the_working_folder() {
+    let f = fixture();
+    let session = open(&f);
+    let outside = f.root.path().join("outside.fbx");
+    std::fs::write(&outside, b"keep outside").expect("outside file");
+    let entry = session.private_directory().join("output.fbx");
+    std::os::unix::fs::symlink(&outside, &entry).expect("outward link");
+    // A force export replaces the directory entry, not the symlink's target.
+    // Such an export would disappear with this session despite resolving outside.
+    assert!(
+        session.owns(&entry),
+        "publication would replace an entry inside the disposable folder"
+    );
+    assert_eq!(bytes(&outside), b"keep outside");
+}
