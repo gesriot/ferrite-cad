@@ -923,6 +923,29 @@ fn cancel_load(loads: &mut Loads, input: &mut ViewportInput) -> bool {
     changed
 }
 
+/// What the height form may offer this frame, from the state the window really has.
+///
+/// Starting a *new* form needs no form open (`Edits::busy`); the open form's own
+/// buttons must not be switched off by the form being open. The copy workflow
+/// needs a clean, idle document and no copy already running; Apply needs only an
+/// idle one.
+fn height_state(
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+) -> ferritecad_ui::HeightState {
+    let idle = !sessions.busy() && can_begin_new(creates, loads, exports);
+    ferritecad_ui::HeightState {
+        running: false,
+        can_cancel: false,
+        apply: sessions.has_session() && idle,
+        copy: idle && !edits.running() && !sessions.dirty(),
+        unsaved: sessions.dirty(),
+    }
+}
+
 /// New is serialized with document loads and exports. Viewing remains available.
 fn can_begin_new(creates: &creates::Creates, loads: &Loads, exports: &exports::Exports) -> bool {
     !creates.busy()
@@ -2793,14 +2816,13 @@ impl ApplicationHandler<AppEvent> for App {
                     && !self.sessions.busy()
                     && !self.sessions.dirty()
                     && can_begin_new(&self.creates, &self.loads, &self.exports);
-                let height = ferritecad_ui::HeightState {
-                    running: false,
-                    can_cancel: false,
-                    apply: self.sessions.has_session()
-                        && !self.sessions.busy()
-                        && can_begin_new(&self.creates, &self.loads, &self.exports),
-                    copy: can_edit && !self.sessions.dirty(),
-                };
+                let height = height_state(
+                    &self.edits,
+                    &self.sessions,
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -18868,6 +18890,87 @@ mod tests {
             document_command(&Key::Named(NamedKey::Escape), primary, false),
             None
         );
+    }
+
+    /// The legacy copy workflow in a clean session: the open height form must not
+    /// switch off its own Save button, and must not claim unsaved changes. Computed
+    /// by the window's own function from real state, not typed in by hand.
+    #[test]
+    fn an_open_height_form_keeps_the_copy_workflow_available_on_a_clean_document() {
+        use ferritecad_jobs::{
+            CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,
+            read_extrude_source,
+        };
+        let root = tempfile::tempdir().expect("directory");
+        let private = tempfile::tempdir().expect("private");
+        let file = root.path().join("plate.fcad");
+        create_document(
+            CreateDocumentRequest::new(
+                &file,
+                NewDocument::SamplePlate(PlateSize {
+                    width: 80.0,
+                    depth: 40.0,
+                    height: 12.0,
+                }),
+                "keep",
+            ),
+            &OperationContext::default(),
+        )
+        .expect("a plate");
+        let reading = read_extrude_source(&file).expect("reading");
+        let mut sessions = sessions::Sessions::default();
+        sessions.adopt(
+            ferritecad_jobs::DocumentSession::open_in(
+                private.path(),
+                &file,
+                HistoryLimits::default(),
+            )
+            .expect("session"),
+        );
+        let (creates, loads, exports) = (
+            creates::Creates::default(),
+            Loads::default(),
+            exports::Exports::default(),
+        );
+        let mut edits = edits::Edits::default();
+
+        let closed = height_state(&edits, &sessions, &creates, &loads, &exports);
+        assert!(closed.copy && closed.apply && !closed.unsaved);
+        // The form is open: a second form may not start, but this one's buttons stay.
+        assert!(edits.begin(&file, &reading));
+        assert!(edits.busy(), "an open form is busy for starting another");
+        let open = height_state(&edits, &sessions, &creates, &loads, &exports);
+        assert!(
+            open.copy,
+            "the open form switched off its own Save new file"
+        );
+        assert!(open.apply && !open.unsaved);
+
+        // Unsaved changes: the copy workflow goes, with the reason.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let feature = reading.features[0].feature;
+        let generation = sessions
+            .begin_apply(|ticket, _, _| {
+                std::thread::spawn(move || {
+                    tx.send(ticket.edit_extrude_height(
+                        feature,
+                        25.0,
+                        &mut ferritecad_kernel::mock::MockKernel::new(),
+                        &OperationContext::default(),
+                    ))
+                    .expect("deliver");
+                })
+            })
+            .expect("started");
+        let produced = rx.recv().expect("answer");
+        assert!(matches!(
+            sessions.finish_apply(generation, produced),
+            sessions::Edited::Show(_)
+        ));
+        sessions.bind(sessions::Bind::Staged).expect("shown");
+        assert!(sessions.finish_scene(generation, Ok(())));
+        let dirty = height_state(&edits, &sessions, &creates, &loads, &exports);
+        assert!(!dirty.copy && dirty.unsaved && dirty.apply);
     }
 
     /// §30A: the window is named for the user's file with a mark while there are

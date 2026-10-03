@@ -28,6 +28,9 @@ pub struct HeightState {
     /// file as the document. With unsaved changes that would silently drop them,
     /// so it is not offered until they are saved or undone.
     pub copy: bool,
+    /// Why `copy` is off, when it is: unsaved changes (the only reason worth the
+    /// words), or just that something else is running.
+    pub unsaved: bool,
 }
 
 impl Default for HeightState {
@@ -37,6 +40,7 @@ impl Default for HeightState {
             can_cancel: false,
             apply: false,
             copy: true,
+            unsaved: false,
         }
     }
 }
@@ -152,10 +156,13 @@ pub fn edit_extrude_panel(
                  disk changes only when you Save.",
             );
             if !offer.copy {
-                ui.label(
+                ui.label(if offer.unsaved {
                     "Saving a copy as a new file is unavailable while the document has unsaved \
-                     changes: Save or Undo them first.",
-                );
+                     changes: Save or Undo them first."
+                } else {
+                    "Saving a copy as a new file is unavailable while another operation is \
+                     running."
+                });
             }
             if let Some(reason) = &form.refusal {
                 egui::ScrollArea::vertical()
