@@ -42,7 +42,10 @@ use ferritecad_document::{Document, DocumentVersion};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
-use crate::edit::{EditExtrudeRequest, EditSketchRequest, edit_extrude_copy, edit_sketch_copy};
+use crate::edit::{
+    EditExtrudeRequest, EditSketchConstraintsRequest, EditSketchRequest, edit_extrude_copy,
+    edit_sketch_constraints_copy, edit_sketch_copy,
+};
 use crate::save::{SavePlan, SaveTarget, Saved};
 
 /// How much accepted history a session keeps.
@@ -522,6 +525,46 @@ impl StepTicket {
                     expected,
                     sketch,
                     vertices,
+                    destination: destination.to_path_buf(),
+                },
+                kernel,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Adds and removes constraints of one saved Sketch: the reused
+    /// `edit-sketch-constraints-copy` operation, reading the current version and
+    /// writing the next, so the result is what the command line makes from the same
+    /// document (the solver decides the shape; stored coordinates stay the
+    /// solver's starting approximation).
+    ///
+    /// `expected` is the version the form that asked for this was opened on; a
+    /// request about any other version is refused, as for the vertex edit. An
+    /// edit that leaves the model as it was is not a step (`changes_model`); a
+    /// replaced constraint is a different UUID and so is a step even when the
+    /// solved drawing is the same.
+    pub fn edit_sketch_constraints<K: GeometryKernel + ?Sized>(
+        self,
+        sketch: ObjectId,
+        edits: ferritecad_document::SketchConstraintEdits,
+        expected: DocumentVersion,
+        kernel: &mut K,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        if expected != self.source.version() {
+            return Err(CadError::input(
+                "the document changed after this form was opened; open it again to edit the current version",
+            ));
+        }
+        self.run(|source, expected, destination| {
+            edit_sketch_constraints_copy(
+                &EditSketchConstraintsRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    sketch,
+                    edits,
                     destination: destination.to_path_buf(),
                 },
                 kernel,

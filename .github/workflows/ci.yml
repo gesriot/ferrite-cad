@@ -794,6 +794,12 @@ jobs:
             sketch::tests::the_open_sketch_form_can_apply_through_the_windows_busy_guard \
             sketch::tests::with_unsaved_changes_the_copy_workflow_is_withheld_but_apply_is_not \
             sketch::tests::a_new_accepted_version_ends_the_forms_about_the_old_one_and_only_those \
+            constraints::tests::session_apply::the_open_form_applies_through_the_windows_own_predicate_and_keeps_its_draft \
+            constraints::tests::session_apply::nothing_else_running_or_open_lets_the_command_start \
+            constraints::tests::session_apply::an_empty_draft_offers_no_apply_and_keeps_the_redo_of_the_draft \
+            constraints::tests::session_apply::with_unsaved_changes_save_copy_is_withheld_with_words_and_apply_is_not \
+            constraints::tests::session_apply::a_new_accepted_version_ends_the_draft_and_keeps_what_the_window_said \
+            constraints::tests::session_apply::the_form_opens_on_a_document_with_unsaved_changes_only_when_the_window_says_so \
             tests::document_undo_waits_for_an_open_form \
             tests::document_chords_are_the_platforms_and_leave_text_undo_to_the_field \
             tests::the_title_marks_unsaved_changes_and_never_names_a_private_file \

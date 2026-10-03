@@ -181,6 +181,11 @@ impl Creates {
         !self.running() && self.form.is_none() && self.sketch.editing_saved_vertices()
     }
 
+    /// The constraints form is the caller of its own Apply, like the Sketch form.
+    pub(crate) fn can_apply_constraints(&self) -> bool {
+        !self.running() && self.form.is_none() && self.sketch.constraints.active()
+    }
+
     pub(crate) fn can_cancel(&self) -> bool {
         self.running() && !self.cancel_requested
     }

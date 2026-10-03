@@ -807,7 +807,8 @@ jobs:
           # and the document stays clean, and the plain plate still goes through.
           for gate in sessions::tests::without_the_solver_an_apply_to_a_constrained_plate_is_refused_and_nothing_changes \
             sessions::tests::native_an_ordinary_plate_is_applied_undone_exported_and_saved_like_the_command_line \
-            sessions::tests::native_vertices_of_an_ordinary_offset_polygon_are_applied_like_the_command_line
+            sessions::tests::native_vertices_of_an_ordinary_offset_polygon_are_applied_like_the_command_line \
+            sessions::tests::without_the_solver_a_constraints_apply_is_refused_and_nothing_changes
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee session-no-solver.log
@@ -974,11 +975,25 @@ jobs:
             sessions::tests::native_open_draws_from_the_sessions_own_copy_and_a_failed_open_leaves_nothing \
             sessions::tests::native_vertices_of_an_ordinary_offset_polygon_are_applied_like_the_command_line \
             sessions::tests::native_vertices_of_a_rectangle_under_a_chamfer_keep_the_chamfer_like_the_command_line \
-            sessions::tests::native_a_refused_vertex_edit_changes_nothing_and_a_constrained_plate_offers_none
+            sessions::tests::native_a_refused_vertex_edit_changes_nothing_and_a_constrained_plate_offers_none \
+            sessions::tests::native_replace_length_of_a_dimensioned_plate_under_a_chamfer_is_applied_like_the_command_line \
+            sessions::tests::native_radius_and_fixed_centre_of_a_circle_are_applied_like_the_command_line \
+            sessions::tests::native_a_solver_conflict_or_a_chamfer_that_no_longer_fits_changes_nothing
           do
             cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee session-native.log
             if grep -q 'skipped:' session-native.log || ! grep -Fq "test $gate ... ok" session-native.log; then
+              echo "::error::${gate} did not run and pass on this platform"
+              exit 1
+            fi
+          done
+          # §30C: the session step of the constraint edit itself, with the real solver.
+          for gate in a_constraint_edit_is_a_session_step_beside_height_with_undo_and_redo \
+            a_constraint_edit_from_an_older_version_or_without_edits_changes_nothing
+          do
+            cargo test --release --features planegcs -p ferritecad-jobs --test session "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-constraints-job.log
+            if grep -q 'skipped:' session-constraints-job.log || ! grep -Eq "^test $gate \.\.\. ok$" session-constraints-job.log; then
               echo "::error::${gate} did not run and pass on this platform"
               exit 1
             fi

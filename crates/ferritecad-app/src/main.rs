@@ -990,6 +990,21 @@ fn can_apply_sketch(
         && !sessions.busy()
 }
 
+/// Shared by the constraints form's Apply button and the command that starts its worker.
+fn can_apply_constraints(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    creates.can_apply_constraints()
+        && document_io_idle(loads, exports)
+        && !edits.busy()
+        && sessions.has_session()
+        && !sessions.busy()
+}
+
 fn ask_new(
     creates: &mut creates::Creates,
     loads: &Loads,
@@ -2879,6 +2894,13 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.edits,
                     &self.sessions,
                 );
+                let constraints_apply = can_apply_constraints(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -2892,6 +2914,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.creates.sketch.set_session(
                     session_idle && !self.edits.busy(),
                     sketch_apply,
+                    self.sessions.dirty(),
+                );
+                self.creates.sketch.constraints.set_session(
+                    session_idle && !self.edits.busy(),
+                    constraints_apply,
                     self.sessions.dirty(),
                 );
                 let (form, sketch) = self.creates.forms();
@@ -2972,6 +2999,10 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.constraints.take_request() {
                             self.ask_where_to_edit_constraints(request);
+                        }
+                        if let Some(request) = self.creates.sketch.constraints.take_apply_request()
+                        {
+                            self.apply_constraints(request);
                         }
                         if let Some(request) = self.creates.sketch.take_apply_request() {
                             self.apply_sketch(request);
@@ -3596,6 +3627,38 @@ impl App {
                 ticket,
                 request.sketch,
                 request.vertices,
+                request.expected,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
+    /// Apply the constraint draft of the saved Sketch to the open document. No file
+    /// dialog; the same session step and two-phase scene as Apply height.
+    fn apply_constraints(&mut self, request: ferritecad_jobs::EditSketchConstraintsRequest) {
+        if !can_apply_constraints(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
+            self.input.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_apply_constraints(
+                ticket,
+                request.sketch,
+                request.edits,
                 request.expected,
                 cancel.clone(),
                 move |result| {
