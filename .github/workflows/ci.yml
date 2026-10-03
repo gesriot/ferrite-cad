@@ -775,6 +775,7 @@ jobs:
             sessions::tests::a_save_still_running_when_another_document_is_adopted_never_moves_its_checkpoint \
             sessions::tests::an_export_keeps_its_working_copy_alive_without_blocking_the_window \
             sessions::tests::a_public_export_into_the_working_folder_is_refused_before_anything_is_written \
+            tests::an_open_height_form_keeps_the_copy_workflow_available_on_a_clean_document \
             tests::document_chords_are_the_platforms_and_leave_text_undo_to_the_field \
             tests::the_title_marks_unsaved_changes_and_never_names_a_private_file \
             dialogs::tests::only_a_clear_save_or_discard_is_not_a_cancel \

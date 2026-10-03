@@ -2493,6 +2493,7 @@ mod tests {
         let dirty = ferritecad_ui::HeightState {
             apply: true,
             copy: false,
+            unsaved: true,
             ..Default::default()
         };
         let frame = |e: &mut Edits, events, offer| {
@@ -2577,6 +2578,14 @@ mod tests {
             &out,
             "unavailable while the document has unsaved changes"
         ));
+        // Off for another reason, the words do not claim unsaved changes.
+        let busy = ferritecad_ui::HeightState {
+            unsaved: false,
+            ..dirty
+        };
+        let out = frame(&mut e, vec![], busy);
+        assert!(painted(&out, "another operation is running"));
+        assert!(!painted(&out, "unsaved changes"));
         assert_ne!(
             press(&mut e, "Save new file…", dirty),
             ferritecad_ui::EditChoice::Save,
