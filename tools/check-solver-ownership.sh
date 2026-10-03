@@ -98,9 +98,18 @@ fi
 [ -d "${APP}/planegcs-bridge" ] \
     && fail "${APP}/planegcs-bridge exists; the C bridge belongs to ${PRODUCT}"
 
+# The macOS Quit adapter talks only to AppKit's Objective-C runtime. Its
+# applicationShouldTerminate callback must veto the OS's immediate exit until
+# the shared unsaved-document guard finishes. It does not own a solver boundary.
+# Exempt only this exact file from the generic C/unsafe spelling ban; solver
+# symbols remain forbidden there too, as do new FFI files anywhere else.
 for forbidden in 'extern "C"' 'unsafe' 'fc_gcs_' 'link_name' '#[link'; do
-    if grep -rqnF "${forbidden}" "${APP}/src" "${APP}/tests"; then
-        grep -rnF "${forbidden}" "${APP}/src" "${APP}/tests" >&2
+    matches=$(grep -rnF "${forbidden}" "${APP}/src" "${APP}/tests" || true)
+    if [ "${forbidden}" != 'fc_gcs_' ]; then
+        matches=$(printf '%s\n' "$matches" | grep -vF "${APP}/src/macos_quit.rs:" || true)
+    fi
+    if [ -n "$matches" ]; then
+        printf '%s\n' "$matches" >&2
         fail "${APP} contains ${forbidden}; the FFI and its lifetime belong to ${PRODUCT}"
     fi
 done

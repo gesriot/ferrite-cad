@@ -71,6 +71,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
+use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowId};
 
 fn main() -> Result<()> {
@@ -2710,10 +2711,20 @@ impl ApplicationHandler<AppEvent> for App {
             // stays the field's.
             WindowEvent::KeyboardInput { ref event, .. }
                 if event.state == ElementState::Pressed
-                    && document_command(&event.logical_key, self.modifiers, response.consumed)
-                        .is_some() =>
+                    && document_command(
+                        &event.logical_key,
+                        event.text_with_all_modifiers(),
+                        self.modifiers,
+                        response.consumed,
+                    )
+                    .is_some() =>
             {
-                match document_command(&event.logical_key, self.modifiers, response.consumed) {
+                match document_command(
+                    &event.logical_key,
+                    event.text_with_all_modifiers(),
+                    self.modifiers,
+                    response.consumed,
+                ) {
                     Some(DocumentCommand::Save) => self.save_document(),
                     Some(DocumentCommand::SaveAs) => self.ask_where_to_save_as(),
                     Some(DocumentCommand::Undo) => self.move_document(true),
@@ -2734,7 +2745,13 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 self.frames.frame_started();
-                let line = self.loads.status().line();
+                // Save As changes the logical name without opening a new scene.
+                // Preserve pending/failed Open messages, but name the accepted
+                // session rather than the last successfully opened filename.
+                let line = match (self.loads.status(), self.sessions.logical_path()) {
+                    (Status::Ready { .. }, Some(path)) => short_name(path),
+                    (status, _) => status.line(),
+                };
                 // Read from the fields rather than through `self`, which `live`
                 // holds: the same two questions `settled` and `document_idle` ask.
                 let settled = can_begin_new(&self.creates, &self.loads, &self.exports)
@@ -4999,6 +5016,7 @@ enum DocumentCommand {
 /// one. Save and Save As are not text commands and are taken regardless.
 fn document_command(
     key: &Key,
+    text_with_modifiers: Option<&str>,
     modifiers: winit::keyboard::ModifiersState,
     claimed_by_ui: bool,
 ) -> Option<DocumentCommand> {
@@ -5010,8 +5028,18 @@ fn document_command(
     if !primary || modifiers.alt_key() {
         return None;
     }
-    let Key::Character(text) = key else {
+    let Key::Character(logical_text) = key else {
         return None;
+    };
+    // macOS maps Command chords through the active layout's command mapping.
+    // For example, Russian logical ы/я have Command text s/z. Respect the OS's
+    // mapping (also for Dvorak) rather than guessing a US physical-key location.
+    // Ctrl text on other platforms can be a control character, so keep their
+    // logical key path unchanged.
+    let text = if cfg!(target_os = "macos") {
+        text_with_modifiers.unwrap_or(logical_text.as_str())
+    } else {
+        logical_text.as_str()
     };
     let shift = modifiers.shift_key();
     if text.eq_ignore_ascii_case("s") {
@@ -18852,23 +18880,23 @@ mod tests {
         let key = |c: &str| Key::Character(c.into());
 
         assert_eq!(
-            document_command(&key("s"), primary, false),
+            document_command(&key("s"), None, primary, false),
             Some(DocumentCommand::Save)
         );
         assert_eq!(
-            document_command(&key("S"), primary | Mods::SHIFT, false),
+            document_command(&key("S"), None, primary | Mods::SHIFT, false),
             Some(DocumentCommand::SaveAs)
         );
         assert_eq!(
-            document_command(&key("z"), primary, false),
+            document_command(&key("z"), None, primary, false),
             Some(DocumentCommand::Undo)
         );
         assert_eq!(
-            document_command(&key("Z"), primary | Mods::SHIFT, false),
+            document_command(&key("Z"), None, primary | Mods::SHIFT, false),
             Some(DocumentCommand::Redo)
         );
         assert_eq!(
-            document_command(&key("y"), primary, false),
+            document_command(&key("y"), None, primary, false),
             if cfg!(target_os = "macos") {
                 None
             } else {
@@ -18876,16 +18904,40 @@ mod tests {
             }
         );
 
-        // A text field has the keyboard: its Undo and Redo are its own; Save is not a
-        // text command and still reaches the document.
-        assert_eq!(document_command(&key("z"), primary, true), None);
+        // Actual macOS Russian-layout events: logical ы/я, Command text s/z.
+        // Use that OS-provided command mapping, not a US physical-key fallback.
+        for (logical, command, shift, expected) in [
+            ("ы", "s", false, DocumentCommand::Save),
+            ("Ы", "S", true, DocumentCommand::SaveAs),
+            ("я", "z", false, DocumentCommand::Undo),
+            ("Я", "Z", true, DocumentCommand::Redo),
+        ] {
+            let mods = primary | if shift { Mods::SHIFT } else { Mods::empty() };
+            assert_eq!(
+                document_command(&key(logical), Some(command), mods, false),
+                cfg!(target_os = "macos").then_some(expected),
+            );
+        }
+        assert_eq!(document_command(&key("я"), Some("z"), primary, true), None);
         assert_eq!(
-            document_command(&key("Z"), primary | Mods::SHIFT, true),
+            document_command(&key("ы"), Some("s"), Mods::empty(), false),
             None
         );
-        assert_eq!(document_command(&key("y"), primary, true), None);
         assert_eq!(
-            document_command(&key("s"), primary, true),
+            document_command(&key("ы"), Some("s"), primary | Mods::ALT, false),
+            None
+        );
+
+        // A text field has the keyboard: its Undo and Redo are its own; Save is not a
+        // text command and still reaches the document.
+        assert_eq!(document_command(&key("z"), None, primary, true), None);
+        assert_eq!(
+            document_command(&key("Z"), None, primary | Mods::SHIFT, true),
+            None
+        );
+        assert_eq!(document_command(&key("y"), None, primary, true), None);
+        assert_eq!(
+            document_command(&key("s"), None, primary, true),
             Some(DocumentCommand::Save)
         );
 
@@ -18894,14 +18946,14 @@ mod tests {
         for mods in [Mods::empty(), Mods::SHIFT, other, primary | Mods::ALT] {
             for letter in ["s", "z", "y"] {
                 assert_eq!(
-                    document_command(&key(letter), mods, false),
+                    document_command(&key(letter), None, mods, false),
                     None,
                     "{mods:?} {letter}"
                 );
             }
         }
         assert_eq!(
-            document_command(&Key::Named(NamedKey::Escape), primary, false),
+            document_command(&Key::Named(NamedKey::Escape), None, primary, false),
             None
         );
     }

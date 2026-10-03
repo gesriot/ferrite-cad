@@ -535,3 +535,18 @@ Evidence: `/private/tmp/ferrite-pr81-review/watch-quit.jsonl`, `quit-saved.json`
 The complete Save/Save As/export/conflict GUI scenario on the combined final
 code is still pending at this commit; this focused Quit test does not stand in
 for it. Remote CI of these review changes is also pending.
+
+The full window review additionally reproduced broken Cmd+S/Shift+S/Z/Shift+Z
+with the active Russian keyboard layout. Instrumented winit events carried
+logical `ы`/`я` but `text_with_all_modifiers` of `s`/`z`. Document commands now
+use that macOS command mapping, including Shift; other platforms retain logical
+keys. The existing chord gate first failed on these actual event values, then
+passed after correction. Diagnostic logging was removed before publication.
+Save As also updates the displayed logical filename, not only the title.
+
+The solver-ownership check now exempts only `app/src/macos_quit.rs` from generic
+C/unsafe spelling checks: that adapter links Objective-C/AppKit, not PlaneGCS.
+The solver-symbol ban still covers the adapter; an injected `fc_gcs_` symbol was
+rejected, restored, and the positive check repeated. Other app files retain the
+old C/unsafe ban. This fixes the check failure on `fc5a397` without relocating a
+platform callback into the solver crate.
