@@ -449,9 +449,6 @@ failed at `the open form must allow Apply` before the correction and passes
 with it; the existing non-native CI step now requires its exact execution.
 The unsaved-editor explanation no longer lists Sketch as unavailable.
 
-Review evidence is being completed in `/private/tmp/ferrite-pr82-review`;
-this paragraph does not claim completion of the corrected window scenario or CI.
-
 The same window run also found a previously existing height-entry defect: after
 Undo, the dirty document's **Edit extrusion…** entry still used the copy-only
 `can_edit` condition. The panel now also permits opening when session Apply is
@@ -460,3 +457,40 @@ App regression `an_open_height_form_keeps_the_copy_workflow_available_on_a_clean
 was extended to click the actual opening button after a real accepted step; it
 failed `Waiting != Begin` before this correction. The Sketch form title now says
 *Edit saved Sketch*, since both Apply and saving a copy are supported.
+
+
+The corrected arm64 bundle was built from `346bdfb` with the existing pinned
+OCCT/PlaneGCS runtime, staged with the normal closure tool, and checked with its
+bundled `--solver-info`. The subsequent `0b7b335` change only clears the regression
+test's unused egui texture deltas; CI's debug assertions caught their drop, which
+release tests had not. No application code changed after the final bundle.
+
+The complete window scenario ran on private copies in
+`/private/tmp/ferrite-pr82-review/scenario-complete`: height 6.75 → 9.5, both right
+vertices 33 → 41.25, draft Undo/Redo/Restore, unsaved STL/FBX, document Undo twice
+and Redo twice, Save, Undo then height 11.25 and Save As. Opening the height form
+on that dirty version succeeded. The chamfered plate refused right X = −4.4 with
+the actual Chamfer UUID and retained the draft; X = 41.25 applied and saved.
+The constrained plate withheld vertex editing, retained fully constrained status,
+and accepted height 8.5. Save and Save As used native dialogs where appropriate;
+Apply did not. The first saved file remained unchanged by Save As. Quit ended
+the owned process normally; no UI query was made after exit.
+
+The extracted comparator consumed those real window artifacts and printed
+`FCAD_30B_GUI_COMPARE_OK cells=12 triangles=12`. It checked unchanged disk state
+before Save and after refusal, all SQL cells against the CLI and explicit edit
+allowlists, history branching, independent closed/oriented STL measurements, and
+byte-identical GUI/CLI STL/FBX. Its negative controls rejected incorrect artifacts.
+Pinned ufbx 0.23.0 read both GUI FBX files: 6 checks / 0 failures each.
+
+The final watchdog run lasted 719.56 s, peak footprint 207.892 MiB, pressure 1
+throughout, swap 1702035456 bytes at both ends, exit 0, no watchdog abort.
+This is a bounded smoke observation, not a resolution of the historical OOM.
+
+Local review checks: jobs session 10; App session workers 26; Sketch 54;
+height/edit workers 17; document commands 2; both availability regressions;
+workspace all-target/all-feature clippy with `-D warnings`, fmt and diff checks.
+Native checks required OCCT and PlaneGCS; no native skip was counted as evidence.
+The review logs, failed-first assertions, bundle and watchdog samples are under
+`/private/tmp/ferrite-pr82-review`. Cross-platform CI is checked separately on the
+published revision; earlier base/head successes are not substituted for it.
