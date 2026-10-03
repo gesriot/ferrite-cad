@@ -720,19 +720,20 @@ fn apply_constraints(
 /// A rebuild of a constrained Sketch needs the sketch solver. Where the build has
 /// none these gates say so and stop, unless the build is required to have one.
 fn without_solver(result: Result<StepCommit, CadError>) -> bool {
-    match result {
-        Ok(_) => false,
-        Err(error) if error.to_string().contains("did not link planegcs") => {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1"),
-                "this build is required to have the sketch solver"
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
-            true
-        }
-        Err(error) => panic!("height: {error}"),
-    }
+    let Err(error) = result else {
+        return false;
+    };
+    assert!(
+        error.to_string().contains("did not link planegcs"),
+        "height: {error}"
+    );
+    assert_ne!(
+        std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+        Ok("1"),
+        "this build is required to have the sketch solver"
+    );
+    eprintln!("skipped: constraints need PlaneGCS");
+    true
 }
 
 #[test]
