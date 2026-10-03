@@ -40,8 +40,8 @@ post-merge CI of the base is a separate run and is not claimed here. Branch
   edit that does not cut the Redo → new branch, on a dimensioned offset plate under a
   Chamfer (**Replace length**: exact remove of the stored UUID and add) and on a circle
   (**Radius** and **Fixed centre**). STL/FBX bytes equal the CLI's at every step. `Save`
-  equals the CLI's second copy cell for cell except the Sketch's own row; there, every
-  rule is equal, each old UUID is unchanged, and each new one is paired with the CLI's
+  equals the CLI's second copy cell for cell except its payload hash and modification stamp; the raw
+  Sketch payload is equal after mapping only the new constraint UUIDs, every rule is equal, each old UUID is unchanged, and each new one is paired with the CLI's
   at the same place (the pairing is asserted to be exactly the added constraints).
   Undo restores the old UUIDs, Redo returns the very same new ones.
 * Refusals (native): a horizontal Line forced parallel to a vertical one (a real solver
@@ -241,7 +241,8 @@ FERRITECAD="$APP/Contents/MacOS/ferritecad" python3 ferrite-30c-compare.py "$FCA
 It requires every `gui-*` file (and never creates one), checks the two sources by SHA-256,
 then: the user's file after Apply is byte-identical to its source, and after Save As to the
 earlier Save; what was saved has every SQL cell of the peer CLI result (only
-`meta.modified_at` and the Sketch's own row set aside), and the Sketch's constraints agree
+`meta.modified_at` and the selected Sketch's payload hash set aside; the raw
+CBOR is compared after mapping only the new constraint UUIDs), and the Sketch's constraints agree
 rule for rule with exactly the added constraints carrying different UUIDs (an old
 UUID unchanged, the replaced one gone, the pairing exact); the branch after Undo has
 all the original UUIDs; the exports are byte-equal to `export-stl`/`export-fbx` of the
@@ -287,33 +288,14 @@ def tables(path):
         got[t] = ([d[0] for d in cur.description], sorted(cur.fetchall(), key=repr))
     db.close()
     return got
-def cells(path, skip_object=None):
-    """Every cell of every table, the modification stamp aside, and (when given) one
-    object's whole row: the Sketch's, whose constraint UUIDs are new in a new run."""
-    skip = bytes.fromhex(skip_object.replace("-", "")) if skip_object else None
-    got = {}
-    for t, (columns, rows) in tables(path).items():
-        stamp = columns.index("modified_at") if t == "meta" and "modified_at" in columns else None
-        if t == "objects" and skip is not None:
-            k = columns.index("id")
-            kept = [r for r in rows if r[k] != skip]
-            assert len(kept) + 1 == len(rows), "the Sketch row is not there"
-            rows = kept
-        got[t] = (columns, sorted(([None if i == stamp else v for i, v in enumerate(r)] for r in rows), key=repr))
-    return got
 def version(path):
     return run("inspect", path, "--json")["result"]["content_version"]
 def constraints(path):
     (sk,) = run("inspect", path, "--json")["result"]["sketches"]
     return [(k["constraint_id"], k["rule"]) for k in sk["constraint_edit"]["constraints"]]
 def same_model(a, b, sketch, before, why):
-    """Every cell but the stamp and the Sketch's own row is equal; the Sketch's
-    constraints are equal rule for rule, an old constraint keeps its UUID, and the
-    new ones are exactly the ones that are not old, each paired with the other
-    document's at the same place. Returns that pairing."""
-    x, y = cells(a, sketch), cells(b, sketch)
-    for t in sorted(set(x) | set(y)):
-        assert x.get(t) == y.get(t), f"{why}: {t} differs ({a.name} vs {b.name})"
+    """Map only new constraint UUIDs in the stored CBOR, then compare all cells
+    except meta.modified_at and the selected Sketch's derived payload hash."""
     ca, cb = constraints(a), constraints(b)
     assert len(ca) == len(cb), f"{why}: {len(ca)} constraints against {len(cb)}"
     pairs = []
@@ -324,6 +306,33 @@ def same_model(a, b, sketch, before, why):
         else:
             assert ib not in before, f"{why}: a new UUID is an old one"
             pairs.append((ia, ib))
+    assert len({i for i, _ in ca}) == len(ca) and len({i for i, _ in cb}) == len(cb)
+    def normalize(payload):
+        for ia, ib in pairs:
+            encoded = b"\x50" + bytes.fromhex(ia.replace("-", ""))
+            assert payload.count(encoded) == 1, ("new constraint UUID encoding", ia)
+            payload = payload.replace(encoded, b"\x50" + bytes.fromhex(ib.replace("-", "")))
+        return payload
+    x, y = tables(a), tables(b)
+    assert x.keys() == y.keys(), f"{why}: tables differ"
+    selected = bytes.fromhex(sketch.replace("-", ""))
+    for t in x:
+        cols, rows = x[t]
+        other_cols, other_rows = y[t]
+        assert cols == other_cols and len(rows) == len(other_rows), (why, t)
+        if t == "objects":
+            key = cols.index("id")
+            rows, other_rows = [sorted(r, key=lambda row: row[key]) for r in (rows, other_rows)]
+        for row, other_row in zip(rows, other_rows):
+            chosen = t == "objects" and row[cols.index("id")] == selected
+            for col, left, right in zip(cols, row, other_row):
+                if t == "meta" and col == "modified_at":
+                    continue
+                if chosen and col == "payload_hash":
+                    continue # inspect above has validated the actual hash of each payload
+                if chosen and col == "payload":
+                    left = normalize(left)
+                assert left == right, (why, t, col)
     return pairs
 def edit_height(source, feature, height, dest):
     run("edit-extrude", source, "--feature", feature, "--distance-mm", str(height),
@@ -450,6 +459,14 @@ must_fail("a new UUID taken for an old one",
           lambda: same_model(out / "gui-plate-saved.fcad", w1, P["sketch_id"], before_p | {pairs[0][0]}, "control"))
 must_fail("a missing output", lambda: require(work))
 must_fail("an old-width mesh", lambda: measure_plate(work / "original.stl", W1, H["first"]))
-print("FCAD_30C_GUI_COMPARE_OK", f"cells={sum(len(r) for _, r in tables(out / 'gui-plate-saved.fcad').values())}",
+# A change to the selected Sketch's metadata must not hide behind its new UUIDs.
+import shutil
+renamed = work / "renamed.fcad"
+shutil.copyfile(out / "gui-plate-saved.fcad", renamed)
+with sqlite3.connect(renamed) as db:
+    assert db.execute("UPDATE objects SET name='unexpected rename' WHERE id=?",
+                      (bytes.fromhex(P["sketch_id"].replace("-", "")),)).rowcount == 1
+must_fail("selected Sketch metadata", lambda: same_model(renamed, w1, P["sketch_id"], before_p, "control"))
+print("FCAD_30C_GUI_COMPARE_OK", f"cells={sum(len(cols)*len(rows) for cols, rows in tables(out / 'gui-plate-saved.fcad').values())}",
       f"triangles={len(mesh(out / 'gui-plate-unsaved.stl'))}")
 ```

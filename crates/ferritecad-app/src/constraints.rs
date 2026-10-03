@@ -213,13 +213,13 @@ impl Editor {
         };
         let mut cancel = false;
         let mut apply_request = None;
-        egui::Window::new("Sketch constraints — new copy")
+        egui::Window::new("Sketch constraints")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    "Select a stored Line or Circle. Solver runs only when saving \
-                     the new copy.",
+                    "Select a stored Line or Circle. Apply updates this document; \
+                     Save constraints copy creates a new file. Both run the solver.",
                 );
                 ui.small(format!(
                     "Sketch {} · {}",

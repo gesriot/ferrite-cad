@@ -1688,6 +1688,15 @@ mod tests {
     /// Every cell of every table, with the one stamp every writer refreshes set
     /// aside: what two documents have to agree on to be the same model.
     fn cells(path: &Path) -> std::collections::BTreeMap<String, Vec<String>> {
+        cells_with_sketch_payload(path, None)
+    }
+
+    // Only the selected payload and its derived hash may differ after an explicit
+    // mapping of newly created constraint UUIDs. Keep every other SQL cell.
+    fn cells_with_sketch_payload(
+        path: &Path,
+        normalized: Option<(ObjectId, &[u8])>,
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
         let db =
             rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .expect("open");
@@ -1714,6 +1723,21 @@ mod tests {
                     for (index, column) in columns.iter().enumerate() {
                         if table == "meta" && column == "modified_at" {
                             continue;
+                        }
+                        if table == "objects"
+                            && let Some((id, payload)) = normalized
+                            && row.get_ref(0)?.as_blob()? == id.to_bytes()
+                        {
+                            if column == "payload_hash" {
+                                continue;
+                            }
+                            if column == "payload" {
+                                line.push_str(&format!(
+                                    "{column}={:?};",
+                                    rusqlite::types::ValueRef::Blob(payload)
+                                ));
+                                continue;
+                            }
                         }
                         line.push_str(&format!("{column}={:?};", row.get_ref(index)?));
                     }
@@ -2522,7 +2546,7 @@ mod tests {
     }
 
     /// Two documents are the same model when every cell agrees but the stamp and
-    /// the Sketch's own row, and the Sketch's constraints agree rule for rule with
+    /// the selected payload hash, and the Sketch's constraints agree rule for rule with
     /// exactly the new ones (and nothing else) carrying different UUIDs: each new
     /// UUID of `ours` is paired with the one at the same place in `theirs`.
     fn same_model_with_explicit_new_ids(
@@ -2535,32 +2559,6 @@ mod tests {
         ferritecad_types::StableEntityId,
         ferritecad_types::StableEntityId,
     )> {
-        let strip = |path: &Path| {
-            let mut all = cells(path);
-            let id = sketch.to_string();
-            let hex: String = id.chars().filter(|c| *c != '-').collect();
-            let blob = |text: &str| text.to_ascii_lowercase().contains(&hex);
-            let _ = blob;
-            let db = rusqlite::Connection::open_with_flags(
-                path,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .expect("open");
-            let row: Vec<u8> = db
-                .query_row(
-                    "SELECT id FROM objects WHERE id = ?1 OR hex(id) = upper(?2)",
-                    rusqlite::params![sketch.to_string(), hex],
-                    |row| row.get(0),
-                )
-                .expect("the Sketch row");
-            let needle = format!("id={:?};", rusqlite::types::ValueRef::Blob(&row));
-            let objects = all.get_mut("objects").expect("objects");
-            let before = objects.len();
-            objects.retain(|line| !line.starts_with(&needle));
-            assert_eq!(objects.len() + 1, before, "{why}: the Sketch row");
-            all
-        };
-        assert_eq!(strip(ours), strip(theirs), "{why}: another cell differs");
         let (a, b) = (stored_constraints(ours), stored_constraints(theirs));
         assert_eq!(a.len(), b.len(), "{why}: the number of constraints");
         let mut pairs = Vec::new();
@@ -2573,7 +2571,75 @@ mod tests {
                 pairs.push((x.id, y.id));
             }
         }
+        let payload = |path: &Path| {
+            // Document validates the stored hash before the comparison excludes it.
+            Document::open_read_only(path)
+                .expect("document")
+                .object(sketch)
+                .expect("object")
+                .expect("Sketch");
+            let db = rusqlite::Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("database");
+            db.query_row(
+                "SELECT payload FROM objects WHERE id = ?1",
+                [sketch.to_bytes().as_slice()],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .expect("payload")
+        };
+        let mut ours_payload = payload(ours);
+        let theirs_payload = payload(theirs);
+        for (ours_id, theirs_id) in &pairs {
+            let encoded: Vec<_> = std::iter::once(0x50).chain(ours_id.to_bytes()).collect();
+            let positions: Vec<_> = ours_payload
+                .windows(encoded.len())
+                .enumerate()
+                .filter_map(|(i, part)| (part == encoded).then_some(i))
+                .collect();
+            assert_eq!(
+                positions.len(),
+                1,
+                "{why}: new constraint UUID must occur exactly once"
+            );
+            let i = positions[0] + 1;
+            ours_payload[i..i + 16].copy_from_slice(&theirs_id.to_bytes());
+        }
+        assert_eq!(
+            cells_with_sketch_payload(ours, Some((sketch, &ours_payload))),
+            cells_with_sketch_payload(theirs, Some((sketch, &theirs_payload))),
+            "{why}: a SQL cell or another Sketch field differs",
+        );
         pairs
+    }
+
+    #[test]
+    fn constraint_comparison_keeps_the_sketch_row_metadata() {
+        let (root, source, reading) = crate::fillets::tests::plate();
+        let sketch = reading.constraint_sketches[0].sketch;
+        let other = root.path().join("renamed-sketch.fcad");
+        std::fs::copy(&source, &other).expect("copy");
+        let old: Vec<_> = stored_constraints(&source).iter().map(|c| c.id).collect();
+        assert!(same_model_with_explicit_new_ids(&source, &other, sketch, &old, "same").is_empty());
+        let db = rusqlite::Connection::open(&other).expect("copy database");
+        assert_eq!(
+            db.execute(
+                "UPDATE objects SET name = 'unexpected rename' WHERE hex(id) = upper(?1)",
+                [sketch.to_string().replace('-', "")],
+            )
+            .expect("rename"),
+            1
+        );
+        drop(db);
+        assert!(
+            std::panic::catch_unwind(|| {
+                same_model_with_explicit_new_ids(&source, &other, sketch, &old, "renamed")
+            })
+            .is_err(),
+            "the comparison discarded the Sketch's metadata"
+        );
     }
 
     /// Height, then the constraint form's own widgets, then Undo and Redo, an
