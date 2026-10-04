@@ -4485,7 +4485,11 @@ in [contract](fillet-radius-session-apply.md) and
 Code/workflow `63feb377` passed 15/15 CI jobs; logs proved 21 new exact gate
 executions and strict Fillet reader markers on all three platforms. Both directed
 mutations compiled, failed assertions, and were restored before positive gates.
-GUI remains unverified: CUA reported a locked Mac before interaction; the single
-owned watchdog viewer was stopped and an extractable review recipe is retained.
+Independent PR #87 review completed the real-window recipe on macOS arm64:
+height/vertices/three radii, refusal, unsaved exports, five Undo/Redo steps,
+Save, branched Save As and reopen. Actual GUI SQL/STL/FBX matched CLI; strict
+ufbx and oriented joins passed. Viewer exited 0, peak footprint 213.673 MiB,
+normal pressure and unchanged swap. The earlier locked-screen attempt is
+recorded separately in verification; the historical OOM cause remains unknown.
 Post-merge base and the docs-only evidence head are audited separately in PR #87.
 §30 and Milestone 5C remain open; no next slice has started.
