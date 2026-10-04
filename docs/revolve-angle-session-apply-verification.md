@@ -96,10 +96,27 @@ cargo build --release --features planegcs -p ferritecad-cli -p ferritecad-app
 # is insufficient. Disable that find_package in this stub target's existing
 # bridge-build cache first (configuration must refuse), then change the absent
 # path to trigger Cargo's build script. Never change the native target cache:
-# cmake -S crates/ferritecad-occt-bridge -B "$STUB_BRIDGE_BUILD" \
-#   -DCMAKE_DISABLE_FIND_PACKAGE_OpenCASCADE=TRUE
+stub_bridge=$(python3 - <<'PY_STUB'
+from pathlib import Path
+caches=list(Path('/private/tmp/ferrite-25j-stub-target/debug/build').glob(
+ 'ferritecad-occt-*/out/bridge-build/CMakeCache.txt'))
+assert len(caches)==1, caches
+print(caches[0].parent)
+PY_STUB
+)
+stub_source=$(python3 - "$stub_bridge/CMakeCache.txt" <<'PY_STUB_SOURCE'
+from pathlib import Path
+import sys
+print(next(line.split('=',1)[1] for line in Path(sys.argv[1]).read_text().splitlines()
+ if line.startswith('CMAKE_HOME_DIRECTORY:INTERNAL=')))
+PY_STUB_SOURCE
+)
+if cmake -S "$stub_source" -B "$stub_bridge" \
+ -DCMAKE_DISABLE_FIND_PACKAGE_OpenCASCADE=TRUE; then
+ echo 'error: stub configuration unexpectedly accepted OCCT'; exit 1
+fi
 (unset FCAD_PLANEGCS_DIR DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH CMAKE_PREFIX_PATH
- CARGO_TARGET_DIR=/private/tmp/ferrite-25j-stub-target OpenCASCADE_DIR=/private/tmp/absent-occt \
+ CARGO_TARGET_DIR=/private/tmp/ferrite-25j-stub-target OpenCASCADE_DIR=/private/tmp/absent-occt-true-stub \
  FERRITECAD_REQUIRE_OCCT=0 FERRITECAD_REQUIRE_PLANEGCS=0 RUNNER_OS=macOS \
  bash /private/tmp/stub-packed.sh)
 ```
@@ -153,11 +170,21 @@ Compare only those real artifacts, then run the pinned reader:
 source /private/tmp/ferrite-pr84-review/env.sh
 export DYLD_FALLBACK_LIBRARY_PATH="$DYLD_LIBRARY_PATH"
 python3 tools/revolve-angle-session-gui.py --compare /private/tmp/ferrite-30e-gui
-# read_production is compiled from the checked ufbx pin by tools/check-fbx-complex.sh:
+# Compile the same independent reader with its checked ufbx pin (macOS):
+reader_work=$(mktemp -d /private/tmp/ferrite-30e-reader.XXXXXX)
+ufbx_cache=$(bash tools/unity-fbx-smoke/scripts/fetch_ufbx.sh)
+clang -std=c11 -O2 -Wall -Wextra -Werror -I "$ufbx_cache" \
+ -c tools/unity-fbx-smoke/scripts/read_production.c -o "$reader_work/reader.o"
+clang -std=c11 -O2 -I "$ufbx_cache" \
+ -c "$ufbx_cache/ufbx.c" -o "$reader_work/ufbx.o"
+clang "$reader_work/reader.o" "$reader_work/ufbx.o" -o "$reader_work/read_production"
+READER="$reader_work/read_production"
 for name in radial axis constrained; do
- "$READER" --identity "/private/tmp/ferrite-30e-gui/$name-unsaved.fbx"
- "$READER" --triangles "/private/tmp/ferrite-30e-gui/$name-unsaved.fbx" > "/private/tmp/$name-triangles.txt"
- python3 tools/fbx/stl-matches-fbx.py "/private/tmp/ferrite-30e-gui/$name-unsaved.stl" "/private/tmp/$name-triangles.txt"
+ "$READER" --identity "/private/tmp/ferrite-30e-gui/$name-unsaved.fbx" \
+  | tee "$reader_work/$name-identity.txt"
+ grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$reader_work/$name-identity.txt"
+ "$READER" --triangles "/private/tmp/ferrite-30e-gui/$name-unsaved.fbx" > "$reader_work/$name-triangles.txt"
+ python3 tools/fbx/stl-matches-fbx.py "/private/tmp/ferrite-30e-gui/$name-unsaved.stl" "$reader_work/$name-triangles.txt"
 done
 ```
 
@@ -192,7 +219,8 @@ rather than interleaving with the harness's exact success lines; executing the
 packed workflow caught that formatting issue and its corrected block passed.
 
 Logs/artifacts for this run: `/private/tmp/ferrite-30e/`; the generator refused a
-checkout destination and generated only temporary input fixtures. The mixed block passed 10 exact tests and its CLI recipes with no skips, in a
+checkout destination and generated only temporary input fixtures. The mixed block
+passed 10 exact tests and its CLI recipes with no skips, in a
 small symlink facade pointing at the existing native target. The initial run
 from the checkout reached an old hardcoded target/release CLI; it was not counted.
 The actual stub block passed all 88 exact tests with no skips. Its first attempt
@@ -224,17 +252,55 @@ root without changing their bytes. No CLI stand-in filled an output. The first
 comparator passed positive SQL/export/geometry comparisons but its corrupt-hash
 negative control revealed that decoding an object alone does not validate its
 raw hash. The helper now explicitly checks raw BLAKE3 before UUID normalization;
-the repeated comparator passed all seven controls. The complete native workflow
-block passed all 18 exact gates again without skips, and final workspace
+the repeated comparator passed all seven controls. This correction changes only
+the test comparison helper; the production viewer exercised by the GUI is unchanged.
+The complete native workflow block passed all 18 exact gates again without skips, and final workspace
 all-targets/all-features clippy with `-D warnings` passed. The comparator emitted
 `FCAD_30E_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true`.
+
+Pinned strict ufbx also read all three actual GUI FBX outputs: six identity checks
+each, radial 348, axis 224 and constrained 332 triangles; oriented triangle sets
+match the GUI STL under mm→m / axis conversion, worst 1.73e-18 m (constrained
+8.67e-19 m). Both Rust comparisons and this independent reader ran after Quit.
+An independent signed-triangle-volume calculation on the real GUI STL measured:
+
+| GUI model at 212.25° | Analytical mm³ | STL approximation mm³ |
+|---|---:|---:|
+| radial | 1629.499930770 | 1628.557896850 |
+| axis | 1808.095484777 | 1806.728696300 |
+| constrained (radius stays 7.5) | 1239.981609368 | 1239.180282944 |
+
+The constrained GUI fixture retains radius 7.5, unlike the native chained fixture
+which first changes the radius to 8.75. Its smaller volume is expected.
 
 One owned watchdog/viewer, limit 1536 MiB: PID 69025, Quit/exit 0, no abort,
 peak footprint 312.36 MiB, pressure normal throughout. Swap stayed at
 1127219200 bytes. After Quit only the owned watchdog/PID was inspected;
 no app or AX call relaunched the viewer. Disk free remained over 137 GiB,
 and memory_pressure reported 56–58% free after the GUI and reader campaign.
-No native pins, foreign process/cache or detached worktree were changed.
+After all local verification, swap still measured 1075 MiB (1127219200 bytes),
+disk free 138 GiB and memory_pressure 63% free. No native pins, foreign
+process/cache or detached worktree were changed. The historical OOM's cause
+remains unestablished.
 
-Published-head and separately checked post-merge base CI are recorded below
-when completed.
+Post-merge base `064b105607d992d1fb1da152efa511ed741f8c61` was checked
+separately after all runs completed: [CI 7/7](https://github.com/gesriot/ferrite-cad/actions/runs/37162153052),
+[PlaneGCS pin 4/4](https://github.com/gesriot/ferrite-cad/actions/runs/37162153010) and
+[combined runtime 4/4](https://github.com/gesriot/ferrite-cad/actions/runs/37162153025),
+all success (15/15). This is the new post-merge evidence, separate from PR #84's
+pre-merge heads and from this slice's published-head CI below.
+
+Published code/workflow head `579b6e2dc2304833b7d1eadd31116eabfc6a66c5`
+completed all 15 checks successfully: [CI 7/7](https://github.com/gesriot/ferrite-cad/actions/runs/37165525453),
+[PlaneGCS pin 4/4](https://github.com/gesriot/ferrite-cad/actions/runs/37165522960) and
+[combined runtime 4/4](https://github.com/gesriot/ferrite-cad/actions/runs/37165522966),
+including the final platform comparison. The saved GitHub responses were checked
+for that exact SHA, completed/success and all 15 successful job conclusions.
+Actual logs confirm all six new widget/stub exact gates in the packed CI step on
+Linux, macOS and Windows. Each runtime job executed the three new native angle
+gates and the mixed no-solver gate, and emitted the actual
+`FCAD_ANGLE_SESSION_UFBX_EXECUTED` marker after reading its three angle artifacts.
+Echoed shell commands were excluded from this evidence. No skip was counted as
+an executed geometry gate. PR [#85](https://github.com/gesriot/ferrite-cad/pull/85)
+is left open without auto-merge for independent review; the later documentation
+commit does not change the verified code or workflows.

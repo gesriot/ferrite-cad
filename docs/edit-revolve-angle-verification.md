@@ -433,6 +433,11 @@ FERRITECAD=/path/to/FerriteCAD.app/Contents/MacOS/ferritecad bash ferrite-27e-fi
 
 ### Window scenario
 
+This exercises the preserved clean-document copy workflow. Its instructions below
+use the current §30E labels; the earlier execution record above remains historical.
+For profile/constraints → angle in one open session, shared document Undo/Redo and
+unsaved exports, use the [§30E scenario](revolve-angle-session-apply-verification.md).
+
 Run exactly one viewer under the watchdog, on the fixture folder outside the
 checkout. Give the watchdog a `--log` name that does not exist yet, and do
 not redirect shell output to it.
@@ -446,12 +451,10 @@ python3 tools/watch-viewer-memory.py \
 
 1. **Open the sector.** Open `stepped-source.fcad`. Among the saved-object
    actions:
-   * `Edit Sketch Profile — <UUID>…` is disabled. Its hover text is
-     "coordinate editing of a partial Revolve (137.5° sector) is not
-     supported in this build; only a full-turn Revolve profile can be
-     edited".
+   * `Edit Sketch Profile — <UUID>…` is now enabled for this supported Line
+     profile (§27F). Leave the profile unchanged for this clean-copy scenario.
    * `Edit Revolve angle Revolve1 — <UUID>…` is enabled.
-2. **The form.** Click it. A window titled "Edit Revolve angle — new copy"
+2. **The form.** Click it. A window titled "Edit saved Revolve angle"
    shows:
    * "Saved partial Revolve · angle only · right-handed about the sketch +Y
      axis";
@@ -470,8 +473,10 @@ python3 tools/watch-viewer-memory.py \
      prints the f64 margin as `0.009999999999990905°`; see Limits);
    * 0.001: "below the 0.01° minimum";
    * `abc`.
-4. **Apply, Undo, Redo.** Type **220** and click **Apply angle change**.
+4. **Draft confirmation, Undo, Redo.** Type **220** and click **Confirm draft numbers**.
    **Undo draft** shows 137.5 and **Redo draft** shows 220.
+   This changes only draft history. The separate **Apply angle** button changes
+   the open document; leave it unused for this copy workflow.
 5. **Cancel, then publish.**
    1. `Save edited Revolve copy…` → **Cancel**: nothing is written, and the
       draft and its Undo stay.
