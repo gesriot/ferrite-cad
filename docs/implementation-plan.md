@@ -4482,4 +4482,10 @@ Exact widget/native/stub/mixed gates, all-cell SQL/CLI comparison, independent
 geometry, pinned ufbx, directed mutations and a real-window recipe are tracked
 in [contract](fillet-radius-session-apply.md) and
 [verification](fillet-radius-session-apply-verification.md).
+Code/workflow `63feb377` passed 15/15 CI jobs; logs proved 21 new exact gate
+executions and strict Fillet reader markers on all three platforms. Both directed
+mutations compiled, failed assertions, and were restored before positive gates.
+GUI remains unverified: CUA reported a locked Mac before interaction; the single
+owned watchdog viewer was stopped and an extractable review recipe is retained.
+Post-merge base and the docs-only evidence head are audited separately in PR #87.
 §30 and Milestone 5C remain open; no next slice has started.

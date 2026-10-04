@@ -142,15 +142,21 @@ Local macOS arm64 evidence is under `/private/tmp/ferrite-30g`:
   no native dependency rebuild or new target. Combined CLI/viewer were restored
   after mixed mode. Fresh staged viewer is Mach-O arm64.
 
-| Native model | B-Rep/analytical mm³ | Independent STL mm³ |
+B-Rep volume is measured on all cold/warm rebuilds and checked within `1e-7`
+relative to these analytical values.
+
+| Native model | Analytical mm³ | Independent STL mm³ |
 | --- | ---: | ---: |
 | One Fillet | 4375.847305899 | 4375.732107839 |
 | Four Fillets | 4305.462723652 | 4304.902540397 |
 | Constrained | 3827.140469952 | 3826.600114928 |
 
-Strict pinned ufbx and oriented joins are still running at this code checkpoint.
+Strict pinned ufbx passed: complex/JSON 3/3, all prior session markers and
+`FCAD_FILLET_SESSION_UFBX_EXECUTED`. Each of the three Fillet FBX files passed
+6 identity checks, triangle reading and an oriented STL/FBX join (history/single/constrained:
+236/68/260 triangles; worst error ≤ 6.94e−18 m). Log: `strict-reader-final.log`.
 The first local invocation lost DYLD at a system-shell exec and failed before
-assertions; the retry uses `source` exactly as the workflow already does.
+assertions; the successful retry uses `source` as the workflow already does.
 
 GUI **unverified**: CUA reported the Mac locked and automatic unlock unavailable
 before selecting the viewer or performing any window operation. Exactly one
@@ -162,7 +168,28 @@ followed the stop. The generator made only inputs; missing-output comparator
 failed at `after-apply.fcad` before any peer job. No GUI artifact or historical
 OOM fix is claimed. The recipe above remains for independent review.
 
-Exact post-merge base CI is separate: CI, planegcs pin, notices, Rust SBOM and
-product SBOM passed; combined runtime Linux/macOS passed while Windows and its
-aggregate are still running. Code/workflow and later docs-only CI are pending
-publication and will be recorded in the follow-up evidence commit.
+Exact post-merge base CI is separate and complete: core CI/pin/runtime 15/15,
+plus standalone notices/Rust SBOM/product SBOM 12/12, all successful on
+`29c0826afb3ddea6a122cb58744e5f24928a2ee8`. This is the merge SHA's own evidence:
+[CI](https://github.com/gesriot/ferrite-cad/actions/runs/37219115925),
+[pin](https://github.com/gesriot/ferrite-cad/actions/runs/37219115949),
+[runtime](https://github.com/gesriot/ferrite-cad/actions/runs/37219115972),
+[notices](https://github.com/gesriot/ferrite-cad/actions/runs/37219115906),
+[Rust SBOM](https://github.com/gesriot/ferrite-cad/actions/runs/37219115932),
+[product SBOM](https://github.com/gesriot/ferrite-cad/actions/runs/37219115965).
+
+Code/workflow `63feb377f7f0e0b3212cef02ff5ddf7d98396bd3`:
+[CI](https://github.com/gesriot/ferrite-cad/actions/runs/37223610478) 7/7 and
+[pin](https://github.com/gesriot/ferrite-cad/actions/runs/37223590271) 4/4 passed.
+[Runtime](https://github.com/gesriot/ferrite-cad/actions/runs/37223590254) 4/4,
+including the platform/release-set aggregate, also passed: core total **15/15**.
+Completed logs and authoritative step timestamps proved all seven new exact
+gates on every OS: **21 actual executions**, no required skip, plus
+`FCAD_FILLET_SESSION_UFBX_EXECUTED` on Linux/macOS/Windows. Echoed argv are not
+execution evidence. `code-ci-evidence.json` records each matched test line and
+marker; `verify-published-ci.py` performed the audit.
+
+The subsequent evidence commit changes only this verification and the
+implementation plan. Its own CI/head is checked separately in
+[PR #87](https://github.com/gesriot/ferrite-cad/pull/87), rather than treated as
+another native code/workflow run. The PR remains open without auto-merge.
