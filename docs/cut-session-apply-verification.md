@@ -235,5 +235,61 @@ not counted. Raw logs, metadata and extracted evidence remain under
 
 This evidence follow-up changes only this verification and the plan. Its separate
 docs-only head/CI result is recorded in [PR #86](https://github.com/gesriot/ferrite-cad/pull/86).
-The PR stays open for independent review, without merge or auto-merge. Real GUI
-and its seven artifact-dependent negative controls remain unverified as above.
+At the author handoff the PR stayed open for independent review, without merge
+or auto-merge. Real GUI and its seven artifact-dependent negative controls were
+still unverified; the independent review below records their later completion.
+
+## Independent review of PR #86 — 2026-10-04
+
+Review code head `5264e8397769c1fbd8dd6746197a422e52c033b9` corrects two
+obsolete UI instructions: existing Cut edits are available while dirty, and the
+Add form still calls its draft button **Apply cut**. No domain rule changed.
+The original incomplete GUI attempt above remains a historical record; the
+following fresh run closes that gap.
+
+Fresh release CLI/viewer, native OCCT and PlaneGCS, arm64 staged bundle at
+`/private/tmp/ferrite-pr86-review/gui/layout/FerriteCAD.app`. Logs, native
+artifacts, watchdog journal and real window files are under
+`/private/tmp/ferrite-pr86-review/`. No native libraries were rebuilt.
+
+- `cargo fmt --all -- --check`, workspace/all-targets/all-features clippy with
+  `-D warnings`, fresh CLI/app build and all 14 `cuts::tests::` passed.
+- The existing packed native session step executed all 20 exact gates, including
+  the 16-Cut history, floor/Origin transition and prior session regressions,
+  without skips. Its three FBX files each passed strict pinned ufbx (6 checks,
+  zero failures) and oriented STL/FBX joins (2660 / 192 / 528 triangles).
+- The fixture generator ran using the fresh bundled CLI. Only the real window
+  produced `unsaved.stl`, `unsaved.fbx`, `undo.stl`, saved and branch documents.
+  Captures of the actual logical file supplied the preservation checkpoints;
+  no job or CLI manufactured missing GUI results.
+
+The real window performed the documented height 15.25 and two left-wall vertex
+edits, then first/middle/last Cut changes. The first changed ThroughAll to a
+6.125 mm pocket through Confirm draft → Undo → Redo → Apply. The other two
+applied current fields without confirmation. A subsequent ThroughAll request
+on the first pocket showed the three protected floor/Origin UUIDs, disabled
+Apply and kept the typed choice. The logical source stayed byte-identical to
+the original through all Apply operations and that refusal.
+
+The window exported the unsaved accepted model and the state after one Undo.
+Four more Undo operations returned to a clean title; five Redo restored the
+accepted history. Save wrote the current model. Undo → changed last Cut
+(31.625, 42.375), r2.125 → Apply discarded Redo. Save As wrote `branch.fcad`
+and left the preceding saved file byte-identical. The saved document reopened
+through the native Open panel and was visibly rendered in isometric view.
+
+`python3 tools/cut-session-gui.py --compare <gui-models>` passed on those actual
+files: `FCAD_30F_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true`. SQL
+cells and raw hashes, permitted new-ref identity mapping, CLI-equal STL/FBX,
+source checkpoints and cold rebuilds passed. All seven deliberate bad-artifact
+controls were rejected. Expected caught panic messages in the log belong to
+those negative controls; the test exit is zero. The actual 536-triangle GUI
+STL also matched pinned ufbx's oriented FBX triangles (worst distance
+6.94e-18 m); strict FBX identity checks: 6, failures: 0.
+
+Owned viewer PID **80081** ran for **478.57 seconds**, exit **0**,
+`aborted=false`, sampled peak footprint **227.001 MiB**, maximum pressure **1**,
+swap **1118830592 bytes** both before and after. Watchdog limit: 1536 MiB.
+After closing the clean window, only the watchdog/process state was checked;
+no CUA app lookup or AX read relaunched it. This is a successful bounded run,
+not an explanation or resolution of the historical OOM.
