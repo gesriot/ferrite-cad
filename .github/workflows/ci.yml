@@ -816,6 +816,10 @@ jobs:
             sketch::tests::angle_apply::angle_range_refusal_status_and_accepted_scene_dismissal_are_visible \
             sketch::tests::angle_apply::angle_form_opens_dirty_and_withholds_only_the_copy_workflow \
             sessions::tests::angle::stub_angle_apply_refuses_without_publication \
+            cuts::tests::session_apply::cut_apply_current_fields_draft_history_noop_and_add_exclusion \
+            cuts::tests::session_apply::cut_apply_busy_guard_proves_idle_request_then_excludes_other_work_and_forms \
+            cuts::tests::session_apply::cut_apply_dirty_discovery_copy_refusals_status_and_scene_dismissal \
+            sessions::tests::cut::stub_cut_apply_refuses_without_publication \
             tests::document_undo_waits_for_an_open_form \
             tests::document_chords_are_the_platforms_and_leave_text_undo_to_the_field \
             tests::the_title_marks_unsaved_changes_and_never_names_a_private_file \

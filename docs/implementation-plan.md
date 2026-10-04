@@ -4449,3 +4449,17 @@ Exact widget/native/stub/mixed workflow gates and strict ufbx comparisons extend
 existing campaigns. No new geometry, format, CLI/JSON or document class.
 [Contract](revolve-angle-session-apply.md), [verification and executable window recipe](revolve-angle-session-apply-verification.md).
 §30, Milestone 5C and the product remain open; the next slice has not started.
+
+
+**§30F — edit an existing circular Cut inside the open document.** The existing
+parameter edit gains **Apply cut** through `StepTicket::edit_circular_cut` and its
+worker, reading the current accepted snapshot and selected feature/tool UUIDs.
+One common history crosses base and any supported 1–16 Cut link; unsaved exports,
+Save/Save As, no-op/Redo and two-phase acceptance keep their owners. **Confirm draft
+numbers** and draft Undo/Redo stay separate; clean copy remains and Add stays copy-only.
+One production predicate allows the form's own Apply and excludes other work/forms.
+Geometry, strict refs, floor/Origin policy and ThroughAll intent stay with the
+existing job/domain. Exact widget/native/stub/mixed gates, all-cell SQL comparisons,
+independent geometry, pinned ufbx and real-window artifacts extend existing campaigns.
+[Contract](cut-session-apply.md), [verification](cut-session-apply-verification.md).
+§30, Milestone 5C and the product remain open; no next slice has started.

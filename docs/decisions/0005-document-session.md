@@ -99,7 +99,7 @@ Save conflict (changed, replaced by another document, or missing); Save busy
 (another saver holds the path); Save over a read-only file or a file with other
 hard links; Save As on an occupied path; Apply while another operation runs, on a
 document whose editor says it is unavailable, or whose snapshot changed; a stale
-worker answer; a scene that cannot be prepared. Remaining copy workflows (Cut, Fillet, Chamfer and creation of Revolve)
+worker answer; a scene that cannot be prepared. Remaining copy workflows (Add Cut, Cut copy, Fillet, Chamfer and creation of Revolve)
 are unavailable while the session is dirty — they
 read a source and write a *new* file, and silently reading the old file would drop
 the unsaved change — and work unchanged on a clean session.
@@ -125,3 +125,7 @@ close. Milestone 5C and the general beta are not complete.
 §30B–E now apply supported saved vertices, constraints, Circle/annulus geometry
 and partial Revolve angles through this same owner. Creation and copy workflows
 retain their own guards.
+
+§30F now applies parameters of an existing supported circular Cut through this
+same session. Add Cut remains copy-only; existing-Cut copy still requires a clean
+document. See [Cut session contract](../cut-session-apply.md).

@@ -119,6 +119,11 @@ pub(crate) struct Editor {
     /// than one enum, so the window keeps handing each operation to the worker
     /// that already knows what to do with it.
     pending_edit: Option<EditCircularCutRequest>,
+    pending_apply: Option<EditCircularCutRequest>,
+    can_begin_edit: bool,
+    can_apply: bool,
+    unsaved: bool,
+    outcome: String,
 }
 
 impl Editor {
@@ -126,13 +131,35 @@ impl Editor {
         self.draft.is_some()
     }
     pub(crate) fn dismiss(&mut self) {
+        let availability = (self.can_begin_edit, self.can_apply, self.unsaved);
         *self = Self::default();
+        self.set_session(availability.0, availability.1, availability.2);
     }
     pub(crate) fn take_request(&mut self) -> Option<CircularCutRequest> {
         self.pending.take()
     }
     pub(crate) fn take_edit_request(&mut self) -> Option<EditCircularCutRequest> {
         self.pending_edit.take()
+    }
+
+    pub(crate) fn editing_saved(&self) -> bool {
+        self.draft
+            .as_ref()
+            .is_some_and(|d| matches!(d.subject, Subject::Edit(_)))
+    }
+    pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
+        self.can_begin_edit = can_begin;
+        self.can_apply = can_apply;
+        self.unsaved = unsaved;
+    }
+    pub(crate) fn session(&self) -> (bool, bool, bool) {
+        (self.can_begin_edit, self.can_apply, self.unsaved)
+    }
+    pub(crate) fn set_outcome(&mut self, outcome: &str) {
+        self.outcome = outcome.to_owned();
+    }
+    pub(crate) fn take_apply_request(&mut self) -> Option<EditCircularCutRequest> {
+        self.pending_apply.take()
     }
 
     fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, body: ObjectId) -> bool {
@@ -155,7 +182,12 @@ impl Editor {
     ///
     /// The form opens on what the document stores, so the first thing it shows
     /// is the cut as it is rather than an empty box beside the word "Depth".
-    fn begin_edit(&mut self, path: &Path, source: &ExtrudeEditSource, feature: ObjectId) -> bool {
+    pub(crate) fn begin_edit(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        feature: ObjectId,
+    ) -> bool {
         let Some(choice) = source
             .cut_features
             .iter()
@@ -245,7 +277,7 @@ impl Editor {
                 for choice in &source.cut_features {
                     let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                     let response = ui.add_enabled(
-                        can_begin && refusal.is_none(),
+                        (can_begin || self.can_begin_edit) && refusal.is_none(),
                         egui::Button::new(format!(
                             "Edit cut {} — {}…",
                             choice.name.as_deref().unwrap_or("Unnamed cut"),
@@ -272,12 +304,16 @@ impl Editor {
         let mut cancel = false;
         let title = match &draft.subject {
             Subject::Add(_) => "Circular cut — new copy",
-            Subject::Edit(_) => "Edit circular cut — new copy",
+            Subject::Edit(_) => "Edit circular cut",
         };
         egui::Window::new(title)
             .default_width(560.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
+                if !self.outcome.is_empty() {
+                    ui.separator();
+                    ui.label(format!("Document: {}", self.outcome));
+                }
                 ui.label(
                     "The tool is drawn on the part's own base XY plane and cuts along that \
                      plane's normal (+Z).",
@@ -423,7 +459,30 @@ impl Editor {
                              height at every rebuild.",
                         );
                     }
-                    if ui.button("Apply cut").clicked() {
+                    if let Some(editing) = &shown.editing {
+                        let parsed = numbers(&draft.typed);
+                        let differs = parsed.as_ref().is_ok_and(|c| {
+                            c.center_mm != editing.center_mm || c.radius_mm != editing.radius_mm
+                                || c.extent != editing.extent
+                        });
+                        let valid = draft.subject.validate(&draft.typed);
+                        if ui.add_enabled(self.can_apply && differs && valid.is_ok(),
+                            egui::Button::new("Apply cut")).clicked() {
+                            let cut = parsed.expect("validated fields");
+                            self.pending_apply = Some(EditCircularCutRequest {
+                                source: draft.source.clone(), expected: draft.version,
+                                cut: editing.feature, edit: edit_of(editing.tool_curve, &cut),
+                                destination: PathBuf::new(),
+                            });
+                        }
+                        if let Err(error) = valid {
+                            ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+                        } else if !differs {
+                            ui.small("These are the stored numbers and end: there is nothing to apply.");
+                        }
+                    }
+                    let confirm = if shown.editing.is_some() { "Confirm draft numbers" } else { "Apply cut" };
+                    if ui.button(confirm).clicked() {
                         match draft.subject.validate(&draft.typed) {
                             Ok(()) => {
                                 let mut applied = draft
@@ -459,7 +518,7 @@ impl Editor {
                                 cut.radius_mm,
                                 describe(cut.extent)
                             ));
-                            if ui.button("Save cut copy…").clicked() {
+                            if ui.add_enabled(!self.unsaved, egui::Button::new("Save cut copy…")).clicked() {
                                 match &shown.editing {
                                     None => {
                                         self.pending = Some(CircularCutRequest {
@@ -486,12 +545,15 @@ impl Editor {
                             }
                         }
                         None => {
-                            ui.small("Apply the numbers and the end before saving.");
+                            ui.small("Confirm the draft numbers and end before saving a copy.");
                         }
                     }
                 });
+                if self.unsaved {
+                    ui.small("Saving a copy is unavailable while the document has unsaved changes: Save or Undo them first. Apply changes this document; the file on disk changes only on Save.");
+                }
                 if running {
-                    ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                    ui.label("Working… Draft retained until acceptance. Cancel job in toolbar.");
                 }
             });
         if cancel {
@@ -662,7 +724,8 @@ pub(crate) fn finish_cut_edit(
 
 #[cfg(test)]
 #[allow(clippy::panic)]
-mod tests {
+pub(crate) mod tests {
+    pub(crate) mod session_apply;
     use super::*;
     use ferritecad_document::Document;
     use ferritecad_kernel::OperationContext;
@@ -1195,7 +1258,7 @@ mod tests {
             ("banana", "15", "5", "4", "not a number"),
         ] {
             fill(&ctx, &mut e, x, y, r, depth);
-            click(&ctx, &mut e, "Apply cut");
+            click(&ctx, &mut e, "Confirm draft numbers");
             let draft = e.draft.as_ref().expect("draft");
             assert!(draft.applied.is_none(), "{why} was accepted");
             assert!(draft.refusal.is_some(), "{why} said nothing");
@@ -1204,7 +1267,7 @@ mod tests {
 
         // One Apply is one step over all four, and a later change closes Save.
         fill(&ctx, &mut e, "30", "20", "7.5", "6");
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 1);
         let confirmed = e.draft.as_ref().expect("draft").typed.clone();
         click(&ctx, &mut e, "Undo");
@@ -1228,7 +1291,7 @@ mod tests {
             !painted(&frame(&ctx, &mut e, false), "Save cut copy…"),
             "an unapplied change must not be saveable"
         );
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 2);
         click(&ctx, &mut e, "Undo");
         assert_eq!(e.draft.as_ref().expect("draft").typed.radius, "7.5");
@@ -1281,11 +1344,11 @@ mod tests {
         assert!(painted(&out, "a hole through the part"));
         assert!(painted(&out, "may run to the part's height"));
         fill(&ctx, &mut e, "20", "15", "5", "3");
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
         // And the depth it already has is still accepted.
         fill(&ctx, &mut e, "20", "15", "5", "10");
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
     }
 
@@ -1341,9 +1404,9 @@ mod tests {
             frame(&ctx, &mut e, false);
         }
         fill(&ctx, &mut e, "48", "32", "1.25", "8");
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         let out = frame(&ctx, &mut e, false);
-        for label in ["Apply cut", "Undo", "Redo", "Save cut copy"] {
+        for label in ["Confirm draft numbers", "Undo", "Redo", "Save cut copy"] {
             let shape=out.shapes.iter().find(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().starts_with(label))).expect("control");
             let egui::Shape::Text(text) = &shape.shape else {
                 unreachable!()
@@ -1458,7 +1521,7 @@ mod tests {
                 "5",
                 "3",
             );
-            click(&ctx, &mut e, "Apply cut");
+            click(&ctx, &mut e, "Confirm draft numbers");
             assert!(
                 e.draft
                     .as_ref()
@@ -1478,7 +1541,7 @@ mod tests {
             ("22", "17", "4.5", "3.25")
         };
         fill(&ctx, &mut e, x, y, r, d);
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 1);
         let confirmed = e.draft.as_ref().expect("draft").typed.clone();
         click(&ctx, &mut e, "Undo");
@@ -1760,7 +1823,7 @@ mod tests {
             !painted(&frame(&ctx, &mut e, false), "Save cut copy…"),
             "choosing an end is not applying it"
         );
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         let draft = e.draft.as_ref().expect("draft");
         assert_eq!(draft.refusal, None);
         assert_eq!(draft.history.undo.len(), 1, "one Apply, one step");
@@ -1814,7 +1877,7 @@ mod tests {
         }
         click(&ctx, &mut e, "Blind depth");
         enter_field(&ctx, &mut e, "Depth (mm):", "3.25");
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
         click(&ctx, &mut e, "Save cut copy…");
         let request = e.take_edit_request().expect("widget request");

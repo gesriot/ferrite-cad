@@ -33,6 +33,11 @@ on the base XY plane; a shallow pocket opens on that side.
 [Supported source, spacing/depth rules and agent recipe](docs/circular-cut-history.md).
 Any saved Cut can have its centre, radius and depth changed through **Edit cut …**
 or `edit-circular-cut`, preserving the feature and tool identities in a new copy.
+In the viewer, **Apply cut** edits that existing Cut inside the open document,
+including after unsaved base height/vertices changes. Document Undo/Redo and
+exports use the accepted model; the user's file changes only on Save. Draft
+confirmation stays separate, and Add Cut remains copy-only.
+[Session contract](docs/cut-session-apply.md).
 A through hole can become a pocket; cutting away a named pocket floor is refused.
 Editing a Cut rebuilds its descendants while preserving history and face origins.
 At 16 Cuts, addition is unavailable and every Cut remains editable.

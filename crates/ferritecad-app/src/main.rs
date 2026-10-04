@@ -1036,6 +1036,21 @@ fn can_apply_angle(
         && !sessions.busy()
 }
 
+/// The same guard for the existing Cut form's button and Apply handler.
+fn can_apply_cut(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    creates.can_apply_cut()
+        && document_io_idle(loads, exports)
+        && !edits.busy()
+        && sessions.has_session()
+        && !sessions.busy()
+}
+
 fn ask_new(
     creates: &mut creates::Creates,
     loads: &Loads,
@@ -2949,6 +2964,13 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.edits,
                     &self.sessions,
                 );
+                let cut_apply = can_apply_cut(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -2966,6 +2988,11 @@ impl ApplicationHandler<AppEvent> for App {
                 );
                 self.creates.sketch.set_analytic_apply(analytic_apply);
                 self.creates.sketch.set_angle_apply(angle_apply);
+                self.creates.sketch.cuts.set_session(
+                    session_idle && !self.edits.busy(),
+                    cut_apply,
+                    self.sessions.dirty(),
+                );
                 self.creates.sketch.constraints.set_session(
                     session_idle && !self.edits.busy(),
                     constraints_apply,
@@ -3081,6 +3108,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.take_cut_request() {
                             self.ask_where_to_cut(request);
+                        }
+                        if let Some(request) = self.creates.sketch.cuts.take_apply_request() {
+                            self.apply_cut(request);
                         }
                         if let Some(request) = self.creates.sketch.take_cut_edit_request() {
                             self.ask_where_to_edit_cut(request);
@@ -3826,6 +3856,37 @@ impl App {
         self.input.request_redraw();
     }
 
+    /// Apply one existing circular Cut to the accepted snapshot, without a dialog.
+    fn apply_cut(&mut self, request: ferritecad_jobs::EditCircularCutRequest) {
+        if !can_apply_cut(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
+            self.input.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_apply_cut(
+                ticket,
+                request.cut,
+                request.edit,
+                request.expected,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
     /// One accepted change back or forward. The version becomes current only when
     /// its picture has been built and shown.
     fn move_document(&mut self, undo: bool) {
@@ -4184,7 +4245,7 @@ impl App {
     }
 
     fn ask_where_to_edit_cut(&mut self, mut request: ferritecad_jobs::EditCircularCutRequest) {
-        if self.edits.running() {
+        if self.sessions.dirty() || self.sessions.busy() || self.edits.running() {
             return;
         }
         let Some(live) = &self.live else {

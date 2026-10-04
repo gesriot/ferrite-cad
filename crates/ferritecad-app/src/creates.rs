@@ -202,6 +202,11 @@ impl Creates {
             && !self.sketch.chamfers.active()
     }
 
+    /// The existing Cut form may Apply itself; every other form excludes it.
+    pub(crate) fn can_apply_cut(&self) -> bool {
+        !self.running() && self.form.is_none() && self.sketch.only_editing_cut()
+    }
+
     pub(crate) fn can_cancel(&self) -> bool {
         self.running() && !self.cancel_requested
     }
