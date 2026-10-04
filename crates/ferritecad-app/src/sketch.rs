@@ -208,6 +208,17 @@ impl Editor {
         self.editing.is_some()
     }
 
+    pub(crate) fn only_editing_cut(&self) -> bool {
+        self.cuts.editing_saved()
+            && self.draft.is_none()
+            && self.editing_circle.is_none()
+            && self.editing_annulus.is_none()
+            && self.editing_angle.is_none()
+            && !self.constraints.active()
+            && !self.fillets.active()
+            && !self.chamfers.active()
+    }
+
     pub(crate) fn editing_saved_angle(&self) -> bool {
         self.editing_angle.is_some()
     }
@@ -285,6 +296,7 @@ impl Editor {
         let analytic = self.can_apply_analytic;
         let angle = self.can_apply_angle;
         let constraints = self.constraints.session();
+        let cuts = self.cuts.session();
         *self = Self::default();
         self.can_begin_sketch = begin;
         self.can_apply = apply;
@@ -293,6 +305,7 @@ impl Editor {
         self.unsaved = unsaved;
         self.constraints
             .set_session(constraints.0, constraints.1, constraints.2);
+        self.cuts.set_session(cuts.0, cuts.1, cuts.2);
     }
     pub(crate) fn take_request(&mut self) -> Option<NewDocument> {
         self.pending.take()
@@ -1010,6 +1023,7 @@ impl Editor {
             return;
         }
         if self.cuts.active() {
+            self.cuts.set_outcome(outcome);
             self.cuts.draw(ui, running);
             return;
         }

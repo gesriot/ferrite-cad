@@ -743,6 +743,26 @@ pub(crate) fn spawn_apply_angle(
     )
 }
 
+/// The existing circular Cut edit on the kernel-owning worker. No Add route.
+pub(crate) fn spawn_apply_cut(
+    ticket: StepTicket,
+    cut: ObjectId,
+    edit: ferritecad_document::CircularCutEdit,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.edit_circular_cut(cut, edit, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
 /// The picture of one private version, read cold exactly as Open reads a file.
 pub(crate) fn spawn_scene(
     path: PathBuf,
@@ -817,6 +837,7 @@ mod tests {
     use super::*;
     mod analytic;
     mod angle;
+    mod cut;
     use ferritecad_document::Document;
     use ferritecad_jobs::{
         CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,

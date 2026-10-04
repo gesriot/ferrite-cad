@@ -43,9 +43,10 @@ use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
 use crate::edit::{
-    EditAnnulusRequest, EditCircleRequest, EditExtrudeRequest, EditRevolveAngleRequest,
-    EditSketchConstraintsRequest, EditSketchRequest, edit_annulus_copy, edit_circle_copy,
-    edit_extrude_copy, edit_revolve_angle_copy, edit_sketch_constraints_copy, edit_sketch_copy,
+    EditAnnulusRequest, EditCircleRequest, EditCircularCutRequest, EditExtrudeRequest,
+    EditRevolveAngleRequest, EditSketchConstraintsRequest, EditSketchRequest, edit_annulus_copy,
+    edit_circle_copy, edit_circular_cut_copy, edit_extrude_copy, edit_revolve_angle_copy,
+    edit_sketch_constraints_copy, edit_sketch_copy,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
 
@@ -626,6 +627,34 @@ impl StepTicket {
                     source: source.to_path_buf(),
                     expected,
                     sketch,
+                    edit,
+                    destination: destination.to_path_buf(),
+                },
+                kernel,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Changes one existing Cut by its saved feature/tool identities, using the
+    /// current accepted snapshot and the CLI's existing copy operation. New floor
+    /// refs belong to the produced version; Undo/Redo never regenerates them.
+    pub fn edit_circular_cut<K: GeometryKernel + ?Sized>(
+        self,
+        cut: ObjectId,
+        edit: ferritecad_document::CircularCutEdit,
+        expected: DocumentVersion,
+        kernel: &mut K,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        self.check_form_version(expected)?;
+        self.run(|source, expected, destination| {
+            edit_circular_cut_copy(
+                &EditCircularCutRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    cut,
                     edit,
                     destination: destination.to_path_buf(),
                 },

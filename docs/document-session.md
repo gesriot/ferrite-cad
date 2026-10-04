@@ -30,7 +30,7 @@ plate and on a plate under one §29A Chamfer with §29D constraints (the same pl
 6. **Export STL/FBX** always writes the accepted working model, saved or not, never
    a stale read of the file on disk, and still refuses to write over the document the
    user has open.
-7. While the document has unsaved changes the remaining copy workflows (Cut, Fillet, Chamfer, creating Revolve
+7. While the document has unsaved changes the remaining copy workflows (Add Cut, Cut copy, Fillet, Chamfer, creating Revolve
    and the *copy* workflow of the height form) are
    shown disabled with the reason in words. They read a file and write a new file,
    so using them on an unsaved document would silently discard the change. When the
@@ -135,3 +135,7 @@ no-solver step of the same workflow.
 * **Next (§30D).** The geometry of a saved Circle or annulus is applied inside the open document: [contract](analytic-sketch-session-apply.md).
 
 * **Next (§30E).** The angle of a saved partial Revolve is applied inside the open document: [contract](revolve-angle-session-apply.md).
+
+§30F now applies parameters of an existing supported circular Cut through this
+same session. Add Cut remains copy-only; existing-Cut copy still requires a clean
+document. See [Cut session contract](cut-session-apply.md).
