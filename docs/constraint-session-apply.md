@@ -58,7 +58,7 @@ Reused: `edit_sketch_constraints_copy` (through `StepTicket::edit_sketch_constra
 the session's two-phase step, its history, dirty-by-comparison, Save, the working-copy
 lease for exports, and the private-folder protections. Not introduced: a second copier,
 solver path, evaluator, history or writer, or any write to the logical file before Save.
-The other copy-only editors (creating Revolve, Cut, Fillet, Chamfer,
+The other copy-only editors (creating Revolve, Add Cut, Add Fillet, Chamfer,
 *Edit extrusion…* copy) stay copy workflows; the Circle and annulus editors joined the
 session in [§30D](analytic-sketch-session-apply.md), and a saved partial Revolve
 angle in [§30E](revolve-angle-session-apply.md).
@@ -74,3 +74,6 @@ were forgotten for the frame after a draft was replaced. It now carries them acr
 The whole of §30, Milestone 5C or the beta; Windows or macOS here; a window run. The
 families other than a dimensioned Line plate under a Chamfer and a Circle were covered
 by the same step and the same headless predicates, but not run natively in a session.
+
+Existing Fillet radii now Apply through the same session, including while dirty:
+[§30G](fillet-radius-session-apply.md). Fillet copy and Add Fillet remain clean-only.

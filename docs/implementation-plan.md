@@ -4469,3 +4469,27 @@ The fresh viewer exited normally, peak footprint 227.001 MiB, pressure normal
 and swap unchanged. Review also corrected two obsolete Cut instructions.
 [Contract](cut-session-apply.md), [verification](cut-session-apply-verification.md).
 §30, Milestone 5C and the product remain open; no next slice has started.
+
+**§30G — edit an existing Fillet radius inside the open document.** Apply radius
+reads current valid text and the selected UUID from the accepted snapshot through
+`StepTicket::edit_fillet_radius` and its worker, reusing the CLI copy operation.
+Dirty base/constraint edits, all 1–4 Fillets, common history, no-op/Redo, unsaved
+exports and Save/Save As retain their owners. Confirm draft number is separate;
+Add Fillet and clean-copy workflow remain unchanged. One production predicate,
+form versions and two-phase acceptance preserve scene/history/draft on refusal.
+Existing solved bounds, every neighbour, UUIDs and strict refs are unchanged.
+Exact widget/native/stub/mixed gates, all-cell SQL/CLI comparison, independent
+geometry, pinned ufbx, directed mutations and a real-window recipe are tracked
+in [contract](fillet-radius-session-apply.md) and
+[verification](fillet-radius-session-apply-verification.md).
+Code/workflow `63feb377` passed 15/15 CI jobs; logs proved 21 new exact gate
+executions and strict Fillet reader markers on all three platforms. Both directed
+mutations compiled, failed assertions, and were restored before positive gates.
+Independent PR #87 review completed the real-window recipe on macOS arm64:
+height/vertices/three radii, refusal, unsaved exports, five Undo/Redo steps,
+Save, branched Save As and reopen. Actual GUI SQL/STL/FBX matched CLI; strict
+ufbx and oriented joins passed. Viewer exited 0, peak footprint 213.673 MiB,
+normal pressure and unchanged swap. The earlier locked-screen attempt is
+recorded separately in verification; the historical OOM cause remains unknown.
+Post-merge base and the docs-only evidence head are audited separately in PR #87.
+§30 and Milestone 5C remain open; no next slice has started.

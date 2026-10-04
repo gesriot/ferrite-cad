@@ -826,6 +826,10 @@ jobs:
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-cut-mixed.log
           if grep -q 'skipped:' session-cut-mixed.log || ! grep -Fq "test $gate ... ok" session-cut-mixed.log; then exit 1; fi
+          gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
+          if grep -q 'skipped:' session-fillet-mixed.log || ! grep -Fq "test $gate ... ok" session-fillet-mixed.log; then exit 1; fi
 
 
       - name: Build the real application and the command line tool against both
@@ -1079,6 +1083,26 @@ jobs:
             test -s "$cut_dir/$name.stl"
           done
           echo "FCAD_CUT_SESSION_FBX_DIR=$cut_artifacts" >> "$GITHUB_ENV"
+
+          fillet_dir="$RUNNER_TEMP/fillet-session"
+          mkdir -p "$fillet_dir"
+          fillet_artifacts="$fillet_dir"
+          case '${{ matrix.name }}' in
+            windows) fillet_artifacts="$(cygpath -w "$fillet_artifacts")" ;;
+          esac
+          export FCAD_FILLET_SESSION_ARTIFACTS="$fillet_artifacts"
+          for gate in sessions::tests::fillet::native_one_and_four_fillets_cross_base_history_and_match_cli \
+            sessions::tests::fillet::native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_redo
+          do
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-native.log
+            if grep -q 'skipped:' session-fillet-native.log || ! grep -Fq "test $gate ... ok" session-fillet-native.log; then exit 1; fi
+          done
+          for name in fillet-history fillet-single fillet-constrained; do
+            test -s "$fillet_dir/$name.fbx"
+            test -s "$fillet_dir/$name.stl"
+          done
+          echo "FCAD_FILLET_SESSION_FBX_DIR=$fillet_artifacts" >> "$GITHUB_ENV"
 
 
       - name: Create a saved polygon through the native CLI and sketch worker
@@ -2722,6 +2746,7 @@ jobs:
           grep -q '^FCAD_ANALYTIC_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ANGLE_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CUT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

@@ -164,7 +164,8 @@ Extrude keeps its key and is reused. Cold, Miss and Hit agree.
 * **UI:** the same discovery row and request/job.
   * The form shows the Fillet UUID, the edge meaning, the corner, the saved
     radius and the bounds.
-  * Apply validates with the domain's rule; Save asks for a destination.
+  * Confirm draft number validates the copy draft; Save radius copy asks for a destination.
+    §30G adds Apply radius to the current document independently of confirmation.
   * The draft survives a cancelled Save, a worker refusal and a stale reply.
   * Publication goes through the existing async Open, and geometry runs off
     the window thread.
@@ -382,3 +383,7 @@ assert sorted(p.name for p in root.iterdir()) == before
 print("FCAD_28B_RECIPE_OK", f"up={up_volume:.6f}/{up_exact:.6f}",
       f"down={down_volume:.6f}/{down_exact:.6f}", f"feature={feature}")
 ```
+
+The current viewer also offers [§30G Apply radius](fillet-radius-session-apply.md)
+on the accepted unsaved document. Confirm draft number is the copy confirmation;
+Add Fillet and Save radius copy still require a clean document.
