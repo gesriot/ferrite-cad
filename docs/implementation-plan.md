@@ -4460,6 +4460,8 @@ numbers** and draft Undo/Redo stay separate; clean copy remains and Add stays co
 One production predicate allows the form's own Apply and excludes other work/forms.
 Geometry, strict refs, floor/Origin policy and ThroughAll intent stay with the
 existing job/domain. Exact widget/native/stub/mixed gates, all-cell SQL comparisons,
-independent geometry, pinned ufbx and real-window artifacts extend existing campaigns.
+independent geometry, pinned ufbx and a reproducible window recipe extend existing
+campaigns. The real window scenario remains unverified after the CUA stall and
+owned watchdog timeout; no GUI output is claimed.
 [Contract](cut-session-apply.md), [verification](cut-session-apply-verification.md).
 §30, Milestone 5C and the product remain open; no next slice has started.

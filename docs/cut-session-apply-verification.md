@@ -83,12 +83,16 @@ framework or destructive Git operation.
 
 ## Real macOS window recipe
 
-Use a freshly staged arm64 bundle and exactly one owned viewer/watchdog:
+Use a freshly staged arm64 bundle and exactly one owned viewer/watchdog. Set
+`APP` to that bundle and choose a new fixture root; the generator and watchdog
+deliberately refuse existing destinations/logs. Do not redirect shell output to
+the watchdog's reserved `.stdout` / `.stderr` files.
 
 ```sh
+FCAD_30F_GUI_ROOT=/private/tmp/ferrite-30f-window-review
 FERRITECAD="$APP/Contents/MacOS/ferritecad" \
- python3 tools/cut-session-gui.py /private/tmp/ferrite-30f/gui-models
-python3 tools/watch-viewer-memory.py --log /private/tmp/ferrite-30f/watch.jsonl \
+ python3 tools/cut-session-gui.py "$FCAD_30F_GUI_ROOT"
+python3 tools/watch-viewer-memory.py --log "$FCAD_30F_GUI_ROOT/watch.jsonl" \
  --limit-mib 1536 -- "$APP/Contents/MacOS/ferritecad-viewer"
 ```
 
@@ -118,7 +122,7 @@ jobs run. All artifacts below belong in the fixture root.
 
 ```sh
 source /private/tmp/ferrite-pr85-review/env.sh
-python3 tools/cut-session-gui.py --compare /private/tmp/ferrite-30f/gui-models
+python3 tools/cut-session-gui.py --compare "$FCAD_30F_GUI_ROOT"
 ```
 
 The comparator compares actual GUI SQL/geometry/export results with temporary
@@ -209,3 +213,27 @@ two build jobs sequentially.
 
 All 14 affected Cut widget/copy tests passed on the final native sources, including
 the prior Add/Edit, polygon, sequential/history and ThroughAll worker/CLI paths.
+
+## Published code/workflow head
+
+Exact head `bf659c3d3dd02cd6be9a6f251dca987d13b395f0` completed 15/15 checks:
+[CI 7/7](https://github.com/gesriot/ferrite-cad/actions/runs/37204689689),
+[combined runtime 4/4](https://github.com/gesriot/ferrite-cad/actions/runs/37204654720),
+[PlaneGCS pin 4/4](https://github.com/gesriot/ferrite-cad/actions/runs/37204654706).
+Each run and job was checked against this head separately from the post-merge base.
+Saved full logs contain 21 actual new exact-name Cut gate executions: four
+widget/stub gates, two native gates and one mixed gate on each of the three OSes.
+All three runtime jobs emitted the actual `FCAD_CUT_SESSION_UFBX_EXECUTED` marker.
+The workflow's no-skip and strict-reader assertions succeeded.
+
+GitHub CLI labelled some Linux runtime output `UNKNOWN STEP`. Those lines were
+matched only to the exact successful step's timestamp interval from authoritative
+job metadata (completedAt has one-second precision), then to the literal executed
+`test … ... ok` lines or reader marker. Commands merely echoing gate names were
+not counted. Raw logs, metadata and extracted evidence remain under
+`/private/tmp/ferrite-30f/`.
+
+This evidence follow-up changes only this verification and the plan. Its separate
+docs-only head/CI result is recorded in [PR #86](https://github.com/gesriot/ferrite-cad/pull/86).
+The PR stays open for independent review, without merge or auto-merge. Real GUI
+and its seven artifact-dependent negative controls remain unverified as above.
