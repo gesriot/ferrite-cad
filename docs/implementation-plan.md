@@ -4469,3 +4469,17 @@ The fresh viewer exited normally, peak footprint 227.001 MiB, pressure normal
 and swap unchanged. Review also corrected two obsolete Cut instructions.
 [Contract](cut-session-apply.md), [verification](cut-session-apply-verification.md).
 §30, Milestone 5C and the product remain open; no next slice has started.
+
+**§30G — edit an existing Fillet radius inside the open document.** Apply radius
+reads current valid text and the selected UUID from the accepted snapshot through
+`StepTicket::edit_fillet_radius` and its worker, reusing the CLI copy operation.
+Dirty base/constraint edits, all 1–4 Fillets, common history, no-op/Redo, unsaved
+exports and Save/Save As retain their owners. Confirm draft number is separate;
+Add Fillet and clean-copy workflow remain unchanged. One production predicate,
+form versions and two-phase acceptance preserve scene/history/draft on refusal.
+Existing solved bounds, every neighbour, UUIDs and strict refs are unchanged.
+Exact widget/native/stub/mixed gates, all-cell SQL/CLI comparison, independent
+geometry, pinned ufbx, directed mutations and a real-window recipe are tracked
+in [contract](fillet-radius-session-apply.md) and
+[verification](fillet-radius-session-apply-verification.md).
+§30 and Milestone 5C remain open; no next slice has started.

@@ -30,7 +30,7 @@ plate and on a plate under one §29A Chamfer with §29D constraints (the same pl
 6. **Export STL/FBX** always writes the accepted working model, saved or not, never
    a stale read of the file on disk, and still refuses to write over the document the
    user has open.
-7. While the document has unsaved changes the remaining copy workflows (Add Cut, Cut copy, Fillet, Chamfer, creating Revolve
+7. While the document has unsaved changes the remaining copy workflows (Add Cut, Cut copy, Add Fillet, Fillet copy, Chamfer, creating Revolve
    and the *copy* workflow of the height form) are
    shown disabled with the reason in words. They read a file and write a new file,
    so using them on an unsaved document would silently discard the change. When the
@@ -139,3 +139,6 @@ no-solver step of the same workflow.
 §30F now applies parameters of an existing supported circular Cut through this
 same session. Add Cut remains copy-only; existing-Cut copy still requires a clean
 document. See [Cut session contract](cut-session-apply.md).
+
+§30G applies an existing Fillet radius through this session, including while dirty.
+Add Fillet and radius copy remain clean-only. See [Fillet session contract](fillet-radius-session-apply.md).

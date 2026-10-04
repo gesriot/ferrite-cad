@@ -96,8 +96,12 @@ by the two Lines that meet there, and the radius is from 0.01 mm to half the
 shorter adjacent side; on a dimensioned plate the sides are the solved ones,
 checked when the copy is built, and the stored drawing only names the
 corners. The copy's Body ends in a named Fillet whose rounded
-face is a real cylinder. Its radius can then be changed in a new copy with
-**Edit Fillet radius** or `edit-fillet-radius`: the same Fillet on the same
+face is a real cylinder. Its radius can then be changed with **Edit Fillet radius** / **Apply radius**
+inside the open document, including after unsaved base changes. Document Undo/Redo,
+unsaved exports and Save/Save As share the existing session. **Confirm draft number**
+serves only the clean-copy workflow; Add Fillet remains copy-only.
+[Session contract](docs/fillet-radius-session-apply.md).
+`edit-fillet-radius` still publishes a new copy: the same Fillet on the same
 edge, with every name kept. The plate's height can be changed under it with
 the ordinary **Edit extrusion** form or `edit-extrude`; the Fillet keeps its
 edge and radius. Its rectangle can be moved or resized with the ordinary

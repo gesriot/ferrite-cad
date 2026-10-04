@@ -219,6 +219,18 @@ impl Editor {
             && !self.chamfers.active()
     }
 
+    pub(crate) fn only_editing_fillet_radius(&self) -> bool {
+        self.fillets.editing_radius()
+            && self.draft.is_none()
+            && self.editing.is_none()
+            && self.editing_circle.is_none()
+            && self.editing_annulus.is_none()
+            && self.editing_angle.is_none()
+            && !self.constraints.active()
+            && !self.cuts.active()
+            && !self.chamfers.active()
+    }
+
     pub(crate) fn editing_saved_angle(&self) -> bool {
         self.editing_angle.is_some()
     }
@@ -297,6 +309,7 @@ impl Editor {
         let angle = self.can_apply_angle;
         let constraints = self.constraints.session();
         let cuts = self.cuts.session();
+        let fillets = self.fillets.session();
         *self = Self::default();
         self.can_begin_sketch = begin;
         self.can_apply = apply;
@@ -306,6 +319,7 @@ impl Editor {
         self.constraints
             .set_session(constraints.0, constraints.1, constraints.2);
         self.cuts.set_session(cuts.0, cuts.1, cuts.2);
+        self.fillets.set_session(fillets.0, fillets.1, fillets.2);
     }
     pub(crate) fn take_request(&mut self) -> Option<NewDocument> {
         self.pending.take()
@@ -1028,6 +1042,7 @@ impl Editor {
             return;
         }
         if self.fillets.active() {
+            self.fillets.set_outcome(outcome);
             self.fillets.draw(ui, running);
             return;
         }

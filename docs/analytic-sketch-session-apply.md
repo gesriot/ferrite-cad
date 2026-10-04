@@ -83,7 +83,7 @@ Reused: `edit_circle_copy` / `edit_annulus_copy` (through `StepTicket::edit_circ
 `StepTicket::edit_annulus`), the session's two-phase step, its history, dirty-by-comparison,
 Save, the working-copy lease for exports and the private-folder protections. Not introduced: a
 second copier, evaluator, history or writer, or any write to the logical file before Save. The
-other copy-only editors (Cut, Fillet, Chamfer, *Edit extrusion…* copy) stay copy
+other copy-only editors (Add Cut, Add Fillet, Chamfer, *Edit extrusion…* copy) stay copy
 workflows.
 
 ## Not claimed
@@ -92,3 +92,6 @@ The whole of §30, Milestone 5C or the beta; Windows or macOS from this containe
 run from this container; that the historical OOM is fixed.
 
 The saved partial Revolve angle joins the session in [§30E](revolve-angle-session-apply.md).
+
+Existing Fillet radii now Apply through the same session, including while dirty:
+[§30G](fillet-radius-session-apply.md). Fillet copy and Add Fillet remain clean-only.

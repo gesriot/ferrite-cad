@@ -77,7 +77,7 @@ struct RadiusDraft {
     version: DocumentVersion,
     choice: FilletRadiusChoice,
     typed: String,
-    /// The radius a confirmed Apply accepted, as typed.
+    /// The radius confirmed for the copy workflow, as typed.
     applied: Option<String>,
     refusal: Option<String>,
 }
@@ -104,6 +104,11 @@ pub(crate) struct Editor {
     pending: Option<EdgeFilletRequest>,
     radius: Option<RadiusDraft>,
     pending_radius: Option<EditFilletRadiusRequest>,
+    pending_apply: Option<EditFilletRadiusRequest>,
+    can_begin_radius: bool,
+    can_apply: bool,
+    unsaved: bool,
+    outcome: String,
 }
 
 impl Editor {
@@ -111,13 +116,33 @@ impl Editor {
         self.draft.is_some() || self.radius.is_some()
     }
     pub(crate) fn dismiss(&mut self) {
+        let availability = self.session();
         *self = Self::default();
+        self.set_session(availability.0, availability.1, availability.2);
     }
     pub(crate) fn take_request(&mut self) -> Option<EdgeFilletRequest> {
         self.pending.take()
     }
     pub(crate) fn take_radius_request(&mut self) -> Option<EditFilletRadiusRequest> {
         self.pending_radius.take()
+    }
+
+    pub(crate) fn editing_radius(&self) -> bool {
+        self.radius.is_some() && self.draft.is_none()
+    }
+    pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
+        self.can_begin_radius = can_begin;
+        self.can_apply = can_apply;
+        self.unsaved = unsaved;
+    }
+    pub(crate) fn session(&self) -> (bool, bool, bool) {
+        (self.can_begin_radius, self.can_apply, self.unsaved)
+    }
+    pub(crate) fn set_outcome(&mut self, outcome: &str) {
+        self.outcome = outcome.to_owned();
+    }
+    pub(crate) fn take_apply_request(&mut self) -> Option<EditFilletRadiusRequest> {
+        self.pending_apply.take()
     }
 
     /// Begin changing the radius of one saved Fillet. The form opens on the
@@ -184,7 +209,7 @@ impl Editor {
         for choice in &source.fillet_bodies {
             let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
             let response = ui.add_enabled(
-                can_begin && refusal.is_none(),
+                can_begin && !self.unsaved && refusal.is_none(),
                 egui::Button::new(format!(
                     "Fillet edge of {} — {}…",
                     choice.name.as_deref().unwrap_or("Unnamed body"),
@@ -203,7 +228,7 @@ impl Editor {
         for choice in &source.fillet_features {
             let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
             let response = ui.add_enabled(
-                can_begin && refusal.is_none(),
+                (can_begin || self.can_begin_radius) && refusal.is_none(),
                 egui::Button::new(format!(
                     "Edit Fillet radius {} — {}{}…",
                     choice.name.as_deref().unwrap_or("Unnamed fillet"),
@@ -238,10 +263,13 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Edit Fillet radius — new copy")
+        egui::Window::new("Edit Fillet radius")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
+                if !self.outcome.is_empty() {
+                    ui.label(format!("Document: {}", self.outcome));
+                }
                 ui.label(
                     "Changes only the radius. The Fillet keeps its edge, its UUID and every \
                      name; the edge cannot be changed here.",
@@ -330,7 +358,7 @@ impl Editor {
                     ui.small(format!(
                         "Saved radius {} mm; at least {} mm. The plate's Sketch has \
                          constraints: the corner shown is its stored position, and the \
-                         new copy is saved only if the radius is at most half of each \
+                         change is accepted only if the radius is at most half of each \
                          side meeting at the corner of the solved plate.",
                         saved.radius_mm,
                         ferritecad_document::MIN_RADIUS_MM,
@@ -356,7 +384,24 @@ impl Editor {
                                 .desired_width(110.),
                         );
                     });
-                    if ui.button("Apply radius").clicked() {
+                    let valid = draft.radius(&draft.typed);
+                    let differs = valid.as_ref().is_ok_and(|r| *r != saved.radius_mm);
+                    if ui.add_enabled(self.can_apply && differs && valid.is_ok(),
+                        egui::Button::new("Apply radius")).clicked() {
+                        self.pending_apply = Some(EditFilletRadiusRequest {
+                            source: draft.source.clone(),
+                            expected: draft.version,
+                            feature: saved.feature,
+                            radius_mm: valid.as_ref().copied().expect("validated radius"),
+                            destination: PathBuf::new(),
+                        });
+                    }
+                    if let Err(error) = valid {
+                        ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+                    } else if !differs {
+                        ui.small("This is the stored radius: there is nothing to apply.");
+                    }
+                    if ui.button("Confirm draft number").clicked() {
                         match draft.radius(&draft.typed) {
                             Ok(_) => {
                                 draft.applied = Some(draft.typed.clone());
@@ -386,7 +431,7 @@ impl Editor {
                                 saved.corner.corner_mm[0],
                                 saved.corner.corner_mm[1]
                             ));
-                            if ui.button("Save radius copy…").clicked() {
+                            if ui.add_enabled(!self.unsaved, egui::Button::new("Save radius copy…")).clicked() {
                                 self.pending_radius = Some(EditFilletRadiusRequest {
                                     source: draft.source.clone(),
                                     expected: draft.version,
@@ -397,12 +442,16 @@ impl Editor {
                             }
                         }
                         None => {
-                            ui.small("Apply a radius before saving.");
+                            ui.small("Confirm the draft number before saving a copy.");
                         }
                     }
                 });
+                ui.small("Apply changes this document; the file on disk changes only on Save.");
+                if self.unsaved {
+                    ui.small("Saving a copy is unavailable while the document has unsaved changes: Save or Undo them first.");
+                }
                 if running {
-                    ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                    ui.label("Working… Draft retained until acceptance. Cancel job in toolbar.");
                 }
             });
         if cancel {
@@ -667,6 +716,7 @@ pub(crate) fn finish_fillet_radius(
 #[cfg(test)]
 #[allow(clippy::panic)]
 pub(crate) mod tests {
+    pub(crate) mod session_apply;
     use super::*;
     use ferritecad_document::{
         Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
@@ -1717,7 +1767,7 @@ pub(crate) mod tests {
             ("inf", "finite"),
         ] {
             enter(&ctx, &mut e, "New radius (mm):", text);
-            click(&ctx, &mut e, "Apply radius");
+            click(&ctx, &mut e, "Confirm draft number");
             let draft = e.radius.as_ref().expect("draft");
             assert!(draft.applied.is_none(), "{text} was applied");
             assert!(
@@ -1727,7 +1777,7 @@ pub(crate) mod tests {
             );
         }
         enter(&ctx, &mut e, "New radius (mm):", "4.8125");
-        click(&ctx, &mut e, "Apply radius");
+        click(&ctx, &mut e, "Confirm draft number");
         let out = frame(&ctx, &mut e, false);
         assert!(painted(
             &out,
@@ -1751,7 +1801,7 @@ pub(crate) mod tests {
         // While a job runs the form is inert and says the draft is kept.
         assert!(painted(
             &frame(&ctx, &mut e, true),
-            "Draft retained until publication"
+            "Draft retained until acceptance"
         ));
         click_while(&ctx, &mut e, "Cancel radius draft", true);
         assert!(e.active(), "Cancel is disabled while saving");
@@ -1824,7 +1874,7 @@ pub(crate) mod tests {
             frame(&ctx, &mut e, false);
         }
         enter(&ctx, &mut e, "New radius (mm):", "1.1875");
-        click(&ctx, &mut e, "Apply radius");
+        click(&ctx, &mut e, "Confirm draft number");
         click(&ctx, &mut e, "Save radius copy…");
         let mut request = e.take_radius_request().expect("widget request");
         let radius = request.radius_mm;
@@ -2185,7 +2235,7 @@ pub(crate) mod tests {
             "New radius (mm):",
             &max1.next_up().to_string(),
         );
-        click(&ctx, &mut e, "Apply radius");
+        click(&ctx, &mut e, "Confirm draft number");
         let draft = e.radius.as_ref().expect("draft");
         assert!(draft.applied.is_none());
         assert!(
@@ -2194,7 +2244,7 @@ pub(crate) mod tests {
             draft.refusal
         );
         enter(&ctx, &mut e, "New radius (mm):", &max1.to_string());
-        click(&ctx, &mut e, "Apply radius");
+        click(&ctx, &mut e, "Confirm draft number");
         click(&ctx, &mut e, "Save radius copy…");
         let request = e.take_radius_request().expect("the widgets' request");
         assert_eq!(
@@ -2262,12 +2312,12 @@ pub(crate) mod tests {
             "New radius (mm):",
             &6.125f64.next_up().to_string(),
         );
-        click(&ctx, &mut e, "Apply radius");
+        click(&ctx, &mut e, "Confirm draft number");
         let draft = e.radius.as_ref().expect("draft");
         assert!(draft.applied.is_none());
         assert!(draft.refusal.is_some(), "past the corner's bound");
         enter(&ctx, &mut e, "New radius (mm):", "6.125");
-        click(&ctx, &mut e, "Apply radius");
+        click(&ctx, &mut e, "Confirm draft number");
         let draft = e.radius.as_ref().expect("draft");
         assert!(draft.refusal.is_none(), "{:?}", draft.refusal);
         assert_eq!(draft.applied.as_deref(), Some("6.125"));
@@ -2303,7 +2353,7 @@ pub(crate) mod tests {
             frame(&ctx, &mut e, false);
         }
         enter(&ctx, &mut e, "New radius (mm):", "4.8125");
-        click(&ctx, &mut e, "Apply radius");
+        click(&ctx, &mut e, "Confirm draft number");
         click(&ctx, &mut e, "Save radius copy…");
         let mut request = e.take_radius_request().expect("widget request");
         assert_eq!(request.feature, feature);
@@ -2615,7 +2665,7 @@ pub(crate) mod tests {
             &out,
             "with Fillet 3: the two radii must leave at least 0.01 mm of it flat."
         ));
-        for label in ["Cancel radius draft", "Apply radius"] {
+        for label in ["Cancel radius draft", "Confirm draft number"] {
             let p = at(&out, label).unwrap_or_else(|| panic!("not painted: {label}"));
             assert!(p.y > 0. && p.y < 768., "{label} at {p:?}");
         }
@@ -2633,7 +2683,7 @@ pub(crate) mod tests {
         );
         for (text, ok) in [(max.next_up().to_string(), false), (max.to_string(), true)] {
             enter(&ctx, &mut e, "New radius (mm):", &text);
-            click(&ctx, &mut e, "Apply radius");
+            click(&ctx, &mut e, "Confirm draft number");
             let draft = e.radius.as_ref().expect("draft");
             assert_eq!(draft.refusal.is_none(), ok, "{text}: {:?}", draft.refusal);
             if !ok {
