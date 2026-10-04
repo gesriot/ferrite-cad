@@ -2642,7 +2642,8 @@ mod tests {
             }
         }
         let payload = |path: &Path| {
-            // Validate the raw stored hash before normalizing newly added UUIDs.
+            // Decode the object and validate its raw stored hash before
+            // normalizing newly added UUIDs. object() alone only decodes it.
             Document::open_read_only(path)
                 .expect("document")
                 .object(sketch)
@@ -2653,12 +2654,21 @@ mod tests {
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .expect("database");
-            db.query_row(
-                "SELECT payload FROM objects WHERE id = ?1",
-                [sketch.to_bytes().as_slice()],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
-            .expect("payload")
+            let (payload, hash) = db
+                .query_row(
+                    "SELECT payload, payload_hash FROM objects WHERE id = ?1",
+                    [sketch.to_bytes().as_slice()],
+                    |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+                )
+                .expect("payload and hash");
+            assert_eq!(
+                ferritecad_types::ContentHash::of_bytes(&payload)
+                    .as_bytes()
+                    .as_slice(),
+                hash,
+                "{why}: the raw stored Sketch payload hash differs",
+            );
+            payload
         };
         let mut ours_payload = payload(ours);
         let theirs_payload = payload(theirs);

@@ -53,6 +53,7 @@ sequentially. Existing native/stub targets are reused, never another checkout.
 
 ```sh
 source /private/tmp/ferrite-pr84-review/env.sh
+export DYLD_FALLBACK_LIBRARY_PATH="$DYLD_LIBRARY_PATH"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --release --features planegcs -p ferritecad-app sketch::tests::angle_apply -- --nocapture --test-threads=1
@@ -63,7 +64,7 @@ from pathlib import Path
 for file, label, output in [
  ('.github/workflows/ci.yml', 'Open, edit, Undo, Redo and Save one document without native geometry', 'stub-packed.sh'),
  ('.github/workflows/runtime-layout.yml', 'Edit, Undo, Redo, export and Save one open document through the native window state', 'native-packed.sh'),
- ('.github/workflows/runtime-layout.yml', 'Build circles with OCCT and refuse constraints without the solver', 'mixed-packed.sh')]:
+ ('.github/workflows/runtime-layout.yml', 'Chamfer a plate with Open CASCADE and no solver', 'mixed-packed.sh')]:
  lines=Path(file).read_text().splitlines()
  i=next(i for i,l in enumerate(lines) if l.strip() == '- name: '+label)
  i=next(i for i in range(i+1,len(lines)) if lines[i].strip() == 'run: |')+1
@@ -77,12 +78,30 @@ mkdir -p "$RUNNER_TEMP"
 export GITHUB_ENV="$RUNNER_TEMP/github-env"
 export FCAD_OCCT_LIB_DIR="$PWD/vendor/install/lib"
 bash /private/tmp/native-packed.sh
-FERRITECAD_REQUIRE_PLANEGCS=0 bash /private/tmp/mixed-packed.sh
+# That existing step uses $PWD/target/release in its CLI recipes. With a custom
+# CARGO_TARGET_DIR, run the unchanged block from a temporary facade whose target
+# points to the selected target; source paths are symlinks, not copied builds.
+repo="$PWD"
+facade="$RUNNER_TEMP/mixed-work"
+mkdir -p "$facade"
+for path in Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates docs vendor tools; do
+  ln -s "$repo/$path" "$facade/$path"
+done
+ln -s "$CARGO_TARGET_DIR" "$facade/target"
+(cd "$facade"; FERRITECAD_REQUIRE_PLANEGCS=0 bash /private/tmp/mixed-packed.sh)
 # Restore the shipped CLI before native peers / GUI:
 cargo build --release --features planegcs -p ferritecad-cli -p ferritecad-app
 # Stub: same packed argv, in the existing stub target, no native discovery.
-CARGO_TARGET_DIR=/private/tmp/ferrite-25j-stub-target OpenCASCADE_DIR=/private/tmp/absent-occt \
- FERRITECAD_REQUIRE_OCCT=0 FERRITECAD_REQUIRE_PLANEGCS=0 bash /private/tmp/stub-packed.sh
+# On this host Homebrew provides another OCCT, so an absent OpenCASCADE_DIR alone
+# is insufficient. Disable that find_package in this stub target's existing
+# bridge-build cache first (configuration must refuse), then change the absent
+# path to trigger Cargo's build script. Never change the native target cache:
+# cmake -S crates/ferritecad-occt-bridge -B "$STUB_BRIDGE_BUILD" \
+#   -DCMAKE_DISABLE_FIND_PACKAGE_OpenCASCADE=TRUE
+(unset FCAD_PLANEGCS_DIR DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH CMAKE_PREFIX_PATH
+ CARGO_TARGET_DIR=/private/tmp/ferrite-25j-stub-target OpenCASCADE_DIR=/private/tmp/absent-occt \
+ FERRITECAD_REQUIRE_OCCT=0 FERRITECAD_REQUIRE_PLANEGCS=0 RUNNER_OS=macOS \
+ bash /private/tmp/stub-packed.sh)
 ```
 
 ## Directed mutations
@@ -132,6 +151,7 @@ Compare only those real artifacts, then run the pinned reader:
 
 ```sh
 source /private/tmp/ferrite-pr84-review/env.sh
+export DYLD_FALLBACK_LIBRARY_PATH="$DYLD_LIBRARY_PATH"
 python3 tools/revolve-angle-session-gui.py --compare /private/tmp/ferrite-30e-gui
 # read_production is compiled from the checked ufbx pin by tools/check-fbx-complex.sh:
 for name in radial axis constrained; do
@@ -172,5 +192,49 @@ rather than interleaving with the harness's exact success lines; executing the
 packed workflow caught that formatting issue and its corrected block passed.
 
 Logs/artifacts for this run: `/private/tmp/ferrite-30e/`; the generator refused a
-checkout destination and generated only temporary input fixtures. Mixed, stub,
-strict-reader, GUI and published-head CI evidence will be appended when completed.
+checkout destination and generated only temporary input fixtures. The mixed block passed 10 exact tests and its CLI recipes with no skips, in a
+small symlink facade pointing at the existing native target. The initial run
+from the checkout reached an old hardcoded target/release CLI; it was not counted.
+The actual stub block passed all 88 exact tests with no skips. Its first attempt
+found Homebrew OCCT, so it was not a stub and the no-skip guard refused it. The
+selected stub bridge cache then disabled OpenCASCADE discovery; Cargo emitted
+its explicit no-kernel warning and the typed refusal executed.
+
+The complete strict-reader script passed (complex corpus: 256 independent checks,
+986837 triangles, 233291656 bytes), including existing analytic session artifacts
+and all three new angle session artifacts. Angle triangle joins: radial 348,
+axis 224, constrained 348; worst difference 1.73e-18 m. On this host, SIP strips
+DYLD variables when starting /bin/bash. The successful script was sourced in a
+bash that loaded the native environment internally; earlier loader aborts are
+recorded as failed environment attempts, not successful geometry checks:
+
+```sh
+bash -c 'source /private/tmp/ferrite-pr84-review/env.sh;
+ export DYLD_FALLBACK_LIBRARY_PATH="$DYLD_LIBRARY_PATH";
+ export FCAD_ANGLE_SESSION_FBX_DIR=/private/tmp/ferrite-30e/angle-session;
+ export FCAD_ANALYTIC_SESSION_FBX_DIR=/private/tmp/ferrite-30e/analytic-session;
+ source tools/check-fbx-complex.sh --release --features planegcs'
+```
+
+Real GUI ran against `/private/tmp/ferrite-30e/gui/layout/FerriteCAD.app` and inputs
+in `/private/tmp/ferrite-30e/gui-models`. All three scenarios above executed;
+actual disk snapshots and native Save/Save As outputs were captured, and actual
+GUI exports were moved from the native dialog's work folder to the artifact
+root without changing their bytes. No CLI stand-in filled an output. The first
+comparator passed positive SQL/export/geometry comparisons but its corrupt-hash
+negative control revealed that decoding an object alone does not validate its
+raw hash. The helper now explicitly checks raw BLAKE3 before UUID normalization;
+the repeated comparator passed all seven controls. The complete native workflow
+block passed all 18 exact gates again without skips, and final workspace
+all-targets/all-features clippy with `-D warnings` passed. The comparator emitted
+`FCAD_30E_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true`.
+
+One owned watchdog/viewer, limit 1536 MiB: PID 69025, Quit/exit 0, no abort,
+peak footprint 312.36 MiB, pressure normal throughout. Swap stayed at
+1127219200 bytes. After Quit only the owned watchdog/PID was inspected;
+no app or AX call relaunched the viewer. Disk free remained over 137 GiB,
+and memory_pressure reported 56–58% free after the GUI and reader campaign.
+No native pins, foreign process/cache or detached worktree were changed.
+
+Published-head and separately checked post-merge base CI are recorded below
+when completed.
