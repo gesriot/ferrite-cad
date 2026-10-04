@@ -545,7 +545,11 @@ impl Editor {
                             }
                         }
                         None => {
-                            ui.small("Confirm the draft numbers and end before saving a copy.");
+                            ui.small(if shown.editing.is_some() {
+                                "Confirm the draft numbers and end before saving a copy."
+                            } else {
+                                "Apply the numbers and the end before saving."
+                            });
                         }
                     }
                 });

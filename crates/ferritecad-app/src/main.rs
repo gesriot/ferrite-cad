@@ -5068,10 +5068,10 @@ impl Live {
             chosen = ferritecad_ui::toolbar(ui, activity);
             if held_back {
                 ui.label(
-                    "The other editors (Cut, Fillet, Chamfer, creating Revolve) are unavailable while the \
-                     document has unsaved changes: Save or Undo them first. The height, \
-                     vertices, constraints, Circle, annulus and a saved partial Revolve angle can still be \
-                     changed with Apply.",
+                    "Save or Undo changes before adding a Cut, creating a Revolve, or using \
+                     Fillet/Chamfer. Height, vertices, constraints, Circle, annulus, a saved \
+                     partial Revolve angle and existing Cut parameters can still be changed \
+                     with Apply.",
                 );
             }
             sketch.draw_choices(
