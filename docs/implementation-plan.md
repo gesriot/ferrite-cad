@@ -4435,3 +4435,17 @@ Quit. Real GUI outputs matched CLI in SQL and STL/FBX; strict ufbx and mesh join
 passed. Viewer peak 210.892 MiB, exit 0, swap unchanged. Code/workflow CI and its
 actual new gate executions were verified on all three OSes. The verification
 record distinguishes stub-only no-ops from native execution.
+
+**§30E — edit a saved partial Revolve angle inside the open document.** The
+existing angle editor gains **Apply angle** through `StepTicket::edit_revolve_angle`
+and its worker, reusing `edit_revolve_angle_copy` and the common commit/show spine.
+It opens after unsaved profile or constraint Apply; one common history, unsaved
+export, Save/Save As, unchanged model no-op with Redo preservation. **Confirm draft
+numbers** owns only draft checkpoints. One production availability predicate allows
+the form's own Apply and excludes other forms and work. Version guards, cancellation,
+stale answers, scene failure and cleanup preserve accepted state and typed draft.
+UUIDs, both caps, axis class and stored constrained approximation remain unchanged.
+Exact widget/native/stub/mixed workflow gates and strict ufbx comparisons extend the
+existing campaigns. No new geometry, format, CLI/JSON or document class.
+[Contract](revolve-angle-session-apply.md), [verification and executable window recipe](revolve-angle-session-apply-verification.md).
+§30, Milestone 5C and the product remain open; the next slice has not started.

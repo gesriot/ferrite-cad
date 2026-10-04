@@ -818,6 +818,11 @@ jobs:
             if grep -q 'skipped:' session-no-solver.log || ! grep -Fq "test $gate ... ok" session-no-solver.log; then exit 1; fi
           done
 
+          gate=sessions::tests::angle::mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-angle-mixed.log
+          if grep -q 'skipped:' session-angle-mixed.log || ! grep -Fq "test $gate ... ok" session-angle-mixed.log; then exit 1; fi
+
       - name: Build the real application and the command line tool against both
         id: build
         env:
@@ -1029,6 +1034,27 @@ jobs:
             test -s "$analytic_dir/$name.stl"
           done
           echo "FCAD_ANALYTIC_SESSION_FBX_DIR=$analytic_artifacts" >> "$GITHUB_ENV"
+          angle_dir="$RUNNER_TEMP/angle-session"
+          mkdir -p "$angle_dir"
+          angle_artifacts="$angle_dir"
+          case '${{ matrix.name }}' in
+            windows) angle_artifacts="$(cygpath -w "$angle_artifacts")" ;;
+          esac
+          export FCAD_ANGLE_SESSION_ARTIFACTS="$angle_artifacts"
+          for gate in sessions::tests::angle::native_radial_profile_then_angle_is_one_session_like_cli \
+            sessions::tests::angle::native_axis_closed_profile_then_angle_keeps_axis_and_caps \
+            sessions::tests::angle::native_constraints_then_angle_preserve_stored_approximation_and_cli_cells
+          do
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-angle-native.log
+            if grep -q 'skipped:' session-angle-native.log || ! grep -Fq "test $gate ... ok" session-angle-native.log; then exit 1; fi
+          done
+          for name in radial axis constrained; do
+            test -s "$angle_dir/$name.fbx"
+            test -s "$angle_dir/$name.stl"
+          done
+          echo "FCAD_ANGLE_SESSION_FBX_DIR=$angle_artifacts" >> "$GITHUB_ENV"
+
 
       - name: Create a saved polygon through the native CLI and sketch worker
         env:
@@ -2669,6 +2695,7 @@ jobs:
           grep -q '^FCAD_CHAMFER_SKETCH_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_CONSTRAINTS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ANALYTIC_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_ANGLE_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

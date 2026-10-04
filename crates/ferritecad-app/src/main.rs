@@ -1021,6 +1021,21 @@ fn can_apply_analytic(
         && !sessions.busy()
 }
 
+/// Shared by the partial Revolve form's Apply button and its worker command.
+fn can_apply_angle(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    creates.can_apply_angle()
+        && document_io_idle(loads, exports)
+        && !edits.busy()
+        && sessions.has_session()
+        && !sessions.busy()
+}
+
 fn ask_new(
     creates: &mut creates::Creates,
     loads: &Loads,
@@ -2927,6 +2942,13 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.edits,
                     &self.sessions,
                 );
+                let angle_apply = can_apply_angle(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -2943,6 +2965,7 @@ impl ApplicationHandler<AppEvent> for App {
                     self.sessions.dirty(),
                 );
                 self.creates.sketch.set_analytic_apply(analytic_apply);
+                self.creates.sketch.set_angle_apply(angle_apply);
                 self.creates.sketch.constraints.set_session(
                     session_idle && !self.edits.busy(),
                     constraints_apply,
@@ -3040,6 +3063,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.take_apply_annulus_request() {
                             self.apply_annulus(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_apply_angle_request() {
+                            self.apply_angle(request);
                         }
                         if let Some(request) = self.creates.sketch.take_edit_request() {
                             self.ask_where_to_edit_sketch(request);
@@ -3756,6 +3782,37 @@ impl App {
                 ticket,
                 request.sketch,
                 request.edit,
+                request.expected,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
+    /// Apply the saved partial Revolve angle to the accepted document, no dialog.
+    fn apply_angle(&mut self, request: ferritecad_jobs::EditRevolveAngleRequest) {
+        if !can_apply_angle(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
+            self.input.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_apply_angle(
+                ticket,
+                request.feature,
+                request.degrees,
                 request.expected,
                 cancel.clone(),
                 move |result| {
@@ -4950,9 +5007,9 @@ impl Live {
             chosen = ferritecad_ui::toolbar(ui, activity);
             if held_back {
                 ui.label(
-                    "The other editors (Cut, Fillet, Chamfer, Revolve) are unavailable while the \
+                    "The other editors (Cut, Fillet, Chamfer, creating Revolve) are unavailable while the \
                      document has unsaved changes: Save or Undo them first. The height, \
-                     vertices, constraints, Circle and annulus of a saved Sketch can still be \
+                     vertices, constraints, Circle, annulus and a saved partial Revolve angle can still be \
                      changed with Apply.",
                 );
             }

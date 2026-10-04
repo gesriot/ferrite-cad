@@ -30,8 +30,8 @@ plate and on a plate under one §29A Chamfer with §29D constraints (the same pl
 6. **Export STL/FBX** always writes the accepted working model, saved or not, never
    a stale read of the file on disk, and still refuses to write over the document the
    user has open.
-7. While the document has unsaved changes the other editors (Sketch, constraints,
-   Cut, Fillet, Chamfer, circles, Revolve and the *copy* workflow of the height form) are
+7. While the document has unsaved changes the remaining copy workflows (Cut, Fillet, Chamfer, creating Revolve
+   and the *copy* workflow of the height form) are
    shown disabled with the reason in words. They read a file and write a new file,
    so using them on an unsaved document would silently discard the change. When the
    document is clean they work exactly as before.
@@ -87,7 +87,8 @@ the typed draft, never a second copy of those facts.
   immediate termination; the event loop owns the guarded exit and worker cleanup.
   It adds only the previously absent delegate decision method and refuses startup
   if a future winit already supplies one, rather than overriding it.
-* Only the Extrude height is on the session. The other editors join in later slices.
+* Saved vertices (§30B), constraints (§30C), Circle/annulus geometry (§30D) and
+  partial Revolve angle (§30E) also Apply through this session. Other editors join later.
 * This does not complete Milestone 5C or the general beta.
 
 ## Checks
@@ -132,3 +133,5 @@ no-solver step of the same workflow.
 * **Next (§30B).** The vertices of a saved Line Sketch are applied inside the open document: [contract](sketch-session-apply.md).
 * **Next (§30C).** The existing constraints of a saved Sketch are applied inside the open document: [contract](constraint-session-apply.md).
 * **Next (§30D).** The geometry of a saved Circle or annulus is applied inside the open document: [contract](analytic-sketch-session-apply.md).
+
+* **Next (§30E).** The angle of a saved partial Revolve is applied inside the open document: [contract](revolve-angle-session-apply.md).
