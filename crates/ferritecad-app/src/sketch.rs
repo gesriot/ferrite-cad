@@ -183,6 +183,9 @@ pub(crate) struct Editor {
     /// bounded history under the same policy as the others.
     editing_angle: Option<(EditRevolveAngleRequest, RevolveAngleChoice)>,
     pending_angle_edit: Option<EditRevolveAngleRequest>,
+    /// §30E: availability and request for Apply inside the open document.
+    can_apply_angle: bool,
+    pending_apply_angle: Option<EditRevolveAngleRequest>,
     angle_edit: String,
     angle_undo: Vec<String>,
     angle_redo: Vec<String>,
@@ -203,6 +206,16 @@ fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
 impl Editor {
     pub(crate) fn editing_saved_vertices(&self) -> bool {
         self.editing.is_some()
+    }
+
+    pub(crate) fn editing_saved_angle(&self) -> bool {
+        self.editing_angle.is_some()
+    }
+    pub(crate) fn set_angle_apply(&mut self, can_apply: bool) {
+        self.can_apply_angle = can_apply;
+    }
+    pub(crate) fn take_apply_angle_request(&mut self) -> Option<EditRevolveAngleRequest> {
+        self.pending_apply_angle.take()
     }
 
     /// §30D: a saved Circle or annulus form is open.
@@ -270,11 +283,13 @@ impl Editor {
         // the frame in between.
         let (begin, apply, unsaved) = (self.can_begin_sketch, self.can_apply, self.unsaved);
         let analytic = self.can_apply_analytic;
+        let angle = self.can_apply_angle;
         let constraints = self.constraints.session();
         *self = Self::default();
         self.can_begin_sketch = begin;
         self.can_apply = apply;
         self.can_apply_analytic = analytic;
+        self.can_apply_angle = angle;
         self.unsaved = unsaved;
         self.constraints
             .set_session(constraints.0, constraints.1, constraints.2);
@@ -745,7 +760,7 @@ impl Editor {
             for choice in &source.revolve_angles {
                 let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                 let response = ui.add_enabled(
-                    can_begin && refusal.is_none(),
+                    (can_begin || self.can_begin_sketch) && refusal.is_none(),
                     egui::Button::new(format!(
                         "Edit Revolve angle {} — {}…",
                         choice.name.as_deref().unwrap_or("Unnamed"),
@@ -1016,7 +1031,7 @@ impl Editor {
             return;
         }
         egui::Window::new(if self.editing_angle.is_some() {
-            "Edit Revolve angle — new copy"
+            "Edit saved Revolve angle"
         } else if self.editing_annulus.is_some() {
             "Edit saved annulus"
         } else if self.editing_circle.is_some() {
@@ -1222,8 +1237,7 @@ impl Editor {
     ///
     /// Shows what is stored, by identity, and offers the one number this edit
     /// may change. The profile, the axis and the direction are named as kept:
-    /// they are not editable here, and a sector's coordinates are not
-    /// editable at all in this build.
+    /// they are not editable here. The profile has its own saved Sketch editor.
     fn draw_angle_edit(&mut self, ui: &mut egui::Ui) {
         let Some((request, choice)) = &self.editing_angle else {
             return;
@@ -1261,21 +1275,50 @@ impl Editor {
         match self.angle_edit_request() {
             Ok(request) => {
                 let pending = self.angle_applied.as_ref() != Some(&self.angle_edit);
-                if ui
-                    .add_enabled(pending, egui::Button::new("Apply angle change"))
-                    .clicked()
-                {
-                    self.apply_angle().expect("validated angle draft");
-                }
+                let differs = self
+                    .editing_angle
+                    .as_ref()
+                    .and_then(|(_, choice)| choice.degrees)
+                    != Some(request.degrees);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            self.can_apply_angle && differs,
+                            egui::Button::new("Apply angle"),
+                        )
+                        .clicked()
+                    {
+                        self.pending_apply_angle = Some(request.clone());
+                    }
+                    if ui
+                        .add_enabled(pending, egui::Button::new("Confirm draft numbers"))
+                        .clicked()
+                    {
+                        self.apply_angle().expect("validated angle draft");
+                    }
+                });
                 let applied = self.angle_applied.as_ref() == Some(&self.angle_edit);
                 if ui
-                    .add_enabled(applied, egui::Button::new("Save edited Revolve copy…"))
+                    .add_enabled(
+                        applied && !self.unsaved,
+                        egui::Button::new("Save edited Revolve copy…"),
+                    )
                     .clicked()
                 {
                     self.pending_angle_edit = Some(request);
                 }
-                if !applied {
-                    ui.small("Apply the angle before saving the copy.");
+                if !differs {
+                    ui.small("This is the stored angle: there is nothing to apply.");
+                }
+                if !applied && !self.unsaved {
+                    ui.small("Confirm the draft numbers before saving a copy.");
+                }
+                if self.unsaved {
+                    ui.small(
+                        "Saving a copy as a new file is unavailable while the document has \
+                        unsaved changes: Save or Undo them first. Apply changes this \
+                        document; the file on disk changes only when you Save.",
+                    );
                 }
             }
             Err(error) => {
@@ -1419,9 +1462,14 @@ impl Editor {
             }
             ui.add_enabled_ui(!running, |ui| self.draw_angle_edit(ui));
             if running {
-                ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                ui.label(
+                    "Working… Draft retained until the change is shown. Cancel job in toolbar.",
+                );
             }
-            ui.small("Undo/redo changes only this draft; history ends at publication.");
+            ui.small(
+                "Undo/redo changes only this draft; document history waits until Apply or Cancel.",
+            );
+            Self::outcome_line(ui, outcome);
             return;
         }
         if self.editing_annulus.is_some() {
@@ -2425,6 +2473,7 @@ fn to_document(pos: egui::Pos2, origin: egui::Pos2, scale: f32) -> [f64; 2] {
 pub(crate) mod tests {
     use super::*;
     pub(crate) mod analytic_apply;
+    pub(crate) mod angle_apply;
 
     /// The request the saved Sketch form makes when `from` is replaced by `to` in
     /// the two vertex boxes that show it and **Apply vertices** is pressed: the real
@@ -4513,7 +4562,7 @@ pub(crate) mod tests {
             })
             .collect();
         for wanted in [
-            "Edit Revolve angle — new copy",
+            "Edit saved Revolve angle",
             "Saved partial Revolve · angle only · right-handed about the sketch +Y axis",
             "Saved angle 137.5° · with a bore · profile, axis, direction and every UUID are retained",
             "137.5",
@@ -4544,7 +4593,7 @@ pub(crate) mod tests {
         // Through 180°, applied, undone and redone through the real buttons.
         replace_field(&ctx, &mut e, "360", "220");
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Apply angle change"));
+        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
         assert_eq!(e.angle_applied.as_deref(), Some("220"));
         assert_eq!(e.angle_undo, ["137.5"]);
         let out = frame(&ctx, &mut e, vec![]);

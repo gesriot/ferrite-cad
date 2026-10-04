@@ -722,6 +722,27 @@ pub(crate) fn spawn_apply_annulus(
     )
 }
 
+/// The partial Revolve angle edit, through the existing copy job on the worker
+/// owning the kernel. `expected` is the version the form was opened from.
+pub(crate) fn spawn_apply_angle(
+    ticket: StepTicket,
+    feature: ObjectId,
+    degrees: f64,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.edit_revolve_angle(feature, degrees, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
 /// The picture of one private version, read cold exactly as Open reads a file.
 pub(crate) fn spawn_scene(
     path: PathBuf,
@@ -795,6 +816,7 @@ pub(crate) fn open_for_view(
 mod tests {
     use super::*;
     mod analytic;
+    mod angle;
     use ferritecad_document::Document;
     use ferritecad_jobs::{
         CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,
@@ -1772,6 +1794,11 @@ mod tests {
                             && row.get_ref(0)?.as_blob()? == id.to_bytes()
                         {
                             if column == "payload_hash" {
+                                let hash = ferritecad_types::ContentHash::of_bytes(payload);
+                                line.push_str(&format!(
+                                    "{column}={:?};",
+                                    rusqlite::types::ValueRef::Blob(hash.as_bytes())
+                                ));
                                 continue;
                             }
                             if column == "payload" {
@@ -2588,8 +2615,8 @@ mod tests {
             .clone()
     }
 
-    /// Two documents are the same model when every cell agrees but the stamp and
-    /// the selected payload hash, and the Sketch's constraints agree rule for rule with
+    /// Every SQL cell agrees except the stamp, after substituting only newly
+    /// added constraint UUIDs in the payload and recomputing its hash. Rules agree with
     /// exactly the new ones (and nothing else) carrying different UUIDs: each new
     /// UUID of `ours` is paired with the one at the same place in `theirs`.
     fn same_model_with_explicit_new_ids(
@@ -2615,7 +2642,7 @@ mod tests {
             }
         }
         let payload = |path: &Path| {
-            // Document validates the stored hash before the comparison excludes it.
+            // Validate the raw stored hash before normalizing newly added UUIDs.
             Document::open_read_only(path)
                 .expect("document")
                 .object(sketch)

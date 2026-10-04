@@ -191,6 +191,17 @@ impl Creates {
         !self.running() && self.form.is_none() && self.sketch.editing_analytic()
     }
 
+    /// The angle form is the caller of its own Apply, not an operation blocking it.
+    pub(crate) fn can_apply_angle(&self) -> bool {
+        !self.running()
+            && self.form.is_none()
+            && self.sketch.editing_saved_angle()
+            && !self.sketch.constraints.active()
+            && !self.sketch.cuts.active()
+            && !self.sketch.fillets.active()
+            && !self.sketch.chamfers.active()
+    }
+
     pub(crate) fn can_cancel(&self) -> bool {
         self.running() && !self.cancel_requested
     }

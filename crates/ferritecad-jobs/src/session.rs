@@ -43,9 +43,9 @@ use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
 use crate::edit::{
-    EditAnnulusRequest, EditCircleRequest, EditExtrudeRequest, EditSketchConstraintsRequest,
-    EditSketchRequest, edit_annulus_copy, edit_circle_copy, edit_extrude_copy,
-    edit_sketch_constraints_copy, edit_sketch_copy,
+    EditAnnulusRequest, EditCircleRequest, EditExtrudeRequest, EditRevolveAngleRequest,
+    EditSketchConstraintsRequest, EditSketchRequest, edit_annulus_copy, edit_circle_copy,
+    edit_extrude_copy, edit_revolve_angle_copy, edit_sketch_constraints_copy, edit_sketch_copy,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
 
@@ -627,6 +627,34 @@ impl StepTicket {
                     expected,
                     sketch,
                     edit,
+                    destination: destination.to_path_buf(),
+                },
+                kernel,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Changes the angle of one supported saved partial Revolve using the same
+    /// copy job as the CLI. The form must name the current version; model-content
+    /// comparison decides no-op, preserving Redo and releasing the private file.
+    pub fn edit_revolve_angle<K: GeometryKernel + ?Sized>(
+        self,
+        feature: ObjectId,
+        degrees: f64,
+        expected: DocumentVersion,
+        kernel: &mut K,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        self.check_form_version(expected)?;
+        self.run(|source, expected, destination| {
+            edit_revolve_angle_copy(
+                &EditRevolveAngleRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    feature,
+                    degrees,
                     destination: destination.to_path_buf(),
                 },
                 kernel,

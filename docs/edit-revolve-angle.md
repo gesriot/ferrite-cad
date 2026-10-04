@@ -1,4 +1,8 @@
-# §27E — edit the angle of a saved partial Revolve in a new copy
+# §27E — edit the angle of a saved partial Revolve
+
+The CLI copy contract below is unchanged. Since [§30E](revolve-angle-session-apply.md),
+the window can also Apply this angle inside its open document, including unsaved
+profile or constraint changes.
 
 [Executed verification and limitations](edit-revolve-angle-verification.md).
 
@@ -202,7 +206,7 @@ the snapshot and before publication.
 * **Starting the edit.** Every saved Revolve gets an **Edit Revolve angle
   {name} — {uuid}…** row among the saved-object actions. A refused one is
   disabled and shows its refusal on hover, as circle rows do.
-* **The form.** The window is titled **"Edit Revolve angle — new copy"**. It
+* **The form.** The window is titled **"Edit saved Revolve angle"**. It
   shows:
   * the feature and the source path;
   * the saved angle and the class (with a bore or closed on the axis);
@@ -210,11 +214,11 @@ the snapshot and before publication.
   * one **Angle °** field with exact text input.
 * **Refusals in the form.** A number the domain refuses is shown in the
   form, with Save disabled.
-* **Apply, Undo and Redo.** **Apply angle change** adds a checkpoint to the
+* **Apply, Undo and Redo.** **Confirm draft numbers** adds a checkpoint to the
   same bounded history (`DRAFT_HISTORY` = 128) as the other drafts, and
   Undo/Redo move through it. **Save edited Revolve copy…** asks for a new
   path (`edited-revolve.fcad` by default) and requires the current number to
-  be applied.
+  be confirmed.
 * **Cancel.**
   * **Cancel draft** discards the draft.
   * Cancelling the Save dialog keeps the draft and its history.
@@ -226,8 +230,13 @@ the snapshot and before publication.
   * The accepted scene and the window title change only when that load is
     accepted.
   * If the load is refused, the draft comes back.
-* **Coordinates.** Editing a sector's Sketch coordinates stays disabled,
-  with the §27D refusal.
+* **Document Apply.** **Apply angle** reads the current valid field, with or without
+  draft confirmation, and adds one step to the common document history without a
+  dialog. The file changes only at Save. A no-op preserves Redo. The copy action is
+  withheld with words while the document is dirty. The session status appears inside
+  the form; accepting a replacement scene dismisses it.
+* **Coordinates.** The sector's supported profile can be edited separately through
+  Apply vertices (§30B), or its constraints through Apply constraints (§30C).
 
 ### Honesty about the mesh
 
