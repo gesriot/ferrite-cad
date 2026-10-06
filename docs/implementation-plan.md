@@ -4510,4 +4510,9 @@ native, stub and mixed gates, all-cell SQL/CLI comparison, B-Rep and independent
 STL corner geometry, pinned ufbx, directed mutations and a real-window recipe are
 tracked in [contract](chamfer-distance-session-apply.md) and
 [verification](chamfer-distance-session-apply-verification.md).
+Code/workflow `79d18a0c` passed 15/15 CI jobs. Retrievable logs show the 12 new
+stub/widget executions and the Chamfer strict-reader marker on all three
+platforms; the nine native/mixed result lines are proven only by their guarded
+steps here. Both directed mutations failed executed assertions and were restored.
+GUI is unverified in this container; the real-window recipe awaits review.
 §30 and Milestone 5C remain open; no next slice has started.

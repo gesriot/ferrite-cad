@@ -234,4 +234,31 @@ standalone notices/Rust SBOM/product SBOM 12/12, all successful on
 [notices](https://github.com/gesriot/ferrite-cad/actions/runs/37232791612),
 [Rust SBOM](https://github.com/gesriot/ferrite-cad/actions/runs/37232791620),
 [product SBOM](https://github.com/gesriot/ferrite-cad/actions/runs/37232791608).
-The code/workflow head's own CI is recorded in a following docs-only commit.
+
+Code/workflow `79d18a0ce85e4f6194ed167c13804ccaeb4481c3`:
+[CI](https://github.com/gesriot/ferrite-cad/actions/runs/37500878959) 7/7,
+[pin](https://github.com/gesriot/ferrite-cad/actions/runs/37500809042) 4/4 and
+[runtime](https://github.com/gesriot/ferrite-cad/actions/runs/37500809081) 4/4,
+including the three-platform aggregate: core total **15/15**.
+
+Log audit of that head (`/home/user/fcad-logs/30h/code-ci-evidence.json`). This
+container's network policy denies the Actions log host
+(`productionresultssa7.blob.core.windows.net`), so the logs were read through the
+GitHub job-log API, which returns the last 5000 lines of a job. Echoed argv are not
+counted; only expanded result lines are.
+
+- `test (ubuntu-latest)`, `test (macos-latest)`, `test (windows-latest)`: each log
+  holds the four new result lines `test <exact gate> ... ok` — the three widget gates
+  and `stub_distance_apply_refuses_without_publication` — with no `skipped`:
+  **12 actual executions**.
+- runtime `linux`, `macos`, `windows`: step 49 printed, for each of the two Chamfer
+  FBX files, `FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0` and
+  `FCAD_STL_FBX_MATCH triangles=16` (worst 4.34e−19 m and 1.73e−18 m, the same as
+  locally), then `FCAD_CHAMFER_SESSION_UFBX_EXECUTED`. Those files are written only
+  by the two native Chamfer gates, and the directory reaches `GITHUB_ENV` only after
+  both passed step 24's exact-name/no-skip guard.
+- The literal result lines of the mixed gate (step 20) and the two native gates
+  (step 24) — 9 executions on three platforms — lie before the retrievable tail and
+  were **not read** here. Steps 20 and 24 concluded `success` on every platform,
+  which their guards allow only with `test <gate> ... ok` and no `skipped:`. A
+  reviewer with access to the full logs should confirm those nine lines directly.
