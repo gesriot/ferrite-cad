@@ -185,7 +185,12 @@ impl Editor {
         self.pending_add.take()
     }
 
-    fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, body: ObjectId) -> bool {
+    pub(crate) fn begin(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        body: ObjectId,
+    ) -> bool {
         let Some(choice) = source
             .cut_bodies
             .iter()

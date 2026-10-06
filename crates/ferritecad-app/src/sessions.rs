@@ -897,6 +897,7 @@ pub(crate) fn open_for_view(
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    mod add_cut;
     mod analytic;
     mod angle;
     mod chamfer;

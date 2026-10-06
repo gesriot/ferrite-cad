@@ -59,7 +59,7 @@ fn request(s: &Sessions, index: usize) -> EditCircularCutRequest {
         destination: PathBuf::new(),
     }
 }
-fn peer(source: &Path, r: &EditCircularCutRequest, root: &Path, out: &Path) {
+pub(super) fn peer(source: &Path, r: &EditCircularCutRequest, root: &Path, out: &Path) {
     let file = out.with_extension("json");
     let extent = match r.edit.extent {
         CutExtent::ThroughAll => r#"{"kind":"through_all"}"#.into(),
