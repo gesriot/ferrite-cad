@@ -190,5 +190,5 @@ stage), macOS/Windows native runs (CI only), release-profile local runs.
 
 CI 37517778819 success; planegcs pin 37517779052 success; product sbom
 37517778796, rust sbom 37517778876 and rust notices 37517778873 success. Combined
-runtime layout 37517778797: macOS and Linux success; Windows still in progress when
-this was written, so it is not claimed passed.
+runtime layout 37517778797: macOS, Linux and Windows (job 112455030475) success;
+run completed success at 2026-10-06T20:47:40Z, after this branch's code was written.
