@@ -902,11 +902,14 @@ fn compare_gui(root: &Path) {
     cold(&branch);
     mesh(&actual.0, &saved);
 
+    // A rejected control's panic message is silenced: inside the gated tests any
+    // output would split the harness's `test … ... ok` line the CI gates read.
     let control = |name: &str, f: &dyn Fn()| {
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err(),
-            "negative control {name} accepted"
-        );
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err();
+        std::panic::set_hook(previous);
+        assert!(rejected, "negative control {name} accepted");
     };
     control("missing", &|| {
         assert!(root.join("absent-real-output.stl").is_file());
@@ -946,7 +949,6 @@ fn compare_gui(root: &Path) {
     .expect("corrupt hash");
     drop(db);
     control("raw hash", &|| same_model(&corrupt, &last, &map, "x"));
-    println!("FCAD_30I_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
 }
 
 /// The Cuts new in `after` (since `before`), in history order: each one's
@@ -1127,4 +1129,5 @@ fn native_compare_real_add_cut_gui_artifacts_with_negative_controls() {
     };
     assert!(native());
     compare_gui(Path::new(&root));
+    println!("FCAD_30I_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
 }
