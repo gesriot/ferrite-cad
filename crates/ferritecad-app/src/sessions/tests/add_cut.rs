@@ -687,6 +687,28 @@ fn gate(name: &str) {
     assert_eq!(std::fs::read(&source).expect("source"), saved_bytes);
     cold(&branch);
     assert_eq!(cut_ids(&branch).len(), 6);
+    let peer_branch = root.path().join("peer-branch.fcad");
+    let peer_base = root.path().join("peer-add-1.fcad");
+    peer_add(&peer_base, body, &fresh.cut, &peer_branch);
+    pair_new(&mut map, &accepted[2], &branch, &peer_base, &peer_branch);
+    same_model(&branch, &peer_branch, &map, "the branch saved as");
+    let (stl, fbx) = export_bytes(&branch, &branch, root.path(), "branch");
+    assert_eq!(
+        (stl.clone(), fbx.clone()),
+        peer_bytes(&peer_branch, root.path(), "peer-branch"),
+        "branch STL/FBX against the CLI"
+    );
+    let (exact, approx) = (cold(&branch), mesh(&stl, &branch));
+    if let Some(dir) = std::env::var_os("FCAD_ADD_CUT_SESSION_ARTIFACTS") {
+        let dir = PathBuf::from(dir);
+        std::fs::write(dir.join(format!("{name}-branch.stl")), &stl).expect("stl");
+        std::fs::write(dir.join(format!("{name}-branch.fbx")), &fbx).expect("fbx");
+        std::fs::write(
+            dir.join(format!("{name}-branch.metrics.txt")),
+            format!("analytical_mm3={exact:.9} stl_mm3={approx:.9}\n"),
+        )
+        .expect("metrics");
+    }
 }
 
 #[test]

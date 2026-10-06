@@ -820,6 +820,10 @@ jobs:
             cuts::tests::session_apply::cut_apply_busy_guard_proves_idle_request_then_excludes_other_work_and_forms \
             cuts::tests::session_apply::cut_apply_dirty_discovery_copy_refusals_status_and_scene_dismissal \
             sessions::tests::cut::stub_cut_apply_refuses_without_publication \
+            cuts::tests::add_session::add_cut_reads_current_fields_draft_history_stays_separate_and_copy_is_clean_only \
+            cuts::tests::add_session::add_cut_busy_guard_proves_idle_request_then_excludes_other_work_and_forms \
+            cuts::tests::add_session::add_cut_dirty_discovery_refusals_keep_text_status_dismissal_and_unsupported_bodies \
+            sessions::tests::add_cut::stub_add_cut_refuses_without_publication \
             fillets::tests::session_apply::radius_current_text_confirmation_noop_clean_copy_and_add_exclusion \
             fillets::tests::session_apply::radius_busy_guard_proves_changed_idle_request_and_excludes_other_work \
             fillets::tests::session_apply::radius_dirty_discovery_refusal_retains_text_and_acceptance_closes_form \
