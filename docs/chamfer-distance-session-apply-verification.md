@@ -219,7 +219,8 @@ Measured volumes (B-Rep checked to 1e−9 of the block on every cold/miss/hit pa
 | History, d 6.125 on 38.75 × 12.25 × 9.25 | 4217.349609375 | 4217.349609375 |
 | Constrained, d 14.24 on solved 41 × 14.25 × 6.75 | 3259.313100000 | 3259.313122000 |
 
-**GUI: unverified.** This container has no macOS arm64 host, app bundle, screen
+**Author's GUI run: unverified; independent review below completes it.** This
+container has no macOS arm64 host, app bundle, screen
 or CUA, so no real window was operated, no bundle was staged and no watchdog viewer
 was started. The extractable recipe above is left for an independent review; no GUI
 artifact and no fix of the historical OOM is claimed. Linux/Windows GUI and the full
@@ -262,3 +263,50 @@ counted; only expanded result lines are.
   were **not read** here. Steps 20 and 24 concluded `success` on every platform,
   which their guards allow only with `test <gate> ... ok` and no `skipped:`. A
   reviewer with access to the full logs should confirm those nine lines directly.
+
+## Independent PR #88 review — macOS arm64, 2026-10-06
+
+Reviewed code/workflow `79d18a0ce85e4f6194ed167c13804ccaeb4481c3` and original
+docs head `a04e20ba858efa5046d3c3266bd369f3a0715fdb`. No production correction was
+needed. Local evidence is under `/private/tmp/ferrite-pr88-review`.
+
+- Read the complete published logs of the three code-head workflows linked above:
+  **15/15** jobs succeeded. `code-ci-evidence.json` records all **21** new exact
+  executions: 12 stub/widget, 6 native and 3 mixed, across Linux/macOS/Windows.
+  The previously unavailable nine result lines were read directly; each is
+  `test <exact gate> ... ok` in its intended step, with no skips. The Chamfer
+  strict-ufbx marker was verified on all three platforms. The original docs head
+  separately passed **7/7** CI jobs (run `37509613882`).
+- Fresh release CLI/viewer with OCCT 8.0.1 and pinned PlaneGCS: Chamfer suite
+  **7/7**, and the complete packed native DocumentSession step **24/24** exact
+  gates, no skips. `fmt`, workspace all-target/all-feature clippy with `-D warnings`
+  and `git diff --check` passed. Builds used two jobs and the existing target;
+  neither native dependency was rebuilt. Stub/mixed were audited in CI, not
+  rerun on this Mac.
+- Staged a fresh arm64 bundle (53 Mach-O files; bundle check and solver-info
+  passed). Executed every window step above through CUA, including the native
+  Open/Save As/export dialogs. Applied the dirty height and vertices, then three
+  distances; Confirm/Undo request left the model unchanged until Apply. An
+  out-of-range 12.25 retained the text and document Redo, with a readable bound;
+  dirty copy remained unavailable with its reason. Undo to clean, Redo, Save,
+  branch at the exact 12.24 bound, Save As and reopen all behaved as specified.
+- All eight comparison inputs came from that window run or copies of its actual
+  logical file. `gui-compare.log` contains
+  `FCAD_30H_GUI_COMPARE_OK analytical_mm3=4217.349609375 stl_mm3=4217.349609375`.
+  The original file remained byte-identical before Save and after refusal; Save
+  As preserved the saved file. Actual GUI SQL matched the CLI chain with only
+  `meta.modified_at` excluded and no UUID remapping; all three exports matched
+  byte-for-byte. The saved file reopened with a clean title and distance 6.125.
+- Pinned ufbx 0.23.0 read the actual GUI FBX and both locally regenerated native
+  Chamfer FBX files: each **6 checks, 0 failures**. Oriented STL/FBX joins each
+  matched 16 triangles (worst errors 4.34e-19, 4.34e-19 and 1.73e-18 m).
+- One owned viewer, PID 45971, ran under the 1536 MiB watchdog for 749 seconds
+  and quit normally: exit **0**, `aborted: false`, peak footprint **217.579 MiB**,
+  pressure **1** throughout, swap **917504000 bytes** at both first and last
+  samples, minimum free disk **135.659 GiB**. After Quit, completion was checked
+  only in the watchdog journal; no viewer AX/getApp call relaunched it.
+
+This adds macOS window evidence; it does not claim Linux/Windows GUI, a new full
+workspace or large STEP/pixel run, or a fix for the historical OOM. §30 and
+Milestone 5C remain open. This review update changes documentation only; its CI
+must be checked separately from the code and original docs heads above.
