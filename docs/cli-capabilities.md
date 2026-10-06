@@ -440,6 +440,13 @@ capability по прежней политике) и штамп. Новой ко�
 же сохранённому результату (все ячейки SQL, кроме `meta.modified_at`). Коды выхода
 и форматы команд прежние, включая 7.
 
+§30I: CLI не меняется. Форма `Cut circle into … — UUID…` получает кнопку
+**Add cut**, которая добавляет новый circular Cut в открытый документ шагом общей
+истории через тот же `circular_cut_copy` ([контракт](add-circular-cut-session.md));
+бывшая кнопка подтверждения черновика называется **Confirm draft numbers**.
+`cut-circular-copy` на том же снимке даёт тот же результат во всех ячейках SQL,
+кроме `meta.modified_at` и доказанного соответствия новых UUID.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.
