@@ -43,11 +43,11 @@ use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
 use crate::edit::{
-    EditAnnulusRequest, EditCircleRequest, EditCircularCutRequest, EditExtrudeRequest,
-    EditFilletRadiusRequest, EditRevolveAngleRequest, EditSketchConstraintsRequest,
-    EditSketchRequest, edit_annulus_copy, edit_circle_copy, edit_circular_cut_copy,
-    edit_extrude_copy, edit_fillet_radius_copy, edit_revolve_angle_copy,
-    edit_sketch_constraints_copy, edit_sketch_copy,
+    EditAnnulusRequest, EditChamferDistanceRequest, EditCircleRequest, EditCircularCutRequest,
+    EditExtrudeRequest, EditFilletRadiusRequest, EditRevolveAngleRequest,
+    EditSketchConstraintsRequest, EditSketchRequest, edit_annulus_copy, edit_chamfer_distance_copy,
+    edit_circle_copy, edit_circular_cut_copy, edit_extrude_copy, edit_fillet_radius_copy,
+    edit_revolve_angle_copy, edit_sketch_constraints_copy, edit_sketch_copy,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
 
@@ -712,6 +712,35 @@ impl StepTicket {
                     expected,
                     feature,
                     radius_mm,
+                    destination: destination.to_path_buf(),
+                },
+                kernel,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Changes the distance of the selected existing Chamfer by UUID through the
+    /// CLI's copy job, reading the accepted snapshot. No identity is created; the
+    /// bound is the domain's and, on a constrained base, the evaluator's on the
+    /// solved Lines. Model comparison discards a numeric no-op.
+    pub fn edit_chamfer_distance<K: GeometryKernel + ?Sized>(
+        self,
+        feature: ObjectId,
+        distance_mm: f64,
+        expected: DocumentVersion,
+        kernel: &mut K,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        self.check_form_version(expected)?;
+        self.run(|source, expected, destination| {
+            edit_chamfer_distance_copy(
+                &EditChamferDistanceRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    feature,
+                    distance_mm,
                     destination: destination.to_path_buf(),
                 },
                 kernel,

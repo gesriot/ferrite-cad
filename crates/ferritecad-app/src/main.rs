@@ -1066,6 +1066,32 @@ fn can_apply_fillet_radius(
         && !sessions.busy()
 }
 
+/// Shared by the existing Chamfer distance form's button and its Apply handler.
+fn can_apply_chamfer_distance(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    creates.can_apply_chamfer_distance()
+        && document_io_idle(loads, exports)
+        && !edits.busy()
+        && sessions.has_session()
+        && !sessions.busy()
+}
+
+/// §30H: the distance copy reads a file and writes a new one; with unsaved
+/// changes that would drop them, so it is refused in words before any dialog.
+fn refuse_unsaved_distance_copy(sessions: &mut sessions::Sessions) -> bool {
+    if sessions.dirty() {
+        sessions.status = "Saving a distance copy is unavailable while the document has unsaved \
+                           changes: Save or Undo them first."
+            .to_owned();
+    }
+    sessions.dirty()
+}
+
 fn ask_new(
     creates: &mut creates::Creates,
     loads: &Loads,
@@ -2993,6 +3019,13 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.edits,
                     &self.sessions,
                 );
+                let distance_apply = can_apply_chamfer_distance(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -3018,6 +3051,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.creates.sketch.fillets.set_session(
                     session_idle && !self.edits.busy(),
                     radius_apply,
+                    self.sessions.dirty(),
+                );
+                self.creates.sketch.chamfers.set_session(
+                    session_idle && !self.edits.busy(),
+                    distance_apply,
                     self.sessions.dirty(),
                 );
                 self.creates.sketch.constraints.set_session(
@@ -3156,6 +3194,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.take_chamfer_distance_request() {
                             self.ask_where_to_edit_chamfer_distance(request);
+                        }
+                        if let Some(request) = self.creates.sketch.chamfers.take_apply_request() {
+                            self.apply_chamfer_distance(request);
                         }
                         if let Some(content) = self.creates.sketch.take_request() {
                             self.ask_where_to_create(content);
@@ -3947,6 +3988,36 @@ impl App {
         self.input.request_redraw();
     }
 
+    fn apply_chamfer_distance(&mut self, request: ferritecad_jobs::EditChamferDistanceRequest) {
+        if !can_apply_chamfer_distance(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
+            self.input.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_apply_chamfer_distance(
+                ticket,
+                request.feature,
+                request.distance_mm,
+                request.expected,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
     /// One accepted change back or forward. The version becomes current only when
     /// its picture has been built and shown.
     fn move_document(&mut self, undo: bool) {
@@ -4282,7 +4353,14 @@ impl App {
         &mut self,
         mut request: ferritecad_jobs::EditChamferDistanceRequest,
     ) {
-        if self.edits.running() {
+        if refuse_unsaved_distance_copy(&mut self.sessions) {
+            self.input.request_redraw();
+            return;
+        }
+        if self.edits.running()
+            || self.sessions.busy()
+            || !document_io_idle(&self.loads, &self.exports)
+        {
             return;
         }
         let Some(live) = &self.live else {
@@ -5138,8 +5216,8 @@ impl Live {
                 ui.label(
                     "Save or Undo changes before adding a Cut, creating a Revolve, or using \
                      Add Fillet/Chamfer. Height, vertices, constraints, Circle, annulus, a saved \
-                     partial Revolve angle, existing Cut parameters and Fillet radii can still be changed \
-                     with Apply.",
+                     partial Revolve angle, existing Cut parameters, Fillet radii and Chamfer \
+                     distances can still be changed with Apply.",
                 );
             }
             sketch.draw_choices(

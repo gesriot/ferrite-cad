@@ -83,7 +83,7 @@ Reused: `edit_circle_copy` / `edit_annulus_copy` (through `StepTicket::edit_circ
 `StepTicket::edit_annulus`), the session's two-phase step, its history, dirty-by-comparison,
 Save, the working-copy lease for exports and the private-folder protections. Not introduced: a
 second copier, evaluator, history or writer, or any write to the logical file before Save. The
-other copy-only editors (Add Cut, Add Fillet, Chamfer, *Edit extrusion…* copy) stay copy
+other copy-only editors (Add Cut, Add Fillet, Add Chamfer, *Edit extrusion…* copy) stay copy
 workflows.
 
 ## Not claimed
@@ -95,3 +95,6 @@ The saved partial Revolve angle joins the session in [§30E](revolve-angle-sessi
 
 Existing Fillet radii now Apply through the same session, including while dirty:
 [§30G](fillet-radius-session-apply.md). Fillet copy and Add Fillet remain clean-only.
+
+Existing Chamfer distances now Apply through the same session, including while dirty:
+[§30H](chamfer-distance-session-apply.md). Distance copy and Add Chamfer remain clean-only.

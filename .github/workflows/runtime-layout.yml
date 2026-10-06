@@ -830,6 +830,10 @@ jobs:
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
           if grep -q 'skipped:' session-fillet-mixed.log || ! grep -Fq "test $gate ... ok" session-fillet-mixed.log; then exit 1; fi
+          gate=sessions::tests::chamfer::mixed_distance_apply_uses_occt_without_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-chamfer-mixed.log
+          if grep -q 'skipped:' session-chamfer-mixed.log || ! grep -Fq "test $gate ... ok" session-chamfer-mixed.log; then exit 1; fi
 
 
       - name: Build the real application and the command line tool against both
@@ -1103,6 +1107,27 @@ jobs:
             test -s "$fillet_dir/$name.stl"
           done
           echo "FCAD_FILLET_SESSION_FBX_DIR=$fillet_artifacts" >> "$GITHUB_ENV"
+
+          # §30H: an existing Chamfer's distance applied inside the open document.
+          chamfer_dir="$RUNNER_TEMP/chamfer-session"
+          mkdir -p "$chamfer_dir"
+          chamfer_artifacts="$chamfer_dir"
+          case '${{ matrix.name }}' in
+            windows) chamfer_artifacts="$(cygpath -w "$chamfer_artifacts")" ;;
+          esac
+          export FCAD_CHAMFER_SESSION_ARTIFACTS="$chamfer_artifacts"
+          for gate in sessions::tests::chamfer::native_height_vertices_then_distances_cross_history_and_match_cli \
+            sessions::tests::chamfer::native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
+          do
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-chamfer-native.log
+            if grep -q 'skipped:' session-chamfer-native.log || ! grep -Fq "test $gate ... ok" session-chamfer-native.log; then exit 1; fi
+          done
+          for name in chamfer-history chamfer-constrained; do
+            test -s "$chamfer_dir/$name.fbx"
+            test -s "$chamfer_dir/$name.stl"
+          done
+          echo "FCAD_CHAMFER_SESSION_FBX_DIR=$chamfer_artifacts" >> "$GITHUB_ENV"
 
 
       - name: Create a saved polygon through the native CLI and sketch worker
@@ -2747,6 +2772,7 @@ jobs:
           grep -q '^FCAD_ANGLE_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CUT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

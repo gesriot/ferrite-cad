@@ -99,7 +99,7 @@ Save conflict (changed, replaced by another document, or missing); Save busy
 (another saver holds the path); Save over a read-only file or a file with other
 hard links; Save As on an occupied path; Apply while another operation runs, on a
 document whose editor says it is unavailable, or whose snapshot changed; a stale
-worker answer; a scene that cannot be prepared. Remaining copy workflows (Add Cut, Cut copy, Add Fillet, Fillet copy, Chamfer and creation of Revolve)
+worker answer; a scene that cannot be prepared. Remaining copy workflows (Add Cut, Cut copy, Add Fillet, Fillet copy, Add Chamfer, Chamfer distance copy and creation of Revolve)
 are unavailable while the session is dirty — they
 read a source and write a *new* file, and silently reading the old file would drop
 the unsaved change — and work unchanged on a clean session.
@@ -132,3 +132,6 @@ document. See [Cut session contract](../cut-session-apply.md).
 
 §30G applies an existing Fillet radius through this session, including while dirty.
 Add Fillet and radius copy remain clean-only. See [Fillet session contract](../fillet-radius-session-apply.md).
+
+§30H applies an existing Chamfer distance through this session, including while dirty.
+Add Chamfer and distance copy remain clean-only. See [Chamfer session contract](../chamfer-distance-session-apply.md).

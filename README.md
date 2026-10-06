@@ -142,8 +142,12 @@ distance in millimetres from the edge along each of its two faces (the slanted
 flat is that × √2 wide), from 0.001 mm to the shorter adjacent side less
 0.01 mm. The copy's Body ends in a real, named `feature.chamfer` whose face is
 a plane, measured on the B-Rep (volume `(W·D − d²/2)·h`, area `d·√2·h`, the
-normal of the chosen corner). Its distance changes in a new copy with
-**Edit Chamfer distance** or `edit-chamfer-distance`, every name kept. The
+normal of the chosen corner). Its distance changes with **Edit Chamfer distance** /
+**Apply distance** inside the open document, including after unsaved base changes;
+document Undo/Redo, unsaved exports and Save/Save As share the existing session.
+**Confirm draft number** serves only the clean-copy workflow; Add Chamfer remains
+copy-only. [Session contract](docs/chamfer-distance-session-apply.md).
+`edit-chamfer-distance` still publishes a new copy, every name kept. The
 plate's height changes under the Chamfer through the existing **Edit extrusion**
 or `edit-extrude` (the Chamfer's corner and distance and all names are kept;
 OCCT refuses a plate thinner than about 1e-5 mm). The four vertices of its base

@@ -10,9 +10,14 @@
 //! slanted flat, which is that times √2 — and the form says so.
 //!
 //! The whole request (the corner and the distance) is one history entry:
-//! **Undo** and **Redo** step through the requests a confirmed **Apply**
-//! accepted, restoring both at once. The Fillet's form has no such history and
-//! this one does not borrow its description.
+//! **Undo request** and **Redo request** step through the requests a confirmed
+//! **Apply chamfer** accepted, restoring both at once. The Fillet's form has no
+//! such history and this one does not borrow its description.
+//!
+//! §30H: the distance form of an existing Chamfer also applies its current text
+//! to the open document (**Apply distance**), through the session, while dirty.
+//! Its **Confirm draft number** keeps the form's own history of confirmed
+//! requests for the copy workflow; that history is not the document's Undo/Redo.
 use ferritecad_document::{
     ChamferChoice, ChamferCorner, ChamferDistanceChoice, DocumentVersion, EdgeChamfer,
     ExtrudeEditSource, SavedChamfer, SavedChamferTarget, SweptEdge,
@@ -32,8 +37,8 @@ struct Typed {
     distance: String,
 }
 
-/// The requests a confirmed Apply accepted, oldest first, with the one the
-/// form is at. The first entry is always the empty request.
+/// The requests a confirmation accepted, oldest first, with the one the form is
+/// at. The first entry is always the empty request (or the saved distance).
 #[derive(Debug, Clone, PartialEq)]
 struct History<T> {
     states: Vec<T>,
@@ -171,6 +176,15 @@ pub(crate) struct Editor {
     pending: Option<EdgeChamferRequest>,
     distance: Option<DistanceDraft>,
     pending_distance: Option<EditChamferDistanceRequest>,
+    /// §30H: the distance the user asked to apply to the open document.
+    pending_apply: Option<EditChamferDistanceRequest>,
+    /// What the window says each frame: whether an existing Chamfer's form may
+    /// open on the accepted (possibly unsaved) version, whether its Apply may
+    /// start, and whether unsaved changes withhold the copy workflows.
+    can_begin_distance: bool,
+    can_apply: bool,
+    unsaved: bool,
+    outcome: String,
 }
 
 impl Editor {
@@ -178,7 +192,26 @@ impl Editor {
         self.draft.is_some() || self.distance.is_some()
     }
     pub(crate) fn dismiss(&mut self) {
+        let availability = self.session();
         *self = Self::default();
+        self.set_session(availability.0, availability.1, availability.2);
+    }
+    pub(crate) fn editing_distance(&self) -> bool {
+        self.distance.is_some() && self.draft.is_none()
+    }
+    pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
+        self.can_begin_distance = can_begin;
+        self.can_apply = can_apply;
+        self.unsaved = unsaved;
+    }
+    pub(crate) fn session(&self) -> (bool, bool, bool) {
+        (self.can_begin_distance, self.can_apply, self.unsaved)
+    }
+    pub(crate) fn set_outcome(&mut self, outcome: &str) {
+        self.outcome = outcome.to_owned();
+    }
+    pub(crate) fn take_apply_request(&mut self) -> Option<EditChamferDistanceRequest> {
+        self.pending_apply.take()
     }
     pub(crate) fn take_request(&mut self) -> Option<EdgeChamferRequest> {
         self.pending.take()
@@ -257,7 +290,7 @@ impl Editor {
         for choice in &source.chamfer_bodies {
             let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
             let response = ui.add_enabled(
-                can_begin && refusal.is_none(),
+                can_begin && !self.unsaved && refusal.is_none(),
                 egui::Button::new(format!(
                     "Chamfer edge of {} — {}…",
                     choice.name.as_deref().unwrap_or("Unnamed body"),
@@ -274,7 +307,7 @@ impl Editor {
         for choice in &source.chamfer_features {
             let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
             let response = ui.add_enabled(
-                can_begin && refusal.is_none(),
+                (can_begin || self.can_begin_distance) && refusal.is_none(),
                 egui::Button::new(format!(
                     "Edit Chamfer distance {} — {} (d{} mm)…",
                     choice.name.as_deref().unwrap_or("Unnamed chamfer"),
@@ -299,10 +332,13 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Edit Chamfer distance — new copy")
+        egui::Window::new("Edit Chamfer distance")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
+                if !self.outcome.is_empty() {
+                    ui.label(format!("Document: {}", self.outcome));
+                }
                 ui.label(
                     "Changes only the distance. The Chamfer keeps its edge, its UUID and every \
                      name; the edge cannot be changed here.",
@@ -326,11 +362,12 @@ impl Editor {
                     ));
                     // §29D: the stored sides are the solver's starting guess; the
                     // largest distance is the solved plate's, judged by the
-                    // rebuild when the copy is saved, so none is shown here.
+                    // rebuild when the change is built, so none is shown here.
                     ui.small(format!(
                         "Saved distance {} mm along each face, at least {} mm. This plate's \
                          Sketch carries constraints: the largest distance is judged on the \
-                         solved plate when the copy is saved. The slanted flat is {} × √2 wide.",
+                         solved plate when the change is built. The slanted flat is {} × √2 \
+                         wide.",
                         saved.distance_mm,
                         ferritecad_document::MIN_DISTANCE_MM,
                         saved.distance_mm
@@ -359,7 +396,36 @@ impl Editor {
                                 .desired_width(110.),
                         );
                     });
-                    if ui.button("Apply distance").clicked() {
+                    // §30H: the current text, judged by the document's own rule,
+                    // applied to the open document without a prior confirmation.
+                    let valid = draft.distance(&draft.typed);
+                    let differs = valid.as_ref().is_ok_and(|d| *d != saved.distance_mm);
+                    if ui
+                        .add_enabled(
+                            self.can_apply && differs,
+                            egui::Button::new("Apply distance"),
+                        )
+                        .clicked()
+                        && let Ok(distance_mm) = valid.as_ref()
+                    {
+                        self.pending_apply = Some(EditChamferDistanceRequest {
+                            source: draft.source.clone(),
+                            expected: draft.version,
+                            feature: saved.feature,
+                            distance_mm: *distance_mm,
+                            destination: PathBuf::new(),
+                        });
+                    }
+                    match &valid {
+                        Err(error) => {
+                            ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+                        }
+                        Ok(_) if !differs => {
+                            ui.small("This is the stored distance: there is nothing to apply.");
+                        }
+                        Ok(_) => {}
+                    }
+                    if ui.button("Confirm draft number").clicked() {
                         match draft.distance(&draft.typed) {
                             Ok(_) => {
                                 draft.history.record(draft.typed.clone());
@@ -408,7 +474,13 @@ impl Editor {
                                 saved.corner.corner_mm[0],
                                 saved.corner.corner_mm[1]
                             ));
-                            if ui.button("Save distance copy…").clicked() {
+                            if ui
+                                .add_enabled(
+                                    !self.unsaved,
+                                    egui::Button::new("Save distance copy…"),
+                                )
+                                .clicked()
+                            {
                                 self.pending_distance = Some(EditChamferDistanceRequest {
                                     source: draft.source.clone(),
                                     expected: draft.version,
@@ -419,12 +491,19 @@ impl Editor {
                             }
                         }
                         None => {
-                            ui.small("Apply a distance before saving.");
+                            ui.small("Confirm the draft number before saving a copy.");
                         }
                     }
                 });
+                ui.small("Apply changes this document; the file on disk changes only on Save.");
+                if self.unsaved {
+                    ui.small(
+                        "Saving a copy is unavailable while the document has unsaved changes: \
+                         Save or Undo them first.",
+                    );
+                }
                 if running {
-                    ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                    ui.label("Working… Draft retained until acceptance. Cancel job in toolbar.");
                 }
             });
         if cancel {
@@ -666,6 +745,7 @@ mod history_tests {
 #[cfg(test)]
 #[allow(clippy::panic)]
 pub(crate) mod tests {
+    pub(crate) mod session_apply;
     use super::*;
     use ferritecad_document::Document;
     use ferritecad_types::StableEntityId;
@@ -1098,7 +1178,10 @@ pub(crate) mod tests {
             !painted(&out, "Corner (-4.5, 15.5)"),
             "no other edge is offered"
         );
-        assert!(painted(&out, "Apply a distance before saving."));
+        assert!(painted(
+            &out,
+            "Confirm the draft number before saving a copy."
+        ));
         let max = saved.corner.max_distance_mm;
         for (text, why) in [
             ("banana", "finite"),
@@ -1106,7 +1189,7 @@ pub(crate) mod tests {
             (max.next_up().to_string().as_str(), "too large"),
         ] {
             new_distance(&ctx, &mut e, text);
-            click(&ctx, &mut e, "Apply distance");
+            click(&ctx, &mut e, "Confirm draft number");
             let draft = e.distance.as_ref().expect("draft");
             assert!(!draft.history.can_undo(), "{text} was recorded");
             assert!(
@@ -1115,7 +1198,7 @@ pub(crate) mod tests {
             );
         }
         new_distance(&ctx, &mut e, "4.5");
-        click(&ctx, &mut e, "Apply distance");
+        click(&ctx, &mut e, "Confirm draft number");
         assert!(painted(
             &frame(&ctx, &mut e, false),
             &format!(
@@ -1124,14 +1207,14 @@ pub(crate) mod tests {
             )
         ));
         new_distance(&ctx, &mut e, "6");
-        click(&ctx, &mut e, "Apply distance");
+        click(&ctx, &mut e, "Confirm draft number");
         click(&ctx, &mut e, "Undo request");
         assert_eq!(e.distance.as_ref().expect("draft").typed, "4.5");
         click(&ctx, &mut e, "Undo request");
         assert_eq!(e.distance.as_ref().expect("draft").typed, "2.375");
         assert!(painted(
             &frame(&ctx, &mut e, false),
-            "Apply a distance before saving."
+            "Confirm the draft number before saving a copy."
         ));
         click(&ctx, &mut e, "Redo request");
         click(&ctx, &mut e, "Redo request");
@@ -1191,7 +1274,7 @@ pub(crate) mod tests {
         );
         assert!(painted(&out, "stored sides"));
         new_distance(&ctx, &mut e, &(max + 1.0).to_string());
-        click(&ctx, &mut e, "Apply distance");
+        click(&ctx, &mut e, "Confirm draft number");
         assert_eq!(
             e.distance.as_ref().expect("draft").confirmed(),
             Some(max + 1.0)
@@ -1299,7 +1382,7 @@ pub(crate) mod tests {
             frame(&ctx, &mut e, false);
         }
         new_distance(&ctx, &mut e, "5.25");
-        click(&ctx, &mut e, "Apply distance");
+        click(&ctx, &mut e, "Confirm draft number");
         click(&ctx, &mut e, "Save distance copy…");
         let mut request = e.take_distance_request().expect("widget request");
         let feature = request.feature;

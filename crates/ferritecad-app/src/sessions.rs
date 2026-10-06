@@ -783,6 +783,26 @@ pub(crate) fn spawn_apply_fillet_radius(
     )
 }
 
+/// The existing Chamfer distance edit on its kernel-owning worker; no Add route.
+pub(crate) fn spawn_apply_chamfer_distance(
+    ticket: StepTicket,
+    feature: ObjectId,
+    distance_mm: f64,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.edit_chamfer_distance(feature, distance_mm, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
 /// The picture of one private version, read cold exactly as Open reads a file.
 pub(crate) fn spawn_scene(
     path: PathBuf,
@@ -857,6 +877,7 @@ mod tests {
     use super::*;
     mod analytic;
     mod angle;
+    mod chamfer;
     mod cut;
     mod fillet;
     use ferritecad_document::Document;
