@@ -75,7 +75,7 @@ fn peer(source: &Path, r: &EditFilletRadiusRequest, out: &Path) {
 }
 // Every table/row/cell and SQLite rowid; only modified_at is set aside. There
 // are no new identities in this operation and no UUID normalization anywhere.
-fn sql(
+pub(super) fn sql(
     path: &Path,
 ) -> std::collections::BTreeMap<String, (Vec<String>, Vec<Vec<rusqlite::types::Value>>)> {
     let mut all = crate::fillets::tests::tables(path);
@@ -106,7 +106,7 @@ fn sql(
     }
     all
 }
-fn saved(s: &mut Sessions, target: SaveTarget) {
+pub(super) fn saved(s: &mut Sessions, target: SaveTarget) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_save(target, None, |p, _, c| {
@@ -120,7 +120,7 @@ fn saved(s: &mut Sessions, target: SaveTarget) {
     );
     assert!(!s.dirty());
 }
-fn state(
+pub(super) fn state(
     s: &Sessions,
 ) -> (
     Option<PathBuf>,

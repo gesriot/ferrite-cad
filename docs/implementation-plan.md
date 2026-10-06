@@ -4493,3 +4493,30 @@ normal pressure and unchanged swap. The earlier locked-screen attempt is
 recorded separately in verification; the historical OOM cause remains unknown.
 Post-merge base and the docs-only evidence head are audited separately in PR #87.
 §30 and Milestone 5C remain open; no next slice has started.
+
+**§30H — edit an existing Chamfer distance inside the open document.** Apply
+distance reads the current valid text and the selected Chamfer UUID from the
+accepted snapshot through `StepTicket::edit_chamfer_distance` and its worker,
+reusing the CLI copy operation, writer, evaluator and two-phase acceptance.
+Dirty height/vertices/constraints edits, common history across base and distance
+steps, no-op/Redo, unsaved exports and Save/Save As keep their owners. The former
+form button is Confirm draft number; its request history and the clean copy are
+unchanged, a dirty copy is refused in words before the dialog, and Add Chamfer
+remains copy-only. One production predicate and form versions guard the button
+and the handler; refusals keep scene, history, Redo, checkpoint, file and draft.
+The domain/evaluator policy (0.001 mm, `min(sides) − 0.01`, exact, never clamped,
+solved sides on a constrained base) and strict refs are unchanged. Exact widget,
+native, stub and mixed gates, all-cell SQL/CLI comparison, B-Rep and independent
+STL corner geometry, pinned ufbx, directed mutations and a real-window recipe are
+tracked in [contract](chamfer-distance-session-apply.md) and
+[verification](chamfer-distance-session-apply-verification.md).
+Code/workflow `79d18a0c` passed 15/15 CI jobs. Independent PR #88 review read all
+21 new exact result lines across three platforms, including the nine native/mixed
+executions missing from the author's log tail, and the Chamfer strict-reader
+marker on every platform. Both directed mutations failed executed assertions
+and were restored. The macOS arm64 window recipe passed: dirty base edits,
+three distances, request/document history, refusal, unsaved exports, Save,
+branched Save As and reopen. Actual GUI SQL/STL/FBX matched CLI; strict ufbx and
+oriented joins passed. Viewer exited 0, peak footprint 217.579 MiB, normal
+pressure and unchanged swap. The historical OOM cause remains unknown.
+§30 and Milestone 5C remain open; no next slice has started.

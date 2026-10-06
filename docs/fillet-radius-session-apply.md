@@ -18,7 +18,8 @@ file. A successful new step after Undo truncates Redo.
 radius form acquires no draft history. Clean copy remains available, including a
 numerical no-op; dirty copy is disabled with the reason in the form and guarded
 again before the dialog. Add Fillet remains the previous copy operation, unavailable
-while dirty, with no session Apply. Chamfer remains copy-only.
+while dirty, with no session Apply. Chamfer remained copy-only in this slice;
+[§30H](chamfer-distance-session-apply.md) later applies an existing Chamfer distance.
 
 `StepTicket::edit_fillet_radius` checks the form's `DocumentVersion`, then calls
 `edit_fillet_radius_copy` using the existing `EditFilletRadiusRequest`, current

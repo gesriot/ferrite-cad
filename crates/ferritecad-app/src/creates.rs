@@ -211,6 +211,10 @@ impl Creates {
         !self.running() && self.form.is_none() && self.sketch.only_editing_fillet_radius()
     }
 
+    pub(crate) fn can_apply_chamfer_distance(&self) -> bool {
+        !self.running() && self.form.is_none() && self.sketch.only_editing_chamfer_distance()
+    }
+
     pub(crate) fn can_cancel(&self) -> bool {
         self.running() && !self.cancel_requested
     }

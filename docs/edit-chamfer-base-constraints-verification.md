@@ -308,6 +308,11 @@ print("FCAD_29D_GUI_FIXTURE_OK", out)
 
 ### Window scenario
 
+> **Current viewer (§30H):** in the distance form, the button these historical steps
+> call **Apply distance** is now **Confirm draft number**; it is what readies
+> **Save distance copy…**. The new **Apply distance** changes the open document
+> through the session instead ([contract](chamfer-distance-session-apply.md)).
+
 One viewer under the 1536 MiB watchdog, without DYLD variables:
 
 ```sh

@@ -255,6 +255,13 @@ the Fillet forms, which have none. The draft survives a refusal and **Save
 Cancel**; a published copy opens asynchronously. No write goes from the UI
 directly to a file.
 
+§30H: in the current viewer the distance form is titled "Edit Chamfer distance";
+its former **Apply distance** is **Confirm draft number** (the request history and
+**Save distance copy…** are unchanged, clean document only), and a new **Apply
+distance** changes the open document through the session, including while dirty.
+**Add Chamfer** keeps exactly the form above. See
+[the session contract](chamfer-distance-session-apply.md).
+
 ## Recipe
 
 Extract the code between the markers and run it with the real command line:
