@@ -1051,6 +1051,32 @@ fn can_apply_cut(
         && !sessions.busy()
 }
 
+/// §30I: shared by the Cut Add form's Add button and its handler.
+fn can_add_cut(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    creates.can_add_cut()
+        && document_io_idle(loads, exports)
+        && !edits.busy()
+        && sessions.has_session()
+        && !sessions.busy()
+}
+
+/// §30I: Save cut copy reads a file and writes a new one; with unsaved changes
+/// that would drop them, so it is refused in words before any dialog.
+fn refuse_unsaved_cut_copy(sessions: &mut sessions::Sessions) -> bool {
+    if sessions.dirty() {
+        sessions.status = "Saving a Cut copy is unavailable while the document has unsaved \
+                           changes: Save or Undo them first, or use Add cut."
+            .to_owned();
+    }
+    sessions.dirty()
+}
+
 /// Shared by the existing Fillet radius form's button and its Apply handler.
 fn can_apply_fillet_radius(
     creates: &creates::Creates,
@@ -3012,6 +3038,13 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.edits,
                     &self.sessions,
                 );
+                let cut_add = can_add_cut(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let radius_apply = can_apply_fillet_radius(
                     &self.creates,
                     &self.loads,
@@ -3048,6 +3081,7 @@ impl ApplicationHandler<AppEvent> for App {
                     cut_apply,
                     self.sessions.dirty(),
                 );
+                self.creates.sketch.cuts.set_add(cut_add);
                 self.creates.sketch.fillets.set_session(
                     session_idle && !self.edits.busy(),
                     radius_apply,
@@ -3176,6 +3210,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.cuts.take_apply_request() {
                             self.apply_cut(request);
+                        }
+                        if let Some(request) = self.creates.sketch.cuts.take_add_request() {
+                            self.add_cut(request);
                         }
                         if let Some(request) = self.creates.sketch.take_cut_edit_request() {
                             self.ask_where_to_edit_cut(request);
@@ -3958,6 +3995,37 @@ impl App {
         self.input.request_redraw();
     }
 
+    /// §30I: add one new circular Cut to the accepted snapshot, without a dialog.
+    fn add_cut(&mut self, request: ferritecad_jobs::CircularCutRequest) {
+        if !can_add_cut(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
+            self.input.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.sessions.begin_apply(|ticket, generation, cancel| {
+            sessions::spawn_add_cut(
+                ticket,
+                request.body,
+                request.cut,
+                request.expected,
+                cancel.clone(),
+                move |result| {
+                    let _ = proxy.send_event(AppEvent::Applied {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
+        self.input.request_redraw();
+    }
+
     fn apply_fillet_radius(&mut self, request: ferritecad_jobs::EditFilletRadiusRequest) {
         if !can_apply_fillet_radius(
             &self.creates,
@@ -4219,7 +4287,11 @@ impl App {
     }
 
     fn ask_where_to_cut(&mut self, mut request: ferritecad_jobs::CircularCutRequest) {
-        if self.edits.running() {
+        if refuse_unsaved_cut_copy(&mut self.sessions) {
+            self.input.request_redraw();
+            return;
+        }
+        if self.sessions.busy() || self.edits.running() {
             return;
         }
         let Some(live) = &self.live else {
@@ -5214,10 +5286,10 @@ impl Live {
             chosen = ferritecad_ui::toolbar(ui, activity);
             if held_back {
                 ui.label(
-                    "Save or Undo changes before adding a Cut, creating a Revolve, or using \
-                     Add Fillet/Chamfer. Height, vertices, constraints, Circle, annulus, a saved \
+                    "Save or Undo changes before creating a Revolve or using Add Fillet/Chamfer \
+                     or a copy workflow. Height, vertices, constraints, Circle, annulus, a saved \
                      partial Revolve angle, existing Cut parameters, Fillet radii and Chamfer \
-                     distances can still be changed with Apply.",
+                     distances can still be changed with Apply, and a new Cut added with Add cut.",
                 );
             }
             sketch.draw_choices(

@@ -743,7 +743,8 @@ pub(crate) fn spawn_apply_angle(
     )
 }
 
-/// The existing circular Cut edit on the kernel-owning worker. No Add route.
+/// The existing circular Cut edit on the kernel-owning worker. Add has its own
+/// worker (`spawn_add_cut`).
 pub(crate) fn spawn_apply_cut(
     ticket: StepTicket,
     cut: ObjectId,
@@ -757,6 +758,27 @@ pub(crate) fn spawn_apply_cut(
             let context = OperationContext::default().with_cancel(cancel);
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ticket.edit_circular_cut(cut, edit, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
+/// §30I: a new circular Cut on the kernel-owning worker. `expected` is the version
+/// the Add form was opened on; the Body is its saved UUID.
+pub(crate) fn spawn_add_cut(
+    ticket: StepTicket,
+    body: ObjectId,
+    cut: ferritecad_document::CircularCut,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.add_circular_cut(body, cut, expected, &mut kernel, &context)
         },
         deliver,
         || Err(CadError::kernel("the edit worker stopped unexpectedly")),

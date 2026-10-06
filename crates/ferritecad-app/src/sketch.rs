@@ -219,6 +219,19 @@ impl Editor {
             && !self.chamfers.active()
     }
 
+    /// §30I: the Add form of a Cut is the only form open.
+    pub(crate) fn only_adding_cut(&self) -> bool {
+        self.cuts.adding()
+            && self.draft.is_none()
+            && self.editing.is_none()
+            && self.editing_circle.is_none()
+            && self.editing_annulus.is_none()
+            && self.editing_angle.is_none()
+            && !self.constraints.active()
+            && !self.fillets.active()
+            && !self.chamfers.active()
+    }
+
     pub(crate) fn only_editing_fillet_radius(&self) -> bool {
         self.fillets.editing_radius()
             && self.draft.is_none()
@@ -321,6 +334,7 @@ impl Editor {
         let angle = self.can_apply_angle;
         let constraints = self.constraints.session();
         let cuts = self.cuts.session();
+        let cuts_add = self.cuts.add_session();
         let fillets = self.fillets.session();
         let chamfers = self.chamfers.session();
         *self = Self::default();
@@ -332,6 +346,7 @@ impl Editor {
         self.constraints
             .set_session(constraints.0, constraints.1, constraints.2);
         self.cuts.set_session(cuts.0, cuts.1, cuts.2);
+        self.cuts.set_add(cuts_add);
         self.fillets.set_session(fillets.0, fillets.1, fillets.2);
         self.chamfers
             .set_session(chamfers.0, chamfers.1, chamfers.2);
