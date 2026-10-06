@@ -7,8 +7,10 @@ use super::cut::{apply, cold, mesh, peer, refs, saved};
 use super::*;
 use crate::cuts::tests::add_session::typed_add;
 use crate::cuts::tests::session_apply::{draft_state, fixture, selected, typed_cut};
-use ferritecad_document::{CircularCut, CutExtent, ObjectPayload};
-use ferritecad_jobs::CircularCutRequest;
+use ferritecad_document::{
+    CircularCut, CircularCutEdit, CutExtent, ExtentVocabulary, ObjectPayload,
+};
+use ferritecad_jobs::{CircularCutRequest, EditCircularCutRequest};
 use std::collections::BTreeMap;
 
 type Id = [u8; 16];
@@ -229,11 +231,14 @@ fn ids(path: &Path) -> Vec<(ObjectId, ObjectPayload)> {
 }
 
 /// Pairs what is new in `ours` (after `before`) with what is new in `theirs`
-/// (after `theirs_before`), extending `map`: new objects by payload type (exactly
-/// one of each), the new Sketch's curves in stored order, and new references by
-/// every other cell once the objects and curves are mapped. Nothing old is mapped.
+/// (after `theirs_before`), extending `map`. `adds` new Cut features on each side
+/// are paired by their place in the history (`previous`), never by rowid or
+/// stored order; each one's profile Sketch by that feature's own `profile`; the
+/// Sketch's curves in stored order; then new references by every other cell once
+/// the objects and curves are mapped. Nothing old is mapped.
 fn pair_new(
     map: &mut BTreeMap<Id, Id>,
+    adds: usize,
     before: &Path,
     ours: &Path,
     theirs_before: &Path,
@@ -244,28 +249,38 @@ fn pair_new(
         ids(after)
             .into_iter()
             .filter(|o| !old.contains(&o.0))
-            .collect::<Vec<_>>()
+            .collect::<BTreeMap<_, _>>()
     };
     let earlier: Vec<Id> = map.keys().copied().collect();
     let (a, b) = (new(before, ours), new(theirs_before, theirs));
     assert_eq!(
         a.len(),
-        2,
-        "one Add makes one Cut feature and one tool Sketch"
+        2 * adds,
+        "each Add makes one Cut feature and one tool Sketch"
     );
-    assert_eq!(b.len(), 2);
-    for (id, payload) in &a {
-        let peer: Vec<_> = b
-            .iter()
-            .filter(|o| o.1.type_name() == payload.type_name())
-            .collect();
-        assert_eq!(peer.len(), 1, "one new {}", payload.type_name());
-        assert!(map.insert(id.to_bytes(), peer[0].0.to_bytes()).is_none());
-        if let (ObjectPayload::Sketch(x), ObjectPayload::Sketch(y)) = (payload, &peer[0].1) {
-            assert_eq!(x.curves.len(), y.curves.len());
-            for (u, v) in x.curves.iter().zip(&y.curves) {
-                assert!(map.insert(u.id.to_bytes(), v.id.to_bytes()).is_none());
-            }
+    assert_eq!(b.len(), 2 * adds);
+    let (ha, hb) = (history_of(before, ours), history_of(theirs_before, theirs));
+    assert_eq!(
+        (ha.len(), hb.len()),
+        (adds, adds),
+        "the new Cuts are one history chain"
+    );
+    for (u, v) in ha.into_iter().zip(hb) {
+        assert!(map.insert(u.to_bytes(), v.to_bytes()).is_none());
+        let (ObjectPayload::Extrude(x), ObjectPayload::Extrude(y)) = (&a[&u], &b[&v]) else {
+            unreachable!()
+        };
+        let (ObjectPayload::Sketch(p), ObjectPayload::Sketch(q)) = (&a[&x.profile], &b[&y.profile])
+        else {
+            panic!("a new Cut's profile is its new tool Sketch")
+        };
+        assert!(
+            map.insert(x.profile.to_bytes(), y.profile.to_bytes())
+                .is_none()
+        );
+        assert_eq!(p.curves.len(), q.curves.len());
+        for (u, v) in p.curves.iter().zip(&q.curves) {
+            assert!(map.insert(u.id.to_bytes(), v.id.to_bytes()).is_none());
         }
     }
     // New references: equal in every cell but their own id once mapped.
@@ -480,14 +495,14 @@ fn gate(name: &str) {
             Some(feature)
         );
         let mut exact_map = BTreeMap::new();
-        pair_new(&mut exact_map, &current, &applied, &current, &exact);
+        pair_new(&mut exact_map, 1, &current, &applied, &current, &exact);
         same_model(
             &applied,
             &exact,
             &exact_map,
             "Add against the CLI on the same snapshot",
         );
-        pair_new(&mut map, &current, &applied, &peer_before, &independent);
+        pair_new(&mut map, 1, &current, &applied, &peer_before, &independent);
         same_model(
             &applied,
             &independent,
@@ -568,6 +583,19 @@ fn gate(name: &str) {
     // Save, cold rebuild, reopen.
     saved(&mut s, SaveTarget::InPlace);
     same_model(&source, &peer_before, &map, "Save");
+    // Both Adds paired at once from the saved file alone, as a window comparison
+    // must: the same bijection as step by step.
+    let mut whole = BTreeMap::new();
+    let peer_base = root.path().join("peer-vertices.fcad");
+    pair_new(
+        &mut whole,
+        2,
+        &before_cuts,
+        &source,
+        &peer_base,
+        &peer_before,
+    );
+    assert_eq!(whole, map, "history-order pairing is the step-by-step one");
     cold(&source);
     let reopened = DocumentSession::open(&source).expect("reopen");
     assert!(!reopened.is_dirty());
@@ -690,24 +718,263 @@ fn gate(name: &str) {
     let peer_branch = root.path().join("peer-branch.fcad");
     let peer_base = root.path().join("peer-add-1.fcad");
     peer_add(&peer_base, body, &fresh.cut, &peer_branch);
-    pair_new(&mut map, &accepted[2], &branch, &peer_base, &peer_branch);
+    pair_new(&mut map, 1, &accepted[2], &branch, &peer_base, &peer_branch);
     same_model(&branch, &peer_branch, &map, "the branch saved as");
-    let (stl, fbx) = export_bytes(&branch, &branch, root.path(), "branch");
+    let (branch_stl, branch_fbx) = export_bytes(&branch, &branch, root.path(), "branch");
     assert_eq!(
-        (stl.clone(), fbx.clone()),
+        (branch_stl.clone(), branch_fbx.clone()),
         peer_bytes(&peer_branch, root.path(), "peer-branch"),
         "branch STL/FBX against the CLI"
     );
-    let (exact, approx) = (cold(&branch), mesh(&stl, &branch));
+    let (exact, approx) = (cold(&branch), mesh(&branch_stl, &branch));
     if let Some(dir) = std::env::var_os("FCAD_ADD_CUT_SESSION_ARTIFACTS") {
         let dir = PathBuf::from(dir);
-        std::fs::write(dir.join(format!("{name}-branch.stl")), &stl).expect("stl");
-        std::fs::write(dir.join(format!("{name}-branch.fbx")), &fbx).expect("fbx");
+        std::fs::write(dir.join(format!("{name}-branch.stl")), &branch_stl).expect("stl");
+        std::fs::write(dir.join(format!("{name}-branch.fbx")), &branch_fbx).expect("fbx");
         std::fs::write(
             dir.join(format!("{name}-branch.metrics.txt")),
             format!("analytical_mm3={exact:.9} stl_mm3={approx:.9}\n"),
         )
         .expect("metrics");
+    }
+
+    // The window comparator's own positive run and negative controls, on files
+    // this session worker wrote in the window's layout. Not window evidence.
+    let layout = root.path().join("layout");
+    std::fs::create_dir_all(layout.join("source")).expect("layout");
+    let put = |name: &str, bytes: &[u8]| std::fs::write(layout.join(name), bytes).expect(name);
+    put("source/cuts.fcad", &original);
+    put("after-add.fcad", &original);
+    put("after-refusal.fcad", &saved_bytes);
+    put("unsaved.stl", &stl);
+    put("unsaved.fbx", &fbx);
+    let undo = export_bytes(&accepted[2], &source, root.path(), "undo").0;
+    put("undo.stl", &undo);
+    put("saved.fcad", &saved_bytes);
+    put("branch.fcad", &std::fs::read(&branch).expect("branch"));
+    put(
+        "after-saveas.fcad",
+        &std::fs::read(&source).expect("after Save As"),
+    );
+    compare_gui(&layout);
+}
+
+/// §30I: actual window files against a temporary CLI chain from the untouched
+/// source: height 15.25, left wall −3.75, two Adds, an edit of the second, the
+/// Undo state, and a branch with a third Add. New UUIDs only by `pair_new`.
+fn compare_gui(root: &Path) {
+    // No peer job may fill a missing real output, even accidentally.
+    let required = [
+        "after-add.fcad",
+        "after-refusal.fcad",
+        "unsaved.stl",
+        "unsaved.fbx",
+        "undo.stl",
+        "saved.fcad",
+        "branch.fcad",
+        "after-saveas.fcad",
+    ];
+    for name in required {
+        assert!(root.join(name).is_file(), "missing real GUI output: {name}");
+    }
+    let source = root.join("source/cuts.fcad");
+    let original = std::fs::read(&source).expect("source");
+    assert_eq!(
+        std::fs::read(root.join("after-add.fcad")).expect("Add source"),
+        original,
+        "Add cut wrote the user's file"
+    );
+    let saved_bytes = std::fs::read(root.join("saved.fcad")).expect("saved");
+    assert_eq!(
+        std::fs::read(root.join("after-refusal.fcad")).expect("refusal source"),
+        saved_bytes,
+        "a refusal wrote the user's file"
+    );
+    assert_eq!(
+        std::fs::read(root.join("after-saveas.fcad")).expect("previous file"),
+        saved_bytes,
+        "Save As wrote the previous file"
+    );
+    let tmp = tempfile::tempdir().expect("peer root");
+    let reading = read_extrude_source(&source).expect("reading");
+    let body = reading.cut_bodies[0].body;
+    let height = tmp.path().join("height.fcad");
+    cli(&[
+        "edit-extrude".as_ref(),
+        source.as_os_str(),
+        "--feature".as_ref(),
+        selected(&reading, 0).base_feature.to_string().as_ref(),
+        "--expect-version".as_ref(),
+        reading.version.content.to_string().as_ref(),
+        "--distance-mm".as_ref(),
+        "15.25".as_ref(),
+        "-o".as_ref(),
+        height.as_os_str(),
+    ]);
+    let reading = read_extrude_source(&height).expect("height reading");
+    let sketch = reading
+        .sketches
+        .iter()
+        .find(|c| c.vertices.is_some())
+        .expect("base");
+    let mut vertices = sketch.vertices.clone().expect("vertices");
+    for p in &mut vertices {
+        if p.start_mm[0] == -2.5 {
+            p.start_mm[0] = -3.75;
+        }
+    }
+    let v = ferritecad_jobs::EditSketchRequest {
+        source: height.clone(),
+        expected: reading.version,
+        sketch: sketch.sketch,
+        vertices,
+        destination: PathBuf::new(),
+    };
+    let base = tmp.path().join("base.fcad");
+    sketch_peer(&height, &v, tmp.path(), &base);
+    let cut = |x: f64, y: f64, radius_mm: f64, depth: Option<f64>| CircularCut {
+        center_mm: [x, y],
+        radius_mm,
+        extent: depth.map_or(CutExtent::ThroughAll, |depth_mm| CutExtent::Blind {
+            depth_mm,
+        }),
+    };
+    let first = tmp.path().join("first.fcad");
+    peer_add(&base, body, &cut(19.25, 30.5, 2.125, Some(4.875)), &first);
+    let second = tmp.path().join("second.fcad");
+    peer_add(&first, body, &cut(66.5, 10.75, 1.875, None), &second);
+    let reading = read_extrude_source(&second).expect("second reading");
+    let index = selected(&reading, 0)
+        .tools
+        .iter()
+        .position(|t| t.feature == added_feature(&first, &second))
+        .expect("the second new Cut");
+    let s = selected(&reading, index);
+    let edit = EditCircularCutRequest {
+        source: second.clone(),
+        expected: reading.version,
+        cut: s.feature,
+        edit: CircularCutEdit {
+            tool_curve: s.tool_curve,
+            center_mm: [66.25, s.center_mm[1]],
+            radius_mm: 2.,
+            extent: s.extent,
+            vocabulary: ExtentVocabulary::BlindOrThroughAll,
+        },
+        destination: PathBuf::new(),
+    };
+    let last = tmp.path().join("last.fcad");
+    peer(&second, &edit, tmp.path(), &last);
+    let peer_branch = tmp.path().join("branch.fcad");
+    peer_add(
+        &second,
+        body,
+        &cut(8.5, 44.25, 1.5, Some(3.25)),
+        &peer_branch,
+    );
+
+    let saved = root.join("saved.fcad");
+    let mut map = BTreeMap::new();
+    pair_new(&mut map, 2, &source, &saved, &base, &last);
+    same_model(&saved, &last, &map, "saved window file");
+    let branch = root.join("branch.fcad");
+    let mut branch_map = BTreeMap::new();
+    pair_new(&mut branch_map, 3, &source, &branch, &base, &peer_branch);
+    same_model(&branch, &peer_branch, &branch_map, "window branch");
+    for (ours, theirs) in &map {
+        if let Some(other) = branch_map.get(ours) {
+            assert_eq!(
+                other, theirs,
+                "one session, one identity for the shared Adds"
+            );
+        }
+    }
+    let actual = (
+        std::fs::read(root.join("unsaved.stl")).expect("stl"),
+        std::fs::read(root.join("unsaved.fbx")).expect("fbx"),
+    );
+    assert_eq!(actual, peer_bytes(&last, tmp.path(), "last-export"));
+    assert_eq!(
+        std::fs::read(root.join("undo.stl")).expect("Undo"),
+        peer_bytes(&second, tmp.path(), "undo-export").0
+    );
+    cold(&saved);
+    cold(&branch);
+    mesh(&actual.0, &saved);
+
+    let control = |name: &str, f: &dyn Fn()| {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err(),
+            "negative control {name} accepted"
+        );
+    };
+    control("missing", &|| {
+        assert!(root.join("absent-real-output.stl").is_file());
+    });
+    control("original instead of Save", &|| {
+        let mut m = BTreeMap::new();
+        pair_new(&mut m, 2, &source, &source, &base, &last);
+    });
+    control("unedited new Cut", &|| {
+        same_model(&saved, &second, &map, "x")
+    });
+    control("wrong branch", &|| {
+        same_model(&saved, &peer_branch, &map, "x")
+    });
+    control("stale export", &|| {
+        assert_eq!(actual, peer_bytes(&second, tmp.path(), "wrong-export"))
+    });
+    // Swapping the two new Cuts' identities is not the bijection.
+    let swapped = {
+        let ours = history_of(&source, &saved);
+        let mut m = map.clone();
+        let (a, b) = (m[&ours[0].to_bytes()], m[&ours[1].to_bytes()]);
+        m.insert(ours[0].to_bytes(), b);
+        m.insert(ours[1].to_bytes(), a);
+        m
+    };
+    control("swapped new identities", &|| {
+        same_model(&saved, &last, &swapped, "x")
+    });
+    let corrupt = tmp.path().join("corrupt.fcad");
+    std::fs::copy(&saved, &corrupt).expect("control");
+    let db = rusqlite::Connection::open(&corrupt).expect("db");
+    db.execute(
+        "UPDATE objects SET payload_hash=zeroblob(32) WHERE id=?1",
+        [history_of(&source, &saved)[1].to_bytes().as_slice()],
+    )
+    .expect("corrupt hash");
+    drop(db);
+    control("raw hash", &|| same_model(&corrupt, &last, &map, "x"));
+    println!("FCAD_30I_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
+}
+
+/// The Cuts new in `after` (since `before`), in history order: each one's
+/// predecessor is the one before it, the first follows an old feature.
+fn history_of(before: &Path, after: &Path) -> Vec<ObjectId> {
+    let old: Vec<_> = ids(before).into_iter().map(|o| o.0).collect();
+    let new: BTreeMap<_, _> = ids(after)
+        .into_iter()
+        .filter(|o| !old.contains(&o.0))
+        .collect();
+    let mut order: Vec<ObjectId> = Vec::new();
+    loop {
+        let next: Vec<_> = new
+            .iter()
+            .filter(|(id, p)| match p {
+                ObjectPayload::Extrude(e) if !order.contains(id) => match order.last() {
+                    Some(last) => e.previous == Some(*last),
+                    None => e.previous.is_some_and(|p| !new.contains_key(&p)),
+                },
+                _ => false,
+            })
+            .collect();
+        assert!(next.len() <= 1, "the new Cuts branch");
+        let Some((id, ObjectPayload::Extrude(e))) = next.first() else {
+            return order;
+        };
+        assert_eq!(e.operation, ferritecad_document::SolidOperation::Cut);
+        order.push(**id);
     }
 }
 
@@ -850,4 +1117,14 @@ fn mixed_add_cut_uses_occt_without_solver() {
         return;
     }
     gate("mixed-add-cut");
+}
+
+#[test]
+fn native_compare_real_add_cut_gui_artifacts_with_negative_controls() {
+    let Some(root) = std::env::var_os("FCAD_30I_GUI_DIR") else {
+        eprintln!("skipped: requires real GUI artifacts");
+        return;
+    };
+    assert!(native());
+    compare_gui(Path::new(&root));
 }
