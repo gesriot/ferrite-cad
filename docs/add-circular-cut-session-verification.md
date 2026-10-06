@@ -192,3 +192,29 @@ CI 37517778819 success; planegcs pin 37517779052 success; product sbom
 37517778796, rust sbom 37517778876 and rust notices 37517778873 success. Combined
 runtime layout 37517778797: macOS, Linux and Windows (job 112455030475) success;
 run completed success at 2026-10-06T20:47:40Z, after this branch's code was written.
+
+### PR #89 CI
+
+First code head `abb4d83`: CI and the planegcs pin started, but runtime layout
+37533395394 failed on Linux and macOS in *Chamfer a plate with Open CASCADE and no
+solver*. The mixed gate itself passed (`1 passed`), but under `--nocapture` the
+comparator's caught negative-control panic messages and its marker split the
+harness line, so the step's exact `test <gate> ... ok` grep refused it. The next
+push cancelled that head's remaining runs. Fix `ec0e9fd` (test code only): controls
+run under a silent panic hook, and the marker is printed only by the window
+comparison test. The exact step command and grep were rerun locally for the three
+native gates and the mixed gate before pushing.
+
+Code head `ec0e9fd`: CI 37534934189 success (lint, sbom, supply-chain, notices, test
+on ubuntu/macos/windows); planegcs pin 37534928642 success (three platforms and
+compare); combined runtime layout 37534928760 success: linux 112513768558, macos
+112513768089, windows 112513768503 and the cross-platform compare 112547345640. On
+each platform the no-solver step (mixed Add-cut gate) and the native session step
+(three native Add-cut gates) succeeded; both fail unless the exact `test <gate> ...
+ok` line is present without `skipped:`. Log tails on all three platforms contain
+`FCAD_ADD_CUT_SESSION_UFBX_EXECUTED` beside `FCAD_CUT_SESSION_UFBX_EXECUTED`.
+Access limit: the GitHub tool returns only the last ~5000 log lines and the full
+log download is redirected to a host this environment does not contact, so the
+earlier test-result lines were established by step conclusion, not read verbatim.
+
+This docs-only head changes no code or workflow; its CI is reported on the PR.
