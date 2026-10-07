@@ -207,5 +207,27 @@ stage), macOS/Windows native runs (CI only), release-profile local runs.
 
 CI 37636781158, planegcs pin 37636781159, product sbom 37636781272, rust sbom
 37636781236 and rust notices 37636781131: success. Combined runtime layout
-37636781102: macOS and Linux success; Windows still in progress when this was
-written, so it is not claimed passed.
+37636781102: macOS, Linux, Windows (job 112844978408) and the cross-platform compare
+112884182143 success.
+
+### PR #90 CI
+
+Code head `fd3e2bb`: CI 37643325025 success (lint, sbom, supply-chain, notices, test
+on ubuntu/macos/windows); planegcs pin 37643295129 success (three platforms and
+compare). Combined runtime layout 37643295179, attempt 1: linux 112867430996, macos
+112867431411 and windows 112867431554 all success, but the cross-platform compare job
+was never created (no job, check run, annotation or log) and the run concluded
+failure; GitHub refused to re-run only failed jobs ("This workflow run cannot be
+retried"). The one allowed re-run, a full re-run, is attempt 2: linux 112916698829,
+macos 112916699310, windows 112916699206 and *Compare what the three platforms
+measured* 112957075748 all success, run success. On every platform in both attempts
+the no-solver step (mixed Add-fillet gate), the native session step (three native
+Add-fillet gates) and the pinned-ufbx step succeeded; each gate step fails unless the
+exact `test <gate> ... ok` line is present without `skipped:`. The log tails read here
+(linux and macos attempt 1, windows attempt 2) contain
+`FCAD_ADD_FILLET_SESSION_UFBX_EXECUTED`. Access limit: the GitHub tool returns only
+the last ~5000 log lines and the full-log download is redirected to a host this
+environment does not contact, so the earlier test-result lines were established by
+step conclusion, not read verbatim.
+
+This docs-only head changes no code or workflow; its CI is reported on the PR.
