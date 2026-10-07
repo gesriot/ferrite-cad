@@ -824,6 +824,10 @@ jobs:
             cuts::tests::add_session::add_cut_busy_guard_proves_idle_request_then_excludes_other_work_and_forms \
             cuts::tests::add_session::add_cut_dirty_discovery_refusals_keep_text_status_dismissal_and_unsupported_bodies \
             sessions::tests::add_cut::stub_add_cut_refuses_without_publication \
+            fillets::tests::add_session::add_fillet_reads_current_selection_confirm_is_draft_only_and_copy_is_clean_only \
+            fillets::tests::add_session::add_fillet_busy_guard_proves_idle_request_then_excludes_other_work_and_forms \
+            fillets::tests::add_session::add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plate \
+            sessions::tests::add_fillet::stub_add_fillet_refuses_without_publication \
             fillets::tests::session_apply::radius_current_text_confirmation_noop_clean_copy_and_add_exclusion \
             fillets::tests::session_apply::radius_busy_guard_proves_changed_idle_request_and_excludes_other_work \
             fillets::tests::session_apply::radius_dirty_discovery_refusal_retains_text_and_acceptance_closes_form \
