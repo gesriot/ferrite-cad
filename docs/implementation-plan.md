@@ -4598,6 +4598,9 @@ byte-equal unsaved/branch STL/FBX, per-corner plane and volume, pinned ufbx, two
 directed mutations, a window comparator with seven negative controls and a
 real-window recipe are tracked in [contract](add-chamfer-session.md) and
 [verification](add-chamfer-session-verification.md). The clean-only copy routes and
-Revolve creation remain copy-only. No real window has been run for this slice in the
-cloud; the macOS recipe is handed off. §30 and Milestone 5C remain open; no next slice
-has started.
+Revolve creation remain copy-only. Independent macOS review completed the real
+window recipe, all-cell SQL comparison with seven negative controls and strict
+FBX/oriented STL joins. Viewer peak was 211.689 MiB, normal pressure, exit 0;
+no production fix was needed. Full logs independently confirm all 27 new exact
+CI executions on the code head across three OSes; see verification for provenance.
+§30 and Milestone 5C remain open.

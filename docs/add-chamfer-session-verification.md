@@ -254,3 +254,55 @@ log lines and the full-log host is denied by this environment's network policy, 
 earlier `test … ok` lines were established by step conclusion, not read verbatim.
 
 This docs-only head changes no code or workflow; its CI is reported on the PR.
+
+
+## Independent macOS review (2026-10-07)
+
+Reviewed PR #91 at `046c34d4c288f5eee3685e3791864762fc63c7b7` against
+`870107f00243505cef935981b9dacca137616b41`. No blocking code finding and no
+production changes were needed. This review commit changes only documentation.
+
+The full GitHub CI and runtime logs were downloaded independently, closing the
+cloud log-access limitation above. On the exact code/workflow head `cf0ec940`,
+all 15 checks succeeded. All 27 new exact executions were read verbatim: three
+widget gates plus the stub gate, four native gates and the mixed gate on each
+of Linux, macOS and Windows. Each platform's strict-reader step completed with
+`FCAD_ADD_CHAMFER_SESSION_UFBX_EXECUTED`. The incoming docs head's seven checks
+also succeeded; they are separate from the code-head native evidence.
+
+Local arm64 verification used the existing pinned OCCT/PlaneGCS libraries,
+`/private/tmp/ferrite-24b-native-target`, two build jobs and sequential builds.
+Fresh release CLI/viewer, fmt and workspace clippy (all targets/features,
+`-D warnings`) passed. All nine `chamfers::tests::` tests and four native
+Add-chamfer session tests executed successfully. The real-output comparator
+initially reported its explicit missing-artifact skip; that was not counted as
+execution. After the window run it executed once and passed.
+
+The freshly staged and signed arm64 bundle under
+`/private/tmp/ferrite-pr91-review/gui/layout/FerriteCAD.app` completed all eight
+window steps above via CUA. Observed: request Confirm/Undo/Redo left the clean
+model alone; native copy Save Cancel retained the draft; height and vertices
+Apply, Add without Confirm and subsequent distance Apply used one document
+history; unsaved STL/FBX export, four Undo/Redo steps, Save, the disabled
+12.2401 mm refusal with retained corner/text, branched Add and Save As all
+behaved as specified. The title returned to clean after Undo to the opened
+state and after each save; a branched Add cleared Redo.
+
+Only the input generator created fixtures. The nine actual window outputs in
+`/private/tmp/ferrite-pr91-review/gui-models` passed
+`FCAD_30K_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true`. Source and
+pre-Save captures stayed unchanged; Save As preserved the former destination.
+The actual GUI FBX and both native artifact FBX files passed pinned ufbx 0.23.0
+strict (`checks=6 failures=0` each). Their oriented STL joins each matched all
+16 triangles, worst difference `4.34e-19` metres.
+
+The one owned viewer PID 54882 ran for 354.38 seconds under the 1536 MiB watchdog,
+peaked at 211.689 MiB, observed only normal pressure (1), and exited normally
+with code 0. System swap decreased from 1561.5 to 1553.5 MiB; no attribution of
+that system-wide change to the viewer is made. After Cmd+Q, process inspection
+confirmed the PID absent; no further viewer CUA lookup or relaunch occurred.
+Evidence: `watch.jsonl`, `memory-summary.json`, `gui-compare.log`, native logs,
+and `code-ci-evidence.json` under `/private/tmp/ferrite-pr91-review`.
+
+The historical OOM remains unexplained. This review does not add a constrained
+Chamfer creation class, complete §30/5C, or claim a Windows/Linux window test.
