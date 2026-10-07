@@ -232,11 +232,25 @@ stage), macOS/Windows native runs (CI only), release-profile local runs.
 
 ### Base CI (post-merge `870107f`)
 
-Recorded separately once complete; at the time of the code push CI 37684553204,
-planegcs pin 37684552864, product sbom 37684554227, rust sbom 37684553011 and rust
-notices 37684552846 were success, and combined runtime layout 37684552867 was still
-running (linux 113008883196 success; macOS and Windows in progress) — not a success.
+CI 37684553204, planegcs pin 37684552864, product sbom 37684554227, rust sbom
+37684553011 and rust notices 37684552846: success. Combined runtime layout
+37684552867: linux 113008883196, macOS 113008883269, Windows 113008883413 and the
+cross-platform compare 113046545281 success (the run was still in progress when the
+code head was pushed and is counted only from its completion).
 
-### PR CI
+### PR #91 CI
 
-Reported on the PR by exact head SHA.
+Code/workflow head `cf0ec9401deed400f7ec75539f661573d23866e3`: CI 37689720322 success
+(lint, sbom, supply-chain, notices, test on ubuntu/macos/windows); planegcs pin
+37689689646 success (three platforms and compare 113030059416). Combined runtime
+layout 37689689488, attempt 1: linux 113026395239, macOS 113026395103, Windows
+113026394841 and *Compare what the three platforms measured* 113060305181 all success,
+run success. On every platform the no-solver step (mixed Add-chamfer gate), the native
+session step (four native Add-chamfer gates) and the pinned-ufbx step succeeded; each
+gate step fails unless the exact `test <gate> ... ok` line is present without
+`skipped:`. The log tails read here contain `FCAD_ADD_CHAMFER_SESSION_UFBX_EXECUTED`
+on linux, macOS and Windows. Access limit: the GitHub tool returns only the last ~5000
+log lines and the full-log host is denied by this environment's network policy, so the
+earlier `test … ok` lines were established by step conclusion, not read verbatim.
+
+This docs-only head changes no code or workflow; its CI is reported on the PR.
