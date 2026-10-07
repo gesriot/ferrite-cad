@@ -149,8 +149,12 @@ a plane, measured on the B-Rep (volume `(W·D − d²/2)·h`, area `d·√2·h`,
 normal of the chosen corner). Its distance changes with **Edit Chamfer distance** /
 **Apply distance** inside the open document, including after unsaved base changes;
 document Undo/Redo, unsaved exports and Save/Save As share the existing session.
-**Confirm draft number** serves only the clean-copy workflow; Add Chamfer remains
-copy-only. [Session contract](docs/chamfer-distance-session-apply.md).
+**Confirm draft number** serves only the clean-copy workflow.
+[Session contract](docs/chamfer-distance-session-apply.md).
+**Add chamfer** adds the plate's one Chamfer inside the open document in the same way,
+including after unsaved base changes, on a free or closure-only plate only;
+**Confirm draft edge and distance** only records the form's request for the clean
+Chamfer copy. [Add Chamfer session contract](docs/add-chamfer-session.md).
 `edit-chamfer-distance` still publishes a new copy, every name kept. The
 plate's height changes under the Chamfer through the existing **Edit extrusion**
 or `edit-extrude` (the Chamfer's corner and distance and all names are kept;

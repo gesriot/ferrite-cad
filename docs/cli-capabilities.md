@@ -454,6 +454,14 @@ capability по прежней политике) и штамп. Новой ко�
 только копию. `fillet-edge-copy` на том же снимке даёт тот же результат во всех
 ячейках SQL, кроме `meta.modified_at` и доказанного соответствия новых UUID.
 
+§30K: CLI не меняется. Форма `Chamfer edge of … — Body UUID…` получает кнопку
+**Add chamfer**, которая добавляет единственный Chamfer пластины в открытый документ
+шагом общей истории через тот же `chamfer_edge_copy` ([контракт](add-chamfer-session.md));
+бывшая кнопка *Apply chamfer* называется **Confirm draft edge and distance** и меняет
+только историю запросов формы. Класс прежний: только свободная или closure-only
+пластина. `chamfer-edge-copy` на том же снимке даёт тот же результат во всех ячейках
+SQL, кроме `meta.modified_at` и доказанного соответствия новых UUID.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

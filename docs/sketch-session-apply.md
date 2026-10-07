@@ -66,9 +66,9 @@ folder (§30A), and nothing can be published inside the session's own folder.
 
 A **dimensioned** (constrained) plate offers no vertex form — its Lines are the
 solver's; the §29D constraint editor and the height Apply work on it as before
-(constraints stay byte for byte). The Add Chamfer editor still writes a copy (Add Cut joined the session in [§30I](add-circular-cut-session.md), Add Fillet in [§30J](add-fillet-session.md)) and
-is unavailable while the document has unsaved changes; moving it onto the
-session is later work. The constraint editor joined the session in
+(constraints stay byte for byte). Add Cut joined the session in [§30I](add-circular-cut-session.md),
+Add Fillet in [§30J](add-fillet-session.md) and Add Chamfer in [§30K](add-chamfer-session.md);
+their copy routes stay clean-only. The constraint editor joined the session in
 [§30C](constraint-session-apply.md), and the Circle and annulus editors in
 [§30D](analytic-sketch-session-apply.md). A saved partial Revolve angle joined in
 [§30E](revolve-angle-session-apply.md); creating Revolve remains a copy workflow.
@@ -86,4 +86,5 @@ Existing Fillet radii now Apply through the same session, including while dirty:
 the session in [§30J](add-fillet-session.md).
 
 Existing Chamfer distances now Apply through the same session, including while dirty:
-[§30H](chamfer-distance-session-apply.md). Distance copy and Add Chamfer remain clean-only.
+[§30H](chamfer-distance-session-apply.md). Distance copy remains clean-only; a new Chamfer joined
+the session in [§30K](add-chamfer-session.md).
