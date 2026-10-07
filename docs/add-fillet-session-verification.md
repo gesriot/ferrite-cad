@@ -231,3 +231,59 @@ environment does not contact, so the earlier test-result lines were established 
 step conclusion, not read verbatim.
 
 This docs-only head changes no code or workflow; its CI is reported on the PR.
+
+## Independent macOS review, 2026-10-07
+
+Reviewed code/workflow `fd3e2bb` at docs head `525829e`. No blocking code defect was
+found. Fresh release CLI/viewer, the existing pinned OCCT/PlaneGCS libraries and
+two build jobs; no native dependency rebuild or extra target. `fmt`, workspace
+clippy (all targets/features, `-D warnings`), 19 Fillet form tests and the three new
+native session gates passed. The real-window artifact test initially reported its
+explicit missing-artifact skip; it was executed separately after the window run
+below, not counted as native evidence from that first invocation.
+
+The fresh ad-hoc-signed arm64 bundle was staged at
+`/private/tmp/ferrite-pr90-review/gui/layout/FerriteCAD.app`. The input-only generator
+created `/private/tmp/ferrite-pr90-review/gui-models`; `--compare` first refused the
+absent window outputs. One viewer (PID 26999) then ran under the 1536 MiB / 1200 s
+watchdog. Native macOS input performed the recipe:
+
+- Apply height 6.75 → 9.25 and both left-wall X coordinates −4.5 → −5.75;
+  Add the first Fillet at (33, 3.25), r2.375 without Confirm; immediately Apply its
+  radius 2.75; Add the adjacent corner (33, 15.5), r1.5. Both Adds closed their forms
+  and retained the dirty document. The source file stayed unchanged.
+- Confirm was also exercised on the second Add form: it prepared a draft, the
+  clean-copy action remained disabled with its dirty-state reason, and Add still
+  accepted the current fields. Export STL/FBX before Save produced real window
+  artifacts. One Undo removed the second Fillet; exporting that state produced
+  `undo.stl`. Four more Undo steps restored the clean original. Five Redo steps
+  returned both Fillets with their original new UUIDs; Save cleared dirty.
+- On the clean file, r6.2 at (−5.75, 3.25) was refused with the 6.125 bound and
+  corner identity visible, retaining the exact input. Changing to r3 and Confirm
+  opened the old copy route; cancelling the native Save dialog kept the draft.
+  After dismissing that draft, Undo removed the second Fillet; Add at
+  (−5.75, 15.5), r3.0625 created a new branch and disabled Redo. Native Save As wrote
+  `branch.fcad`, leaving the prior saved file intact. Both rounded corners were
+  visible in the final isometric view.
+
+The comparator then executed against those window-created files:
+`FCAD_30J_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true`. All SQL cells
+match the independent CLI chain under the documented new-UUID-only bijection;
+unsaved exports match byte-for-byte, preservation checks and all seven negative
+controls pass. The existing pinned strict ufbx reader read the actual GUI FBX and
+both native artifact pairs, each `checks=6 failures=0`. Oriented STL/FBX joins:
+108 triangles / worst 6.94e-18 m (GUI), 228 / 1.73e-18 and 216 / 1.73e-18 (native).
+
+Viewer quit normally: exit 0 after 671.38 s, sampled peak footprint 206.939 MiB,
+pressure 1 throughout, swap did not grow (1645740032 → at most that many bytes).
+No watchdog abort. Completion was verified by PID without reattaching CUA after
+Quit. The earlier OOM cause remains unknown. Logs, actual outputs and memory summary
+are local evidence under `/private/tmp/ferrite-pr90-review/`, not required repo files.
+
+GitHub was independently read at exact SHAs: code CI/pin/runtime attempt 2 all
+success; docs `525829e` CI 37669653590 has seven successful jobs. Full runtime logs
+for attempt 2 contain all 12 new exact executions (three native plus one mixed on
+each OS) and the Add-fillet ufbx marker on each OS. Full CI logs also contain the
+three new widget gates and stub gate on every platform. This does not turn cloud
+or headless tests into window evidence; the macOS window evidence is the separate
+run above. The review commit only adds this record and the plan note.

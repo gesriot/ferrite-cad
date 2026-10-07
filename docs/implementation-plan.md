@@ -4566,7 +4566,12 @@ new identities only, Undo/Redo without remap, byte-equal unsaved/branch STL/FBX,
 per-corner geometry, pinned ufbx, two directed mutations, a window comparator with
 seven negative controls and a real-window recipe are tracked in
 [contract](add-fillet-session.md) and [verification](add-fillet-session-verification.md).
-Add Chamfer, the clean-only copy routes and Revolve creation remain copy-only. The real
-window recipe is the independent GUI stage. §30 and Milestone 5C remain open; no next
-slice has started.
-
+Add Chamfer, the clean-only copy routes and Revolve creation remain copy-only.
+Independent macOS review completed the real window recipe: dirty height/vertices,
+two adjacent Adds, radius Apply, unsaved exports, complete Undo/Redo, Save, bound
+refusal, native copy-dialog Cancel and a new branch with Save As. Actual GUI files
+match the CLI in SQL/STL/FBX; all seven negative controls and strict ufbx/oriented
+joins pass. Viewer exit 0, peak 206.939 MiB, pressure normal, no swap growth. Exact
+code CI and final author docs CI were verified separately, including full logs for
+the 12 new runtime executions. See verification for provenance and limits; prior
+OOM cause remains unknown. §30 and Milestone 5C remain open; no next slice has started.
