@@ -182,10 +182,19 @@ fn cut_apply_current_fields_draft_history_noop_and_add_exclusion() {
     );
     e.dismiss();
     assert!(e.begin(&path, &reading, reading.cut_bodies[0].body));
-    assert!(!ready(&c, &s), "Add has no document Apply");
+    // §30I: the Add form adds through its own predicate (`can_add_cut`), never
+    // through the edit's Apply cut.
+    assert!(!ready(&c, &s), "the edit predicate excludes the Add form");
+    for _ in 0..3 {
+        frame(&ctx, &mut c.sketch.cuts, false);
+    }
     let out = frame(&ctx, &mut c.sketch.cuts, false);
-    assert!(!painted(&out, "Confirm draft numbers"));
-    click(&ctx, &mut c.sketch.cuts, "Apply cut");
+    assert!(painted(&out, "Confirm draft numbers"));
+    assert!(painted(&out, "Add cut"));
+    assert!(
+        !painted(&out, "Apply cut"),
+        "the Add form offers no edit Apply"
+    );
     assert!(c.sketch.cuts.take_apply_request().is_none());
 }
 #[test]

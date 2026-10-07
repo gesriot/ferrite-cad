@@ -4520,3 +4520,31 @@ branched Save As and reopen. Actual GUI SQL/STL/FBX matched CLI; strict ufbx and
 oriented joins passed. Viewer exited 0, peak footprint 217.579 MiB, normal
 pressure and unchanged swap. The historical OOM cause remains unknown.
 §30 and Milestone 5C remain open; no next slice has started.
+
+**§30I — add a new circular Cut inside the open document.** On the Add form,
+**Add cut** reads the current valid centre, radius and Blind depth or explicit
+Through all and adds the Cut to the open document through
+`StepTicket::add_circular_cut` and its worker, reusing `circular_cut_copy`,
+`CircularCutRequest`, the writer, evaluator, lease, cleanup and two-phase
+acceptance. The source is the accepted snapshot and the Body is its saved UUID.
+The former form button is **Confirm draft numbers**; it and the form's Undo/Redo
+stay draft history. The clean Cut copy keeps its meaning; a dirty copy is refused
+in words before the dialog. One production predicate `can_add_cut` guards button and
+handler. One accepted Add is one document step; new UUIDs come only from the
+operation and Redo restores them without a job; the new Cut is at once offered by
+Edit cut (§30F). The class (unconstrained Line polygon, 0–16 Cuts, real outline and
+clearances, Blind/ThroughAll, strict refs) and the constrained-base refusal are
+unchanged. Widget, native, stub and mixed gates, all-cell SQL/CLI comparison under a
+proved bijection of new identities only, Undo/Redo without remap, byte-equal
+unsaved/branch STL/FBX, pinned ufbx, two directed mutations, a window comparator
+with seven negative controls and a real-window recipe are tracked in
+[contract](add-circular-cut-session.md) and
+[verification](add-circular-cut-session-verification.md). Add Fillet, Add Chamfer,
+the clean-only copy routes and Revolve creation remain copy-only. Independent
+PR #89 review read all 24 new exact CI executions and the reader markers on three
+platforms (code 15/15, author docs 7/7). The macOS arm64 window recipe passed:
+dirty base edits, both Add routes, immediate Cut editing, draft/document history,
+refusal, unsaved exports, Save and branched Save As. Actual GUI SQL/STL/FBX matched
+CLI; strict ufbx and oriented joins passed. Viewer exited 0, peak footprint
+227.345 MiB, normal pressure and unchanged swap. The historical OOM cause remains
+unknown. §30 and Milestone 5C remain open; no next slice has started.

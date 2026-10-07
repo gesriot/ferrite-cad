@@ -66,7 +66,7 @@ folder (§30A), and nothing can be published inside the session's own folder.
 
 A **dimensioned** (constrained) plate offers no vertex form — its Lines are the
 solver's; the §29D constraint editor and the height Apply work on it as before
-(constraints stay byte for byte). The Add Cut, Add Fillet and Add Chamfer editors still write a copy and
+(constraints stay byte for byte). The Add Fillet and Add Chamfer editors still write a copy (Add Cut joined the session in [§30I](add-circular-cut-session.md)) and
 are unavailable while the document has unsaved changes; moving them onto the
 session is later work. The constraint editor joined the session in
 [§30C](constraint-session-apply.md), and the Circle and annulus editors in

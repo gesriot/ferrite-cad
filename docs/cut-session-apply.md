@@ -16,8 +16,9 @@ its previous file. An accepted new step after Undo drops the Redo branch.
 
 **Confirm draft numbers**, and the form's Undo/Redo, affect only draft checkpoints.
 The existing **Save cut copy…** workflow requires confirmed fields and a clean
-document. Its disabled state explains unsaved changes. Add Cut remains the same
-copy workflow and has no document Apply route.
+document. Its disabled state explains unsaved changes. Since §30I the Add form has
+its own document route, **Add cut** ([contract](add-circular-cut-session.md)); it never
+goes through this edit's Apply cut.
 
 `StepTicket::edit_circular_cut` pins the form version, reads the current accepted
 snapshot and calls `edit_circular_cut_copy` with the existing

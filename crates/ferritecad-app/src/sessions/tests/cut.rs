@@ -21,7 +21,7 @@ fn start(
         .expect("start");
     (g, rx)
 }
-fn apply(s: &mut Sessions, r: &EditCircularCutRequest) -> Edited {
+pub(super) fn apply(s: &mut Sessions, r: &EditCircularCutRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(
         g,
@@ -59,7 +59,7 @@ fn request(s: &Sessions, index: usize) -> EditCircularCutRequest {
         destination: PathBuf::new(),
     }
 }
-fn peer(source: &Path, r: &EditCircularCutRequest, root: &Path, out: &Path) {
+pub(super) fn peer(source: &Path, r: &EditCircularCutRequest, root: &Path, out: &Path) {
     let file = out.with_extension("json");
     let extent = match r.edit.extent {
         CutExtent::ThroughAll => r#"{"kind":"through_all"}"#.into(),
@@ -86,7 +86,7 @@ fn peer(source: &Path, r: &EditCircularCutRequest, root: &Path, out: &Path) {
         "--json".as_ref(),
     ]);
 }
-fn refs(path: &Path) -> Vec<TopologyRef> {
+pub(super) fn refs(path: &Path) -> Vec<TopologyRef> {
     Document::open_read_only(path)
         .expect("document")
         .topology_refs()
@@ -94,7 +94,7 @@ fn refs(path: &Path) -> Vec<TopologyRef> {
 }
 /// Every SQL cell, including rowid where SQLite exposes it. No payload, hash,
 /// row or table is excluded. Only actually new topology_refs.id cells may map.
-fn sql(
+pub(super) fn sql(
     path: &Path,
     pairs: &[(
         ferritecad_types::StableEntityId,
@@ -208,7 +208,7 @@ fn same_sql(ours: &Path, theirs: &Path, before: &Path) {
         "every SQL cell except modified_at and explicit new ref IDs"
     );
 }
-fn saved(s: &mut Sessions, target: SaveTarget) {
+pub(super) fn saved(s: &mut Sessions, target: SaveTarget) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_save(target, None, |p, _, c| {
@@ -245,7 +245,7 @@ fn refuse(s: &mut Sessions, r: &EditCircularCutRequest) -> String {
     );
     s.status.clone()
 }
-fn cold(path: &Path) -> f64 {
+pub(super) fn cold(path: &Path) -> f64 {
     let d = Document::open_read_only(path).expect("document");
     let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
     let built =
@@ -285,7 +285,7 @@ fn cold(path: &Path) -> f64 {
     d.close().expect("close");
     exact
 }
-fn mesh(stl: &[u8], path: &Path) -> f64 {
+pub(super) fn mesh(stl: &[u8], path: &Path) -> f64 {
     let float = |off| f32::from_le_bytes(stl[off..off + 4].try_into().expect("float")) as f64;
     let n = u32::from_le_bytes(stl[80..84].try_into().expect("count")) as usize;
     assert_eq!(stl.len(), 84 + 50 * n);

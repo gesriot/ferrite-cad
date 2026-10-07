@@ -120,8 +120,12 @@ pub(crate) struct Editor {
     /// that already knows what to do with it.
     pending_edit: Option<EditCircularCutRequest>,
     pending_apply: Option<EditCircularCutRequest>,
+    /// §30I: the new Cut the Add form asked to add to the open document.
+    pending_add: Option<CircularCutRequest>,
     can_begin_edit: bool,
     can_apply: bool,
+    /// Whether the window's `can_add_cut` allows the Add form's own Add now.
+    can_add: bool,
     unsaved: bool,
     outcome: String,
 }
@@ -132,8 +136,10 @@ impl Editor {
     }
     pub(crate) fn dismiss(&mut self) {
         let availability = (self.can_begin_edit, self.can_apply, self.unsaved);
+        let add = self.can_add;
         *self = Self::default();
         self.set_session(availability.0, availability.1, availability.2);
+        self.can_add = add;
     }
     pub(crate) fn take_request(&mut self) -> Option<CircularCutRequest> {
         self.pending.take()
@@ -161,8 +167,30 @@ impl Editor {
     pub(crate) fn take_apply_request(&mut self) -> Option<EditCircularCutRequest> {
         self.pending_apply.take()
     }
+    /// §30I: the Add form is open (not the edit of a saved Cut).
+    pub(crate) fn adding(&self) -> bool {
+        self.draft
+            .as_ref()
+            .is_some_and(|d| matches!(d.subject, Subject::Add(_)))
+    }
+    /// What the window's `can_add_cut` says, each frame.
+    pub(crate) fn set_add(&mut self, can_add: bool) {
+        self.can_add = can_add;
+    }
+    pub(crate) fn add_session(&self) -> bool {
+        self.can_add
+    }
+    /// §30I: the new Cut the user asked to add to the open document.
+    pub(crate) fn take_add_request(&mut self) -> Option<CircularCutRequest> {
+        self.pending_add.take()
+    }
 
-    fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, body: ObjectId) -> bool {
+    pub(crate) fn begin(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        body: ObjectId,
+    ) -> bool {
         let Some(choice) = source
             .cut_bodies
             .iter()
@@ -256,8 +284,10 @@ impl Editor {
             .show(ui, |ui| {
                 for choice in &source.cut_bodies {
                     let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+                    // §30I: the Add form adds into the open document, so it may be
+                    // opened with unsaved changes when the session is idle.
                     let response = ui.add_enabled(
-                        can_begin && refusal.is_none(),
+                        (can_begin || self.can_begin_edit) && refusal.is_none(),
                         egui::Button::new(format!(
                             "Cut circle into {} — {}…",
                             choice.name.as_deref().unwrap_or("Unnamed body"),
@@ -303,7 +333,7 @@ impl Editor {
         };
         let mut cancel = false;
         let title = match &draft.subject {
-            Subject::Add(_) => "Circular cut — new copy",
+            Subject::Add(_) => "Add circular cut",
             Subject::Edit(_) => "Edit circular cut",
         };
         egui::Window::new(title)
@@ -481,8 +511,28 @@ impl Editor {
                             ui.small("These are the stored numbers and end: there is nothing to apply.");
                         }
                     }
-                    let confirm = if shown.editing.is_some() { "Confirm draft numbers" } else { "Apply cut" };
-                    if ui.button(confirm).clicked() {
+                    if shown.editing.is_none() {
+                        // §30I: into the open document, no file name; the current valid
+                        // fields, whether or not the draft was confirmed.
+                        let valid = draft.subject.validate(&draft.typed);
+                        if ui
+                            .add_enabled(self.can_add && valid.is_ok(), egui::Button::new("Add cut"))
+                            .clicked()
+                        {
+                            let cut = numbers(&draft.typed).expect("validated fields");
+                            self.pending_add = Some(CircularCutRequest {
+                                source: draft.source.clone(),
+                                expected: draft.version,
+                                body: shown.body,
+                                cut,
+                                destination: PathBuf::new(),
+                            });
+                        }
+                        if let Err(error) = valid {
+                            ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+                        }
+                    }
+                    if ui.button("Confirm draft numbers").clicked() {
                         match draft.subject.validate(&draft.typed) {
                             Ok(()) => {
                                 let mut applied = draft
@@ -545,16 +595,12 @@ impl Editor {
                             }
                         }
                         None => {
-                            ui.small(if shown.editing.is_some() {
-                                "Confirm the draft numbers and end before saving a copy."
-                            } else {
-                                "Apply the numbers and the end before saving."
-                            });
+                            ui.small("Confirm the draft numbers and end before saving a copy.");
                         }
                     }
                 });
                 if self.unsaved {
-                    ui.small("Saving a copy is unavailable while the document has unsaved changes: Save or Undo them first. Apply changes this document; the file on disk changes only on Save.");
+                    ui.small("Saving a copy is unavailable while the document has unsaved changes: Save or Undo them first. Add cut and Apply cut change this document; the file on disk changes only on Save.");
                 }
                 if running {
                     ui.label("Working… Draft retained until acceptance. Cancel job in toolbar.");
@@ -729,6 +775,7 @@ pub(crate) fn finish_cut_edit(
 #[cfg(test)]
 #[allow(clippy::panic)]
 pub(crate) mod tests {
+    pub(crate) mod add_session;
     pub(crate) mod session_apply;
     use super::*;
     use ferritecad_document::Document;
@@ -917,7 +964,7 @@ pub(crate) mod tests {
             ("banana", "15", "5", "4", "not a number"),
         ] {
             fill(&ctx, &mut e, x, y, r, depth);
-            click(&ctx, &mut e, "Apply cut");
+            click(&ctx, &mut e, "Confirm draft numbers");
             let draft = e.draft.as_ref().expect("draft");
             assert!(draft.applied.is_none(), "{why} was accepted");
             assert!(draft.refusal.is_some(), "{why} said nothing");
@@ -926,7 +973,7 @@ pub(crate) mod tests {
 
         // One Apply is one history step over all four numbers.
         fill(&ctx, &mut e, "20", "15", "5", "4");
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         let draft = e.draft.as_ref().expect("draft");
         assert_eq!(draft.refusal, None);
         assert_eq!(draft.history.undo.len(), 1, "one Apply, one step");
@@ -938,7 +985,7 @@ pub(crate) mod tests {
             !painted(&frame(&ctx, &mut e, false), "Save cut copy…"),
             "an unapplied change must not be saveable"
         );
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 2);
 
         // Undo and Redo move the request and ask no job for anything.
@@ -1004,7 +1051,7 @@ pub(crate) mod tests {
         }
         fill(&ctx, &mut e, "20", "15", "5", "4");
         if second {
-            click(&ctx, &mut e, "Apply cut");
+            click(&ctx, &mut e, "Confirm draft numbers");
             assert!(
                 e.draft
                     .as_ref()
@@ -1017,7 +1064,7 @@ pub(crate) mod tests {
             assert!(e.draft.as_ref().expect("draft").history.undo.is_empty());
             fill(&ctx, &mut e, "45", "25", "6", "7");
         }
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         if second {
             click(&ctx, &mut e, "Undo");
             assert_eq!(e.draft.as_ref().expect("draft").typed, Numbers::default());
@@ -2042,7 +2089,7 @@ pub(crate) mod tests {
         }
         fill(&ctx, &mut e, "20.375", "15.125", "5.25", "");
         click(&ctx, &mut e, "Through all");
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
         click(&ctx, &mut e, "Save cut copy…");
         let mut request = e.take_request().expect("widget request");
@@ -2166,7 +2213,7 @@ pub(crate) mod tests {
             ("40", "17", "4", "the concave edge"),
         ] {
             fill(&ctx, &mut e, x, y, r, "4");
-            click(&ctx, &mut e, "Apply cut");
+            click(&ctx, &mut e, "Confirm draft numbers");
             let draft = e.draft.as_ref().expect("draft");
             assert!(draft.applied.is_none(), "{why} was accepted");
             assert!(
@@ -2181,10 +2228,10 @@ pub(crate) mod tests {
         }
         fill(&ctx, &mut e, "10.125", "18.625", "2.25", "");
         click(&ctx, &mut e, "Through all");
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
         fill(&ctx, &mut e, "45", "10", "5", "");
-        click(&ctx, &mut e, "Apply cut");
+        click(&ctx, &mut e, "Confirm draft numbers");
         assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 2);
         click(&ctx, &mut e, "Undo");
         assert_eq!(e.draft.as_ref().expect("draft").typed.center_x, "10.125");

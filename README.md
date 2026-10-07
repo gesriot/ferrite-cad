@@ -36,8 +36,10 @@ or `edit-circular-cut`, preserving the feature and tool identities in a new copy
 In the viewer, **Apply cut** edits that existing Cut inside the open document,
 including after unsaved base height/vertices changes. Document Undo/Redo and
 exports use the accepted model; the user's file changes only on Save. Draft
-confirmation stays separate, and Add Cut remains copy-only.
-[Session contract](docs/cut-session-apply.md).
+confirmation stays separate. **Add cut** adds a new Cut inside the open document as
+well (also after unsaved edits), one step of the same history; Save cut copy stays
+clean-only. [Session contract](docs/cut-session-apply.md),
+[Add contract](docs/add-circular-cut-session.md).
 A through hole can become a pocket; cutting away a named pocket floor is refused.
 Editing a Cut rebuilds its descendants while preserving history and face origins.
 At 16 Cuts, addition is unavailable and every Cut remains editable.

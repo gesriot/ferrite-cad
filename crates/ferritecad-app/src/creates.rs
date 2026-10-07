@@ -207,6 +207,11 @@ impl Creates {
         !self.running() && self.form.is_none() && self.sketch.only_editing_cut()
     }
 
+    /// §30I: the Cut Add form may Add itself; every other form excludes it.
+    pub(crate) fn can_add_cut(&self) -> bool {
+        !self.running() && self.form.is_none() && self.sketch.only_adding_cut()
+    }
+
     pub(crate) fn can_apply_fillet_radius(&self) -> bool {
         !self.running() && self.form.is_none() && self.sketch.only_editing_fillet_radius()
     }
