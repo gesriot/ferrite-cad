@@ -785,7 +785,29 @@ pub(crate) fn spawn_add_cut(
     )
 }
 
-/// The existing Fillet radius edit on its kernel-owning worker; no Add route.
+/// §30J: a new Fillet on the kernel-owning worker. `expected` is the version the
+/// Add form was opened on; the Body is its saved UUID.
+pub(crate) fn spawn_add_fillet(
+    ticket: StepTicket,
+    body: ObjectId,
+    fillet: ferritecad_document::EdgeFillet,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.add_edge_fillet(body, fillet, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
+/// The existing Fillet radius edit on its kernel-owning worker (§30G); the Add
+/// form has its own worker (`spawn_add_fillet`).
 pub(crate) fn spawn_apply_fillet_radius(
     ticket: StepTicket,
     feature: ObjectId,

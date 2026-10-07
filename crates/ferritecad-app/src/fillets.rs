@@ -105,6 +105,10 @@ pub(crate) struct Editor {
     radius: Option<RadiusDraft>,
     pending_radius: Option<EditFilletRadiusRequest>,
     pending_apply: Option<EditFilletRadiusRequest>,
+    /// §30J: the new Fillet the Add form asked to add to the open document.
+    pending_add: Option<EdgeFilletRequest>,
+    /// Whether the window's `can_add_fillet` allows the Add form's own Add now.
+    can_add: bool,
     can_begin_radius: bool,
     can_apply: bool,
     unsaved: bool,
@@ -117,8 +121,10 @@ impl Editor {
     }
     pub(crate) fn dismiss(&mut self) {
         let availability = self.session();
+        let add = self.can_add;
         *self = Self::default();
         self.set_session(availability.0, availability.1, availability.2);
+        self.can_add = add;
     }
     pub(crate) fn take_request(&mut self) -> Option<EdgeFilletRequest> {
         self.pending.take()
@@ -129,6 +135,21 @@ impl Editor {
 
     pub(crate) fn editing_radius(&self) -> bool {
         self.radius.is_some() && self.draft.is_none()
+    }
+    /// §30J: the Add form is open (not the radius edit of a saved Fillet).
+    pub(crate) fn adding(&self) -> bool {
+        self.draft.is_some() && self.radius.is_none()
+    }
+    /// What the window's `can_add_fillet` says, each frame.
+    pub(crate) fn set_add(&mut self, can_add: bool) {
+        self.can_add = can_add;
+    }
+    pub(crate) fn add_session(&self) -> bool {
+        self.can_add
+    }
+    /// §30J: the new Fillet the user asked to add to the open document.
+    pub(crate) fn take_add_request(&mut self) -> Option<EdgeFilletRequest> {
+        self.pending_add.take()
     }
     pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
         self.can_begin_radius = can_begin;
@@ -169,7 +190,12 @@ impl Editor {
         true
     }
 
-    fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, body: ObjectId) -> bool {
+    pub(crate) fn begin(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        body: ObjectId,
+    ) -> bool {
         if self.active() || source.refusal.is_some() {
             return false;
         }
@@ -208,8 +234,10 @@ impl Editor {
         };
         for choice in &source.fillet_bodies {
             let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+            // §30J: the Add form adds into the open document, so it may be opened
+            // with unsaved changes whenever the session is idle.
             let response = ui.add_enabled(
-                can_begin && !self.unsaved && refusal.is_none(),
+                (can_begin || self.can_begin_radius) && refusal.is_none(),
                 egui::Button::new(format!(
                     "Fillet edge of {} — {}…",
                     choice.name.as_deref().unwrap_or("Unnamed body"),
@@ -471,10 +499,13 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Fillet one vertical edge — new copy")
+        egui::Window::new("Fillet one vertical edge")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
+                if !self.outcome.is_empty() {
+                    ui.label(format!("Document: {}", self.outcome));
+                }
                 ui.label(
                     "Rounds one vertical edge of the plate with a constant radius. The edge is \
                      named by the base Extrude and the two Lines that meet at its corner.",
@@ -554,7 +585,29 @@ impl Editor {
                                 .desired_width(110.),
                         );
                     });
-                    if ui.button("Apply fillet").clicked() {
+                    // §30J: into the open document, no file name; the current
+                    // corner and valid radius, whether or not the draft was confirmed.
+                    let valid = draft.fillet(&draft.typed);
+                    if ui
+                        .add_enabled(
+                            self.can_add && valid.is_ok(),
+                            egui::Button::new("Add fillet"),
+                        )
+                        .clicked()
+                    {
+                        let (_, fillet) = valid.as_ref().copied().expect("validated draft");
+                        self.pending_add = Some(EdgeFilletRequest {
+                            source: draft.source.clone(),
+                            expected: draft.version,
+                            body: target.body,
+                            fillet,
+                            destination: PathBuf::new(),
+                        });
+                    }
+                    if let Err(error) = &valid {
+                        ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+                    }
+                    if ui.button("Confirm draft edge and radius").clicked() {
                         match draft.fillet(&draft.typed) {
                             Ok(_) => {
                                 draft.applied = Some(draft.typed.clone());
@@ -591,7 +644,10 @@ impl Editor {
                                     corner.corner_mm[0], corner.corner_mm[1], fillet.radius_mm
                                 )
                             });
-                            if ui.button("Save fillet copy…").clicked() {
+                            if ui
+                                .add_enabled(!self.unsaved, egui::Button::new("Save fillet copy…"))
+                                .clicked()
+                            {
                                 self.pending = Some(EdgeFilletRequest {
                                     source: draft.source.clone(),
                                     expected: draft.version,
@@ -602,12 +658,24 @@ impl Editor {
                             }
                         }
                         None => {
-                            ui.small("Apply an edge and a radius before saving.");
+                            ui.small("Confirm the draft edge and radius before saving a copy.");
                         }
                     }
                 });
+                if self.unsaved {
+                    ui.small(
+                        "Saving a copy is unavailable while the document has unsaved changes: \
+                         Save or Undo them first.",
+                    );
+                }
+                ui.small(
+                    "This document changes with Add fillet; the file on disk changes only on Save.",
+                );
                 if running {
-                    ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                    ui.label(
+                        "Working… Draft retained until publication or acceptance. Cancel job in \
+                         toolbar.",
+                    );
                 }
             });
         if cancel {
@@ -716,6 +784,7 @@ pub(crate) fn finish_fillet_radius(
 #[cfg(test)]
 #[allow(clippy::panic)]
 pub(crate) mod tests {
+    pub(crate) mod add_session;
     pub(crate) mod session_apply;
     use super::*;
     use ferritecad_document::{
@@ -988,7 +1057,7 @@ pub(crate) mod tests {
 
         // Nothing chosen, then text that is no radius, then radii the
         // document refuses: each refused, none applied.
-        click(&ctx, &mut e, "Apply fillet");
+        click(&ctx, &mut e, "Confirm draft edge and radius");
         assert!(
             e.draft
                 .as_ref()
@@ -1013,7 +1082,7 @@ pub(crate) mod tests {
             ("inf", "finite"),
         ] {
             radius(&ctx, &mut e, text);
-            click(&ctx, &mut e, "Apply fillet");
+            click(&ctx, &mut e, "Confirm draft edge and radius");
             let draft = e.draft.as_ref().expect("draft");
             assert!(draft.applied.is_none(), "{text} was applied");
             assert!(
@@ -1023,7 +1092,7 @@ pub(crate) mod tests {
             );
         }
         radius(&ctx, &mut e, "2.375");
-        click(&ctx, &mut e, "Apply fillet");
+        click(&ctx, &mut e, "Confirm draft edge and radius");
         let out = frame(&ctx, &mut e, false);
         assert!(painted(
             &out,
@@ -1053,7 +1122,10 @@ pub(crate) mod tests {
 
         // While a job runs the form is inert, and says the draft is kept.
         let out = frame(&ctx, &mut e, true);
-        assert!(painted(&out, "Draft retained until publication"));
+        assert!(painted(
+            &out,
+            "Draft retained until publication or acceptance"
+        ));
         click_while(&ctx, &mut e, "Cancel fillet draft", true);
         assert!(e.active(), "Cancel is disabled while saving");
 
@@ -1177,7 +1249,7 @@ pub(crate) mod tests {
         }
         click(&ctx, &mut e, "Corner (-4.5, 15.5)");
         radius(&ctx, &mut e, "3.0625");
-        click(&ctx, &mut e, "Apply fillet");
+        click(&ctx, &mut e, "Confirm draft edge and radius");
         click(&ctx, &mut e, "Save fillet copy…");
         let mut request = e.take_request().expect("widget request");
         let fillet = request.fillet;
@@ -1484,7 +1556,7 @@ pub(crate) mod tests {
             ("inf", "finite"),
         ] {
             radius(&ctx, &mut e, text);
-            click(&ctx, &mut e, "Apply fillet");
+            click(&ctx, &mut e, "Confirm draft edge and radius");
             let draft = e.draft.as_ref().expect("draft");
             assert!(draft.applied.is_none(), "{text} was applied");
             assert!(
@@ -1494,7 +1566,7 @@ pub(crate) mod tests {
             );
         }
         radius(&ctx, &mut e, "6.5");
-        click(&ctx, &mut e, "Apply fillet");
+        click(&ctx, &mut e, "Confirm draft edge and radius");
         let out = frame(&ctx, &mut e, false);
         assert!(painted(
             &out,
@@ -1548,7 +1620,7 @@ pub(crate) mod tests {
         }
         click(&ctx, &mut e, &format!("Lines {a} | {b}"));
         let run = |e: &mut Editor, destination: &Path| {
-            click(&ctx, e, "Apply fillet");
+            click(&ctx, e, "Confirm draft edge and radius");
             click(&ctx, e, "Save fillet copy…");
             let mut request = e.take_request().expect("widget request");
             request.destination = destination.to_path_buf();
@@ -1995,7 +2067,7 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Corner (33, 15.5)");
         for text in ["6.125", "6.12"] {
             radius(&ctx, &mut e, text);
-            click(&ctx, &mut e, "Apply fillet");
+            click(&ctx, &mut e, "Confirm draft edge and radius");
             let draft = e.draft.as_ref().expect("draft");
             assert!(draft.applied.is_none(), "{text} was applied");
             assert!(
@@ -2009,7 +2081,7 @@ pub(crate) mod tests {
             );
         }
         radius(&ctx, &mut e, "3.5");
-        click(&ctx, &mut e, "Apply fillet");
+        click(&ctx, &mut e, "Confirm draft edge and radius");
         let out = frame(&ctx, &mut e, false);
         assert!(painted(
             &out,
@@ -2071,7 +2143,7 @@ pub(crate) mod tests {
         }
         click(&ctx, &mut e, "Corner (33, 15.5)");
         radius(&ctx, &mut e, "3.0625");
-        click(&ctx, &mut e, "Apply fillet");
+        click(&ctx, &mut e, "Confirm draft edge and radius");
         click(&ctx, &mut e, "Save fillet copy…");
         let mut request = e.take_request().expect("widget request");
         let fillet = request.fillet;
@@ -2510,7 +2582,7 @@ pub(crate) mod tests {
             .expect("the candidate");
         assert_eq!(beside.matches("shares Line").count(), 2, "{beside}");
         // The form fits the screen with Save and Cancel in reach.
-        for label in ["Cancel fillet draft", "Apply fillet"] {
+        for label in ["Cancel fillet draft", "Confirm draft edge and radius"] {
             let p = at(&out, label).unwrap_or_else(|| panic!("not painted: {label}"));
             assert!(
                 p.y > 0. && p.y < 768. && p.x > 0. && p.x < 988.,
@@ -2526,7 +2598,7 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Corner (33, 15.5)");
         for text in [max.next_up().to_string(), "6.121".to_owned()] {
             radius(&ctx, &mut e, &text);
-            click(&ctx, &mut e, "Apply fillet");
+            click(&ctx, &mut e, "Confirm draft edge and radius");
             let draft = e.draft.as_ref().expect("draft");
             assert!(draft.applied.is_none(), "{text} was applied");
             let reason = draft.refusal.as_deref().expect("a refusal");
@@ -2537,7 +2609,7 @@ pub(crate) mod tests {
             );
         }
         radius(&ctx, &mut e, &max.to_string());
-        click(&ctx, &mut e, "Apply fillet");
+        click(&ctx, &mut e, "Confirm draft edge and radius");
         let out = frame(&ctx, &mut e, false);
         assert!(painted(
             &out,
@@ -2745,7 +2817,7 @@ pub(crate) mod tests {
             }
             click(&ctx, &mut e, label);
             radius(&ctx, &mut e, radius_text);
-            click(&ctx, &mut e, "Apply fillet");
+            click(&ctx, &mut e, "Confirm draft edge and radius");
             click(&ctx, &mut e, "Save fillet copy…");
             let mut request = e.take_request().expect("widget request");
             let fillet = request.fillet;

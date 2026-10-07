@@ -43,12 +43,12 @@ use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
 use crate::edit::{
-    CircularCutRequest, EditAnnulusRequest, EditChamferDistanceRequest, EditCircleRequest,
+    CircularCutRequest, EdgeFilletRequest, EditAnnulusRequest, EditChamferDistanceRequest, EditCircleRequest,
     EditCircularCutRequest, EditExtrudeRequest, EditFilletRadiusRequest, EditRevolveAngleRequest,
     EditSketchConstraintsRequest, EditSketchRequest, circular_cut_copy, edit_annulus_copy,
     edit_chamfer_distance_copy, edit_circle_copy, edit_circular_cut_copy, edit_extrude_copy,
     edit_fillet_radius_copy, edit_revolve_angle_copy, edit_sketch_constraints_copy,
-    edit_sketch_copy,
+    edit_sketch_copy, fillet_edge_copy,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
 
@@ -716,6 +716,36 @@ impl StepTicket {
                     expected,
                     feature,
                     degrees,
+                    destination: destination.to_path_buf(),
+                },
+                kernel,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// §30J: adds one Fillet to the Body named by its saved UUID, at the corner
+    /// named by the base feature and its two Line UUIDs, using the current accepted
+    /// snapshot and the CLI's existing `fillet_edge_copy`. The feature and its
+    /// references get their UUIDs here, in the produced version only; Undo/Redo
+    /// move between accepted files and never run the job again.
+    pub fn add_edge_fillet<K: GeometryKernel + ?Sized>(
+        self,
+        body: ObjectId,
+        fillet: ferritecad_document::EdgeFillet,
+        expected: DocumentVersion,
+        kernel: &mut K,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        self.check_form_version(expected)?;
+        self.run(|source, expected, destination| {
+            fillet_edge_copy(
+                &EdgeFilletRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    body,
+                    fillet,
                     destination: destination.to_path_buf(),
                 },
                 kernel,
