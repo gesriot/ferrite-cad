@@ -414,3 +414,8 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
         full.fillet_bodies[0].body
     ));
 }
+
+/// The Add form's whole draft (corner, radius text, confirmed draft, refusal).
+pub(crate) fn add_draft_state(e: &crate::sketch::Editor) -> String {
+    format!("{:?}", e.fillets.draft)
+}
