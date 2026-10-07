@@ -1850,7 +1850,16 @@ mod tests {
         false
     }
 
+    std::thread_local! {
+        /// Peer CLI processes started on this test's thread (§30J: a refused
+        /// window comparison must start none).
+        static CLI_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    fn cli_runs() -> usize {
+        CLI_RUNS.with(|n| n.get())
+    }
     fn cli(arguments: &[&std::ffi::OsStr]) -> std::process::Output {
+        CLI_RUNS.with(|n| n.set(n.get() + 1));
         let output = std::process::Command::new(crate::creates::tests::ferritecad())
             .args(arguments)
             .output()

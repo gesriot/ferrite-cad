@@ -794,3 +794,387 @@ fn mixed_add_fillet_uses_occt_without_solver() {
     assert_eq!(state(&s), before);
     assert_eq!(std::fs::read(source).expect("source"), original);
 }
+
+/// The window scenario's inputs: a corner by its stored position and the radius.
+const WINDOW_A: ([f64; 2], &str) = ([33., 3.25], "2.375");
+const WINDOW_A_RADIUS: &str = "2.75";
+const WINDOW_B: ([f64; 2], &str) = ([33., 15.5], "1.5");
+const WINDOW_C: ([f64; 2], &str) = ([-5.75, 15.5], "3.0625");
+const WINDOW_OUTPUTS: [&str; 8] = [
+    "after-add.fcad",
+    "after-refusal.fcad",
+    "unsaved.stl",
+    "unsaved.fbx",
+    "undo.stl",
+    "saved.fcad",
+    "branch.fcad",
+    "after-saveas.fcad",
+];
+
+fn fillet_of(at: [f64; 2], radius: &str, path: &Path) -> EdgeFillet {
+    let reading = read_extrude_source(path).expect("reading");
+    let target = reading.fillet_bodies[0].target.clone().expect("target");
+    let corner = target
+        .corners
+        .iter()
+        .find(|c| c.corner_mm == at)
+        .expect("free corner");
+    EdgeFillet {
+        edge: ferritecad_document::FilletEdge {
+            feature: target.base_feature,
+            joint: corner.joint,
+        },
+        radius_mm: radius.parse().expect("radius"),
+    }
+}
+
+/// §30J: actual window files against a temporary CLI chain from the untouched
+/// source: height 9.25, left wall −5.75, Add A, its radius, Add B (shares a Line
+/// with A), the Undo state, and a branch with Add C instead of B. New UUIDs only
+/// by `pair_fillets`. A missing output is refused before any peer job.
+fn compare_gui(root: &Path) {
+    for name in WINDOW_OUTPUTS {
+        assert!(root.join(name).is_file(), "missing real GUI output: {name}");
+    }
+    let source = root.join("source/plate.fcad");
+    let original = std::fs::read(&source).expect("source");
+    let saved_bytes = std::fs::read(root.join("saved.fcad")).expect("saved");
+    assert_eq!(
+        std::fs::read(root.join("after-add.fcad")).expect("Add source"),
+        original,
+        "Add fillet wrote the user's file"
+    );
+    assert_eq!(
+        std::fs::read(root.join("after-refusal.fcad")).expect("refusal source"),
+        saved_bytes,
+        "a refusal wrote the user's file"
+    );
+    assert_eq!(
+        std::fs::read(root.join("after-saveas.fcad")).expect("previous file"),
+        saved_bytes,
+        "Save As wrote the previous file"
+    );
+    let tmp = tempfile::tempdir().expect("peer root");
+    let reading = read_extrude_source(&source).expect("reading");
+    let target = reading.fillet_bodies[0].target.clone().expect("target");
+    let body = target.body;
+    let height = tmp.path().join("height.fcad");
+    cli(&[
+        "edit-extrude".as_ref(),
+        source.as_os_str(),
+        "--feature".as_ref(),
+        target.base_feature.to_string().as_ref(),
+        "--expect-version".as_ref(),
+        reading.version.content.to_string().as_ref(),
+        "--distance-mm".as_ref(),
+        "9.25".as_ref(),
+        "-o".as_ref(),
+        height.as_os_str(),
+    ]);
+    let reading = read_extrude_source(&height).expect("height reading");
+    let mut vertices = reading
+        .sketches
+        .iter()
+        .find(|c| c.sketch == target.profile)
+        .expect("base")
+        .vertices
+        .clone()
+        .expect("vertices");
+    for p in &mut vertices {
+        if p.start_mm[0] == -4.5 {
+            p.start_mm[0] = -5.75;
+        }
+    }
+    let v = ferritecad_jobs::EditSketchRequest {
+        source: height.clone(),
+        expected: reading.version,
+        sketch: target.profile,
+        vertices,
+        destination: PathBuf::new(),
+    };
+    let base = tmp.path().join("base.fcad");
+    sketch_peer(&height, &v, tmp.path(), &base);
+    let a = tmp.path().join("a.fcad");
+    peer_add(&base, body, &fillet_of(WINDOW_A.0, WINDOW_A.1, &base), &a);
+    let radius = tmp.path().join("radius.fcad");
+    radius_peer(
+        &a,
+        &ferritecad_jobs::EditFilletRadiusRequest {
+            source: a.clone(),
+            expected: read_extrude_source(&a).expect("a").version,
+            feature: history(&a)[0].feature,
+            radius_mm: WINDOW_A_RADIUS.parse().expect("radius"),
+            destination: PathBuf::new(),
+        },
+        &radius,
+    );
+    let last = tmp.path().join("last.fcad");
+    peer_add(
+        &radius,
+        body,
+        &fillet_of(WINDOW_B.0, WINDOW_B.1, &radius),
+        &last,
+    );
+    let peer_branch = tmp.path().join("branch.fcad");
+    peer_add(
+        &radius,
+        body,
+        &fillet_of(WINDOW_C.0, WINDOW_C.1, &radius),
+        &peer_branch,
+    );
+
+    let saved_file = root.join("saved.fcad");
+    let mut map = BTreeMap::new();
+    pair_fillets(&mut map, 2, &source, &saved_file, &base, &last);
+    same_model(&saved_file, &last, &map, "saved window file");
+    let branch = root.join("branch.fcad");
+    let mut branch_map = BTreeMap::new();
+    pair_fillets(&mut branch_map, 2, &source, &branch, &base, &peer_branch);
+    same_model(&branch, &peer_branch, &branch_map, "window branch");
+    let first = history_of(&source, &saved_file)[0].to_bytes();
+    assert_eq!(
+        branch_map.get(&first),
+        map.get(&first),
+        "one session, one identity for the shared Add"
+    );
+    let actual = (
+        std::fs::read(root.join("unsaved.stl")).expect("stl"),
+        std::fs::read(root.join("unsaved.fbx")).expect("fbx"),
+    );
+    assert_eq!(
+        actual,
+        peer_bytes(&last, tmp.path(), "last-export"),
+        "unsaved STL/FBX against the CLI"
+    );
+    assert_eq!(
+        std::fs::read(root.join("undo.stl")).expect("Undo"),
+        peer_bytes(&radius, tmp.path(), "undo-export").0
+    );
+    cold(&saved_file, 38.75, 12.25, 9.25);
+    cold(&branch, 38.75, 12.25, 9.25);
+    mesh(
+        &actual.0,
+        &history(&saved_file),
+        [-5.75, 3.25, 33., 15.5],
+        9.25,
+    );
+}
+
+/// The comparator on a copy of `root` with one fact broken must refuse, for the
+/// reason `why` names.
+fn control(root: &Path, name: &str, why: &str, breaks: &dyn Fn(&Path)) {
+    let copy = tempfile::tempdir().expect("control");
+    for entry in walk(root) {
+        let to = copy.path().join(entry.strip_prefix(root).expect("inside"));
+        std::fs::create_dir_all(to.parent().expect("parent")).expect("dir");
+        std::fs::copy(&entry, &to).expect("copy");
+    }
+    breaks(copy.path());
+    // Silent: inside the gated tests any output would split the harness's
+    // `test … ... ok` line the CI gates read.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compare_gui(copy.path())));
+    std::panic::set_hook(previous);
+    let payload = outcome.expect_err(&format!("negative control {name} accepted"));
+    let refused = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default();
+    assert!(
+        refused.contains(why),
+        "control {name} refused for another reason"
+    );
+}
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut all = Vec::new();
+    for entry in std::fs::read_dir(root).expect("dir") {
+        let path = entry.expect("entry").path();
+        if path.is_dir() {
+            all.extend(walk(&path));
+        } else {
+            all.push(path);
+        }
+    }
+    all
+}
+
+/// The comparator's positive run and its seven negative controls.
+fn compare_with_controls(root: &Path) {
+    compare_gui(root);
+    let before = cli_runs();
+    control(root, "missing", "missing real GUI output: undo.stl", &|r| {
+        std::fs::remove_file(r.join("undo.stl")).expect("remove")
+    });
+    assert_eq!(
+        cli_runs(),
+        before,
+        "a peer job ran before the missing output was refused"
+    );
+    let file = |r: &Path, name: &str| std::fs::read(r.join(name)).expect(name);
+    let as_saved = |r: &Path, bytes: &[u8]| {
+        for name in ["saved.fcad", "after-refusal.fcad", "after-saveas.fcad"] {
+            std::fs::write(r.join(name), bytes).expect("write");
+        }
+    };
+    control(
+        root,
+        "original instead of Save",
+        "each Add makes one Fillet object",
+        &|r| as_saved(r, &file(r, "source/plate.fcad")),
+    );
+    control(root, "branch instead of Save", "a new ref pairs", &|r| {
+        as_saved(r, &file(r, "branch.fcad"))
+    });
+    control(root, "Save instead of branch", "a new ref pairs", &|r| {
+        std::fs::write(r.join("branch.fcad"), file(r, "saved.fcad")).expect("write")
+    });
+    control(
+        root,
+        "stale export",
+        "unsaved STL/FBX against the CLI",
+        &|r| std::fs::write(r.join("unsaved.stl"), file(r, "undo.stl")).expect("write"),
+    );
+    control(
+        root,
+        "refusal wrote the file",
+        "a refusal wrote the user's file",
+        &|r| std::fs::write(r.join("after-refusal.fcad"), file(r, "branch.fcad")).expect("write"),
+    );
+    // A new reference may map only its own UUID, never its owner. The user's file
+    // after the refusal and Save As stays that same saved file.
+    control(root, "new ref owner", "a new ref pairs", &|r| {
+        let saved = r.join("saved.fcad");
+        let source = r.join("source/plate.fcad");
+        let base = read_extrude_source(&source).expect("reading").fillet_bodies[0]
+            .target
+            .clone()
+            .expect("target")
+            .base_feature;
+        let new = refs(&saved)
+            .into_iter()
+            .find(|x| !refs(&source).iter().any(|o| o.id == x.id))
+            .expect("a new ref");
+        let db = rusqlite::Connection::open(&saved).expect("db");
+        db.execute(
+            "UPDATE topology_refs SET owner_id=?1 WHERE id=?2",
+            rusqlite::params![base.to_bytes().as_slice(), new.id.to_bytes().as_slice()],
+        )
+        .expect("wrong owner");
+        drop(db);
+        as_saved(r, &file(r, "saved.fcad"));
+    });
+}
+
+/// The window scenario run by the session's own forms and workers, its files laid
+/// out as the window leaves them, then the comparator and its controls. This is a
+/// self-check of the comparator, not window evidence.
+#[test]
+fn native_window_scenario_on_session_files_passes_the_comparator_and_its_controls() {
+    if !native() {
+        return;
+    }
+    let (root, source, opened) = fixture(0);
+    let layout = root.path().join("layout");
+    std::fs::create_dir_all(layout.join("source")).expect("layout");
+    let put = |name: &str, bytes: &[u8]| std::fs::write(layout.join(name), bytes).expect(name);
+    let original = std::fs::read(&source).expect("source");
+    put("source/plate.fcad", &original);
+    let target = opened.fillet_bodies[0].target.clone().expect("target");
+    let mut s = Sessions::default();
+    s.adopt(DocumentSession::open(&source).expect("session"));
+    apply_native(&mut s, target.base_feature, 9.25);
+    let current = s.export_path().expect("current");
+    let reading = read_extrude_source(&current).expect("reading");
+    let mut v = ferritecad_jobs::EditSketchRequest {
+        source: current,
+        expected: reading.version,
+        sketch: target.profile,
+        vertices: reading
+            .sketches
+            .iter()
+            .find(|c| c.sketch == target.profile)
+            .expect("base")
+            .vertices
+            .clone()
+            .expect("vertices"),
+        destination: PathBuf::new(),
+    };
+    for p in &mut v.vertices {
+        if p.start_mm[0] == -4.5 {
+            p.start_mm[0] = -5.75;
+        }
+    }
+    apply_sketch_native(&mut s, v);
+    let adds = |s: &mut Sessions, (at, radius): ([f64; 2], &str)| {
+        let current = s.export_path().expect("current");
+        let reading = read_extrude_source(&current).expect("reading");
+        let (mut form, r) = typed_add(&current, &reading, s, at, radius);
+        assert!(matches!(add(s, &r), Edited::Show(_)), "{}", s.status);
+        form.finish_session_change();
+    };
+    adds(&mut s, WINDOW_A);
+    let current = s.export_path().expect("A");
+    let reading = read_extrude_source(&current).expect("reading");
+    let (mut form, r) = typed_radius(
+        &current,
+        &reading,
+        &s,
+        history(&current)[0].feature,
+        WINDOW_A_RADIUS,
+    );
+    assert!(matches!(apply_radius(&mut s, &r), Edited::Show(_)));
+    form.finish_session_change();
+    adds(&mut s, WINDOW_B);
+    put("after-add.fcad", &std::fs::read(&source).expect("source"));
+    let last = s.export_path().expect("B");
+    let (stl, fbx) = export_bytes(&last, &source, root.path(), "unsaved");
+    put("unsaved.stl", &stl);
+    put("unsaved.fbx", &fbx);
+    move_native(&mut s, true);
+    let undo = export_bytes(
+        &s.export_path().expect("Undo"),
+        &source,
+        root.path(),
+        "undo",
+    )
+    .0;
+    put("undo.stl", &undo);
+    for _ in 0..4 {
+        move_native(&mut s, true);
+    }
+    assert!(!s.dirty());
+    for _ in 0..5 {
+        move_native(&mut s, false);
+    }
+    saved(&mut s, SaveTarget::InPlace);
+    put("saved.fcad", &std::fs::read(&source).expect("saved"));
+    put(
+        "after-refusal.fcad",
+        &std::fs::read(&source).expect("after refusal"),
+    );
+    move_native(&mut s, true);
+    adds(&mut s, WINDOW_C);
+    assert!(!s.can_redo());
+    let branch = root.path().join("branch.fcad");
+    saved(&mut s, SaveTarget::As(branch.clone()));
+    put("branch.fcad", &std::fs::read(&branch).expect("branch"));
+    put(
+        "after-saveas.fcad",
+        &std::fs::read(&source).expect("previous"),
+    );
+    compare_with_controls(&layout);
+}
+
+#[test]
+fn native_compare_real_add_fillet_gui_artifacts_with_negative_controls() {
+    let Some(root) = std::env::var_os("FCAD_30J_GUI_DIR") else {
+        eprintln!("skipped: requires real GUI artifacts");
+        return;
+    };
+    assert!(native());
+    compare_with_controls(Path::new(&root));
+    println!("FCAD_30J_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
+}
