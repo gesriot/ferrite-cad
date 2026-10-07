@@ -4540,6 +4540,11 @@ unsaved/branch STL/FBX, pinned ufbx, two directed mutations, a window comparator
 with seven negative controls and a real-window recipe are tracked in
 [contract](add-circular-cut-session.md) and
 [verification](add-circular-cut-session-verification.md). Add Fillet, Add Chamfer,
-the clean-only copy routes and Revolve creation remain copy-only. The real window
-recipe is the independent GUI stage. §30 and Milestone 5C remain open; no next
-slice has started.
+the clean-only copy routes and Revolve creation remain copy-only. Independent
+PR #89 review read all 24 new exact CI executions and the reader markers on three
+platforms (code 15/15, author docs 7/7). The macOS arm64 window recipe passed:
+dirty base edits, both Add routes, immediate Cut editing, draft/document history,
+refusal, unsaved exports, Save and branched Save As. Actual GUI SQL/STL/FBX matched
+CLI; strict ufbx and oriented joins passed. Viewer exited 0, peak footprint
+227.345 MiB, normal pressure and unchanged swap. The historical OOM cause remains
+unknown. §30 and Milestone 5C remain open; no next slice has started.

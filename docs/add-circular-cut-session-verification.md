@@ -218,3 +218,51 @@ log download is redirected to a host this environment does not contact, so the
 earlier test-result lines were established by step conclusion, not read verbatim.
 
 This docs-only head changes no code or workflow; its CI is reported on the PR.
+
+## Independent PR #89 review (macOS arm64, 2026-10-07)
+
+Reviewed production changes and their session, widget and comparison gates at
+`3dccb1210949faf421e17a21c20b5b28182ec21c` (code/workflow `ec0e9fd`). No production
+correction was needed. Full GitHub logs, obtained independently, close the cloud
+log-access limitation above: all **24 new exact result lines** were read (12
+widget/stub, nine native and three mixed), without skips, and the Add-cut strict
+reader marker was present on each of the three platforms. Code CI was **15/15**;
+the author's final docs head was **7/7**. These are distinct from this review's
+docs-only commit and from future merge CI.
+
+Local checks: fmt, workspace clippy with all targets/features and `-D warnings`,
+fresh release CLI/viewer, **17/17** `cuts::` tests, and the existing packed native
+DocumentSession step with **27 exact gates**, all passed without skips. Existing
+pinned OCCT and PlaneGCS libraries and the target were reused; no kernel rebuild
+or full heavy STEP campaign was needed.
+
+The window recipe above was performed through the fresh arm64 bundle. The six-Line
+profile first received unsaved height 15.25 and left-wall X −3.75. The first Add
+used Confirm draft numbers → draft Undo → draft Redo; the second Add read the
+unconfirmed ThroughAll fields. Neither opened a save dialog. The new Cut was
+immediately editable, and its X/radius edit exported before Save. Five document
+Undos returned to the clean source; five Redos restored the accepted state, then
+Save wrote it. After another Undo, the duplicate disk was visibly refused by
+preflight with the existing Cut UUID, its fields preserved and Add disabled;
+this was not presented as a worker failure. Cancel kept Redo. A different Add
+discarded Redo, and Save As produced a clean `branch.fcad` while keeping the old
+file. Dirty-copy refusal text and the disabled copy button were also observed.
+
+All eight required files came from that window run or byte copies of its logical
+file at the specified checkpoints. The real comparator passed:
+`FCAD_30I_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true`. The source before
+Save, the saved file across refusal/Save As, every compared SQL cell, and both
+unsaved exports matched the CLI contract. The missing-output Python guard was
+also executed before the window run and refused before building a peer. Pinned
+ufbx 0.23.0 read the actual GUI FBX and both native artifacts: **6 checks / 0
+failures each**. Oriented STL/FBX joins passed for **884, 884 and 1036 triangles**,
+worst deviation `1.39e-17 m`.
+
+One owned viewer, PID 96301, exited **0** through Quit. Watchdog limit 1536 MiB,
+duration 1200 s; actual duration 1064.5 s, peak footprint **227.345 MiB**, pressure
+normal (`1`) throughout, swap unchanged at 1679294464 bytes, minimum free disk
+137.5 GiB. No viewer AX query was made after Quit. Evidence is local under
+`/private/tmp/ferrite-pr89-review/` (watch log/summary, full CI logs/audit,
+native/cuts logs, GUI inputs and outputs, comparator and reader transcripts).
+This is a macOS window check, not Windows/Linux GUI or an explanation of the
+historical OOM. §30 and milestone 5C remain open.
