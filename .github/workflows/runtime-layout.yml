@@ -830,6 +830,10 @@ jobs:
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-add-cut-mixed.log
           if grep -q 'skipped:' session-add-cut-mixed.log || ! grep -Fq "test $gate ... ok" session-add-cut-mixed.log; then exit 1; fi
+          gate=sessions::tests::add_fillet::mixed_add_fillet_uses_occt_without_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-add-fillet-mixed.log
+          if grep -q 'skipped:' session-add-fillet-mixed.log || ! grep -Fq "test $gate ... ok" session-add-fillet-mixed.log; then exit 1; fi
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
@@ -1112,6 +1116,27 @@ jobs:
             test -s "$add_cut_dir/$name.stl"
           done
           echo "FCAD_ADD_CUT_SESSION_FBX_DIR=$add_cut_artifacts" >> "$GITHUB_ENV"
+
+          add_fillet_dir="$RUNNER_TEMP/add-fillet-session"
+          mkdir -p "$add_fillet_dir"
+          add_fillet_artifacts="$add_fillet_dir"
+          case '${{ matrix.name }}' in
+            windows) add_fillet_artifacts="$(cygpath -w "$add_fillet_artifacts")" ;;
+          esac
+          export FCAD_ADD_FILLET_SESSION_ARTIFACTS="$add_fillet_artifacts"
+          for gate in sessions::tests::add_fillet::native_dirty_base_four_adds_radius_edit_history_save_branch_match_cli \
+            sessions::tests::add_fillet::native_add_on_unsaved_constraints_is_measured_on_solved_lines \
+            sessions::tests::add_fillet::native_window_scenario_on_session_files_passes_the_comparator_and_its_controls
+          do
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-add-fillet-native.log
+            if grep -q 'skipped:' session-add-fillet-native.log || ! grep -Fq "test $gate ... ok" session-add-fillet-native.log; then exit 1; fi
+          done
+          for name in add-fillet-history add-fillet-history-branch; do
+            test -s "$add_fillet_dir/$name.fbx"
+            test -s "$add_fillet_dir/$name.stl"
+          done
+          echo "FCAD_ADD_FILLET_SESSION_FBX_DIR=$add_fillet_artifacts" >> "$GITHUB_ENV"
 
           fillet_dir="$RUNNER_TEMP/fillet-session"
           mkdir -p "$fillet_dir"
@@ -2797,6 +2822,7 @@ jobs:
           grep -q '^FCAD_ANGLE_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CUT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ADD_CUT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_ADD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 

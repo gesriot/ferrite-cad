@@ -13,7 +13,7 @@ use ferritecad_document::{
 use ferritecad_jobs::{CircularCutRequest, EditCircularCutRequest};
 use std::collections::BTreeMap;
 
-type Id = [u8; 16];
+pub(super) type Id = [u8; 16];
 
 fn start(s: &mut Sessions, r: &CircularCutRequest) -> (u64, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
@@ -220,7 +220,7 @@ pub(super) fn sql_mapped(path: &Path, map: &BTreeMap<Id, Id>) -> BTreeMap<String
         .collect()
 }
 
-fn ids(path: &Path) -> Vec<(ObjectId, ObjectPayload)> {
+pub(super) fn ids(path: &Path) -> Vec<(ObjectId, ObjectPayload)> {
     Document::open_read_only(path)
         .expect("document")
         .objects()
@@ -283,7 +283,20 @@ fn pair_new(
             assert!(map.insert(u.id.to_bytes(), v.id.to_bytes()).is_none());
         }
     }
-    // New references: equal in every cell but their own id once mapped.
+    pair_refs(map, &earlier, before, ours, theirs_before, theirs);
+}
+
+/// New references of `ours` (after `before`) paired with those of `theirs` (after
+/// `theirs_before`): equal in every cell but their own id once the new objects in
+/// `map` are mapped. Then checks that no old identity entered `map` after `earlier`.
+pub(super) fn pair_refs(
+    map: &mut BTreeMap<Id, Id>,
+    earlier: &[Id],
+    before: &Path,
+    ours: &Path,
+    theirs_before: &Path,
+    theirs: &Path,
+) {
     let row_of = |path: &Path, map: &BTreeMap<Id, Id>| -> BTreeMap<Id, String> {
         let db =
             rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -341,7 +354,7 @@ fn pair_new(
     }
 }
 
-fn same_model(ours: &Path, theirs: &Path, map: &BTreeMap<Id, Id>, why: &str) {
+pub(super) fn same_model(ours: &Path, theirs: &Path, map: &BTreeMap<Id, Id>, why: &str) {
     assert_eq!(
         sql_mapped(ours, map),
         sql_mapped(theirs, &BTreeMap::new()),

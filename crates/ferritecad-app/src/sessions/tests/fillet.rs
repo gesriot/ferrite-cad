@@ -22,7 +22,7 @@ fn start(
         .expect("start");
     (g, rx)
 }
-fn apply(s: &mut Sessions, r: &EditFilletRadiusRequest) -> Edited {
+pub(super) fn apply(s: &mut Sessions, r: &EditFilletRadiusRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(g, rx.recv().expect("answer"));
     if let Edited::Show(path) = &edited {
@@ -48,7 +48,7 @@ fn request(s: &Sessions, index: usize, radius_mm: f64) -> EditFilletRadiusReques
         destination: PathBuf::new(),
     }
 }
-fn peer(source: &Path, r: &EditFilletRadiusRequest, out: &Path) {
+pub(super) fn peer(source: &Path, r: &EditFilletRadiusRequest, out: &Path) {
     let file = out.with_extension("json");
     std::fs::write(
         &file,
@@ -145,13 +145,13 @@ fn refuse(s: &mut Sessions, r: &EditFilletRadiusRequest) -> String {
     assert_eq!(state(s), before);
     s.status.clone()
 }
-fn history(path: &Path) -> Vec<SavedFillet> {
+pub(super) fn history(path: &Path) -> Vec<SavedFillet> {
     let reading = read_extrude_source(path).expect("reading");
     (0..reading.fillet_features.len())
         .map(|i| selected(&reading, i))
         .collect()
 }
-fn cold(path: &Path, width: f64, depth: f64, height: f64) -> f64 {
+pub(super) fn cold(path: &Path, width: f64, depth: f64, height: f64) -> f64 {
     let d = Document::open_read_only(path).expect("document");
     let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
     let ctx = OperationContext::default();
@@ -204,7 +204,7 @@ fn cold(path: &Path, width: f64, depth: f64, height: f64) -> f64 {
     }
     exact
 }
-fn mesh(stl: &[u8], fillets: &[SavedFillet], bounds: [f64; 4], height: f64) -> f64 {
+pub(super) fn mesh(stl: &[u8], fillets: &[SavedFillet], bounds: [f64; 4], height: f64) -> f64 {
     let [x0, y0, x1, y1] = bounds;
     let n = u32::from_le_bytes(stl[80..84].try_into().expect("count")) as usize;
     assert_eq!(stl.len(), 84 + 50 * n);

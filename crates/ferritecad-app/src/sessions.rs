@@ -785,7 +785,29 @@ pub(crate) fn spawn_add_cut(
     )
 }
 
-/// The existing Fillet radius edit on its kernel-owning worker; no Add route.
+/// §30J: a new Fillet on the kernel-owning worker. `expected` is the version the
+/// Add form was opened on; the Body is its saved UUID.
+pub(crate) fn spawn_add_fillet(
+    ticket: StepTicket,
+    body: ObjectId,
+    fillet: ferritecad_document::EdgeFillet,
+    expected: ferritecad_document::DocumentVersion,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ticket.add_edge_fillet(body, fillet, expected, &mut kernel, &context)
+        },
+        deliver,
+        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
+    )
+}
+
+/// The existing Fillet radius edit on its kernel-owning worker (§30G); the Add
+/// form has its own worker (`spawn_add_fillet`).
 pub(crate) fn spawn_apply_fillet_radius(
     ticket: StepTicket,
     feature: ObjectId,
@@ -898,6 +920,7 @@ pub(crate) fn open_for_view(
 mod tests {
     use super::*;
     mod add_cut;
+    mod add_fillet;
     mod analytic;
     mod angle;
     mod chamfer;
@@ -1827,7 +1850,16 @@ mod tests {
         false
     }
 
+    std::thread_local! {
+        /// Peer CLI processes started on this test's thread (§30J: a refused
+        /// window comparison must start none).
+        static CLI_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    fn cli_runs() -> usize {
+        CLI_RUNS.with(|n| n.get())
+    }
     fn cli(arguments: &[&std::ffi::OsStr]) -> std::process::Output {
+        CLI_RUNS.with(|n| n.set(n.get() + 1));
         let output = std::process::Command::new(crate::creates::tests::ferritecad())
             .args(arguments)
             .output()
