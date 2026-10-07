@@ -834,6 +834,10 @@ jobs:
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-add-fillet-mixed.log
           if grep -q 'skipped:' session-add-fillet-mixed.log || ! grep -Fq "test $gate ... ok" session-add-fillet-mixed.log; then exit 1; fi
+          gate=sessions::tests::add_chamfer::mixed_add_chamfer_uses_occt_without_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-add-chamfer-mixed.log
+          if grep -q 'skipped:' session-add-chamfer-mixed.log || ! grep -Fq "test $gate ... ok" session-add-chamfer-mixed.log; then exit 1; fi
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
@@ -1137,6 +1141,28 @@ jobs:
             test -s "$add_fillet_dir/$name.stl"
           done
           echo "FCAD_ADD_FILLET_SESSION_FBX_DIR=$add_fillet_artifacts" >> "$GITHUB_ENV"
+
+          add_chamfer_dir="$RUNNER_TEMP/add-chamfer-session"
+          mkdir -p "$add_chamfer_dir"
+          add_chamfer_artifacts="$add_chamfer_dir"
+          case '${{ matrix.name }}' in
+            windows) add_chamfer_artifacts="$(cygpath -w "$add_chamfer_artifacts")" ;;
+          esac
+          export FCAD_ADD_CHAMFER_SESSION_ARTIFACTS="$add_chamfer_artifacts"
+          for gate in sessions::tests::add_chamfer::native_dirty_base_add_distance_history_save_bound_and_branch_match_cli \
+            sessions::tests::add_chamfer::native_every_corner_adds_its_own_plane_like_the_cli \
+            sessions::tests::add_chamfer::native_constraints_close_add_but_constraints_and_distance_after_add_still_apply \
+            sessions::tests::add_chamfer::native_window_scenario_on_session_files_passes_the_comparator_and_its_controls
+          do
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-add-chamfer-native.log
+            if grep -q 'skipped:' session-add-chamfer-native.log || ! grep -Fq "test $gate ... ok" session-add-chamfer-native.log; then exit 1; fi
+          done
+          for name in add-chamfer-history add-chamfer-history-branch; do
+            test -s "$add_chamfer_dir/$name.fbx"
+            test -s "$add_chamfer_dir/$name.stl"
+          done
+          echo "FCAD_ADD_CHAMFER_SESSION_FBX_DIR=$add_chamfer_artifacts" >> "$GITHUB_ENV"
 
           fillet_dir="$RUNNER_TEMP/fillet-session"
           mkdir -p "$fillet_dir"
@@ -2823,6 +2849,7 @@ jobs:
           grep -q '^FCAD_CUT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ADD_CUT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ADD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_ADD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 

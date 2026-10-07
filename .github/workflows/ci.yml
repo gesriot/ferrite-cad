@@ -828,6 +828,10 @@ jobs:
             fillets::tests::add_session::add_fillet_busy_guard_proves_idle_request_then_excludes_other_work_and_forms \
             fillets::tests::add_session::add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plate \
             sessions::tests::add_fillet::stub_add_fillet_refuses_without_publication \
+            chamfers::tests::add_session::add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_clean_only \
+            chamfers::tests::add_session::add_chamfer_busy_guard_proves_idle_request_then_excludes_other_work_and_forms \
+            chamfers::tests::add_session::add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_classes \
+            sessions::tests::add_chamfer::stub_add_chamfer_refuses_without_publication \
             fillets::tests::session_apply::radius_current_text_confirmation_noop_clean_copy_and_add_exclusion \
             fillets::tests::session_apply::radius_busy_guard_proves_changed_idle_request_and_excludes_other_work \
             fillets::tests::session_apply::radius_dirty_discovery_refusal_retains_text_and_acceptance_closes_form \
