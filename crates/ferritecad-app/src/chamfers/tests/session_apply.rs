@@ -210,7 +210,11 @@ fn distance_current_text_draft_history_noop_clean_copy_and_add_exclusion() {
     }
     let out = frame(&ctx, &mut c.sketch.chamfers, false);
     assert!(!painted(&out, "Apply distance"));
-    assert!(painted(&out, "Apply chamfer"));
+    assert!(painted(&out, "Confirm draft edge and distance"));
+    assert!(
+        painted(&out, "Add chamfer"),
+        "§30K: the Add form has its own Add"
+    );
 }
 
 /// The predicate first offers a changed idle request, then refuses it while
@@ -410,11 +414,12 @@ fn distance_dirty_discovery_copy_reason_refusal_retains_text_and_acceptance_clos
             );
         }
     };
-    // Add Chamfer stays shut while dirty, even where a plate offers one and
-    // the window's gate were open.
+    // §30K: Add Chamfer adds into the open document, so it opens while dirty when
+    // the session is idle (it was shut here before §30K).
     let (_plain_root, plain, plain_reading) = crate::fillets::tests::plate();
     press(&mut c, &plain_reading, &plain, true, "Chamfer edge of");
-    assert!(!c.sketch.chamfers.active(), "Add opened while dirty");
+    assert!(c.sketch.chamfers.adding(), "Add opens while dirty and idle");
+    c.sketch.chamfers.dismiss();
     // The existing Chamfer's form opens though the copy workflows' gate is shut.
     press(
         &mut c,

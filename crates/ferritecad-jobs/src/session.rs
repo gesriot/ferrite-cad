@@ -43,12 +43,13 @@ use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
 use crate::edit::{
-    CircularCutRequest, EdgeFilletRequest, EditAnnulusRequest, EditChamferDistanceRequest,
-    EditCircleRequest, EditCircularCutRequest, EditExtrudeRequest, EditFilletRadiusRequest,
-    EditRevolveAngleRequest, EditSketchConstraintsRequest, EditSketchRequest, circular_cut_copy,
-    edit_annulus_copy, edit_chamfer_distance_copy, edit_circle_copy, edit_circular_cut_copy,
-    edit_extrude_copy, edit_fillet_radius_copy, edit_revolve_angle_copy,
-    edit_sketch_constraints_copy, edit_sketch_copy, fillet_edge_copy,
+    CircularCutRequest, EdgeChamferRequest, EdgeFilletRequest, EditAnnulusRequest,
+    EditChamferDistanceRequest, EditCircleRequest, EditCircularCutRequest, EditExtrudeRequest,
+    EditFilletRadiusRequest, EditRevolveAngleRequest, EditSketchConstraintsRequest,
+    EditSketchRequest, chamfer_edge_copy, circular_cut_copy, edit_annulus_copy,
+    edit_chamfer_distance_copy, edit_circle_copy, edit_circular_cut_copy, edit_extrude_copy,
+    edit_fillet_radius_copy, edit_revolve_angle_copy, edit_sketch_constraints_copy,
+    edit_sketch_copy, fillet_edge_copy,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
 
@@ -773,6 +774,37 @@ impl StepTicket {
                     expected,
                     feature,
                     radius_mm,
+                    destination: destination.to_path_buf(),
+                },
+                kernel,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// §30K: adds one Chamfer to the Body named by its saved UUID, at the corner
+    /// named by the base feature and its two Line UUIDs, using the current accepted
+    /// snapshot and the CLI's existing `chamfer_edge_copy`. Its class (free or
+    /// closure-only plate, no other edge feature) is the domain's, unchanged. The
+    /// feature and its references get their UUIDs here, in the produced version
+    /// only; Undo/Redo move between accepted files and never run the job again.
+    pub fn add_edge_chamfer<K: GeometryKernel + ?Sized>(
+        self,
+        body: ObjectId,
+        chamfer: ferritecad_document::EdgeChamfer,
+        expected: DocumentVersion,
+        kernel: &mut K,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        self.check_form_version(expected)?;
+        self.run(|source, expected, destination| {
+            chamfer_edge_copy(
+                &EdgeChamferRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    body,
+                    chamfer,
                     destination: destination.to_path_buf(),
                 },
                 kernel,
