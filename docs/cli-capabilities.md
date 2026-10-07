@@ -447,6 +447,13 @@ capability по прежней политике) и штамп. Новой ко�
 `cut-circular-copy` на том же снимке даёт тот же результат во всех ячейках SQL,
 кроме `meta.modified_at` и доказанного соответствия новых UUID.
 
+§30J: CLI не меняется. Форма `Fillet edge of … — UUID…` получает кнопку
+**Add fillet**, которая добавляет новый Fillet в открытый документ шагом общей
+истории через тот же `fillet_edge_copy` ([контракт](add-fillet-session.md));
+бывшая кнопка *Apply fillet* называется **Confirm draft edge and radius** и готовит
+только копию. `fillet-edge-copy` на том же снимке даёт тот же результат во всех
+ячейках SQL, кроме `meta.modified_at` и доказанного соответствия новых UUID.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

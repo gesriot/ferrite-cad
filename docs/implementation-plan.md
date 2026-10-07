@@ -4548,3 +4548,25 @@ refusal, unsaved exports, Save and branched Save As. Actual GUI SQL/STL/FBX matc
 CLI; strict ufbx and oriented joins passed. Viewer exited 0, peak footprint
 227.345 MiB, normal pressure and unchanged swap. The historical OOM cause remains
 unknown. §30 and Milestone 5C remain open; no next slice has started.
+
+**§30J — add a Fillet inside the open document.** On the Fillet Add form, **Add
+fillet** reads the current corner (base Extrude + Line UUIDs) and valid radius and adds
+the Fillet to the open document through `StepTicket::add_edge_fillet` and its worker,
+reusing `fillet_edge_copy`, `EdgeFilletRequest`, the writer, evaluator, lease, cleanup
+and two-phase acceptance. The source is the accepted snapshot and the Body its saved
+UUID. The former *Apply fillet* is **Confirm draft edge and radius** and only prepares
+the clean copy; a dirty Fillet copy is refused in words before the dialog. One
+production predicate `can_add_fillet` guards button and handler. One accepted Add is
+one document step; new UUIDs come only from the operation and Redo restores them
+without a job; the new Fillet is at once offered by Edit Fillet radius (§30G). The
+class (axis-aligned four-Line rectangle, 0–4 Fillets on distinct corners, bounds,
+solved-geometry evaluator on a constrained base) is unchanged. Widget, native, stub,
+mixed and constrained gates, all-cell SQL/CLI comparison under a proved bijection of
+new identities only, Undo/Redo without remap, byte-equal unsaved/branch STL/FBX,
+per-corner geometry, pinned ufbx, two directed mutations, a window comparator with
+seven negative controls and a real-window recipe are tracked in
+[contract](add-fillet-session.md) and [verification](add-fillet-session-verification.md).
+Add Chamfer, the clean-only copy routes and Revolve creation remain copy-only. The real
+window recipe is the independent GUI stage. §30 and Milestone 5C remain open; no next
+slice has started.
+

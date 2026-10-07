@@ -101,8 +101,10 @@ corners. The copy's Body ends in a named Fillet whose rounded
 face is a real cylinder. Its radius can then be changed with **Edit Fillet radius** / **Apply radius**
 inside the open document, including after unsaved base changes. Document Undo/Redo,
 unsaved exports and Save/Save As share the existing session. **Confirm draft number**
-serves only the clean-copy workflow; Add Fillet remains copy-only.
-[Session contract](docs/fillet-radius-session-apply.md).
+serves only the clean-copy workflow. [Session contract](docs/fillet-radius-session-apply.md).
+**Add fillet** adds a new Fillet inside the open document in the same way, including after
+unsaved base changes; **Confirm draft edge and radius** only prepares the clean Fillet copy.
+[Add Fillet session contract](docs/add-fillet-session.md).
 `edit-fillet-radius` still publishes a new copy: the same Fillet on the same
 edge, with every name kept. The plate's height can be changed under it with
 the ordinary **Edit extrusion** form or `edit-extrude`; the Fillet keeps its
