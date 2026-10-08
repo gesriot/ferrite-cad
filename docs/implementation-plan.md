@@ -4691,7 +4691,13 @@ operation slot, workers off the event loop. CLI: `list-checkpoints`, `extract-ch
 the list. [Contract](named-document-checkpoints.md),
 [verification and the macOS recipe](named-document-checkpoints-verification.md),
 [decision](decisions/0005-document-session.md#30n-named-checkpoints-inside-the-document).
-No real window was run for this slice by its author.
+No real window was run by the author. Independent review corrected output cleanup
+ownership, stale prepared-image validation, metadata-only Undo/Redo rebuilding,
+and intact-checkpoint restore beside a damaged image; added mandatory regressions.
+The real macOS recipe then passed with Save/Save As, Restore/Undo/Redo and Delete/Undo;
+all-SQL comparison, byte-equal CLI/STL/FBX and four negative controls passed. Viewer
+peak 315.048 MiB, normal pressure, unchanged swap, exit 0. See the verification record
+for exact-head CI and limits.
 
 *What remains of §30 after §30N:* tabs; branching, automatic or persisted-Undo revisions
 (not in scope: named checkpoints of the model only); recovery of Undo history and of

@@ -10,7 +10,8 @@ Contract: [named-document-checkpoints.md](named-document-checkpoints.md). Decisi
 `c8b088ebabab56ac3ff81a42d128c84bfe3a3bfa`. Reviewed code head `956317f` CI: success.
 Post-merge CI on `e8ab0e3` when this slice started: CI, planegcs pin, rust notices, rust
 sbom, product sbom succeeded; *combined runtime layout* was still in progress, with no
-completed failure. Branch `named-document-checkpoints`, local and uncommitted.
+completed failure. This was the author's initial handoff; the independent review
+below records publication and the completed window check.
 
 ## What was found before the change
 
@@ -222,12 +223,12 @@ Both compiled, failed executed assertions, and were restored byte for byte (SHA-
   (`left: NoChange, right: Accepted`) and five app gates (`not a catalog-only step:
   NoChange`, `matches!(edited, Edited::Keep(_))`) failed.
 
-## Not executed, limits
+## Author handoff limits
 
-* The real window recipe above (left to the independent macOS review); no window
-  output exists and the comparator has never been run on one. It deliberately has no
-  self-check that fabricates window outputs.
-* Windows and Linux: only through CI, which does not exist yet for this diff.
+* The author did not run the real window recipe. The independent review below
+  subsequently ran it on genuine window outputs.
+* Windows and Linux: the author did not run them locally; remote CI is recorded
+  separately below.
 * Old builds reading v4 files are refused by design; not exercised against an old
   binary here beyond the schema rule's own test.
 * Power-loss durability: not claimed (publication is the existing no-clobber link;
@@ -242,7 +243,7 @@ Changed: `.github/workflows/ci.yml`, `.github/workflows/runtime-layout.yml`, `RE
 
 New: `crates/ferritecad-app/src/checkpoints.rs`, `crates/ferritecad-app/src/sessions/tests/checkpoints.rs`, `crates/ferritecad-cli/src/checkpoint.rs`, `crates/ferritecad-cli/src/json/checkpoint.rs`, `crates/ferritecad-cli/tests/checkpoints.rs`, `crates/ferritecad-document/src/document/checkpoint.rs`, `crates/ferritecad-document/tests/checkpoints.rs`, `crates/ferritecad-jobs/src/checkpoint.rs`, `crates/ferritecad-jobs/tests/checkpoints.rs`, `crates/ferritecad-ui/src/checkpoint.rs`, `docs/named-document-checkpoints-verification.md`, `docs/named-document-checkpoints.md`, `tools/named-document-checkpoints-gui.py`
 
-## Independent review (2026-10-08, in progress)
+## Independent review (2026-10-08)
 
 The base merge now has six successful workflows, including runtime 37842033936.
 Review found and corrected:
@@ -265,4 +266,59 @@ Review found and corrected:
   including a catalogue inserted outside the product writer.
 
 The three new storage regressions are mandatory exact-name gates on all CI OSes.
-Window evidence and remote CI follow below when completed.
+The first real-window comparison also found a mistake in the comparator: it
+counted every feature-catalogue row as a Cut, although the NewBody row carries a
+local refusal. It now counts typed saved Cut entries, asserts the chosen centre,
+radius and ThroughAll intent, and independently reads both extracted models' STL
+height/volume. The real artifacts were not edited or regenerated to make it pass.
+
+### Local review evidence
+
+Runtime code is `b04a53b9d36a12b63ed682f0497abfb4025e3277`; the follow-up changes only
+the GUI comparator and this record/plan. Reused native OCCT/PlaneGCS and the release
+target; no vendor rebuild. Local logs: `/private/tmp/ferrite-30n-review/`.
+
+* Fresh release CLI/viewer build; checkpoint suites: document 9, jobs 5, CLI 2.
+* App checkpoint suite: 9 harness passes, comprising four kernel-free tests, two
+  native gates and three inactive environment-specific guards (mixed, stub, window
+  comparator). Those three are not native evidence. The native markers report
+  volumes 38400.000 and 62431.253 mm³ and successful stored STEP recovery.
+* Session suite: 98 harness passes, one previously ignored test. Environment-specific
+  N/A branches are not counted as additional geometry executions.
+* Workspace clippy (all targets/features, `-D warnings`), fmt, licence headers,
+  export boundary, actionlint and whitespace checks passed. After the comparator
+  correction, its exact test and fmt/clippy were repeated.
+
+### Real macOS window
+
+One fresh arm64 bundle from the reviewed runtime code, one viewer PID 31512, owned
+by `tools/watch-viewer-memory.py` (1536 MiB, 1200 s). The actual artifacts and memory
+log are in `/private/tmp/ferrite-30n-window-review/`. The input generator made only
+inputs; all four outputs were made by the window.
+
+Observed: empty name refused; Create A; Apply height 20; Add ThroughAll Cut at
+(40,20), r5; Create B; open form disables checkpoint actions with a reason; Restore A
+keeps both entries and removes the hole; actual STL/FBX Save dialogs; Undo returns
+B's hole, Redo returns A; Delete B → Cancel leaves it, Delete → Undo brings it back;
+Save clears dirty; Open v3 file; Create `old`; Save As `old-saved.fcad`; Quit.
+An initial incorrect name caused by the macOS input layout was undone before the
+scenario; the user switched to English and the exact names were observed.
+
+The comparator ran against these unchanged window files:
+`FCAD_30N_GUI_COMPARE_OK negative_controls=4 all_SQL_cells=true` (1 test executed,
+0 failures). It verified all model SQL cells, both catalogue entries, the original
+v3 file byte-for-byte, the v4 Save As result, removal of recovery records, and
+byte-identical CLI/STL/FBX exports. Four controls on private copies were rejected
+for their specified reasons: missing export, unsaved plate, overwritten v3 source,
+and B's STL substituted for restored A. Pinned ufbx 0.23.0 strict independently read
+the actual restored FBX: 12 triangles, 6 checks, 0 failures.
+
+Watchdog: peak footprint **315.048 MiB**, pressure always 1 (normal), swap unchanged
+at **1034.0625 MiB**, exit **0** after 954.9 s, no abort. The PID was verified gone
+without querying CUA again (which can relaunch the app). No Windows/Linux window,
+Unity or power-loss claim; the historical OOM cause remains unknown.
+
+### Remote CI
+
+PR #94 contains the independent fixes. Exact-head CI is recorded here after it
+completes; local results above are not substitutes for the remote matrix.

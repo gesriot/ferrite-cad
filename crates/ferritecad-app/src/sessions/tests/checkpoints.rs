@@ -831,7 +831,17 @@ fn compare_gui(root: &Path) {
         Some(20.0),
         "checkpoint B height"
     );
-    assert_eq!(b_reading.cut_features.len(), 1, "checkpoint B has one Cut");
+    // The catalogue has a row for every feature, including the NewBody base
+    // with a local refusal; only a saved circular-cut row names a Cut.
+    let cuts: Vec<_> = b_reading
+        .cut_features
+        .iter()
+        .filter_map(|row| row.saved.as_ref())
+        .collect();
+    assert_eq!(cuts.len(), 1, "checkpoint B has one Cut");
+    assert_eq!(cuts[0].center_mm, [40.0, 20.0]);
+    assert_eq!(cuts[0].radius_mm, 5.0);
+    assert_eq!(cuts[0].extent, CutExtent::ThroughAll);
     assert!(
         ids_and_refs(&cli_b).0.len() > ids_and_refs(&cli_a).0.len(),
         "B adds the Cut's objects"
@@ -846,6 +856,14 @@ fn compare_gui(root: &Path) {
     let (stl, fbx) = peer_bytes(&cli_a, work.path(), "a");
     assert!(read("restored.stl") == stl, "restored STL against the CLI");
     assert!(read("restored.fbx") == fbx, "restored FBX against the CLI");
+    let (b_stl, _) = peer_bytes(&cli_b, work.path(), "b");
+    let (a_triangles, a_height, a_volume) = stl_facts(&stl);
+    let (b_triangles, b_height, b_volume) = stl_facts(&b_stl);
+    assert!((a_height - 12.0).abs() < 1e-4 && (b_height - 20.0).abs() < 1e-4);
+    assert!((a_volume - 80.0 * 40.0 * 12.0).abs() < 1e-2);
+    let hole = std::f64::consts::PI * 25.0 * 20.0;
+    assert!((b_volume - (80.0 * 40.0 * 20.0 - hole)).abs() < 0.05 * hole);
+    assert!(b_triangles > a_triangles, "checkpoint B's hole adds faces");
 
     // The old v3 file: read as it was, saved elsewhere as v4 with its checkpoint.
     let old_saved = root.join("old-saved.fcad");
