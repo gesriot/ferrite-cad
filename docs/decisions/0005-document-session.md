@@ -116,8 +116,9 @@ not claimed to be closed.
 
 ## Not in this slice
 
-Autosave and crash recovery (a crashed process leaves its private directory in the
-system temporary directory; nothing reopens it), persistent revisions, multiple
+Autosave and crash recovery (until §30M a crashed process left its private
+directory in the system temporary directory and nothing reopened it; §30M below
+recovers the last published copy of the accepted model), persistent revisions, multiple
 documents or tabs, a feature tree and inspector, the other editors joining the
 session. AppKit Quit now enters the same guarded event-loop route as window
 close. Milestone 5C and the general beta are not complete.
@@ -196,3 +197,77 @@ a file before they have a model. The decision:
   and exit codes. Copy workflows keep requiring a saved, clean document and say so.
 
 Contract and checks: [../unnamed-document-session.md](../unnamed-document-session.md).
+
+## §30M: the last published crash copy of the accepted model
+
+**Decided before implementation.** Until §30M a crashed viewer left its private
+directory in the system temporary directory and nothing ever read it again. The
+decision:
+
+* **Where.** A per-user recovery folder outside the system temporary directory and
+  outside any checkout: `~/Library/Application Support/FerriteCAD/Recovery` on macOS,
+  `$XDG_STATE_HOME/ferritecad/recovery` (default `~/.local/state/ferritecad/recovery`)
+  on Linux and other Unix, `%LOCALAPPDATA%\FerriteCAD\Recovery` on Windows.
+  `FERRITECAD_RECOVERY_DIR` names another folder explicitly (tests, the macOS recipe);
+  the CLI also takes `--recovery-dir`. Created `0700`. Only entries named
+  `r-<uuid>` holding a FerriteCAD lease header are ever read or removed; nothing else
+  in that folder, and no temporary, session or cache directory anywhere, is scanned or
+  cleaned.
+* **What is recorded.** Exactly the session's *current accepted* version, and only
+  while `is_dirty()`: after Open, New, Apply/Add, Undo/Redo and recovery have made a
+  version current (the moment its picture is shown), never a produced, stale,
+  cancelled or unshowable candidate and never form text. A clean document (a clean
+  Open, Undo back to the saved version, after a published Save) has no copy.
+* **One owner, one mechanism.** `ferritecad_jobs::recovery` owns the folder: a store
+  (list, claim, create, delete), a record (one session's copy, held under a lease), a
+  claim (an orphaned record, validated and held under its lease) and a recorder (one
+  worker thread per process that copies on behalf of the window). The window calls the
+  recorder at the one place the session changes hands (`Sessions` after an accepted
+  picture, a published save and a replacement); no editor has its own hook. The copy is
+  the SQLite online backup the session already uses (`Document::snapshot_to`); there is
+  no second serializer, evaluator or copier. The CLI lists and extracts through the
+  same claim.
+* **Write and its guarantee.** Copy to a partial name, `fsync`, verify (document id,
+  complete content version, model version; length and BLAKE3 of the bytes), rename to
+  `c<n>.fcad`, `fsync` the directory, write the manifest the same way (partial,
+  `fsync`, rename, directory `fsync`), then remove the previous copy. A process crash
+  at any point leaves the previous complete copy or the new one, never a partial one;
+  partial names are never read. What is recovered is the **last fully published copy**:
+  edits accepted after it was published can be lost. Durability across power loss
+  depends on the OS and disk honouring `fsync` and is not claimed (a killed process is
+  not a power cut; macOS `fsync` does not flush the drive cache).
+* **Order.** The recorder numbers every request; its single worker drops superseded
+  requests, a record refuses an older number than it has written, and once a
+  session's record has been retired no later request for that session can write it
+  again (a late answer cannot resurrect a discarded model).
+* **Ownership.** The record's owner holds an exclusive advisory lock on its `lease`
+  file (`File::try_lock`, the primitive Save's lock uses) for the whole life of the
+  record; the operating system releases it when the process ends in any way. A lease
+  that can be locked and carries the header is an orphan; one that cannot is a live
+  viewer's and is neither offered nor touched. No PID, host or age is consulted. A
+  claim keeps holding the lease, so two processes cannot restore or extract one
+  record at once. A filesystem without advisory locks refuses recovery rather than
+  guess.
+* **Recovery.** A claim is restored into a new **untitled** `DocumentSession`
+  (`recover_in`): no logical path, no checkpoint, every UUID, SQL row and reference
+  as recorded, named `<name> (recovered)` — a name, never a path. Its first Save is the
+  existing no-clobber Save As; the original file is never written by recovery. The
+  picture is prepared and the session accepted through the same `Bind::Open` as Open;
+  a dirty open document is guarded by Save/Discard/Cancel first. A refused claim, a
+  failed restore or picture keeps the record and the current document. On acceptance
+  the claimed record *becomes* the new session's record (same bytes, same lease), so
+  nothing is deleted at the press of a button and nothing is duplicated.
+* **End of life.** A published Save empties the record; Discard retires it when the
+  replacement is accepted (Cancel, a failed Save or a failed replacement keeps it);
+  Quit after the guard retires it. An exit nobody chose (the window could not draw)
+  keeps it. A crash before a retirement is processed leaves the older copy listed —
+  the safe direction.
+* **Limits.** One copy per record. At most 32 records in the folder: at the limit a new
+  record is not created and the window says so; nothing recoverable is ever deleted to
+  make room. Records with no manifest (nothing to recover) are removed when a new
+  record is made. Deleting a recoverable record is the user's explicit choice.
+* **Not decided here:** Undo history across a crash, draft form values, tabs,
+  persistent revisions, autosave to the user's file, power-loss durability, a CLI
+  session protocol.
+
+Contract and checks: [../document-crash-recovery.md](../document-crash-recovery.md).
