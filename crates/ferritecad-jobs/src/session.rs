@@ -207,6 +207,9 @@ pub const STALE_STEP: &str =
 /// The open document. See the module documentation.
 #[derive(Debug)]
 pub struct DocumentSession {
+    /// Which session this is, for whoever keeps something on its behalf (§30M:
+    /// its crash copy). Not the document's id: two sessions can hold one document.
+    id: ObjectId,
     directory: Arc<SessionDir>,
     /// Where Save writes; absent until a new document's first Save is published.
     logical: Option<PathBuf>,
@@ -217,6 +220,12 @@ pub struct DocumentSession {
     next_file: u64,
     generation: u64,
     limits: HistoryLimits,
+    /// §30M: what a recovered document was called, so it is named
+    /// `<name> (recovered)`; `None` for every other session.
+    recovered: Option<String>,
+    /// §30M: the record this session was recovered from, held until the window's
+    /// recorder takes it over (dropping it lets the record go, unchanged).
+    recovery: Option<crate::recovery::RecoveryClaim>,
 }
 
 /// What [`DocumentSession::commit_step`] did.
@@ -263,6 +272,7 @@ impl DocumentSession {
             ));
         }
         Ok(Self {
+            id: ObjectId::new(),
             directory,
             logical: Some(logical),
             saved: Some(Checkpoint { disk, model }),
@@ -271,6 +281,8 @@ impl DocumentSession {
             next_file: 1,
             generation: 0,
             limits,
+            recovered: None,
+            recovery: None,
         })
     }
 
@@ -291,6 +303,7 @@ impl DocumentSession {
         produce(&first)?;
         let snapshot = Snapshot::adopt(first, Arc::clone(&directory))?;
         Ok(Self {
+            id: ObjectId::new(),
             directory,
             logical: None,
             saved: None,
@@ -299,7 +312,63 @@ impl DocumentSession {
             next_file: 1,
             generation: 0,
             limits,
+            recovered: None,
+            recovery: None,
         })
+    }
+
+    /// §30M: a new, untitled session holding the model a crash copy recorded, every
+    /// identity as recorded. It has no logical path and no checkpoint, so its first
+    /// Save is a Save As and it can never be saved in place over the file it came
+    /// from. The record is not changed; the claim is held by the session until the
+    /// window's recorder takes it over ([`Self::take_recovery_claim`]), and
+    /// dropping the session first lets the record go untouched.
+    pub fn recover_in(
+        root: &Path,
+        limits: HistoryLimits,
+        claim: crate::recovery::RecoveryClaim,
+    ) -> Result<Self> {
+        let summary = claim.summary().clone();
+        let mut session = Self::create_in(root, limits, |first| claim.restore_to(first))?;
+        let current = session.current();
+        if current.disk.document_id != summary.document_id
+            || current.disk.content != summary.content
+            || current.model != summary.model
+        {
+            return Err(CadError::io(
+                "recovering a document",
+                "the restored version is not the recorded one",
+            ));
+        }
+        session.recovered = Some(summary.name);
+        session.recovery = Some(claim);
+        Ok(session)
+    }
+
+    /// Which session this is (§30M).
+    pub fn id(&self) -> ObjectId {
+        self.id
+    }
+
+    /// Whether this session was recovered from a crash copy and not saved since.
+    pub fn is_recovered(&self) -> bool {
+        self.recovered.is_some() && self.logical.is_none()
+    }
+
+    /// The record this session was recovered from, once: the recorder takes it
+    /// over as this session's own record.
+    pub fn take_recovery_claim(&mut self) -> Option<crate::recovery::RecoveryClaim> {
+        self.recovery.take()
+    }
+
+    /// What a crash copy of this session is called: its file's name, what a
+    /// recovered document was called, or [`UNTITLED`]. Never a path.
+    pub fn recovery_name(&self) -> String {
+        match (&self.logical, &self.recovered) {
+            (Some(_), _) => self.display_name(),
+            (None, Some(name)) => name.clone(),
+            (None, None) => UNTITLED.to_owned(),
+        }
     }
 
     /// A new, untitled session made by the shared creation route: the
@@ -337,10 +406,15 @@ impl DocumentSession {
         self.logical.is_none()
     }
 
-    /// The name the window shows: the file's name, or [`UNTITLED`].
+    /// The name the window shows: the file's name, `<name> (recovered)` for a
+    /// recovered document that has not been saved, or [`UNTITLED`].
     pub fn display_name(&self) -> String {
         self.logical.as_ref().map_or_else(
-            || UNTITLED.to_owned(),
+            || {
+                self.recovered
+                    .as_ref()
+                    .map_or_else(|| UNTITLED.to_owned(), |name| format!("{name} (recovered)"))
+            },
             |logical| {
                 logical
                     .file_name()
