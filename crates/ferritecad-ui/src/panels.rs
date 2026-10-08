@@ -846,12 +846,11 @@ pub const SAMPLE_PLATE: &str = "Sample plate (a template with a fixed shape)";
 /// sees before they have opened anything.
 pub const EMPTY_DOCUMENT: &str = "Empty document";
 
-/// What the button that goes on to the system dialog is called.
+/// What the button that makes the document is called.
 ///
-/// Says what happens next rather than "Create", because nothing is created by
-/// pressing it: the next thing the person sees is their own save dialog, and a
-/// button that promised a file would be lying about the step in between.
-pub const CHOOSE_LOCATION: &str = "Choose where to save…";
+/// No ellipsis, because no dialog follows (§30L): the new document is made and
+/// shown as **Untitled**, and where its file goes is asked by the first Save.
+pub const CREATE_DOCUMENT: &str = "Create document";
 
 /// The unit every size on this form is in.
 ///
@@ -900,6 +899,10 @@ pub struct NewDocumentForm {
     /// a section further down the window would be an answer somewhere the
     /// question is not.
     pub refusal: Option<String>,
+    /// Whether [`CREATE_DOCUMENT`] can be pressed: the window's own predicate,
+    /// written each frame by whoever owns the form, and the same one its handler
+    /// asks.
+    pub can_create: bool,
 }
 
 /// What the user said about the form.
@@ -908,7 +911,7 @@ pub enum NewChoice {
     /// Nothing yet, which is the answer on almost every frame.
     #[default]
     Waiting,
-    /// Go on to choosing where to save it.
+    /// Make the document now. Nothing asks where it goes until it is saved.
     Create,
     /// Never mind. Nothing is made and nothing on screen changes.
     Cancel,
@@ -919,8 +922,9 @@ pub enum NewChoice {
 /// Nothing at all is drawn when nobody has asked for one, and neither answer is
 /// returned until the user gives one: a frame in which they did nothing means
 /// nothing has been decided. Nothing here creates anything — pressing
-/// [`CHOOSE_LOCATION`] reports that the person is finished with the form, and
-/// where the file goes is a question their own system dialog asks next.
+/// [`CREATE_DOCUMENT`] reports that the person is finished with the form, and the
+/// window makes the document as **Untitled**; where its file goes is asked by the
+/// first Save.
 pub fn new_document_form(ui: &mut egui::Ui, form: Option<&mut NewDocumentForm>) -> NewChoice {
     let Some(form) = form else {
         return NewChoice::Waiting;
@@ -930,7 +934,7 @@ pub fn new_document_form(ui: &mut egui::Ui, form: Option<&mut NewDocumentForm>) 
     ui.label(NEW_DOCUMENT_TITLE);
     ui.add(
         egui::Label::new(
-            "Create a new .fcad file. Existing files cannot be replaced; choose a different name.",
+            "Make a new Untitled document. Nothing is written to disk until you Save; Save asks where.",
         )
         .wrap(),
     );
@@ -962,7 +966,10 @@ pub fn new_document_form(ui: &mut egui::Ui, form: Option<&mut NewDocumentForm>) 
     }
 
     ui.horizontal(|ui| {
-        if ui.button(CHOOSE_LOCATION).clicked() {
+        if ui
+            .add_enabled(form.can_create, egui::Button::new(CREATE_DOCUMENT))
+            .clicked()
+        {
             choice = NewChoice::Create;
         }
         if ui.button("Cancel").clicked() {
@@ -3953,9 +3960,10 @@ mod tests {
             depth: "40".into(),
             height: "10".into(),
             refusal: None,
+            can_create: true,
         };
         for (label, expected) in [
-            (CHOOSE_LOCATION, NewChoice::Create),
+            (CREATE_DOCUMENT, NewChoice::Create),
             ("Cancel", NewChoice::Cancel),
         ] {
             let mut output = context.run_ui(egui::RawInput::default(), |ui| {

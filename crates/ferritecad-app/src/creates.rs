@@ -4,63 +4,65 @@
 //! # The work is not here
 //!
 //! What a new document *is* — the display units, the sample plate's plane,
-//! profile, extrusion and references, the transaction they go in through, the
-//! scratch file, the atomic publication — is
-//! [`ferritecad_jobs::create_document`], which is the same route the shipped
-//! command takes. Nothing in this file writes a byte of SQLite, decides what a
-//! plate is made of, or knows what an exit code is. What is here is everything
-//! that is about a *window*: when the action is offered, what the form holds,
-//! what happens while it runs, and what the user is shown afterwards.
+//! profile, extrusion and references, the transaction they go in through — is
+//! [`ferritecad_jobs::create_document_with_kernel`], which is the same route the
+//! shipped command takes. Nothing in this file writes a byte of SQLite, decides
+//! what a plate is made of, or knows what an exit code is. What is here is
+//! everything that is about a *window*: when the action is offered, what the form
+//! holds, what happens while it runs, and what the user is shown afterwards.
 //!
-//! # A created document is not yet the document on screen
+//! # A new document is a session before it is a file (§30L)
 //!
-//! Creating publishes a file and stops. What the window shows afterwards is the
-//! result of opening that file the ordinary way, on the thread that opens every
-//! other document, and the two are reported apart: a file that was written and
-//! then could not be shown is two facts, and a window that had one place to say
-//! them would have to drop one. Until that Open is accepted, the picture, the
-//! choice made in it and the document an export reads are all exactly what they
-//! were.
+//! Creating no longer asks for a file name. The worker makes the document inside
+//! a *candidate* session's own private directory
+//! ([`ferritecad_jobs::DocumentSession::create_document_in`]) and reads its
+//! picture from there, exactly as Open does. The candidate becomes the window's
+//! document only when that picture is accepted (`sessions::Bind::Open`, in the
+//! window's `show`); until then the picture, the session, its history and every
+//! draft are what they were, and a refused, cancelled, stale or unshowable
+//! candidate is dropped with its directory. The document is **Untitled** until
+//! its first Save, which asks where its file goes.
 //!
-//! A polygon draft is owned separately by `sketch::Editor`. It is disposable
-//! input, not the accepted document. Save cancellation and job failures retain
-//! it; a published result ends its history before the ordinary async Open.
+//! The New form and the drawing drafts stay on screen until the new document is
+//! accepted, so nothing a person typed is lost to a failure.
 //!
-//! # Nothing here blocks the loop, and nothing here replaces a file
+//! # Nothing here blocks the loop
 //!
-//! Writing a document is short, but it is filesystem work and it runs on a
-//! thread of its own, cancelled and joined before this process ends. And the
-//! shared operation has no way to overwrite anything: a destination that is
-//! taken is refused in the window's own words, which say to pick another name
-//! rather than offering a replacement that could not happen.
+//! Creating is filesystem and kernel work and runs on a thread of its own,
+//! cancelled and joined before this process ends.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::thread::JoinHandle;
 
-use ferritecad_jobs::{CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize};
+use ferritecad_jobs::{DocumentSession, NewDocument, PlateSize};
 use ferritecad_kernel::{CancelToken, OperationContext};
+use ferritecad_scene::LoadedScene;
 use ferritecad_types::{ErrorKind, Result};
 use ferritecad_ui::{NewChoice, NewContent, NewDocumentForm, ViewportInput};
 
-/// What the window tells a person about a destination that is already taken.
-///
-/// The window's own words. The command line finishes the same sentence with
-/// what `create` would have done to the file; there is no flag and no button
-/// here that authorises a replacement, so this says the one thing that does
-/// work — and says it instead of offering a replacement the shared operation
-/// would refuse anyway.
-pub(crate) const CHOOSE_ANOTHER_NAME: &str = "choose a different file name";
-
 /// What the window says while a document is being made.
-const CREATING: &str = "Creating…";
-/// A document that was written. Whether it can be shown is a separate answer
-/// and is reported separately.
-const CREATED: &str = "Created";
-/// A document that was not made. Nothing was written and nothing at the
-/// destination changed.
-const CREATE_FAILED: &str = "Could not create";
-/// A creation the window gave up on. No file was published.
-const CREATE_CANCELLED: &str = "New document cancelled";
+const CREATING: &str = "Creating a new document…";
+/// A new document that is on screen and has no file yet.
+const CREATED: &str = "New document: Untitled, not saved yet. Save asks where to put it.";
+/// A document that was not made, or not shown. Nothing on screen changed.
+const CREATE_FAILED: &str = "Could not create the new document";
+/// A creation the window gave up on. Nothing on screen changed.
+const CREATE_CANCELLED: &str = "New document cancelled; nothing changed";
+
+/// A new document the worker made and whose picture it read: what the window
+/// accepts together, or drops together (its private directory with it).
+pub(crate) struct Candidate {
+    pub(crate) scene: LoadedScene,
+    pub(crate) session: DocumentSession,
+}
+
+impl std::fmt::Debug for Candidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Candidate")
+            .field("session", &self.session)
+            .finish_non_exhaustive()
+    }
+}
 
 /// What the form says about a size that is not a number.
 ///
@@ -88,42 +90,34 @@ struct Creating {
 
 /// What the window says about the document it was last asked to make.
 ///
-/// Entirely separate from what it says about opening one. A creation that
-/// succeeded says so even when the document it produced then failed to open,
-/// because those are two things that happened and a person needs both.
+/// Entirely separate from what it says about opening one.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) enum CreateStatus {
     /// Nothing has been asked for. True until the first New.
     #[default]
     Idle,
-    /// Running. Nothing is at the destination yet.
-    Running {
-        generation: CreateGeneration,
-        destination: String,
-    },
-    /// A document was published at the destination.
-    Made { destination: String },
-    /// Given up on. Nothing was published.
-    Cancelled { destination: String },
-    /// Could not be made. Whatever was at the destination is still there.
-    Failed {
-        destination: String,
-        message: String,
-    },
+    /// Running. Nothing on screen has changed yet.
+    Running { generation: CreateGeneration },
+    /// Made and waiting for its picture to be accepted.
+    Made,
+    /// Accepted: the new document is the window's, untitled.
+    Shown,
+    /// Given up on. Nothing on screen changed.
+    Cancelled,
+    /// Could not be made or shown. Nothing on screen changed.
+    Failed { message: String },
 }
 
 impl CreateStatus {
-    /// The line to put in front of the user.
+    /// The line to put in front of the user. Names no private path: a candidate
+    /// is shown as what it is, an untitled document.
     fn line(&self) -> String {
         match self {
             Self::Idle => String::new(),
-            Self::Running { destination, .. } => format!("{CREATING} {destination}"),
-            Self::Made { destination } => format!("{CREATED} {destination}"),
-            Self::Cancelled { destination } => format!("{CREATE_CANCELLED}: {destination}"),
-            Self::Failed {
-                destination,
-                message,
-            } => format!("{CREATE_FAILED} {destination}: {message}"),
+            Self::Running { .. } | Self::Made => CREATING.to_owned(),
+            Self::Shown => CREATED.to_owned(),
+            Self::Cancelled => CREATE_CANCELLED.to_owned(),
+            Self::Failed { message } => format!("{CREATE_FAILED}: {message}"),
         }
     }
 }
@@ -158,6 +152,15 @@ impl Creates {
     }
     pub(crate) fn status(&self) -> &CreateStatus {
         &self.status
+    }
+
+    /// §30L: the window's one `can_create` answer, written each frame into every
+    /// form that can make a new document, so the button and the handler agree.
+    pub(crate) fn set_can_create(&mut self, can_create: bool) {
+        if let Some(form) = self.form.as_mut() {
+            form.can_create = can_create;
+        }
+        self.sketch.set_create(can_create);
     }
 
     /// The form on screen, to be drawn and typed into.
@@ -257,6 +260,7 @@ impl Creates {
             depth: millimetres(PlateSize::DEFAULT.depth),
             height: millimetres(PlateSize::DEFAULT.height),
             refusal: None,
+            can_create: false,
         });
     }
 
@@ -267,33 +271,27 @@ impl Creates {
 
     /// Starts a creation, abandoning whatever was already running.
     ///
-    /// `spawn` is handed the destination, what to put in the document, the
-    /// generation to label its answer with and the token that stops it.
-    /// Starting and recording are one operation, so there is no arrangement of
-    /// calls in which a running worker is untracked.
+    /// `spawn` is handed what to put in the document, the generation to label
+    /// its answer with and the token that stops it. Starting and recording are
+    /// one operation, so there is no arrangement of calls in which a running
+    /// worker is untracked. The form stays: it is taken down only when the new
+    /// document is accepted, so a failure leaves what was typed in it.
     fn start(
         &mut self,
-        destination: &Path,
         content: NewDocument,
-        spawn: impl FnOnce(&Path, NewDocument, CreateGeneration, &CancelToken) -> JoinHandle<()>,
+        spawn: impl FnOnce(NewDocument, CreateGeneration, &CancelToken) -> JoinHandle<()>,
     ) -> CreateGeneration {
         for creating in &self.running {
             creating.cancel.cancel();
         }
-        // The form asked a question that has now been answered.
-        self.form = None;
-
         self.cancel_requested = false;
         self.issued += 1;
         let generation = CreateGeneration(self.issued);
         let cancel = CancelToken::new();
-        let worker = spawn(destination, content, generation, &cancel);
+        let worker = spawn(content, generation, &cancel);
         self.running.push(Creating { cancel, worker });
         self.current = Some(generation);
-        self.status = CreateStatus::Running {
-            generation,
-            destination: destination.display().to_string(),
-        };
+        self.status = CreateStatus::Running { generation };
         generation
     }
 
@@ -305,41 +303,39 @@ impl Creates {
     /// Notes what a generation answered, and joins whatever has ended.
     ///
     /// The outcome is reported for every answer, current or not, and this
-    /// decides what it is worth. An answer to a request that has been replaced
-    /// changes nothing at all, and above all does not send the window off to
-    /// open a document nobody asked for.
+    /// decides what it is worth. An answer to a request that has been replaced,
+    /// or one that arrives after Cancel, changes nothing on screen: its
+    /// candidate is dropped here, and its private directory with it.
     ///
-    /// Returns the document to open, when there is one and it is still wanted.
+    /// Returns the candidate to show, when there is one and it is still wanted.
     fn answered(
         &mut self,
         generation: CreateGeneration,
-        outcome: Result<CreatedDocument>,
-    ) -> (bool, Option<PathBuf>) {
-        let mut open = None;
+        outcome: Result<Candidate>,
+    ) -> (bool, Option<Candidate>) {
+        let mut show = None;
         let changed = match &self.status {
             CreateStatus::Running {
                 generation: waiting,
-                destination,
             } if *waiting == generation && self.accepts(generation) => {
-                let destination = destination.clone();
                 self.status = match outcome {
-                    Ok(created) => {
-                        if !self.cancel_requested {
-                            self.sketch.draft_published(created.destination());
-                            open = Some(created.destination().to_path_buf());
-                        } else {
-                            self.sketch.dismiss();
-                        }
-                        CreateStatus::Made { destination }
+                    Ok(candidate) if !self.cancel_requested => {
+                        // The drawing draft is kept aside until the picture is
+                        // accepted, and comes back if it is not.
+                        self.sketch
+                            .draft_published(candidate.session.current().path());
+                        show = Some(candidate);
+                        CreateStatus::Made
                     }
+                    // Cancel was pressed: the answer is "nothing changed".
+                    Ok(_) => CreateStatus::Cancelled,
                     // Giving up is not a failure, and a window that reported
                     // it as one would be complaining about something it was
                     // asked to do.
                     Err(error) if error.kind() == ErrorKind::Cancellation => {
-                        CreateStatus::Cancelled { destination }
+                        CreateStatus::Cancelled
                     }
                     Err(error) => CreateStatus::Failed {
-                        destination,
                         message: error.to_string(),
                     },
                 };
@@ -361,7 +357,22 @@ impl Creates {
                 index += 1;
             }
         }
-        (changed, open)
+        (changed, show)
+    }
+
+    /// What became of the candidate `answered` handed out: shown (the form is
+    /// done with), or not (the form stays as it was typed).
+    fn shown(&mut self, outcome: std::result::Result<(), String>) {
+        if self.status != CreateStatus::Made {
+            return;
+        }
+        self.status = match outcome {
+            Ok(()) => {
+                self.form = None;
+                CreateStatus::Shown
+            }
+            Err(message) => CreateStatus::Failed { message },
+        };
     }
 
     /// Stops every creation and waits for all of them.
@@ -414,9 +425,9 @@ pub(crate) fn open_form(creates: &mut Creates, input: &mut ViewportInput) -> boo
 /// nothing, and the last of the three says so inside the form, where the boxes
 /// that need fixing are.
 ///
-/// The form is deliberately not taken down here. The next thing that happens is
-/// a system dialog, and a person who closes that dialog has not thrown away the
-/// sizes they typed.
+/// The form is deliberately not taken down here. It stays until the new
+/// document is on screen, so a question about unsaved changes that is answered
+/// Cancel, or a creation that fails, leaves the sizes that were typed.
 pub(crate) fn answer_form(
     creates: &mut Creates,
     input: &mut ViewportInput,
@@ -473,23 +484,21 @@ fn number(field: &str, typed: &str) -> std::result::Result<f64, String> {
         .map_err(|_| not_a_number(field, typed))
 }
 
-/// Acts on a chosen destination, and makes any visible change once.
+/// Starts making a new document, and makes the visible change once.
 ///
-/// Returns the generation when a creation really started. A closed dialog does
-/// nothing at all: no worker, no status, no file, and the form stays exactly as
-/// it was so the sizes are still there to try again with.
+/// Returns the generation when a creation really started; one already running
+/// starts nothing. No dialog and no destination: the document is made in a
+/// candidate session's private directory and named when it is first saved.
 pub(crate) fn begin_create(
     creates: &mut Creates,
     input: &mut ViewportInput,
     content: NewDocument,
-    chosen: Option<PathBuf>,
-    spawn: impl FnOnce(&Path, NewDocument, CreateGeneration, &CancelToken) -> JoinHandle<()>,
+    spawn: impl FnOnce(NewDocument, CreateGeneration, &CancelToken) -> JoinHandle<()>,
 ) -> Option<CreateGeneration> {
     if creates.running() {
         return None;
     }
-    let destination = chosen?;
-    let generation = creates.start(&destination, content, spawn);
+    let generation = creates.start(content, spawn);
     input.request_redraw();
     Some(generation)
 }
@@ -497,19 +506,29 @@ pub(crate) fn begin_create(
 /// Finishes an answer at the application boundary.
 ///
 /// [`Creates::answered`] is the one generation check, and its answer controls
-/// both things visible outside that state machine: a redraw, and the document
-/// the window goes on to open.
+/// both things visible outside that state machine: a redraw, and the candidate
+/// the window goes on to show.
 pub(crate) fn finish_create(
     creates: &mut Creates,
     input: &mut ViewportInput,
     generation: CreateGeneration,
-    outcome: Result<CreatedDocument>,
-) -> Option<PathBuf> {
-    let (changed, open) = creates.answered(generation, outcome);
+    outcome: Result<Candidate>,
+) -> Option<Candidate> {
+    let (changed, show) = creates.answered(generation, outcome);
     if changed {
         input.request_redraw();
     }
-    open
+    show
+}
+
+/// Records whether the candidate [`finish_create`] handed out was accepted.
+pub(crate) fn finish_shown(
+    creates: &mut Creates,
+    input: &mut ViewportInput,
+    outcome: std::result::Result<(), String>,
+) {
+    creates.shown(outcome);
+    input.request_redraw();
 }
 
 /// The line this frame borrows from, and nothing when there is nothing to say.
@@ -530,28 +549,25 @@ pub(crate) fn shown<'a>(status: &CreateStatus, line: &'a str) -> Option<&'a str>
 ///
 /// Both halves are arguments so that this can be shown to return while the
 /// creation is still running, which is the whole property: the window stays
-/// alive while a document is written.
+/// alive while a document is made.
 pub(crate) fn spawn_create(
-    create: impl FnOnce() -> Result<CreatedDocument> + Send + 'static,
-    deliver: impl FnOnce(Result<CreatedDocument>) + Send + 'static,
+    create: impl FnOnce() -> Result<Candidate> + Send + 'static,
+    deliver: impl FnOnce(Result<Candidate>) + Send + 'static,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || deliver(create()))
 }
 
-/// The whole of the work, and the only place this application does any of it.
-///
-/// One shared operation. The factory opens a worker-owned kernel only for a
-/// polygon; empty/sample documents retain their kernel-free creation behavior.
+/// The whole of the work, and the only place this application does any of it:
+/// the shared creation route into a candidate session under `root`, and the
+/// picture of it. The kernel is opened for a drawn profile's check and for the
+/// picture; Empty and the sample plate are created without one.
 pub(crate) fn run_create(
-    destination: &Path,
+    root: &Path,
     content: NewDocument,
     context: &OperationContext,
-) -> Result<CreatedDocument> {
-    ferritecad_jobs::create_document_with_kernel(
-        CreateDocumentRequest::new(destination, content, CHOOSE_ANOTHER_NAME),
-        ferritecad_occt::OcctKernel::new,
-        context,
-    )
+) -> Result<Candidate> {
+    let (scene, session) = crate::sessions::create_for_view(root, content, context)?;
+    Ok(Candidate { scene, session })
 }
 
 #[cfg(test)]
@@ -559,6 +575,7 @@ pub(crate) fn run_create(
 pub(crate) mod tests {
     use super::*;
 
+    use std::path::PathBuf;
     use std::sync::mpsc;
 
     use ferritecad_document::{
@@ -594,34 +611,63 @@ pub(crate) mod tests {
         names
     }
 
+    /// The candidate a test worker makes: the production `run_create` where this
+    /// build has Open CASCADE, and otherwise the same production document route
+    /// with its picture read through the mock kernel, so the window's state
+    /// machine is exercised on every build. Production itself refuses a picture
+    /// without Open CASCADE (see `stub_creation_is_refused_at_the_picture`).
+    pub(crate) fn test_candidate(
+        root: &Path,
+        content: NewDocument,
+        context: &OperationContext,
+    ) -> Result<Candidate> {
+        if ferritecad_occt::is_available() {
+            return run_create(root, content, context);
+        }
+        let session = DocumentSession::create_document_in(
+            root,
+            ferritecad_jobs::HistoryLimits::default(),
+            content,
+            ferritecad_occt::OcctKernel::new,
+            context,
+        )?;
+        let scene = ferritecad_scene::snapshot_of(
+            session.current().path(),
+            &mut ferritecad_kernel::mock::MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP in this gate",
+                ))
+            },
+            &ferritecad_kernel::TessellationParams::default(),
+            context,
+        )?;
+        Ok(Candidate { scene, session })
+    }
+
     /// Drives one creation the way the event loop does, with the real work
-    /// behind it and no window anywhere.
-    ///
-    /// This is the window's own route and not a second one: the same
-    /// [`begin_create`] the frame calls, handed the same [`run_create`] the
-    /// spawner in `main` hands it, and the answer delivered back through
-    /// [`finish_create`] exactly as the event loop delivers it. What is left
-    /// out is the winit event and the system dialog, which is what "without
-    /// reproducing clicks" means.
+    /// behind it and no window anywhere: the same [`crate::start_new`] the frame
+    /// calls, a worker making a candidate under `root`, and the answer delivered
+    /// back through [`finish_create`]. What is left out is the winit event and the
+    /// picture's upload, which the caller decides with [`finish_shown`].
     pub(crate) fn run_to_completion(
         creates: &mut Creates,
         input: &mut ViewportInput,
+        root: &Path,
         content: NewDocument,
-        chosen: Option<PathBuf>,
-    ) -> (Option<CreateGeneration>, Option<PathBuf>) {
+    ) -> (Option<CreateGeneration>, Option<Candidate>) {
         let (answers, answered) = mpsc::channel();
+        let root = root.to_path_buf();
         let Some(generation) = crate::start_new(
             creates,
             &crate::Loads::default(),
             &crate::exports::Exports::default(),
             input,
             content,
-            chosen,
-            |destination, content, generation, cancel| {
-                let destination = destination.to_path_buf();
+            move |content, generation, cancel| {
                 let context = OperationContext::default().with_cancel(cancel.clone());
                 spawn_create(
-                    move || run_create(&destination, content, &context),
+                    move || test_candidate(&root, content, &context),
                     move |result| {
                         let _ = answers.send((generation, result));
                     },
@@ -631,12 +677,59 @@ pub(crate) mod tests {
             return (None, None);
         };
         let (answered_generation, result) = answered.recv().expect("the creation answered");
-        let open = finish_create(creates, input, answered_generation, result);
-        (Some(generation), open)
+        let candidate = finish_create(creates, input, answered_generation, result);
+        (Some(generation), candidate)
+    }
+
+    /// The first Save of an untitled session: the production Save As.
+    pub(crate) fn save_first(session: &mut DocumentSession, destination: &Path) {
+        let saved = session
+            .begin_save(ferritecad_jobs::SaveTarget::As(destination.to_path_buf()))
+            .run(&OperationContext::default())
+            .expect("the first save is published");
+        session.record_saved(&saved);
+    }
+
+    /// §30L: a drawing form's request through the window's route: the worker
+    /// makes a candidate, the draft is held aside while its picture is prepared,
+    /// a refused picture gives the draft back without resubmitting it
+    /// (`restored` inspects it then), and an accepted one retires it. The
+    /// accepted document is then saved for the first time at `destination`.
+    pub(crate) fn drawn_through_the_window(
+        creates: &mut Creates,
+        view: &mut ViewportInput,
+        content: NewDocument,
+        destination: &Path,
+        restored: impl FnOnce(&crate::sketch::Editor),
+    ) {
+        let sessions = tempfile::tempdir().expect("sessions");
+        let (_, candidate) = run_to_completion(creates, view, sessions.path(), content.clone());
+        let mut candidate = candidate.expect("a candidate");
+        // Another request while this one is held is not a second worker.
+        let shown = candidate.session.current().path().to_path_buf();
+        assert!(!creates.sketch.active(), "the draft is held aside");
+        creates
+            .sketch
+            .draft_load_finished(Path::new("unrelated.fcad"), false);
+        assert!(!creates.sketch.active());
+        creates.sketch.draft_load_finished(&shown, false);
+        assert!(
+            creates.sketch.active(),
+            "a refused picture restores the draft"
+        );
+        assert!(creates.sketch.take_request().is_none(), "no resubmission");
+        restored(&creates.sketch);
+        creates.sketch.draft_published(&shown);
+        creates.sketch.draft_load_finished(&shown, true);
+        assert!(!creates.sketch.active());
+        finish_shown(creates, view, Ok(()));
+        assert!(candidate.session.is_untitled());
+        save_first(&mut candidate.session, destination);
     }
 
     /// The whole of the window's route, from the button to the file, as one
-    /// call: press New, fill the form in, choose a path, let it finish.
+    /// call: press New, fill the form in, let the candidate be made and its
+    /// picture accepted, then Save it for the first time at `destination`.
     fn create_through_the_window(
         destination: &Path,
         content: NewContent,
@@ -644,6 +737,7 @@ pub(crate) mod tests {
     ) -> (Creates, Option<PathBuf>) {
         let mut creates = Creates::default();
         let mut input = input();
+        let sessions = tempfile::tempdir().expect("sessions");
 
         assert!(crate::ask_new(
             &mut creates,
@@ -659,13 +753,13 @@ pub(crate) mod tests {
 
         let asked =
             answer_form(&mut creates, &mut input, NewChoice::Create).expect("the form is complete");
-        let (_, open) = run_to_completion(
-            &mut creates,
-            &mut input,
-            asked,
-            Some(destination.to_path_buf()),
-        );
-        (creates, open)
+        let (_, candidate) = run_to_completion(&mut creates, &mut input, sessions.path(), asked);
+        let Some(mut candidate) = candidate else {
+            return (creates, None);
+        };
+        finish_shown(&mut creates, &mut input, Ok(()));
+        save_first(&mut candidate.session, destination);
+        (creates, Some(destination.to_path_buf()))
     }
 
     // ------------------------------------------------ what starts a creation
@@ -740,11 +834,12 @@ pub(crate) mod tests {
         assert_eq!(creates.status(), &CreateStatus::Idle);
     }
 
-    /// A closed save dialog makes nothing, and keeps the sizes that were
-    /// typed so the person can try again.
+    /// §30L: the sizes stay on screen until the new document is accepted; a
+    /// picture that could not be shown leaves them, and only acceptance takes the
+    /// form down. No file is written anywhere a person keeps files.
     #[test]
-    fn a_closed_dialog_makes_nothing_and_keeps_the_form() {
-        let dir = tempfile::tempdir().expect("temp dir");
+    fn the_form_stays_until_the_new_document_is_accepted() {
+        let sessions = tempfile::tempdir().expect("sessions");
         let mut creates = Creates::default();
         let mut input = input();
 
@@ -754,147 +849,186 @@ pub(crate) mod tests {
         form.width = "125".to_owned();
         let content =
             answer_form(&mut creates, &mut input, NewChoice::Create).expect("the form is complete");
-        let _ = input.take_redraw();
 
-        let (generation, open) = run_to_completion(&mut creates, &mut input, content, None);
-
-        assert_eq!(generation, None);
-        assert_eq!(open, None);
-        assert_eq!(creates.status(), &CreateStatus::Idle);
-        assert_eq!(
-            creates.form().expect("the form is still there").width,
-            "125"
+        let (generation, candidate) =
+            run_to_completion(&mut creates, &mut input, sessions.path(), content.clone());
+        assert!(generation.is_some());
+        let candidate = candidate.expect("a candidate");
+        assert_eq!(creates.status(), &CreateStatus::Made);
+        assert_eq!(creates.form().expect("still typed").width, "125");
+        // The picture could not be uploaded: nothing is accepted, the form stays.
+        drop(candidate);
+        finish_shown(&mut creates, &mut input, Err("no device".to_owned()));
+        assert!(
+            matches!(creates.status(), CreateStatus::Failed { message } if message == "no device")
         );
-        assert!(!input.take_redraw(), "a closed dialog owed a frame");
-        assert!(entries(dir.path()).is_empty());
+        assert_eq!(creates.form().expect("kept").width, "125");
+        assert!(
+            entries(sessions.path()).is_empty(),
+            "the dropped candidate left files"
+        );
+
+        let (_, candidate) = run_to_completion(&mut creates, &mut input, sessions.path(), content);
+        let candidate = candidate.expect("a candidate");
+        finish_shown(&mut creates, &mut input, Ok(()));
+        assert_eq!(creates.status(), &CreateStatus::Shown);
+        assert!(creates.form().is_none(), "accepted: the form is done with");
+        let line = words(creates.status());
+        assert!(line.contains("Untitled"), "{line}");
+        assert!(
+            !line.contains(&candidate.session.private_directory().display().to_string()),
+            "{line}"
+        );
     }
 
     // ------------------------------------------------------ what it produces
 
-    /// The window's route publishes a document and hands it back to be opened.
+    /// The window's route makes an untitled session with no file, holding the
+    /// plate the form asked for.
     #[test]
-    fn the_window_route_publishes_the_document_and_asks_for_it_to_be_opened() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let destination = dir.path().join("plate.fcad");
+    fn the_window_route_makes_an_untitled_session_and_writes_no_file() {
+        let sessions = tempfile::tempdir().expect("sessions");
+        let mut creates = Creates::default();
+        let mut input = input();
 
-        let (creates, open) =
-            create_through_the_window(&destination, NewContent::SamplePlate, ["80", "50", "12"]);
-
-        assert_eq!(open.as_deref(), Some(destination.as_path()));
-        let CreateStatus::Made { destination: said } = creates.status() else {
-            panic!(
-                "the window does not say it made one: {:?}",
-                creates.status()
-            );
-        };
-        assert_eq!(said, &destination.display().to_string());
-        // The form asked its question and has been answered.
-        assert_eq!(entries(dir.path()), vec!["plate.fcad".to_owned()]);
-
-        let document = Document::open(&destination).expect("opens what the window made");
+        let (_, candidate) = run_to_completion(
+            &mut creates,
+            &mut input,
+            sessions.path(),
+            NewDocument::SamplePlate(PlateSize {
+                width: 80.0,
+                depth: 50.0,
+                height: 12.0,
+            }),
+        );
+        let candidate = candidate.expect("a candidate");
+        let session = &candidate.session;
+        assert_eq!(session.logical_path(), None);
+        assert_eq!(session.saved_version(), None);
+        assert_eq!(session.display_name(), "Untitled");
+        assert!(session.is_dirty());
+        assert!(session.owns(session.current().path()));
+        let document =
+            Document::open_read_only(session.current().path()).expect("opens what was made");
         assert_eq!(document.objects().expect("reads objects").len(), 4);
         assert_eq!(document.topology_refs().expect("reads refs").len(), 3);
         document.close().expect("closes");
+        assert_eq!(entries(sessions.path()).len(), 1, "one private folder");
     }
 
-    /// And an empty document, which is a different thing from an empty window.
+    /// And an empty document, which is a different thing from an empty window:
+    /// it has a session, and it is unsaved.
     #[test]
     fn an_empty_document_is_a_document() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let destination = dir.path().join("empty.fcad");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let mut creates = Creates::default();
+        let mut input = input();
 
-        let (creates, open) =
-            create_through_the_window(&destination, NewContent::Empty, ["60", "40", "10"]);
-
-        assert_eq!(open.as_deref(), Some(destination.as_path()));
-        assert!(matches!(creates.status(), CreateStatus::Made { .. }));
-
-        let document = Document::open(&destination).expect("opens it");
+        let (_, candidate) = run_to_completion(
+            &mut creates,
+            &mut input,
+            sessions.path(),
+            NewDocument::Empty,
+        );
+        let candidate = candidate.expect("a candidate");
+        assert!(candidate.session.is_untitled() && candidate.session.is_dirty());
+        let document =
+            Document::open_read_only(candidate.session.current().path()).expect("opens it");
         assert!(document.objects().expect("reads objects").is_empty());
         document.close().expect("closes");
     }
 
     // ------------------------------------------------------- what it refuses
 
-    /// A destination that is taken is refused in the window's own words, and
-    /// the file that is there is not touched.
+    /// The first Save refuses a name that is taken, in its own words, and the
+    /// untitled document stays exactly as it was.
     #[test]
-    fn a_taken_destination_is_refused_without_offering_a_replacement() {
-        let dir = tempfile::tempdir().expect("temp dir");
+    fn a_taken_name_is_refused_by_the_first_save_without_a_replacement() {
+        let sessions = tempfile::tempdir().expect("sessions");
+        let dir = tempfile::tempdir().expect("user");
         let destination = dir.path().join("plate.fcad");
         std::fs::write(&destination, b"somebody else's file").expect("writes the file");
-
-        let (creates, open) =
-            create_through_the_window(&destination, NewContent::SamplePlate, ["80", "50", "12"]);
-
-        assert_eq!(
-            open, None,
-            "a refused creation sent a document to be opened"
+        let mut creates = Creates::default();
+        let mut input = input();
+        let (_, candidate) = run_to_completion(
+            &mut creates,
+            &mut input,
+            sessions.path(),
+            NewDocument::Empty,
         );
-        let CreateStatus::Failed { message, .. } = creates.status() else {
-            panic!("the window does not say it failed: {:?}", creates.status());
-        };
-        assert!(message.contains(CHOOSE_ANOTHER_NAME), "{message}");
-        // The window has no flag to offer and must not print one.
+        let candidate = candidate.expect("a candidate");
+        let failure = candidate
+            .session
+            .begin_save(ferritecad_jobs::SaveTarget::As(destination.clone()))
+            .run(&OperationContext::default())
+            .expect_err("occupied");
+        assert_eq!(failure.kind, ferritecad_jobs::SaveFailureKind::Occupied);
+        let message = failure.to_string();
         assert!(!message.contains("--force"), "{message}");
-        assert!(!message.contains("Replace"), "{message}");
         assert_eq!(
             std::fs::read(&destination).expect("reads it"),
             b"somebody else's file"
         );
+        assert!(candidate.session.is_untitled());
         assert_eq!(entries(dir.path()), vec!["plate.fcad".to_owned()]);
     }
 
     /// A size the document will not store leaves nothing behind, and the
-    /// window says so without pretending a file is there.
+    /// window says so without pretending a document is there.
     ///
     /// `NaN` is a number as far as parsing goes, so it reaches the document
     /// and is refused by the same rule the command line meets.
     #[test]
-    fn a_size_the_document_refuses_leaves_nothing_at_the_destination() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let destination = dir.path().join("bad.fcad");
-
-        let (creates, open) =
-            create_through_the_window(&destination, NewContent::SamplePlate, ["60", "40", "NaN"]);
-
-        assert_eq!(open, None);
-        let CreateStatus::Failed { message, .. } = creates.status() else {
+    fn a_size_the_document_refuses_leaves_nothing_behind() {
+        let sessions = tempfile::tempdir().expect("sessions");
+        let mut creates = Creates::default();
+        let mut input = input();
+        let (_, candidate) = run_to_completion(
+            &mut creates,
+            &mut input,
+            sessions.path(),
+            NewDocument::SamplePlate(PlateSize {
+                width: 60.0,
+                depth: 40.0,
+                height: f64::NAN,
+            }),
+        );
+        assert!(candidate.is_none());
+        let CreateStatus::Failed { message } = creates.status() else {
             panic!("the window does not say it failed: {:?}", creates.status());
         };
         assert!(message.contains("must be finite"), "{message}");
-        assert!(!destination.exists(), "a refused creation left a document");
         assert!(
-            entries(dir.path()).is_empty(),
+            entries(sessions.path()).is_empty(),
             "a refused creation left {:?}",
-            entries(dir.path())
+            entries(sessions.path())
         );
     }
 
     /// An answer to a creation that has been replaced changes nothing at all,
-    /// and above all does not send the window off to open a document.
+    /// and its candidate is dropped with its private folder.
     #[test]
     fn a_stale_answer_is_not_acted_on() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let first = dir.path().join("first.fcad");
-        let second = dir.path().join("second.fcad");
+        let sessions = tempfile::tempdir().expect("sessions");
         let mut creates = Creates::default();
         let mut input = input();
 
-        let (stale, _) = run_to_completion(
+        let (stale, first) = run_to_completion(
             &mut creates,
             &mut input,
+            sessions.path(),
             NewDocument::Empty,
-            Some(first.clone()),
         );
         let stale = stale.expect("the first creation started");
-        let (_, open) = run_to_completion(
+        drop(first);
+        let (_, second) = run_to_completion(
             &mut creates,
             &mut input,
+            sessions.path(),
             NewDocument::Empty,
-            Some(second.clone()),
         );
-        assert_eq!(open.as_deref(), Some(second.as_path()));
+        let second = second.expect("the second candidate");
+        finish_shown(&mut creates, &mut input, Ok(()));
         let _ = input.take_redraw();
 
         // The first request's answer, arriving after the second replaced it.
@@ -902,44 +1036,41 @@ pub(crate) mod tests {
             &mut creates,
             &mut input,
             stale,
-            run_create(
-                &dir.path().join("late.fcad"),
+            test_candidate(
+                sessions.path(),
                 NewDocument::Empty,
                 &OperationContext::default(),
             ),
         );
-
-        assert_eq!(
-            late, None,
-            "a stale answer asked for a document to be opened"
-        );
-        let CreateStatus::Made { destination } = creates.status() else {
-            panic!("{:?}", creates.status());
-        };
-        assert_eq!(destination, &second.display().to_string());
+        assert!(late.is_none(), "a stale answer asked to be shown");
+        assert_eq!(creates.status(), &CreateStatus::Shown);
         assert!(!input.take_redraw(), "a stale answer owed a frame");
+        assert_eq!(
+            entries(sessions.path()).len(),
+            1,
+            "only the accepted candidate's folder remains"
+        );
+        drop(second);
     }
 
     /// New is unavailable exactly while a document is being made.
     #[test]
     fn a_creation_in_flight_is_the_only_thing_that_withdraws_new() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let root = sessions.path().to_path_buf();
         let mut creates = Creates::default();
         let mut input = input();
 
         assert!(!creates.running());
         let (answers, answered) = mpsc::channel();
-        let destination = dir.path().join("plate.fcad");
         begin_create(
             &mut creates,
             &mut input,
             NewDocument::Empty,
-            Some(destination.clone()),
-            |destination, content, generation, cancel| {
-                let destination = destination.to_path_buf();
+            move |content, generation, cancel| {
                 let context = OperationContext::default().with_cancel(cancel.clone());
                 spawn_create(
-                    move || run_create(&destination, content, &context),
+                    move || test_candidate(&root, content, &context),
                     move |result| {
                         let _ = answers.send((generation, result));
                     },
@@ -958,9 +1089,39 @@ pub(crate) mod tests {
         assert!(creates.form().is_none());
 
         let (generation, result) = answered.recv().expect("the creation answered");
-        finish_create(&mut creates, &mut input, generation, result);
+        drop(finish_create(&mut creates, &mut input, generation, result));
         assert!(!creates.running());
         creates.stop_all();
+    }
+
+    /// §30L stub: without Open CASCADE the production route still makes the
+    /// kernel-free document, but no picture can be read, so nothing is accepted
+    /// and the candidate's folder is gone.
+    #[test]
+    fn stub_creation_is_refused_at_the_picture() {
+        if ferritecad_occt::is_available() {
+            eprintln!("skipped: requires stub");
+            return;
+        }
+        let sessions = tempfile::tempdir().expect("sessions");
+        let error = run_create(
+            sessions.path(),
+            NewDocument::Empty,
+            &OperationContext::default(),
+        )
+        .expect_err("no picture without a kernel");
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{error}");
+        assert!(entries(sessions.path()).is_empty());
+        // The document itself needs no kernel, as before.
+        let session = DocumentSession::create_document_in(
+            sessions.path(),
+            ferritecad_jobs::HistoryLimits::default(),
+            NewDocument::SamplePlate(PlateSize::DEFAULT),
+            ferritecad_occt::OcctKernel::new,
+            &OperationContext::default(),
+        )
+        .expect("kernel-free creation");
+        assert!(session.is_untitled());
     }
 
     // ------------------------------------------------------------ two clients
@@ -1362,10 +1523,10 @@ pub(crate) mod tests {
         assert_ne!(command_line_ids.document, window_ids.document);
     }
     #[test]
-    fn cancel_waits_for_the_worker_and_never_claims_a_published_file_is_absent() {
+    fn cancel_waits_for_the_worker_and_accepts_nothing_it_made() {
         for late in [false, true] {
-            let dir = tempfile::tempdir().expect("directory");
-            let path = dir.path().join("result.fcad");
+            let sessions = tempfile::tempdir().expect("sessions");
+            let root = sessions.path().to_path_buf();
             let mut creates = Creates::default();
             let mut input = input();
             let (ready, reached) = mpsc::channel();
@@ -1375,21 +1536,19 @@ pub(crate) mod tests {
                 &mut creates,
                 &mut input,
                 NewDocument::Empty,
-                Some(path.clone()),
-                move |path, content, generation, cancel| {
-                    let path = path.to_path_buf();
+                move |content, generation, cancel| {
                     let context = OperationContext::default().with_cancel(cancel.clone());
                     spawn_create(
                         move || {
                             if late {
-                                let result = run_create(&path, content, &context);
+                                let result = test_candidate(&root, content, &context);
                                 ready.send(()).expect("ready");
                                 resume.recv().expect("release");
                                 result
                             } else {
                                 ready.send(()).expect("ready");
                                 resume.recv().expect("release");
-                                run_create(&path, content, &context)
+                                test_candidate(&root, content, &context)
                             }
                         },
                         move |result| {
@@ -1405,17 +1564,12 @@ pub(crate) mod tests {
             assert!(!creates.can_cancel());
             release.send(()).expect("resume");
             let (generation, result) = answered.recv().expect("answer");
-            assert_eq!(
-                finish_create(&mut creates, &mut input, generation, result),
-                None
+            assert!(finish_create(&mut creates, &mut input, generation, result).is_none());
+            assert_eq!(creates.status(), &CreateStatus::Cancelled);
+            assert!(
+                entries(sessions.path()).is_empty(),
+                "a cancelled candidate left its folder (late={late})"
             );
-            assert_eq!(path.exists(), late);
-            if late {
-                assert!(matches!(creates.status(), CreateStatus::Made { .. }));
-            } else {
-                assert!(matches!(creates.status(), CreateStatus::Cancelled { .. }));
-                assert!(entries(dir.path()).is_empty());
-            }
             creates.stop_all();
             assert!(creates.running.is_empty());
         }
@@ -1423,8 +1577,8 @@ pub(crate) mod tests {
 
     #[test]
     fn shutdown_cancels_and_joins_creation_with_its_scratch_removed() {
-        let dir = tempfile::tempdir().expect("directory");
-        let path = dir.path().join("closing.fcad");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let root = sessions.path().to_path_buf();
         let mut creates = Creates::default();
         let mut input = input();
         let (send, reached) = mpsc::channel();
@@ -1433,9 +1587,7 @@ pub(crate) mod tests {
             &mut creates,
             &mut input,
             NewDocument::Empty,
-            Some(path),
-            |path, content, _, cancel| {
-                let path = path.to_path_buf();
+            move |content, _, cancel| {
                 let waiting = cancel.clone();
                 let context = OperationContext::default()
                     .with_cancel(cancel.clone())
@@ -1454,9 +1606,9 @@ pub(crate) mod tests {
                         }
                     }));
                 spawn_create(
-                    move || run_create(&path, content, &context),
+                    move || test_candidate(&root, content, &context),
                     move |result| {
-                        answer.send(result).expect("answer");
+                        answer.send(result.map(|_| ())).expect("answer");
                     },
                 )
             },
@@ -1473,7 +1625,7 @@ pub(crate) mod tests {
                 .kind(),
             ErrorKind::Cancellation
         );
-        assert!(entries(dir.path()).is_empty());
+        assert!(entries(sessions.path()).is_empty());
     }
 
     #[test]

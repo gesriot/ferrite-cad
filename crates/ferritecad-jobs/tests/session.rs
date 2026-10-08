@@ -140,7 +140,7 @@ fn open_apply_undo_redo_save_is_one_state_machine() {
     session.record_saved(&saved);
     assert!(!session.is_dirty());
     assert_eq!(height_of(&f.file), 21.5);
-    assert_eq!(session.logical_path(), f.file);
+    assert_eq!(session.logical_path(), Some(f.file.as_path()));
 
     // The saved checkpoint moved with it: Undo is now dirty, Redo clean again.
     let undo = session.begin_undo().expect("back");

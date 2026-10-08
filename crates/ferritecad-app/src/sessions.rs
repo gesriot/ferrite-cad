@@ -39,8 +39,9 @@ use crate::PRODUCT_NAME;
 pub(crate) enum Continuation {
     /// Choose another document.
     Open,
-    /// Make a new document.
-    New,
+    /// Make the new document a create form asked for (§30L): it is held by the
+    /// window until the Save it waits for is published.
+    Create,
     /// Close the window.
     Quit,
 }
@@ -144,7 +145,7 @@ pub(crate) struct Sessions {
 /// written for a person names the document they opened, not the file the window
 /// reads it from. Only ever consulted to *show* a path; no code reads a document
 /// through it.
-static SHOWN_AS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
+static SHOWN_AS: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
 
 /// How to name `path` to the user: the document it is the working copy of, or the
 /// path itself when it is not one of ours.
@@ -153,10 +154,7 @@ pub(crate) fn shown_as(path: &Path) -> String {
     known
         .iter()
         .find(|(private, _)| path.starts_with(private))
-        .map_or_else(
-            || path.display().to_string(),
-            |(_, logical)| logical.display().to_string(),
-        )
+        .map_or_else(|| path.display().to_string(), |(_, shown)| shown.clone())
 }
 
 impl Drop for Sessions {
@@ -186,7 +184,11 @@ impl Sessions {
         }
         if let Some(session) = &self.session {
             let private = session.private_directory().to_path_buf();
-            known.push((private.clone(), session.logical_path().to_path_buf()));
+            // An untitled document is named by its name, never by its private file.
+            let shown = session
+                .logical_path()
+                .map_or_else(|| session.display_name(), |path| path.display().to_string());
+            known.push((private.clone(), shown));
             self.registered = Some(private);
         }
     }
@@ -220,11 +222,31 @@ impl Sessions {
     }
 
     pub(crate) fn logical_path(&self) -> Option<&Path> {
-        self.session.as_ref().map(DocumentSession::logical_path)
+        self.session
+            .as_ref()
+            .and_then(DocumentSession::logical_path)
     }
 
     pub(crate) fn name(&self) -> Option<String> {
         self.session.as_ref().map(DocumentSession::display_name)
+    }
+
+    /// Whether the open document has never been saved: Save asks where (§30L).
+    pub(crate) fn untitled(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(DocumentSession::is_untitled)
+    }
+
+    /// The name and folder a file dialog suggests for this document: its own
+    /// file, or **Untitled** in the folder dialogs start in. Never the private
+    /// file the model is read from.
+    pub(crate) fn suggestion(&self) -> Option<PathBuf> {
+        let session = self.session.as_ref()?;
+        Some(session.logical_path().map_or_else(
+            || self.suggested_directory().join(session.display_name()),
+            Path::to_path_buf,
+        ))
     }
 
     /// The file an export reads: the current accepted version, which holds unsaved
@@ -237,7 +259,9 @@ impl Sessions {
 
     #[cfg(test)]
     pub(crate) fn session_saved_version(&self) -> Option<ferritecad_document::DocumentVersion> {
-        self.session.as_ref().map(DocumentSession::saved_version)
+        self.session
+            .as_ref()
+            .and_then(DocumentSession::saved_version)
     }
 
     #[cfg(test)]
@@ -912,6 +936,34 @@ pub(crate) fn spawn_save(
 /// A slot a worker fills with the session it opened, and the event reads out.
 pub(crate) type Opened = Arc<Mutex<Option<DocumentSession>>>;
 
+/// What a creation does on its worker (§30L): the new document is made in a
+/// candidate session's own private directory by the shared creation route, and
+/// its picture is read from that private file exactly as Open reads one. Nothing
+/// is written anywhere else. A failure at any point drops the candidate and its
+/// directory; the window's session is not touched until the picture is accepted.
+pub(crate) fn create_for_view(
+    root: &Path,
+    content: ferritecad_jobs::NewDocument,
+    context: &OperationContext,
+) -> Result<(LoadedScene, DocumentSession)> {
+    let session = DocumentSession::create_document_in(
+        root,
+        ferritecad_jobs::HistoryLimits::default(),
+        content,
+        ferritecad_occt::OcctKernel::new,
+        context,
+    )?;
+    let mut kernel = ferritecad_occt::OcctKernel::new()?;
+    let scene = ferritecad_scene::snapshot_of(
+        session.current().path(),
+        &mut kernel,
+        |kernel, source| kernel.import_step(source),
+        &TessellationParams::default(),
+        context,
+    )?;
+    Ok((scene, session))
+}
+
 /// What an Open does on its worker: the file is read once, into a new session's
 /// private copy, and the picture is read from that copy — so what is shown and what
 /// Save writes are one reading, and the file on disk is not read a second time.
@@ -949,6 +1001,7 @@ mod tests {
     mod chamfer;
     mod cut;
     mod fillet;
+    mod new_document;
     use ferritecad_document::Document;
     use ferritecad_jobs::{
         CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,
@@ -1422,7 +1475,6 @@ mod tests {
             crate::dialogs::Action::SaveAs,
             crate::dialogs::Action::ExportFbx,
             crate::dialogs::Action::ExportStl,
-            crate::dialogs::Action::New,
         ] {
             assert_eq!(
                 dialogs.receive(
@@ -1518,7 +1570,7 @@ mod tests {
         let mut second =
             DocumentSession::open_in(f.private.path(), &other, HistoryLimits::default())
                 .expect("the other document");
-        let before = second.saved_version();
+        let before = second.saved_version().expect("opened from a file");
         sessions.adopt(std::mem::replace(
             &mut second,
             DocumentSession::open_in(f.private.path(), &other, HistoryLimits::default())

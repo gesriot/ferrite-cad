@@ -156,6 +156,10 @@ pub(crate) struct Editor {
     /// The open document has unsaved changes: the copy workflow reads a file and
     /// writes a new one, so it is withheld, and the form says why.
     unsaved: bool,
+    /// §30L: whether a drawing may make a new document right now. The window's
+    /// own `can_create` predicate, written each frame and asked again by the
+    /// handler; never persisted.
+    can_create: bool,
     /// Which profile the open window is asking for, and the circle's numbers.
     /// Both outlive a trip through the other mode; only Cancel clears them.
     mode: Mode,
@@ -196,6 +200,12 @@ pub(crate) struct Editor {
 }
 /// How many draft checkpoints either editor keeps. One bound, one policy.
 const DRAFT_HISTORY: usize = 128;
+
+/// §30L: the drawing forms make a new **Untitled** document; no dialog follows, so
+/// none of these ends in an ellipsis. The file is named by the first Save.
+pub(crate) const CREATE_DRAWN: &str = "Create new document";
+pub(crate) const CREATE_CIRCLE: &str = "Create circle document";
+pub(crate) const CREATE_ANNULUS: &str = "Create annular document";
 fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
     if stack.len() == DRAFT_HISTORY {
         stack.remove(0);
@@ -356,6 +366,7 @@ impl Editor {
         // again every frame, but a draft that is replaced must not forget it for
         // the frame in between.
         let (begin, apply, unsaved) = (self.can_begin_sketch, self.can_apply, self.unsaved);
+        let create = self.can_create;
         let analytic = self.can_apply_analytic;
         let angle = self.can_apply_angle;
         let constraints = self.constraints.session();
@@ -367,6 +378,7 @@ impl Editor {
         let chamfers_add = self.chamfers.add_session();
         *self = Self::default();
         self.can_begin_sketch = begin;
+        self.can_create = create;
         self.can_apply = apply;
         self.can_apply_analytic = analytic;
         self.can_apply_angle = angle;
@@ -383,6 +395,10 @@ impl Editor {
     }
     pub(crate) fn take_request(&mut self) -> Option<NewDocument> {
         self.pending.take()
+    }
+    /// §30L: what the window says each frame about making a new document.
+    pub(crate) fn set_create(&mut self, can_create: bool) {
+        self.can_create = can_create;
     }
     pub(crate) fn take_edit_request(&mut self) -> Option<EditSketchRequest> {
         self.pending_edit.take()
@@ -1167,7 +1183,10 @@ impl Editor {
             });
         match self.circle_content() {
             Ok(content) => {
-                if ui.button("Save circle extrusion…").clicked() {
+                if ui
+                    .add_enabled(self.can_create, egui::Button::new(CREATE_CIRCLE))
+                    .clicked()
+                {
                     self.pending = Some(content);
                 }
             }
@@ -1210,7 +1229,10 @@ impl Editor {
             });
         match self.annulus_content() {
             Ok(content) => {
-                if ui.button("Save annular extrusion…").clicked() {
+                if ui
+                    .add_enabled(self.can_create, egui::Button::new(CREATE_ANNULUS))
+                    .clicked()
+                {
                     self.pending = Some(content);
                 }
             }
@@ -2032,8 +2054,8 @@ impl Editor {
             Ok(content) => {
                 if ui
                     .add_enabled(
-                        self.canvas.gesture.is_none(),
-                        egui::Button::new("Create in new file…"),
+                        self.can_create && self.canvas.gesture.is_none(),
+                        egui::Button::new(CREATE_DRAWN),
                     )
                     .clicked()
                 {
@@ -2995,7 +3017,12 @@ pub(crate) mod tests {
         click(&ctx, e, text_at(&out, "Undo draft"));
         assert!(e.content().is_ok());
         let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Create in new file…"));
+        // §30L: the window's create predicate is off: the press asks nothing.
+        click(&ctx, e, text_at(&out, CREATE_DRAWN));
+        assert!(e.take_request().is_none(), "a disabled Create asked");
+        e.set_create(true);
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, CREATE_DRAWN));
         e.take_request().expect("real button submitted one request")
     }
     #[test]
@@ -3199,7 +3226,7 @@ pub(crate) mod tests {
             assert!(e.circle_content().is_err(), "radius {bad:?} was accepted");
             assert!(
                 !out.shapes.iter().any(|c| matches!(&c.shape,
-                    egui::Shape::Text(t) if t.galley.text() == "Save circle extrusion…")),
+                    egui::Shape::Text(t) if t.galley.text() == CREATE_CIRCLE)),
                 "radius {bad:?} still offered Save"
             );
             assert!(e.take_request().is_none());
@@ -3207,7 +3234,12 @@ pub(crate) mod tests {
 
         let ctx = draw_circle_through_widgets(&mut e, ["12", "-7"], "10", "15");
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save circle extrusion…"));
+        // §30L: the window's create predicate is off: the press asks nothing.
+        click(&ctx, &mut e, text_at(&out, CREATE_CIRCLE));
+        assert!(e.take_request().is_none(), "a disabled Create asked");
+        e.set_create(true);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, CREATE_CIRCLE));
         let NewDocument::CircleExtrude(c) = e.take_request().expect("one request") else {
             panic!("the circle form asked for something else")
         };
@@ -3219,7 +3251,7 @@ pub(crate) mod tests {
         // the job. Draft actions must not discard the recovery state or change
         // which form will reappear if the worker refuses the publication.
         let before_circle = e.circle.clone();
-        for label in ["Cancel draft", "Line polygon", "Save circle extrusion…"] {
+        for label in ["Cancel draft", "Line polygon", CREATE_CIRCLE] {
             let out = frame_running(&ctx, &mut e, vec![], true);
             let at = text_at(&out, label);
             frame_running(&ctx, &mut e, vec![egui::Event::PointerMoved(at)], true);
@@ -3306,7 +3338,7 @@ pub(crate) mod tests {
             assert!(e.annulus_content().is_err(), "{field} {bad:?} was accepted");
             assert!(
                 !out.shapes.iter().any(|c| matches!(&c.shape,
-                    egui::Shape::Text(t) if t.galley.text() == "Save annular extrusion…")),
+                    egui::Shape::Text(t) if t.galley.text() == CREATE_ANNULUS)),
                 "{field} {bad:?} still offered Save"
             );
             assert!(e.take_request().is_none());
@@ -3333,14 +3365,19 @@ pub(crate) mod tests {
         let out = frame(&ctx, &mut e, vec![]);
         assert!(
             !out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == "Save annular extrusion…")),
+                egui::Shape::Text(t) if t.galley.text() == CREATE_ANNULUS)),
             "an empty radius still offered Save"
         );
         assert!(e.take_request().is_none());
 
         let ctx = draw_annulus_through_widgets(&mut e, ["12", "-7"], "10", "4", "15");
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save annular extrusion…"));
+        // §30L: the window's create predicate is off: the press asks nothing.
+        click(&ctx, &mut e, text_at(&out, CREATE_ANNULUS));
+        assert!(e.take_request().is_none(), "a disabled Create asked");
+        e.set_create(true);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, CREATE_ANNULUS));
         let NewDocument::AnnularExtrude(a) = e.take_request().expect("one request") else {
             panic!("the annular form asked for something else")
         };
@@ -3352,7 +3389,7 @@ pub(crate) mod tests {
 
         // While that request is saving, only the toolbar can cancel the job.
         let before = e.annulus.clone();
-        for label in ["Cancel draft", "Circle", "Save annular extrusion…"] {
+        for label in ["Cancel draft", "Circle", CREATE_ANNULUS] {
             let out = frame_running(&ctx, &mut e, vec![], true);
             let at = text_at(&out, label);
             frame_running(&ctx, &mut e, vec![egui::Event::PointerMoved(at)], true);
@@ -3406,7 +3443,6 @@ pub(crate) mod tests {
             self,
             tests::{ferritecad, read_semantics},
         };
-        use std::sync::mpsc;
         let d = tempfile::tempdir().expect("dir");
         let ui = d.path().join("annulus-ui.fcad");
         let cli = d.path().join("annulus-cli.fcad");
@@ -3419,93 +3455,13 @@ pub(crate) mod tests {
             .expect("the widgets describe an annulus");
         let before = creates.sketch.annulus.clone();
         let mut view = ferritecad_ui::ViewportInput::new();
-        let loads = crate::Loads::default();
-        let exports = crate::exports::Exports::default();
 
-        // A cancelled save dialog keeps the numbers that were typed.
-        assert!(
-            crate::start_new(
-                &mut creates,
-                &loads,
-                &exports,
-                &mut view,
-                content.clone(),
-                None,
-                |_, _, _, _| panic!("no worker on cancel")
-            )
-            .is_none()
-        );
-        assert_eq!(creates.sketch.annulus, before);
-        // So does a destination that is already taken.
-        let busy = d.path().join("occupied.fcad");
-        std::fs::write(&busy, b"keep").expect("busy");
-        let (_, open) = creates::tests::run_to_completion(
+        creates::tests::drawn_through_the_window(
             &mut creates,
             &mut view,
             content.clone(),
-            Some(busy.clone()),
-        );
-        assert!(open.is_none());
-        assert_eq!(creates.sketch.annulus, before);
-        assert_eq!(std::fs::read(busy).expect("busy"), b"keep");
-
-        let (tx, rx) = mpsc::channel();
-        let spawn = move |path: &std::path::Path,
-                          content,
-                          generation,
-                          cancel: &ferritecad_kernel::CancelToken| {
-            let path = path.to_path_buf();
-            let ctx = ferritecad_kernel::OperationContext::default().with_cancel(cancel.clone());
-            creates::spawn_create(
-                move || creates::run_create(&path, content, &ctx),
-                move |result| tx.send((generation, result)).expect("reply"),
-            )
-        };
-        crate::start_new(
-            &mut creates,
-            &loads,
-            &exports,
-            &mut view,
-            content.clone(),
-            Some(ui.clone()),
-            spawn,
-        )
-        .expect("worker");
-        let (generation, result) = rx.recv().expect("worker result");
-        assert_eq!(
-            creates::finish_create(&mut creates, &mut view, generation, result),
-            Some(ui.clone())
-        );
-        assert!(!creates.sketch.active());
-        // Publication must retain the draft until the async Open is accepted.
-        creates
-            .sketch
-            .draft_load_finished(Path::new("unrelated.fcad"), false);
-        assert!(!creates.sketch.active());
-        creates.sketch.draft_load_finished(&ui, false);
-        assert!(
-            creates.sketch.active(),
-            "failed Open must restore the published draft"
-        );
-        assert_eq!(creates.sketch.annulus, before);
-        assert_eq!(creates.sketch.annulus_content().expect("restored"), content);
-        assert!(
-            creates.sketch.take_request().is_none(),
-            "restoring must not resubmit"
-        );
-        creates.sketch.draft_published(&ui);
-        creates.sketch.draft_load_finished(&ui, true);
-        assert!(!creates.sketch.active());
-        assert!(creates.sketch.published_draft.is_none());
-        // A reply for a request that is no longer current changes nothing.
-        assert!(
-            creates::finish_create(
-                &mut creates,
-                &mut view,
-                generation,
-                Err(ferritecad_types::CadError::kernel("stale")),
-            )
-            .is_none()
+            &ui,
+            |e| assert_eq!(e.annulus, before, "a refused picture restores the draft"),
         );
         creates.stop_all();
 
@@ -3627,7 +3583,7 @@ pub(crate) mod tests {
         );
         let out = frame(&ctx, e, vec![]);
         assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
-            egui::Shape::Text(t) if t.galley.text() == "Create in new file…")));
+            egui::Shape::Text(t) if t.galley.text() == CREATE_DRAWN)));
         click(&ctx, e, text_at(&out, "Undo draft"));
         assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
         ctx
@@ -3638,7 +3594,12 @@ pub(crate) mod tests {
         let mut e = Editor::default();
         let ctx = draw_stepped_revolve_through_widgets(&mut e);
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Create in new file…"));
+        // §30L: the window's create predicate is off: the press asks nothing.
+        click(&ctx, &mut e, text_at(&out, CREATE_DRAWN));
+        assert!(e.take_request().is_none(), "a disabled Create asked");
+        e.set_create(true);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, CREATE_DRAWN));
         let Some(NewDocument::SketchRevolve(revolution)) = e.take_request() else {
             panic!("one Revolve request")
         };
@@ -3673,7 +3634,6 @@ pub(crate) mod tests {
             self,
             tests::{ferritecad, read_semantics},
         };
-        use std::sync::mpsc;
         let d = tempfile::tempdir().expect("dir");
         let ui = d.path().join("revolve-ui.fcad");
         let cli = d.path().join("revolve-cli.fcad");
@@ -3683,72 +3643,14 @@ pub(crate) mod tests {
         let content = creates.sketch.content().expect("a Revolve");
         let before = creates.sketch.draft.clone();
         let mut view = ferritecad_ui::ViewportInput::new();
-        let loads = crate::Loads::default();
-        let exports = crate::exports::Exports::default();
 
-        // A cancelled save dialog keeps the draft and starts nothing.
-        assert!(
-            crate::start_new(
-                &mut creates,
-                &loads,
-                &exports,
-                &mut view,
-                content.clone(),
-                None,
-                |_, _, _, _| panic!("no worker on cancel")
-            )
-            .is_none()
-        );
-        assert_eq!(creates.sketch.draft, before);
-        // A taken destination is refused and leaves it alone.
-        let busy = d.path().join("occupied.fcad");
-        std::fs::write(&busy, b"keep").expect("busy");
-        let (_, open) = creates::tests::run_to_completion(
+        creates::tests::drawn_through_the_window(
             &mut creates,
             &mut view,
             content.clone(),
-            Some(busy.clone()),
+            &ui,
+            |e| assert_eq!(e.draft, before, "a refused picture restores the draft"),
         );
-        assert!(open.is_none());
-        assert_eq!(creates.sketch.draft, before);
-        assert_eq!(std::fs::read(busy).expect("busy"), b"keep");
-
-        let (tx, rx) = mpsc::channel();
-        let spawn = move |path: &std::path::Path,
-                          content,
-                          generation,
-                          cancel: &ferritecad_kernel::CancelToken| {
-            let path = path.to_path_buf();
-            let ctx = ferritecad_kernel::OperationContext::default().with_cancel(cancel.clone());
-            creates::spawn_create(
-                move || creates::run_create(&path, content, &ctx),
-                move |result| tx.send((generation, result)).expect("reply"),
-            )
-        };
-        crate::start_new(
-            &mut creates,
-            &loads,
-            &exports,
-            &mut view,
-            content.clone(),
-            Some(ui.clone()),
-            spawn,
-        )
-        .expect("worker");
-        let (generation, result) = rx.recv().expect("worker result");
-        assert_eq!(
-            creates::finish_create(&mut creates, &mut view, generation, result),
-            Some(ui.clone())
-        );
-        // A failed async Open gives the published draft back; an accepted one
-        // retires it.
-        creates.sketch.draft_load_finished(&ui, false);
-        assert!(creates.sketch.active(), "failed Open restores the draft");
-        assert_eq!(creates.sketch.draft, before);
-        assert!(creates.sketch.take_request().is_none(), "no resubmission");
-        creates.sketch.draft_published(&ui);
-        creates.sketch.draft_load_finished(&ui, true);
-        assert!(!creates.sketch.active());
         creates.stop_all();
 
         std::fs::write(
@@ -3840,7 +3742,7 @@ pub(crate) mod tests {
             assert!(error.contains(refusal), "{typed}: {error}");
             let out = frame(&ctx, e, vec![]);
             assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == "Create in new file…")));
+                egui::Shape::Text(t) if t.galley.text() == CREATE_DRAWN)));
         }
         // An emptied field is not an angle either (set directly: typing
         // nothing over a selection sends no event to clear it with).
@@ -3878,7 +3780,12 @@ pub(crate) mod tests {
         let mut e = Editor::default();
         let ctx = draw_partial_revolve_through_widgets(&mut e);
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Create in new file…"));
+        // §30L: the window's create predicate is off: the press asks nothing.
+        click(&ctx, &mut e, text_at(&out, CREATE_DRAWN));
+        assert!(e.take_request().is_none(), "a disabled Create asked");
+        e.set_create(true);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, CREATE_DRAWN));
         let Some(NewDocument::SketchPartialRevolve { profile, angle }) = e.take_request() else {
             panic!("one partial Revolve request")
         };
@@ -3916,7 +3823,6 @@ pub(crate) mod tests {
             self,
             tests::{ferritecad, read_semantics},
         };
-        use std::sync::mpsc;
         let d = tempfile::tempdir().expect("dir");
         let ui = d.path().join("sector-ui.fcad");
         let cli = d.path().join("sector-cli.fcad");
@@ -3926,63 +3832,13 @@ pub(crate) mod tests {
         let content = creates.sketch.content().expect("a sector");
         let before = creates.sketch.draft.clone();
         let mut view = ferritecad_ui::ViewportInput::new();
-        let loads = crate::Loads::default();
-        let exports = crate::exports::Exports::default();
-        // A cancelled save dialog keeps the draft and starts nothing.
-        assert!(
-            crate::start_new(
-                &mut creates,
-                &loads,
-                &exports,
-                &mut view,
-                content.clone(),
-                None,
-                |_, _, _, _| panic!("no worker on cancel")
-            )
-            .is_none()
-        );
-        assert_eq!(creates.sketch.draft, before);
-        let busy = d.path().join("occupied.fcad");
-        std::fs::write(&busy, b"keep").expect("busy");
-        let (_, open) = creates::tests::run_to_completion(
+        creates::tests::drawn_through_the_window(
             &mut creates,
             &mut view,
             content.clone(),
-            Some(busy.clone()),
+            &ui,
+            |e| assert_eq!(e.draft, before, "a refused picture restores the draft"),
         );
-        assert!(open.is_none());
-        assert_eq!(creates.sketch.draft, before);
-        assert_eq!(std::fs::read(busy).expect("busy"), b"keep");
-        let (tx, rx) = mpsc::channel();
-        let spawn = move |path: &std::path::Path,
-                          content,
-                          generation,
-                          cancel: &ferritecad_kernel::CancelToken| {
-            let path = path.to_path_buf();
-            let ctx = ferritecad_kernel::OperationContext::default().with_cancel(cancel.clone());
-            creates::spawn_create(
-                move || creates::run_create(&path, content, &ctx),
-                move |result| tx.send((generation, result)).expect("reply"),
-            )
-        };
-        crate::start_new(
-            &mut creates,
-            &loads,
-            &exports,
-            &mut view,
-            content.clone(),
-            Some(ui.clone()),
-            spawn,
-        )
-        .expect("worker");
-        let (generation, result) = rx.recv().expect("worker result");
-        assert_eq!(
-            creates::finish_create(&mut creates, &mut view, generation, result),
-            Some(ui.clone())
-        );
-        creates.sketch.draft_published(&ui);
-        creates.sketch.draft_load_finished(&ui, true);
-        assert!(!creates.sketch.active());
         creates.stop_all();
 
         std::fs::write(
@@ -5451,7 +5307,6 @@ pub(crate) mod tests {
             self,
             tests::{ferritecad, read_semantics},
         };
-        use std::sync::mpsc;
         let d = tempfile::tempdir().expect("dir");
         let ui = d.path().join("circle-ui.fcad");
         let cli = d.path().join("circle-cli.fcad");
@@ -5464,73 +5319,13 @@ pub(crate) mod tests {
             .expect("the widgets describe a circle");
         let before = creates.sketch.circle.clone();
         let mut view = ferritecad_ui::ViewportInput::new();
-        let loads = crate::Loads::default();
-        let exports = crate::exports::Exports::default();
 
-        // A cancelled save dialog keeps the numbers that were typed.
-        assert!(
-            crate::start_new(
-                &mut creates,
-                &loads,
-                &exports,
-                &mut view,
-                content.clone(),
-                None,
-                |_, _, _, _| panic!("no worker on cancel")
-            )
-            .is_none()
-        );
-        assert_eq!(creates.sketch.circle, before);
-        // So does a destination that is already taken.
-        let busy = d.path().join("occupied.fcad");
-        std::fs::write(&busy, b"keep").expect("busy");
-        let (_, open) = creates::tests::run_to_completion(
+        creates::tests::drawn_through_the_window(
             &mut creates,
             &mut view,
             content.clone(),
-            Some(busy.clone()),
-        );
-        assert!(open.is_none());
-        assert_eq!(creates.sketch.circle, before);
-        assert_eq!(std::fs::read(busy).expect("busy"), b"keep");
-
-        let (tx, rx) = mpsc::channel();
-        let spawn = move |path: &std::path::Path,
-                          content,
-                          generation,
-                          cancel: &ferritecad_kernel::CancelToken| {
-            let path = path.to_path_buf();
-            let ctx = ferritecad_kernel::OperationContext::default().with_cancel(cancel.clone());
-            creates::spawn_create(
-                move || creates::run_create(&path, content, &ctx),
-                move |result| tx.send((generation, result)).expect("reply"),
-            )
-        };
-        crate::start_new(
-            &mut creates,
-            &loads,
-            &exports,
-            &mut view,
-            content.clone(),
-            Some(ui.clone()),
-            spawn,
-        )
-        .expect("worker");
-        let (generation, result) = rx.recv().expect("worker result");
-        assert_eq!(
-            creates::finish_create(&mut creates, &mut view, generation, result),
-            Some(ui.clone())
-        );
-        assert!(!creates.sketch.active());
-        // A reply for a request that is no longer current changes nothing.
-        assert!(
-            creates::finish_create(
-                &mut creates,
-                &mut view,
-                generation,
-                Err(ferritecad_types::CadError::kernel("stale")),
-            )
-            .is_none()
+            &ui,
+            |e| assert_eq!(e.circle, before, "a refused picture restores the draft"),
         );
         creates.stop_all();
 
@@ -5591,7 +5386,6 @@ pub(crate) mod tests {
             self,
             tests::{ferritecad, read_semantics},
         };
-        use std::sync::mpsc;
         let d = tempfile::tempdir().expect("dir");
         let ui = d.path().join("ui.fcad");
         let cli = d.path().join("cli.fcad");
@@ -5600,74 +5394,13 @@ pub(crate) mod tests {
         let content = draw_l_through_widgets(&mut creates.sketch);
         let before = creates.sketch.draft.clone();
         let mut view = ferritecad_ui::ViewportInput::new();
-        let loads = crate::Loads::default();
-        let exports = crate::exports::Exports::default();
-        // Cancelled/failed save dialogs both provide no destination; the exact
-        // post-dialog UI route must leave the draft and accepted scene alone.
-        assert!(
-            crate::start_new(
-                &mut creates,
-                &loads,
-                &exports,
-                &mut view,
-                content.clone(),
-                None,
-                |_, _, _, _| panic!("no worker on cancel")
-            )
-            .is_none()
-        );
-        assert_eq!(creates.sketch.draft, before);
-        let busy = d.path().join("occupied.fcad");
-        std::fs::write(&busy, b"keep").expect("busy");
-        let (_, open) = creates::tests::run_to_completion(
+        creates::tests::drawn_through_the_window(
             &mut creates,
             &mut view,
             content.clone(),
-            Some(busy.clone()),
+            &ui,
+            |e| assert_eq!(e.draft, before, "a refused picture restores the draft"),
         );
-        assert!(open.is_none());
-        assert_eq!(creates.sketch.draft, before);
-        assert_eq!(std::fs::read(busy).expect("busy"), b"keep");
-        let (tx, rx) = mpsc::channel();
-        let spawn = move |path: &std::path::Path,
-                          content,
-                          generation,
-                          cancel: &ferritecad_kernel::CancelToken| {
-            let path = path.to_path_buf();
-            let ctx = ferritecad_kernel::OperationContext::default().with_cancel(cancel.clone());
-            creates::spawn_create(
-                move || creates::run_create(&path, content, &ctx),
-                move |result| tx.send((generation, result)).expect("reply"),
-            )
-        };
-        crate::start_new(
-            &mut creates,
-            &loads,
-            &exports,
-            &mut view,
-            content.clone(),
-            Some(ui.clone()),
-            spawn,
-        )
-        .expect("worker");
-        assert!(
-            crate::start_new(
-                &mut creates,
-                &loads,
-                &exports,
-                &mut view,
-                content,
-                Some(ui.clone()),
-                |_, _, _, _| panic!("duplicate worker")
-            )
-            .is_none()
-        );
-        let (generation, result) = rx.recv().expect("worker result");
-        assert_eq!(
-            creates::finish_create(&mut creates, &mut view, generation, result),
-            Some(ui.clone())
-        );
-        assert!(!creates.sketch.active());
         creates.stop_all();
         std::fs::write(&input,r#"{"request_version":1,"points_mm":[[0,0],[60,0],[60,20],[20,20],[20,40],[0,40]],"height_mm":10}"#).expect("request");
         let run = std::process::Command::new(ferritecad())
@@ -7245,11 +6978,11 @@ pub(crate) mod tests {
         assert!(!painted(&out, "Restore saved vertices"));
         click(&ctx, &mut e, text_at(&out, "Circle"));
         let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, "Save circle extrusion…"));
+        assert!(painted(&out, CREATE_CIRCLE));
         assert!(!painted(&out, "Restore saved vertices"));
         click(&ctx, &mut e, text_at(&out, "Circle with hole"));
         let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, "Save annular extrusion…"));
+        assert!(painted(&out, CREATE_ANNULUS));
         assert!(!painted(&out, "Restore saved vertices"));
 
         let root = tempfile::tempdir().expect("dir");

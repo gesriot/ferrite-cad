@@ -153,8 +153,10 @@ impl SaveHooks for NoHooks {}
 pub struct SavePlan {
     source: Arc<Snapshot>,
     private: PathBuf,
-    logical: PathBuf,
-    expected: DocumentVersion,
+    /// The session's file; `None` for a document that has never been saved, which
+    /// only Save As can save.
+    logical: Option<PathBuf>,
+    expected: Option<DocumentVersion>,
     target: SaveTarget,
     generation: u64,
 }
@@ -163,8 +165,8 @@ impl SavePlan {
     pub(crate) fn new(
         source: Arc<Snapshot>,
         private: PathBuf,
-        logical: PathBuf,
-        expected: DocumentVersion,
+        logical: Option<PathBuf>,
+        expected: Option<DocumentVersion>,
         target: SaveTarget,
         generation: u64,
     ) -> Self {
@@ -201,6 +203,13 @@ impl SavePlan {
     ) -> Result<Saved, SaveFailure> {
         context.check_cancelled().map_err(SaveFailure::failed)?;
         match self.target.clone() {
+            SaveTarget::InPlace if self.logical.is_none() => Err(SaveFailure::new(
+                SaveFailureKind::Failed,
+                format!(
+                    "{} has not been saved yet, so there is no file to replace; choose where to save it.",
+                    crate::session::UNTITLED
+                ),
+            )),
             SaveTarget::InPlace => self.in_place(context, hooks),
             SaveTarget::As(destination) => self.as_new(&destination, context, hooks),
         }
@@ -224,23 +233,40 @@ impl SavePlan {
     }
 
     fn name(&self) -> String {
-        self.logical
-            .file_name()
-            .unwrap_or(self.logical.as_os_str())
-            .to_string_lossy()
-            .into_owned()
+        self.logical.as_ref().map_or_else(
+            || crate::session::UNTITLED.to_owned(),
+            |logical| {
+                logical
+                    .file_name()
+                    .unwrap_or(logical.as_os_str())
+                    .to_string_lossy()
+                    .into_owned()
+            },
+        )
+    }
+
+    /// The file an in-place save replaces. Only reached with one: `run_with`
+    /// refuses an in-place save of an untitled session first.
+    fn logical(&self) -> Result<&Path, SaveFailure> {
+        self.logical.as_deref().ok_or_else(|| {
+            SaveFailure::new(
+                SaveFailureKind::Failed,
+                format!("{} has no file yet", crate::session::UNTITLED),
+            )
+        })
     }
 
     /// The file the logical path resolves to right now: saving through a symbolic
     /// link replaces the file it points at and leaves the link as it is.
     fn resolve(&self) -> Result<PathBuf, SaveFailure> {
-        match std::fs::canonicalize(&self.logical) {
+        let logical = self.logical()?;
+        match std::fs::canonicalize(logical) {
             Ok(path) => Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Err(self.conflict(Conflict::Missing))
             }
             Err(error) => Err(SaveFailure::failed(CadError::io(
-                format!("resolving {}", self.logical.display()),
+                format!("resolving {}", logical.display()),
                 error,
             ))),
         }
@@ -330,7 +356,7 @@ impl SavePlan {
             .map_err(SaveFailure::failed)?;
         drop(lock);
         hooks.after_publish();
-        Ok(self.saved(self.logical.clone(), SaveKind::InPlace))
+        Ok(self.saved(self.logical()?.to_path_buf(), SaveKind::InPlace))
     }
 
     fn as_new(
@@ -357,11 +383,15 @@ impl SavePlan {
         // The session's private directory goes with the session: a document saved
         // there would be deleted when the window moves on.
         if crate::session::is_inside(&self.private, &destination) {
+            // Named by the file alone: the working folder is never shown (§30L).
             return Err(SaveFailure::new(
                 SaveFailureKind::Failed,
                 format!(
                     "{} is inside FerriteCAD's temporary working folder, which is deleted when the document is closed; choose a folder of your own.",
-                    destination.display()
+                    destination
+                        .file_name()
+                        .unwrap_or(destination.as_os_str())
+                        .to_string_lossy()
                 ),
             ));
         }
@@ -421,10 +451,13 @@ impl SavePlan {
         // Closed before anything replaces it: a replaced file must not have a
         // handle open on it.
         document.close().map_err(SaveFailure::failed)?;
-        if found.document_id != self.expected.document_id {
+        let Some(expected) = self.expected else {
+            return Err(self.conflict(Conflict::Replaced));
+        };
+        if found.document_id != expected.document_id {
             return Err(self.conflict(Conflict::Replaced));
         }
-        if found.content != self.expected.content {
+        if found.content != expected.content {
             return Err(self.conflict(Conflict::Modified));
         }
         Ok(())

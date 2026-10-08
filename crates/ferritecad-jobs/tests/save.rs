@@ -135,7 +135,7 @@ fn an_externally_modified_file_is_never_replaced_and_keeps_the_users_work() {
         .expect("save as");
     session.record_saved(&saved);
     assert_eq!(height_of(&kept), 22.0);
-    assert_eq!(session.logical_path(), kept);
+    assert_eq!(session.logical_path(), Some(kept.as_path()));
     assert!(!session.is_dirty());
     assert_eq!(bytes(&f.file), theirs, "Save As touched the original");
 }
@@ -198,7 +198,7 @@ fn save_as_refuses_an_occupied_path_and_succeeds_on_a_free_one() {
     assert!(session.is_dirty(), "a refused Save As moved the checkpoint");
     assert_eq!(
         session.logical_path(),
-        f.file,
+        Some(f.file.as_path()),
         "a refused Save As moved the path"
     );
     only(&f, &["plate.fcad", "theirs.fcad"]);
@@ -224,7 +224,7 @@ fn save_as_refuses_an_occupied_path_and_succeeds_on_a_free_one() {
     assert_eq!(saved.kind, SaveKind::As);
     session.record_saved(&saved);
     assert_eq!(height_of(&free), 22.0);
-    assert_eq!(session.logical_path(), free);
+    assert_eq!(session.logical_path(), Some(free.as_path()));
     assert!(!session.is_dirty());
     assert_eq!(bytes(&f.file), untouched, "Save As changed the original");
     // The next Save goes to the new name.
@@ -285,7 +285,7 @@ fn a_symlink_is_saved_through_and_a_hard_linked_file_is_refused() {
         "Save replaced the link"
     );
     assert_eq!(height_of(&real), 22.0);
-    assert_eq!(session.logical_path(), f.file);
+    assert_eq!(session.logical_path(), Some(f.file.as_path()));
     only(&f, &["plate.fcad", "real.fcad"]);
 }
 
@@ -491,7 +491,7 @@ fn a_failed_save_leaves_the_session_and_the_directory_exactly_as_they_were() {
         .expect_err("no directory");
     assert_eq!(failure.kind, SaveFailureKind::Failed);
     assert!(session.is_dirty());
-    assert_eq!(session.logical_path(), f.file);
+    assert_eq!(session.logical_path(), Some(f.file.as_path()));
     only(&f, &["plate.fcad"]);
 }
 
