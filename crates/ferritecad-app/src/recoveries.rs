@@ -156,10 +156,7 @@ impl Recoveries {
                 if let Some(index) = self.offers.iter().position(|offer| offer.record == record) {
                     let summary = self.offers.remove(index);
                     self.written.remove(index);
-                    self.outcome = Some(format!(
-                        "Recovered {}. It is a new unsaved document: check it, then Save As.",
-                        summary.name
-                    ));
+                    self.outcome = Some(format!("Recovered {}.", summary.name));
                 }
             }
             Err(message) => {

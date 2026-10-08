@@ -2907,23 +2907,29 @@ impl ApplicationHandler<AppEvent> for App {
                 // An answer nobody waits for is dropped, and with it the session
                 // and its claim: the record stays as it was.
                 if self.recoveries.accepts(generation) {
-                    let outcome = match *result {
-                        Ok((scene, session)) => {
-                            let shown = session.current().path().to_path_buf();
-                            // Accepted exactly as an Open is: the session is bound in
-                            // the statement that shows its picture, and a picture that
-                            // cannot be prepared leaves the open document as it was.
-                            let outcome = self.show(
-                                &shown,
-                                Ok(scene),
-                                sessions::Bind::Open(Box::new(session)),
-                            );
-                            if outcome.is_ok() {
-                                self.loads.document_replaced();
+                    let outcome = if !self.sessions.finish_recovery(generation) {
+                        Err(CadError::input(
+                            "Recovery was cancelled; its copy was kept.",
+                        ))
+                    } else {
+                        match *result {
+                            Ok((scene, session)) => {
+                                let shown = session.current().path().to_path_buf();
+                                // Accepted exactly as an Open is: the session is bound in
+                                // the statement that shows its picture, and a picture that
+                                // cannot be prepared leaves the open document as it was.
+                                let outcome = self.show(
+                                    &shown,
+                                    Ok(scene),
+                                    sessions::Bind::Open(Box::new(session)),
+                                );
+                                if outcome.is_ok() {
+                                    self.loads.document_replaced();
+                                }
+                                outcome
                             }
-                            outcome
+                            Err(error) => Err(error),
                         }
-                        Err(error) => Err(error),
                     };
                     if let Err(error) = &outcome {
                         eprintln!("ferritecad: {error}");
@@ -3923,7 +3929,9 @@ impl App {
         };
         exports::leave_document(&mut self.exports, &mut self.input);
         let proxy = self.proxy.clone();
+        let sessions = &mut self.sessions;
         self.recoveries.begin(record, move |generation| {
+            sessions.hold_recovery(generation);
             std::thread::spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     sessions::recover_for_view(

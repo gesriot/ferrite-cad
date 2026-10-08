@@ -51,6 +51,13 @@ impl ContentHash {
     pub fn of_bytes(bytes: &[u8]) -> Self {
         Self(*blake3::hash(bytes).as_bytes())
     }
+
+    /// Hashes raw bytes with bounded buffering, without loading an entire file.
+    pub fn of_reader(reader: impl std::io::Read) -> std::io::Result<Self> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update_reader(reader)?;
+        Ok(Self(*hasher.finalize().as_bytes()))
+    }
 }
 
 impl fmt::Display for ContentHash {
@@ -200,6 +207,22 @@ impl<'de> Deserialize<'de> for ContentHash {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn streamed_hash_matches_bytes_and_propagates_read_failure() {
+        use std::io::Read as _;
+        let bytes = vec![37; 180_001];
+        assert_eq!(
+            super::ContentHash::of_reader(bytes.as_slice()).expect("hash"),
+            super::ContentHash::of_bytes(&bytes)
+        );
+        struct Fails;
+        impl std::io::Read for Fails {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("read failed"))
+            }
+        }
+        assert!(super::ContentHash::of_reader(bytes.as_slice().chain(Fails)).is_err());
+    }
     use super::*;
 
     #[test]

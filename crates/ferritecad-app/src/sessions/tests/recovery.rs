@@ -18,6 +18,50 @@ fn recording(store: &RecoveryStore) -> Sessions {
     sessions
 }
 
+#[test]
+fn recovery_reserves_document_mutation_and_cancel_rejects_its_late_answer() {
+    let f = fixture();
+    let mut sessions = Sessions::default();
+    sessions.adopt(
+        DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
+            .expect("session"),
+    );
+    let accepted = sessions.export_source().expect("snapshot");
+    sessions.hold_recovery(7);
+    assert!(sessions.busy());
+    assert!(!sessions.can_save_as() && !sessions.can_undo() && !sessions.can_redo());
+    assert!(
+        sessions
+            .begin_apply(|_, _, _| panic!("must not start a competing edit"))
+            .is_none()
+    );
+    assert!(!crate::can_create(
+        &crate::creates::Creates::default(),
+        &crate::Loads::default(),
+        &crate::exports::Exports::default(),
+        &crate::edits::Edits::default(),
+        &sessions,
+    ));
+    assert!(
+        !sessions.finish_recovery(6),
+        "older answer does not release the slot"
+    );
+    assert!(sessions.busy());
+    assert!(sessions.cancel());
+    assert!(!sessions.busy() && sessions.can_save_as());
+    assert!(
+        !sessions.finish_recovery(7),
+        "cancelled answer cannot replace the document"
+    );
+    assert_eq!(
+        sessions.export_source().expect("still shown").version(),
+        accepted.version()
+    );
+    sessions.hold_recovery(8);
+    assert!(sessions.finish_recovery(8));
+    assert!(!sessions.busy());
+}
+
 fn settle(sessions: &Sessions) -> Option<RecoveryStatus> {
     let deadline = Instant::now() + Duration::from_secs(120);
     while !sessions.recovery_settled() {

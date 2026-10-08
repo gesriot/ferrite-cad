@@ -310,6 +310,10 @@ pub trait RecoveryHooks {
     fn after_copy_published(&mut self) {}
     /// The new manifest is written under its partial name, not yet renamed.
     fn after_manifest_written(&mut self) {}
+    /// The manifest has been renamed; a test can inject failure of the final sync.
+    fn sync_published_manifest(&mut self, directory: &Path) -> Result<()> {
+        sync_directory(directory)
+    }
 }
 
 struct NoHooks;
@@ -532,6 +536,7 @@ impl RecoveryStore {
                         lease,
                         sequence: 0,
                         current: None,
+                        confirmed: true,
                         last_order: 0,
                     });
                 }
@@ -688,6 +693,16 @@ fn create_lease(directory: &Path) -> Result<Lease> {
 }
 
 fn take_lease(directory: &Path) -> LeaseState {
+    // All callers, including deletion and empty-orphan cleanup, must reject a
+    // linked directory before opening any of its children.
+    match std::fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return LeaseState::NotOurs,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LeaseState::Missing,
+        Err(error) => {
+            return LeaseState::Failed(CadError::io("reading a recovery directory", error));
+        }
+    }
     let path = directory.join(LEASE);
     match std::fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.is_file() => {}
@@ -1026,19 +1041,24 @@ fn verify(
             )));
         }
     }
-    let contents = std::fs::read(&copy)
+    let contents = File::open(&copy)
         .map_err(|e| RecoveryRefusal::io(record, CadError::io("reading a recovery copy", e)))?;
-    if contents.len() as u64 != manifest.bytes {
+    let length = contents
+        .metadata()
+        .map_err(|e| RecoveryRefusal::io(record, CadError::io("measuring a recovery copy", e)))?
+        .len();
+    if length != manifest.bytes {
         return Err(mismatch(
             "the copy is not the length its manifest says (incomplete)",
         ));
     }
-    if ContentHash::of_bytes(&contents) != manifest.blake3 {
+    let hash = ContentHash::of_reader(contents)
+        .map_err(|e| RecoveryRefusal::io(record, CadError::io("hashing a recovery copy", e)))?;
+    if hash != manifest.blake3 {
         return Err(mismatch(
             "the copy's bytes are not the ones its manifest names",
         ));
     }
-    drop(contents);
     let document = Document::open_read_only(&copy).map_err(|e| {
         RecoveryRefusal::new(
             record,
@@ -1094,6 +1114,9 @@ pub struct RecoveryRecord {
     sequence: u64,
     /// What the published manifest says, when there is one.
     current: Option<Manifest>,
+    /// A renamed manifest remains authoritative even if its directory sync fails.
+    /// That copy must be kept, but an identical retry must not claim durability.
+    confirmed: bool,
     /// The highest request number this record has acted on.
     last_order: u64,
 }
@@ -1132,6 +1155,7 @@ impl RecoveryRecord {
         let name = clean_name(name);
         let version = snapshot.version();
         if let Some(current) = &self.current
+            && self.confirmed
             && current.document == version.document_id
             && current.content == version.content
             && current.model == snapshot.model()
@@ -1145,6 +1169,7 @@ impl RecoveryRecord {
         let file = copy_name(sequence);
         let partial = self.directory.join(format!(".{file}.partial"));
         let _ = std::fs::remove_file(&partial);
+        let mut published = None;
         let outcome = (|| -> Result<Manifest> {
             let source = Document::open_read_only(snapshot.path())?;
             source.snapshot_to(&partial)?;
@@ -1165,21 +1190,26 @@ impl RecoveryRecord {
                     "the copy does not hold the version it was made from",
                 ));
             }
-            let contents = std::fs::read(&partial)
+            let contents = File::open(&partial)
                 .map_err(|e| CadError::io("reading back a recovery copy", e))?;
+            let bytes = contents
+                .metadata()
+                .map_err(|e| CadError::io("measuring a recovery copy", e))?
+                .len();
+            let blake3 = ContentHash::of_reader(contents)
+                .map_err(|e| CadError::io("hashing a recovery copy", e))?;
             let manifest = Manifest {
                 record: self.record,
                 sequence,
                 file: file.clone(),
-                bytes: contents.len() as u64,
-                blake3: ContentHash::of_bytes(&contents),
+                bytes,
+                blake3,
                 document: version.document_id,
                 content: version.content,
                 model: snapshot.model(),
                 written_unix_ms: now_unix_ms(),
                 name,
             };
-            drop(contents);
             std::fs::rename(&partial, self.directory.join(&file))
                 .map_err(|e| CadError::io("publishing a recovery copy", e))?;
             sync_directory(&self.directory)?;
@@ -1199,12 +1229,21 @@ impl RecoveryRecord {
             hooks.after_manifest_written();
             std::fs::rename(&manifest_partial, self.directory.join(MANIFEST))
                 .map_err(|e| CadError::io("publishing a recovery manifest", e))?;
-            sync_directory(&self.directory)?;
+            published = Some(manifest.clone());
+            hooks.sync_published_manifest(&self.directory)?;
             Ok(manifest)
         })();
         let manifest = match outcome {
             Ok(manifest) => manifest,
             Err(error) => {
+                if let Some(manifest) = published {
+                    // The manifest already names this file. Deleting it here
+                    // would turn a sync failure into loss of the recovery copy.
+                    self.sequence = sequence;
+                    self.current = Some(manifest);
+                    self.confirmed = false;
+                    return Err(CadError::io("syncing the published recovery copy", error));
+                }
                 let _ = std::fs::remove_file(&partial);
                 let _ = std::fs::remove_file(self.directory.join(MANIFEST_PARTIAL));
                 // A copy renamed into place whose manifest never followed is not
@@ -1221,6 +1260,7 @@ impl RecoveryRecord {
             }
         };
         self.sequence = sequence;
+        self.confirmed = true;
         let previous = self.current.replace(manifest.clone());
         if let Some(previous) = previous
             && previous.file != manifest.file
@@ -1363,6 +1403,7 @@ impl RecoveryClaim {
             lease: self.lease,
             sequence: manifest.sequence,
             current: Some(manifest),
+            confirmed: true,
             last_order: 0,
         })
     }

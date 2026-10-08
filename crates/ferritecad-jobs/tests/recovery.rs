@@ -964,3 +964,87 @@ fn a_recovered_session_adopts_its_record_without_writing_or_duplicating_it() {
     recorder.finish(Ending::Retire);
     assert!(record_dirs(root.path()).is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn recovery_cleanup_never_follows_a_record_directory_symlink() {
+    use std::os::unix::fs::symlink;
+    for published in [false, true] {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let store = RecoveryStore::open(root.path()).expect("store");
+        let external = RecoveryStore::open(outside.path()).expect("external store");
+        let mut record = external.create_record().expect("record");
+        let id = record.id();
+        let directory = outside.path().join(format!("r-{id}"));
+        if published {
+            let session = new_plate_session(sessions.path());
+            record.publish(1, &session.current(), "keep").expect("copy");
+        } else {
+            std::fs::write(directory.join("c1.fcad"), b"outside incomplete copy").expect("file");
+        }
+        drop(record);
+        let original: Vec<_> = names(&directory)
+            .into_iter()
+            .map(|name| {
+                let data = bytes(&directory.join(&name));
+                (name, data)
+            })
+            .collect();
+        symlink(&directory, root.path().join(format!("r-{id}"))).expect("symlink");
+        let new = store.create_record().expect("new local record");
+        assert!(store.delete(id).is_err(), "linked record must be refused");
+        for (name, data) in original {
+            assert_eq!(
+                std::fs::read(directory.join(&name)).ok(),
+                Some(data),
+                "cleanup altered an external {name}, published={published}"
+            );
+        }
+        new.retire().expect("retire own record");
+    }
+}
+
+#[test]
+fn a_failed_final_sync_keeps_the_published_copy_and_advances_its_sequence() {
+    struct FailSync;
+    impl RecoveryHooks for FailSync {
+        fn sync_published_manifest(&mut self, _: &Path) -> Result<()> {
+            Err(CadError::io(
+                "syncing recovery directory",
+                "injected I/O failure",
+            ))
+        }
+    }
+    let root = tempfile::tempdir().expect("root");
+    let sessions = tempfile::tempdir().expect("sessions");
+    let store = RecoveryStore::open(root.path()).expect("store");
+    let mut session = new_plate_session(sessions.path());
+    let first = session.current();
+    let mut record = store.create_record().expect("record");
+    let id = record.id();
+    record.publish(1, &first, "plate").expect("first copy");
+    apply(&mut session, 22.0);
+    let second = session.current();
+    let error = record
+        .publish_with(2, &second, "plate", &mut FailSync)
+        .expect_err("sync failed");
+    assert!(format!("{error:?}").contains("injected I/O failure"));
+    let directory = root.path().join(format!("r-{id}"));
+    assert_eq!(
+        version_of(&directory.join("c2.fcad")).0,
+        second.version(),
+        "the published manifest must keep its copy after a sync error"
+    );
+    // A retry must actually confirm durability, not return an unverified Unchanged.
+    assert!(matches!(
+        record.publish(3, &second, "plate"),
+        Ok(Publication::Written { sequence: 3, .. })
+    ));
+    drop(record);
+    assert_eq!(
+        store.claim(id).expect("recoverable").summary().content,
+        second.version().content
+    );
+}

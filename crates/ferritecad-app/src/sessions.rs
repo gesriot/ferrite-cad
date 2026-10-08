@@ -131,6 +131,9 @@ pub(crate) struct SaveReport {
 pub(crate) struct Sessions {
     session: Option<DocumentSession>,
     operation: Option<Operation>,
+    /// Recover uses a separate worker but reserves the same document mutation slot.
+    /// Cancellation releases the slot and makes its eventual answer stale.
+    recovery_generation: Option<u64>,
     issued: u64,
     /// What the user was on their way to when they pressed Save.
     after_save: Option<Continuation>,
@@ -288,7 +291,17 @@ impl Sessions {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.operation.is_some()
+        self.operation.is_some() || self.recovery_generation.is_some()
+    }
+
+    pub(crate) fn hold_recovery(&mut self, generation: u64) {
+        self.recovery_generation = Some(generation);
+    }
+
+    pub(crate) fn finish_recovery(&mut self, generation: u64) -> bool {
+        self.recovery_generation
+            .take_if(|current| *current == generation)
+            .is_some()
     }
 
     pub(crate) fn logical_path(&self) -> Option<&Path> {
@@ -379,6 +392,7 @@ impl Sessions {
     /// The session of the document that was just accepted replaces the old one,
     /// which is dropped here and takes its private files with it.
     pub(crate) fn adopt(&mut self, session: DocumentSession) {
+        self.recovery_generation = None;
         // Whatever was in flight belonged to the document being replaced: its
         // answer must not be applied to this one (a Save's checkpoint above all).
         // It is cancelled and its worker joined later, not here, so the window
@@ -667,6 +681,10 @@ impl Sessions {
 
     /// Asks the operation in flight to stop. Returns whether there was one.
     pub(crate) fn cancel(&mut self) -> bool {
+        if self.recovery_generation.take().is_some() {
+            self.status = "Recovery cancelled; the copy is kept.".to_owned();
+            return true;
+        }
         match &self.operation {
             Some(op) => {
                 op.cancel.cancel();
@@ -678,6 +696,7 @@ impl Sessions {
 
     /// Stops and joins everything; the session and its private files go with it.
     pub(crate) fn stop_all(&mut self) {
+        self.recovery_generation = None;
         if let Some(mut operation) = self.operation.take() {
             operation.cancel.cancel();
             if let Some(worker) = operation.worker.take() {

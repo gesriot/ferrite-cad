@@ -746,6 +746,7 @@ jobs:
             a_live_lease_is_never_offered_claimed_or_deleted_and_death_releases_it \
             a_crash_in_every_phase_of_a_publication_leaves_the_previous_whole_copy \
             an_older_request_never_replaces_a_newer_copy \
+            a_failed_final_sync_keeps_the_published_copy_and_advances_its_sequence \
             save_discard_cancel_and_failed_saves_end_the_record_as_the_person_decided \
             a_discarded_document_is_not_brought_back_by_a_copy_still_in_flight \
             extraction_publishes_a_new_file_and_keeps_the_record_and_the_source \
@@ -758,6 +759,9 @@ jobs:
             if grep -q 'skipped:' recovery-job.log || ! grep -Fq "test $gate ... ok" recovery-job.log; then exit 1; fi
           done
           if [ "$RUNNER_OS" != Windows ]; then
+            gate=recovery_cleanup_never_follows_a_record_directory_symlink
+            cargo test -p ferritecad-jobs --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-symlink.log
+            if grep -q 'skipped:' recovery-symlink.log || ! grep -Fq "test $gate ... ok" recovery-symlink.log; then exit 1; fi
             # Directory permissions are a Unix gate; the runner is not root, so it
             # must execute rather than skip.
             gate=a_folder_without_write_permission_fails_the_copy_and_loses_nothing
@@ -897,6 +901,7 @@ jobs:
             sketch::tests::a_dirty_document_can_open_a_new_drawing_without_enabling_copy_workflows \
             sessions::tests::recovery::only_a_version_shown_with_its_picture_is_copied_and_saved_or_undone_states_have_no_copy \
             sessions::tests::recovery::discard_and_quit_end_the_copy_and_an_exit_nobody_chose_keeps_it \
+            sessions::tests::recovery::recovery_reserves_document_mutation_and_cancel_rejects_its_late_answer \
             sessions::tests::recovery::a_recovered_document_is_untitled_named_recovered_and_takes_over_its_record
           do
             cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-app.log
