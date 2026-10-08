@@ -838,6 +838,10 @@ jobs:
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-add-chamfer-mixed.log
           if grep -q 'skipped:' session-add-chamfer-mixed.log || ! grep -Fq "test $gate ... ok" session-add-chamfer-mixed.log; then exit 1; fi
+          gate=sessions::tests::new_document::mixed_new_documents_need_no_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-new-document-mixed.log
+          if grep -q 'skipped:' session-new-document-mixed.log || ! grep -Fq "test $gate ... ok" session-new-document-mixed.log; then exit 1; fi
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
@@ -1163,6 +1167,29 @@ jobs:
             test -s "$add_chamfer_dir/$name.stl"
           done
           echo "FCAD_ADD_CHAMFER_SESSION_FBX_DIR=$add_chamfer_artifacts" >> "$GITHUB_ENV"
+
+          # §30L: every new-document variant untitled until its first Save, the
+          # window comparator's self-check, and representative exports before
+          # and after the first Save for the pinned reader below.
+          new_document_dir="$RUNNER_TEMP/new-document-session"
+          mkdir -p "$new_document_dir"
+          new_document_artifacts="$new_document_dir"
+          case '${{ matrix.name }}' in
+            windows) new_document_artifacts="$(cygpath -w "$new_document_artifacts")" ;;
+          esac
+          export FCAD_NEW_DOCUMENT_SESSION_ARTIFACTS="$new_document_artifacts"
+          for gate in sessions::tests::new_document::native_every_new_document_variant_is_untitled_until_its_first_save_like_the_cli \
+            sessions::tests::new_document::native_window_scenario_on_session_files_passes_the_comparator_and_its_controls
+          do
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-new-document-native.log
+            if grep -q 'skipped:' session-new-document-native.log || ! grep -Fq "test $gate ... ok" session-new-document-native.log; then exit 1; fi
+          done
+          for name in new-polygon-before-save new-polygon-after-save new-annulus-before-save new-annulus-after-save; do
+            test -s "$new_document_dir/$name.fbx"
+            test -s "$new_document_dir/$name.stl"
+          done
+          echo "FCAD_NEW_DOCUMENT_SESSION_FBX_DIR=$new_document_artifacts" >> "$GITHUB_ENV"
 
           fillet_dir="$RUNNER_TEMP/fillet-session"
           mkdir -p "$fillet_dir"
@@ -2850,6 +2877,7 @@ jobs:
           grep -q '^FCAD_ADD_CUT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ADD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ADD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_NEW_DOCUMENT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 
