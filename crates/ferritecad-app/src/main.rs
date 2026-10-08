@@ -37,6 +37,7 @@ mod exports;
 mod fillets;
 #[cfg(target_os = "macos")]
 mod macos_quit;
+mod recoveries;
 mod sessions;
 mod sketch;
 
@@ -308,6 +309,18 @@ enum AppEvent {
         generation: creates::CreateGeneration,
         result: Box<Result<creates::Candidate>>,
     },
+    /// §30M: what the recovery folder holds (at start, and after a Delete).
+    RecoveryListed {
+        listing: Box<Result<ferritecad_jobs::RecoveryListing>>,
+        outcome: Option<String>,
+    },
+    /// §30M: a recovered document and its picture, or why not.
+    Recovered {
+        generation: recoveries::RecoverGeneration,
+        result: Box<Result<(LoadedScene, ferritecad_jobs::DocumentSession)>>,
+    },
+    /// §30M: the crash copy of the open document was written (or not).
+    RecoveryChanged,
     /// A load has something new to say about how far along it is.
     ///
     /// Carries no number: the number is in the relay, and by the time this
@@ -944,6 +957,23 @@ fn cancel_load(loads: &mut Loads, input: &mut ViewportInput) -> bool {
     changed
 }
 
+/// §30M: whether Recover (and Delete) may start: nothing reads or replaces the
+/// document, no form or operation is running, no other Recover is in flight.
+fn can_recover(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+    recoveries: &recoveries::Recoveries,
+) -> bool {
+    can_begin_new(creates, loads, exports)
+        && !sessions.busy()
+        && !creates.busy()
+        && !edits.busy()
+        && !recoveries.running()
+}
+
 /// What the height form may offer this frame, from the state the window really has.
 ///
 /// Starting a *new* form needs no form open (`Edits::busy`); the open form's own
@@ -1258,6 +1288,8 @@ struct Sections<'a> {
     form: Option<&'a mut ferritecad_ui::NewDocumentForm>,
     /// What the last New did.
     created: Option<&'a str>,
+    /// §30M: the start-up list of crash copies and the open document's copy line.
+    recovery: ferritecad_ui::RecoveryPanel<'a>,
 }
 
 /// What accepting or discarding an answer did at the application boundary.
@@ -2594,6 +2626,11 @@ struct App {
     /// unsaved changes and the user chose Save: made once that save is
     /// published, dropped if it is not.
     pending_create: Option<NewDocument>,
+    /// §30M: the start-up list of crash copies and the Recover in flight.
+    recoveries: recoveries::Recoveries,
+    /// §30M: the record a Recover asked for while the open document had unsaved
+    /// changes and the user chose Save: recovered once that save is published.
+    pending_recover: Option<ferritecad_jobs::RecordId>,
     modifiers: winit::keyboard::ModifiersState,
 }
 
@@ -2620,6 +2657,8 @@ impl ApplicationHandler<AppEvent> for App {
         match self.start(event_loop) {
             Ok(live) => {
                 self.live = Some(live);
+                // What an earlier window left behind is read off the event loop.
+                self.list_recoveries(None);
                 // The window is up. Reading starts only if a document was
                 // named; otherwise the window stays empty until Open, with
                 // no invented path and no load in flight.
@@ -2653,6 +2692,7 @@ impl ApplicationHandler<AppEvent> for App {
         self.creates.stop_all();
         self.loads.stop_all();
         self.exports.stop_all();
+        self.recoveries.stop_all();
         // Last: it joins the session's workers and removes its private files.
         self.sessions.stop_all();
     }
@@ -2847,6 +2887,55 @@ impl ApplicationHandler<AppEvent> for App {
                         // the document it was going to make is not made.
                         None => self.pending_create = None,
                     }
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
+            AppEvent::RecoveryChanged => {
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
+            AppEvent::RecoveryListed { listing, outcome } => {
+                self.recoveries.listed(*listing);
+                if let Some(outcome) = outcome {
+                    self.recoveries.deleted(outcome);
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
+            AppEvent::Recovered { generation, result } => {
+                // An answer nobody waits for is dropped, and with it the session
+                // and its claim: the record stays as it was.
+                if self.recoveries.accepts(generation) {
+                    let outcome = if !self.sessions.finish_recovery(generation) {
+                        Err(CadError::input(
+                            "Recovery was cancelled; its copy was kept.",
+                        ))
+                    } else {
+                        match *result {
+                            Ok((scene, session)) => {
+                                let shown = session.current().path().to_path_buf();
+                                // Accepted exactly as an Open is: the session is bound in
+                                // the statement that shows its picture, and a picture that
+                                // cannot be prepared leaves the open document as it was.
+                                let outcome = self.show(
+                                    &shown,
+                                    Ok(scene),
+                                    sessions::Bind::Open(Box::new(session)),
+                                );
+                                if outcome.is_ok() {
+                                    self.loads.document_replaced();
+                                }
+                                outcome
+                            }
+                            Err(error) => Err(error),
+                        }
+                    };
+                    if let Err(error) = &outcome {
+                        eprintln!("ferritecad: {error}");
+                    }
+                    self.recoveries
+                        .finish(generation, outcome.map_err(|error| error.to_string()));
                 }
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
@@ -3177,6 +3266,14 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.edits,
                     &self.sessions,
                 );
+                let can_recover = can_recover(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                    &self.recoveries,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -3218,6 +3315,10 @@ impl ApplicationHandler<AppEvent> for App {
                     self.sessions.dirty(),
                 );
                 self.creates.set_can_create(creatable);
+                // §30M: the crash copies an earlier window left, and the open
+                // document's own copy, in words borrowed for this frame.
+                let recovery_offers = self.recoveries.offers();
+                let recovery_line = self.sessions.recovery_line();
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
@@ -3237,6 +3338,13 @@ impl ApplicationHandler<AppEvent> for App {
                         sketch,
                         creating,
                         created,
+                        recovery: ferritecad_ui::RecoveryPanel {
+                            offers: &recovery_offers,
+                            refused: self.recoveries.refused(),
+                            can_act: can_recover,
+                            outcome: self.recoveries.outcome(),
+                            line: recovery_line.as_deref(),
+                        },
                     },
                 ) {
                     // A button pressed during this frame reaches the camera
@@ -3252,6 +3360,23 @@ impl ApplicationHandler<AppEvent> for App {
                         // as long as the user browsed.
                         if chosen.open {
                             self.ask_for_a_document();
+                        }
+                        match chosen.recovery {
+                            ferritecad_ui::RecoveryChoice::Recover(index) => {
+                                if let Some(record) =
+                                    self.recoveries.record_at(index).map(|offer| offer.record)
+                                {
+                                    self.recover(record);
+                                }
+                            }
+                            ferritecad_ui::RecoveryChoice::Delete(index) => {
+                                self.delete_recovery(index);
+                            }
+                            ferritecad_ui::RecoveryChoice::Later => {
+                                self.recoveries.later();
+                                self.input.request_redraw();
+                            }
+                            ferritecad_ui::RecoveryChoice::Waiting => {}
                         }
                         // A new document is asked about before it is made:
                         // the form says what goes in it, and the system dialog
@@ -3524,6 +3649,21 @@ impl ApplicationHandler<AppEvent> for App {
 
 impl App {
     fn new(proxy: EventLoopProxy<AppEvent>, document: Option<PathBuf>) -> Self {
+        // §30M: the per-user recovery folder (or FERRITECAD_RECOVERY_DIR), and the
+        // one worker that keeps the open document's crash copy in it. Without a
+        // folder the window works as before and says that copies are off.
+        let store = ferritecad_jobs::RecoveryStore::open_default();
+        let mut sessions = sessions::Sessions::default();
+        if let Ok(store) = &store {
+            let waking = proxy.clone();
+            sessions.keep_recovery(ferritecad_jobs::RecoveryRecorder::start(
+                store.clone(),
+                move || {
+                    let _ = waking.send_event(AppEvent::RecoveryChanged);
+                },
+            ));
+        }
+        let recoveries = recoveries::Recoveries::new(store);
         Self {
             dialogs: dialogs::Dialogs::default(),
             live: None,
@@ -3535,8 +3675,10 @@ impl App {
             exports: exports::Exports::default(),
             creates: creates::Creates::default(),
             edits: edits::Edits::default(),
-            sessions: sessions::Sessions::default(),
+            sessions,
             pending_create: None,
+            recoveries,
+            pending_recover: None,
             modifiers: winit::keyboard::ModifiersState::default(),
         }
     }
@@ -3735,6 +3877,115 @@ impl App {
         );
     }
 
+    /// §30M: reads the recovery folder on a thread of its own; the answer is the
+    /// start-up list (and, after a Delete, `outcome`).
+    fn list_recoveries(&mut self, outcome: Option<String>) {
+        let Some(store) = self.recoveries.store().cloned() else {
+            return;
+        };
+        let proxy = self.proxy.clone();
+        // Joined by nobody: it reads a folder and ends; a closed loop is an
+        // ordinary end state for its answer.
+        let _ = std::thread::spawn(move || {
+            let listing = store.list();
+            let _ = proxy.send_event(AppEvent::RecoveryListed {
+                listing: Box::new(listing),
+                outcome,
+            });
+        });
+    }
+
+    /// Whether a Recover may start: nothing else is reading or replacing the
+    /// document. The one predicate the buttons and the handler ask.
+    fn can_recover(&self) -> bool {
+        can_recover(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+            &self.recoveries,
+        )
+    }
+
+    /// §30M: Recover from the start-up list. A dirty document is asked about first,
+    /// as for Open; Save goes on to the recovery once it is published.
+    fn recover(&mut self, record: ferritecad_jobs::RecordId) {
+        if !self.can_recover() {
+            self.input.request_redraw();
+            return;
+        }
+        self.pending_recover = Some(record);
+        if !self.guard(sessions::Continuation::Recover) {
+            // Kept only for a Save that is running on the way to it.
+            if !self.sessions.busy() {
+                self.pending_recover = None;
+            }
+            return;
+        }
+        self.pending_recover = None;
+        let Some(store) = self.recoveries.store().cloned() else {
+            return;
+        };
+        exports::leave_document(&mut self.exports, &mut self.input);
+        let proxy = self.proxy.clone();
+        let sessions = &mut self.sessions;
+        self.recoveries.begin(record, move |generation| {
+            sessions.hold_recovery(generation);
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    sessions::recover_for_view(
+                        &std::env::temp_dir(),
+                        &store,
+                        record,
+                        &OperationContext::default(),
+                    )
+                }))
+                .unwrap_or_else(|_| {
+                    Err(CadError::kernel("the recovery worker stopped unexpectedly"))
+                });
+                let _ = proxy.send_event(AppEvent::Recovered {
+                    generation,
+                    result: Box::new(result),
+                });
+            })
+        });
+        self.input.request_redraw();
+    }
+
+    /// §30M: removes one crash copy after asking. The removal and the new listing
+    /// run off the event loop.
+    fn delete_recovery(&mut self, index: usize) {
+        if !self.can_recover() {
+            return;
+        }
+        let Some(summary) = self.recoveries.record_at(index).cloned() else {
+            return;
+        };
+        let Some(store) = self.recoveries.store().cloned() else {
+            return;
+        };
+        let confirmed = self.live.as_ref().is_some_and(|live| {
+            self.dialogs
+                .confirm_delete_recovery(&summary.name, &live.window)
+        });
+        if !confirmed {
+            return;
+        }
+        let proxy = self.proxy.clone();
+        let _ = std::thread::spawn(move || {
+            let outcome = match store.delete(summary.record) {
+                Ok(()) => format!("Deleted the recovery copy of {}.", summary.name),
+                Err(refusal) => format!("The recovery copy was not deleted: {refusal}"),
+            };
+            let listing = store.list();
+            let _ = proxy.send_event(AppEvent::RecoveryListed {
+                listing: Box::new(listing),
+                outcome: Some(outcome),
+            });
+        });
+    }
+
     /// The one `can_create` predicate, asked by the forms' buttons and here.
     fn can_create(&self) -> bool {
         can_create(
@@ -3762,6 +4013,8 @@ impl App {
     /// Native Quit and window close share the same guarded exit.
     fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
         if self.guard(sessions::Continuation::Quit) {
+            // Nothing unsaved, or the user chose Discard: the crash copy goes.
+            self.sessions.decide_exit();
             event_loop.exit();
         } else {
             self.request_frame_now(event_loop);
@@ -3811,6 +4064,12 @@ impl App {
             (sessions::Continuation::Open, false) => "Opening another document would replace it.",
             (sessions::Continuation::Create, false) => "Making a new document would replace it.",
             (sessions::Continuation::Quit, false) => "Closing the window would lose them.",
+            (sessions::Continuation::Recover, false) => {
+                "Recovering another document would replace it."
+            }
+            (sessions::Continuation::Recover, true) => {
+                "It has never been saved. Recovering another document would replace it."
+            }
             (sessions::Continuation::Open, true) => {
                 "It has never been saved. Opening another document would replace it."
             }
@@ -3820,6 +4079,18 @@ impl App {
             (sessions::Continuation::Quit, true) => {
                 "It has never been saved. Closing the window would lose it."
             }
+        };
+        // A recovered copy was saved once, as another file; what is true of it now
+        // is that this copy has not been (§30M).
+        let recovered;
+        let request = if self.sessions.recovered() {
+            recovered = request.replace(
+                "It has never been saved.",
+                "It is a recovered copy that has not been saved.",
+            );
+            recovered.as_str()
+        } else {
+            request
         };
         let choice = match (self.sessions.name(), self.live.as_ref()) {
             (Some(name), Some(live)) => self.dialogs.ask_unsaved(&name, &live.window, request),
@@ -3864,7 +4135,16 @@ impl App {
                     self.create_new(content);
                 }
             }
-            sessions::Continuation::Quit => event_loop.exit(),
+            sessions::Continuation::Quit => {
+                self.sessions.decide_exit();
+                event_loop.exit();
+            }
+            sessions::Continuation::Recover => {
+                // Exactly once, and the document is clean now.
+                if let Some(record) = self.pending_recover.take() {
+                    self.recover(record);
+                }
+            }
         }
     }
 
@@ -3918,7 +4198,7 @@ impl App {
         let name = if self.sessions.untitled() {
             format!(
                 "{}.{DOCUMENT_EXTENSION}",
-                self.sessions.name().unwrap_or_default()
+                suggestion.file_name().unwrap_or_default().to_string_lossy()
             )
         } else {
             self.sessions.name().unwrap_or_default()
@@ -5489,6 +5769,7 @@ impl Live {
             replacing,
             mut form,
             created,
+            recovery,
         } = sections;
         let mut pointed_row = None;
         let mut output = egui.run_ui(raw_input, |ui| {
@@ -5497,6 +5778,7 @@ impl Live {
             // place for that is what stops a button and a keystroke drifting
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
+            chosen.recovery = ferritecad_ui::recovery_panel(ui, recovery);
             if held_back {
                 ui.label(
                     "Copy workflows require a saved document with no unsaved changes. \

@@ -470,6 +470,19 @@ SQL, кроме `meta.modified_at` и доказанного соответст�
 Нативная матрица сравнивает каждый вариант с CLI во всех ячейках SQL, кроме
 `meta.created_at`, `meta.modified_at` и доказанной биекции новых UUID.
 
+§30M: аварийные копии принятой модели. Окно держит в пользовательском каталоге
+восстановления (не во временном каталоге ОС; `FERRITECAD_RECOVERY_DIR` задаёт другой)
+одну последнюю опубликованную копию текущей принятой версии каждого несохранённого
+документа и на следующем запуске предлагает **Recover**. CLI получает те же записи
+через ту же библиотечную claim: `list-recovery [--recovery-dir DIR] [--json]` только
+читает (записи работающих окон лишь считаются, `active`), `extract-recovery RECORD
+--output PATH [--recovery-dir DIR] [--json]` копирует модель со всеми UUID в новый
+`.fcad` no-clobber и оставляет запись на месте. Занятый путь, путь внутри каталога
+восстановления, активная, повреждённая или неизвестная запись — exit 2 с
+`error.recovery_refusal` (`active`, `damaged`, `mismatch`, `unknown-version`,
+`not-found`); usage остаётся текстом clap; потеря stdout после извлечения — exit 7,
+файл остаётся. Ядро не нужно ([контракт](document-crash-recovery.md)).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

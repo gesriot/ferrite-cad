@@ -975,6 +975,28 @@ if [ -n "${FCAD_NEW_DOCUMENT_SESSION_FBX_DIR:-}" ]; then
     echo "FCAD_NEW_DOCUMENT_SESSION_UFBX_EXECUTED"
 fi
 
+if [ -n "${FCAD_RECOVERY_SESSION_FBX_DIR:-}" ]; then
+    python="$(command -v python3 || command -v python || true)"
+    # §30M: models recovered from a killed window's crash copy.
+    for name in recovered-plate recovered-drawn; do
+        "$reader" --identity "$FCAD_RECOVERY_SESSION_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: recovered session FBX was not independently read: $name" >&2
+            exit 1
+        fi
+        "$reader" --triangles "$FCAD_RECOVERY_SESSION_FBX_DIR/$name.fbx" > "$work/$name-triangles.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[0-9]* failures=0$' "$work/$name-triangles.txt"; then
+            echo "error: recovered session FBX triangles were not read: $name" >&2
+            exit 1
+        fi
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$FCAD_RECOVERY_SESSION_FBX_DIR/$name.stl" "$(native "$work/$name-triangles.txt")" \
+            | tee "$work/$name-match.txt"
+        grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
+    done
+    echo "FCAD_RECOVERY_SESSION_UFBX_EXECUTED"
+fi
+
 if [ -n "${FCAD_FILLET_SESSION_FBX_DIR:-}" ]; then
     python="$(command -v python3 || command -v python || true)"
     # §30G: accepted existing Fillet exports with every preserved UUID and name.

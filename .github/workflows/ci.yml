@@ -740,6 +740,45 @@ jobs:
             cargo test -p ferritecad-jobs --test unnamed "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee unnamed-job.log
             grep -Eq "^test $gate \.\.\. ok$" unnamed-job.log
           done
+          # §30M: crash copies of the accepted model; the crash tests kill their own
+          # child process. Kernel-free, so they run here on every platform.
+          for gate in a_killed_window_leaves_its_last_published_copy_for_named_untitled_and_undo_redo_sessions \
+            a_live_lease_is_never_offered_claimed_or_deleted_and_death_releases_it \
+            a_crash_in_every_phase_of_a_publication_leaves_the_previous_whole_copy \
+            an_older_request_never_replaces_a_newer_copy \
+            a_failed_final_sync_keeps_the_published_copy_and_advances_its_sequence \
+            save_discard_cancel_and_failed_saves_end_the_record_as_the_person_decided \
+            a_discarded_document_is_not_brought_back_by_a_copy_still_in_flight \
+            extraction_publishes_a_new_file_and_keeps_the_record_and_the_source \
+            unknown_damaged_mismatched_and_foreign_records_are_refused_alone \
+            a_write_failure_is_reported_keeps_the_previous_copy_and_is_never_written_status \
+            the_limit_never_deletes_recoverable_work_and_empty_orphans_are_swept \
+            many_quick_changes_end_with_the_newest_accepted_version_written \
+            a_recovered_session_adopts_its_record_without_writing_or_duplicating_it; do
+            cargo test -p ferritecad-jobs --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-job.log
+            if grep -q 'skipped:' recovery-job.log || ! grep -Fq "test $gate ... ok" recovery-job.log; then exit 1; fi
+          done
+          if [ "$RUNNER_OS" != Windows ]; then
+            gate=recovery_cleanup_never_follows_a_record_directory_symlink
+            cargo test -p ferritecad-jobs --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-symlink.log
+            if grep -q 'skipped:' recovery-symlink.log || ! grep -Fq "test $gate ... ok" recovery-symlink.log; then exit 1; fi
+            # Directory permissions are a Unix gate; the runner is not root, so it
+            # must execute rather than skip.
+            gate=a_folder_without_write_permission_fails_the_copy_and_loses_nothing
+            cargo test -p ferritecad-jobs --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-permission.log
+            # It prints its marker, so libtest's "ok" follows on a line of its own.
+            if grep -q 'skipped:' recovery-permission.log; then exit 1; fi
+            grep -Fq "test $gate ... " recovery-permission.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' recovery-permission.log
+            grep -q '^FCAD_30M_PERMISSION_GATE_EXECUTED$' recovery-permission.log
+          fi
+          for gate in list_and_extract_share_the_claim_keep_the_record_and_refuse_occupied_outputs \
+            active_damaged_and_unknown_records_are_refused_as_data \
+            a_missing_folder_lists_nothing_and_is_not_created_and_the_variable_names_the_folder \
+            usage_stays_text_and_a_lost_report_after_extraction_exits_7_and_keeps_the_file; do
+            cargo test -p ferritecad-cli --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-cli.log
+            if grep -q 'skipped:' recovery-cli.log || ! grep -Fq "test $gate ... ok" recovery-cli.log; then exit 1; fi
+          done
           saves="an_externally_modified_file_is_never_replaced_and_keeps_the_users_work \
             a_replaced_missing_or_foreign_file_is_a_typed_conflict_not_an_overwrite \
             save_as_refuses_an_occupied_path_and_succeeds_on_a_free_one \
@@ -859,14 +898,26 @@ jobs:
             sessions::tests::new_document::stub_new_document_is_refused_at_the_picture_and_keeps_the_open_one \
             sessions::tests::new_document::the_first_save_names_the_document_and_only_then_continues_once \
             tests::the_create_predicate_lets_open_forms_create_and_excludes_other_work \
-            sketch::tests::a_dirty_document_can_open_a_new_drawing_without_enabling_copy_workflows
+            sketch::tests::a_dirty_document_can_open_a_new_drawing_without_enabling_copy_workflows \
+            sessions::tests::recovery::only_a_version_shown_with_its_picture_is_copied_and_saved_or_undone_states_have_no_copy \
+            sessions::tests::recovery::discard_and_quit_end_the_copy_and_an_exit_nobody_chose_keeps_it \
+            sessions::tests::recovery::recovery_reserves_document_mutation_and_cancel_rejects_its_late_answer \
+            sessions::tests::recovery::a_recovered_document_is_untitled_named_recovered_and_takes_over_its_record
           do
             cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-app.log
             if grep -q 'skipped:' session-app.log || ! grep -Fq "test $gate ... ok" session-app.log; then exit 1; fi
           done
+          # §30M: prints its marker, so libtest's "ok" follows on a line of its own.
+          gate=sessions::tests::recovery::stub_recovery_is_refused_at_the_picture_and_keeps_the_record_and_the_open_document
+          cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-app.log
+          if grep -q 'skipped:' recovery-app.log; then exit 1; fi
+          grep -Fq "test $gate ... " recovery-app.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' recovery-app.log
+          grep -q '^FCAD_30M_STUB_RECOVERY_EXECUTED$' recovery-app.log
           for gate in panels::tests::the_document_commands_are_offered_exactly_when_they_would_do_something \
             panels::tests::unsaved_changes_and_the_last_outcome_are_on_the_screen_in_words \
-            panels::tests::new_form_create_asks_nothing_while_the_window_says_it_cannot
+            panels::tests::new_form_create_asks_nothing_while_the_window_says_it_cannot \
+            recovery::tests::recover_and_delete_ask_nothing_while_the_window_says_they_cannot
           do
             cargo test -p ferritecad-ui --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-ui.log
             if ! grep -Fq "test $gate ... ok" session-ui.log; then exit 1; fi

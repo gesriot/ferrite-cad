@@ -155,6 +155,11 @@ drawing forms create without a dialog, the first Save asks where, and Open, Quit
 another creation are guarded at the moment of replacement. See
 [unnamed document contract](unnamed-document-session.md).
 
+§30M: while the session is dirty its current accepted version is also kept, by one
+recorder worker, as the last published crash copy in a per-user recovery folder; the
+next start offers it, and a recovered copy is a new untitled session. See
+[crash recovery contract](document-crash-recovery.md).
+
 §30J adds a new Fillet through this same session, including while dirty (**Add
 fillet**). Save fillet copy, Add Chamfer and the other copies remain clean-only. See
 [Add Fillet session contract](add-fillet-session.md).

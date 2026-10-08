@@ -44,6 +44,9 @@ pub(crate) enum Continuation {
     Create,
     /// Close the window.
     Quit,
+    /// Recover a crash copy (§30M): the record is held by the window until the
+    /// Save it waits for is published.
+    Recover,
 }
 
 /// The answer to "this document has unsaved changes".
@@ -128,6 +131,9 @@ pub(crate) struct SaveReport {
 pub(crate) struct Sessions {
     session: Option<DocumentSession>,
     operation: Option<Operation>,
+    /// Recover uses a separate worker but reserves the same document mutation slot.
+    /// Cancellation releases the slot and makes its eventual answer stale.
+    recovery_generation: Option<u64>,
     issued: u64,
     /// What the user was on their way to when they pressed Save.
     after_save: Option<Continuation>,
@@ -139,6 +145,13 @@ pub(crate) struct Sessions {
     /// Workers of operations that belonged to a session which has since been
     /// replaced, cancelled and waiting to be joined. Their answers change nothing.
     retired: Vec<JoinHandle<()>>,
+    /// §30M: the worker that keeps the crash copy of the current accepted
+    /// version. Told at the one place a version is accepted, saved or replaced;
+    /// `None` when there is no recovery folder (and in tests that do not ask).
+    recorder: Option<ferritecad_jobs::RecoveryRecorder>,
+    /// The person chose how the window ends (Quit after the guard): the record
+    /// goes. Without that decision a dirty document's record stays.
+    exit_decided: bool,
 }
 
 /// Which user's file each private working directory stands for, so that text
@@ -173,6 +186,66 @@ impl Sessions {
         for worker in done {
             let _ = worker.join();
         }
+    }
+
+    /// §30M: crash copies of this window's accepted versions are kept by `recorder`.
+    pub(crate) fn keep_recovery(&mut self, recorder: ferritecad_jobs::RecoveryRecorder) {
+        self.recorder = Some(recorder);
+        self.record();
+    }
+
+    /// The one place the recorder is told about the session: after a version was
+    /// accepted with its picture, after a save was published, after the session
+    /// was replaced. Never for a produced, stale or unshown version.
+    fn record(&mut self) {
+        if let (Some(recorder), Some(session)) = (self.recorder.as_mut(), self.session.as_mut()) {
+            recorder.observe(session);
+        }
+    }
+
+    /// What the window says about the crash copy of the open document, when there
+    /// is something to say. Never says written while it is being written or failed.
+    pub(crate) fn recovery_line(&self) -> Option<String> {
+        let status = self.recorder.as_ref()?.status();
+        match status {
+            ferritecad_jobs::RecoveryStatus::Off => None,
+            ferritecad_jobs::RecoveryStatus::Writing => {
+                Some("Recovery copy: writing the newest change…".to_owned())
+            }
+            ferritecad_jobs::RecoveryStatus::Written { unix_ms } => Some(format!(
+                "Recovery copy written {}.",
+                ferritecad_jobs::format_utc(unix_ms)
+            )),
+            ferritecad_jobs::RecoveryStatus::Failed(message) => Some(format!(
+                "Recovery copy could not be written: {message}. The document is unchanged and Save still works."
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recovery_status(&self) -> Option<ferritecad_jobs::RecoveryStatus> {
+        self.recorder
+            .as_ref()
+            .map(ferritecad_jobs::RecoveryRecorder::status)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recovery_settled(&self) -> bool {
+        self.recorder
+            .as_ref()
+            .is_none_or(ferritecad_jobs::RecoveryRecorder::settled)
+    }
+
+    /// The person chose to end the window (Quit after the guard): its record goes.
+    pub(crate) fn decide_exit(&mut self) {
+        self.exit_decided = true;
+    }
+
+    /// Whether the open document is a recovered copy that has not been saved.
+    pub(crate) fn recovered(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(DocumentSession::is_recovered)
     }
 
     /// Keeps [`shown_as`] in step with the session: called whenever the session or
@@ -218,7 +291,17 @@ impl Sessions {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.operation.is_some()
+        self.operation.is_some() || self.recovery_generation.is_some()
+    }
+
+    pub(crate) fn hold_recovery(&mut self, generation: u64) {
+        self.recovery_generation = Some(generation);
+    }
+
+    pub(crate) fn finish_recovery(&mut self, generation: u64) -> bool {
+        self.recovery_generation
+            .take_if(|current| *current == generation)
+            .is_some()
     }
 
     pub(crate) fn logical_path(&self) -> Option<&Path> {
@@ -243,10 +326,22 @@ impl Sessions {
     /// file the model is read from.
     pub(crate) fn suggestion(&self) -> Option<PathBuf> {
         let session = self.session.as_ref()?;
-        Some(session.logical_path().map_or_else(
-            || self.suggested_directory().join(session.display_name()),
-            Path::to_path_buf,
-        ))
+        // A recovered copy is suggested as `<stem> (recovered)`, so its dialogs
+        // offer `plate (recovered).fcad`, never `plate.fcad (recovered).fcad`.
+        let name = if session.is_recovered() {
+            let base = session.recovery_name();
+            let stem = Path::new(&base)
+                .file_stem()
+                .map_or_else(|| base.clone(), |stem| stem.to_string_lossy().into_owned());
+            format!("{stem} (recovered)")
+        } else {
+            session.display_name()
+        };
+        Some(
+            session
+                .logical_path()
+                .map_or_else(|| self.suggested_directory().join(&name), Path::to_path_buf),
+        )
     }
 
     /// The file an export reads: the current accepted version, which holds unsaved
@@ -297,6 +392,7 @@ impl Sessions {
     /// The session of the document that was just accepted replaces the old one,
     /// which is dropped here and takes its private files with it.
     pub(crate) fn adopt(&mut self, session: DocumentSession) {
+        self.recovery_generation = None;
         // Whatever was in flight belonged to the document being replaced: its
         // answer must not be applied to this one (a Save's checkpoint above all).
         // It is cancelled and its worker joined later, not here, so the window
@@ -312,6 +408,7 @@ impl Sessions {
         self.register();
         self.after_save = None;
         self.status.clear();
+        self.record();
     }
 
     // --- Apply -----------------------------------------------------------
@@ -480,10 +577,12 @@ impl Sessions {
             .ok_or_else(|| CadError::input("no change is waiting to be shown"))?;
         match staged {
             Staged::Step(step) => match session.commit_step(step)? {
-                StepCommit::Accepted | StepCommit::NoChange => Ok(()),
+                StepCommit::Accepted | StepCommit::NoChange => {}
             },
-            Staged::Move(request) => session.commit_move(request),
+            Staged::Move(request) => session.commit_move(request)?,
         }
+        self.record();
+        Ok(())
     }
 
     /// The scene phase is over. `shown` is whether the picture replaced the old one.
@@ -562,6 +661,7 @@ impl Sessions {
                 session.record_saved(&saved);
                 self.status = format!("Saved {}.", session.display_name());
                 self.register();
+                self.record();
                 Some(SaveReport {
                     published: true,
                     continuation,
@@ -581,6 +681,10 @@ impl Sessions {
 
     /// Asks the operation in flight to stop. Returns whether there was one.
     pub(crate) fn cancel(&mut self) -> bool {
+        if self.recovery_generation.take().is_some() {
+            self.status = "Recovery cancelled; the copy is kept.".to_owned();
+            return true;
+        }
         match &self.operation {
             Some(op) => {
                 op.cancel.cancel();
@@ -592,6 +696,7 @@ impl Sessions {
 
     /// Stops and joins everything; the session and its private files go with it.
     pub(crate) fn stop_all(&mut self) {
+        self.recovery_generation = None;
         if let Some(mut operation) = self.operation.take() {
             operation.cancel.cancel();
             if let Some(worker) = operation.worker.take() {
@@ -602,6 +707,16 @@ impl Sessions {
             let _ = worker.join();
         }
         self.after_save = None;
+        // A dirty document whose window ends without the person deciding keeps its
+        // crash copy for the next start; one they decided about loses it.
+        if let Some(recorder) = self.recorder.take() {
+            let ending = if self.exit_decided || !self.dirty() {
+                ferritecad_jobs::Ending::Retire
+            } else {
+                ferritecad_jobs::Ending::Keep
+            };
+            recorder.finish(ending);
+        }
         self.session = None;
         self.register();
     }
@@ -964,6 +1079,30 @@ pub(crate) fn create_for_view(
     Ok((scene, session))
 }
 
+/// What a Recover does on its worker (§30M): the record is claimed and checked,
+/// restored into a new untitled session's private directory, and its picture is
+/// read from there exactly as Open reads one. A failure at any point drops the
+/// session and the claim with it; the record stays as it was.
+pub(crate) fn recover_for_view(
+    root: &Path,
+    store: &ferritecad_jobs::RecoveryStore,
+    record: ferritecad_jobs::RecordId,
+    context: &OperationContext,
+) -> Result<(LoadedScene, DocumentSession)> {
+    let claim = store.claim(record).map_err(CadError::from)?;
+    let session =
+        DocumentSession::recover_in(root, ferritecad_jobs::HistoryLimits::default(), claim)?;
+    let mut kernel = ferritecad_occt::OcctKernel::new()?;
+    let scene = ferritecad_scene::snapshot_of(
+        session.current().path(),
+        &mut kernel,
+        |kernel, source| kernel.import_step(source),
+        &TessellationParams::default(),
+        context,
+    )?;
+    Ok((scene, session))
+}
+
 /// What an Open does on its worker: the file is read once, into a new session's
 /// private copy, and the picture is read from that copy — so what is shown and what
 /// Save writes are one reading, and the file on disk is not read a second time.
@@ -1002,6 +1141,7 @@ mod tests {
     mod cut;
     mod fillet;
     mod new_document;
+    mod recovery;
     use ferritecad_document::Document;
     use ferritecad_jobs::{
         CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,

@@ -1878,7 +1878,7 @@ FerriteCADOccurrenceId, размещение        fcad1:occ:place:<OccurrenceI
 
 **Независимое ревью §23A, 2026-09-06.** Найден и исправлен существующий дефект панели, мешавший первому Open: при ширине 988 px кнопки вытесняли status/error за правый край. Кнопки теперь переносятся, состояние и ошибка занимают отдельную строку с переносом текста, Cancel/progress остаются доступными; отказ начинается с `Could not open`. Новый тест читает реальные нарисованные текстовые shapes и clip bounds при ширине 988/800/360 px и нажимает настоящий Cancel; до исправления он падал из-за отсутствующего `No document`. Старый тест Cancel больше не воспроизводит вторую копию раскладки toolbar. Через системные диалоги на macOS проверены пустой старт → отмена Open → повреждённый `.fcad` → видимая ошибка → повторный Open → модель → Export FBX. Полученные 4092 байта совпали с CLI-экспортом того же документа. Для управления UI использовался временный review bundle вне репозитория с побайтовой копией собранного executable: это свидетельство работы окна и диалогов, не готовности переносимой поставки §23B. Локально после исправлений: fmt, workspace clippy `-D warnings`, 228 viewer tests, 100 UI tests, 3 solver-info tests; GPU/OCCT обязательны и без skip, локальный planegcs не слинкован. Первый CI выявил два старых ожидания текста ошибки в linked-solver tests; они обновлены под `Could not open`, проверки содержания и отделения UI от диагностического вывода сохранены. Проверка переносимости и запуск продуктового `.app` из Finder остаются §23B.
 
-**§23B — запуск из оболочки ОС, сразу после §23A; Claude Code.** Довести macOS bundle до запуска `FerriteCAD.app` из Finder: корректный `Info.plist` с выбранным GUI executable, существующая проверенная раскладка native libraries, запуск из произвольного рабочего каталога без окружения сборки. Проверить реальный сценарий двойной щелчок → Open → модель, сохранность CLI рядом с GUI и прежние проверки переносимости. Для Windows и Linux сохранить работоспособный запуск GUI без аргументов из их раскладок; platform launchers и ассоциации файлов планировать явно. Открытие `.fcad` двойным щелчком — отдельная проверка доставки файла от ОС, а не следствие наличия Open. Установщики, подпись распространения, notarization и обновления остаются release-работой §11; отсутствие их не оправдывает обязательный терминал в локальной сборке.
+**§23B — запуск из оболочки ОС, сразу после §23A.** Довести macOS bundle до запуска `FerriteCAD.app` из Finder: корректный `Info.plist` с выбранным GUI executable, существующая проверенная раскладка native libraries, запуск из произвольного рабочего каталога без окружения сборки. Проверить реальный сценарий двойной щелчок → Open → модель, сохранность CLI рядом с GUI и прежние проверки переносимости. Для Windows и Linux сохранить работоспособный запуск GUI без аргументов из их раскладок; platform launchers и ассоциации файлов планировать явно. Открытие `.fcad` двойным щелчком — отдельная проверка доставки файла от ОС, а не следствие наличия Open. Установщики, подпись распространения, notarization и обновления остаются release-работой §11; отсутствие их не оправдывает обязательный терминал в локальной сборке.
 
 **§23B сделано: доставленный `FerriteCAD.app` открывается двойным щелчком.** Дефект был не в коде приложения, а в поставке: staged `FerriteCAD.app` не имел `Contents/Info.plist`, поэтому LaunchServices не запускал ничего и ничего не сообщал — `open` возвращал 0, процесса не появлялось, unified log молчал. Два executable лежат рядом в `Contents/MacOS`, и без этого файла ничто в поставке не говорит, который из них приложение.
 
@@ -4373,8 +4373,8 @@ family at a time, so they edit the accepted document instead of being disabled
 while it is dirty. *(Status after §30L: done — §30B–§30K moved every listed
 editor and the Cut/Fillet/Chamfer Adds onto the session, and §30L made creation
 itself a session; only the copy-to-a-new-file routes still require a saved, clean
-document, by design.)* (2) Autosave and crash recovery; today a crashed process leaves
-its private directory in the system temporary directory and nothing reopens it.
+document, by design.)* (2) Autosave and crash recovery: §30M now restores the last
+published copy of the accepted model; Undo history and draft form values remain outside it.
 (3) Persistent revisions, a revision list, tabs. The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
 (4) Close the lock-ignoring-writer window only if a platform primitive allows a
@@ -4638,8 +4638,42 @@ matched the CLI, with both FBX files also read by pinned ufbx. Viewer peak was
 209.74 MiB, swap did not grow, exit 0. The review's added widget test also received
 a debug-only texture-delta cleanup after CI exposed it; evidence is in verification.
 
-*What remains of §30 after §30L:* autosave and crash recovery; persistent revisions,
-a revision list and tabs; the lock-ignoring-writer window of Save (documented, not
-closed); copy-to-a-new-file routes that still need a saved, clean document; window
-evidence on Windows and Linux. §30, Milestone 5C and the product remain open; no next
-slice has started.
+**§30M — the last published crash copy of the accepted model.** While a session is
+dirty, one recorder worker (`ferritecad_jobs::recovery`) keeps a copy of its current
+accepted version — told only where `Sessions` accepts a version with its picture,
+publishes a save or replaces the document, never for a produced, stale, cancelled or
+unshown candidate or form text — in a per-user folder outside the temporary directory
+(`FERRITECAD_RECOVERY_DIR` for tests and the recipe). Each record is a leased directory:
+copy, `fsync`, verify (document id, content and model versions, length, BLAKE3), rename,
+then the manifest the same way, then the previous copy goes; a killed process leaves the
+previous whole copy or the new one. An advisory lease (the primitive Save's lock uses)
+separates a live window's record from an orphan without PID or age guesses, and a claim
+holds it so two processes cannot recover one record. The next start lists orphans with
+their name and confirmed time; **Recover** claims, restores into a new untitled
+`<name> (recovered)` session and accepts it with its picture through `Bind::Open`, after
+the Save/Discard/Cancel guard; the claimed record becomes that session's record. Save
+empties the record, Discard retires it when the replacement is accepted, Quit after the
+guard retires it, an exit nobody decided keeps it; at most 32 records and nothing
+recoverable is deleted for the limit. CLI `list-recovery` and `extract-recovery` (JSON v1,
+structured refusals, exit 7) use the same claim and never take a record over. Real
+child-process crashes (named dirty, Untitled/Empty, Undo/Redo, crash in each phase of a
+publication, live lease), native recovery of OCCT/PlaneGCS edits compared in every SQL
+cell, STL/FBX and cold rebuild with pinned ufbx, a non-root permission gate, two directed
+mutations, a comparator with seven controls and a macOS recipe:
+[contract](document-crash-recovery.md), [verification](document-crash-recovery-verification.md),
+[decision](decisions/0005-document-session.md#30m-the-last-published-crash-copy-of-the-accepted-model).
+No real window was run in the cloud. Independent macOS review on `956317f` completed
+the real named-document and Untitled recovery scenarios, including Cancel/Discard,
+occupied Save As refusal and successful Save. Actual GUI artifacts passed all-SQL
+comparison and seven negative controls; STL/FBX match the CLI byte-for-byte and both
+FBX pass pinned ufbx. Peak viewer footprint was 203.74 MiB. Review also fixed
+record-directory symlink cleanup, preservation after a post-manifest sync failure,
+and Recover racing a document mutation; recovery hashes now stream their input.
+
+*What remains of §30 after §30M:* persistent revisions, a revision list and tabs;
+recovery of Undo history and of draft form values (not in scope: the model only);
+power-loss durability of the crash copy (`fsync` order only, not proven); the
+lock-ignoring-writer window of Save (documented, not closed); copy-to-a-new-file routes
+that still need a saved, clean document; window evidence on Windows and Linux.
+§30, Milestone 5C and the product remain open; no next slice
+has started.

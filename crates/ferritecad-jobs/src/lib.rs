@@ -44,11 +44,18 @@ mod edit;
 mod fbx;
 mod import;
 mod publish;
+mod recovery;
 mod save;
 mod session;
 mod stl;
 mod validate;
 
+pub use recovery::{
+    Ending, ExtractedRecovery, MAX_RECORDS, Publication, RECOVERY_DIR_ENV, RecordId, RecoveryClaim,
+    RecoveryEntry, RecoveryHooks, RecoveryListing, RecoveryRecord, RecoveryRecorder,
+    RecoveryRefusal, RecoveryStatus, RecoveryStore, RecoverySummary, RefusalKind, STALE_RECOVERY,
+    default_recovery_root, format_utc,
+};
 pub use save::{
     Conflict, SaveFailure, SaveFailureKind, SaveHooks, SaveKind, SavePlan, SaveTarget, Saved,
 };

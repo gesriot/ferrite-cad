@@ -16,9 +16,11 @@ mod chamfer;
 pub(crate) mod constraints;
 mod fbx;
 mod import;
+mod recovery;
 mod validate;
 pub use fbx::ExportedFbx;
 pub use import::emit_import;
+pub use recovery::{RecoveryList, emit_recovery_extract};
 pub use validate::Validated;
 
 const SCHEMA_VERSION: u32 = 1;
@@ -50,6 +52,8 @@ pub enum Operation {
     ExportFbx,
     ImportStep,
     Validate,
+    ListRecovery,
+    ExtractRecovery,
 }
 
 #[derive(Serialize)]
@@ -76,6 +80,9 @@ struct Failure {
     rejection: Option<import::ReaderRejection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     constraint_conflict: Option<constraints::Conflict>,
+    /// §30M: why a recovery record was refused (`active`, `damaged`, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_refusal: Option<&'static str>,
 }
 
 impl From<&CadError> for Failure {
@@ -92,6 +99,7 @@ impl From<&CadError> for Failure {
             causes,
             rejection: None,
             constraint_conflict: None,
+            recovery_refusal: None,
         }
     }
 }
