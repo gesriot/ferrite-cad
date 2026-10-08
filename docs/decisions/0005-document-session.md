@@ -99,7 +99,7 @@ Save conflict (changed, replaced by another document, or missing); Save busy
 (another saver holds the path); Save over a read-only file or a file with other
 hard links; Save As on an occupied path; Apply while another operation runs, on a
 document whose editor says it is unavailable, or whose snapshot changed; a stale
-worker answer; a scene that cannot be prepared. Remaining copy workflows (Cut copy, Fillet copy, Chamfer copy, Chamfer distance copy and creation of Revolve)
+worker answer; a scene that cannot be prepared. Remaining copy workflows (Cut copy, Fillet copy, Chamfer copy, Chamfer distance copy; creating a new document, Revolve included, is guarded by the question instead since §30L)
 are unavailable while the session is dirty — they
 read a source and write a *new* file, and silently reading the old file would drop
 the unsaved change — and work unchanged on a clean session.

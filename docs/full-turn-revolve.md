@@ -230,7 +230,9 @@ JSON
    * The height field is replaced by "Revolve: one full turn (360°) about
      the sketch Y axis, through X = 0."
 2. **Enter the profile.** Enter the stepped points (4,0) (10,0) (10,5) (7,5)
-   (7,15) (4,15) in the numeric editor. `Create in new file…` appears.
+   (7,15) (4,15) in the numeric editor. `Create in new file…` appears (since
+   §30L **Create new document**, which makes an Untitled document with no dialog;
+   the first Save asks for the name — see [the §30L contract](unnamed-document-session.md)).
 3. **Refuse the axis.** Change (4,0) to (0,0). In place of the button, a red
    refusal says the point is "not strictly on the positive radial side"
    (since §27C: the profile "touches the axis alone").

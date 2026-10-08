@@ -4370,7 +4370,10 @@ is clean. No new geometry, no CLI contract change.
 *Obligations carried forward.* (1) Move the other editors (Sketch, constraints,
 Cut, Fillet, Chamfer radius/distance, circles, Revolve) onto the session one
 family at a time, so they edit the accepted document instead of being disabled
-while it is dirty. (2) Autosave and crash recovery; today a crashed process leaves
+while it is dirty. *(Status after §30L: done — §30B–§30K moved every listed
+editor and the Cut/Fillet/Chamfer Adds onto the session, and §30L made creation
+itself a session; only the copy-to-a-new-file routes still require a saved, clean
+document, by design.)* (2) Autosave and crash recovery; today a crashed process leaves
 its private directory in the system temporary directory and nothing reopens it.
 (3) Persistent revisions, a revision list, tabs. The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
@@ -4604,3 +4607,32 @@ FBX/oriented STL joins. Viewer peak was 211.689 MiB, normal pressure, exit 0;
 no production fix was needed. Full logs independently confirm all 27 new exact
 CI executions on the code head across three OSes; see verification for provenance.
 §30 and Milestone 5C remain open.
+
+**§30L — a new unsaved document and its first Save.** New (Empty, sample plate) and
+the drawing forms (Line polygon, Circle, annulus, full-turn and partial Revolve) no
+longer ask for a file name: the window's create worker makes the document through the
+existing `create_document_with_kernel` inside a candidate `DocumentSession`'s private
+directory (`create_document_in`) and reads its picture there; the candidate is
+accepted with its picture through the same `Bind::Open` as Open, and a refused,
+cancelled, stale or unshowable candidate keeps the previous session, scene and typed
+draft. The session has no logical path and no checkpoint (`Untitled`) and is unsaved
+until a Save As is published; Undo to the created version does not make it saved, and
+an in-place save of it is refused. Save asks where the first time and uses the
+existing no-clobber publication; Open, Quit and creating another document are guarded
+at the moment of replacement, and Save from that question continues exactly once after
+publication. One `can_create` predicate serves the Create buttons and the handler.
+Two refusals that printed a path inside the private folder now name only the file. The
+CLI create commands are unchanged. Library, widget, predicate, stub and mixed gates, a
+seven-variant native matrix compared with the CLI in every SQL cell under a proved
+bijection of new identities, representative STL/FBX before and after the first Save
+read by pinned ufbx, two directed mutations, a window comparator with seven controls
+and a macOS recipe: [contract](unnamed-document-session.md),
+[verification](unnamed-document-session-verification.md),
+[decision](decisions/0005-document-session.md#30l-a-new-document-is-a-session-before-it-is-a-file).
+No real window was run in the cloud.
+
+*What remains of §30 after §30L:* autosave and crash recovery; persistent revisions,
+a revision list and tabs; the lock-ignoring-writer window of Save (documented, not
+closed); copy-to-a-new-file routes that still need a saved, clean document; window
+evidence on Windows and Linux. §30, Milestone 5C and the product remain open; no next
+slice has started.
