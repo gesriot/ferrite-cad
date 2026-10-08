@@ -493,6 +493,13 @@ The first **Save** asks where the file goes and never replaces an existing one;
 after that Save writes in place. Open, Quit and making another new document ask
 Save / Discard / Cancel while the document is untitled or has unsaved changes.
 [Contract](docs/unnamed-document-session.md).
+While a document has unsaved changes, a recovery copy of the model on screen is kept
+in a per-user folder (§30M; `FERRITECAD_RECOVERY_DIR` names another). If the window
+ends without a decision, the next start lists it under **Recover unsaved work**:
+**Recover** opens it as a new unsaved `<name> (recovered)` document to check and
+**Save As**; the original file is never written. `ferritecad list-recovery` and
+`ferritecad extract-recovery` read the same copies.
+[Contract](docs/document-crash-recovery.md).
 `Open…` chooses an existing `.fcad`. Export is offered once a document is accepted,
 including an empty one (which has no bodies to export as STL).
 

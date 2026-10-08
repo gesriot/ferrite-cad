@@ -22,6 +22,8 @@ use ferritecad_viewport::{PickId, StandardView};
 #[non_exhaustive]
 pub struct Chosen {
     pub edit: crate::EditChoice,
+    /// §30M: what was pressed in the start-up list of crash copies.
+    pub recovery: crate::RecoveryChoice,
     pub stl: crate::StlChoice,
     /// A direction to look from.
     pub view: Option<StandardView>,

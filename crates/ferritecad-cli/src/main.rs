@@ -24,6 +24,7 @@ mod fillet;
 mod import;
 mod json;
 mod rebuild;
+mod recovery;
 mod render;
 mod revolve;
 mod sketch;
@@ -180,6 +181,12 @@ enum Command {
     PrintTopology(DocumentArgs),
     /// Read a STEP file into a new document, source bytes and all.
     ImportStep(ImportStepArgs),
+    /// List the crash copies FerriteCAD windows left in the recovery folder.
+    /// Reads only; records of running windows are counted, never listed.
+    ListRecovery(recovery::ListRecoveryArgs),
+    /// Copy one crash copy, every identity kept, to a new .fcad. The record stays;
+    /// existing files and records of running windows are refused.
+    ExtractRecovery(recovery::ExtractRecoveryArgs),
 }
 
 #[derive(Debug, Args)]
@@ -453,6 +460,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(json::emit_import(import::import_step_result(&args)))
         }
         Command::ImportStep(args) => import::import_step(args),
+        Command::ListRecovery(args) => recovery::run_list(args),
+        Command::ExtractRecovery(args) => recovery::run_extract(args),
     }
 }
 

@@ -139,6 +139,29 @@ impl Dialogs {
         Some(unsaved_choice(&answer))
     }
 
+    /// §30M: whether to remove one crash copy. Modal like the others; a question
+    /// that could not be asked removes nothing.
+    pub(crate) fn confirm_delete_recovery(
+        &mut self,
+        name: &str,
+        parent: &winit::window::Window,
+    ) -> bool {
+        let answer = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Delete recovery copy")
+            .set_description(format!(
+                "Delete the recovery copy of {name}? Its unsaved changes cannot be recovered afterwards. Your files are not changed."
+            ))
+            .set_buttons(rfd::MessageButtons::OkCancelCustom(
+                "Delete".to_owned(),
+                "Cancel".to_owned(),
+            ))
+            .set_parent(parent)
+            .show();
+        matches!(answer, rfd::MessageDialogResult::Custom(ref chosen) if chosen == "Delete")
+            || matches!(answer, rfd::MessageDialogResult::Ok)
+    }
+
     pub(super) fn receive(
         &mut self,
         action: Action,

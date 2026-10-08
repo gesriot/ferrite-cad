@@ -137,6 +137,7 @@ pub fn emit_import(result: Result<StepImportOutcome>) -> ExitCode {
                 ok: false,
                 error: Box::new(Failure {
                     constraint_conflict: None,
+                    recovery_refusal: None,
                     kind: ErrorKind::Input.as_str(),
                     message: "STEP reader rejected the source; nothing was published".into(),
                     causes: Vec::new(),

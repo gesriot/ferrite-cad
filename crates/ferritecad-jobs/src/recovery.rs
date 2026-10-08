@@ -360,6 +360,17 @@ impl RecoveryStore {
         })
     }
 
+    /// The folder at `root`, without creating it: a folder that does not exist
+    /// holds nothing (the command line's listing changes nothing).
+    pub fn at(root: &Path) -> Result<Self> {
+        let root = std::path::absolute(root)
+            .map_err(|e| CadError::io(format!("resolving {}", root.display()), e))?;
+        Ok(Self {
+            root,
+            limit: MAX_RECORDS,
+        })
+    }
+
     /// The folder at the default place ([`default_recovery_root`]).
     pub fn open_default() -> Result<Self> {
         Self::open(&default_recovery_root()?)
@@ -382,12 +393,16 @@ impl RecoveryStore {
 
     /// The record directories in the folder, by name. Anything else is not ours.
     fn record_ids(&self) -> Result<Vec<RecordId>> {
-        let entries = std::fs::read_dir(&self.root).map_err(|e| {
-            CadError::io(
-                format!("reading the recovery folder {}", self.root.display()),
-                e,
-            )
-        })?;
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(CadError::io(
+                    format!("reading the recovery folder {}", self.root.display()),
+                    error,
+                ));
+            }
+        };
         let mut found = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|e| CadError::io("reading the recovery folder", e))?;
@@ -490,6 +505,9 @@ impl RecoveryStore {
                         kept += 1;
                     }
                 }
+                // Nothing at all left in it (a removal that raced a reader on a
+                // platform that defers deletion): an empty folder of our name.
+                LeaseState::Missing if std::fs::remove_dir(&directory).is_ok() => {}
                 _ if std::fs::symlink_metadata(&directory).is_ok() => kept += 1,
                 _ => {}
             }
@@ -499,25 +517,32 @@ impl RecoveryStore {
                 "the recovery folder already holds {kept} recovery copies, its limit; recover or delete some to protect this document"
             )));
         }
-        let record = RecordId::new();
-        let directory = self.record_directory(record);
-        create_private_directory(&directory)?;
-        let lease = match create_lease(&directory) {
-            Ok(lease) => lease,
-            Err(error) => {
-                let _ = std::fs::remove_file(directory.join(LEASE));
-                let _ = std::fs::remove_dir(&directory);
-                return Err(error);
+        // A folder another window is sweeping in the instant between our
+        // directory and our lease is simply tried again under a new name.
+        let mut last = None;
+        for _ in 0..3 {
+            let record = RecordId::new();
+            let directory = self.record_directory(record);
+            create_private_directory(&directory)?;
+            match create_lease(&directory) {
+                Ok(lease) => {
+                    return Ok(RecoveryRecord {
+                        record,
+                        directory,
+                        lease,
+                        sequence: 0,
+                        current: None,
+                        last_order: 0,
+                    });
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(directory.join(LEASE));
+                    let _ = std::fs::remove_dir(&directory);
+                    last = Some(error);
+                }
             }
-        };
-        Ok(RecoveryRecord {
-            record,
-            directory,
-            lease,
-            sequence: 0,
-            current: None,
-            last_order: 0,
-        })
+        }
+        Err(last.unwrap_or_else(|| CadError::io("creating a recovery record", "no attempt")))
     }
 
     fn inspect(&self, record: RecordId) -> Inspected {
@@ -1177,7 +1202,8 @@ impl RecoveryRecord {
                 {
                     let _ = std::fs::remove_file(self.directory.join(&file));
                 }
-                return Err(error);
+                // Said as what it is: the crash copy, not the document or a Save.
+                return Err(CadError::io("writing the recovery copy", error));
             }
         };
         self.sequence = sequence;
@@ -1687,7 +1713,12 @@ mod tests {
         };
         let text = manifest.render();
         assert_eq!(Manifest::parse(record, &text).expect("reads"), manifest);
-        let kind = |text: &str| Manifest::parse(record, text).map(|_| ()).unwrap_err().kind;
+        let kind = |text: &str| {
+            Manifest::parse(record, text)
+                .map(|_| ())
+                .expect_err("refused")
+                .kind
+        };
         assert_eq!(
             kind(&text.replace("RECOVERY 1", "RECOVERY 2")),
             RefusalKind::UnknownVersion

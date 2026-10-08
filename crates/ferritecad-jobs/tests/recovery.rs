@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#![allow(clippy::panic)]
 //! §30M: the last published crash copy of the accepted model, without a window
 //! and without a geometry kernel. Crashes are real: the test binary starts itself
 //! as a child process, which makes and accepts versions, waits until the recorder
@@ -427,17 +428,20 @@ fn a_live_lease_is_never_offered_claimed_or_deleted_and_death_releases_it() {
         .parse()
         .expect("id");
     assert_eq!(
-        store.claim(record).map(|_| ()).unwrap_err().kind,
+        store.claim(record).map(|_| ()).expect_err("refused").kind,
         RefusalKind::Active
     );
-    assert_eq!(store.delete(record).unwrap_err().kind, RefusalKind::Active);
+    assert_eq!(
+        store.delete(record).expect_err("refused").kind,
+        RefusalKind::Active
+    );
     assert_eq!(record_dirs(root.path()).len(), 1);
 
     child.kill();
     let claim = store.claim(record).expect("an orphan now");
     // Held: nobody else, in this process or another, can take it meanwhile.
     assert_eq!(
-        store.claim(record).map(|_| ()).unwrap_err().kind,
+        store.claim(record).map(|_| ()).expect_err("refused").kind,
         RefusalKind::Active
     );
     assert_eq!(store.list().expect("list").active, 1);
@@ -759,7 +763,7 @@ fn unknown_damaged_mismatched_and_foreign_records_are_refused_alone() {
     expect(missing, "damaged");
     assert_eq!(kinds.len(), 7, "{kinds:?}");
     assert_eq!(
-        store.claim(newer).map(|_| ()).unwrap_err().kind,
+        store.claim(newer).map(|_| ()).expect_err("refused").kind,
         RefusalKind::UnknownVersion
     );
     // The good one is untouched by its neighbours.
@@ -779,7 +783,7 @@ fn unknown_damaged_mismatched_and_foreign_records_are_refused_alone() {
         .parse()
         .expect("id");
     assert_eq!(
-        store.delete(foreign_id).unwrap_err().kind,
+        store.delete(foreign_id).expect_err("refused").kind,
         RefusalKind::NotFound
     );
     assert_eq!(names(&foreign), ["lease", "manifest"]);

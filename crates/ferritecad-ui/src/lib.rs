@@ -33,5 +33,11 @@ pub use panels::{
     open_failure_panel, replace_confirmation, selection_inspector, sketch_solves_panel, toolbar,
 };
 
+mod recovery;
+pub use recovery::{
+    DELETE_RECOVERY, LATER, RECOVER, RECOVER_HEADING, RecoveryChoice, RecoveryOffer, RecoveryPanel,
+    recovery_panel,
+};
+
 mod stl;
 pub use stl::{PublishedStl, StlBodyRow, StlChoice, StlExportForm, stl_export_form};

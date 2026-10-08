@@ -28,7 +28,7 @@ fn start(s: &mut Sessions, r: &EdgeFilletRequest) -> (u64, mpsc::Receiver<Result
     (g, rx)
 }
 /// The window's own Add: the worker, the picture, the version becoming current.
-fn add(s: &mut Sessions, r: &EdgeFilletRequest) -> Edited {
+pub(super) fn add(s: &mut Sessions, r: &EdgeFilletRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(
         g,

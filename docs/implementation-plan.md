@@ -4638,8 +4638,36 @@ matched the CLI, with both FBX files also read by pinned ufbx. Viewer peak was
 209.74 MiB, swap did not grow, exit 0. The review's added widget test also received
 a debug-only texture-delta cleanup after CI exposed it; evidence is in verification.
 
-*What remains of §30 after §30L:* autosave and crash recovery; persistent revisions,
-a revision list and tabs; the lock-ignoring-writer window of Save (documented, not
-closed); copy-to-a-new-file routes that still need a saved, clean document; window
-evidence on Windows and Linux. §30, Milestone 5C and the product remain open; no next
-slice has started.
+**§30M — the last published crash copy of the accepted model.** While a session is
+dirty, one recorder worker (`ferritecad_jobs::recovery`) keeps a copy of its current
+accepted version — told only where `Sessions` accepts a version with its picture,
+publishes a save or replaces the document, never for a produced, stale, cancelled or
+unshown candidate or form text — in a per-user folder outside the temporary directory
+(`FERRITECAD_RECOVERY_DIR` for tests and the recipe). Each record is a leased directory:
+copy, `fsync`, verify (document id, content and model versions, length, BLAKE3), rename,
+then the manifest the same way, then the previous copy goes; a killed process leaves the
+previous whole copy or the new one. An advisory lease (the primitive Save's lock uses)
+separates a live window's record from an orphan without PID or age guesses, and a claim
+holds it so two processes cannot recover one record. The next start lists orphans with
+their name and confirmed time; **Recover** claims, restores into a new untitled
+`<name> (recovered)` session and accepts it with its picture through `Bind::Open`, after
+the Save/Discard/Cancel guard; the claimed record becomes that session's record. Save
+empties the record, Discard retires it when the replacement is accepted, Quit after the
+guard retires it, an exit nobody decided keeps it; at most 32 records and nothing
+recoverable is deleted for the limit. CLI `list-recovery` and `extract-recovery` (JSON v1,
+structured refusals, exit 7) use the same claim and never take a record over. Real
+child-process crashes (named dirty, Untitled/Empty, Undo/Redo, crash in each phase of a
+publication, live lease), native recovery of OCCT/PlaneGCS edits compared in every SQL
+cell, STL/FBX and cold rebuild with pinned ufbx, a non-root permission gate, two directed
+mutations, a comparator with seven controls and a macOS recipe:
+[contract](document-crash-recovery.md), [verification](document-crash-recovery-verification.md),
+[decision](decisions/0005-document-session.md#30m-the-last-published-crash-copy-of-the-accepted-model).
+No real window was run in the cloud.
+
+*What remains of §30 after §30M:* persistent revisions, a revision list and tabs;
+recovery of Undo history and of draft form values (not in scope: the model only);
+power-loss durability of the crash copy (`fsync` order only, not proven); the
+lock-ignoring-writer window of Save (documented, not closed); copy-to-a-new-file routes
+that still need a saved, clean document; window evidence on Windows and Linux, and the
+§30M macOS window review. §30, Milestone 5C and the product remain open; no next slice
+has started.
