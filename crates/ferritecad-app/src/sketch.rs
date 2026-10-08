@@ -2873,7 +2873,7 @@ pub(crate) mod tests {
         let ctx = egui::Context::default();
         let mut editor = Editor::default();
         let render = |editor: &mut Editor, events| {
-            ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -2884,7 +2884,9 @@ pub(crate) mod tests {
                 },
                 // A dirty session withholds the old clean-only copy route.
                 |ui| editor.draw(ui, false, false, ""),
-            )
+            );
+            output.textures_delta.clear();
+            output
         };
         for permitted in [false, true] {
             // The same idle-session permission that opens saved Sketch forms;
