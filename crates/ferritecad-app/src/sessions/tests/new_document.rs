@@ -235,12 +235,12 @@ fn pair_independent(ours: &Path, theirs: &Path) -> BTreeMap<Id, Id> {
         assert_eq!(
             *map.entry(*x).or_insert(*y),
             *y,
-            "an identity pairs with two"
+            "an identity would pair with two"
         );
         assert_eq!(
             *back.entry(*y).or_insert(*x),
             *x,
-            "two identities pair with one"
+            "two identities would pair with one"
         );
     }
     for x in map.keys() {
@@ -586,4 +586,348 @@ fn the_first_save_names_the_document_and_only_then_continues_once() {
     );
     assert_eq!(s.replacing(None), Replace::Go);
     s.stop_all();
+}
+
+// --- the real window's outputs ---------------------------------------------------
+
+/// What the window run leaves in its root (see the verification recipe).
+const WINDOW_OUTPUTS: [&str; 9] = [
+    "unsaved.stl",
+    "unsaved.fbx",
+    "first-save.fcad",
+    "undo.stl",
+    "after-guard.fcad",
+    "plate.fcad",
+    "annulus.stl",
+    "annulus.fbx",
+    "empty.fcad",
+];
+
+/// FBX text with every UUID replaced by the order it first appears in: equal for
+/// two exports exactly when they agree in everything but a bijection of UUIDs.
+fn fbx_canonical(fbx: &[u8]) -> String {
+    let text = String::from_utf8(fbx.to_vec()).expect("ASCII FBX");
+    let bytes = text.as_bytes();
+    let is_uuid = |s: &[u8]| {
+        s.len() == 36
+            && s.iter().enumerate().all(|(i, b)| match i {
+                8 | 13 | 18 | 23 => *b == b'-',
+                _ => b.is_ascii_hexdigit(),
+            })
+    };
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 36 <= bytes.len() && is_uuid(&bytes[i..i + 36]) {
+            let id = text[i..i + 36].to_owned();
+            let n = seen.iter().position(|s| *s == id).unwrap_or_else(|| {
+                seen.push(id);
+                seen.len() - 1
+            });
+            out.push_str(&format!("<uuid{n}>"));
+            i += 36;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// §30L: the actual window files against a temporary command-line chain. A
+/// missing output is refused before any peer job.
+fn compare_gui(root: &Path) {
+    for name in WINDOW_OUTPUTS {
+        assert!(root.join(name).is_file(), "missing real GUI output: {name}");
+    }
+    let file = |name: &str| std::fs::read(root.join(name)).expect(name);
+    // The generator's pristine copy of the name the window was refused.
+    assert_eq!(
+        file("occupied.fcad"),
+        file("inputs/occupied.fcad"),
+        "the occupied file was written"
+    );
+    assert_eq!(
+        file("plate.fcad"),
+        file("after-guard.fcad"),
+        "the guarded Save is the file left behind"
+    );
+    let tmp = tempfile::tempdir().expect("peer root");
+    let peer = tmp.path();
+    let base = peer.join("base.fcad");
+    cli(&[
+        "create".as_ref(),
+        base.as_os_str(),
+        "--sample".as_ref(),
+        "--size".as_ref(),
+        "83".as_ref(),
+        "47".as_ref(),
+        "13".as_ref(),
+    ]);
+    let reading = ferritecad_jobs::read_extrude_source(&base).expect("base");
+    let edited = peer.join("edited.fcad");
+    cli(&[
+        "edit-extrude".as_ref(),
+        base.as_os_str(),
+        "--feature".as_ref(),
+        reading.features[0].feature.to_string().as_ref(),
+        "--expect-version".as_ref(),
+        reading.version.content.to_string().as_ref(),
+        "--distance-mm".as_ref(),
+        "21.5".as_ref(),
+        "-o".as_ref(),
+        edited.as_os_str(),
+    ]);
+
+    // The first Save is the edited plate, under a bijection of its new identities.
+    let first = root.join("first-save.fcad");
+    let map = pair_independent(&first, &edited);
+    assert_eq!(
+        independent_cells(&first, &map),
+        independent_cells(&edited, &BTreeMap::new()),
+        "the first save is the edited plate"
+    );
+    // The guarded Save is the same document after Undo: the same identities in
+    // the same places, and the unedited plate.
+    let after = root.join("after-guard.fcad");
+    assert_eq!(
+        identities(&after),
+        identities(&first),
+        "the guarded save is the same document"
+    );
+    assert_eq!(
+        independent_cells(&after, &map),
+        independent_cells(&base, &BTreeMap::new()),
+        "the guarded save is the plate after Undo"
+    );
+
+    let (stl, fbx) = peer_bytes(&edited, peer, "edited");
+    assert_eq!(file("unsaved.stl"), stl, "unsaved STL against the CLI");
+    assert_eq!(
+        fbx_mapped(&file("unsaved.fbx"), &map),
+        String::from_utf8(fbx).expect("ASCII"),
+        "unsaved FBX against the CLI"
+    );
+    assert_eq!(
+        file("undo.stl"),
+        peer_bytes(&base, peer, "base").0,
+        "Undo STL against the CLI"
+    );
+
+    let annulus = cli_create(
+        &variants()
+            .into_iter()
+            .find(|v| v.name == "annulus")
+            .expect("annulus"),
+        peer,
+    );
+    let (stl, fbx) = peer_bytes(&annulus, peer, "annulus");
+    assert_eq!(file("annulus.stl"), stl, "annulus STL against the CLI");
+    assert_eq!(
+        fbx_canonical(&file("annulus.fbx")),
+        fbx_canonical(&fbx),
+        "annulus FBX against the CLI under a bijection of UUIDs"
+    );
+
+    let empty = cli_create(
+        &variants()
+            .into_iter()
+            .find(|v| v.name == "empty")
+            .expect("empty"),
+        peer,
+    );
+    let window_empty = root.join("empty.fcad");
+    let map = pair_independent(&window_empty, &empty);
+    assert_eq!(
+        independent_cells(&window_empty, &map),
+        independent_cells(&empty, &BTreeMap::new()),
+        "the saved Empty document"
+    );
+}
+
+/// The comparator on a copy of `root` with one fact broken must refuse, for the
+/// reason `why` names.
+fn control(root: &Path, name: &str, why: &str, breaks: &dyn Fn(&Path)) {
+    let copy = tempfile::tempdir().expect("control");
+    for entry in super::add_fillet::walk(root) {
+        let to = copy.path().join(entry.strip_prefix(root).expect("inside"));
+        std::fs::create_dir_all(to.parent().expect("parent")).expect("dir");
+        std::fs::copy(&entry, &to).expect("copy");
+    }
+    breaks(copy.path());
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compare_gui(copy.path())));
+    std::panic::set_hook(previous);
+    let payload = outcome.expect_err(&format!("negative control {name} accepted"));
+    let refused = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default();
+    assert!(
+        refused.contains(why),
+        "control {name} refused for another reason"
+    );
+}
+
+/// The comparator's positive run and its seven negative controls.
+fn compare_with_controls(root: &Path) {
+    compare_gui(root);
+    let before = cli_runs();
+    control(root, "missing", "missing real GUI output: undo.stl", &|r| {
+        std::fs::remove_file(r.join("undo.stl")).expect("remove")
+    });
+    assert_eq!(
+        cli_runs(),
+        before,
+        "a peer job ran before the missing output was refused"
+    );
+    let file = |r: &Path, name: &str| std::fs::read(r.join(name)).expect(name);
+    control(
+        root,
+        "occupied written",
+        "the occupied file was written",
+        &|r| std::fs::write(r.join("occupied.fcad"), b"replaced").expect("write"),
+    );
+    control(
+        root,
+        "old document as first save",
+        "the first save is the edited plate",
+        &|r| std::fs::write(r.join("first-save.fcad"), file(r, "after-guard.fcad")).expect("w"),
+    );
+    control(
+        root,
+        "another document as the guarded save",
+        "the guarded save is the same document",
+        &|r| {
+            for name in ["after-guard.fcad", "plate.fcad"] {
+                std::fs::write(r.join(name), file(r, "empty.fcad")).expect("w");
+            }
+        },
+    );
+    control(
+        root,
+        "export of the old version",
+        "unsaved STL against the CLI",
+        &|r| std::fs::write(r.join("unsaved.stl"), file(r, "undo.stl")).expect("w"),
+    );
+    control(
+        root,
+        "the plate's FBX as the annulus",
+        "annulus FBX against the CLI",
+        &|r| std::fs::write(r.join("annulus.fbx"), file(r, "unsaved.fbx")).expect("w"),
+    );
+    // A reference that names the wrong owner is a wrong reference, whatever its UUID.
+    control(root, "wrong ref owner", "would pair with", &|r| {
+        let first = r.join("first-save.fcad");
+        let db = rusqlite::Connection::open(&first).expect("db");
+        let objects: Vec<Vec<u8>> = db
+            .prepare("SELECT id FROM objects ORDER BY rowid")
+            .expect("ids")
+            .query_map([], |row| row.get(0))
+            .expect("rows")
+            .collect::<std::result::Result<_, _>>()
+            .expect("ids");
+        db.execute(
+            "UPDATE topology_refs SET owner_id=?1 WHERE rowid=(SELECT min(rowid) FROM topology_refs)",
+            rusqlite::params![objects[0]],
+        )
+        .expect("wrong owner");
+    });
+}
+
+/// The window recipe run through the window's own create worker, session owner
+/// and save worker, its files laid out as the window leaves them, then the
+/// comparator and its controls. A self-check of the comparator, not window
+/// evidence.
+#[test]
+fn native_window_scenario_on_session_files_passes_the_comparator_and_its_controls() {
+    if !native() {
+        return;
+    }
+    let work = tempfile::tempdir().expect("work");
+    let layout = work.path().join("layout");
+    std::fs::create_dir_all(&layout).expect("layout");
+    let sessions_root = tempfile::tempdir().expect("sessions");
+    let occupied = layout.join("occupied.fcad");
+    cli(&["create".as_ref(), occupied.as_os_str()]);
+    std::fs::create_dir_all(layout.join("inputs")).expect("inputs");
+    std::fs::copy(&occupied, layout.join("inputs/occupied.fcad")).expect("pristine");
+    let put = |name: &str, bytes: &[u8]| std::fs::write(layout.join(name), bytes).expect(name);
+
+    let mut s = Sessions::default();
+    let plate = variants().swap_remove(1).content;
+    create_into(&mut s, sessions_root.path(), plate);
+    let created = s.export_path().expect("created");
+    apply_native(&mut s, first_extrude(&created), 21.5);
+    let alias = s.suggestion().expect("suggestion");
+    let (stl, fbx) = export_bytes(&s.export_path().expect("edited"), &alias, work.path(), "u");
+    put("unsaved.stl", &stl);
+    put("unsaved.fbx", &fbx);
+    // The occupied name is refused and changes nothing.
+    let (tx, rx) = mpsc::channel();
+    let g = s
+        .begin_save(SaveTarget::As(occupied.clone()), None, |p, _, c| {
+            spawn_save(p, c.clone(), move |v| tx.send(v).expect("save"))
+        })
+        .expect("started");
+    assert!(
+        !s.finish_save(g, rx.recv().expect("answer"))
+            .expect("report")
+            .published
+    );
+    let plate_file = layout.join("plate.fcad");
+    saved(&mut s, SaveTarget::As(plate_file.clone()));
+    put(
+        "first-save.fcad",
+        &std::fs::read(&plate_file).expect("first"),
+    );
+    move_native(&mut s, true);
+    put(
+        "undo.stl",
+        &export_bytes(
+            &s.export_path().expect("undone"),
+            &plate_file,
+            work.path(),
+            "d",
+        )
+        .0,
+    );
+    move_native(&mut s, false);
+    move_native(&mut s, true);
+    // The guarded Save before the annulus replaces it: in place.
+    saved(&mut s, SaveTarget::InPlace);
+    put(
+        "after-guard.fcad",
+        &std::fs::read(&plate_file).expect("guarded"),
+    );
+    let annulus = variants().swap_remove(4).content;
+    create_into(&mut s, sessions_root.path(), annulus);
+    let alias = s.suggestion().expect("suggestion");
+    let (stl, fbx) = export_bytes(&s.export_path().expect("annulus"), &alias, work.path(), "a");
+    put("annulus.stl", &stl);
+    put("annulus.fbx", &fbx);
+    // Discard: the untitled annulus is replaced by an Empty document.
+    assert_eq!(
+        s.replacing(Some(UnsavedChoice::Discard)),
+        Replace::Discarded
+    );
+    create_into(&mut s, sessions_root.path(), NewDocument::Empty);
+    saved(&mut s, SaveTarget::As(layout.join("empty.fcad")));
+    s.stop_all();
+    compare_with_controls(&layout);
+}
+
+#[test]
+fn native_compare_real_new_document_gui_artifacts_with_negative_controls() {
+    let Some(root) = std::env::var_os("FCAD_30L_GUI_DIR") else {
+        eprintln!("skipped: requires real GUI artifacts");
+        return;
+    };
+    assert!(native());
+    compare_with_controls(Path::new(&root));
+    println!("FCAD_30L_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
 }

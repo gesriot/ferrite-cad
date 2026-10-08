@@ -3951,6 +3951,59 @@ mod tests {
         }
     }
 
+    /// §30L: Create document is the window's predicate; while it is off a press
+    /// asks nothing, and no dialog is promised by its label.
+    #[test]
+    fn new_form_create_asks_nothing_while_the_window_says_it_cannot() {
+        let context = egui::Context::default();
+        let mut form = NewDocumentForm {
+            content: NewContent::Empty,
+            width: "60".into(),
+            depth: "40".into(),
+            height: "10".into(),
+            refusal: None,
+            can_create: false,
+        };
+        assert!(!CREATE_DOCUMENT.ends_with('…'), "no dialog follows");
+        for enabled in [false, true] {
+            form.can_create = enabled;
+            let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+                new_document_form(ui, Some(&mut form));
+            });
+            output.textures_delta.clear();
+            let at = visible_toolbar_text(&output, CREATE_DOCUMENT, 10000.0).center();
+            let raw = egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+                ..Default::default()
+            };
+            let mut choice = NewChoice::Waiting;
+            let mut output = context.run_ui(raw, |ui| {
+                choice = new_document_form(ui, Some(&mut form));
+            });
+            output.textures_delta.clear();
+            let expected = if enabled {
+                NewChoice::Create
+            } else {
+                NewChoice::Waiting
+            };
+            assert_eq!(choice, expected, "enabled={enabled}");
+        }
+    }
+
     #[test]
     fn new_form_shows_millimetres_and_reports_its_real_buttons() {
         let context = egui::Context::default();

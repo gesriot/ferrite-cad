@@ -19508,6 +19508,133 @@ mod tests {
         exports.stop_all();
     }
 
+    /// §30L: one `can_create` predicate for the create forms' buttons and the
+    /// handler. Shown open first (the forms themselves are open and that is not
+    /// work), then each kind of work closes it: a creation running, a load, an
+    /// export, an edit form and a session operation.
+    #[test]
+    fn the_create_predicate_lets_open_forms_create_and_excludes_other_work() {
+        let dir = tempfile::tempdir().expect("directory");
+        let path = dir.path().join("plate.fcad");
+        ferritecad_jobs::create_document(
+            ferritecad_jobs::CreateDocumentRequest::new(
+                &path,
+                NewDocument::SamplePlate(ferritecad_jobs::PlateSize::DEFAULT),
+                "keep",
+            ),
+            &OperationContext::default(),
+        )
+        .expect("plate");
+        let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+        let mut input = ViewportInput::new();
+        let mut creates = creates::Creates::default();
+        let edits = edits::Edits::default();
+        let mut sessions = sessions::Sessions::default();
+        sessions.adopt(ferritecad_jobs::DocumentSession::open(&path).expect("session"));
+        assert!(ask_new(
+            &mut creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &mut input
+        ));
+        let idle = |creates: &creates::Creates,
+                    loads: &Loads,
+                    exports: &exports::Exports,
+                    edits: &edits::Edits,
+                    sessions: &sessions::Sessions| {
+            can_create(creates, loads, exports, edits, sessions)
+        };
+        assert!(
+            idle(
+                &creates,
+                &Loads::default(),
+                &exports::Exports::default(),
+                &edits,
+                &sessions
+            ),
+            "the open New form may create"
+        );
+        creates.set_can_create(true);
+        assert!(creates.form().expect("form").can_create);
+
+        let mut loads = Loads::default();
+        loads.open(Some(&path), relay(), |_, _| std::thread::spawn(|| {}));
+        assert!(!idle(
+            &creates,
+            &loads,
+            &exports::Exports::default(),
+            &edits,
+            &sessions
+        ));
+        loads.stop_all();
+
+        let mut exporting = exports::Exports::default();
+        exports::begin_export(
+            &mut exporting,
+            &mut input,
+            Some(&path),
+            Some(dir.path().join("out.fbx")),
+            |_, _, _, _| std::thread::spawn(|| {}),
+        )
+        .expect("export");
+        assert!(!idle(
+            &creates,
+            &Loads::default(),
+            &exporting,
+            &edits,
+            &sessions
+        ));
+        exporting.stop_all();
+
+        let mut editing = edits::Edits::default();
+        assert!(editing.begin(&path, &reading));
+        assert!(!idle(
+            &creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &editing,
+            &sessions
+        ));
+
+        sessions
+            .begin_apply(|_, _, _| std::thread::spawn(|| {}))
+            .expect("a session operation");
+        assert!(!idle(
+            &creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &edits,
+            &sessions
+        ));
+        sessions.stop_all();
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        start_new(
+            &mut creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &mut input,
+            NewDocument::Empty,
+            move |_, _, _| {
+                std::thread::spawn(move || {
+                    let _ = rx.recv();
+                })
+            },
+        )
+        .expect("a creation");
+        assert!(!idle(
+            &creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &edits,
+            &sessions
+        ));
+        creates.set_can_create(false);
+        assert!(!creates.form().expect("still open").can_create);
+        drop(tx);
+        creates.stop_all();
+    }
+
     /// §30L: a new document replaces the accepted picture only when its own
     /// picture is accepted. A candidate whose upload fails leaves the old scene,
     /// camera and the form's typed sizes; an accepted one is shown from its
