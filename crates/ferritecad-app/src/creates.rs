@@ -42,8 +42,9 @@ use ferritecad_ui::{NewChoice, NewContent, NewDocumentForm, ViewportInput};
 
 /// What the window says while a document is being made.
 const CREATING: &str = "Creating a new document…";
-/// A new document that is on screen and has no file yet.
-const CREATED: &str = "New document: Untitled, not saved yet. Save asks where to put it.";
+/// The result of the last creation. This stays visible after Save or Open, so it
+/// must not claim the current document is still untitled or unsaved.
+const CREATED: &str = "Created a new document.";
 /// A document that was not made, or not shown. Nothing on screen changed.
 const CREATE_FAILED: &str = "Could not create the new document";
 /// A creation the window gave up on. Nothing on screen changed.
@@ -874,7 +875,7 @@ pub(crate) mod tests {
         assert_eq!(creates.status(), &CreateStatus::Shown);
         assert!(creates.form().is_none(), "accepted: the form is done with");
         let line = words(creates.status());
-        assert!(line.contains("Untitled"), "{line}");
+        assert_eq!(line, "Created a new document.");
         assert!(
             !line.contains(&candidate.session.private_directory().display().to_string()),
             "{line}"
