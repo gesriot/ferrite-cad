@@ -53,7 +53,10 @@ ferritecad extract-recovery RECORD --output PATH [--recovery-dir DIR] [--json]
    length and BLAKE3, rename to `c<n>.fcad`, `fsync` the directory, write the
    manifest to its partial name, `fsync`, rename, `fsync` the directory, remove the
    previous `c<m>.fcad`. A request numbered no higher than the record's last one is
-   refused (*stale*).
+   refused (*stale*). Hashing streams the file instead of allocating its whole size.
+   If the final directory sync fails after the manifest rename, the new named copy
+   stays intact and the status is failed, not confirmed written. Its sequence is
+   consumed; retry writes a new sequence. The older copy can remain until cleanup.
 5. **Manifest v1.** Text, every line `key value`, exactly in this order:
    `FERRITECAD-RECOVERY 1`, `record <uuid>`, `sequence <n>`, `file c<n>.fcad`,
    `bytes <n>`, `blake3 <64 hex>`, `document <uuid>`, `content <64 hex>`,
@@ -78,6 +81,9 @@ ferritecad extract-recovery RECORD --output PATH [--recovery-dir DIR] [--json]
    `Bind::Open` as Open. Any refusal or failure keeps the record and the current
    document. On acceptance the claimed record becomes the new session's record: its
    copy already is that model, so nothing is written or deleted at that moment.
+   Recovery reserves the same busy slot as document edits, Save and Open/New.
+   Cancel invalidates its generation; a late answer cannot replace the document or
+   release the reservation of a newer operation.
 9. **Recovered document.** No logical path, no saved checkpoint, every UUID, SQL row
    and reference as recorded; dirty until a Save As is published; Save asks where
    (no-clobber; occupied paths refused). It has no right to save in place to the file
@@ -86,10 +92,13 @@ ferritecad extract-recovery RECORD --output PATH [--recovery-dir DIR] [--json]
     the replacement document is accepted; Cancel, a failed Save and a failed or
     refused replacement keep it. Quit after the guard retires it; an exit without that
     decision keeps it. After a retirement no later request can rewrite that record.
-11. **Limits.** One copy per record. At most 32 records; at the limit a new session
+11. **Limits.** One manifest-selected copy per record (interrupted publication can
+    leave unselected files until cleanup). At most 32 records; at the limit a new session
     gets no record and the status says so. Records with no manifest are removed when a
     new record is made; nothing recoverable is removed except by **Delete…**, by
     extraction of the session that adopted it, or by its own session's end of life.
+    Lease acquisition rejects a record-directory symlink before accessing children;
+    this also protects explicit deletion and the empty-orphan sweep.
 12. **CLI.** `list-recovery` reads the folder (no claim is kept, nothing is changed,
     no kernel). `extract-recovery` claims the record, copies its model with the same
     identities to `--output` by the shared no-clobber publication, and releases the

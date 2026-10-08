@@ -4373,8 +4373,8 @@ family at a time, so they edit the accepted document instead of being disabled
 while it is dirty. *(Status after §30L: done — §30B–§30K moved every listed
 editor and the Cut/Fillet/Chamfer Adds onto the session, and §30L made creation
 itself a session; only the copy-to-a-new-file routes still require a saved, clean
-document, by design.)* (2) Autosave and crash recovery; today a crashed process leaves
-its private directory in the system temporary directory and nothing reopens it.
+document, by design.)* (2) Autosave and crash recovery: §30M now restores the last
+published copy of the accepted model; Undo history and draft form values remain outside it.
 (3) Persistent revisions, a revision list, tabs. The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
 (4) Close the lock-ignoring-writer window only if a platform primitive allows a
@@ -4662,12 +4662,18 @@ cell, STL/FBX and cold rebuild with pinned ufbx, a non-root permission gate, two
 mutations, a comparator with seven controls and a macOS recipe:
 [contract](document-crash-recovery.md), [verification](document-crash-recovery-verification.md),
 [decision](decisions/0005-document-session.md#30m-the-last-published-crash-copy-of-the-accepted-model).
-No real window was run in the cloud.
+No real window was run in the cloud. Independent macOS review on `956317f` completed
+the real named-document and Untitled recovery scenarios, including Cancel/Discard,
+occupied Save As refusal and successful Save. Actual GUI artifacts passed all-SQL
+comparison and seven negative controls; STL/FBX match the CLI byte-for-byte and both
+FBX pass pinned ufbx. Peak viewer footprint was 203.74 MiB. Review also fixed
+record-directory symlink cleanup, preservation after a post-manifest sync failure,
+and Recover racing a document mutation; recovery hashes now stream their input.
 
 *What remains of §30 after §30M:* persistent revisions, a revision list and tabs;
 recovery of Undo history and of draft form values (not in scope: the model only);
 power-loss durability of the crash copy (`fsync` order only, not proven); the
 lock-ignoring-writer window of Save (documented, not closed); copy-to-a-new-file routes
-that still need a saved, clean document; window evidence on Windows and Linux, and the
-§30M macOS window review. §30, Milestone 5C and the product remain open; no next slice
+that still need a saved, clean document; window evidence on Windows and Linux.
+§30, Milestone 5C and the product remain open; no next slice
 has started.

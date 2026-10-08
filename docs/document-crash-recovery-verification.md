@@ -327,3 +327,94 @@ CI on `77cc280`, all completed success:
 
 Later commits only record CI in this file; CI for the final docs-only head is reported
 on the PR by its exact SHA, separately from the code head above.
+
+## Independent macOS review (2026-10-08)
+
+Reviewed implementation `77cc280` / original docs head `457e751`; review code and
+workflow head `956317fa5f68afbec5058afe9c8d210deeedcbfc`. Primary checkout only;
+foreign worktree a200 unchanged. Evidence directory:
+`/private/tmp/ferrite-pr93-review/` (local logs and GUI artifacts, not repository inputs).
+
+### Defects reproduced and fixed
+
+* A record-directory symlink could make Delete or the empty-orphan sweep remove
+  files outside the recovery root. Lease acquisition now rejects the directory
+  before following any children. The regression gate covers both a published and
+  an incomplete external record and compares every external file. On the old code
+  the gate executed and failed because the external copy disappeared.
+* If the final directory sync failed after manifest publication, error cleanup
+  removed the copy named by that manifest. A targeted hook injects failure at that
+  exact phase: old code fails on missing `c2.fcad`; corrected code preserves it,
+  consumes sequence 2, reports failure rather than confirmed success, and retries
+  with sequence 3. An unselected previous copy can remain until cleanup.
+* Recover had its own worker but did not reserve `Sessions`' mutation slot. An edit
+  or Open/New could therefore start while a recovery accepted under an earlier
+  guard was in flight. Recovery now owns the common busy slot with a generation;
+  cancellation invalidates that generation and a late result cannot overwrite the
+  current model. The new test verifies the blocked edit/create/Save/Undo/Redo paths,
+  older answers, cancellation and preservation of the current snapshot.
+* Recovery verification and publication read a whole document into a byte vector
+  solely to hash it. `ContentHash::of_reader` now hashes a file with bounded buffering;
+  a test compares bytes and streaming results and propagates a real read error.
+  The recovery outcome label also no longer claims a document is unsaved after Save.
+
+### Executed local checks
+
+Fresh pinned-native release CLI/app, existing target and libraries, jobs=2:
+jobs recovery **15 passed, 1 ignored child entry point**; CLI recovery **4 passed**;
+app recovery **9 harness passes, 1 ignored child entry point**, including the native
+three-variant crash matrix and comparator self-check. Mixed/stub-only branches in
+that app run are N/A, not native evidence. Streaming hash **1 passed**. Workspace
+clippy with all targets/features and `-D warnings`, fmt, actionlint, licence headers
+and diff whitespace passed. The new jobs and app regression gates were added to
+existing CI loops; no previous gate was removed.
+
+### Real window and actual outputs
+
+Fresh bundle built from `956317f`:
+`/private/tmp/ferrite-pr93-review/gui/layout/FerriteCAD.app`.
+Inputs and outputs: `/private/tmp/ferrite-pr93-review/gui-models`, with its own
+explicit recovery root; the user's recovery directory was never opened. The supplied
+input generator wrote no result artifacts. Native dialogs and the real viewer were
+operated through CUA.
+
+* A (PID 59847): open the 80×40×12 plate, Apply height 21.5, see the dirty title and
+  confirmed recovery timestamp, export `accepted.stl`/`accepted.fbx`, kill that PID.
+* B (PID 61660): startup lists the same name and timestamp; Recover gives
+  `*plate.fcad (recovered)`, export `recovered.stl`/`recovered.fbx`. Save As to
+  `occupied.fcad` refuses even after the native Replace prompt; dirty title and copy
+  remain. Save to `recovered.fcad` succeeds, title becomes clean and the recovery
+  status disappears. Cmd+Q exits 0.
+* C (PID 62369): next start has no recovery offer; New Empty gives `*Untitled` and
+  a confirmed copy. Kill that PID.
+* D (PID 62531): startup lists that Untitled; create another Empty, Recover → Cancel
+  keeps it and the offer, Recover → Discard gives `*Untitled (recovered)`.
+  Save `empty-recovered.fcad`, Cmd+Q exits 0.
+
+The published comparator recipe ran against these actual window outputs in the
+release profile: **`FCAD_30M_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true`**,
+1 executed exact test. It verifies source and occupied file preservation, empty
+recovery folder, every SQL cell with only the declared volatile fields normalized,
+CLI height 21.5, and byte-identical accepted/recovered/CLI STL and FBX. Pinned
+ufbx 0.23.0 strict read both actual GUI FBX: **6 checks, 0 failures each**.
+An initial debug invocation lacked the debug peer CLI and failed before comparison;
+that attempt is not counted. The documented release invocation then passed.
+
+Every viewer ran under the 1536 MiB watchdog. Sampled peaks: A **203.735 MiB**, B
+**192.798 MiB**, C **188.673 MiB**, D **192.798 MiB**. A/C return -9 (watchdog shell
+137) are the deliberate crashes, not successful quits; B/D return 0. Pressure stayed
+normal and swap did not grow within any viewer run. The first B launch was refused
+before spawning because system pressure was 2; it is retained as `watch-b.jsonl`,
+not counted as GUI success. B resumed as `watch-b2.jsonl` only after pressure returned
+to 1. All own PIDs are gone; no CUA call after each Quit/crash relaunched a viewer.
+`memory-summary.json` and all five watchdog logs retain the distinction.
+
+### CI provenance
+
+Original code `77cc280`: 15/15 checks; original docs `457e751`: 7/7. Full downloaded
+logs independently contain the native crash matrix, comparator, mixed recovery,
+stub recovery and pinned-reader markers on all three OSes, and the permission gate
+on the two Unix runners. Review head `956317f` starts new CI 37829811723, runtime
+37829807351 and planegcs pin 37829807355; these are separate from the original
+implementation's successful runs. Final completion is checked by exact SHA before
+merge, not inferred from the original green head.
