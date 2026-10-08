@@ -25,7 +25,9 @@ text for **Save distance copy…** and records it in the form's own request hist
 the form's, not the document's Undo/Redo, and move no model. A clean copy remains
 available, including a numerical no-op; a dirty copy is disabled with its reason in
 the form and refused again, in words, before any dialog. **Add Chamfer** and its form
-remain the previous copy-only route, unavailable while dirty, with no session Apply.
+remained the previous copy-only route in this slice; since [§30K](add-chamfer-session.md)
+that form has its own document route, **Add chamfer**, and never goes through this
+Apply distance.
 
 ## What the library and the window own
 

@@ -11,7 +11,9 @@
 //!
 //! The whole request (the corner and the distance) is one history entry:
 //! **Undo request** and **Redo request** step through the requests a confirmed
-//! **Apply chamfer** accepted, restoring both at once. The Fillet's form has no
+//! **Confirm draft edge and distance** (formerly *Apply chamfer*) accepted,
+//! restoring both at once. §30K: **Add chamfer** reads the current fields and adds
+//! the Chamfer to the open document; that request history is never the document's. The Fillet's form has no
 //! such history and this one does not borrow its description.
 //!
 //! §30H: the distance form of an existing Chamfer also applies its current text
@@ -178,6 +180,10 @@ pub(crate) struct Editor {
     pending_distance: Option<EditChamferDistanceRequest>,
     /// §30H: the distance the user asked to apply to the open document.
     pending_apply: Option<EditChamferDistanceRequest>,
+    /// §30K: the new Chamfer the Add form asked to add to the open document.
+    pending_add: Option<EdgeChamferRequest>,
+    /// Whether the window's `can_add_chamfer` allows the Add form's own Add now.
+    can_add: bool,
     /// What the window says each frame: whether an existing Chamfer's form may
     /// open on the accepted (possibly unsaved) version, whether its Apply may
     /// start, and whether unsaved changes withhold the copy workflows.
@@ -193,11 +199,28 @@ impl Editor {
     }
     pub(crate) fn dismiss(&mut self) {
         let availability = self.session();
+        let add = self.can_add;
         *self = Self::default();
         self.set_session(availability.0, availability.1, availability.2);
+        self.can_add = add;
     }
     pub(crate) fn editing_distance(&self) -> bool {
         self.distance.is_some() && self.draft.is_none()
+    }
+    /// §30K: the Add form is open (not the distance edit of a saved Chamfer).
+    pub(crate) fn adding(&self) -> bool {
+        self.draft.is_some() && self.distance.is_none()
+    }
+    /// What the window's `can_add_chamfer` says, each frame.
+    pub(crate) fn set_add(&mut self, can_add: bool) {
+        self.can_add = can_add;
+    }
+    pub(crate) fn add_session(&self) -> bool {
+        self.can_add
+    }
+    /// §30K: the new Chamfer the user asked to add to the open document.
+    pub(crate) fn take_add_request(&mut self) -> Option<EdgeChamferRequest> {
+        self.pending_add.take()
     }
     pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
         self.can_begin_distance = can_begin;
@@ -250,7 +273,12 @@ impl Editor {
         true
     }
 
-    fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, body: ObjectId) -> bool {
+    pub(crate) fn begin(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        body: ObjectId,
+    ) -> bool {
         if self.active() || source.refusal.is_some() {
             return false;
         }
@@ -289,8 +317,10 @@ impl Editor {
         };
         for choice in &source.chamfer_bodies {
             let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+            // §30K: the Add form adds into the open document, so it may be opened
+            // with unsaved changes whenever the session is idle.
             let response = ui.add_enabled(
-                can_begin && !self.unsaved && refusal.is_none(),
+                (can_begin || self.can_begin_distance) && refusal.is_none(),
                 egui::Button::new(format!(
                     "Chamfer edge of {} — {}…",
                     choice.name.as_deref().unwrap_or("Unnamed body"),
@@ -523,10 +553,13 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Chamfer one vertical edge — new copy")
+        egui::Window::new("Chamfer one vertical edge")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
+                if !self.outcome.is_empty() {
+                    ui.label(format!("Document: {}", self.outcome));
+                }
                 ui.label(
                     "Cuts one vertical edge of the plate away at one equal distance along both \
                      of its faces. The edge is named by the base Extrude and the two Lines that \
@@ -573,7 +606,29 @@ impl Editor {
                                 .desired_width(110.),
                         );
                     });
-                    if ui.button("Apply chamfer").clicked() {
+                    // §30K: into the open document, no file name; the current corner
+                    // and valid distance, whether or not the draft was confirmed.
+                    let valid = draft.chamfer(&draft.typed);
+                    if ui
+                        .add_enabled(
+                            self.can_add && valid.is_ok(),
+                            egui::Button::new("Add chamfer"),
+                        )
+                        .clicked()
+                    {
+                        let (_, chamfer) = valid.as_ref().copied().expect("validated draft");
+                        self.pending_add = Some(EdgeChamferRequest {
+                            source: draft.source.clone(),
+                            expected: draft.version,
+                            body: target.body,
+                            chamfer,
+                            destination: PathBuf::new(),
+                        });
+                    }
+                    if let Err(error) = &valid {
+                        ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+                    }
+                    if ui.button("Confirm draft edge and distance").clicked() {
                         match draft.chamfer(&draft.typed) {
                             Ok(_) => {
                                 draft.history.record(draft.typed.clone());
@@ -620,7 +675,10 @@ impl Editor {
                                 "Ready: chamfer the edge at ({}, {}) with d{} mm",
                                 corner.corner_mm[0], corner.corner_mm[1], chamfer.distance_mm
                             ));
-                            if ui.button("Save chamfer copy…").clicked() {
+                            if ui
+                                .add_enabled(!self.unsaved, egui::Button::new("Save chamfer copy…"))
+                                .clicked()
+                            {
                                 self.pending = Some(EdgeChamferRequest {
                                     source: draft.source.clone(),
                                     expected: draft.version,
@@ -631,12 +689,25 @@ impl Editor {
                             }
                         }
                         None => {
-                            ui.small("Apply an edge and a distance before saving.");
+                            ui.small("Confirm the draft edge and distance before saving a copy.");
                         }
                     }
                 });
+                if self.unsaved {
+                    ui.small(
+                        "Saving a copy is unavailable while the document has unsaved changes: \
+                         Save or Undo them first.",
+                    );
+                }
+                ui.small(
+                    "This document changes with Add chamfer; the file on disk changes only on \
+                     Save.",
+                );
                 if running {
-                    ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                    ui.label(
+                        "Working… Draft retained until publication or acceptance. Cancel job in \
+                         toolbar.",
+                    );
                 }
             });
         if cancel {
@@ -745,6 +816,7 @@ mod history_tests {
 #[cfg(test)]
 #[allow(clippy::panic)]
 pub(crate) mod tests {
+    pub(crate) mod add_session;
     pub(crate) mod session_apply;
     use super::*;
     use ferritecad_document::Document;
@@ -970,7 +1042,7 @@ pub(crate) mod tests {
 
         // Nothing chosen, then text that is no distance, then distances the
         // document refuses: each refused, none recorded.
-        click(&ctx, &mut e, "Apply chamfer");
+        click(&ctx, &mut e, "Confirm draft edge and distance");
         assert!(
             e.draft
                 .as_ref()
@@ -998,7 +1070,7 @@ pub(crate) mod tests {
             ("inf", "finite"),
         ] {
             distance(&ctx, &mut e, text);
-            click(&ctx, &mut e, "Apply chamfer");
+            click(&ctx, &mut e, "Confirm draft edge and distance");
             let draft = e.draft.as_ref().expect("draft");
             assert!(!draft.history.can_undo(), "{text} was recorded");
             assert!(
@@ -1009,10 +1081,10 @@ pub(crate) mod tests {
         }
         // The exact maximum is accepted and the next float was not.
         distance(&ctx, &mut e, &max.to_string());
-        click(&ctx, &mut e, "Apply chamfer");
+        click(&ctx, &mut e, "Confirm draft edge and distance");
         assert!(e.draft.as_ref().expect("draft").history.can_undo());
         distance(&ctx, &mut e, "2.375");
-        click(&ctx, &mut e, "Apply chamfer");
+        click(&ctx, &mut e, "Confirm draft edge and distance");
         let out = frame(&ctx, &mut e, false);
         assert!(painted(
             &out,
@@ -1029,7 +1101,7 @@ pub(crate) mod tests {
         // together, a new request after an Undo drops the Redo tail.
         click(&ctx, &mut e, "Corner (-4.5, 15.5)");
         distance(&ctx, &mut e, "1.5");
-        click(&ctx, &mut e, "Apply chamfer");
+        click(&ctx, &mut e, "Confirm draft edge and distance");
         let third = e.draft.as_ref().expect("draft").typed.clone();
         assert_eq!(third.distance, "1.5");
         click(&ctx, &mut e, "Undo request");
@@ -1057,7 +1129,7 @@ pub(crate) mod tests {
         assert_eq!(e.draft.as_ref().expect("draft").typed, third);
         click(&ctx, &mut e, "Undo request");
         distance(&ctx, &mut e, "2.375");
-        click(&ctx, &mut e, "Apply chamfer");
+        click(&ctx, &mut e, "Confirm draft edge and distance");
         assert_eq!(
             e.draft.as_ref().expect("draft").history.states.len(),
             4,
@@ -1098,7 +1170,10 @@ pub(crate) mod tests {
         assert_eq!(e.draft.as_ref().expect("draft").typed, typed);
         // While a job runs the form is inert, and says the draft is kept.
         let out = frame(&ctx, &mut e, true);
-        assert!(painted(&out, "Draft retained until publication"));
+        assert!(painted(
+            &out,
+            "Draft retained until publication or acceptance"
+        ));
         click_while(&ctx, &mut e, "Cancel chamfer draft", true);
         assert!(e.active(), "Cancel is disabled while saving");
 
@@ -1302,7 +1377,7 @@ pub(crate) mod tests {
         }
         click(&ctx, &mut e, "Corner (-4.5, 15.5)");
         distance(&ctx, &mut e, "3.0625");
-        click(&ctx, &mut e, "Apply chamfer");
+        click(&ctx, &mut e, "Confirm draft edge and distance");
         click(&ctx, &mut e, "Save chamfer copy…");
         let mut request = e.take_request().expect("widget request");
         let chamfer = request.chamfer;

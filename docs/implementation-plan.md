@@ -4575,3 +4575,32 @@ joins pass. Viewer exit 0, peak 206.939 MiB, pressure normal, no swap growth. Ex
 code CI and final author docs CI were verified separately, including full logs for
 the 12 new runtime executions. See verification for provenance and limits; prior
 OOM cause remains unknown. §30 and Milestone 5C remain open; no next slice has started.
+
+**§30K — add a Chamfer inside the open document.** On the Chamfer Add form, **Add
+chamfer** reads the current corner (base Extrude + Line UUIDs) and valid distance and
+adds the plate's one Chamfer to the open document through
+`StepTicket::add_edge_chamfer` and its worker, reusing `chamfer_edge_copy`,
+`EdgeChamferRequest`, the writer, evaluator, lease, cleanup and two-phase acceptance.
+The source is the accepted snapshot and the Body its saved UUID. The former *Apply
+chamfer* is **Confirm draft edge and distance**; it and Undo request/Redo request keep
+their request history and never move the model. The clean Chamfer copy keeps its
+meaning; a dirty copy is disabled with its reason and refused in words before the
+dialog. One production predicate `can_add_chamfer` guards button and handler. One
+accepted Add is one document step; new UUIDs come only from the operation and Redo
+restores them without a job; the new Chamfer is at once offered by Edit Chamfer
+distance (§30H). The class is unchanged: a free or closure-only axis-aligned four-Line
+rectangle with a literal forward Blind NewBody and no Chamfer, Fillet or Cut; the
+managed constraint family under an already saved Chamfer does not open creation, so
+after an unsaved constraint Apply the form is not offered and Add is refused with the
+domain's reason. Widget, native, stub, mixed and constrained gates, all-cell SQL/CLI
+comparison under a proved bijection of new identities only, Undo/Redo without remap,
+byte-equal unsaved/branch STL/FBX, per-corner plane and volume, pinned ufbx, two
+directed mutations, a window comparator with seven negative controls and a
+real-window recipe are tracked in [contract](add-chamfer-session.md) and
+[verification](add-chamfer-session-verification.md). The clean-only copy routes and
+Revolve creation remain copy-only. Independent macOS review completed the real
+window recipe, all-cell SQL comparison with seven negative controls and strict
+FBX/oriented STL joins. Viewer peak was 211.689 MiB, normal pressure, exit 0;
+no production fix was needed. Full logs independently confirm all 27 new exact
+CI executions on the code head across three OSes; see verification for provenance.
+§30 and Milestone 5C remain open.

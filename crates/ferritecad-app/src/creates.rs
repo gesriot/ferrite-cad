@@ -221,6 +221,11 @@ impl Creates {
         !self.running() && self.form.is_none() && self.sketch.only_editing_fillet_radius()
     }
 
+    /// §30K: the Chamfer Add form may Add itself; every other form excludes it.
+    pub(crate) fn can_add_chamfer(&self) -> bool {
+        !self.running() && self.form.is_none() && self.sketch.only_adding_chamfer()
+    }
+
     pub(crate) fn can_apply_chamfer_distance(&self) -> bool {
         !self.running() && self.form.is_none() && self.sketch.only_editing_chamfer_distance()
     }

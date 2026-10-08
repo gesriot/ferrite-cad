@@ -257,6 +257,19 @@ impl Editor {
             && !self.chamfers.active()
     }
 
+    /// §30K: the Add form of a Chamfer is the only form open.
+    pub(crate) fn only_adding_chamfer(&self) -> bool {
+        self.chamfers.adding()
+            && self.draft.is_none()
+            && self.editing.is_none()
+            && self.editing_circle.is_none()
+            && self.editing_annulus.is_none()
+            && self.editing_angle.is_none()
+            && !self.constraints.active()
+            && !self.cuts.active()
+            && !self.fillets.active()
+    }
+
     pub(crate) fn only_editing_chamfer_distance(&self) -> bool {
         self.chamfers.editing_distance()
             && self.draft.is_none()
@@ -351,6 +364,7 @@ impl Editor {
         let fillets = self.fillets.session();
         let fillets_add = self.fillets.add_session();
         let chamfers = self.chamfers.session();
+        let chamfers_add = self.chamfers.add_session();
         *self = Self::default();
         self.can_begin_sketch = begin;
         self.can_apply = apply;
@@ -365,6 +379,7 @@ impl Editor {
         self.fillets.set_add(fillets_add);
         self.chamfers
             .set_session(chamfers.0, chamfers.1, chamfers.2);
+        self.chamfers.set_add(chamfers_add);
     }
     pub(crate) fn take_request(&mut self) -> Option<NewDocument> {
         self.pending.take()

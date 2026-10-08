@@ -988,7 +988,7 @@ fn control(root: &Path, name: &str, why: &str, breaks: &dyn Fn(&Path)) {
         "control {name} refused for another reason"
     );
 }
-fn walk(root: &Path) -> Vec<PathBuf> {
+pub(super) fn walk(root: &Path) -> Vec<PathBuf> {
     let mut all = Vec::new();
     for entry in std::fs::read_dir(root).expect("dir") {
         let path = entry.expect("entry").path();

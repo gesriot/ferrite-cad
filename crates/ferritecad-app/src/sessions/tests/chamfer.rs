@@ -28,7 +28,7 @@ fn start(
         .expect("start");
     (g, rx)
 }
-fn apply(s: &mut Sessions, r: &EditChamferDistanceRequest) -> Edited {
+pub(super) fn apply(s: &mut Sessions, r: &EditChamferDistanceRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(g, rx.recv().expect("answer"));
     if let Edited::Show(path) = &edited {
@@ -59,7 +59,7 @@ fn request(s: &Sessions, distance_mm: f64) -> EditChamferDistanceRequest {
     }
 }
 /// The shipped command line, from the same accepted file the window read.
-fn peer(source: &Path, r: &EditChamferDistanceRequest, out: &Path) {
+pub(super) fn peer(source: &Path, r: &EditChamferDistanceRequest, out: &Path) {
     let file = out.with_extension("json");
     std::fs::write(
         &file,
@@ -130,7 +130,7 @@ fn only_distance(before: &Path, after: &Path, distance_mm: f64) {
 /// name resolves, the Body has 7 faces and the volume `(W·D − d²/2)·H`, and the
 /// one named Chamfer face is the plane of exactly `corner`: outward diagonal
 /// normal, through the two points `d` along each adjacent side, area `d·√2·H`.
-fn cold(path: &Path, rect: [f64; 4], corner: [f64; 2], height: f64) -> f64 {
+pub(super) fn cold(path: &Path, rect: [f64; 4], corner: [f64; 2], height: f64) -> f64 {
     let chamfer = saved_of(&reading_of(path));
     let distance = chamfer.distance_mm;
     let d = Document::open_read_only(path).expect("document");
@@ -233,7 +233,13 @@ fn cold(path: &Path, rect: [f64; 4], corner: [f64; 2], height: f64) -> f64 {
 /// and the corner cut by one plane facing out of it whose triangles add up to
 /// `d·√2·H`, with the new vertex columns `d` along each adjacent side and no
 /// vertex left at the corner.
-fn mesh(stl: &[u8], rect: [f64; 4], corner: [f64; 2], distance: f64, height: f64) -> f64 {
+pub(super) fn mesh(
+    stl: &[u8],
+    rect: [f64; 4],
+    corner: [f64; 2],
+    distance: f64,
+    height: f64,
+) -> f64 {
     let [x0, y0, x1, y1] = rect;
     let n = u32::from_le_bytes(stl[80..84].try_into().expect("count")) as usize;
     assert_eq!(stl.len(), 84 + 50 * n);

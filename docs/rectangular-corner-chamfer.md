@@ -260,7 +260,10 @@ its former **Apply distance** is **Confirm draft number** (the request history a
 **Save distance copy…** are unchanged, clean document only), and a new **Apply
 distance** changes the open document through the session, including while dirty.
 **Add Chamfer** keeps exactly the form above. See
-[the session contract](chamfer-distance-session-apply.md).
+[the session contract](chamfer-distance-session-apply.md). §30K: the form's former
+*Apply chamfer* is **Confirm draft edge and distance** (request history and the clean
+**Save chamfer copy…** unchanged), and **Add chamfer** adds this Chamfer inside the
+open document, including while dirty: [Add Chamfer session contract](add-chamfer-session.md).
 
 ## Recipe
 

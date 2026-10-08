@@ -83,7 +83,7 @@ Reused: `edit_circle_copy` / `edit_annulus_copy` (through `StepTicket::edit_circ
 `StepTicket::edit_annulus`), the session's two-phase step, its history, dirty-by-comparison,
 Save, the working-copy lease for exports and the private-folder protections. Not introduced: a
 second copier, evaluator, history or writer, or any write to the logical file before Save. The
-other copy-only editors (Add Chamfer, *Edit extrusion…* copy; Add Fillet until [§30J](add-fillet-session.md)) stay copy
+other copy-only editors (*Edit extrusion…* copy; Add Fillet until [§30J](add-fillet-session.md), Add Chamfer until [§30K](add-chamfer-session.md)) stay copy
 workflows.
 
 ## Not claimed
@@ -98,4 +98,5 @@ Existing Fillet radii now Apply through the same session, including while dirty:
 the session in [§30J](add-fillet-session.md).
 
 Existing Chamfer distances now Apply through the same session, including while dirty:
-[§30H](chamfer-distance-session-apply.md). Distance copy and Add Chamfer remain clean-only.
+[§30H](chamfer-distance-session-apply.md). Distance copy remains clean-only; a new Chamfer joined
+the session in [§30K](add-chamfer-session.md).
