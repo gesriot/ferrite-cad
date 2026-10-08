@@ -162,6 +162,31 @@ impl Dialogs {
             || matches!(answer, rfd::MessageDialogResult::Ok)
     }
 
+    /// §30N: whether to delete one checkpoint from the working document. Modal
+    /// like the others; a question that could not be asked deletes nothing.
+    pub(crate) fn confirm_delete_checkpoint(
+        &mut self,
+        name: &str,
+        created: &str,
+        parent: &winit::window::Window,
+    ) -> bool {
+        let answer = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Delete checkpoint")
+            .set_description(format!(
+                "Delete the checkpoint \"{name}\" made {created}? The model on screen is not \
+                 changed. Undo brings the checkpoint back; the file changes only when you save."
+            ))
+            .set_buttons(rfd::MessageButtons::OkCancelCustom(
+                "Delete".to_owned(),
+                "Cancel".to_owned(),
+            ))
+            .set_parent(parent)
+            .show();
+        matches!(answer, rfd::MessageDialogResult::Custom(ref chosen) if chosen == "Delete")
+            || matches!(answer, rfd::MessageDialogResult::Ok)
+    }
+
     pub(super) fn receive(
         &mut self,
         action: Action,

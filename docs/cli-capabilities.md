@@ -483,6 +483,17 @@ SQL, кроме `meta.modified_at` и доказанного соответст�
 `not-found`); usage остаётся текстом clap; потеря stdout после извлечения — exit 7,
 файл остаётся. Ядро не нужно ([контракт](document-crash-recovery.md)).
 
+§30N: именованные контрольные версии внутри документа (таблица `checkpoints`, схема v4;
+файлы схемы v3 читаются без миграции). `list-checkpoints SOURCE [--json]` только читает;
+`extract-checkpoint SOURCE --checkpoint UUID --output PATH [--expect-version V] [--json]`
+публикует модель одной версии со всеми UUID в новый `.fcad` (это и есть Restore для CLI);
+`create-checkpoint SOURCE --name NAME --expect-version V --output PATH [--json]` и
+`delete-checkpoint SOURCE --checkpoint UUID --expect-version V --output PATH [--json]`
+публикуют копию источника с изменением. Источник никогда не пишется; вывод no-clobber;
+`--expect-version` обязателен для create/delete; JSON v1 добавляет только операции
+`list-checkpoints`, `create-checkpoint`, `delete-checkpoint`, `extract-checkpoint`; потеря
+stdout после публикации — exit 7. Ядро не нужно ([контракт](named-document-checkpoints.md)).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

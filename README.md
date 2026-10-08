@@ -500,6 +500,12 @@ ends without a decision, the next start lists it under **Recover unsaved work**:
 **Save As**; the original file is never written. `ferritecad list-recovery` and
 `ferritecad extract-recovery` read the same copies.
 [Contract](docs/document-crash-recovery.md).
+The **Checkpoints** section keeps named versions of the model inside the document
+(§30N): **Create checkpoint** names the model on screen, **Restore** makes a checkpoint's
+model the working model as one Undo step, **Delete…** asks first; like any change they
+reach the file with Save. `ferritecad list-checkpoints`, `extract-checkpoint`,
+`create-checkpoint` and `delete-checkpoint` work on the same table without a kernel.
+[Contract](docs/named-document-checkpoints.md).
 `Open…` chooses an existing `.fcad`. Export is offered once a document is accepted,
 including an empty one (which has no bodies to export as STL).
 

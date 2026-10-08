@@ -28,6 +28,12 @@ use crate::schema::{
 };
 use crate::validate::ValidationReport;
 
+mod checkpoint;
+pub use checkpoint::{
+    CheckpointEntry, MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_NAME_CHARS, MAX_CHECKPOINTS,
+    checkpoint_name,
+};
+
 /// SQLite's own clock, so a timestamp is generated inside the writing
 /// transaction rather than by a separate dependency.
 const NOW_UTC: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
@@ -534,7 +540,7 @@ impl Document {
     /// are refused, rather than assigned an incomplete version.
     /// Read this from `open_read_only`, whose transaction pins the whole reading.
     pub fn content_version(&self) -> Result<ContentHash> {
-        self.logical_content("document.logical-content", false)
+        self.logical_content("document.logical-content", false, false)
     }
 
     /// The same logical content with only `meta.modified_at` set aside (read
@@ -548,13 +554,32 @@ impl Document {
     /// implicit row identities, still counts. `content_version` itself is
     /// unchanged byte for byte.
     pub fn model_version(&self) -> Result<ContentHash> {
-        self.logical_content("document.model-content", true)
+        self.logical_content("document.model-content", true, false)
     }
 
-    fn logical_content(&self, domain: &str, ignore_modified_at: bool) -> Result<ContentHash> {
+    /// §30N: the model content with the rows of the checkpoint catalog set aside
+    /// too, under its own domain tag: what a checkpoint of this version holds.
+    ///
+    /// Two versions that differ only in their checkpoints have the same value, so
+    /// a change to the catalog alone is known not to change what is drawn; and a
+    /// checkpoint's image has exactly the value of the version it was made from.
+    /// The catalog table is set aside whole (its schema entries too), so a schema
+    /// v3 document and its v4 migration draw the same model; `model_version`
+    /// still tells them apart, because saving one over the other changes the file.
+    pub fn model_without_checkpoints(&self) -> Result<ContentHash> {
+        self.logical_content("document.model-without-checkpoints", true, true)
+    }
+
+    fn logical_content(
+        &self,
+        domain: &str,
+        ignore_modified_at: bool,
+        without_checkpoints: bool,
+    ) -> Result<ContentHash> {
         fn quoted(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
         }
+        let without_checkpoints = without_checkpoints && schema::has_checkpoint_table(&self.conn)?;
         let read = || -> Result<ContentHash> {
             let sql_error = |e| CadError::io("reading complete document version", e);
             let mut hash = CanonicalHasher::new(domain);
@@ -566,6 +591,11 @@ impl Document {
             let mut rows = schema.query([]).map_err(sql_error)?;
             let mut tables = Vec::new();
             while let Some(row) = rows.next().map_err(sql_error)? {
+                if without_checkpoints
+                    && row.get_ref(2).map_err(sql_error)?.as_str().ok() == Some("checkpoints")
+                {
+                    continue;
+                }
                 for column in 0..4 {
                     let value: Option<String> = row.get(column).map_err(sql_error)?;
                     hash.bool(value.is_some())
@@ -676,6 +706,11 @@ impl Document {
             .create_new(true)
             .open(destination)
             .map_err(|e| CadError::io("reserving document snapshot", e))?;
+        self.snapshot_into_reserved(destination)
+    }
+
+    /// The caller has exclusively created this empty file in private storage.
+    fn snapshot_into_reserved(&self, destination: &Path) -> Result<()> {
         let mut target = open_connection(destination, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         let backup = rusqlite::backup::Backup::new(&self.conn, &mut target)
             .map_err(|e| CadError::io("starting SQLite backup", e))?;

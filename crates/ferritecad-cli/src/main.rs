@@ -8,6 +8,7 @@
 
 mod annulus;
 mod chamfer;
+mod checkpoint;
 mod circle;
 mod cut;
 mod edit_annular;
@@ -187,6 +188,17 @@ enum Command {
     /// Copy one crash copy, every identity kept, to a new .fcad. The record stays;
     /// existing files and records of running windows are refused.
     ExtractRecovery(recovery::ExtractRecoveryArgs),
+    /// List the named checkpoints stored in a document. Reads only.
+    ListCheckpoints(checkpoint::ListCheckpointsArgs),
+    /// Publish a copy of a document with a checkpoint of its current model added.
+    /// The source is not changed; --expect-version is required.
+    CreateCheckpoint(checkpoint::CreateCheckpointArgs),
+    /// Publish a copy of a document without one checkpoint. The source is not
+    /// changed; --expect-version is required.
+    DeleteCheckpoint(checkpoint::DeleteCheckpointArgs),
+    /// Copy one checkpoint's model, every identity kept, to a new .fcad: the
+    /// command line's way to restore it. The source is not changed.
+    ExtractCheckpoint(checkpoint::ExtractCheckpointArgs),
 }
 
 #[derive(Debug, Args)]
@@ -462,6 +474,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::ImportStep(args) => import::import_step(args),
         Command::ListRecovery(args) => recovery::run_list(args),
         Command::ExtractRecovery(args) => recovery::run_extract(args),
+        Command::ListCheckpoints(args) => checkpoint::run_list(args),
+        Command::CreateCheckpoint(args) => checkpoint::run_create(args),
+        Command::DeleteCheckpoint(args) => checkpoint::run_delete(args),
+        Command::ExtractCheckpoint(args) => checkpoint::run_extract(args),
     }
 }
 
@@ -536,7 +552,9 @@ fn create_result(args: CreateArgs) -> Result<ferritecad_jobs::CreatedDocument> {
 }
 
 fn clear_cache(args: DocumentArgs) -> Result<ExitCode> {
-    let document = Document::open(&args.path)?;
+    // Read-only: deleting the sidecar is no reason to migrate the document
+    // (§30N); a schema v3 file must stay readable by the build that wrote it.
+    let document = Document::open_read_only(&args.path)?;
     let cache = document.cache_path();
     document.close()?;
 

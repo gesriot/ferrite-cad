@@ -24,6 +24,8 @@ pub struct Chosen {
     pub edit: crate::EditChoice,
     /// §30M: what was pressed in the start-up list of crash copies.
     pub recovery: crate::RecoveryChoice,
+    /// §30N: what was pressed in the open document's checkpoints.
+    pub checkpoint: crate::CheckpointChoice,
     pub stl: crate::StlChoice,
     /// A direction to look from.
     pub view: Option<StandardView>,

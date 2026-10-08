@@ -28,6 +28,7 @@
 //! empty scene and gains the model when the model is ready.
 
 mod chamfers;
+mod checkpoints;
 mod constraints;
 mod creates;
 mod cuts;
@@ -321,6 +322,16 @@ enum AppEvent {
     },
     /// §30M: the crash copy of the open document was written (or not).
     RecoveryChanged,
+    /// §30N: a checkpoint change has finished: a private version, or why not.
+    CheckpointStepped {
+        generation: u64,
+        result: Box<Result<sessions::CheckpointStep>>,
+    },
+    /// Form facts for a metadata-only Undo/Redo; the shown model stays.
+    KeptFacts {
+        generation: u64,
+        result: Box<Result<ferritecad_document::ExtrudeEditSource>>,
+    },
     /// A load has something new to say about how far along it is.
     ///
     /// Carries no number: the number is in the relay, and by the time this
@@ -1290,6 +1301,9 @@ struct Sections<'a> {
     created: Option<&'a str>,
     /// §30M: the start-up list of crash copies and the open document's copy line.
     recovery: ferritecad_ui::RecoveryPanel<'a>,
+    /// §30N: the open document's checkpoints and the name being typed; absent
+    /// while no document is open.
+    checkpoints: Option<(ferritecad_ui::CheckpointPanel<'a>, &'a mut String)>,
 }
 
 /// What accepting or discarding an answer did at the application boundary.
@@ -1582,7 +1596,8 @@ struct LiveScene<P> {
     ///
     /// `None` until a reading has been accepted, which is what makes writing
     /// the model out an action a window can only offer once there is something
-    /// to write. Replaced by [`commit_scene`] and by nothing else, so a
+    /// to write. Replaced by [`commit_scene`], and by [`retarget_scene`] for a
+    /// version that draws the same model (§30N), and by nothing else, so a
     /// reading that failed, was abandoned or arrived too late leaves it naming
     /// the document actually on screen.
     document: Option<PathBuf>,
@@ -1748,6 +1763,19 @@ fn commit_scene<P>(
     scene.edit_source = next.edit_source;
     *camera = next.framed;
     Ok(())
+}
+
+/// §30N: points the shown picture at a new version that draws exactly the same
+/// model (only its checkpoints differ). The picture, what its parts are, the
+/// choice made in it and the camera stay; the file it was read from and the
+/// edit facts, which name the version, follow it.
+fn retarget_scene<P>(
+    scene: &mut LiveScene<P>,
+    document: PathBuf,
+    edit_source: ferritecad_document::ExtrudeEditSource,
+) {
+    scene.document = Some(document);
+    scene.edit_source = Some(edit_source);
 }
 
 /// Whether there is a document this window could write out.
@@ -2631,6 +2659,11 @@ struct App {
     /// §30M: the record a Recover asked for while the open document had unsaved
     /// changes and the user chose Save: recovered once that save is published.
     pending_recover: Option<ferritecad_jobs::RecordId>,
+    /// §30N: the name typed for the next checkpoint, kept between frames and
+    /// cleared when a checkpoint made under it is accepted.
+    checkpoint_name: String,
+    /// §30N: the Create whose acceptance clears `checkpoint_name`.
+    checkpoint_naming: Option<u64>,
     modifiers: winit::keyboard::ModifiersState,
 }
 
@@ -2848,12 +2881,20 @@ impl ApplicationHandler<AppEvent> for App {
                 self.request_frame_now(event_loop);
             }
             AppEvent::Applied { generation, result } => {
-                match self.sessions.finish_apply(generation, *result) {
-                    sessions::Edited::Show(path) => self.stage_scene(generation, path),
-                    sessions::Edited::Failed
-                    | sessions::Edited::NoChange
-                    | sessions::Edited::Ignore => {}
-                }
+                let edited = self.sessions.finish_apply(generation, *result);
+                self.after_step(generation, edited);
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
+            AppEvent::CheckpointStepped { generation, result } => {
+                let edited = self.sessions.finish_checkpoint(generation, *result);
+                self.after_step(generation, edited);
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
+            AppEvent::KeptFacts { generation, result } => {
+                let edited = self.sessions.finish_kept_facts(generation, *result);
+                self.after_step(generation, edited);
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
@@ -3319,6 +3360,30 @@ impl ApplicationHandler<AppEvent> for App {
                 // document's own copy, in words borrowed for this frame.
                 let recovery_offers = self.recoveries.offers();
                 let recovery_line = self.sessions.recovery_line();
+                // §30N: the current version's checkpoints, read when the version
+                // was made; nothing is read from disk for this frame.
+                let checkpoint_source = self.sessions.export_source();
+                let checkpoint_allowed = checkpoints::availability(
+                    settled && live.scene.document.is_some(),
+                    form_open(&self.edits, &self.creates.sketch),
+                    checkpoint_source.as_deref(),
+                    &self.checkpoint_name,
+                );
+                let checkpoint_words = checkpoint_source
+                    .as_deref()
+                    .map(|current| (checkpoints::rows(current), checkpoints::usage(current)));
+                let checkpoint_rows: Vec<ferritecad_ui::CheckpointRow<'_>> = checkpoint_words
+                    .as_ref()
+                    .map(|(rows, _)| {
+                        rows.iter()
+                            .map(|(name, created, current)| ferritecad_ui::CheckpointRow {
+                                name,
+                                created,
+                                current: *current,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
@@ -3345,6 +3410,25 @@ impl ApplicationHandler<AppEvent> for App {
                             outcome: self.recoveries.outcome(),
                             line: recovery_line.as_deref(),
                         },
+                        checkpoints: checkpoint_words.as_ref().map(|(_, usage)| {
+                            (
+                                ferritecad_ui::CheckpointPanel {
+                                    rows: &checkpoint_rows,
+                                    create: checkpoint_allowed
+                                        .create
+                                        .as_ref()
+                                        .map(|_| ())
+                                        .map_err(String::as_str),
+                                    act: checkpoint_allowed
+                                        .act
+                                        .as_ref()
+                                        .map(|_| ())
+                                        .map_err(String::as_str),
+                                    usage,
+                                },
+                                &mut self.checkpoint_name,
+                            )
+                        }),
                     },
                 ) {
                     // A button pressed during this frame reaches the camera
@@ -3377,6 +3461,16 @@ impl ApplicationHandler<AppEvent> for App {
                                 self.input.request_redraw();
                             }
                             ferritecad_ui::RecoveryChoice::Waiting => {}
+                        }
+                        match chosen.checkpoint {
+                            ferritecad_ui::CheckpointChoice::Create => self.create_checkpoint(),
+                            ferritecad_ui::CheckpointChoice::Restore(index) => {
+                                self.restore_checkpoint(index);
+                            }
+                            ferritecad_ui::CheckpointChoice::Delete(index) => {
+                                self.delete_checkpoint(index);
+                            }
+                            ferritecad_ui::CheckpointChoice::Waiting => {}
                         }
                         // A new document is asked about before it is made:
                         // the form says what goes in it, and the system dialog
@@ -3679,6 +3773,8 @@ impl App {
             pending_create: None,
             recoveries,
             pending_recover: None,
+            checkpoint_name: String::new(),
+            checkpoint_naming: None,
             modifiers: winit::keyboard::ModifiersState::default(),
         }
     }
@@ -4605,18 +4701,152 @@ impl App {
         self.input.request_redraw();
     }
 
+    /// What an edit's or a checkpoint's answer leads to.
+    fn after_step(&mut self, generation: u64, edited: sessions::Edited) {
+        match edited {
+            sessions::Edited::Show(path) => self.stage_scene(generation, path),
+            sessions::Edited::Keep(path) => self.keep_picture(generation, path),
+            sessions::Edited::Failed | sessions::Edited::NoChange | sessions::Edited::Ignore => {}
+        }
+    }
+
+    /// §30N: accepts a version that draws what is on screen (only its checkpoints
+    /// changed). The session's commit and the picture's re-pointing at the new
+    /// version are one statement, as in [`Self::show`]; nothing is rebuilt.
+    fn keep_picture(&mut self, generation: u64, path: PathBuf) {
+        let outcome = match self.live.as_mut() {
+            None => Err(CadError::input("there is no window to show the change in")),
+            Some(live) => self
+                .sessions
+                .commit_kept()
+                .map(|facts| retarget_scene(&mut live.scene, path, facts)),
+        };
+        if let Err(error) = &outcome {
+            eprintln!("ferritecad: {error}");
+        }
+        let shown = outcome.is_ok();
+        if self.sessions.finish_scene(generation, outcome) && shown {
+            if self
+                .checkpoint_naming
+                .take_if(|asked| *asked == generation)
+                .is_some()
+            {
+                self.checkpoint_name.clear();
+            }
+            // As after any accepted version (`show`): a form opened meanwhile
+            // describes the version that was replaced.
+            self.edits.cancel();
+            self.creates.sketch.finish_session_change();
+            exports::leave_document(&mut self.exports, &mut self.input);
+            self.refresh_title();
+        }
+    }
+
+    /// §30N: whether Create, Restore and Delete may be pressed; the one answer the
+    /// panel and the handlers share.
+    fn checkpoint_availability(&self) -> checkpoints::Availability {
+        let current = self.sessions.export_source();
+        checkpoints::availability(
+            self.settled()
+                && self
+                    .live
+                    .as_ref()
+                    .is_some_and(|live| live.scene.document.is_some()),
+            form_open(&self.edits, &self.creates.sketch),
+            current.as_deref(),
+            &self.checkpoint_name,
+        )
+    }
+
+    /// §30N: runs one checkpoint change on its worker, in the operation slot
+    /// every document change shares.
+    fn start_checkpoint(&mut self, action: sessions::CheckpointAction) -> Option<u64> {
+        let proxy = self.proxy.clone();
+        let generation =
+            self.sessions
+                .begin_checkpoint(action, |ticket, action, generation, cancel| {
+                    sessions::spawn_checkpoint(ticket, action, cancel.clone(), move |result| {
+                        let _ = proxy.send_event(AppEvent::CheckpointStepped {
+                            generation,
+                            result: Box::new(result),
+                        });
+                    })
+                });
+        self.input.request_redraw();
+        generation
+    }
+
+    fn create_checkpoint(&mut self) {
+        if self.checkpoint_availability().create.is_err() {
+            return;
+        }
+        let name = self.checkpoint_name.clone();
+        self.checkpoint_naming = self.start_checkpoint(sessions::CheckpointAction::Create(name));
+    }
+
+    /// The checkpoint shown in row `index` of the current version's list.
+    fn checkpoint_at(&self, index: usize) -> Option<ferritecad_document::CheckpointEntry> {
+        let current = self.sessions.export_source()?;
+        current.checkpoints().ok()?.get(index).cloned()
+    }
+
+    fn restore_checkpoint(&mut self, index: usize) {
+        if self.checkpoint_availability().act.is_err() {
+            return;
+        }
+        if let Some(entry) = self.checkpoint_at(index) {
+            self.start_checkpoint(sessions::CheckpointAction::Restore(entry.id));
+        }
+    }
+
+    /// Deletes one checkpoint from the working document after asking; the model
+    /// on screen stays, and Undo brings the checkpoint back.
+    fn delete_checkpoint(&mut self, index: usize) {
+        if self.checkpoint_availability().act.is_err() {
+            return;
+        }
+        let Some(entry) = self.checkpoint_at(index) else {
+            return;
+        };
+        let confirmed = self.live.as_ref().is_some_and(|live| {
+            self.dialogs.confirm_delete_checkpoint(
+                &entry.name,
+                &checkpoints::shown_time(&entry),
+                &live.window,
+            )
+        });
+        // The question was modal; ask again whether anything moved meanwhile.
+        if confirmed
+            && self.checkpoint_availability().act.is_ok()
+            && self
+                .checkpoint_at(index)
+                .is_some_and(|now| now.id == entry.id)
+        {
+            self.start_checkpoint(sessions::CheckpointAction::Delete(entry.id));
+        }
+    }
+
     /// Builds the picture of a version that is waiting to become current.
     fn stage_scene(&mut self, generation: u64, path: PathBuf) {
         let Some(cancel) = self.sessions.scene_token(generation) else {
             return;
         };
         let proxy = self.proxy.clone();
-        let worker = sessions::spawn_scene(path, cancel, move |result| {
-            let _ = proxy.send_event(AppEvent::SceneStaged {
-                generation,
-                result: Box::new(result),
-            });
-        });
+        let worker = if self.sessions.staged_keeps_picture(generation) {
+            sessions::spawn_kept_facts(path, cancel, move |result| {
+                let _ = proxy.send_event(AppEvent::KeptFacts {
+                    generation,
+                    result: Box::new(result),
+                });
+            })
+        } else {
+            sessions::spawn_scene(path, cancel, move |result| {
+                let _ = proxy.send_event(AppEvent::SceneStaged {
+                    generation,
+                    result: Box::new(result),
+                });
+            })
+        };
         self.sessions.attach_scene(generation, worker);
     }
 
@@ -5770,6 +6000,7 @@ impl Live {
             mut form,
             created,
             recovery,
+            mut checkpoints,
         } = sections;
         let mut pointed_row = None;
         let mut output = egui.run_ui(raw_input, |ui| {
@@ -5779,6 +6010,9 @@ impl Live {
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
             chosen.recovery = ferritecad_ui::recovery_panel(ui, recovery);
+            if let Some((panel, name)) = &mut checkpoints {
+                chosen.checkpoint = ferritecad_ui::checkpoint_panel(ui, *panel, name);
+            }
             if held_back {
                 ui.label(
                     "Copy workflows require a saved document with no unsaved changes. \

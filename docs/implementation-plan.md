@@ -4375,7 +4375,8 @@ editor and the Cut/Fillet/Chamfer Adds onto the session, and §30L made creation
 itself a session; only the copy-to-a-new-file routes still require a saved, clean
 document, by design.)* (2) Autosave and crash recovery: §30M now restores the last
 published copy of the accepted model; Undo history and draft form values remain outside it.
-(3) Persistent revisions, a revision list, tabs. The macOS review added the AppKit
+(3) Persistent revisions, a revision list, tabs. *(Status after §30N: named checkpoints
+of the model are stored in the document, listed, restored and deleted; tabs remain.)* The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
 (4) Close the lock-ignoring-writer window only if a platform primitive allows a
 compare-and-replace; until then it is documented, not closed. The independent Mac window scenario now covers Apply, document Undo/Redo,
@@ -4670,10 +4671,32 @@ FBX pass pinned ufbx. Peak viewer footprint was 203.74 MiB. Review also fixed
 record-directory symlink cleanup, preservation after a post-manifest sync failure,
 and Recover racing a document mutation; recovery hashes now stream their input.
 
-*What remains of §30 after §30M:* persistent revisions, a revision list and tabs;
-recovery of Undo history and of draft form values (not in scope: the model only);
-power-loss durability of the crash copy (`fsync` order only, not proven); the
-lock-ignoring-writer window of Save (documented, not closed); copy-to-a-new-file routes
-that still need a saved, clean document; window evidence on Windows and Linux.
-§30, Milestone 5C and the product remain open; no next slice
+**§30N — named checkpoints inside the document.** A person names a useful version of
+the accepted model (saved or not, Empty included), saves, quits, reopens and restores it.
+Checkpoints live in the `.fcad` itself: table `checkpoints`, SQL schema v4 by a real
+migration, one row per checkpoint (UUIDv7 identity, name, time, BLAKE3, and the model as
+a complete document image with an empty catalog, made by the session's online backup and
+compacted with `VACUUM INTO`, row identities kept — no recursion, no second copier). Schema
+v3 files stay readable without migration; reading, listing and extracting never write;
+only a write makes v4, the user's file at Save; `clear-cache` stops migrating. The list is
+document content: Create/Delete are ordinary session steps (dirty until saved, Undo/Redo,
+version guard), accepted without a rebuild because `model_without_checkpoints` proves the
+picture unchanged; Restore is one model step with its picture, keeps the current list and
+never writes the file. 32 checkpoints / 16 MiB per document, refusal past either, nothing
+deleted to make room; deleted images are zeroed. Window: a collapsed **Checkpoints**
+section with Create / Restore / Delete… (asks), honest disabled reasons, the shared
+operation slot, workers off the event loop. CLI: `list-checkpoints`, `extract-checkpoint`
+(the CLI's Restore), `create-checkpoint`, `delete-checkpoint` (copies;
+`--expect-version` required), JSON v1 additive, exit 7 unchanged. §30M crash copies carry
+the list. [Contract](named-document-checkpoints.md),
+[verification and the macOS recipe](named-document-checkpoints-verification.md),
+[decision](decisions/0005-document-session.md#30n-named-checkpoints-inside-the-document).
+No real window was run for this slice by its author.
+
+*What remains of §30 after §30N:* tabs; branching, automatic or persisted-Undo revisions
+(not in scope: named checkpoints of the model only); recovery of Undo history and of
+draft form values; power-loss durability of the crash copy (`fsync` order only, not
+proven); the lock-ignoring-writer window of Save (documented, not closed);
+copy-to-a-new-file routes that still need a saved, clean document; window evidence on
+Windows and Linux. §30, Milestone 5C and the product remain open; no next slice
 has started.

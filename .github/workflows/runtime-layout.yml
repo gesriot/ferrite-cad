@@ -850,6 +850,15 @@ jobs:
           grep -Fq "test $gate ... " session-recovery-mixed.log
           grep -q '^test result: ok\. 1 passed; 0 failed' session-recovery-mixed.log
           grep -q '^FCAD_30M_MIXED_RECOVERY_EXECUTED$' session-recovery-mixed.log
+          # §30N: a checkpoint of an unconstrained plate is restored and drawn with
+          # Open CASCADE and no solver.
+          gate=sessions::tests::checkpoints::mixed_checkpoint_restore_draws_with_occt_and_no_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-checkpoint-mixed.log
+          if grep -q 'skipped:' session-checkpoint-mixed.log; then exit 1; fi
+          grep -Fq "test $gate ... " session-checkpoint-mixed.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' session-checkpoint-mixed.log
+          grep -q '^FCAD_30N_MIXED_CHECKPOINTS_EXECUTED$' session-checkpoint-mixed.log
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
@@ -1228,6 +1237,38 @@ jobs:
             test -s "$recovery_dir/$name.stl"
           done
           echo "FCAD_RECOVERY_SESSION_FBX_DIR=$recovery_artifacts" >> "$GITHUB_ENV"
+
+          # §30N: checkpoint A, two accepted changes (height, Add Cut), checkpoint B,
+          # Restore A, Undo, Redo, Save, reopen, CLI extraction of A and B, every SQL
+          # cell and both exports against the CLI; an imported STEP checkpoint with no
+          # STEP file left. Exports of A and B for the pinned reader below.
+          checkpoint_dir="$RUNNER_TEMP/checkpoint-session"
+          mkdir -p "$checkpoint_dir"
+          checkpoint_artifacts="$checkpoint_dir"
+          case '${{ matrix.name }}' in
+            windows) checkpoint_artifacts="$(cygpath -w "$checkpoint_artifacts")" ;;
+          esac
+          export FCAD_CHECKPOINT_SESSION_ARTIFACTS="$checkpoint_artifacts"
+          # Both print their marker (the first with measured volumes after it), so
+          # libtest's "ok" follows on a line of its own.
+          for check in \
+            "sessions::tests::checkpoints::native_checkpoints_restore_undo_redo_save_reopen_and_extract_like_the_command_line FCAD_30N_NATIVE_CHECKPOINTS_EXECUTED" \
+            "sessions::tests::checkpoints::native_an_imported_step_checkpoint_needs_no_step_file FCAD_30N_NATIVE_STEP_CHECKPOINT_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-checkpoint-native.log
+            if grep -q 'skipped:' session-checkpoint-native.log; then exit 1; fi
+            grep -Fq "test $gate ... " session-checkpoint-native.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' session-checkpoint-native.log
+            grep -Eq "^${marker}( |\$)" session-checkpoint-native.log
+          done
+          for name in checkpoint-a checkpoint-b; do
+            test -s "$checkpoint_dir/$name.fbx"
+            test -s "$checkpoint_dir/$name.stl"
+          done
+          echo "FCAD_CHECKPOINT_SESSION_FBX_DIR=$checkpoint_artifacts" >> "$GITHUB_ENV"
 
           fillet_dir="$RUNNER_TEMP/fillet-session"
           mkdir -p "$fillet_dir"
@@ -2917,6 +2958,7 @@ jobs:
           grep -q '^FCAD_ADD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_NEW_DOCUMENT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_RECOVERY_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_CHECKPOINT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 
