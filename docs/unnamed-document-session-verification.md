@@ -226,3 +226,87 @@ macOS and Windows. Only the last ~5000 log lines are reachable from this environ
 (the full-log host is outside its network policy), so the per-test exact-name gates are
 counted from the steps' own pass/fail status, not re-read from complete logs. CI for the
 final docs-only head is reported on the PR by its exact SHA.
+
+## Independent macOS review (2026-10-07)
+
+Review work is under `/private/tmp/ferrite-pr92-review`, with the existing native
+target, pinned OCCT/PlaneGCS, two build jobs, and sequential builds. The original
+code head `3cf8275` was checked from complete GitHub logs: all 15 jobs succeeded,
+all 39 new exact gate executions (10 stub + 2 native + 1 mixed on each OS) were
+found, no skip was accepted, and the new-document ufbx marker occurred on all
+three platforms. The base was checked separately (27 successful checks).
+
+Two application defects were fixed during review:
+
+* `ed96e0c`: the creation status kept saying "Untitled, not saved yet" after Save
+  or Open. It now reports the historical fact, "Created a new document."
+* `177772b`: the drawing-form opener still required a clean document, making
+  step 8 above unreachable. It now uses the existing idle-session permission,
+  while copy routes retain their saved/clean requirement. An actual pointer-driven
+  widget regression failed once against the old condition (executed assertion,
+  not compilation), then passed with the fix. The stale Revolve help was corrected.
+
+The new widget test first passed locally in release, but debug CI detected an
+unhandled egui texture delta. `17bfabf` fixes only this test's frame helper by
+clearing the delta, as the existing helpers do. That failed CI attempt is not a
+passing result. Window evidence below uses `177772b`; the later change affects
+only the test helper, not application code. The exact widget gate was also
+re-run locally in debug on `17bfabf`: one executed test passed.
+
+Local verification: 37 jobs session/save/unnamed tests, 105 UI tests, 69 sketch
+tests, the native seven-variant matrix and comparator self-test, creation and
+first-Save component tests, fmt, workspace clippy with all targets/features and
+`-D warnings`, and actionlint. Native-inapplicable stub/mixed gates were reported
+as skips and were not counted as executed geometry. No new native dependency
+build or large STEP campaign was needed locally.
+
+### Actual window and actual output files
+
+One freshly staged, signed Apple Silicon bundle was launched under the 1536 MiB
+watchdog. The first attempt exposed the drawing-opener defect and was closed
+normally (189.45 MiB peak). After the fix and a fresh build/stage, the recipe was
+completed using only files under `gui-models` outside the checkout:
+
+* New plate, Apply height, unsaved STL/FBX exports, Save Cancel, occupied-output
+  refusal, first Save, Undo/Redo and export after Undo.
+* Quit Cancel; drawing an annulus alongside a dirty plate; replacement Cancel
+  kept the plate and typed values. Save wrote the plate and continued creation
+  exactly once, yielding an unsaved annulus, which was exported.
+* Additional nested first-Save checks: New Empty from the unsaved annulus,
+  choose Save then cancel the file dialog; retry Save to occupied output and
+  refuse. Both kept the annulus and the Empty form. Discard then accepted Empty.
+* Quit Empty, choose Save then cancel its dialog: the window remained. Repeating
+  Quit/Save to `empty.fcad` published the file and exited normally. This exercises
+  the first-Save continuation rather than only toolbar Save followed by Quit.
+
+The fixture generator produced only its declared inputs. Before GUI execution,
+the comparator refused all missing outputs. After execution, it read the actual
+window artifacts and reported
+`FCAD_30L_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true` (one executed
+test, no skips). The only shell copies were `plate.fcad` to `first-save.fcad`
+immediately after first Save and to `after-guard.fcad` immediately after guarded
+Save, as the recipe requires. No CLI substitute was used for a GUI output.
+
+Pinned ufbx 0.23.0 independently read actual `unsaved.fbx` and `annulus.fbx`:
+6 checks / 0 failures each. Their oriented triangle joins with the actual STL
+were respectively 12 and 652 triangles, worst error `3.47e-18` metres.
+
+Final owned PID 4714 exited 0 after 600.7 seconds, without watchdog intervention;
+peak footprint **209.74 MiB**, pressure normal, swap delta **0**. After Quit only
+the process/watchdog was observed; no CUA app lookup could relaunch the viewer.
+Windows/Linux window behaviour and the historical OOM cause remain unverified.
+
+### CI at the time this review record was written
+
+Code/test/workflow head: `17bfabfb257b3ab17b126bbedfcbad361697a63d`.
+CI run [37727885547](https://github.com/gesriot/ferrite-cad/actions/runs/37727885547)
+has 7 successful jobs (the macOS-only retry followed a DNS failure resolving
+`index.crates.io` before compilation, not a test failure). Pin run
+[37727881930](https://github.com/gesriot/ferrite-cad/actions/runs/37727881930)
+has 4 successful jobs. Native runtime run
+[37727881939](https://github.com/gesriot/ferrite-cad/actions/runs/37727881939)
+is still executing at the time of this documentation commit and is not claimed
+as passed here. The merge review must verify its final outcome separately. The
+review adds one exact widget gate per OS, so the new-document campaign now has
+42 required executions (11 stub + 2 native + 1 mixed on each OS). A docs-only
+head has its own 7-job CI; it does not stand in for this code-head runtime run.

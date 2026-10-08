@@ -4631,6 +4631,13 @@ and a macOS recipe: [contract](unnamed-document-session.md),
 [decision](decisions/0005-document-session.md#30l-a-new-document-is-a-session-before-it-is-a-file).
 No real window was run in the cloud.
 
+Independent macOS review fixed a stale post-creation status and the drawing opener's
+clean-only gate, then completed the actual guarded-replacement/first-Save window
+scenario. All SQL comparisons and seven negative controls passed; actual STL/FBX
+matched the CLI, with both FBX files also read by pinned ufbx. Viewer peak was
+209.74 MiB, swap did not grow, exit 0. The review's added widget test also received
+a debug-only texture-delta cleanup after CI exposed it; evidence is in verification.
+
 *What remains of §30 after §30L:* autosave and crash recovery; persistent revisions,
 a revision list and tabs; the lock-ignoring-writer window of Save (documented, not
 closed); copy-to-a-new-file routes that still need a saved, clean document; window
