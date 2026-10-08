@@ -288,3 +288,42 @@ run here; the viewer was never started.
 * The CLI lists and extracts but does not delete; Delete is the window's.
 * Undo history, draft form values and the original file's path are not part of a crash
   copy (the name is a file name only).
+
+## Heads and CI
+
+Base `f31539a156ccae3c094a226bf8586d985f35952c` (CI above). Branch
+`document-crash-recovery`; commits `89386ad` (decision and contract, before any code),
+`7f04fdf` (library), `5e10ad9` (window, CLI, UI, CI wiring), `77cc280` (marker gates,
+recovered name, Windows retry, record). **Code and workflow head:
+`77cc280f1deff6fa1cada58c315617e059a3af2b`.** Diff from the base to it, tracked and
+untracked (nothing untracked): 30 files, 5926 insertions, 21 deletions — new
+`crates/ferritecad-jobs/src/recovery.rs`, `crates/ferritecad-jobs/tests/recovery.rs`,
+`crates/ferritecad-app/src/recoveries.rs`, `crates/ferritecad-app/src/sessions/tests/recovery.rs`,
+`crates/ferritecad-cli/src/recovery.rs`, `crates/ferritecad-cli/src/json/recovery.rs`,
+`crates/ferritecad-cli/tests/recovery.rs`, `crates/ferritecad-ui/src/recovery.rs`,
+`tools/document-crash-recovery-gui.py`, `docs/document-crash-recovery*.md`; changes in
+`session.rs`, `lib.rs` (jobs), `sessions.rs`, `main.rs`, `dialogs.rs`,
+`tests/add_fillet.rs` (app), CLI `main.rs`/`json.rs`/`json/import.rs`, UI
+`lib.rs`/`panels.rs`, both workflows, `tools/check-fbx-complex.sh`, ADR 0005, README,
+plan, `cli-capabilities.md`, `document-session.md`.
+
+CI on `77cc280`, all completed success:
+
+* CI 37804023696: test linux 113403440095, macOS 113403439953, Windows 113403440136;
+  lint 113403439828, sbom 113403440032, notices 113403439855, supply-chain
+  113403439565. In the log tails the §30M jobs, CLI, app and UI gates read `ok`;
+  `FCAD_30M_STUB_RECOVERY_EXECUTED` on all three, `FCAD_30M_PERMISSION_GATE_EXECUTED`
+  on linux and macOS (the gate is Unix-only).
+* planegcs pin 37803977017: linux 113403278219, macOS 113403277979, Windows
+  113403278201, comparison 113407933297.
+* combined runtime layout 37803977038: linux 113403277810, macOS 113403278318, Windows
+  113403278288, comparison 113446681847. On each OS step #20 (no solver, including
+  `mixed_recovery_draws_without_a_solver`), #24 (native session, including the crash
+  matrix and the comparator self-check, both of which the step fails without their
+  marker) and #49 (pinned ufbx) succeeded; `FCAD_RECOVERY_SESSION_UFBX_EXECUTED` is in
+  all three log tails. Only the last 5000 lines of a log are reachable from this
+  environment (the full-log host is outside its network policy), so the earlier
+  markers are evidenced by their steps' own checks, not re-read.
+
+Later commits only record CI in this file; CI for the final docs-only head is reported
+on the PR by its exact SHA, separately from the code head above.
