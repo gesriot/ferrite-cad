@@ -30,8 +30,8 @@ plate and on a plate under one §29A Chamfer with §29D constraints (the same pl
 6. **Export STL/FBX** always writes the accepted working model, saved or not, never
    a stale read of the file on disk, and still refuses to write over the document the
    user has open.
-7. While the document has unsaved changes the remaining copy workflows (Cut copy, Fillet copy, Chamfer copy, Chamfer distance copy, creating Revolve
-   and the *copy* workflow of the height form) are
+7. While the document has unsaved changes the remaining copy workflows (Cut copy, Fillet copy, Chamfer copy, Chamfer distance copy
+   and the *copy* workflow of the height form; since §30L creating a new document, Revolve included, is guarded by the unsaved-changes question instead) are
    shown disabled with the reason in words. They read a file and write a new file,
    so using them on an unsaved document would silently discard the change. When the
    document is clean they work exactly as before.
@@ -149,6 +149,11 @@ Add Chamfer and distance copy remain clean-only. See [Chamfer session contract](
 §30I adds a new circular Cut through this same session, including while dirty
 (**Add cut**). Save cut copy, Add Fillet, Add Chamfer and the other copies remain
 clean-only. See [Add Cut session contract](add-circular-cut-session.md).
+
+§30L: a new document is an untitled session before it is a file: New and the
+drawing forms create without a dialog, the first Save asks where, and Open, Quit and
+another creation are guarded at the moment of replacement. See
+[unnamed document contract](unnamed-document-session.md).
 
 §30J adds a new Fillet through this same session, including while dirty (**Add
 fillet**). Save fillet copy, Add Chamfer and the other copies remain clean-only. See

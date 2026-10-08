@@ -485,21 +485,22 @@ cargo run -p ferritecad-app --bin ferritecad-viewer
 
 Opens an empty window. `New…` offers an empty document or a sample plate template.
 Plate dimensions are in **millimetres**, initially 60 × 40 × 10, just like
-`ferritecad create --sample`. Choose its `.fcad` name in the system save dialog;
-the viewer creates the file on a worker and then opens it through the ordinary
-asynchronous loader. An existing file is refused: choose a different name.
+`ferritecad create --sample`. **Create document** makes it at once, with no file
+dialog (§30L): the window shows it as `*Untitled`, and editing, Undo/Redo and
+STL/FBX export work before it has a file. The drawing forms (**Create new
+document**, **Create circle document**, **Create annular document**) do the same.
+The first **Save** asks where the file goes and never replaces an existing one;
+after that Save writes in place. Open, Quit and making another new document ask
+Save / Discard / Cancel while the document is untitled or has unsaved changes.
+[Contract](docs/unnamed-document-session.md).
 `Open…` chooses an existing `.fcad`. Export is offered once a document is accepted,
-including a saved empty document (which has no bodies to export as STL).
+including an empty one (which has no bodies to export as STL).
 
-New is available when no Open or Export is pending. While its form or creation
-is active, Open and Export wait; camera and visibility controls remain usable.
-Cancelling the form or save dialog writes nothing. `Cancel creation` asks the
-worker to stop before publication; the window reports its actual result, since
-a cancellation arriving after publication cannot undo a file already created.
-A creation error or a failed/cancelled subsequent Open preserves the previous
-accepted scene and its export source. If creation succeeded but Open failed,
-both facts are shown. New does not introduce an unsaved model, Save/Save As,
-or a parameter editor. On macOS
+Create is available when no Open, Export or document operation is pending; camera
+and visibility controls remain usable. Cancelling the form writes nothing.
+`Cancel creation` stops the worker; a creation that fails, is cancelled or whose
+picture cannot be shown keeps the previous document, its scene and what was typed in
+the form. On macOS
 the same window opens by double-clicking a built `FerriteCAD.app`, with no terminal
 involved; [An application you can open without a terminal](#an-application-you-can-open-without-a-terminal)
 is how one is built.

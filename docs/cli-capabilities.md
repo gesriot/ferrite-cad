@@ -462,6 +462,14 @@ capability по прежней политике) и штамп. Новой ко�
 пластина. `chamfer-edge-copy` на том же снимке даёт тот же результат во всех ячейках
 SQL, кроме `meta.modified_at` и доказанного соответствия новых UUID.
 
+§30L: CLI не меняется: `create`, `create-sketch-extrude`, `create-sketch-revolve`,
+`create-circle-extrude` и `create-annular-extrude` по-прежнему публикуют указанный путь
+с прежними JSON/text и кодами выхода. В окне те же семь вариантов `NewDocument` через
+тот же `create_document_with_kernel` создают безымянный документ (**Untitled**) в
+сессии без диалога сохранения; путь спрашивает первый Save ([контракт](unnamed-document-session.md)).
+Нативная матрица сравнивает каждый вариант с CLI во всех ячейках SQL, кроме
+`meta.created_at`, `meta.modified_at` и доказанной биекции новых UUID.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

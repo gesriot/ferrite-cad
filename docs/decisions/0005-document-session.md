@@ -99,7 +99,7 @@ Save conflict (changed, replaced by another document, or missing); Save busy
 (another saver holds the path); Save over a read-only file or a file with other
 hard links; Save As on an occupied path; Apply while another operation runs, on a
 document whose editor says it is unavailable, or whose snapshot changed; a stale
-worker answer; a scene that cannot be prepared. Remaining copy workflows (Cut copy, Fillet copy, Chamfer copy, Chamfer distance copy and creation of Revolve)
+worker answer; a scene that cannot be prepared. Remaining copy workflows (Cut copy, Fillet copy, Chamfer copy, Chamfer distance copy; creating a new document, Revolve included, is guarded by the question instead since §30L)
 are unavailable while the session is dirty — they
 read a source and write a *new* file, and silently reading the old file would drop
 the unsaved change — and work unchanged on a clean session.
@@ -146,3 +146,53 @@ fillet**); Save fillet copy, Add Chamfer and the other copies remain clean-only.
 §30K adds the plate's one Chamfer through this same session, including while dirty
 (**Add chamfer**), on a free or closure-only plate only; Save chamfer copy and the
 other copies remain clean-only. See [Add Chamfer session contract](../add-chamfer-session.md).
+
+## §30L: a new document is a session before it is a file
+
+**Decided before implementation.** Until §30L the window's New asked for a file
+name first, published a `.fcad` there and then opened it. Now that every editor
+and Add works inside the session, that is the last place where a person must name
+a file before they have a model. The decision:
+
+* **State.** A session may have no logical path and no saved checkpoint
+  (`DocumentSession::create_in`). Both are *absent* (`Option`), never a private
+  snapshot, the working directory, an empty path or an invented `untitled.fcad`
+  standing in for a saved file. The window calls it **Untitled**; the private
+  directory still appears nowhere a person reads. An empty window with no document
+  and an accepted new Empty document are different states (the first has no
+  session).
+* **One fact, one owner.** `is_dirty()` stays the single "would closing lose
+  something" answer and is owned by the session: with no checkpoint it is true for
+  every version, Empty included, and Undo back to the first version does not make
+  it saved. After the first Save it is again exactly the model-content comparison
+  with the checkpoint, so no-op, Redo and the version guard are unchanged; no
+  "modified" flag is added.
+* **Creation route.** The worker creates the first version inside the candidate
+  session's own private directory through the existing `create_document_with_kernel`
+  (one `needs_kernel` classification: Empty and the sample plate need no kernel),
+  then builds the picture from that private file. Nothing is published anywhere
+  else and nothing is rebuilt twice for a DTO. The candidate becomes the window's
+  session only through the same `Bind::Open` that Open uses, in one statement with
+  the scene replacement; a failed, cancelled, stale or scene/GPU-refused candidate
+  is dropped (its directory with it) and the previous session, picture and typed
+  draft stay.
+* **First Save is Save As.** Save on an untitled session asks for a path and runs
+  the existing no-clobber Save As publication. Only a published save gives the
+  session its logical path and checkpoint; a cancelled dialog, an occupied
+  destination, a path inside the private directory (or reaching it through an
+  alias) or a failed publication changes nothing. A cancellation that arrives after
+  publication does not undo it. Later Saves are the existing in-place Save with
+  its version guard. A library `InPlace` save of an untitled session is refused.
+* **Guard at the point of replacement.** Open, Quit and *creating* a new document
+  ask about an untitled or dirty session; the question is asked when the new
+  document is about to be made (from any create form), not only when New is
+  pressed, so no toolbar route can drop an unsaved document. Save from the
+  question continues exactly once after a published save; Cancel, a cancelled
+  dialog or a failed save continues nothing. Discard keeps the old session until
+  the replacement is accepted.
+* **Not decided here:** autosave, recovery, tabs, persistent revisions, a CLI
+  session protocol. The command line's `create`, `create-sketch-*` and analytic
+  create commands keep publishing the path they are given, with unchanged output
+  and exit codes. Copy workflows keep requiring a saved, clean document and say so.
+
+Contract and checks: [../unnamed-document-session.md](../unnamed-document-session.md).

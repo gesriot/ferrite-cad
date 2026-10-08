@@ -302,14 +302,11 @@ enum AppEvent {
         generation: u64,
         result: Result<ferritecad_jobs::EditedDocument>,
     },
-    /// A new document has been made, or has finished failing to be.
-    ///
-    /// Not boxed: what a creation answers with is a path and an identifier,
-    /// which is the smallest answer this application moves rather than the
-    /// largest.
+    /// A new document has been made with its picture, or has finished failing
+    /// to be (§30L): a candidate session that is accepted or dropped as one.
     Created {
         generation: creates::CreateGeneration,
-        result: Result<ferritecad_jobs::CreatedDocument>,
+        result: Box<Result<creates::Candidate>>,
     },
     /// A load has something new to say about how far along it is.
     ///
@@ -607,23 +604,25 @@ fn stl_spawner(
 
 /// What a started creation runs, and where its answer goes.
 ///
-/// No kernel session and no picture: writing the feature graph of a new
-/// document needs neither, and a window that opened a session here would make
-/// New impossible on a build with no Open CASCADE for no reason at all.
+/// The new document is made in a candidate session's private directory under the
+/// system temporary directory, as Open's session is, and its picture is read from
+/// there (§30L). Nothing is written where a person keeps files.
 fn creator(
     proxy: EventLoopProxy<AppEvent>,
-) -> impl FnOnce(&Path, NewDocument, creates::CreateGeneration, &CancelToken) -> JoinHandle<()> {
-    move |destination, content, generation, cancel| {
-        let destination = destination.to_path_buf();
-        // The one thing the event loop hands the worker beyond the two values:
+) -> impl FnOnce(NewDocument, creates::CreateGeneration, &CancelToken) -> JoinHandle<()> {
+    move |content, generation, cancel| {
+        // The one thing the event loop hands the worker beyond the content:
         // how to be told to stop.
         let context = OperationContext::default().with_cancel(cancel.clone());
         creates::spawn_create(
-            move || creates::run_create(&destination, content, &context),
+            move || creates::run_create(&std::env::temp_dir(), content, &context),
             move |result| {
                 // A closed event loop is an ordinary end state, and there is
                 // nowhere useful to report a failed wake-up after it.
-                let _ = proxy.send_event(AppEvent::Created { generation, result });
+                let _ = proxy.send_event(AppEvent::Created {
+                    generation,
+                    result: Box::new(result),
+                });
             },
         )
     }
@@ -771,6 +770,20 @@ impl Loads {
             .as_ref()
             .filter(|(current, _)| *current == generation)
             .map(|(_, relay)| relay)
+    }
+
+    /// A document that was not read from a file (§30L: a new one) is now the one
+    /// on screen. The line names the session from now on, not the last file read
+    /// or the last attempt that failed; a reading in flight is left alone.
+    fn document_replaced(&mut self) {
+        if matches!(self.status, Status::Loading { .. }) {
+            return;
+        }
+        self.conflict = None;
+        self.shown = None;
+        self.status = Status::Ready {
+            file: String::new(),
+        };
     }
 
     /// Stops the reading in flight and goes back to describing what is drawn.
@@ -1179,24 +1192,34 @@ fn ask_new(
     can_begin_new(creates, loads, exports) && creates::open_form(creates, input)
 }
 
-/// The UI command after the save dialog. An absent destination changes nothing.
+/// Starts making a new document (§30L). No dialog: the worker makes it in a
+/// candidate session, and the first Save asks where its file goes.
 fn start_new(
     creates: &mut creates::Creates,
     loads: &Loads,
     exports: &exports::Exports,
     input: &mut ViewportInput,
     content: NewDocument,
-    chosen: Option<PathBuf>,
-    spawn: impl FnOnce(&Path, NewDocument, creates::CreateGeneration, &CancelToken) -> JoinHandle<()>,
+    spawn: impl FnOnce(NewDocument, creates::CreateGeneration, &CancelToken) -> JoinHandle<()>,
 ) -> Option<creates::CreateGeneration> {
-    if loads.current.is_some()
-        || exports.running()
-        || exports.pending().is_some()
-        || exports.configuring_stl()
-    {
+    if !document_io_idle(loads, exports) {
         return None;
     }
-    creates::begin_create(creates, input, content, chosen, spawn)
+    creates::begin_create(creates, input, content, spawn)
+}
+
+/// §30L: whether a create form may make a new document now. One predicate, for
+/// the forms' Create buttons and for the handler: no creation already running,
+/// no load or export, no edit form or worker and no session operation in flight.
+/// The forms that ask are themselves open, so `Creates::busy` is not asked.
+fn can_create(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    !creates.running() && document_io_idle(loads, exports) && !edits.busy() && !sessions.busy()
 }
 
 /// What the sections under the toolbar show this frame.
@@ -2567,6 +2590,10 @@ struct App {
     /// The open document's session: the one owner of what is accepted, what is
     /// saved and what can be undone. The picture in `live` is derived from it.
     sessions: sessions::Sessions,
+    /// §30L: the new document a create form asked for while the open one had
+    /// unsaved changes and the user chose Save: made once that save is
+    /// published, dropped if it is not.
+    pending_create: Option<NewDocument>,
     modifiers: winit::keyboard::ModifiersState,
 }
 
@@ -2814,27 +2841,45 @@ impl ApplicationHandler<AppEvent> for App {
                     if report.published {
                         self.refresh_title();
                     }
-                    if let Some(next) = report.continuation {
-                        self.continue_with(next, event_loop);
+                    match report.continuation {
+                        Some(next) => self.continue_with(next, event_loop),
+                        // A save that was not published continues nothing, and
+                        // the document it was going to make is not made.
+                        None => self.pending_create = None,
                     }
                 }
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
             AppEvent::Created { generation, result } => {
-                // An answer to a creation the user has since replaced changes
-                // nothing at all, and above all does not send this window off
-                // to open a document nobody is waiting for.
+                // An answer to a creation the user has since replaced, or
+                // cancelled, changes nothing: its candidate is dropped with its
+                // private directory.
                 //
-                // A document that was made is then opened the ordinary way,
-                // on the thread every other document is read on. Until that
-                // Open is accepted the picture, what is chosen in it and the
-                // document an export reads are all what they were: a creation
-                // publishes a file and nothing else.
-                if let Some(path) =
-                    creates::finish_create(&mut self.creates, &mut self.input, generation, result)
+                // A candidate that is still wanted becomes the document exactly
+                // as an Open does: its session is bound in the same statement
+                // that shows its picture, and a picture that cannot be prepared
+                // leaves the previous session, picture and drafts as they were.
+                if let Some(candidate) =
+                    creates::finish_create(&mut self.creates, &mut self.input, generation, *result)
                 {
-                    self.open(path);
+                    let creates::Candidate { scene, session } = candidate;
+                    let shown = session.current().path().to_path_buf();
+                    let outcome =
+                        self.show(&shown, Ok(scene), sessions::Bind::Open(Box::new(session)));
+                    if outcome.is_ok() {
+                        // The window names the new document now, not the last
+                        // file it read or failed to read.
+                        self.loads.document_replaced();
+                    }
+                    if let Err(error) = &outcome {
+                        eprintln!("ferritecad: {error}");
+                    }
+                    creates::finish_shown(
+                        &mut self.creates,
+                        &mut self.input,
+                        outcome.map_err(|error| error.to_string()),
+                    );
                 }
                 if self.input.take_redraw() {
                     self.request_frame_now(event_loop);
@@ -2958,8 +3003,8 @@ impl ApplicationHandler<AppEvent> for App {
                 // Save As changes the logical name without opening a new scene.
                 // Preserve pending/failed Open messages, but name the accepted
                 // session rather than the last successfully opened filename.
-                let line = match (self.loads.status(), self.sessions.logical_path()) {
-                    (Status::Ready { .. }, Some(path)) => short_name(path),
+                let line = match (self.loads.status(), self.sessions.name()) {
+                    (Status::Ready { .. }, Some(name)) => name,
                     (status, _) => status.line(),
                 };
                 // Read from the fields rather than through `self`, which `live`
@@ -3125,6 +3170,13 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.edits,
                     &self.sessions,
                 );
+                let creatable = can_create(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -3165,6 +3217,7 @@ impl ApplicationHandler<AppEvent> for App {
                     constraints_apply,
                     self.sessions.dirty(),
                 );
+                self.creates.set_can_create(creatable);
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
@@ -3205,10 +3258,9 @@ impl ApplicationHandler<AppEvent> for App {
                         // says where it goes. Both happen after the frame was
                         // published, for the reason opening does — a modal
                         // dialog runs its own event loop.
-                        if chosen.new_document
-                            && !self.edits.busy()
-                            && self.guard(sessions::Continuation::New)
-                        {
+                        // Opening the form replaces nothing; the question about
+                        // unsaved changes is asked when the document is made.
+                        if chosen.new_document && !self.edits.busy() {
                             ask_new(
                                 &mut self.creates,
                                 &self.loads,
@@ -3310,7 +3362,7 @@ impl ApplicationHandler<AppEvent> for App {
                             self.add_chamfer(request);
                         }
                         if let Some(content) = self.creates.sketch.take_request() {
-                            self.ask_where_to_create(content);
+                            self.create_new(content);
                         }
                         if chosen.cancel_create {
                             self.creates.cancel(&mut self.input);
@@ -3318,7 +3370,7 @@ impl ApplicationHandler<AppEvent> for App {
                         if let Some(content) =
                             creates::answer_form(&mut self.creates, &mut self.input, asked)
                         {
-                            self.ask_where_to_create(content);
+                            self.create_new(content);
                         }
                         // Asked for after the frame for the same reason, and
                         // before the answer to the replace question, because
@@ -3484,6 +3536,7 @@ impl App {
             creates: creates::Creates::default(),
             edits: edits::Edits::default(),
             sessions: sessions::Sessions::default(),
+            pending_create: None,
             modifiers: winit::keyboard::ModifiersState::default(),
         }
     }
@@ -3569,11 +3622,7 @@ impl App {
         };
         // The user's name and folder for the suggestion, not the private file the
         // model is read from.
-        let document = self
-            .sessions
-            .logical_path()
-            .map(Path::to_path_buf)
-            .unwrap_or(shown);
+        let document = self.sessions.suggestion().unwrap_or(shown);
 
         let Some(chosen) = self.dialogs.choose(
             dialogs::Action::ExportFbx,
@@ -3611,11 +3660,7 @@ impl App {
             let document = lease
                 .as_ref()
                 .map_or_else(|| shown.clone(), |snapshot| snapshot.path().to_path_buf());
-            let alias = self
-                .sessions
-                .logical_path()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| shown.clone());
+            let alias = self.sessions.suggestion().unwrap_or_else(|| shown.clone());
             self.exports.ask_stl_for(
                 &document,
                 &alias,
@@ -3665,47 +3710,40 @@ impl App {
         );
     }
 
-    /// Asks where the new document should go, and starts making it there.
-    ///
-    /// Blocking on purpose, exactly as the Open and Export dialogs are: while
-    /// it is up the user is choosing a file, and every toolkit runs the
-    /// window's events for the duration. What must not block is the creation
-    /// itself, and that has its own thread.
-    ///
-    /// Choosing the name is part of making the document rather than a step
-    /// after it: nothing is built until a path comes back, and a cancelled
-    /// dialog creates nothing at all and leaves the form as it was.
-    fn ask_where_to_create(&mut self, content: NewDocument) {
-        // A toolbar cannot be drawn without a live window, so reaching this
-        // without one would be a wiring error. Do not silently turn that into
-        // an unowned top-level dialog: its parent is what keeps it in front of
-        // this viewer and gives the XDG portal a non-empty window identifier.
-        let Some(live) = &self.live else {
+    /// Makes a new document from a create form (§30L): no file dialog. Asked by
+    /// every create form, so the question about an untitled or dirty document is
+    /// asked here, at the moment it would be replaced, whichever toolbar route
+    /// opened the form. Save from that question makes the document once the save
+    /// is published; Cancel, a cancelled dialog or a failed save make nothing and
+    /// keep the form as it was typed.
+    fn create_new(&mut self, content: NewDocument) {
+        if !self.can_create() {
+            self.input.request_redraw();
             return;
-        };
-
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::New,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                // Beside the last document this window was pointed at, which is
-                // where somebody making another one is most likely to want it.
-                .set_directory(
-                    self.document
-                        .as_deref()
-                        .and_then(Path::parent)
-                        .filter(|parent| !parent.as_os_str().is_empty())
-                        .unwrap_or(Path::new(".")),
-                )
-                .set_file_name(format!("untitled.{DOCUMENT_EXTENSION}"))
-                .set_parent(live.window.as_ref()),
+        }
+        if !self.guard_replacing(sessions::Continuation::Create, Some(&content)) {
+            return;
+        }
+        let proxy = self.proxy.clone();
+        start_new(
+            &mut self.creates,
+            &self.loads,
+            &self.exports,
             &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
+            content,
+            creator(proxy),
+        );
+    }
 
-        self.create_at(content, Some(chosen));
+    /// The one `can_create` predicate, asked by the forms' buttons and here.
+    fn can_create(&self) -> bool {
+        can_create(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        )
     }
 
     /// Nothing that reads or replaces the document is running or waiting.
@@ -3739,6 +3777,17 @@ impl App {
     /// question that could not be asked, an operation still finishing, or Save,
     /// which goes on by itself when it has succeeded.
     fn guard(&mut self, next: sessions::Continuation) -> bool {
+        self.guard_replacing(next, None)
+    }
+
+    /// [`Self::guard`], with what a create form asked for when the replacement is
+    /// a new document: it is kept, and made only after a Save the user chose has
+    /// been published (§30L).
+    fn guard_replacing(
+        &mut self,
+        next: sessions::Continuation,
+        content: Option<&NewDocument>,
+    ) -> bool {
         if self.sessions.busy() {
             self.input.request_redraw();
             return false;
@@ -3748,15 +3797,29 @@ impl App {
         }
         // Something is still replacing or reading the document (an Open or a New on
         // its way, an export): a Save started now would overlap it. Wait for it, or
-        // cancel it, and ask then.
-        if !self.settled() {
+        // cancel it, and ask then. A create form asking is open itself, so for it
+        // the question is the create predicate rather than "no form is open".
+        let settled = match next {
+            sessions::Continuation::Create => self.can_create(),
+            _ => self.settled(),
+        };
+        if !settled {
             self.input.request_redraw();
             return false;
         }
-        let request = match next {
-            sessions::Continuation::Open => "Opening another document would replace it.",
-            sessions::Continuation::New => "Making a new document would replace it.",
-            sessions::Continuation::Quit => "Closing the window would lose them.",
+        let request = match (next, self.sessions.untitled()) {
+            (sessions::Continuation::Open, false) => "Opening another document would replace it.",
+            (sessions::Continuation::Create, false) => "Making a new document would replace it.",
+            (sessions::Continuation::Quit, false) => "Closing the window would lose them.",
+            (sessions::Continuation::Open, true) => {
+                "It has never been saved. Opening another document would replace it."
+            }
+            (sessions::Continuation::Create, true) => {
+                "It has never been saved. Making a new document would replace it."
+            }
+            (sessions::Continuation::Quit, true) => {
+                "It has never been saved. Closing the window would lose it."
+            }
         };
         let choice = match (self.sessions.name(), self.live.as_ref()) {
             (Some(name), Some(live)) => self.dialogs.ask_unsaved(&name, &live.window, request),
@@ -3765,10 +3828,27 @@ impl App {
         match self.sessions.replacing(choice) {
             sessions::Replace::Go | sessions::Replace::Discarded => true,
             sessions::Replace::AfterSave => {
-                self.start_save(ferritecad_jobs::SaveTarget::InPlace, Some(next));
+                self.pending_create = content.cloned();
+                if !self.save_then(Some(next)) {
+                    self.pending_create = None;
+                }
                 false
             }
             sessions::Replace::Stay => false,
+        }
+    }
+
+    /// Save, as the toolbar's Save does: in place for a document with a file, and
+    /// for an untitled one a Save As whose path the user chooses first (§30L). A
+    /// cancelled dialog starts nothing. Returns whether a save started, so a
+    /// continuation waits only on a save that is really running.
+    fn save_then(&mut self, after: Option<sessions::Continuation>) -> bool {
+        if !self.sessions.untitled() {
+            return self.start_save(ferritecad_jobs::SaveTarget::InPlace, after);
+        }
+        match self.choose_save_as_path() {
+            Some(chosen) => self.start_save(ferritecad_jobs::SaveTarget::As(chosen), after),
+            None => false,
         }
     }
 
@@ -3777,13 +3857,12 @@ impl App {
     fn continue_with(&mut self, next: sessions::Continuation, event_loop: &ActiveEventLoop) {
         match next {
             sessions::Continuation::Open => self.pick_and_open(),
-            sessions::Continuation::New => {
-                ask_new(
-                    &mut self.creates,
-                    &self.loads,
-                    &self.exports,
-                    &mut self.input,
-                );
+            sessions::Continuation::Create => {
+                // Exactly once: the content is taken, and the document is clean
+                // now, so making it asks nothing more.
+                if let Some(content) = self.pending_create.take() {
+                    self.create_new(content);
+                }
             }
             sessions::Continuation::Quit => event_loop.exit(),
         }
@@ -3811,9 +3890,10 @@ impl App {
     }
 
     /// Writes the accepted changes to the document's own file, when there are any.
+    /// An untitled document has no file yet: Save asks where, as Save As does.
     fn save_document(&mut self) {
         if self.settled() && self.sessions.can_save() {
-            self.start_save(ferritecad_jobs::SaveTarget::InPlace, None);
+            self.save_then(None);
         }
     }
 
@@ -3824,30 +3904,40 @@ impl App {
         if !(self.settled() && self.sessions.can_save_as()) {
             return;
         }
-        let Some(live) = &self.live else {
-            return;
+        if let Some(chosen) = self.choose_save_as_path() {
+            self.start_save(ferritecad_jobs::SaveTarget::As(chosen), None);
+        }
+    }
+
+    /// The Save As dialog: beside the document's own file, or for an untitled one
+    /// in the folder dialogs start in, named `Untitled.fcad`. Never the private
+    /// folder. `None` is a cancelled (or unavailable) dialog.
+    fn choose_save_as_path(&mut self) -> Option<PathBuf> {
+        let live = self.live.as_ref()?;
+        let suggestion = self.sessions.suggestion()?;
+        let name = if self.sessions.untitled() {
+            format!(
+                "{}.{DOCUMENT_EXTENSION}",
+                self.sessions.name().unwrap_or_default()
+            )
+        } else {
+            self.sessions.name().unwrap_or_default()
         };
-        let Some(logical) = self.sessions.logical_path().map(Path::to_path_buf) else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
+        self.dialogs.choose(
             dialogs::Action::SaveAs,
             rfd::FileDialog::new()
                 .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
                 .set_directory(
-                    logical
+                    suggestion
                         .parent()
                         .filter(|parent| !parent.as_os_str().is_empty())
                         .unwrap_or(Path::new(".")),
                 )
-                .set_file_name(self.sessions.name().unwrap_or_default())
+                .set_file_name(name)
                 .set_parent(live.window.as_ref()),
             &mut self.input,
             self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        self.start_save(ferritecad_jobs::SaveTarget::As(chosen), None);
+        )
     }
 
     /// Apply the height typed in the form to the open document. No file dialog: the
@@ -4676,27 +4766,6 @@ impl App {
     /// Acts on a chosen destination, whether or not a dialog produced it.
     ///
     /// Split from the dialog so that everything this decides can be exercised
-    /// with an injected `Option<PathBuf>`, exactly as opening and exporting
-    /// are. This is the whole of what pressing New reaches.
-    fn create_at(&mut self, content: NewDocument, chosen: Option<PathBuf>) {
-        if self.edits.busy() {
-            return;
-        }
-        let proxy = self.proxy.clone();
-        start_new(
-            &mut self.creates,
-            &self.loads,
-            &self.exports,
-            &mut self.input,
-            content,
-            chosen,
-            creator(proxy),
-        );
-    }
-
-    /// Acts on a chosen destination, whether or not a dialog produced it.
-    ///
-    /// Split from the dialog so that everything this decides can be exercised
     /// with an injected `Option<PathBuf>`, exactly as opening a document is.
     fn export_to(&mut self, chosen: Option<PathBuf>) {
         if self.creates.busy() || self.edits.busy() {
@@ -5430,7 +5499,7 @@ impl Live {
             chosen = ferritecad_ui::toolbar(ui, activity);
             if held_back {
                 ui.label(
-                    "Save or Undo changes before creating a Revolve or using a copy workflow. \
+                    "Copy workflows require a saved document with no unsaved changes. \
                      Height, vertices, constraints, Circle, annulus, a saved partial Revolve \
                      angle, existing Cut parameters, Fillet radii and Chamfer distances can \
                      still be changed with Apply, and a new Cut, Fillet or Chamfer added with \
@@ -15535,11 +15604,10 @@ mod tests {
         let status = loads.status().clone();
         let issued = loads.issued;
         let mut exports = exports::Exports::default();
-        let mut creates = creates::Creates::default();
+        let creates = creates::Creates::default();
         let mut dialogs = dialogs::Dialogs::default();
         for action in [
             dialogs::Action::Open,
-            dialogs::Action::New,
             dialogs::Action::Edit,
             dialogs::Action::ExportFbx,
             dialogs::Action::ExportStl,
@@ -15565,18 +15633,6 @@ mod tests {
                     scene.document.as_deref(),
                     chosen.clone(),
                     |_, _, _, _| panic!("a dialog refusal started an export"),
-                );
-                assert!(
-                    start_new(
-                        &mut creates,
-                        &loads,
-                        &exports,
-                        &mut input,
-                        NewDocument::Empty,
-                        chosen,
-                        |_, _, _, _| panic!("a dialog refusal created a file")
-                    )
-                    .is_none()
                 );
                 assert_eq!(loads.issued, issued);
                 assert_eq!(loads.status(), &status);
@@ -19418,8 +19474,7 @@ mod tests {
                 &exports,
                 &mut input,
                 NewDocument::Empty,
-                Some(dir.path().join("forbidden.fcad")),
-                |_, _, _, _| panic!("New started during Open")
+                |_, _, _| panic!("New started during Open")
             )
             .is_none()
         );
@@ -19453,11 +19508,142 @@ mod tests {
         exports.stop_all();
     }
 
+    /// §30L: one `can_create` predicate for the create forms' buttons and the
+    /// handler. Shown open first (the forms themselves are open and that is not
+    /// work), then each kind of work closes it: a creation running, a load, an
+    /// export, an edit form and a session operation.
     #[test]
-    fn new_command_preserves_accepted_scene_until_open_succeeds() {
+    fn the_create_predicate_lets_open_forms_create_and_excludes_other_work() {
         let dir = tempfile::tempdir().expect("directory");
+        let path = dir.path().join("plate.fcad");
+        ferritecad_jobs::create_document(
+            ferritecad_jobs::CreateDocumentRequest::new(
+                &path,
+                NewDocument::SamplePlate(ferritecad_jobs::PlateSize::DEFAULT),
+                "keep",
+            ),
+            &OperationContext::default(),
+        )
+        .expect("plate");
+        let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+        let mut input = ViewportInput::new();
+        let mut creates = creates::Creates::default();
+        let edits = edits::Edits::default();
+        let mut sessions = sessions::Sessions::default();
+        sessions.adopt(ferritecad_jobs::DocumentSession::open(&path).expect("session"));
+        assert!(ask_new(
+            &mut creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &mut input
+        ));
+        let idle = |creates: &creates::Creates,
+                    loads: &Loads,
+                    exports: &exports::Exports,
+                    edits: &edits::Edits,
+                    sessions: &sessions::Sessions| {
+            can_create(creates, loads, exports, edits, sessions)
+        };
+        assert!(
+            idle(
+                &creates,
+                &Loads::default(),
+                &exports::Exports::default(),
+                &edits,
+                &sessions
+            ),
+            "the open New form may create"
+        );
+        creates.set_can_create(true);
+        assert!(creates.form().expect("form").can_create);
+
+        let mut loads = Loads::default();
+        loads.open(Some(&path), relay(), |_, _| std::thread::spawn(|| {}));
+        assert!(!idle(
+            &creates,
+            &loads,
+            &exports::Exports::default(),
+            &edits,
+            &sessions
+        ));
+        loads.stop_all();
+
+        let mut exporting = exports::Exports::default();
+        exports::begin_export(
+            &mut exporting,
+            &mut input,
+            Some(&path),
+            Some(dir.path().join("out.fbx")),
+            |_, _, _, _| std::thread::spawn(|| {}),
+        )
+        .expect("export");
+        assert!(!idle(
+            &creates,
+            &Loads::default(),
+            &exporting,
+            &edits,
+            &sessions
+        ));
+        exporting.stop_all();
+
+        let mut editing = edits::Edits::default();
+        assert!(editing.begin(&path, &reading));
+        assert!(!idle(
+            &creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &editing,
+            &sessions
+        ));
+
+        sessions
+            .begin_apply(|_, _, _| std::thread::spawn(|| {}))
+            .expect("a session operation");
+        assert!(!idle(
+            &creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &edits,
+            &sessions
+        ));
+        sessions.stop_all();
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        start_new(
+            &mut creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &mut input,
+            NewDocument::Empty,
+            move |_, _, _| {
+                std::thread::spawn(move || {
+                    let _ = rx.recv();
+                })
+            },
+        )
+        .expect("a creation");
+        assert!(!idle(
+            &creates,
+            &Loads::default(),
+            &exports::Exports::default(),
+            &edits,
+            &sessions
+        ));
+        creates.set_can_create(false);
+        assert!(!creates.form().expect("still open").can_create);
+        drop(tx);
+        creates.stop_all();
+    }
+
+    /// §30L: a new document replaces the accepted picture only when its own
+    /// picture is accepted. A candidate whose upload fails leaves the old scene,
+    /// camera and the form's typed sizes; an accepted one is shown from its
+    /// private version and is exportable before any Save.
+    #[test]
+    fn new_command_preserves_accepted_scene_until_the_candidate_is_shown() {
+        let dir = tempfile::tempdir().expect("directory");
+        let sessions = tempfile::tempdir().expect("sessions");
         let old = dir.path().join("old.fcad");
-        let new = dir.path().join("new.fcad");
         let mut scene = empty_scene();
         let mut input = ViewportInput::new();
         let mut loads = Loads::default();
@@ -19476,113 +19662,52 @@ mod tests {
         let before = *input.camera();
         assert!(ask_new(&mut creates, &loads, &exports, &mut input));
         assert!(!can_begin_new(&creates, &loads, &exports));
-        assert!(
-            start_new(
+        creates.form().expect("form").width = "77".to_owned();
+        for accept in [false, true] {
+            let (_, candidate) = creates::tests::run_to_completion(
                 &mut creates,
-                &loads,
-                &exports,
                 &mut input,
+                sessions.path(),
                 NewDocument::Empty,
-                None,
-                |_, _, _, _| panic!("cancelled dialog spawned work")
-            )
-            .is_none()
-        );
-        assert_eq!(scene.document.as_ref(), Some(&old));
-        assert_eq!(*input.camera(), before);
-        creates::answer_form(&mut creates, &mut input, NewChoice::Cancel);
-        for (destination, failure) in [(old.clone(), true), (new.clone(), false)] {
-            if failure {
-                std::fs::write(&destination, b"old document sentinel").expect("sentinel");
-            }
-            let (send, recv) = std::sync::mpsc::channel();
-            start_new(
-                &mut creates,
-                &loads,
-                &exports,
-                &mut input,
-                NewDocument::Empty,
-                Some(destination),
-                |path, content, generation, cancel| {
-                    let path = path.to_path_buf();
-                    let context = OperationContext::default().with_cancel(cancel.clone());
-                    creates::spawn_create(
-                        move || creates::run_create(&path, content, &context),
-                        move |result| {
-                            send.send((generation, result)).expect("answer");
-                        },
-                    )
-                },
-            )
-            .expect("new started");
-            assert!(creates.busy());
-            let (generation, result) = recv.recv().expect("answer");
-            let path = creates::finish_create(&mut creates, &mut input, generation, result);
+            );
+            let candidate = candidate.expect("a candidate");
+            // Made, not shown: the old picture is still the window's.
             assert_eq!(scene.document.as_ref(), Some(&old));
             assert_eq!(*input.camera(), before);
-            if failure {
-                assert!(path.is_none());
-                assert_eq!(
-                    std::fs::read(&old).expect("sentinel"),
-                    b"old document sentinel"
+            let shown = candidate.session.current().path().to_path_buf();
+            let next = prepare_load(&input, &shown, Ok(candidate.scene), |_, _| {
+                if accept {
+                    Ok(())
+                } else {
+                    Err(CadError::rendering("the device refused the upload"))
+                }
+            });
+            let outcome = commit_scene(&mut scene, &mut input, next);
+            creates::finish_shown(
+                &mut creates,
+                &mut input,
+                outcome.as_ref().map(|_| ()).map_err(ToString::to_string),
+            );
+            if !accept {
+                assert!(outcome.is_err());
+                assert_eq!(scene.document.as_ref(), Some(&old));
+                assert_eq!(*input.camera(), before);
+                assert_eq!(creates.form().expect("kept").width, "77");
+                drop(candidate.session);
+                assert!(
+                    std::fs::read_dir(sessions.path())
+                        .expect("sessions")
+                        .next()
+                        .is_none(),
+                    "the refused candidate left its folder"
                 );
                 continue;
             }
-            assert_eq!(path.as_ref(), Some(&new));
-            let generation = loads
-                .open(path.as_deref(), relay(), |_, _| std::thread::spawn(|| {}))
-                .expect("open new");
-            assert!(!can_begin_new(&creates, &loads, &exports));
-            deliver_into(
-                &mut scene,
-                &mut loads,
-                &mut input,
-                generation,
-                Err(CadError::input("cannot show created document")),
-            );
-            assert!(new.is_file());
-            assert!(matches!(
-                creates.status(),
-                creates::CreateStatus::Made { .. }
-            ));
-            assert!(loads.status().line().contains("Could not open"));
-            assert_eq!(scene.document.as_ref(), Some(&old));
-            assert_eq!(*input.camera(), before);
-            // A newer Open supersedes a pending Open of the created file.
-            let stale = loads
-                .open(Some(&new), relay(), |_, _| std::thread::spawn(|| {}))
-                .expect("stale open");
-            let accepted = loads
-                .open(Some(&old), relay(), |_, _| std::thread::spawn(|| {}))
-                .expect("latest open");
-            deliver_into(
-                &mut scene,
-                &mut loads,
-                &mut input,
-                stale,
-                Ok(loaded(scene_at(200.0))),
-            );
-            assert_eq!(scene.document.as_ref(), Some(&old));
-            deliver_into(
-                &mut scene,
-                &mut loads,
-                &mut input,
-                accepted,
-                Ok(loaded(scene_at(10.0))),
-            );
-            // Successfully loading an empty saved document still accepts its export source.
-            let empty = loads
-                .open(Some(&new), relay(), |_, _| std::thread::spawn(|| {}))
-                .expect("empty open");
-            deliver_into(
-                &mut scene,
-                &mut loads,
-                &mut input,
-                empty,
-                Ok(loaded(SnapshotBuilder::new().build())),
-            );
-            assert_eq!(scene.document.as_ref(), Some(&new));
+            outcome.expect("accepted");
+            assert_eq!(scene.document.as_ref(), Some(&shown));
+            assert!(creates.form().is_none());
             assert!(can_export(&scene));
+            assert!(candidate.session.is_untitled());
         }
         creates.stop_all();
         loads.stop_all();

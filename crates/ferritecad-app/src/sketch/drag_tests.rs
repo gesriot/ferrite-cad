@@ -241,7 +241,7 @@ fn pointer_hit_ties_free_add_and_invalid_preview_use_existing_draft_policy() {
     assert!(e.pending.is_none());
     let out = frame(&ctx, &mut e, vec![]);
     assert!(!out.shapes.iter().any(
-        |c| matches!(&c.shape,egui::Shape::Text(t) if t.galley.text()=="Create in new file…")
+        |c| matches!(&c.shape,egui::Shape::Text(t) if t.galley.text()==crate::sketch::CREATE_DRAWN)
     ));
     e.undo();
     assert!(e.content().is_ok());
@@ -1212,7 +1212,7 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
             assert!(refused.contains(refusal), "{to}: {refused}");
             let out = frame(&ctx, e, vec![]);
             assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == "Create in new file…")));
+                egui::Shape::Text(t) if t.galley.text() == crate::sketch::CREATE_DRAWN)));
             click(&ctx, e, text_at(&out, "Undo draft"));
             assert_eq!(e.draft, valid);
         }
@@ -1220,57 +1220,9 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     let content = creates.sketch.content().expect("a Revolve");
     let before = creates.sketch.draft.clone();
     let mut view = ferritecad_ui::ViewportInput::new();
-    let loads = crate::Loads::default();
-    let exports = crate::exports::Exports::default();
-    assert!(
-        crate::start_new(
-            &mut creates,
-            &loads,
-            &exports,
-            &mut view,
-            content.clone(),
-            None,
-            |_, _, _, _| panic!("no worker on cancel")
-        )
-        .is_none(),
-        "a cancelled Save starts nothing"
-    );
-    assert_eq!(creates.sketch.draft, before);
-    let (tx, rx) = std::sync::mpsc::channel();
-    let spawn = move |path: &std::path::Path,
-                      content,
-                      generation,
-                      cancel: &ferritecad_kernel::CancelToken| {
-        let path = path.to_path_buf();
-        let ctx = OperationContext::default().with_cancel(cancel.clone());
-        creates::spawn_create(
-            move || creates::run_create(&path, content, &ctx),
-            move |result| tx.send((generation, result)).expect("reply"),
-        )
-    };
-    crate::start_new(
-        &mut creates,
-        &loads,
-        &exports,
-        &mut view,
-        content,
-        Some(ui.clone()),
-        spawn,
-    )
-    .expect("worker");
-    let (generation, result) = rx.recv().expect("worker result");
-    assert_eq!(
-        creates::finish_create(&mut creates, &mut view, generation, result),
-        Some(ui.clone())
-    );
-    creates.sketch.draft_load_finished(&ui, false);
-    assert_eq!(
-        creates.sketch.draft, before,
-        "a failed Open keeps the draft"
-    );
-    creates.sketch.draft_published(&ui);
-    creates.sketch.draft_load_finished(&ui, true);
-    assert!(!creates.sketch.active());
+    creates::tests::drawn_through_the_window(&mut creates, &mut view, content.clone(), &ui, |e| {
+        assert_eq!(e.draft, before, "a refused picture restores the draft")
+    });
     creates.stop_all();
 
     let input = root.path().join("cylinder.json");

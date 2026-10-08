@@ -34,6 +34,16 @@
 //! logical content with only the modified stamp set aside). Undoing back to the
 //! checkpoint, redoing away from it, editing a value and editing it back, and a
 //! no-op edit therefore need no counter and cannot leave a false mark.
+//!
+//! # A new document has no file yet
+//!
+//! [`DocumentSession::create_in`] makes a session whose first version was created
+//! in its own private directory (§30L). It has no logical path and no saved
+//! checkpoint: both are absent, not stood in for by a private file or an invented
+//! name. Until the first Save is published every version of it is unsaved, so
+//! [`DocumentSession::is_dirty`] is true even for an empty document and after Undo
+//! back to the first version. The first save is a Save As; only its publication
+//! gives the session a path and a checkpoint.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,6 +52,7 @@ use ferritecad_document::{Document, DocumentVersion};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
+use crate::create::{CreateDocumentRequest, NewDocument, create_document_with_kernel};
 use crate::edit::{
     CircularCutRequest, EdgeChamferRequest, EdgeFilletRequest, EditAnnulusRequest,
     EditChamferDistanceRequest, EditCircleRequest, EditCircularCutRequest, EditExtrudeRequest,
@@ -52,6 +63,10 @@ use crate::edit::{
     edit_sketch_copy, fillet_edge_copy,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
+
+/// What a person reads for a document that has not been saved yet. A name, not a
+/// path: nothing is ever written or read under it.
+pub const UNTITLED: &str = "Untitled";
 
 /// How much accepted history a session keeps.
 ///
@@ -193,8 +208,10 @@ pub const STALE_STEP: &str =
 #[derive(Debug)]
 pub struct DocumentSession {
     directory: Arc<SessionDir>,
-    logical: PathBuf,
-    saved: Checkpoint,
+    /// Where Save writes; absent until a new document's first Save is published.
+    logical: Option<PathBuf>,
+    /// What is on disk at `logical`; absent exactly when `logical` is.
+    saved: Option<Checkpoint>,
     history: Vec<Arc<Snapshot>>,
     current: usize,
     next_file: u64,
@@ -247,8 +264,8 @@ impl DocumentSession {
         }
         Ok(Self {
             directory,
-            logical,
-            saved: Checkpoint { disk, model },
+            logical: Some(logical),
+            saved: Some(Checkpoint { disk, model }),
             history: vec![snapshot],
             current: 0,
             next_file: 1,
@@ -257,18 +274,81 @@ impl DocumentSession {
         })
     }
 
-    /// Where Save writes, as the user named it.
-    pub fn logical_path(&self) -> &Path {
-        &self.logical
+    /// A new, untitled session whose first version `produce` writes at the path
+    /// it is given, inside the session's own private directory (§30L).
+    ///
+    /// `produce` is the existing creation (see [`Self::create_document_in`]); this
+    /// owns only where it writes and what the result is. Any failure, a
+    /// cancellation included, drops the directory and everything in it. The
+    /// session has no logical path and no saved checkpoint until its first Save.
+    pub fn create_in(
+        root: &Path,
+        limits: HistoryLimits,
+        produce: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<Self> {
+        let directory = SessionDir::create(root)?;
+        let first = directory.path.join("v0.fcad");
+        produce(&first)?;
+        let snapshot = Snapshot::adopt(first, Arc::clone(&directory))?;
+        Ok(Self {
+            directory,
+            logical: None,
+            saved: None,
+            history: vec![snapshot],
+            current: 0,
+            next_file: 1,
+            generation: 0,
+            limits,
+        })
     }
 
-    /// The name the window shows.
+    /// A new, untitled session made by the shared creation route: the
+    /// `create_document_with_kernel` the command line's `create` commands use,
+    /// writing into the session's private directory instead of a user path. The
+    /// kernel factory is called only for content that
+    /// [`NewDocument::needs_kernel`]; Empty and the sample plate need none.
+    pub fn create_document_in<K: GeometryKernel>(
+        root: &Path,
+        limits: HistoryLimits,
+        content: NewDocument,
+        factory: impl FnOnce() -> Result<K>,
+        context: &OperationContext,
+    ) -> Result<Self> {
+        Self::create_in(root, limits, |first| {
+            // The destination is a fresh name in a directory made a moment ago,
+            // so the advice for a taken path can never be shown.
+            create_document_with_kernel(
+                CreateDocumentRequest::new(first, content, "choose a different name"),
+                factory,
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Where Save writes, as the user named it. `None` for a new document that
+    /// has never been saved.
+    pub fn logical_path(&self) -> Option<&Path> {
+        self.logical.as_deref()
+    }
+
+    /// Whether this document has never been saved (it has no file).
+    pub fn is_untitled(&self) -> bool {
+        self.logical.is_none()
+    }
+
+    /// The name the window shows: the file's name, or [`UNTITLED`].
     pub fn display_name(&self) -> String {
-        self.logical
-            .file_name()
-            .unwrap_or(self.logical.as_os_str())
-            .to_string_lossy()
-            .into_owned()
+        self.logical.as_ref().map_or_else(
+            || UNTITLED.to_owned(),
+            |logical| {
+                logical
+                    .file_name()
+                    .unwrap_or(logical.as_os_str())
+                    .to_string_lossy()
+                    .into_owned()
+            },
+        )
     }
 
     /// The current version. Held (it is an `Arc`) by whoever reads it for longer
@@ -277,9 +357,11 @@ impl DocumentSession {
         Arc::clone(&self.history[self.current])
     }
 
-    /// Whether the current model differs from what was last saved or opened.
+    /// Whether closing would lose something: the current model differs from what
+    /// was last saved or opened, or the document has never been saved at all.
     pub fn is_dirty(&self) -> bool {
-        self.history[self.current].model != self.saved.model
+        self.saved
+            .is_none_or(|saved| self.history[self.current].model != saved.model)
     }
 
     pub fn can_undo(&self) -> bool {
@@ -428,7 +510,7 @@ impl DocumentSession {
             self.current(),
             self.directory.path.clone(),
             self.logical.clone(),
-            self.saved.disk,
+            self.saved.map(|saved| saved.disk),
             target,
             self.generation,
         )
@@ -441,18 +523,24 @@ impl DocumentSession {
     /// moved on after the save began, the session is dirty against the new
     /// checkpoint, which is the truth.
     pub fn record_saved(&mut self, saved: &Saved) {
-        self.saved = Checkpoint {
+        // An in-place save of a session with no file cannot have been published
+        // (`SavePlan` refuses it), so there is no path to record for one.
+        if saved.kind == crate::save::SaveKind::InPlace && self.logical.is_none() {
+            return;
+        }
+        self.saved = Some(Checkpoint {
             disk: saved.disk,
             model: saved.model,
-        };
+        });
         if saved.kind == crate::save::SaveKind::As {
-            self.logical = saved.path.clone();
+            self.logical = Some(saved.path.clone());
         }
     }
 
-    /// The version last written to or read from the logical path.
-    pub fn saved_version(&self) -> DocumentVersion {
-        self.saved.disk
+    /// The version last written to or read from the logical path; `None` before
+    /// a new document's first Save.
+    pub fn saved_version(&self) -> Option<DocumentVersion> {
+        self.saved.map(|saved| saved.disk)
     }
 }
 

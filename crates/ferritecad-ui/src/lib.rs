@@ -23,7 +23,7 @@ mod panels;
 pub use edit::{EditChoice, EditExtrudeForm, ExtrusionRow, HeightState, edit_extrude_panel};
 pub use input::{Hover, PointerButton, ViewportEvent, ViewportInput};
 pub use panels::{
-    Activity, CANCEL_EXPORT, CHOOSE_LOCATION, Chosen, ConflictingRule, EMPTY_DOCUMENT, EXPORT_FBX,
+    Activity, CANCEL_EXPORT, CREATE_DOCUMENT, Chosen, ConflictingRule, EMPTY_DOCUMENT, EXPORT_FBX,
     EdgeName, ExportOutcome, FRAME_ALL_KEY, FRAME_KEY, FaceName, GeometryUnavailable, HIDE_KEY,
     ISOLATE_KEY, LENGTH_UNIT, NEW_DOCUMENT, NEW_DOCUMENT_TITLE, NewChoice, NewContent,
     NewDocumentForm, OmittedDefinition, OpenFailure, PROJECTION_KEY, PublishedFile, REDO_DOCUMENT,

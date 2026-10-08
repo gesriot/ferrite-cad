@@ -953,6 +953,28 @@ if [ -n "${FCAD_ADD_CHAMFER_SESSION_FBX_DIR:-}" ]; then
     echo "FCAD_ADD_CHAMFER_SESSION_UFBX_EXECUTED"
 fi
 
+if [ -n "${FCAD_NEW_DOCUMENT_SESSION_FBX_DIR:-}" ]; then
+    python="$(command -v python3 || command -v python || true)"
+    # §30L: new documents exported before and after their first Save.
+    for name in new-polygon-before-save new-polygon-after-save new-annulus-before-save new-annulus-after-save; do
+        "$reader" --identity "$FCAD_NEW_DOCUMENT_SESSION_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: session new document FBX was not independently read: $name" >&2
+            exit 1
+        fi
+        "$reader" --triangles "$FCAD_NEW_DOCUMENT_SESSION_FBX_DIR/$name.fbx" > "$work/$name-triangles.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[0-9]* failures=0$' "$work/$name-triangles.txt"; then
+            echo "error: session new document FBX triangles were not read: $name" >&2
+            exit 1
+        fi
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$FCAD_NEW_DOCUMENT_SESSION_FBX_DIR/$name.stl" "$(native "$work/$name-triangles.txt")" \
+            | tee "$work/$name-match.txt"
+        grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
+    done
+    echo "FCAD_NEW_DOCUMENT_SESSION_UFBX_EXECUTED"
+fi
+
 if [ -n "${FCAD_FILLET_SESSION_FBX_DIR:-}" ]; then
     python="$(command -v python3 || command -v python || true)"
     # §30G: accepted existing Fillet exports with every preserved UUID and name.

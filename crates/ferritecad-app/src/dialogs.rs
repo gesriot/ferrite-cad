@@ -6,7 +6,6 @@ use std::path::PathBuf;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     Open,
-    New,
     Edit,
     SaveAs,
     ExportFbx,
@@ -17,7 +16,6 @@ impl Action {
     fn title(self) -> &'static str {
         match self {
             Self::Open => "Open a document",
-            Self::New => "New document",
             Self::Edit => "Save edited model as a new file",
             Self::SaveAs => "Save As",
             Self::ExportFbx => "Export FBX",
@@ -158,7 +156,10 @@ impl Dialogs {
                 self.failure = Some(format!(
                     "{}: {} is inside FerriteCAD's temporary working folder, which is deleted when the document is closed. Nothing was written; choose a folder of your own.",
                     action.title(),
-                    path.display()
+                    // The file's own name: the working folder is never shown (§30L).
+                    path.file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
                 ));
                 input.request_redraw();
                 return None;
@@ -207,7 +208,6 @@ mod tests {
     fn null_panel_constructor_is_a_failure_instead_of_unwinding_the_viewer() {
         for action in [
             Action::Open,
-            Action::New,
             Action::Edit,
             Action::SaveAs,
             Action::ExportFbx,
@@ -259,7 +259,6 @@ mod tests {
         let path = PathBuf::from("a chosen document.fcad");
         for action in [
             Action::Open,
-            Action::New,
             Action::Edit,
             Action::SaveAs,
             Action::ExportFbx,
