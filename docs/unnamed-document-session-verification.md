@@ -210,12 +210,19 @@ native runs (CI), release-profile local runs, Windows/Linux windows.
 
 ### Base CI (post-merge `fae2337`)
 
-At the time of the code push: CI 37707500898, planegcs pin 37707500848, product sbom
-37707500856, rust sbom 37707500872 and rust notices 37707500879 success; combined
-runtime layout 37707500851 still running (linux 113085259837 and macOS 113085259572
-success, Windows 113085259786 in progress) — not counted as success; recorded again
-when complete.
+All success: CI 37707500898, planegcs pin 37707500848, product sbom 37707500856, rust
+sbom 37707500872, rust notices 37707500879, combined runtime layout 37707500851
+(linux 113085259837, macOS 113085259572, Windows 113085259786, compare 113109670143).
 
-### PR CI
+### PR CI (code and workflow head `3cf8275`)
 
-Reported on the PR by exact head SHA.
+The last commit that changes code or workflows is `3cf8275`; later commits only record
+CI in this file. On `3cf8275`, all success: CI 37714482083, planegcs pin 37714461568
+(compare 113109733400), combined runtime layout 37714461505 (linux 113107654201, macOS
+113107654421, Windows 113107654482, compare 113131015381). In each of the three native
+jobs the no-solver, native session and ufbx steps passed, and
+`FCAD_NEW_DOCUMENT_SESSION_UFBX_EXECUTED` is present in the job log tail on linux,
+macOS and Windows. Only the last ~5000 log lines are reachable from this environment
+(the full-log host is outside its network policy), so the per-test exact-name gates are
+counted from the steps' own pass/fail status, not re-read from complete logs. CI for the
+final docs-only head is reported on the PR by its exact SHA.
