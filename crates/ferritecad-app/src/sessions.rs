@@ -313,10 +313,22 @@ impl Sessions {
     /// file the model is read from.
     pub(crate) fn suggestion(&self) -> Option<PathBuf> {
         let session = self.session.as_ref()?;
-        Some(session.logical_path().map_or_else(
-            || self.suggested_directory().join(session.display_name()),
-            Path::to_path_buf,
-        ))
+        // A recovered copy is suggested as `<stem> (recovered)`, so its dialogs
+        // offer `plate (recovered).fcad`, never `plate.fcad (recovered).fcad`.
+        let name = if session.is_recovered() {
+            let base = session.recovery_name();
+            let stem = Path::new(&base)
+                .file_stem()
+                .map_or_else(|| base.clone(), |stem| stem.to_string_lossy().into_owned());
+            format!("{stem} (recovered)")
+        } else {
+            session.display_name()
+        };
+        Some(
+            session
+                .logical_path()
+                .map_or_else(|| self.suggested_directory().join(&name), Path::to_path_buf),
+        )
     }
 
     /// The file an export reads: the current accepted version, which holds unsaved

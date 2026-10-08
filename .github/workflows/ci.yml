@@ -762,7 +762,10 @@ jobs:
             # must execute rather than skip.
             gate=a_folder_without_write_permission_fails_the_copy_and_loses_nothing
             cargo test -p ferritecad-jobs --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-permission.log
-            if grep -q 'skipped:' recovery-permission.log || ! grep -Fq "test $gate ... ok" recovery-permission.log; then exit 1; fi
+            # It prints its marker, so libtest's "ok" follows on a line of its own.
+            if grep -q 'skipped:' recovery-permission.log; then exit 1; fi
+            grep -Fq "test $gate ... " recovery-permission.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' recovery-permission.log
             grep -q '^FCAD_30M_PERMISSION_GATE_EXECUTED$' recovery-permission.log
           fi
           for gate in list_and_extract_share_the_claim_keep_the_record_and_refuse_occupied_outputs \
@@ -894,15 +897,18 @@ jobs:
             sketch::tests::a_dirty_document_can_open_a_new_drawing_without_enabling_copy_workflows \
             sessions::tests::recovery::only_a_version_shown_with_its_picture_is_copied_and_saved_or_undone_states_have_no_copy \
             sessions::tests::recovery::discard_and_quit_end_the_copy_and_an_exit_nobody_chose_keeps_it \
-            sessions::tests::recovery::a_recovered_document_is_untitled_named_recovered_and_takes_over_its_record \
-            sessions::tests::recovery::stub_recovery_is_refused_at_the_picture_and_keeps_the_record_and_the_open_document
+            sessions::tests::recovery::a_recovered_document_is_untitled_named_recovered_and_takes_over_its_record
           do
             cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-app.log
             if grep -q 'skipped:' session-app.log || ! grep -Fq "test $gate ... ok" session-app.log; then exit 1; fi
-            case "$gate" in
-              *stub_recovery_is_refused*) grep -q '^FCAD_30M_STUB_RECOVERY_EXECUTED$' session-app.log ;;
-            esac
           done
+          # §30M: prints its marker, so libtest's "ok" follows on a line of its own.
+          gate=sessions::tests::recovery::stub_recovery_is_refused_at_the_picture_and_keeps_the_record_and_the_open_document
+          cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-app.log
+          if grep -q 'skipped:' recovery-app.log; then exit 1; fi
+          grep -Fq "test $gate ... " recovery-app.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' recovery-app.log
+          grep -q '^FCAD_30M_STUB_RECOVERY_EXECUTED$' recovery-app.log
           for gate in panels::tests::the_document_commands_are_offered_exactly_when_they_would_do_something \
             panels::tests::unsaved_changes_and_the_last_outcome_are_on_the_screen_in_words \
             panels::tests::new_form_create_asks_nothing_while_the_window_says_it_cannot \

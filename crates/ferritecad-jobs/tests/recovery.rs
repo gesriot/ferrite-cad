@@ -870,7 +870,7 @@ fn a_folder_without_write_permission_fails_the_copy_and_loses_nothing() {
     drop(record);
     let found = recoverable(&store);
     assert_eq!(found[0].content, first.content);
-    println!("FCAD_30M_PERMISSION_GATE_EXECUTED");
+    println!("\nFCAD_30M_PERMISSION_GATE_EXECUTED");
 }
 
 #[test]

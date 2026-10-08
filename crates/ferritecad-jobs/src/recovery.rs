@@ -731,12 +731,26 @@ fn remove_record(directory: &Path, lease: Lease) -> Result<()> {
     // going away; the directory goes once the handle is closed.
     let _ = std::fs::remove_file(directory.join(LEASE));
     drop(lease);
-    std::fs::remove_dir(directory).map_err(|e| {
-        CadError::io(
-            "removing a recovery record (files that are not FerriteCAD's were left in it)",
-            e,
-        )
-    })
+    // On Windows a name removed while another process (a scanner, another
+    // window listing the folder) has it open is gone only when that handle is
+    // closed, a moment later; the empty folder is asked for a few times.
+    let mut attempt = 0;
+    loop {
+        match std::fs::remove_dir(directory) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) if cfg!(windows) && attempt < 20 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => {
+                return Err(CadError::io(
+                    "removing a recovery record (files that are not FerriteCAD's were left in it)",
+                    error,
+                ));
+            }
+        }
+    }
 }
 
 /// Removes the manifest first (from then on nothing is recoverable from the

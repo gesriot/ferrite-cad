@@ -845,7 +845,10 @@ jobs:
           gate=sessions::tests::recovery::mixed_recovery_draws_without_a_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-recovery-mixed.log
-          if grep -q 'skipped:' session-recovery-mixed.log || ! grep -Fq "test $gate ... ok" session-recovery-mixed.log; then exit 1; fi
+          # It prints its marker, so libtest's "ok" follows on a line of its own.
+          if grep -q 'skipped:' session-recovery-mixed.log; then exit 1; fi
+          grep -Fq "test $gate ... " session-recovery-mixed.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' session-recovery-mixed.log
           grep -q '^FCAD_30M_MIXED_RECOVERY_EXECUTED$' session-recovery-mixed.log
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
@@ -1206,11 +1209,20 @@ jobs:
             windows) recovery_artifacts="$(cygpath -w "$recovery_artifacts")" ;;
           esac
           export FCAD_RECOVERY_SESSION_ARTIFACTS="$recovery_artifacts"
-          gate=sessions::tests::recovery::native_a_killed_window_recovers_named_untitled_and_edited_models_as_accepted
-          cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
-            -- --exact --nocapture --test-threads=1 2>&1 | tee session-recovery-native.log
-          if grep -q 'skipped:' session-recovery-native.log || ! grep -Fq "test $gate ... ok" session-recovery-native.log; then exit 1; fi
-          grep -q '^FCAD_30M_NATIVE_CRASH_MATRIX_EXECUTED variants=3$' session-recovery-native.log
+          # Both print their marker, so libtest's "ok" follows on a line of its own.
+          for check in \
+            "sessions::tests::recovery::native_a_killed_window_recovers_named_untitled_and_edited_models_as_accepted FCAD_30M_NATIVE_CRASH_MATRIX_EXECUTED variants=3" \
+            "sessions::tests::recovery::native_recovery_window_scenario_on_session_files_passes_the_comparator_and_its_controls FCAD_30M_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-recovery-native.log
+            if grep -q 'skipped:' session-recovery-native.log; then exit 1; fi
+            grep -Fq "test $gate ... " session-recovery-native.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' session-recovery-native.log
+            grep -Fxq "$marker" session-recovery-native.log
+          done
           for name in recovered-plate recovered-drawn; do
             test -s "$recovery_dir/$name.fbx"
             test -s "$recovery_dir/$name.stl"

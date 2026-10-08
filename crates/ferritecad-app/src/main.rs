@@ -4190,7 +4190,7 @@ impl App {
         let name = if self.sessions.untitled() {
             format!(
                 "{}.{DOCUMENT_EXTENSION}",
-                self.sessions.name().unwrap_or_default()
+                suggestion.file_name().unwrap_or_default().to_string_lossy()
             )
         } else {
             self.sessions.name().unwrap_or_default()

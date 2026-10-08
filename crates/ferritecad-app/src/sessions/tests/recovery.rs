@@ -261,6 +261,13 @@ fn a_recovered_document_is_untitled_named_recovered_and_takes_over_its_record() 
     written(&s);
     assert_eq!(s.title(), "*plate.fcad (recovered) — FerriteCAD");
     assert!(s.untitled() && s.recovered() && s.dirty() && !s.can_undo());
+    // Dialogs suggest `plate (recovered)`, in the folder dialogs start in.
+    let suggestion = s.suggestion().expect("suggestion");
+    assert_eq!(
+        suggestion.file_name().and_then(|n| n.to_str()),
+        Some("plate (recovered)")
+    );
+    assert!(!suggestion.starts_with(f.private.path()));
     assert_eq!(s.logical_path(), None);
     assert_eq!(
         sql(&s.export_path().expect("current")),
@@ -309,7 +316,7 @@ fn stub_recovery_is_refused_at_the_picture_and_keeps_the_record_and_the_open_doc
         "plate.fcad — FerriteCAD",
         "the open document stays"
     );
-    println!("FCAD_30M_STUB_RECOVERY_EXECUTED");
+    println!("\nFCAD_30M_STUB_RECOVERY_EXECUTED");
 }
 
 #[test]
@@ -326,7 +333,7 @@ fn mixed_recovery_draws_without_a_solver() {
             .expect("recovered with OCCT and no solver");
     assert!(!scene.catalogue.is_empty());
     assert_eq!(session.current().version(), before.current().version());
-    println!("FCAD_30M_MIXED_RECOVERY_EXECUTED");
+    println!("\nFCAD_30M_MIXED_RECOVERY_EXECUTED");
 }
 
 // ---- the native crash matrix -------------------------------------------------
@@ -612,7 +619,7 @@ fn native_a_killed_window_recovers_named_untitled_and_edited_models_as_accepted(
         s.stop_all();
         assert_eq!(records(root.path()), 0, "{mode}");
     }
-    println!("FCAD_30M_NATIVE_CRASH_MATRIX_EXECUTED variants=3");
+    println!("\nFCAD_30M_NATIVE_CRASH_MATRIX_EXECUTED variants=3");
 }
 
 // ---- the real window: comparator, controls and its self-check -----------------
@@ -834,7 +841,7 @@ fn compare_with_controls(root: &Path) {
             .expect("w")
         },
     );
-    println!("FCAD_30M_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
+    println!("\nFCAD_30M_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
 }
 
 /// The macOS recipe run through the window's own session owner, recorder, claim,
