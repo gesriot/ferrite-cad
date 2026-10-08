@@ -1129,7 +1129,10 @@ impl Editor {
         }
         if !self.active() {
             if ui
-                .add_enabled(can_begin, egui::Button::new("Create sketch + Extrude…"))
+                .add_enabled(
+                    can_begin || self.can_begin_sketch,
+                    egui::Button::new("Create sketch + Extrude…"),
+                )
                 .clicked()
             {
                 self.begin();
@@ -2863,6 +2866,49 @@ pub(crate) mod tests {
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
         frame_running(ctx, e, events, false)
+    }
+
+    #[test]
+    fn a_dirty_document_can_open_a_new_drawing_without_enabling_copy_workflows() {
+        let ctx = egui::Context::default();
+        let mut editor = Editor::default();
+        let render = |editor: &mut Editor, events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 900.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                // A dirty session withholds the old clean-only copy route.
+                |ui| editor.draw(ui, false, false, ""),
+            )
+        };
+        for permitted in [false, true] {
+            // The same idle-session permission that opens saved Sketch forms;
+            // unlike the copy route it does not require a clean document.
+            editor.set_session(permitted, false, true);
+            editor.set_create(permitted);
+            let out = render(&mut editor, vec![]);
+            let at = text_at(&out, "Create sketch + Extrude…");
+            render(&mut editor, vec![egui::Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                render(
+                    &mut editor,
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    }],
+                );
+            }
+            assert_eq!(editor.active(), permitted, "drawing availability");
+            assert!(editor.unsaved, "opening a drawing must not enable copies");
+            assert!(editor.take_request().is_none(), "opening is not creation");
+        }
     }
     fn frame_running(
         ctx: &egui::Context,

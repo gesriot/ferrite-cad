@@ -5499,7 +5499,7 @@ impl Live {
             chosen = ferritecad_ui::toolbar(ui, activity);
             if held_back {
                 ui.label(
-                    "Save or Undo changes before creating a Revolve or using a copy workflow. \
+                    "Copy workflows require a saved document with no unsaved changes. \
                      Height, vertices, constraints, Circle, annulus, a saved partial Revolve \
                      angle, existing Cut parameters, Fillet radii and Chamfer distances can \
                      still be changed with Apply, and a new Cut, Fillet or Chamfer added with \

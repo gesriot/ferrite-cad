@@ -858,7 +858,8 @@ jobs:
             creates::tests::stub_creation_is_refused_at_the_picture \
             sessions::tests::new_document::stub_new_document_is_refused_at_the_picture_and_keeps_the_open_one \
             sessions::tests::new_document::the_first_save_names_the_document_and_only_then_continues_once \
-            tests::the_create_predicate_lets_open_forms_create_and_excludes_other_work
+            tests::the_create_predicate_lets_open_forms_create_and_excludes_other_work \
+            sketch::tests::a_dirty_document_can_open_a_new_drawing_without_enabling_copy_workflows
           do
             cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-app.log
             if grep -q 'skipped:' session-app.log || ! grep -Fq "test $gate ... ok" session-app.log; then exit 1; fi
