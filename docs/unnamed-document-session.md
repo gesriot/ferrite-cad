@@ -13,7 +13,9 @@ and Add, Undo/Redo and STL/FBX export work before the first Save, wherever the
 document's own catalogue offers them. **Save** (or **Save As**) asks where to put the
 file the first time; after that Save writes in place under the existing version
 guard. Open, Quit and making another new document ask Save / Discard / Cancel while
-the document is untitled or has unsaved changes.
+the document is untitled or has unsaved changes. *Since §30O* a new document, an Open
+and a Recover add a tab and ask nothing; closing a tab and Quit ask
+([tabs contract](document-tabs.md)).
 
 ## Rules
 
@@ -43,6 +45,9 @@ the document is untitled or has unsaved changes.
    replacement. Save from the question continues exactly once after it is published;
    Cancel, a cancelled dialog or a failed save continue nothing; Discard keeps the old
    session until the new document is accepted. A new document starts its own history.
+   *Since §30O nothing is replaced:* the new document is a new tab and the question is
+   asked when a tab is closed or the window quits, with the same Save-once, Cancel and
+   failed-save rules ([tabs contract](document-tabs.md)).
 
 ## Unchanged
 

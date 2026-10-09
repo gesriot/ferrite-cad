@@ -528,7 +528,7 @@ fn the_first_save_names_the_document_and_only_then_continues_once() {
     let run = |s: &mut Sessions, target: SaveTarget, cancel: bool| {
         let (tx, rx) = mpsc::channel();
         let g = s
-            .begin_save(target, Some(Continuation::Create), |p, _, c| {
+            .begin_save(target, Some(Continuation::Close), |p, _, c| {
                 if cancel {
                     c.cancel();
                 }
@@ -574,7 +574,7 @@ fn the_first_save_names_the_document_and_only_then_continues_once() {
         report,
         SaveReport {
             published: true,
-            continuation: Some(Continuation::Create),
+            continuation: Some(Continuation::Close),
         }
     );
     assert_eq!(s.logical_path(), Some(file.as_path()));

@@ -782,9 +782,10 @@ publishes at line ${published}; the last check must come first"
     # Beginning an Open stops the export of the document being left behind,
     # so an answer about the old document cannot arrive describing the new one.
     # The check the job makes before it publishes is what makes that safe; this
-    # is what makes it happen.
+    # is what makes it happen. Inspect the pre-load route, not a fixed number of
+    # lines: tab deduplication/refusals precede it and start no load.
     stopped="$(shipped crates/ferritecad-app/src/main.rs \
-        | grep -A 8 -F 'fn open(&mut self, path: PathBuf) {' \
+        | sed -n '/fn open(&mut self, path: PathBuf) {/,/^[[:space:]]*begin_load(/p' \
         | grep -F 'exports::leave_document(' || true)"
     if [ -z "$stopped" ]; then
         fail "beginning an Open does not stop the export of the document being left behind"

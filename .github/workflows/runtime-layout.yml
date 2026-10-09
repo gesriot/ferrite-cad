@@ -859,6 +859,15 @@ jobs:
           grep -Fq "test $gate ... " session-checkpoint-mixed.log
           grep -q '^test result: ok\. 1 passed; 0 failed' session-checkpoint-mixed.log
           grep -q '^FCAD_30N_MIXED_CHECKPOINTS_EXECUTED$' session-checkpoint-mixed.log
+          # §30O: two plates in two tabs, edited and switched with Open CASCADE and
+          # no solver.
+          gate=sessions::tests::tabs::mixed_tabs_switch_and_apply_with_occt_and_no_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-tabs-mixed.log
+          if grep -q 'skipped:' session-tabs-mixed.log; then exit 1; fi
+          grep -Fq "test $gate ... " session-tabs-mixed.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' session-tabs-mixed.log
+          grep -q '^FCAD_30O_MIXED_TABS_EXECUTED$' session-tabs-mixed.log
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
@@ -1269,6 +1278,38 @@ jobs:
             test -s "$checkpoint_dir/$name.stl"
           done
           echo "FCAD_CHECKPOINT_SESSION_FBX_DIR=$checkpoint_artifacts" >> "$GITHUB_ENV"
+
+          # §30O: a plate and a circle in two tabs of one window: Apply alternating
+          # between them, Undo/Redo and Restore in the plate only, unsaved exports,
+          # Save and reopen, every SQL cell against the CLI; the window recipe's
+          # comparator on the window owners' own files with its six controls.
+          # Exports of both for the pinned reader below.
+          tabs_dir="$RUNNER_TEMP/tabs-session"
+          mkdir -p "$tabs_dir"
+          tabs_artifacts="$tabs_dir"
+          case '${{ matrix.name }}' in
+            windows) tabs_artifacts="$(cygpath -w "$tabs_artifacts")" ;;
+          esac
+          export FCAD_TABS_SESSION_ARTIFACTS="$tabs_artifacts"
+          # Both print their marker, so libtest's "ok" follows on a line of its own.
+          for check in \
+            "sessions::tests::tabs::native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_command_line FCAD_30O_NATIVE_TABS_EXECUTED" \
+            "sessions::tests::tabs::native_tabs_scenario_on_session_files_passes_the_comparator_and_its_controls FCAD_30O_SESSION_FILES_COMPARE_OK negative_controls=6 all_SQL_cells=true"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-tabs-native.log
+            if grep -q 'skipped:' session-tabs-native.log; then exit 1; fi
+            grep -Fq "test $gate ... " session-tabs-native.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' session-tabs-native.log
+            grep -Eq "^${marker}( |\$)" session-tabs-native.log
+          done
+          for name in tabs-a tabs-b; do
+            test -s "$tabs_dir/$name.fbx"
+            test -s "$tabs_dir/$name.stl"
+          done
+          echo "FCAD_TABS_SESSION_FBX_DIR=$tabs_artifacts" >> "$GITHUB_ENV"
 
           fillet_dir="$RUNNER_TEMP/fillet-session"
           mkdir -p "$fillet_dir"
@@ -2959,6 +3000,7 @@ jobs:
           grep -q '^FCAD_NEW_DOCUMENT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_RECOVERY_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHECKPOINT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_TABS_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 

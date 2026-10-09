@@ -18,7 +18,10 @@
 //!   [`RecoveryRecord::publish`] and emptied or removed when the session's life ends.
 //! * [`RecoveryClaim`] is a record whose owner is gone, validated and held.
 //! * [`RecoveryRecorder`] is the one worker thread a window hands accepted
-//!   versions to; the event loop never copies, hashes or `fsync`s anything.
+//!   versions to; the event loop never copies, hashes or `fsync`s anything. Each
+//!   open document of a window (§30O: each tab) talks to it through its own lane
+//!   ([`RecoveryRecorder::lane`]), so what one document does never ends another's
+//!   record.
 //!
 //! # Ownership is a lock, not a guess
 //!
@@ -1439,41 +1442,50 @@ pub enum Ending {
     Keep,
 }
 
+/// The status a lane shows, written by the worker for that lane only.
+type Lane = Arc<Mutex<Shared>>;
+
 enum Request {
     Adopt {
         key: ObjectId,
         claim: RecoveryClaim,
+        lane: Lane,
     },
     Checkpoint {
         key: ObjectId,
         order: u64,
         snapshot: Arc<Snapshot>,
         name: String,
+        lane: Lane,
     },
     Clear {
         key: ObjectId,
         order: u64,
+        lane: Lane,
     },
     End {
         key: ObjectId,
         ending: Ending,
     },
+    /// The last lane has gone: finish what came before and end the worker.
+    Stop,
 }
 
 impl Request {
-    fn key(&self) -> ObjectId {
+    fn key(&self) -> Option<ObjectId> {
         match self {
             Self::Adopt { key, .. }
             | Self::Checkpoint { key, .. }
             | Self::Clear { key, .. }
-            | Self::End { key, .. } => *key,
+            | Self::End { key, .. } => Some(*key),
+            Self::Stop => None,
         }
     }
 
     fn order(&self) -> Option<u64> {
         match self {
             Self::Checkpoint { order, .. } | Self::Clear { order, .. } => Some(*order),
-            Self::Adopt { .. } | Self::End { .. } => None,
+            Self::Adopt { .. } | Self::End { .. } | Self::Stop => None,
         }
     }
 }
@@ -1487,14 +1499,34 @@ struct Shared {
     status: RecoveryStatus,
 }
 
-/// The one worker that writes crash copies for a window. See the module docs.
+/// The worker thread, shared by every lane of one window and stopped (after the
+/// requests already sent) when the last lane is dropped.
+struct Worker {
+    sender: Sender<Request>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let _ = self.sender.send(Request::Stop);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// One lane of the one worker that writes crash copies for a window. See the
+/// module docs.
 ///
-/// [`Self::observe`] is called whenever the session has a new accepted version,
-/// has been saved, or has been replaced; it never waits for the disk.
+/// [`Self::observe`] is called whenever the lane's session has a new accepted
+/// version, has been saved, or has been replaced; it never waits for the disk. A
+/// lane tracks one session at a time; [`Self::lane`] makes another lane of the
+/// same worker for another open document (§30O), with its own session, order and
+/// status.
 pub struct RecoveryRecorder {
     sender: Option<Sender<Request>>,
-    worker: Option<JoinHandle<()>>,
-    shared: Arc<Mutex<Shared>>,
+    worker: Option<Arc<Worker>>,
+    shared: Lane,
     order: u64,
     tracked: Option<ObjectId>,
 }
@@ -1513,21 +1545,37 @@ impl RecoveryRecorder {
     /// finished, so a window can wake and read [`Self::status`].
     pub fn start(store: RecoveryStore, notify: impl Fn() + Send + 'static) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let shared = Arc::new(Mutex::new(Shared {
-            key: None,
-            requested: 0,
-            done: 0,
-            status: RecoveryStatus::Off,
-        }));
-        let worker_shared = Arc::clone(&shared);
-        let worker = std::thread::spawn(move || run(&store, &receiver, &worker_shared, &notify));
+        let thread = std::thread::spawn(move || run(&store, &receiver, &notify));
+        let worker = Arc::new(Worker {
+            sender: sender.clone(),
+            thread: Some(thread),
+        });
+        Self::on(sender, worker)
+    }
+
+    fn on(sender: Sender<Request>, worker: Arc<Worker>) -> Self {
         Self {
             sender: Some(sender),
             worker: Some(worker),
-            shared,
+            shared: Arc::new(Mutex::new(Shared {
+                key: None,
+                requested: 0,
+                done: 0,
+                status: RecoveryStatus::Off,
+            })),
             order: 0,
             tracked: None,
         }
+    }
+
+    /// Another lane of the same worker, tracking nothing yet (§30O: one per tab).
+    /// Its session, order and status are its own; observing or ending a session
+    /// through it never ends a session another lane tracks.
+    pub fn lane(&self) -> Self {
+        let (Some(sender), Some(worker)) = (&self.sender, &self.worker) else {
+            unreachable!("a lane is stopped only by finish or drop, which consume it")
+        };
+        Self::on(sender.clone(), Arc::clone(worker))
     }
 
     fn send(&self, request: Request) {
@@ -1550,7 +1598,11 @@ impl RecoveryRecorder {
         }
         self.tracked = Some(key);
         if let Some(claim) = session.take_recovery_claim() {
-            self.send(Request::Adopt { key, claim });
+            self.send(Request::Adopt {
+                key,
+                claim,
+                lane: Arc::clone(&self.shared),
+            });
         }
         self.order += 1;
         let order = self.order;
@@ -1570,9 +1622,14 @@ impl RecoveryRecorder {
                 order,
                 snapshot: session.current(),
                 name: session.recovery_name(),
+                lane: Arc::clone(&self.shared),
             });
         } else {
-            self.send(Request::Clear { key, order });
+            self.send(Request::Clear {
+                key,
+                order,
+                lane: Arc::clone(&self.shared),
+            });
         }
     }
 
@@ -1601,8 +1658,8 @@ impl RecoveryRecorder {
             .is_ok_and(|shared| shared.key.is_none() || shared.done >= shared.requested)
     }
 
-    /// Finishes every request already made and stops the worker. Records still
-    /// tracked end as `ending` says.
+    /// Ends this lane's session as `ending` says. When it is the last lane of the
+    /// worker, also finishes every request already made and stops the worker.
     pub fn finish(mut self, ending: Ending) {
         self.end(ending);
         self.stop();
@@ -1610,9 +1667,8 @@ impl RecoveryRecorder {
 
     fn stop(&mut self) {
         self.sender = None;
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        // The last lane joins the worker after everything already sent.
+        self.worker = None;
     }
 }
 
@@ -1626,27 +1682,25 @@ impl Drop for RecoveryRecorder {
     }
 }
 
-fn run(
-    store: &RecoveryStore,
-    receiver: &Receiver<Request>,
-    shared: &Mutex<Shared>,
-    notify: &dyn Fn(),
-) {
+fn run(store: &RecoveryStore, receiver: &Receiver<Request>, notify: &dyn Fn()) {
     let mut records: HashMap<ObjectId, RecoveryRecord> = HashMap::new();
     let mut ended: HashSet<ObjectId> = HashSet::new();
-    while let Ok(first) = receiver.recv() {
+    'requests: while let Ok(first) = receiver.recv() {
         let mut batch = vec![first];
         batch.extend(receiver.try_iter());
         // Only the newest Checkpoint or Clear of each session is worth doing.
         let mut newest: HashMap<ObjectId, u64> = HashMap::new();
         for request in &batch {
-            if let Some(order) = request.order() {
-                let entry = newest.entry(request.key()).or_insert(order);
+            if let (Some(key), Some(order)) = (request.key(), request.order()) {
+                let entry = newest.entry(key).or_insert(order);
                 *entry = (*entry).max(order);
             }
         }
         for request in batch {
-            let key = request.key();
+            let Some(key) = request.key() else {
+                // Stop: everything sent before it has been done.
+                break 'requests;
+            };
             if let Some(order) = request.order()
                 && newest.get(&key).is_some_and(|newest| *newest != order)
             {
@@ -1658,19 +1712,20 @@ fn run(
                 continue;
             }
             let outcome = match request {
-                Request::Adopt { claim, .. } => match claim.into_record() {
+                Request::Adopt { claim, lane, .. } => match claim.into_record() {
                     Ok(record) => {
                         if let Some(old) = records.insert(key, record) {
                             drop(old);
                         }
                         None
                     }
-                    Err(error) => Some((0, Err(error))),
+                    Err(error) => Some((lane, 0, Err(error))),
                 },
                 Request::Checkpoint {
                     order,
                     snapshot,
                     name,
+                    lane,
                     ..
                 } => {
                     let record = match records.remove(&key) {
@@ -1682,13 +1737,13 @@ fn run(
                         records.insert(key, record);
                         published
                     });
-                    Some((order, result.map(|p| Some(p.written_unix_ms()))))
+                    Some((lane, order, result.map(|p| Some(p.written_unix_ms()))))
                 }
-                Request::Clear { order, .. } => {
+                Request::Clear { order, lane, .. } => {
                     let result = records
                         .get_mut(&key)
                         .map_or(Ok(()), |record| record.clear(order));
-                    Some((order, result.map(|()| None)))
+                    Some((lane, order, result.map(|()| None)))
                 }
                 Request::End { ending, .. } => {
                     ended.insert(key);
@@ -1702,9 +1757,10 @@ fn run(
                     }
                     None
                 }
+                Request::Stop => break 'requests,
             };
-            if let Some((order, result)) = outcome
-                && let Ok(mut shared) = shared.lock()
+            if let Some((lane, order, result)) = outcome
+                && let Ok(mut shared) = lane.lock()
                 && shared.key == Some(key)
                 && (order == 0 || shared.requested == order)
             {

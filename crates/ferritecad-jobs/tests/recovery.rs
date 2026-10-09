@@ -237,6 +237,40 @@ fn child_process_entry() {
             undo(&mut session);
             accepted(session, recorder);
         }
+        // §30O: two open documents, each through its own lane of the one worker.
+        "two-lanes" => {
+            let mut named = DocumentSession::open_in(
+                &sessions,
+                &work.join("plate.fcad"),
+                HistoryLimits::default(),
+            )
+            .expect("open");
+            let mut lane = recorder.lane();
+            lane.observe(&mut named);
+            apply(&mut named, 22.0);
+            lane.observe(&mut named);
+            wait_written(&lane);
+            let mut untitled = DocumentSession::create_document_in(
+                &sessions,
+                HistoryLimits::default(),
+                plate(),
+                no_kernel,
+                &OperationContext::default(),
+            )
+            .expect("new");
+            recorder.observe(&mut untitled);
+            wait_written(&recorder);
+            let line = format!(
+                "READY {} {}",
+                named.current().version().content,
+                untitled.current().version().content
+            );
+            std::mem::forget(lane);
+            std::mem::forget(named);
+            std::mem::forget(recorder);
+            std::mem::forget(untitled);
+            say_and_hang(&line);
+        }
         "lease" => {
             let session = DocumentSession::create_document_in(
                 &sessions,
@@ -335,6 +369,33 @@ fn recoverable(store: &RecoveryStore) -> Vec<ferritecad_jobs::RecoverySummary> {
 }
 
 // --- the tests ------------------------------------------------------------------------
+
+/// §30O: a window with two dirty documents (two lanes of one worker) is killed;
+/// both last published copies are found by another process, each its own record.
+#[test]
+fn a_killed_window_with_two_tabs_leaves_both_dirty_documents_recoverable() {
+    let root = tempfile::tempdir().expect("root");
+    let work = tempfile::tempdir().expect("work");
+    make_plate(&work.path().join("plate.fcad"));
+    let said = start_child("two-lanes", root.path(), work.path()).kill();
+    let mut wanted: Vec<ContentHash> = said
+        .strip_prefix("READY ")
+        .expect("ready")
+        .split(' ')
+        .map(|hash| hash.parse().expect("hash"))
+        .collect();
+    let store = RecoveryStore::open(root.path()).expect("store");
+    let found = recoverable(&store);
+    let mut contents: Vec<ContentHash> = found.iter().map(|entry| entry.content).collect();
+    wanted.sort_by_key(ToString::to_string);
+    contents.sort_by_key(ToString::to_string);
+    assert_eq!(contents, wanted, "{found:?}");
+    let mut names: Vec<&str> = found.iter().map(|entry| entry.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Untitled", "plate.fcad"]);
+    assert_ne!(found[0].record, found[1].record);
+    println!("\nFCAD_30O_TWO_TAB_CRASH_EXECUTED");
+}
 
 #[test]
 fn a_killed_window_leaves_its_last_published_copy_for_named_untitled_and_undo_redo_sessions() {
@@ -614,6 +675,73 @@ fn save_discard_cancel_and_failed_saves_end_the_record_as_the_person_decided() {
     let found = recoverable(&store);
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].content, kept.current().version().content);
+}
+
+/// §30O: each open document of a window writes through its own lane of the one
+/// worker. Observing or ending one lane's session never ends another lane's.
+#[test]
+fn lanes_of_one_worker_keep_and_end_only_their_own_records() {
+    let root = tempfile::tempdir().expect("root");
+    let sessions = tempfile::tempdir().expect("sessions");
+    let store = RecoveryStore::open(root.path()).expect("store");
+    let recorder = RecoveryRecorder::start(store.clone(), || {});
+    let mut first_lane = recorder.lane();
+    let mut second_lane = recorder.lane();
+    let mut first = new_plate_session(sessions.path());
+    let mut second = new_plate_session(sessions.path());
+    first_lane.observe(&mut first);
+    wait_written(&first_lane);
+    second_lane.observe(&mut second);
+    wait_written(&second_lane);
+    assert_eq!(record_dirs(root.path()).len(), 2, "one record per document");
+    // A lane that has not observed anything says nothing about the others.
+    assert_eq!(recorder.status(), RecoveryStatus::Off);
+
+    // Work in the second document leaves the first one's copy as it was.
+    assert_eq!(recoverable_live(&store), 2, "both records are held");
+    apply(&mut second, 29.0);
+    second_lane.observe(&mut second);
+    wait_written(&second_lane);
+    assert!(matches!(
+        first_lane.status(),
+        RecoveryStatus::Written { .. }
+    ));
+    assert_eq!(recoverable_live(&store), 2, "both records are still held");
+
+    // The second is closed after Discard: only its record goes.
+    // Not joined: another lane still holds the worker, so wait for it to be done.
+    second_lane.finish(Ending::Retire);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while record_dirs(root.path()).len() != 1 {
+        assert!(
+            Instant::now() < deadline,
+            "the closed record was never retired"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(matches!(
+        first_lane.status(),
+        RecoveryStatus::Written { .. }
+    ));
+    let remaining = record_dirs(root.path());
+    assert_eq!(remaining.len(), 1, "only the closed document's record went");
+    assert!(
+        root.path().join(&remaining[0]).join("manifest").exists(),
+        "the open document still has its copy"
+    );
+
+    // The window ends without deciding: the first one's copy stays recoverable.
+    // The worker stops (after everything sent) when the last lane has gone.
+    drop(first_lane);
+    drop(recorder);
+    let found = recoverable(&store);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].content, first.current().version().content);
+}
+
+/// How many records are held by a live lane (listed as active).
+fn recoverable_live(store: &RecoveryStore) -> usize {
+    store.list().expect("list").active
 }
 
 #[test]

@@ -18,6 +18,13 @@
 //! `show`). Anything that goes wrong before that — a failed edit, a stale answer,
 //! a cancellation, a picture that cannot be uploaded — drops the produced version
 //! and changes nothing else.
+//!
+//! # One value per tab (§30O)
+//!
+//! A window has one `Sessions` per open document tab, each with its own [`TabId`].
+//! Every answer a worker sends back is labelled with an [`Address`] — the tab and
+//! the generation — so an answer meant for another tab, for a tab that was closed or
+//! for an older operation of this tab changes nothing and releases nothing.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,20 +40,37 @@ use ferritecad_scene::LoadedScene;
 use ferritecad_types::{CadError, ErrorKind, ObjectId, Result};
 
 use crate::PRODUCT_NAME;
+use crate::tabs::TabId;
 
-/// What the user asked for on the way to which a Save was offered.
+/// Which operation of which tab a worker's answer belongs to (§30O). Monotonic
+/// generations within a tab, and tab ids that are never reused, so no two
+/// operations of one window ever share one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Address {
+    pub(crate) tab: TabId,
+    pub(crate) generation: u64,
+}
+
+/// Tests name "a later generation of the same tab" as `address + n`.
+#[cfg(test)]
+impl std::ops::Add<u64> for Address {
+    type Output = Self;
+    fn add(self, later: u64) -> Self {
+        Self {
+            generation: self.generation + later,
+            ..self
+        }
+    }
+}
+
+/// What the user asked for on the way to which a Save was offered. Since §30O
+/// Open, New and Recover add a tab and ask nothing; only closing does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Continuation {
-    /// Choose another document.
-    Open,
-    /// Make the new document a create form asked for (§30L): it is held by the
-    /// window until the Save it waits for is published.
-    Create,
-    /// Close the window.
+    /// Close the window (the Quit pass goes on to the next unsaved tab).
     Quit,
-    /// Recover a crash copy (§30M): the record is held by the window until the
-    /// Save it waits for is published.
-    Recover,
+    /// Close this tab.
+    Close,
 }
 
 /// The answer to "this document has unsaved changes".
@@ -125,13 +149,16 @@ enum Staged {
 }
 
 /// What an arriving picture is bound to, decided at the moment it replaces the
-/// shown one.
+/// shown one (`Tabs::bind`).
 pub(crate) enum Bind {
-    /// An Open: the session the picture was read from becomes the session, and the
-    /// previous one (with its private files) is dropped.
+    /// An Open, New or Recover: the session the picture was read from becomes a
+    /// new tab, shown; the tab that was shown stays open, hidden (§30O).
     Open(Box<DocumentSession>),
     /// An Apply, Undo or Redo: the staged version becomes current.
     Staged,
+    /// §30O: the hidden tab this switch generation was showing becomes the shown
+    /// one; the tab that was shown is hidden.
+    Switch(u64),
 }
 
 struct Operation {
@@ -170,13 +197,23 @@ pub(crate) struct SaveReport {
     pub(crate) continuation: Option<Continuation>,
 }
 
+/// What else holds the operation slot: work whose worker belongs to another owner.
+/// Cancellation releases the slot at once and makes the eventual answer stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reserved {
+    /// Recover (§30M): the recoveries' worker.
+    Recover(u64),
+    /// Showing another tab (§30O): the tab list's worker builds its picture.
+    Switch(u64),
+}
+
 #[derive(Default)]
 pub(crate) struct Sessions {
+    /// Which tab this is (§30O). Made with the value, never reused.
+    tab: TabId,
     session: Option<DocumentSession>,
     operation: Option<Operation>,
-    /// Recover uses a separate worker but reserves the same document mutation slot.
-    /// Cancellation releases the slot and makes its eventual answer stale.
-    recovery_generation: Option<u64>,
+    reserved: Option<Reserved>,
     issued: u64,
     /// What the user was on their way to when they pressed Save.
     after_save: Option<Continuation>,
@@ -334,16 +371,54 @@ impl Sessions {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.operation.is_some() || self.recovery_generation.is_some()
+        self.operation.is_some() || self.reserved.is_some()
+    }
+
+    /// Which tab this is.
+    pub(crate) fn tab(&self) -> TabId {
+        self.tab
+    }
+
+    fn address(&self, generation: u64) -> Address {
+        Address {
+            tab: self.tab,
+            generation,
+        }
+    }
+
+    /// The operation in flight, when `address` is its own: this tab's, this
+    /// generation's. Anything else is an answer nobody here is waiting for.
+    fn addressed(&self, address: Address) -> Option<&Operation> {
+        self.operation
+            .as_ref()
+            .filter(|op| address.tab == self.tab && op.generation == address.generation)
     }
 
     pub(crate) fn hold_recovery(&mut self, generation: u64) {
-        self.recovery_generation = Some(generation);
+        self.reserved = Some(Reserved::Recover(generation));
     }
 
     pub(crate) fn finish_recovery(&mut self, generation: u64) -> bool {
-        self.recovery_generation
-            .take_if(|current| *current == generation)
+        self.reserved
+            .take_if(|held| *held == Reserved::Recover(generation))
+            .is_some()
+    }
+
+    /// §30O: another tab's picture is being prepared to replace this one's. Holds
+    /// the one operation slot until it is shown, refused or cancelled.
+    pub(crate) fn hold_switch(&mut self, generation: u64) -> bool {
+        if self.busy() {
+            return false;
+        }
+        self.reserved = Some(Reserved::Switch(generation));
+        true
+    }
+
+    /// Releases the slot held for switch `generation`; false when it is no longer
+    /// held for it (cancelled, or another one).
+    pub(crate) fn finish_switch(&mut self, generation: u64) -> bool {
+        self.reserved
+            .take_if(|held| *held == Reserved::Switch(generation))
             .is_some()
     }
 
@@ -435,7 +510,7 @@ impl Sessions {
     /// The session of the document that was just accepted replaces the old one,
     /// which is dropped here and takes its private files with it.
     pub(crate) fn adopt(&mut self, session: DocumentSession) {
-        self.recovery_generation = None;
+        self.reserved = None;
         // Whatever was in flight belonged to the document being replaced: its
         // answer must not be applied to this one (a Save's checkpoint above all).
         // It is cancelled and its worker joined later, not here, so the window
@@ -460,8 +535,8 @@ impl Sessions {
     /// answer with.
     pub(crate) fn begin_apply(
         &mut self,
-        spawn: impl FnOnce(StepTicket, u64, &CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
+        spawn: impl FnOnce(StepTicket, Address, &CancelToken) -> JoinHandle<()>,
+    ) -> Option<Address> {
         if self.busy() {
             return None;
         }
@@ -470,7 +545,7 @@ impl Sessions {
         self.issued += 1;
         let generation = self.issued;
         let cancel = CancelToken::new();
-        let worker = spawn(ticket, generation, &cancel);
+        let worker = spawn(ticket, self.address(generation), &cancel);
         self.operation = Some(Operation {
             generation,
             kind: Kind::Apply,
@@ -480,15 +555,19 @@ impl Sessions {
             kept: None,
         });
         self.status = "Applying the change…".to_owned();
-        Some(generation)
+        Some(self.address(generation))
     }
 
     /// The answer of the edit worker.
-    pub(crate) fn finish_apply(&mut self, generation: u64, result: Result<ProducedStep>) -> Edited {
-        let Some(operation) = self.operation.as_mut() else {
-            return Edited::Ignore;
-        };
-        if operation.generation != generation || operation.kind != Kind::Apply {
+    pub(crate) fn finish_apply(
+        &mut self,
+        address: Address,
+        result: Result<ProducedStep>,
+    ) -> Edited {
+        if self
+            .addressed(address)
+            .is_none_or(|operation| operation.kind != Kind::Apply)
+        {
             return Edited::Ignore;
         }
         self.finish_step(result)
@@ -549,8 +628,8 @@ impl Sessions {
     pub(crate) fn begin_checkpoint(
         &mut self,
         action: CheckpointAction,
-        spawn: impl FnOnce(StepTicket, CheckpointAction, u64, &CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
+        spawn: impl FnOnce(StepTicket, CheckpointAction, Address, &CancelToken) -> JoinHandle<()>,
+    ) -> Option<Address> {
         if self.busy() {
             return None;
         }
@@ -560,7 +639,7 @@ impl Sessions {
         self.issued += 1;
         let generation = self.issued;
         let cancel = CancelToken::new();
-        let worker = spawn(ticket, action, generation, &cancel);
+        let worker = spawn(ticket, action, self.address(generation), &cancel);
         self.operation = Some(Operation {
             generation,
             kind: Kind::Checkpoint(kind),
@@ -575,20 +654,20 @@ impl Sessions {
             CheckpointKind::Delete => "Deleting the checkpoint…",
         }
         .to_owned();
-        Some(generation)
+        Some(self.address(generation))
     }
 
     /// The answer of a checkpoint worker: as an Apply's, except that a version
     /// which only changes the checkpoints is accepted with the picture shown.
     pub(crate) fn finish_checkpoint(
         &mut self,
-        generation: u64,
+        address: Address,
         result: Result<CheckpointStep>,
     ) -> Edited {
-        let Some(operation) = self.operation.as_mut() else {
-            return Edited::Ignore;
-        };
-        if operation.generation != generation || !matches!(operation.kind, Kind::Checkpoint(_)) {
+        if self
+            .addressed(address)
+            .is_none_or(|operation| !matches!(operation.kind, Kind::Checkpoint(_)))
+        {
             return Edited::Ignore;
         }
         let (step, facts) = match result {
@@ -622,7 +701,7 @@ impl Sessions {
 
     /// Asks the session for one step back or forward. The version to show is
     /// returned; nothing is current until it has been shown.
-    pub(crate) fn begin_move(&mut self, undo: bool) -> Option<(u64, PathBuf)> {
+    pub(crate) fn begin_move(&mut self, undo: bool) -> Option<(Address, PathBuf)> {
         if self.busy() {
             return None;
         }
@@ -644,39 +723,33 @@ impl Sessions {
             kept: None,
         });
         self.status = if undo { "Undoing…" } else { "Redoing…" }.to_owned();
-        Some((generation, path))
+        Some((self.address(generation), path))
     }
 
     // --- the scene phase ---------------------------------------------------
 
     /// Records the worker that is building the picture of the staged version, and
     /// the token that stops it.
-    pub(crate) fn attach_scene(&mut self, generation: u64, worker: JoinHandle<()>) -> bool {
-        match self.operation.as_mut() {
-            Some(op) if op.generation == generation && op.staged.is_some() => {
-                op.worker = Some(worker);
-                true
-            }
-            _ => {
-                let _ = worker.join();
-                false
-            }
+    pub(crate) fn attach_scene(&mut self, address: Address, worker: JoinHandle<()>) -> bool {
+        if self
+            .addressed(address)
+            .is_some_and(|op| op.staged.is_some())
+            && let Some(op) = self.operation.as_mut()
+        {
+            op.worker = Some(worker);
+            return true;
         }
+        let _ = worker.join();
+        false
     }
 
-    pub(crate) fn scene_token(&self, generation: u64) -> Option<CancelToken> {
-        self.operation
-            .as_ref()
-            .filter(|op| op.generation == generation)
-            .map(|op| op.cancel.clone())
+    pub(crate) fn scene_token(&self, address: Address) -> Option<CancelToken> {
+        self.addressed(address).map(|op| op.cancel.clone())
     }
 
     /// Where the picture being waited for was read from.
-    pub(crate) fn staged_path(&self, generation: u64) -> Option<PathBuf> {
-        let op = self
-            .operation
-            .as_ref()
-            .filter(|op| op.generation == generation)?;
+    pub(crate) fn staged_path(&self, address: Address) -> Option<PathBuf> {
+        let op = self.addressed(address)?;
         match op.staged.as_ref()? {
             Staged::Step(step) => Some(step.path().to_path_buf()),
             Staged::Move(request) => Some(request.path().to_path_buf()),
@@ -685,12 +758,8 @@ impl Sessions {
 
     /// Metadata-only Undo/Redo uses the same picture as Create/Delete. Reading
     /// the new form facts still happens on a worker, without opening a kernel.
-    pub(crate) fn staged_keeps_picture(&self, generation: u64) -> bool {
-        let Some(op) = self
-            .operation
-            .as_ref()
-            .filter(|op| op.generation == generation)
-        else {
+    pub(crate) fn staged_keeps_picture(&self, address: Address) -> bool {
+        let Some(op) = self.addressed(address) else {
             return false;
         };
         match op.staged.as_ref() {
@@ -704,13 +773,13 @@ impl Sessions {
 
     pub(crate) fn finish_kept_facts(
         &mut self,
-        generation: u64,
+        address: Address,
         result: Result<ferritecad_document::ExtrudeEditSource>,
     ) -> Edited {
-        let Some(path) = self.staged_path(generation) else {
+        let Some(path) = self.staged_path(address) else {
             return Edited::Ignore;
         };
-        if !self.staged_keeps_picture(generation) {
+        if !self.staged_keeps_picture(address) {
             return Edited::Ignore;
         }
         match result {
@@ -719,22 +788,24 @@ impl Sessions {
                 Edited::Keep(path)
             }
             Err(error) => {
-                self.finish_scene(generation, Err(error));
+                self.finish_scene(address, Err(error));
                 Edited::Failed
             }
         }
     }
 
-    /// Makes the arriving picture's session binding current. Called between
-    /// preparing the picture and replacing the shown one: it can fail, and then the
-    /// picture is not shown either.
+    /// One controller's part of a bind, for tests of this controller alone: a
+    /// staged version is committed, an opened session adopted into this value. In
+    /// the window `Tabs::bind` decides which controller (a new tab) gets it.
+    #[cfg(test)]
     pub(crate) fn bind(&mut self, bind: Bind) -> Result<()> {
         match bind {
+            Bind::Staged => self.commit_staged(),
             Bind::Open(session) => {
                 self.adopt(*session);
                 Ok(())
             }
-            Bind::Staged => self.commit_staged(),
+            Bind::Switch(_) => Err(CadError::input("another tab is bound by the tab list")),
         }
     }
 
@@ -768,8 +839,11 @@ impl Sessions {
     }
 
     /// The scene phase is over. `shown` is whether the picture replaced the old one.
-    pub(crate) fn finish_scene(&mut self, generation: u64, shown: Result<()>) -> bool {
-        let Some(operation) = self.operation.take_if(|op| op.generation == generation) else {
+    pub(crate) fn finish_scene(&mut self, address: Address, shown: Result<()>) -> bool {
+        if self.addressed(address).is_none() {
+            return false;
+        }
+        let Some(operation) = self.operation.take() else {
             return false;
         };
         if let Some(worker) = operation.worker {
@@ -810,8 +884,8 @@ impl Sessions {
         &mut self,
         target: SaveTarget,
         after: Option<Continuation>,
-        spawn: impl FnOnce(SavePlan, u64, &CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
+        spawn: impl FnOnce(SavePlan, Address, &CancelToken) -> JoinHandle<()>,
+    ) -> Option<Address> {
         if self.busy() {
             return None;
         }
@@ -824,7 +898,7 @@ impl Sessions {
         self.issued += 1;
         let generation = self.issued;
         let cancel = CancelToken::new();
-        let worker = spawn(plan, generation, &cancel);
+        let worker = spawn(plan, self.address(generation), &cancel);
         self.operation = Some(Operation {
             generation,
             kind,
@@ -835,19 +909,23 @@ impl Sessions {
         });
         self.after_save = after;
         self.status = "Saving…".to_owned();
-        Some(generation)
+        Some(self.address(generation))
     }
 
     /// The answer of the save worker. A published file moves the checkpoint (and,
     /// for Save As, the logical path); a failure moves nothing.
     pub(crate) fn finish_save(
         &mut self,
-        generation: u64,
+        address: Address,
         result: std::result::Result<Saved, SaveFailure>,
     ) -> Option<SaveReport> {
-        let operation = self.operation.take_if(|op| {
-            op.generation == generation && matches!(op.kind, Kind::Save | Kind::SaveAs)
-        })?;
+        if !self
+            .addressed(address)
+            .is_some_and(|op| matches!(op.kind, Kind::Save | Kind::SaveAs))
+        {
+            return None;
+        }
+        let operation = self.operation.take()?;
         if let Some(worker) = operation.worker {
             let _ = worker.join();
         }
@@ -878,9 +956,16 @@ impl Sessions {
 
     /// Asks the operation in flight to stop. Returns whether there was one.
     pub(crate) fn cancel(&mut self) -> bool {
-        if self.recovery_generation.take().is_some() {
-            self.status = "Recovery cancelled; the copy is kept.".to_owned();
-            return true;
+        match self.reserved.take() {
+            Some(Reserved::Recover(_)) => {
+                self.status = "Recovery cancelled; the copy is kept.".to_owned();
+                return true;
+            }
+            Some(Reserved::Switch(_)) => {
+                self.status = "Switching tabs cancelled; this document stays.".to_owned();
+                return true;
+            }
+            None => {}
         }
         match &self.operation {
             Some(op) => {
@@ -893,7 +978,7 @@ impl Sessions {
 
     /// Stops and joins everything; the session and its private files go with it.
     pub(crate) fn stop_all(&mut self) {
-        self.recovery_generation = None;
+        self.reserved = None;
         if let Some(mut operation) = self.operation.take() {
             operation.cancel.cancel();
             if let Some(worker) = operation.worker.take() {
@@ -1397,6 +1482,7 @@ mod tests {
     mod fillet;
     mod new_document;
     mod recovery;
+    mod tabs;
     use ferritecad_document::Document;
     use ferritecad_jobs::{
         CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,
@@ -1448,7 +1534,7 @@ mod tests {
 
     /// The edit as the window runs it, on a thread, with the mock kernel (the same
     /// reused `edit-extrude` operation; geometry is measured by the native tests).
-    fn apply(sessions: &mut Sessions, feature: ObjectId, millimetres: f64) -> (u64, Edited) {
+    fn apply(sessions: &mut Sessions, feature: ObjectId, millimetres: f64) -> (Address, Edited) {
         let (tx, rx) = mpsc::channel();
         let generation = sessions
             .begin_apply(|ticket, _, _| {
@@ -1541,7 +1627,13 @@ mod tests {
 
         // A reply that is not the operation in flight does nothing.
         assert_eq!(
-            sessions.finish_apply(77, Err(CadError::input("stale"))),
+            sessions.finish_apply(
+                Address {
+                    tab: sessions.tab(),
+                    generation: 77
+                },
+                Err(CadError::input("stale"))
+            ),
             Edited::Ignore
         );
         let (generation, _) = apply(&mut sessions, f.feature, 30.0);
@@ -1745,8 +1837,12 @@ mod tests {
         document.write_extrude_height(&prepared).expect("written");
         document.close().expect("closed");
         std::fs::rename(&theirs, &f.file).expect("lands");
-        let report =
-            save(&mut sessions, SaveTarget::InPlace, Some(Continuation::Open)).expect("answered");
+        let report = save(
+            &mut sessions,
+            SaveTarget::InPlace,
+            Some(Continuation::Close),
+        )
+        .expect("answered");
         assert_eq!(
             report,
             SaveReport {
@@ -2155,7 +2251,7 @@ mod tests {
     fn apply_vertices(
         sessions: &mut Sessions,
         request: ferritecad_jobs::EditSketchRequest,
-    ) -> (u64, Edited) {
+    ) -> (Address, Edited) {
         let (tx, rx) = mpsc::channel();
         let generation = sessions
             .begin_apply(|ticket, _, _| {

@@ -11,7 +11,7 @@ use ferritecad_kernel::GeometryKernel;
 fn start(
     s: &mut Sessions,
     r: &EditFilletRadiusRequest,
-) -> (u64, mpsc::Receiver<Result<ProducedStep>>) {
+) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {

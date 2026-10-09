@@ -10,7 +10,7 @@ use ferritecad_jobs::EditCircularCutRequest;
 fn start(
     s: &mut Sessions,
     r: &EditCircularCutRequest,
-) -> (u64, mpsc::Receiver<Result<ProducedStep>>) {
+) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {

@@ -16,7 +16,10 @@ use ferritecad_document::{EdgeFillet, ObjectPayload};
 use ferritecad_jobs::EdgeFilletRequest;
 use std::collections::BTreeMap;
 
-fn start(s: &mut Sessions, r: &EdgeFilletRequest) -> (u64, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(
+    s: &mut Sessions,
+    r: &EdgeFilletRequest,
+) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {

@@ -4376,7 +4376,8 @@ itself a session; only the copy-to-a-new-file routes still require a saved, clea
 document, by design.)* (2) Autosave and crash recovery: §30M now restores the last
 published copy of the accepted model; Undo history and draft form values remain outside it.
 (3) Persistent revisions, a revision list, tabs. *(Status after §30N: named checkpoints
-of the model are stored in the document, listed, restored and deleted; tabs remain.)* The macOS review added the AppKit
+of the model are stored in the document, listed, restored and deleted. After §30O:
+several documents in tabs of one window; restoring the tab set after a restart remains.)* The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
 (4) Close the lock-ignoring-writer window only if a platform primitive allows a
 compare-and-replace; until then it is documented, not closed. The independent Mac window scenario now covers Apply, document Undo/Redo,
@@ -4699,10 +4700,36 @@ all-SQL comparison, byte-equal CLI/STL/FBX and four negative controls passed. Vi
 peak 315.048 MiB, normal pressure, unchanged swap, exit 0. See the verification record
 for exact-head CI and limits.
 
-*What remains of §30 after §30N:* tabs; branching, automatic or persisted-Undo revisions
+**§30O — several documents in tabs of one window.** Open A, change it without saving,
+open B in a second tab, change B, go back to A and continue it with its own Undo/Redo,
+checkpoints and Save. A tab is the existing window controller of one `DocumentSession`
+(`sessions::Sessions`) with a runtime `TabId` (never a position or a `DocumentId`: two
+copies of one file are two tabs); `tabs::Tabs` owns only the set, the order, the hidden
+controllers and their camera, and repeats no Save/Apply/Undo rule. Open, New and Recover
+add a tab and ask nothing; opening a file a tab already names (by any name) shows that
+tab; Save As refuses another tab's file; at most 8 tabs, refused in words. One picture:
+a hidden tab has no scene or GPU buffer; switching draws the target's current version on
+a worker and makes it active with its picture in one statement, holding the one
+operation slot; refusals and Cancel keep the shown tab; camera per tab, selection and
+visibility reset. Every session answer carries `Address { tab, generation }`. Close asks
+about an unsaved tab after showing it; Quit asks about every unsaved tab in turn, and
+Cancel part way closes nothing and undoes nothing. Recovery: one recorder worker, one
+lane per tab (`RecoveryRecorder::lane`), so one tab's work or close never ends another's
+crash copy. Kernel-free gates of the real owners on every OS (two copies with one
+`DocumentId`, alias dedup, Save As, Close/Quit, late/cancelled/foreign answers, private
+files and records, the limit), a real two-tab crash child, a native two-model gate
+compared with the CLI in every SQL cell with a narrow explained allowlist, byte-equal
+unsaved exports, independent STL geometry and pinned ufbx, a no-solver gate, a stub gate,
+two directed mutations, a window recipe with an input generator and a comparator with six
+controls: [contract](document-tabs.md), [verification](document-tabs-verification.md),
+[decision](decisions/0005-document-session.md#30o-several-documents-in-tabs-of-one-window).
+No real window was run by the author. The CLI is unchanged.
+
+*What remains of §30 after §30O:* restoring the tab set after a restart; per-tab drafts;
+branching, automatic or persisted-Undo revisions
 (not in scope: named checkpoints of the model only); recovery of Undo history and of
 draft form values; power-loss durability of the crash copy (`fsync` order only, not
 proven); the lock-ignoring-writer window of Save (documented, not closed);
 copy-to-a-new-file routes that still need a saved, clean document; window evidence on
-Windows and Linux. §30, Milestone 5C and the product remain open; no next slice
-has started.
+Windows and Linux. §30, Milestone 5C and the product remain open; nothing here closes the
+earlier OOM investigation; no next slice has started.

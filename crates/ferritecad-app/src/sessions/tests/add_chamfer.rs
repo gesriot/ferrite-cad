@@ -15,7 +15,10 @@ use ferritecad_document::{EdgeChamfer, ObjectPayload};
 use ferritecad_jobs::EdgeChamferRequest;
 use std::collections::BTreeMap;
 
-fn start(s: &mut Sessions, r: &EdgeChamferRequest) -> (u64, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(
+    s: &mut Sessions,
+    r: &EdgeChamferRequest,
+) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {

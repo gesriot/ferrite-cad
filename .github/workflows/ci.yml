@@ -754,10 +754,19 @@ jobs:
             a_write_failure_is_reported_keeps_the_previous_copy_and_is_never_written_status \
             the_limit_never_deletes_recoverable_work_and_empty_orphans_are_swept \
             many_quick_changes_end_with_the_newest_accepted_version_written \
-            a_recovered_session_adopts_its_record_without_writing_or_duplicating_it; do
+            a_recovered_session_adopts_its_record_without_writing_or_duplicating_it \
+            lanes_of_one_worker_keep_and_end_only_their_own_records; do
             cargo test -p ferritecad-jobs --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-job.log
             if grep -q 'skipped:' recovery-job.log || ! grep -Fq "test $gate ... ok" recovery-job.log; then exit 1; fi
           done
+          # §30O: a killed window with two dirty tabs (two lanes of the one recorder)
+          # leaves both copies. Prints its marker, so "ok" follows on its own line.
+          gate=a_killed_window_with_two_tabs_leaves_both_dirty_documents_recoverable
+          cargo test -p ferritecad-jobs --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-tabs.log
+          if grep -q 'skipped:' recovery-tabs.log; then exit 1; fi
+          grep -Fq "test $gate ... " recovery-tabs.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' recovery-tabs.log
+          grep -q '^FCAD_30O_TWO_TAB_CRASH_EXECUTED$' recovery-tabs.log
           if [ "$RUNNER_OS" != Windows ]; then
             gate=recovery_cleanup_never_follows_a_record_directory_symlink
             cargo test -p ferritecad-jobs --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-symlink.log
@@ -940,7 +949,17 @@ jobs:
             sessions::tests::checkpoints::checkpoint_steps_keep_the_picture_are_unsaved_and_undo_like_any_step \
             sessions::tests::checkpoints::a_checkpoint_shares_the_operation_slot_and_a_cancelled_or_late_answer_changes_nothing \
             sessions::tests::checkpoints::the_checkpoint_predicate_says_why_and_waits_for_forms_operations_names_and_the_limit \
-            sessions::tests::checkpoints::a_crash_copy_of_the_window_carries_its_checkpoints
+            sessions::tests::checkpoints::a_crash_copy_of_the_window_carries_its_checkpoints \
+            sessions::tests::tabs::two_copies_of_one_document_are_two_tabs_with_their_own_history_saves_and_checkpoints \
+            sessions::tests::tabs::opening_a_file_open_by_any_name_shows_its_tab_and_copies_are_new_tabs \
+            sessions::tests::tabs::save_as_onto_another_tabs_file_is_refused_and_the_existing_guards_still_hold \
+            sessions::tests::tabs::closing_asks_only_about_unsaved_tabs_and_cancel_or_a_failed_save_keeps_the_tab \
+            sessions::tests::tabs::quit_asks_every_unsaved_tab_in_turn_and_cancel_part_way_closes_nothing \
+            sessions::tests::tabs::quit_waits_for_open_forms_and_foreground_work_even_when_tabs_are_clean \
+            sessions::tests::tabs::a_cancelled_switch_reply_is_ignored_while_an_apply_runs \
+            sessions::tests::tabs::a_cancelled_switch_keeps_its_input_alive_until_its_worker_finishes \
+            sessions::tests::tabs::each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own \
+            sessions::tests::tabs::the_ninth_document_is_refused_before_anything_changes
           do
             cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-app.log
             if grep -q 'skipped:' session-app.log || ! grep -Fq "test $gate ... ok" session-app.log; then exit 1; fi
@@ -960,11 +979,26 @@ jobs:
           grep -Fq "test $gate ... " checkpoint-app.log
           grep -q '^test result: ok\. 1 passed; 0 failed' checkpoint-app.log
           grep -q '^FCAD_30N_STUB_CHECKPOINTS_EXECUTED$' checkpoint-app.log
+          # §30O: late, cancelled and foreign answers through the tab list, and a
+          # switch refused at its picture without a kernel. Both print a marker.
+          for check in \
+            "sessions::tests::tabs::late_cancelled_or_foreign_answers_change_no_tab_and_release_no_slot FCAD_30O_LATE_ANSWERS_EXECUTED" \
+            "sessions::tests::tabs::stub_switching_is_refused_at_the_picture_and_keeps_the_shown_tab FCAD_30O_STUB_TABS_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee tabs-app.log
+            if grep -q 'skipped:' tabs-app.log; then exit 1; fi
+            grep -Fq "test $gate ... " tabs-app.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' tabs-app.log
+            grep -Fxq "$marker" tabs-app.log
+          done
           for gate in panels::tests::the_document_commands_are_offered_exactly_when_they_would_do_something \
             panels::tests::unsaved_changes_and_the_last_outcome_are_on_the_screen_in_words \
             panels::tests::new_form_create_asks_nothing_while_the_window_says_it_cannot \
             recovery::tests::recover_and_delete_ask_nothing_while_the_window_says_they_cannot \
-            checkpoint::tests::the_buttons_ask_nothing_while_the_window_says_why_they_cannot
+            checkpoint::tests::the_buttons_ask_nothing_while_the_window_says_why_they_cannot \
+            tabs::tests::tabs_show_names_marks_and_answer_with_their_key_only_when_available
           do
             cargo test -p ferritecad-ui --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-ui.log
             if ! grep -Fq "test $gate ... ok" session-ui.log; then exit 1; fi

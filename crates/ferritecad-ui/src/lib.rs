@@ -47,3 +47,6 @@ pub use recovery::{
 
 mod stl;
 pub use stl::{PublishedStl, StlBodyRow, StlChoice, StlExportForm, stl_export_form};
+
+mod tabs;
+pub use tabs::{CLOSE_TAB, TabChoice, TabLabel, TabStrip, tab_strip, tab_title};

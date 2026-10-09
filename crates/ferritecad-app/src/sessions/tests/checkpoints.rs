@@ -11,7 +11,7 @@ use ferritecad_jobs::{RecoveryRecorder, RecoveryStatus, RecoveryStore, SaveTarge
 use ferritecad_types::CheckpointId;
 use std::collections::BTreeMap;
 
-fn run_checkpoint(s: &mut Sessions, action: CheckpointAction) -> (u64, Edited) {
+fn run_checkpoint(s: &mut Sessions, action: CheckpointAction) -> (Address, Edited) {
     let (tx, rx) = mpsc::channel();
     let generation = s
         .begin_checkpoint(action, |ticket, action, _, cancel| {
@@ -458,7 +458,7 @@ fn add_cut_native(s: &mut Sessions) {
 
 /// Every row of every table (row identities included) and the schema, with only
 /// the named tables and, when asked, the write stamp set aside.
-fn all_sql(path: &Path, skip: &[&str], stamp: bool) -> BTreeMap<String, Vec<String>> {
+pub(super) fn all_sql(path: &Path, skip: &[&str], stamp: bool) -> BTreeMap<String, Vec<String>> {
     let mut all: BTreeMap<String, Vec<String>> = crate::fillets::tests::tables(path)
         .into_iter()
         .filter(|(table, _)| !skip.contains(&table.as_str()))
@@ -503,7 +503,7 @@ fn all_sql(path: &Path, skip: &[&str], stamp: bool) -> BTreeMap<String, Vec<Stri
 
 /// An independent reading of a binary STL: triangle count, the z extent and the
 /// enclosed volume (divergence theorem), nothing from the writer.
-fn stl_facts(bytes: &[u8]) -> (usize, f64, f64) {
+pub(super) fn stl_facts(bytes: &[u8]) -> (usize, f64, f64) {
     let count = u32::from_le_bytes(bytes[80..84].try_into().expect("count")) as usize;
     assert_eq!(bytes.len(), 84 + 50 * count, "a binary STL");
     let (mut low, mut high, mut volume) = (f64::MAX, f64::MIN, 0.0);
@@ -529,7 +529,7 @@ fn stl_facts(bytes: &[u8]) -> (usize, f64, f64) {
     (count, high - low, volume.abs())
 }
 
-fn ids_and_refs(path: &Path) -> (Vec<ObjectId>, Vec<String>) {
+pub(super) fn ids_and_refs(path: &Path) -> (Vec<ObjectId>, Vec<String>) {
     let document = Document::open_read_only(path).expect("document");
     let mut ids: Vec<ObjectId> = document
         .objects()

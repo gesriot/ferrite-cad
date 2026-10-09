@@ -490,13 +490,17 @@ dialog (§30L): the window shows it as `*Untitled`, and editing, Undo/Redo and
 STL/FBX export work before it has a file. The drawing forms (**Create new
 document**, **Create circle document**, **Create annular document**) do the same.
 The first **Save** asks where the file goes and never replaces an existing one;
-after that Save writes in place. Open, Quit and making another new document ask
-Save / Discard / Cancel while the document is untitled or has unsaved changes.
-[Contract](docs/unnamed-document-session.md).
+after that Save writes in place. [Contract](docs/unnamed-document-session.md).
+Several documents can be open at once, each in its own tab (§30O): **Open…**, **New**
+and **Recover** add a tab and leave the open documents as they are; pressing a tab
+shows its document with its own Undo/Redo, checkpoints and file; **×** closes a tab and
+asks Save / Discard / Cancel when it has unsaved changes, and Quit asks about every
+unsaved tab in turn. Opening a file that is already open shows its tab. At most eight
+tabs. [Contract](docs/document-tabs.md).
 While a document has unsaved changes, a recovery copy of the model on screen is kept
 in a per-user folder (§30M; `FERRITECAD_RECOVERY_DIR` names another). If the window
 ends without a decision, the next start lists it under **Recover unsaved work**:
-**Recover** opens it as a new unsaved `<name> (recovered)` document to check and
+**Recover** opens it in a new tab as an unsaved `<name> (recovered)` document to check and
 **Save As**; the original file is never written. `ferritecad list-recovery` and
 `ferritecad extract-recovery` read the same copies.
 [Contract](docs/document-crash-recovery.md).

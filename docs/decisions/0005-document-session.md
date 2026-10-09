@@ -342,3 +342,63 @@ only as long as the session's Undo history or as a separate file. The decision:
   checkpoints, automatic checkpoints, cloud sync.
 
 Contract and checks: [../named-document-checkpoints.md](../named-document-checkpoints.md).
+
+## §30O: several documents in tabs of one window
+
+**Decided before implementation.** Until §30O the window held at most one session, so
+Open, New and Recover had to replace the document on screen. The decision:
+
+* **A tab is one window controller of one session.** A tab is the existing
+  `sessions::Sessions` value (operation slot, status, recovery lane) holding exactly one
+  `DocumentSession`; it gets a runtime `TabId` when it is made, never reused and never
+  derived from the tab's position or from the `DocumentId` (two copies of one `.fcad`
+  share a `DocumentId` and are two tabs). Path or Untitled, dirty, accepted history,
+  checkpoints and Save are the session's, unchanged; a tab's name, `*` and which
+  actions it offers are read from its session. The tab list (`tabs::Tabs`) owns only
+  which tabs exist, their order, the hidden tabs' controllers and their view state
+  (camera, typed checkpoint name): no Save, Apply or Undo rule is copied into it.
+* **One active tab, one picture.** Only the active tab has a GPU scene; a hidden tab
+  keeps its session files and a camera, no scene and no GPU buffer, and nothing
+  rebuilds hidden tabs in the background. Switching reads the target's current version
+  on a worker exactly like an Undo's picture, then in one statement makes the target
+  active, parks the previous tab (with its camera) and replaces the picture; a refused
+  kernel, upload or a Cancel leaves the previous tab active and shown. The camera is
+  kept per tab; selection and visibility are reset on every switch (no identity of
+  picks is carried between pictures).
+* **One foreground operation per window.** A switch reserves the active session's
+  operation slot the way Recover does. Switching, closing and Quit wait while any
+  operation, load, export or create is running or a form is open (a form never moves
+  to another document; the minimal honest rule, not per-tab drafts). Every session
+  answer carries its tab and generation (`sessions::Address`); an answer for another
+  tab, a closed tab or an older generation changes nothing and releases nothing.
+* **Open, New, Recover add a tab.** The document on screen stays, so nothing is asked
+  about it. A candidate becomes a tab only through the same `Bind` that shows its
+  picture; a failed, cancelled or stale candidate adds nothing. Opening a file (or a
+  link, a hard link or another spelling of it) that a tab already names activates that
+  tab instead of making a second writer; different physical copies are separate tabs.
+  Save As refuses a destination another tab names, in addition to the existing
+  no-clobber and save guards. At most **8** tabs: a ninth Open, New or Recover is
+  refused in words before any work starts.
+* **Close and Quit.** Closing a clean tab closes it; a dirty or Untitled one is first
+  made active and asked Save / Discard / Cancel through the existing guard; Cancel, a
+  failed or cancelled Save, or a tab that cannot be shown keeps it. Closing the last
+  tab leaves an empty window. Quit (window close, `Cmd+Q`) asks about every dirty tab in
+  turn, active first, each made active before it is asked. Cancel at any tab stops Quit:
+  no tab is closed, files saved earlier in the pass stay saved, and tabs answered
+  Discard stay open, dirty and recoverable (Discard takes effect only when the window
+  actually ends).
+* **Recovery belongs to the session.** The process keeps one recorder worker; each tab
+  writes through its own lane (`RecoveryRecorder::lane`), so one tab's accepted step,
+  save or close never ends another tab's record. Close after Save/Discard retires only
+  that tab's record; a crash keeps every dirty tab's last published copy; Recover opens
+  the copy as a new tab. Leases and the 32-record limit are unchanged.
+* **Limits are per window, not per session.** 8 tabs × 64 versions / 512 MiB of private
+  history each (at most 4 GiB of private files), one recovery record per dirty tab
+  within the store's 32, one scene in memory and on the GPU at a time plus the
+  transient picture being prepared for a switch. Nothing here proves the earlier OOM
+  gone.
+* **Not decided here:** restoring the set or order of tabs after a restart, per-tab
+  drafts, background work in hidden tabs, several windows, docking, a CLI session
+  protocol. The command line is unchanged.
+
+Contract and checks: [../document-tabs.md](../document-tabs.md).

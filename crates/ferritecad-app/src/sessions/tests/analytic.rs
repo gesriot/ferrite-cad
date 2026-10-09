@@ -84,7 +84,10 @@ impl Request {
 fn start(
     sessions: &mut Sessions,
     request: &Request,
-) -> (u64, mpsc::Receiver<Result<ferritecad_jobs::ProducedStep>>) {
+) -> (
+    Address,
+    mpsc::Receiver<Result<ferritecad_jobs::ProducedStep>>,
+) {
     let (tx, rx) = mpsc::channel();
     let generation = sessions
         .begin_apply(|ticket, _, cancel| match request {
@@ -218,7 +221,13 @@ impl Mesh {
 /// A cylinder of `radius` about `center` and `height` tall, hollow to `bore` when
 /// there is one: closed, outward, the bounds and a volume that only the inscribed
 /// polygon of the tessellation can lower.
-fn assert_round(stl: &[u8], center: [f64; 2], radius: f64, bore: Option<f64>, height: f64) {
+pub(super) fn assert_round(
+    stl: &[u8],
+    center: [f64; 2],
+    radius: f64,
+    bore: Option<f64>,
+    height: f64,
+) {
     let m = mesh(stl);
     m.assert_closed_and_oriented();
     let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
@@ -560,7 +569,7 @@ fn analytic_gate(
     assert_eq!(cells(source), cells(&peer2), "the branch wrote the file");
 }
 
-fn create(root: &Path, operation: &str, json: &str) -> PathBuf {
+pub(super) fn create(root: &Path, operation: &str, json: &str) -> PathBuf {
     let source = root.join(format!("{operation}.fcad"));
     let input = root.join(format!("{operation}.json"));
     std::fs::write(&input, json).expect("request");
