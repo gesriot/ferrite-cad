@@ -4758,8 +4758,16 @@ a stub gate, a no-solver gate, two native gates against the CLI (height + polygo
 circle in B: every SQL cell, ids, model hash, exports before and after Save, independent
 geometry, pinned ufbx; and *Replace length* drafts in two copies), a window recipe with a
 fixture generator and a comparator with six controls, two directed mutations:
-[contract and verification](tab-edit-drafts.md). No real window was run by the author;
-CI for this diff has not run. The CLI is unchanged.
+[contract and verification](tab-edit-drafts.md). Independent review fixed floating
+window IDs that otherwise leaked field focus between tabs; a failing-first real-widget
+regression is now an exact CI gate. The macOS window recipe passed, including invalid
+literal text, separate drafts, Apply/Undo/Redo, unsaved exports and Quit stopping on a
+hidden form. Actual GUI artifacts matched CLI SQL/STL/FBX; six negative controls and
+pinned ufbx passed. Peak viewer footprint 213.329 MiB, normal pressure, unchanged swap,
+exit 0. Initial macOS CI exposed a recovery lease lifetime issue: explicit unlock now
+releases a dropped lease even while a duplicated Unix descriptor remains open, with
+a deterministic regression and the full jobs suite. Final-head CI evidence is recorded
+in verification. The CLI is unchanged.
 
 *What remains of §30 after §30P:* restoring the tab set after a restart; drafts across a
 restart or crash; Open/New/Recover while the shown tab has a form;

@@ -285,7 +285,7 @@ form left open at Quit applied (30), swapped exports, a recovery record left beh
   mark for a hidden tab that keeps one.
 * The *Save new file…* status line under the height form is the window's, not a tab's.
 
-## Independent review (2026-10-09, in progress)
+## Independent review (2026-10-09)
 
 The original `push_id` scoped embedded controls, but egui floating `Window`s derive
 their IDs from their titles and do not inherit the parent Ui scope. A real Circle
@@ -297,5 +297,65 @@ regression passes and is required by exact name and marker in the existing CI st
 The initial test-harness attempt dropped an unhandled `TexturesDelta`; that harness
 error was corrected before the failing assertion above was obtained.
 
-Review logs: `/private/tmp/ferrite-30p-review/`. Remote CI and the real window recipe
-are still pending at this point; headless results do not claim a window pass.
+Review logs: `/private/tmp/ferrite-30p-review/`.
+
+The real macOS arm64 window recipe passed on UI/code head `f551608d` in a freshly
+staged bundle. One viewer, PID 74936, ran under the 1536 MiB watchdog for 493.47 s
+and exited normally with code 0. Peak sampled footprint was 213.329 MiB, pressure
+stayed 1, and swap stayed 1018.0625 MiB. The final Quit was checked by the watchdog's
+PID result; no UI observation relaunched the application afterwards. An earlier
+pressure-2 preflight delayed the launch until pressure returned to normal.
+
+Observed through real controls and native dialogs:
+
+- A's literal invalid height `2..6` survived A → B → A; B kept its independent
+  centre/radius draft. Correcting and applying A's height to 26 changed only A.
+- A's two 80 mm vertex coordinates were changed to 90, left unapplied while B's
+  circle was applied at centre (-3.5, 4.25), radius 8, then restored and applied.
+  Document Undo/Redo was exercised before export.
+- Both tabs exported their unsaved accepted models to STL/FBX. A then kept an
+  unapplied height `30`. Quit saved B, showed A and stopped with the form and
+  its exact text intact; cancelling that form and choosing Quit/Save saved A
+  at the accepted height 26 and exited.
+
+One exploratory click after a layout shift opened Add Cut; it was cancelled
+without applying. An obsolete accessibility index was rejected without action
+before Save B. Neither changed the model or the intended scenario.
+
+The comparator ran against these actual window files in
+`/private/tmp/ferrite-30p-window-review`, not generated replacements:
+`FCAD_30P_GUI_COMPARE_OK negative_controls=6 all_SQL_cells=true`. Every SQL cell
+except the documented modified timestamp, UUIDs/refs and model content matched
+the CLI; unsaved STL/FBX matched byte for byte. A measured 90 × 40 × 26 mm,
+93600 mm³; B measured radius 8 at (-3.5, 4.25), height 15.25. Pinned ufbx 0.23.0
+read both FBX with 6 checks / 0 failures each; independently compared triangles
+matched the STL (12 for A, 352 for B).
+
+Independent local checks: 198 affected app harness passes (native/stub/mixed
+conditional applicability is not recounted as geometry), fmt, workspace clippy
+all targets/features with denied warnings, export boundary, licence headers,
+actionlint, shellcheck and diff whitespace. The final recovery correction below
+also passed the complete jobs suite: 119 executed, one intentional child entry
+ignored, no `skipped:` results. The initial jobs invocation omitted the planegcs
+feature while requiring it and failed at build configuration; the corrected
+invocation supplied the feature and is the run counted here.
+
+### Recovery lease found during CI
+
+The first macOS CI run on `f551608d` failed the existing crash-publication test:
+`list()` found the record recoverable, then `claim()` reported Active. A normal
+local rerun passed; that alone was not treated as a fix. The lease only closed its
+File on drop. Unix duplicated/inherited descriptors share the lock, so an
+unrelated concurrent spawn can retain it until exec closes the inherited handle.
+The CI log cannot prove that exact scheduling, but a deterministic duplicated-file
+regression reproduced the underlying lifetime defect: dropping the lease left
+it Active while a duplicate stayed open. This follows the documented
+[File lock lifetime](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock).
+
+`Lease::drop` now explicitly unlocks before closing. The regression then passes,
+including proof that closing the old duplicate cannot unlock the next owner's
+lease. Existing real-process active-owner, crash, claim, Save/Discard and cleanup
+tests still pass; no retry/sleep or weaker assertion was introduced. The lock
+change is after the window-tested UI commit; it does not alter the form/window
+wiring. Remote CI for the final correction is pending, not inferred from the
+initial run.

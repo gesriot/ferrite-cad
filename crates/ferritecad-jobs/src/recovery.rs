@@ -652,9 +652,17 @@ fn create_private_directory(path: &Path) -> Result<()> {
 /// A held lease: the open, locked `lease` file of one record.
 #[derive(Debug)]
 struct Lease {
-    /// Never read: holding the open, locked file *is* the lease.
-    #[allow(dead_code)]
     file: File,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        // A concurrent Unix spawn can briefly inherit this open file description
+        // before exec closes its descriptor. Closing only our handle would leave
+        // the lock held until that unrelated child closes its copy. The lease
+        // ends here, so release it explicitly; File still closes on any error.
+        let _ = self.file.unlock();
+    }
 }
 
 enum LeaseState {
@@ -1781,6 +1789,29 @@ fn run(store: &RecoveryStore, receiver: &Receiver<Request>, notify: &dyn Fn()) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A concurrently spawned child can hold a duplicated Unix descriptor until
+    // exec closes it. Keep that descriptor alive deterministically: ending our
+    // lease must release the lock without waiting for an unrelated child.
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_lease_unlocks_before_a_duplicated_descriptor_closes() {
+        let root = tempfile::tempdir().expect("record directory");
+        let lease = create_lease(root.path()).expect("lease");
+        let duplicate = lease.file.try_clone().expect("duplicated descriptor");
+        assert!(matches!(take_lease(root.path()), LeaseState::Active));
+        drop(lease);
+        let next = take_lease(root.path());
+        assert!(
+            matches!(next, LeaseState::Held(_)),
+            "a dropped lease must not remain active through a duplicate"
+        );
+        // Closing the older descriptor must not release the new owner's lock.
+        drop(duplicate);
+        assert!(matches!(take_lease(root.path()), LeaseState::Active));
+        drop(next);
+        assert!(matches!(take_lease(root.path()), LeaseState::Held(_)));
+    }
 
     #[test]
     fn utc_dates_are_the_civil_calendar() {
