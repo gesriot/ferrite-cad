@@ -357,5 +357,20 @@ including proof that closing the old duplicate cannot unlock the next owner's
 lease. Existing real-process active-owner, crash, claim, Save/Discard and cleanup
 tests still pass; no retry/sleep or weaker assertion was introduced. The lock
 change is after the window-tested UI commit; it does not alter the form/window
-wiring. Remote CI for the final correction is pending, not inferred from the
-initial run.
+wiring. The 29-test app tab suite was repeated after this correction and passed.
+
+### Remote execution records
+
+The final code correction is `20538b621b95b9cfebc777b1bf8d0f8566b26897`.
+[Standard CI](https://github.com/gesriot/ferrite-cad/actions/runs/37943189567)
+finished successfully (7/7 jobs); the actual logs contain all nine §30P markers
+on Linux, macOS and Windows. The duplicated-descriptor regression executed on
+both Unix platforms; the existing crash-publication test passed on all three.
+[Combined runtime layout](https://github.com/gesriot/ferrite-cad/actions/runs/37943179781)
+is the separate execution record for this exact code, including the mixed gate,
+three native §30P gates and two independent FBX reads per platform. Its conclusions
+are checked before merging and recorded in PR #96, separately from local GUI evidence.
+[PlaneGCS pin](https://github.com/gesriot/ferrite-cad/actions/runs/37941402192)
+passed all four jobs on `f551608d`; the later recovery-only correction did not match
+that workflow's input paths, while the combined runtime links both native libraries.
+Subsequent documentation-only commits do not replace the code run's evidence.
