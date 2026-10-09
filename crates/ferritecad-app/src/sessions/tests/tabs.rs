@@ -13,6 +13,9 @@ use ferritecad_ui::ViewportInput;
 use ferritecad_viewport::StandardView;
 use std::time::{Duration, Instant};
 
+/// §30P: each tab's unfinished forms, through the same owners.
+mod drafts;
+
 /// How a picture is built for a test: on the mock kernel (kernel-free gates) or
 /// by the window's own scene worker on Open CASCADE (native gates).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,6 +63,9 @@ struct Window {
     sessions: Sessions,
     tabs: Tabs,
     checkpoint_name: String,
+    /// §30P: the shown tab's forms, as `App` holds them (`creates.sketch`).
+    edits: crate::edits::Edits,
+    creates: crate::creates::Creates,
     private: tempfile::TempDir,
     drawn: Drawn,
 }
@@ -83,6 +89,8 @@ impl Window {
             sessions: Sessions::default(),
             tabs: Tabs::new(store.map(|store| RecoveryRecorder::start(store.clone(), || {}))),
             checkpoint_name: String::new(),
+            edits: crate::edits::Edits::default(),
+            creates: crate::creates::Creates::default(),
             private: tempfile::tempdir().expect("private root"),
             drawn,
         }
@@ -102,6 +110,10 @@ impl Window {
             &mut self.sessions,
             &mut self.tabs,
             &mut self.checkpoint_name,
+            crate::tabs::Forms {
+                edits: &mut self.edits,
+                editor: &mut self.creates.sketch,
+            },
             document,
             loaded,
             bind,
@@ -563,9 +575,18 @@ fn closing_asks_only_about_unsaved_tabs_and_cancel_or_a_failed_save_keeps_the_ta
     w.create(NewDocument::Empty).expect("untitled");
     let c = w.sessions.tab();
 
-    assert_eq!(w.tabs.close_step(&w.sessions, b), Some(CloseStep::Now));
-    assert_eq!(w.tabs.close_step(&w.sessions, a), Some(CloseStep::Show));
-    assert_eq!(w.tabs.close_step(&w.sessions, c), Some(CloseStep::Ask));
+    assert_eq!(
+        w.tabs.close_step(&w.sessions, b, false),
+        Some(CloseStep::Now)
+    );
+    assert_eq!(
+        w.tabs.close_step(&w.sessions, a, false),
+        Some(CloseStep::Show)
+    );
+    assert_eq!(
+        w.tabs.close_step(&w.sessions, c, false),
+        Some(CloseStep::Ask)
+    );
     let b_private = w.hidden(b).private_directory().expect("b").to_path_buf();
     assert_eq!(
         w.close(b).expect("closed"),
@@ -608,10 +629,16 @@ fn closing_asks_only_about_unsaved_tabs_and_cancel_or_a_failed_save_keeps_the_ta
     assert_eq!(w.sessions.title(), PRODUCT_NAME);
     // A is hidden and unsaved: shown first, then asked.
     w.switch(a);
-    assert_eq!(w.tabs.close_step(&w.sessions, a), Some(CloseStep::Ask));
+    assert_eq!(
+        w.tabs.close_step(&w.sessions, a, false),
+        Some(CloseStep::Ask)
+    );
     let report = w.save(SaveTarget::InPlace);
     assert!(report.published);
-    assert_eq!(w.tabs.close_step(&w.sessions, a), Some(CloseStep::Now));
+    assert_eq!(
+        w.tabs.close_step(&w.sessions, a, false),
+        Some(CloseStep::Now)
+    );
     assert_eq!(w.close(a).expect("closed"), None, "the last tab");
     assert_eq!(w.tabs.count(), 0);
     assert!(w.tabs.labels(&w.sessions).is_empty());
@@ -659,7 +686,7 @@ fn quit_asks_every_unsaved_tab_in_turn_and_cancel_part_way_closes_nothing() {
     // First pass: C (shown) Save As → published; A is next and is shown first;
     // there Cancel stops the pass.
     w.tabs.begin_quit();
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Ask);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
     let c_file = user.path().join("c.fcad");
     let report = {
         let (tx, rx) = mpsc::channel();
@@ -679,7 +706,7 @@ fn quit_asks_every_unsaved_tab_in_turn_and_cancel_part_way_closes_nothing() {
     };
     assert_eq!(report.continuation, Some(Continuation::Quit));
     assert_eq!(
-        w.tabs.quit_step(&w.sessions),
+        w.tabs.quit_step(&w.sessions, false),
         QuitStep::Show(a),
         "B is clean"
     );
@@ -689,7 +716,7 @@ fn quit_asks_every_unsaved_tab_in_turn_and_cancel_part_way_closes_nothing() {
         .expect("awaited");
     shown.expect("A is shown");
     assert_eq!(after, Some(After::Quit));
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Ask);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
     assert_eq!(
         w.sessions.replacing(Some(UnsavedChoice::Cancel)),
         Replace::Stay
@@ -704,20 +731,20 @@ fn quit_asks_every_unsaved_tab_in_turn_and_cancel_part_way_closes_nothing() {
     // Second pass: Discard A. The tab stays open (and dirty) until the window
     // actually ends; then every tab's crash copy goes.
     w.tabs.begin_quit();
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Ask);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
     assert_eq!(
         w.sessions.replacing(Some(UnsavedChoice::Discard)),
         Replace::Discarded
     );
     w.tabs.discarded(a);
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Exit);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
     assert!(w.sessions.dirty(), "Discard acts only when the window ends");
     // A pass Cancelled after Discard forgets that answer.
     w.tabs.abort_quit();
     w.tabs.begin_quit();
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Ask);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
     w.tabs.discarded(a);
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Exit);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
     settled(&w.sessions);
     w.tabs.decide_exit(&mut w.sessions);
     w.sessions.stop_all();
@@ -1541,6 +1568,12 @@ fn compare_gui(root: &Path) {
 }
 
 fn gui_control(root: &Path, name: &str, why: &str, breaks: &dyn Fn(&Path)) {
+    control_of(compare_gui, root, name, why, breaks);
+}
+
+/// One negative control: a copy of `root` broken by `breaks` must be refused by
+/// `compare` for the reason `why`.
+fn control_of(compare: fn(&Path), root: &Path, name: &str, why: &str, breaks: &dyn Fn(&Path)) {
     let copy = tempfile::tempdir().expect("control");
     for entry in super::add_fillet::walk(root) {
         let to = copy.path().join(entry.strip_prefix(root).expect("inside"));
@@ -1550,8 +1583,7 @@ fn gui_control(root: &Path, name: &str, why: &str, breaks: &dyn Fn(&Path)) {
     breaks(copy.path());
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
-    let outcome =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compare_gui(copy.path())));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compare(copy.path())));
     std::panic::set_hook(previous);
     let payload = outcome.expect_err(&format!("negative control {name} accepted"));
     let refused = payload
@@ -1714,17 +1746,17 @@ fn native_tabs_scenario_on_session_files_passes_the_comparator_and_its_controls(
     w.switch(b);
     // 10: Quit: B (shown) Save; A shown and asked; Cancel. Nothing closes.
     w.tabs.begin_quit();
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Ask);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
     assert!(w.save(SaveTarget::InPlace).published);
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Show(a));
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Show(a));
     w.switch(a);
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Ask);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
     w.tabs.abort_quit();
     assert_eq!(w.tabs.order(), [a, b]);
     // 11: Quit again: A Save; the window ends by the person's decision.
     w.tabs.begin_quit();
     assert!(w.save(SaveTarget::InPlace).published);
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Exit);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
     w.tabs.decide_exit(&mut w.sessions);
     w.sessions.stop_all();
     w.tabs.stop_all();
@@ -1804,7 +1836,7 @@ fn quit_waits_for_open_forms_and_foreground_work_even_when_tabs_are_clean() {
         &crate::exports::Exports::default(),
         &crate::edits::Edits::default(),
     ));
-    assert_eq!(w.tabs.quit_step(&w.sessions), QuitStep::Exit);
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
 }
 
 /// Cancelling a switch must invalidate it immediately, not only when another

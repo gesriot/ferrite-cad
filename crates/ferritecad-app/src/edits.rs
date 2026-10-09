@@ -10,8 +10,10 @@ use ferritecad_kernel::{CancelToken, OperationContext};
 use ferritecad_types::{CadError, ErrorKind, Result};
 use ferritecad_ui::{EditChoice, EditExtrudeForm, ExtrusionRow};
 
+/// The height form as typed: what the window keeps of it while its tab is hidden
+/// (§30P). Opaque outside this module.
 #[derive(Debug)]
-struct Form {
+pub(crate) struct Form {
     source: PathBuf,
     reading: ExtrudeEditSource,
     shown: EditExtrudeForm,
@@ -46,6 +48,38 @@ impl Edits {
 
     pub(crate) fn busy(&self) -> bool {
         self.form.is_some() || self.running.is_some()
+    }
+
+    /// §30P: the height form is open (idle or not; a copy worker is `running`).
+    pub(crate) fn form_open(&self) -> bool {
+        self.form.is_some()
+    }
+
+    /// §30P: the open form leaves with the tab being hidden, exactly as typed.
+    /// A copy worker and what it keeps for its own load never leave the window.
+    pub(crate) fn take_form(&mut self) -> Option<Form> {
+        self.form.take()
+    }
+
+    /// §30P: the form of the tab being shown comes back as it was left.
+    pub(crate) fn restore_form(&mut self, form: Option<Form>) {
+        self.form = form;
+    }
+
+    /// The open form's chosen extrusion and its height exactly as typed.
+    #[cfg(test)]
+    pub(crate) fn typed(&self) -> Option<(Option<ferritecad_types::ObjectId>, &str)> {
+        self.form
+            .as_ref()
+            .map(|form| (form.shown.selected, form.shown.distance.as_str()))
+    }
+
+    /// Types into the open form what its widgets would leave there.
+    #[cfg(test)]
+    pub(crate) fn type_height(&mut self, feature: ferritecad_types::ObjectId, typed: &str) {
+        let form = self.form.as_mut().expect("an open height form");
+        form.shown.selected = Some(feature);
+        typed.clone_into(&mut form.shown.distance);
     }
 
     pub(crate) fn begin(&mut self, source: &Path, reading: &ExtrudeEditSource) -> bool {

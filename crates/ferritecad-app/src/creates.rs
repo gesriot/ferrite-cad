@@ -179,6 +179,12 @@ impl Creates {
         self.running() || self.form.is_some() || self.sketch.active()
     }
 
+    /// §30P: New is under way — a creation running, the New form, or a drawing
+    /// for a new document. None of it belongs to a tab, so it holds the window.
+    pub(crate) fn making_new(&self) -> bool {
+        self.running() || self.form.is_some() || self.sketch.drawing_new()
+    }
+
     /// The saved Sketch form is the caller of Apply, not an operation blocking it.
     /// New and the other Sketch-family forms retain their existing exclusion.
     pub(crate) fn can_apply_sketch(&self) -> bool {

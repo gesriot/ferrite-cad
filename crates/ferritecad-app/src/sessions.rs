@@ -232,6 +232,10 @@ pub(crate) struct Sessions {
     /// The person chose how the window ends (Quit after the guard): the record
     /// goes. Without that decision a dirty document's record stays.
     exit_decided: bool,
+    /// §30P: the form that came back with this tab was made on another accepted
+    /// version than the one shown. Its Apply and Add are refused until it is
+    /// closed; its text stays to be read and cancelled.
+    stale_draft: bool,
 }
 
 /// Which user's file each private working directory stands for, so that text
@@ -420,6 +424,32 @@ impl Sessions {
         self.reserved
             .take_if(|held| *held == Reserved::Switch(generation))
             .is_some()
+    }
+
+    /// §30P: whether a form's Apply or Add may start: a document, nothing in
+    /// flight, and the form is about the version shown. The one answer every
+    /// form's button and handler share.
+    pub(crate) fn takes_form_apply(&self) -> bool {
+        self.has_session() && !self.busy() && !self.stale_draft
+    }
+
+    /// §30P: the shown tab's form came back made on another version than the
+    /// current one. Nothing is re-read or re-bound; Apply is refused in words.
+    pub(crate) fn hold_stale_draft(&mut self) {
+        self.stale_draft = true;
+        self.status = "The open form was made on another version of this document; it \
+                       cannot be applied. Cancel it and open it again."
+            .to_owned();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stale_draft(&self) -> bool {
+        self.stale_draft
+    }
+
+    /// §30P: the shown tab has no form open any more: nothing is held.
+    pub(crate) fn release_stale_draft(&mut self) {
+        self.stale_draft = false;
     }
 
     pub(crate) fn logical_path(&self) -> Option<&Path> {

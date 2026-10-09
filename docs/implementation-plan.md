@@ -4377,7 +4377,8 @@ document, by design.)* (2) Autosave and crash recovery: §30M now restores the l
 published copy of the accepted model; Undo history and draft form values remain outside it.
 (3) Persistent revisions, a revision list, tabs. *(Status after §30N: named checkpoints
 of the model are stored in the document, listed, restored and deleted. After §30O:
-several documents in tabs of one window; restoring the tab set after a restart remains.)* The macOS review added the AppKit
+several documents in tabs of one window; after §30P each tab keeps its unfinished edit
+form; restoring the tab set after a restart remains.)* The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
 (4) Close the lock-ignoring-writer window only if a platform primitive allows a
 compare-and-replace; until then it is documented, not closed. The independent Mac window scenario now covers Apply, document Undo/Redo,
@@ -4736,7 +4737,40 @@ passes and deliberately missing cleanup still fails. Production behavior is unch
 by that test correction. Exact-head CI and limitations are recorded in verification.
 The CLI is unchanged.
 
-*What remains of §30 after §30O:* restoring the tab set after a restart; per-tab drafts;
+**§30P — each tab keeps its unfinished edit form.** Open A, start changing its height
+(an invalid string too), press B, start B's circle or constraints, press A: A's form is
+exactly as left, and Apply/Cancel act on the tab the form belongs to. The window's two
+existing form owners — the `Edits` height form and the `sketch::Editor` with every
+other saved-object form (vertices, Circle/annulus, Revolve angle, constraints, Cut,
+Fillet and Chamfer Add/Edit) — are moved whole as a `tabs::Draft` of the hidden tab
+(keyed by `TabId`) in the same `Tabs::bind` statement that swaps the session, picture
+and camera; refused, cancelled, stale or foreign switches never reach it. One predicate
+(`can_leave_tab`) lets an idle form stay with its tab while any operation, load, export,
+New, copy worker or pointer gesture still holds the window. Text is kept literally; each
+tab's forms are drawn under their own egui ids; a draft is bound to its version's
+identity and comes back held (never applied) if that version ever changed; Close and
+Quit show a tab with a form and stop there, even over a clean model. Save, exports,
+checkpoints, crash copies and document Undo read only the accepted model; drafts are not
+kept across a restart. Kernel-free gates of the real owners (A→B→A literal text with two
+copies of one `DocumentId`, picks/pending additions/draft history, refused/cancelled/
+stale/foreign answers, gestures and running work, Close/Quit, a held draft, egui focus),
+a stub gate, a no-solver gate, two native gates against the CLI (height + polygon in A,
+circle in B: every SQL cell, ids, model hash, exports before and after Save, independent
+geometry, pinned ufbx; and *Replace length* drafts in two copies), a window recipe with a
+fixture generator and a comparator with six controls, two directed mutations:
+[contract and verification](tab-edit-drafts.md). Independent review fixed floating
+window IDs that otherwise leaked field focus between tabs; a failing-first real-widget
+regression is now an exact CI gate. The macOS window recipe passed, including invalid
+literal text, separate drafts, Apply/Undo/Redo, unsaved exports and Quit stopping on a
+hidden form. Actual GUI artifacts matched CLI SQL/STL/FBX; six negative controls and
+pinned ufbx passed. Peak viewer footprint 213.329 MiB, normal pressure, unchanged swap,
+exit 0. Initial macOS CI exposed a recovery lease lifetime issue: explicit unlock now
+releases a dropped lease even while a duplicated Unix descriptor remains open, with
+a deterministic regression and the full jobs suite. Final-head CI evidence is recorded
+in verification. The CLI is unchanged.
+
+*What remains of §30 after §30P:* restoring the tab set after a restart; drafts across a
+restart or crash; Open/New/Recover while the shown tab has a form;
 branching, automatic or persisted-Undo revisions
 (not in scope: named checkpoints of the model only); recovery of Undo history and of
 draft form values; power-loss durability of the crash copy (`fsync` order only, not

@@ -419,17 +419,31 @@ impl Editor {
     /// request made from them could only name the old version. A drawing in
     /// progress for a new document is not about the open one and stays.
     pub(crate) fn finish_session_change(&mut self) {
-        let saved_object = self.editing.is_some()
+        if self.saved_object_open() {
+            self.dismiss();
+        }
+    }
+    /// A form about a saved object of the open document is open: what a hidden
+    /// tab keeps (§30P). A drawing for a new document is not one.
+    pub(crate) fn saved_object_open(&self) -> bool {
+        self.editing.is_some()
             || self.editing_circle.is_some()
             || self.editing_annulus.is_some()
             || self.editing_angle.is_some()
             || self.constraints.active()
             || self.cuts.active()
             || self.fillets.active()
-            || self.chamfers.active();
-        if saved_object {
-            self.dismiss();
-        }
+            || self.chamfers.active()
+    }
+    /// §30P: the drawing window for a new document is open. It is not about the
+    /// open document and never goes with a tab.
+    pub(crate) fn drawing_new(&self) -> bool {
+        self.draft.is_some() && self.editing.is_none()
+    }
+    /// §30P: a vertex is being dragged (or the press that may start a drag is
+    /// held) on the drawing: a gesture is not a draft and holds the window.
+    pub(crate) fn gesturing(&self) -> bool {
+        self.canvas.gesture.is_some() || self.canvas.claimed_press
     }
     pub(crate) fn take_circle_edit_request(&mut self) -> Option<EditCircleRequest> {
         self.pending_circle_edit.take()
@@ -1139,17 +1153,20 @@ impl Editor {
             }
             return;
         }
-        egui::Window::new(if self.editing_angle.is_some() {
-            "Edit saved Revolve angle"
-        } else if self.editing_annulus.is_some() {
-            "Edit saved annulus"
-        } else if self.editing_circle.is_some() {
-            "Edit saved Circle"
-        } else if self.editing.is_some() {
-            "Edit saved Sketch"
-        } else {
-            "Sketch + Extrude — new document"
-        })
+        crate::form_window(
+            ui,
+            if self.editing_angle.is_some() {
+                "Edit saved Revolve angle"
+            } else if self.editing_annulus.is_some() {
+                "Edit saved annulus"
+            } else if self.editing_circle.is_some() {
+                "Edit saved Circle"
+            } else if self.editing.is_some() {
+                "Edit saved Sketch"
+            } else {
+                "Sketch + Extrude — new document"
+            },
+        )
         .resizable(false)
         .default_width(540.)
         .show(ui.ctx(), |ui| self.draw_draft(ui, running, outcome));
@@ -2590,6 +2607,70 @@ pub(crate) mod tests {
     pub(crate) mod analytic_apply;
     pub(crate) mod angle_apply;
 
+    #[test]
+    fn floating_forms_in_two_tabs_do_not_share_keyboard_focus() {
+        let root = tempfile::tempdir().expect("root");
+        let path = root.path().join("circle.fcad");
+        analytic_apply::write_round(&path, [12.0, -7.0], &[10.0], 15.0, false);
+        let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+        let mut a = Editor::default();
+        let mut b = Editor::default();
+        for editor in [&mut a, &mut b] {
+            assert!(editor.begin_circle_edit(&path, &reading, reading.circle_sketches[0].sketch));
+        }
+        let ctx = egui::Context::default();
+        let frame = |editor: &mut Editor, tab, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(988., 768.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    crate::in_tab_scope(ui, "tab-forms", tab, |ui| {
+                        editor.draw(ui, false, false, "");
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        frame(&mut a, 1, vec![]);
+        let out = frame(&mut a, 1, vec![]);
+        let field = text_at(&out, "12");
+        for pressed in [true, false] {
+            frame(
+                &mut a,
+                1,
+                vec![
+                    egui::Event::PointerMoved(field),
+                    egui::Event::PointerButton {
+                        pos: field,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        frame(&mut a, 1, vec![egui::Event::Text("5".into())]);
+        let typed_a = a.circle.center.clone();
+        assert_ne!(typed_a[0], "12", "A received keyboard input");
+        frame(&mut b, 2, vec![]);
+        frame(&mut b, 2, vec![egui::Event::Text("9".into())]);
+        frame(&mut b, 2, vec![egui::Event::Text("9".into())]);
+        assert_eq!(
+            b.circle.center,
+            ["12", "-7"],
+            "A's focus edited B's floating form"
+        );
+        assert_eq!(a.circle.center, typed_a);
+        println!("\nFCAD_30P_FLOATING_FORM_FOCUS_EXECUTED");
+    }
+
     /// The request the saved Sketch form makes when `from` is replaced by `to` in
     /// the two vertex boxes that show it and **Apply vertices** is pressed: the real
     /// widgets, in the state the window leaves the form in for an idle session.
@@ -2615,6 +2696,26 @@ pub(crate) mod tests {
         out.shapes.iter().any(
             |c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == "Apply vertices"),
         )
+    }
+
+    /// §30P: one press of `label` on a form the window holds, through the widgets.
+    pub(crate) fn press(e: &mut Editor, label: &str) {
+        let ctx = egui::Context::default();
+        frame(&ctx, e, vec![]);
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, label));
+    }
+
+    /// §30P: the drawing window for a new document, open as its button opens it.
+    pub(crate) fn begin_drawing(e: &mut Editor) {
+        e.begin();
+    }
+
+    /// §30P: the vertex draft as typed, and the depth of its Undo and Redo.
+    pub(crate) fn vertex_draft(e: &Editor) -> Option<(Vec<[String; 2]>, usize, usize)> {
+        e.draft
+            .as_ref()
+            .map(|d| (d.points.clone(), e.undo.len(), e.redo.len()))
     }
 
     pub(crate) fn typed_apply(

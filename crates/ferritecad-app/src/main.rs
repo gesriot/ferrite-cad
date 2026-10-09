@@ -1008,7 +1008,7 @@ fn height_state(
     ferritecad_ui::HeightState {
         running: false,
         can_cancel: false,
-        apply: sessions.has_session() && idle,
+        apply: sessions.takes_form_apply() && idle,
         copy: idle && !edits.running() && !sessions.dirty(),
         unsaved: sessions.dirty(),
     }
@@ -1021,6 +1021,38 @@ fn height_state(
 /// about. Apply or Cancel the form first.
 fn form_open(edits: &edits::Edits, sketch: &sketch::Editor) -> bool {
     edits.busy() || sketch.active()
+}
+
+/// §30P: why another tab cannot be shown or closed right now.
+const LEAVE_WAIT: &str = "Another tab can be shown or closed once the current operation, \
+                          export or New has finished. An open edit form stays with its tab.";
+/// §30P: closing a tab never closes its open form behind the person's back.
+const FORM_BEFORE_CLOSING: &str = "This tab has an open form. Apply or Cancel it before closing \
+                                   the tab; nothing was closed.";
+/// §30P: nor does Quit: the pass stops at the tab whose form is open.
+const FORM_BEFORE_QUITTING: &str = "This tab has an open form. Apply or Cancel it before \
+                                    quitting; no tab was closed.";
+
+/// §30P: whether another tab may be shown or closed now; the one answer the tab
+/// row and its handlers share. Nothing may be running or waiting on the window —
+/// a session operation (Apply, Add, Undo, Redo, Save, a switch, Recover), a load,
+/// an export or its question, New (its form, drawing or worker), a copy worker —
+/// and no pointer gesture may be under way. An idle form over the shown document
+/// does not hold the window: it is kept with its tab (`Tabs::bind`).
+fn can_leave_tab(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+    input: &ViewportInput,
+) -> bool {
+    !creates.making_new()
+        && !creates.sketch.gesturing()
+        && document_io_idle(loads, exports)
+        && !edits.running()
+        && !sessions.busy()
+        && !input.is_dragging()
 }
 
 /// New is serialized with document loads and exports. Viewing remains available.
@@ -1046,8 +1078,7 @@ fn can_apply_sketch(
     creates.can_apply_sketch()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// Shared by the constraints form's Apply button and the command that starts its worker.
@@ -1061,8 +1092,7 @@ fn can_apply_constraints(
     creates.can_apply_constraints()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// Shared by the saved Circle and annulus forms' Apply button and the commands
@@ -1077,8 +1107,7 @@ fn can_apply_analytic(
     creates.can_apply_analytic()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// Shared by the partial Revolve form's Apply button and its worker command.
@@ -1092,8 +1121,7 @@ fn can_apply_angle(
     creates.can_apply_angle()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// The same guard for the existing Cut form's button and Apply handler.
@@ -1107,8 +1135,7 @@ fn can_apply_cut(
     creates.can_apply_cut()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// §30I: shared by the Cut Add form's Add button and its handler.
@@ -1122,8 +1149,7 @@ fn can_add_cut(
     creates.can_add_cut()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// §30I: Save cut copy reads a file and writes a new one; with unsaved changes
@@ -1148,8 +1174,7 @@ fn can_apply_fillet_radius(
     creates.can_apply_fillet_radius()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// §30J: shared by the Fillet Add form's Add button and its handler.
@@ -1163,8 +1188,7 @@ fn can_add_fillet(
     creates.can_add_fillet()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// §30J: Save fillet copy reads a file and writes a new one; with unsaved changes
@@ -1189,8 +1213,7 @@ fn can_apply_chamfer_distance(
     creates.can_apply_chamfer_distance()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// §30K: shared by the Chamfer Add form's Add button and its handler.
@@ -1204,8 +1227,7 @@ fn can_add_chamfer(
     creates.can_add_chamfer()
         && document_io_idle(loads, exports)
         && !edits.busy()
-        && sessions.has_session()
-        && !sessions.busy()
+        && sessions.takes_form_apply()
 }
 
 /// §30K: Save chamfer copy reads a file and writes a new one; with unsaved changes
@@ -1312,6 +1334,10 @@ struct Sections<'a> {
     checkpoints: Option<(ferritecad_ui::CheckpointPanel<'a>, &'a mut String)>,
     /// §30O: the row of open documents.
     tabs: ferritecad_ui::TabStrip<'a>,
+    /// §30P: the shown tab's key. Its forms are drawn under ids of their own, so
+    /// no focus, cursor or selection of one tab's field reaches the field of the
+    /// same name in another tab.
+    forms_scope: u64,
 }
 
 /// What accepting or discarding an answer did at the application boundary.
@@ -1528,9 +1554,10 @@ fn prepare_arrival<P>(
 /// What `App::show` does with an arriving picture, minus the graphics device
 /// (`prepare` is the upload). Everything that can fail happens before the commit:
 /// preparing the picture, then binding its document change (`Tabs::bind`: a staged
-/// version, a new tab, or a hidden tab made active); only then do the picture, what
-/// its parts are, the choice made in it and the camera become current together. A
-/// failure at any step leaves every tab, the picture and the camera as they were.
+/// version, a new tab, or a hidden tab made active, each tab's forms going with it);
+/// only then do the picture, what its parts are, the choice made in it and the
+/// camera become current together. A failure at any step leaves every tab, every
+/// form, the picture and the camera as they were.
 #[allow(
     clippy::too_many_arguments,
     reason = "one arrival is one statement over the window's parts; see PreparedLoad"
@@ -1541,11 +1568,14 @@ fn present<P>(
     sessions: &mut sessions::Sessions,
     tabs: &mut tabs::Tabs,
     checkpoint_name: &mut String,
+    mut forms: tabs::Forms<'_>,
     document: &Path,
     loaded: Result<LoadedScene>,
     bind: sessions::Bind,
     prepare: impl FnOnce(Arc<RenderSnapshot>, &[SketchDrawing]) -> Result<P>,
 ) -> Result<()> {
+    // §30P: a tab shown again brings its own forms back, about its own version.
+    let switching = matches!(bind, sessions::Bind::Switch(_));
     let next = match &bind {
         // A tab shown again keeps its own camera.
         sessions::Bind::Switch(generation) => tabs
@@ -1560,10 +1590,17 @@ fn present<P>(
     // session change and the scene change are one statement, so the version a
     // person is looking at is the version Save would write.
     let next = next.and_then(|next| {
-        tabs.bind(sessions, bind, input, checkpoint_name)
+        tabs.bind(sessions, bind, input, checkpoint_name, &mut forms)
             .map(|()| next)
     });
-    commit_scene(scene, input, next)
+    commit_scene(scene, input, next)?;
+    // Whatever else replaced the picture (Apply, Undo, Redo, another document),
+    // forms about the saved objects of the old one are over: a request made from
+    // them could only name the version that was replaced.
+    if !switching {
+        forms.editor.finish_session_change();
+    }
+    Ok(())
 }
 
 /// §30O: closes `tab`. Closing the shown tab replaces the picture with an empty
@@ -3311,6 +3348,18 @@ impl ApplicationHandler<AppEvent> for App {
                 let settled = can_begin_new(&self.creates, &self.loads, &self.exports)
                     && !self.sessions.busy();
                 let idle = settled && !form_open(&self.edits, &self.creates.sketch);
+                // §30P: a form held as made on another version is over once closed.
+                if !form_open(&self.edits, &self.creates.sketch) {
+                    self.sessions.release_stale_draft();
+                }
+                let leave = can_leave_tab(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                    &self.input,
+                );
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
@@ -3566,14 +3615,7 @@ impl ApplicationHandler<AppEvent> for App {
                     .collect();
                 let tab_strip = ferritecad_ui::TabStrip {
                     tabs: &tab_labels,
-                    available: if idle {
-                        Ok(())
-                    } else {
-                        Err(
-                            "Another tab can be shown or closed once the current operation has \
-                             finished and no form is open.",
-                        )
-                    },
+                    available: if leave { Ok(()) } else { Err(LEAVE_WAIT) },
                 };
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
@@ -3621,6 +3663,7 @@ impl ApplicationHandler<AppEvent> for App {
                             )
                         }),
                         tabs: tab_strip,
+                        forms_scope: self.sessions.tab().key(),
                     },
                 ) {
                     // A button pressed during this frame reaches the camera
@@ -4327,7 +4370,13 @@ impl App {
     /// be asked or a tab that could not be shown stops it, closing nothing.
     fn continue_quit(&mut self, event_loop: &ActiveEventLoop) {
         while self.tabs.quitting() {
-            match self.tabs.quit_step(&self.sessions) {
+            let form = form_open(&self.edits, &self.creates.sketch);
+            match self.tabs.quit_step(&self.sessions, form) {
+                // §30P: shown with its form; the person finishes it, then quits.
+                tabs::QuitStep::Form => {
+                    self.sessions.status = FORM_BEFORE_QUITTING.to_owned();
+                    self.tabs.abort_quit();
+                }
                 tabs::QuitStep::Ask => {
                     let tab = self.sessions.tab();
                     match self.ask_to_close(sessions::Continuation::Quit) {
@@ -4412,13 +4461,24 @@ impl App {
         }
     }
 
+    /// The window may show or close another tab now (§30P: [`can_leave_tab`]).
+    fn can_leave_tab(&self) -> bool {
+        can_leave_tab(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+            &self.input,
+        )
+    }
+
     /// §30O: starts showing hidden tab `tab` (and then `after`). Refused, with the
-    /// reason in the status line, while anything else is running or a form is open.
+    /// reason in the status line, while anything else is running. An idle form of
+    /// the shown tab stays with it (§30P).
     fn switch_to(&mut self, tab: tabs::TabId, after: Option<tabs::After>) -> bool {
-        if !self.document_idle() {
-            self.sessions.status = "Wait for the current operation to finish, or close the open \
-                                    form, before showing another tab."
-                .to_owned();
+        if !self.can_leave_tab() {
+            self.sessions.status = LEAVE_WAIT.to_owned();
             self.input.request_redraw();
             return false;
         }
@@ -4444,16 +4504,20 @@ impl App {
     }
 
     /// §30O: the × of a tab. A clean tab closes; an unsaved one is shown (when
-    /// hidden) and asked about first.
+    /// hidden) and asked about first. §30P: a tab with an open form is shown and
+    /// its form left for the person to Apply or Cancel; nothing is closed.
     fn close_tab(&mut self, tab: tabs::TabId) {
-        if !self.document_idle() {
-            self.sessions.status = "Wait for the current operation to finish, or close the open \
-                                    form, before closing a tab."
-                .to_owned();
+        if !self.can_leave_tab() {
+            self.sessions.status = LEAVE_WAIT.to_owned();
             self.input.request_redraw();
             return;
         }
-        match self.tabs.close_step(&self.sessions, tab) {
+        let form = form_open(&self.edits, &self.creates.sketch);
+        match self.tabs.close_step(&self.sessions, tab, form) {
+            Some(tabs::CloseStep::Form) => {
+                self.sessions.status = FORM_BEFORE_CLOSING.to_owned();
+                self.input.request_redraw();
+            }
             Some(tabs::CloseStep::Now) => self.close_now(tab),
             Some(tabs::CloseStep::Show) => {
                 self.switch_to(tab, Some(tabs::After::Close));
@@ -4621,7 +4685,7 @@ impl App {
     /// change is accepted into the session when its picture is ready, and the file
     /// on disk is written only by Save.
     fn apply_height(&mut self) {
-        if !self.settled() || !self.sessions.has_session() {
+        if !self.settled() || !self.sessions.takes_form_apply() {
             return;
         }
         let Some((feature, distance_mm)) = self.edits.apply_request() else {
@@ -6058,6 +6122,10 @@ impl App {
             &mut self.sessions,
             &mut self.tabs,
             &mut self.checkpoint_name,
+            tabs::Forms {
+                edits: &mut self.edits,
+                editor: &mut self.creates.sketch,
+            },
             document,
             loaded,
             bind,
@@ -6075,11 +6143,9 @@ impl App {
             .sketch
             .draft_load_finished(document, committed.is_ok());
         self.edits.draft_load_finished(document, committed.is_ok());
+        // Forms about the saved objects of the replaced picture ended in
+        // `present` (§30P: a tab shown again brought back its own).
         committed?;
-        // Whatever the picture was replaced by (Apply, Undo, Redo, another
-        // document), forms about the saved objects of the old one are over: a
-        // request made from them could only name the version that was replaced.
-        self.creates.sketch.finish_session_change();
         exports::leave_document(&mut self.exports, &mut self.input);
         // The picture is current; the name on the window is the same fact: the
         // session's logical name (never the private file the picture was read
@@ -6325,6 +6391,7 @@ impl Live {
             recovery,
             mut checkpoints,
             tabs,
+            forms_scope,
         } = sections;
         let mut pointed_row = None;
         let mut output = egui.run_ui(raw_input, |ui| {
@@ -6347,13 +6414,15 @@ impl Live {
                      Add cut, Add fillet or Add chamfer.",
                 );
             }
-            sketch.draw_choices(
-                ui,
-                can_edit,
-                scene.document.as_deref(),
-                scene.edit_source.as_ref(),
-            );
-            sketch.draw(ui, can_edit, creating || edits.running(), document_outcome);
+            in_tab_scope(ui, "tab-forms", forms_scope, |ui| {
+                sketch.draw_choices(
+                    ui,
+                    can_edit,
+                    scene.document.as_deref(),
+                    scene.edit_source.as_ref(),
+                );
+                sketch.draw(ui, can_edit, creating || edits.running(), document_outcome);
+            });
             if let Some(message) = dialog_failure {
                 ui.colored_label(ui.visuals().error_fg_color, message);
             }
@@ -6363,7 +6432,9 @@ impl Live {
                 .as_ref()
                 .map(|source| source.unavailable_reason())
                 .unwrap_or(Some("Open a document to edit an extrusion."));
-            chosen.edit = edits.draw_with(ui, can_edit, unavailable, height);
+            chosen.edit = in_tab_scope(ui, "tab-height", forms_scope, |ui| {
+                edits.draw_with(ui, can_edit, unavailable, height)
+            });
             let stl = ferritecad_ui::stl_export_form(ui, stl_form.as_deref_mut());
             if stl != ferritecad_ui::StlChoice::Waiting {
                 chosen.stl = stl;
@@ -6468,6 +6539,25 @@ impl Live {
         frame.present();
         Ok((chosen, replace, asked, pointed_row, interface_has_pointer))
     }
+}
+
+/// §30P: draws part of one tab's forms under ids of that tab's own, so no focus,
+/// cursor or text selection of one tab's field reaches the field of the same name
+/// in another tab. `part` keeps the window's form sections apart.
+fn in_tab_scope<R>(
+    ui: &mut egui::Ui,
+    part: &'static str,
+    tab: u64,
+    draw: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.push_id((part, tab), draw).inner
+}
+
+/// Floating windows are roots in egui: `Window::new` otherwise derives its ID
+/// only from the title and ignores the parent Ui's tab scope. Include that scope
+/// explicitly so their fields, text undo state and focus belong to one tab too.
+fn form_window<'a>(ui: &egui::Ui, title: &'a str) -> egui::Window<'a> {
+    egui::Window::new(title).id(ui.make_persistent_id(("form-window", title)))
 }
 
 /// Turns one window event into what this application means by it.

@@ -98,6 +98,16 @@ struct Draft {
     history: History,
     refusal: Option<String>,
 }
+/// §30P, tests: a draft's picks (Line, pair A, pair B) and request history depths.
+#[cfg(test)]
+pub(crate) type DraftState = (
+    Option<StableEntityId>,
+    Option<StableEntityId>,
+    Option<StableEntityId>,
+    usize,
+    usize,
+);
+
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     draft: Option<Draft>,
@@ -137,6 +147,19 @@ impl Editor {
     #[cfg(test)]
     pub(crate) fn draft_edits(&self) -> Option<SketchConstraintEdits> {
         self.draft.as_ref().map(|d| d.edits.clone())
+    }
+    /// The picked Line and pair, and the depth of the request Undo and Redo.
+    #[cfg(test)]
+    pub(crate) fn draft_state(&self) -> Option<DraftState> {
+        self.draft.as_ref().map(|d| {
+            (
+                d.selected,
+                d.pair_a,
+                d.pair_b,
+                d.history.undo.len(),
+                d.history.redo.len(),
+            )
+        })
     }
     pub(crate) fn session(&self) -> (bool, bool, bool) {
         (self.can_begin, self.can_apply, self.unsaved)
@@ -213,7 +236,7 @@ impl Editor {
         };
         let mut cancel = false;
         let mut apply_request = None;
-        egui::Window::new("Sketch constraints")
+        crate::form_window(ui, "Sketch constraints")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
