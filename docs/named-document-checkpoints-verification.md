@@ -320,5 +320,19 @@ Unity or power-loss claim; the historical OOM cause remains unknown.
 
 ### Remote CI
 
-PR #94 contains the independent fixes. Exact-head CI is recorded here after it
-completes; local results above are not substitutes for the remote matrix.
+The final code/test head is `3231762b4eba02327dbea644fcdbb790fd79a6ff`:
+
+* [CI 37860345213](https://github.com/gesriot/ferrite-cad/actions/runs/37860345213):
+  lint, ordinary tests on three OSes, notices, SBOM and supply chain.
+* [PlaneGCS pin 37860341135](https://github.com/gesriot/ferrite-cad/actions/runs/37860341135):
+  three native platforms and their comparison.
+* [Combined runtime 37860341094](https://github.com/gesriot/ferrite-cad/actions/runs/37860341094):
+  OCCT/PlaneGCS, mixed tests, checkpoint workers and independent FBX readers.
+
+These links pin the measured code. This documentation follow-up changes no source,
+workflow, dependency or native input. The final status of all three runs is the
+merge gate in [PR #94](https://github.com/gesriot/ferrite-cad/pull/94); local evidence
+above is not a substitute. The review checks actual log lines for all three new
+storage regressions, `FCAD_30N_STUB_CHECKPOINTS_EXECUTED`, the mixed marker, both
+native markers and `FCAD_CHECKPOINT_SESSION_UFBX_EXECUTED` on each OS. Window outputs
+remain macOS-only; the CI matrix is not a Windows/Linux GUI check.
