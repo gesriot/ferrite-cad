@@ -4857,8 +4857,15 @@ listings racing an owner's publications), CLI gates with the real binary around 
 edited source, and a window-owner gate on two tabs with forms (Cancel, late and stale
 answers, refusal, Quit) that also runs through Open CASCADE; two directed mutations:
 [contract and verification](recovery-inspection-contention.md). The window's visible
-change is words and time only; the real-window scenario for it is written there and was
-not run by the author. §30, Milestone 5C and the product remain open; nothing here
+change is words and time only. Independent review preserved I/O/unsupported shared-probe
+failures instead of falsely reporting an active holder, with a failing-first regression.
+The real macOS window passed listing under a held reader, busy, Cancel, recovery after
+release, occupied Save refusal and named/Untitled Save. Actual artifacts passed all-SQL
+and byte-equal CLI/STL/FBX comparisons, seven negative controls and pinned ufbx. Peak
+viewer footprint 203.439 MiB, unchanged swap; three preflights refused elevated system
+pressure before any viewer started and were retried only at normal pressure. Deliberate
+crash processes and normal Quit processes are distinguished in the verification record.
+No real window was run by the author. §30, Milestone 5C and the product remain open; nothing here
 closes the earlier OOM investigation.
 
 *What remains of §30 after §30S:* drafts across a restart or crash; Open over a running New; contention the

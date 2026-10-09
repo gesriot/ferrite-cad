@@ -280,8 +280,11 @@ PY
    refused, Save to `recovered.fcad`, Quit). Check that only your own PIDs are gone
    (`watch-*.pid`, `reader.pid`); after Quit do not call `getApp`/`getAX`: it can
    relaunch the viewer outside the watchdog.
-7. §30M steps 10–13 unchanged, then the existing comparator, whose result and negative
-   controls are the saved-result check:
+7. Follow §30M steps 10–13 with the current tab behavior: create/crash Untitled,
+   launch again, create a second Untitled, then Recover opens the orphan in a separate
+   tab (there is no longer a Discard-before-Recover question). Save the recovered tab
+   as `empty-recovered.fcad`, Quit, and Discard only the other test Untitled. Then run
+   the existing comparator, whose result and negative controls check the saved result:
 
 ```sh
 python3 tools/document-crash-recovery-gui.py --compare "$ROOT"
@@ -371,7 +374,7 @@ It is not claimed closed: §30, Milestone 5C, the product and the earlier OOM
 investigation remain open, and no next slice has started.
 
 
-## Independent review (in progress)
+## Independent review
 
 The shared-lock probe originally reduced every failure to `active`. A refused lock
 (`WouldBlock`) proves contention; an I/O error or an unsupported lock does not. Review
@@ -383,5 +386,65 @@ nested I/O cause (the outer Display only prints context), all 12 recovery librar
 six real CLI recovery processes and the two-tab cancellation owner gate passed in the
 true stub build. The ignored library entry is the child-process test harness.
 
-Review logs: `/private/tmp/ferrite-30s-review/`. Native, window and remote CI results
-will be recorded after they finish; no window result is claimed here.
+Review logs: `/private/tmp/ferrite-30s-review/`. Native OCCT+PlaneGCS recovery
+integration: 17 passed (one child-process harness ignored); the new two-tab owner
+scenario passed with its execution marker. Workspace clippy all-targets/all-features,
+fmt, actionlint and diff whitespace passed. An initial jobs command omitted
+`--all-features` while requiring PlaneGCS and was rejected by build.rs; it was corrected,
+not counted as a test failure or a pass.
+
+### macOS window evidence
+
+A fresh release CLI/viewer was staged with the existing pinned native libraries and
+verified by the bundled `--solver-info`. Private roots and outputs:
+`/private/tmp/ferrite-30s-window-review/`; one viewer at a time under the unchanged
+1536 MiB watchdog. No positive output was generated outside the window.
+
+* Applied height 21.5 without Save, observed the recovery publication, exported
+  `accepted.stl`/`accepted.fbx`, then killed only watchdog-owned PID 50382.
+* A separate Python process held the record's shared lease. The new window still
+  offered it. Recover showed `Recovering…`, then the bounded "still being read"
+  refusal; no tab appeared and the copy stayed. Another Recover followed immediately
+  by Cancel returned "Recovery cancelled; the copy is kept" within the 1.57 s tool
+  interaction, before the five-second bound.
+* The first manual release was too late for that particular five-second attempt and
+  correctly produced another busy refusal. A subsequent bounded-reader attempt
+  recovered successfully. The window result proves recovery after release; exact
+  release-during-wait timing is established by the deterministic owner/CLI gates,
+  not claimed from automation scheduling.
+* Exported the recovered model, tried Save to the occupied test file (the app refused
+  even after the OS Replace confirmation), then saved `recovered.fcad` and Quit.
+  Accepted/recovered STL and FBX are byte-identical. Both actual FBX files passed
+  pinned ufbx 0.23.0: six checks each, no failures.
+* Created and crashed Untitled; the last window created another Untitled, recovered
+  the orphan into its own tab, saved `empty-recovered.fcad`, then Quit/Discard applied
+  only to the other test Untitled. The recovery folder ended empty.
+
+Watchdog logs `watch-a`, `watch-b2`, `watch-c2`, `watch-d2`: peak footprints
+201.329, 203.439, 189.251, 194.845 MiB. A/C ended by the deliberate SIGKILL; B/D exited
+0. Pressure stayed normal while each viewer ran; sampled swap stayed 1471283200 bytes.
+Three preflights (`watch-b`, `watch-c`, `watch-d`) refused at system pressure 2 before
+launching a viewer, then were retried after pressure returned to 1. No watchdog limit
+was weakened. No dead app was queried with CUA after Quit/crash. This is not evidence
+that the historical OOM cause has been fixed.
+
+The existing real-window comparator passed on these outputs:
+`FCAD_30M_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true`, one executed test,
+no skips. It checked every SQL cell with its existing narrow allowlist, UUIDs, source
+and occupied-file preservation, both exports against the actual CLI, the recovered
+empty model, and the empty recovery directory.
+
+### CI revisions
+
+Reviewed production code/workflow: `c990770c36e462a04c810ae3f64dcf0a53d8e782`,
+[PR #99](https://github.com/gesriot/ferrite-cad/pull/99). The ordinary
+[CI run](https://github.com/gesriot/ferrite-cad/actions/runs/37995709932) completed
+7/7 jobs successfully, including the added recovery gates on Linux, macOS and Windows.
+The [PlaneGCS run](https://github.com/gesriot/ferrite-cad/actions/runs/37995706295)
+completed all four jobs successfully. The
+[combined native runtime run](https://github.com/gesriot/ferrite-cad/actions/runs/37995706316)
+is the required native/mixed evidence for that same code head and must finish before
+merge. Final results are attached to the PR checks; these documentation edits change
+no code or workflow. Local audit downloads each OS job log and requires the exact new
+gate lines and `FCAD_30S_RECOVER_BESIDE_READER_EXECUTED`, rather than counting an
+unexecuted test as passed.
