@@ -60,7 +60,7 @@ pub use recovery::{
     Ending, ExtractedRecovery, MAX_RECORDS, Publication, RECOVERY_DIR_ENV, RecordId, RecoveryClaim,
     RecoveryEntry, RecoveryHooks, RecoveryListing, RecoveryRecord, RecoveryRecorder,
     RecoveryRefusal, RecoveryStatus, RecoveryStore, RecoverySummary, RefusalKind, STALE_RECOVERY,
-    default_recovery_root, format_utc,
+    default_recovery_root, format_utc, per_user_state_folder,
 };
 pub use save::{
     Conflict, SaveFailure, SaveFailureKind, SaveHooks, SaveKind, SavePlan, SaveTarget, Saved,

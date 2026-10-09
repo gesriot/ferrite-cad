@@ -45,6 +45,11 @@ pub use recovery::{
     recovery_panel,
 };
 
+mod reopen;
+pub use reopen::{
+    NOT_NOW, REOPEN, REOPEN_HEADING, ReopenChoice, ReopenPanel, ReopenRow, reopen_panel,
+};
+
 mod stl;
 pub use stl::{PublishedStl, StlBodyRow, StlChoice, StlExportForm, stl_export_form};
 

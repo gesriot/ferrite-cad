@@ -83,7 +83,22 @@ pub const STALE_RECOVERY: &str =
 /// platform's place for an application's own state. Never the system temporary
 /// directory.
 pub fn default_recovery_root() -> Result<PathBuf> {
-    if let Some(chosen) = std::env::var_os(RECOVERY_DIR_ENV).filter(|value| !value.is_empty()) {
+    per_user_state_folder(RECOVERY_DIR_ENV, "recovery folder", "Recovery", "recovery")
+}
+
+/// A folder of FerriteCAD's own per-user state: `env` when it is set and not
+/// empty, otherwise `~/Library/Application Support/FerriteCAD/<leaf>` (macOS),
+/// `%LOCALAPPDATA%\FerriteCAD\<leaf>` (Windows), or
+/// `$XDG_STATE_HOME/ferritecad/<unix_leaf>`, by default
+/// `~/.local/state/ferritecad/<unix_leaf>` (Linux, other Unix). Never the system
+/// temporary directory. Nothing is created; `what` names the folder in the refusal.
+pub fn per_user_state_folder(
+    env: &str,
+    what: &str,
+    leaf: &str,
+    unix_leaf: &str,
+) -> Result<PathBuf> {
+    if let Some(chosen) = std::env::var_os(env).filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(chosen));
     }
     let home = || {
@@ -92,7 +107,7 @@ pub fn default_recovery_root() -> Result<PathBuf> {
             .map(PathBuf::from)
             .ok_or_else(|| {
                 CadError::input(format!(
-                    "no home folder is known, so there is no recovery folder; set {RECOVERY_DIR_ENV}"
+                    "no home folder is known, so there is no {what}; set {env}"
                 ))
             })
     };
@@ -101,29 +116,29 @@ pub fn default_recovery_root() -> Result<PathBuf> {
             .join("Library")
             .join("Application Support")
             .join("FerriteCAD")
-            .join("Recovery"));
+            .join(leaf));
     }
     if cfg!(windows) {
         let local = std::env::var_os("LOCALAPPDATA")
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 CadError::input(format!(
-                    "LOCALAPPDATA is not set, so there is no recovery folder; set {RECOVERY_DIR_ENV}"
+                    "LOCALAPPDATA is not set, so there is no {what}; set {env}"
                 ))
             })?;
-        return Ok(PathBuf::from(local).join("FerriteCAD").join("Recovery"));
+        return Ok(PathBuf::from(local).join("FerriteCAD").join(leaf));
     }
     if let Some(state) = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
     {
-        return Ok(state.join("ferritecad").join("recovery"));
+        return Ok(state.join("ferritecad").join(unix_leaf));
     }
     Ok(home()?
         .join(".local")
         .join("state")
         .join("ferritecad")
-        .join("recovery"))
+        .join(unix_leaf))
 }
 
 /// A record's identity: the UUID in its directory name and in its manifest.

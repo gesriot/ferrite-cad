@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 /// §30P: each tab's unfinished forms, through the same owners.
 mod drafts;
+/// §30R: the last window's saved files, kept at Quit and reopened.
+mod restore;
 
 /// How a picture is built for a test: on the mock kernel (kernel-free gates) or
 /// by the window's own scene worker on Open CASCADE (native gates).

@@ -959,7 +959,8 @@ jobs:
             sessions::tests::tabs::a_cancelled_switch_reply_is_ignored_while_an_apply_runs \
             sessions::tests::tabs::a_cancelled_switch_keeps_its_input_alive_until_its_worker_finishes \
             sessions::tests::tabs::each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own \
-            sessions::tests::tabs::the_ninth_document_is_refused_before_anything_changes
+            sessions::tests::tabs::the_ninth_document_is_refused_before_anything_changes \
+            sessions::tests::tabs::restore::reopen_waits_for_a_gesture_and_is_offered_only_with_a_list
           do
             cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-app.log
             if grep -q 'skipped:' session-app.log || ! grep -Fq "test $gate ... ok" session-app.log; then exit 1; fi
@@ -984,7 +985,11 @@ jobs:
           # forms kept, refused, closed, quit and drawn per tab, and a switch refused
           # at its picture keeping both drafts. §30Q: Open, New and Recover beside
           # open forms, New's focus apart from a tab's, and all three refused at
-          # their picture without a kernel. Every one prints a marker.
+          # their picture without a kernel. §30R: the last window's list — format,
+          # refusals, a failed publication, native paths, two processes at once —
+          # kept only at the end of Quit, reopened beside open tabs, Cancel and late
+          # answers, and refused at the picture without a kernel. Every one prints a
+          # marker.
           for check in \
             "sessions::tests::tabs::late_cancelled_or_foreign_answers_change_no_tab_and_release_no_slot FCAD_30O_LATE_ANSWERS_EXECUTED" \
             "sessions::tests::tabs::stub_switching_is_refused_at_the_picture_and_keeps_the_shown_tab FCAD_30O_STUB_TABS_EXECUTED" \
@@ -1001,7 +1006,17 @@ jobs:
             "sessions::tests::tabs::drafts::open_new_recover::new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly FCAD_30Q_NEW_OVER_FORMS_EXECUTED" \
             "sessions::tests::tabs::drafts::open_new_recover::recover_over_an_unfinished_form_keeps_the_record_on_every_refusal FCAD_30Q_RECOVER_OVER_FORMS_EXECUTED" \
             "sketch::tests::new_over_forms::new_opened_over_a_floating_form_shares_no_focus_or_text_with_it FCAD_30Q_NEW_FORM_FOCUS_EXECUTED" \
-            "sessions::tests::tabs::drafts::open_new_recover::stub_open_new_and_recover_beside_a_form_are_refused_at_the_picture_and_keep_it FCAD_30Q_STUB_OVER_FORMS_EXECUTED"
+            "sessions::tests::tabs::drafts::open_new_recover::stub_open_new_and_recover_beside_a_form_are_refused_at_the_picture_and_keep_it FCAD_30Q_STUB_OVER_FORMS_EXECUTED" \
+            "last_tabs::tests::a_published_list_reads_back_exactly_and_reading_writes_nothing FCAD_30R_DESCRIPTOR_ROUND_TRIP_EXECUTED" \
+            "last_tabs::tests::damaged_foreign_or_unknown_lists_are_refused_and_left_as_they_are FCAD_30R_DESCRIPTOR_REFUSALS_EXECUTED" \
+            "last_tabs::tests::a_failed_publication_keeps_the_previous_list_whole_and_touches_nothing_else FCAD_30R_FAILED_PUBLICATION_EXECUTED" \
+            "last_tabs::tests::paths_keep_their_native_units_exactly FCAD_30R_NATIVE_PATHS_EXECUTED" \
+            "last_tabs::tests::two_processes_publish_whole_lists_and_one_of_them_stays FCAD_30R_TWO_PROCESSES_EXECUTED" \
+            "sessions::tests::tabs::restore::quit_keeps_the_saved_files_only_when_the_window_really_ends FCAD_30R_QUIT_PUBLICATION_EXECUTED" \
+            "sessions::tests::tabs::restore::an_empty_end_clears_the_offer_and_a_list_that_cannot_be_kept_stops_quit_once FCAD_30R_EMPTY_AND_FAILED_LIST_EXECUTED" \
+            "sessions::tests::tabs::restore::reopen_restores_saved_files_beside_open_tabs_in_order_and_shows_the_last_shown FCAD_30R_REOPEN_EXECUTED" \
+            "sessions::tests::tabs::restore::cancel_late_answers_and_a_full_window_never_revive_or_mix_a_reopen FCAD_30R_CANCEL_LATE_FULL_EXECUTED" \
+            "sessions::tests::tabs::restore::stub_reopen_is_refused_at_the_picture_and_keeps_the_open_tab FCAD_30R_STUB_REOPEN_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"
@@ -1016,7 +1031,8 @@ jobs:
             panels::tests::new_form_create_asks_nothing_while_the_window_says_it_cannot \
             recovery::tests::recover_and_delete_ask_nothing_while_the_window_says_they_cannot \
             checkpoint::tests::the_buttons_ask_nothing_while_the_window_says_why_they_cannot \
-            tabs::tests::tabs_show_names_marks_and_answer_with_their_key_only_when_available
+            tabs::tests::tabs_show_names_marks_and_answer_with_their_key_only_when_available \
+            reopen::tests::reopen_asks_nothing_while_the_window_says_it_cannot_and_says_what_opens
           do
             cargo test -p ferritecad-ui --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-ui.log
             if ! grep -Fq "test $gate ... ok" session-ui.log; then exit 1; fi

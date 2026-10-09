@@ -886,6 +886,15 @@ jobs:
           grep -Fq "test $gate ... " session-over-forms-mixed.log
           grep -q '^test result: ok\. 1 passed; 0 failed' session-over-forms-mixed.log
           grep -q '^FCAD_30Q_MIXED_OVER_FORMS_EXECUTED$' session-over-forms-mixed.log
+          # §30R: two plates kept at Quit and reopened by the production reading
+          # drawn by Open CASCADE with no solver; the shown one applied.
+          gate=sessions::tests::tabs::restore::mixed_reopen_with_occt_and_no_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-reopen-mixed.log
+          if grep -q 'skipped:' session-reopen-mixed.log; then exit 1; fi
+          grep -Fq "test $gate ... " session-reopen-mixed.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' session-reopen-mixed.log
+          grep -q '^FCAD_30R_MIXED_REOPEN_EXECUTED$' session-reopen-mixed.log
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
@@ -1315,6 +1324,10 @@ jobs:
           # §30Q: Open, New and Recover beside open forms, then Apply and Save; the
           # recipe's comparator and its eight controls on the owners' own files.
           export FCAD_OPEN_NEW_RECOVER_ARTIFACTS="$tabs_artifacts"
+          # §30R: a first window saves A and quits; a second reopens A and B from
+          # the list it kept, edits, exports and saves B; the recipe's comparator
+          # and its eight controls on the owners' own files.
+          export FCAD_RESTORE_SAVED_TABS_ARTIFACTS="$tabs_artifacts"
           # Each prints its marker, so libtest's "ok" follows on a line of its own.
           for check in \
             "sessions::tests::tabs::native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_command_line FCAD_30O_NATIVE_TABS_EXECUTED" \
@@ -1335,7 +1348,15 @@ jobs:
           done
           # §30Q's gate, the last one above, also prints its comparator's result.
           grep -Fxq 'FCAD_30Q_SESSION_FILES_COMPARE_OK negative_controls=8 all_SQL_cells=true' session-tabs-native.log
-          for name in tabs-a tabs-b drafts-a drafts-b over-a over-n over-c; do
+          gate=sessions::tests::tabs::restore::native_reopen_saved_tabs_then_apply_save_and_compare_with_the_command_line
+          cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-reopen-native.log
+          if grep -q 'skipped:' session-reopen-native.log; then exit 1; fi
+          grep -Fq "test $gate ... " session-reopen-native.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' session-reopen-native.log
+          grep -Eq '^FCAD_30R_NATIVE_REOPEN_EXECUTED volume_a=83200\.000 volume_b=[0-9.]+$' session-reopen-native.log
+          grep -Fxq 'FCAD_30R_SESSION_FILES_COMPARE_OK negative_controls=8 all_SQL_cells=true' session-reopen-native.log
+          for name in tabs-a tabs-b drafts-a drafts-b over-a over-n over-c reopen-a reopen-b; do
             test -s "$tabs_dir/$name.fbx"
             test -s "$tabs_dir/$name.stl"
           done
@@ -1343,6 +1364,7 @@ jobs:
             echo "FCAD_TABS_SESSION_FBX_DIR=$tabs_artifacts"
             echo "FCAD_TAB_DRAFTS_FBX_DIR=$tabs_artifacts"
             echo "FCAD_OPEN_NEW_RECOVER_FBX_DIR=$tabs_artifacts"
+            echo "FCAD_RESTORE_SAVED_TABS_FBX_DIR=$tabs_artifacts"
           } >> "$GITHUB_ENV"
 
           fillet_dir="$RUNNER_TEMP/fillet-session"
@@ -3037,6 +3059,7 @@ jobs:
           grep -q '^FCAD_TABS_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_TAB_DRAFTS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_OPEN_NEW_RECOVER_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_RESTORE_SAVED_TABS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 

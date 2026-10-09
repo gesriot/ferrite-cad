@@ -4378,8 +4378,8 @@ published copy of the accepted model; Undo history and draft form values remain 
 (3) Persistent revisions, a revision list, tabs. *(Status after §30N: named checkpoints
 of the model are stored in the document, listed, restored and deleted. After §30O:
 several documents in tabs of one window; after §30P each tab keeps its unfinished edit
-form; after §30Q Open, New and Recover leave it with its tab; restoring the tab set after
-a restart remains.)* The macOS review added the AppKit
+form; after §30Q Open, New and Recover leave it with its tab; after §30R the saved files
+of the last window that quit are offered at the next start and reopened in order.)* The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
 (4) Close the lock-ignoring-writer window only if a platform primitive allows a
 compare-and-replace; until then it is documented, not closed. The independent Mac window scenario now covers Apply, document Undo/Redo,
@@ -4802,8 +4802,41 @@ negative controls; pinned ufbx read the actual GUI export and two CLI exports of
 GUI-saved documents. Viewer peak 209.251 MiB, normal pressure, unchanged swap, exit 0.
 No real window was run by the author. The CLI is unchanged.
 
-*What remains of §30 after §30Q:* restoring the tab set after a restart; drafts across a
-restart or crash; Open over a running New; the recovery store's probe/claim race;
+**§30R — reopen the saved files of the last window.** Open A, B and C, save what
+matters and Quit: the next start offers *Reopen saved files* with their names; one press
+opens each file **as saved on disk now**, in the old order, through the ordinary
+`Loads`/`open_for_view`/`Bind::Open` route one file at a time, and shows the tab that was
+shown (or the first listed file that opened). The list is one small versioned
+descriptor (`last-window`) in a per-user folder beside the recovery folder
+(`FERRITECAD_TABS_DIR` names another), published only when the Quit pass really ends
+(`end_window_quit` at `QuitStep::Exit`, before the window's tabs are decided) by a
+uniquely named temporary file and one rename: whole or the previous one; the last
+window to finish its Quit wins, lists never merge. Cancel, a refused Save, a form (also
+set aside or hidden), a worker or an exit nobody decided publish nothing; a list that
+cannot be kept stops Quit once in words. Named tabs answered Discard reopen as saved;
+Untitled tabs are left out; an empty end publishes an empty list. Paths are kept as
+native units (Unix bytes, Windows UTF-16), strictly parsed, bounded by `MAX_TABS` and
+size before reading; damaged, unknown, too large, unreadable or linked lists are
+refused visibly and left alone. Missing, broken, picture-refused, full-window, already
+open and cancelled files are each said by name; repeated Reopen never duplicates a
+tab; a late answer cannot revive a cancelled Reopen. No model, Undo, form, camera or
+selection is kept; no document, schema, JSON or CLI change. Kernel-free owner gates,
+descriptor gates (format, refusals, failed publication, native paths, two processes),
+a stub gate, a no-solver gate, a native two-lifecycle gate against the CLI (all SQL
+cells but the write stamp, ids/refs, exports before and after Save, geometry, pinned
+ufbx) with eight comparator controls, a window recipe for two launches, two directed
+mutations: [contract and verification](restore-saved-tabs.md). Independent review
+fixed publication overwriting unreadable/unknown/foreign descriptors and cleanup
+removing a temporary file whose exclusive creation had failed; both regressions
+failed before the fixes. Review also fixed full-window refusal skipping a later
+already-open active tab, with a failing-first owner regression. Review passed the
+two-launch macOS recipe: real Quit publication, Reopen and repeated Reopen, Apply,
+exports before Save and the second Quit.
+Actual files passed all-SQL/CLI comparisons, eight negative controls and pinned ufbx.
+Viewer peaks were 193.642/207.189 MiB, normal pressure, unchanged swap, both exit 0.
+No real window was run by the author. The CLI is unchanged.
+
+*What remains of §30 after §30R:* drafts across a restart or crash; Open over a running New; the recovery store's probe/claim race;
 branching, automatic or persisted-Undo revisions
 (not in scope: named checkpoints of the model only); recovery of Undo history and of
 draft form values; power-loss durability of the crash copy (`fsync` order only, not
