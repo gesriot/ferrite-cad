@@ -794,6 +794,27 @@ fn cancel_late_answers_and_a_full_window_never_revive_or_mix_a_reopen() {
     assert_eq!(shown, None, "A was read last: it is shown already");
     assert_eq!(logical(&full, full.sessions.tab()), files[0]);
     assert!(restores.report()[1].starts_with("b.fcad — not opened: 8 documents are open"));
+
+    // Capacity is not cancellation: a later listed file may already be open,
+    // and the previous active file must still be selected at the end.
+    let existing_a = full.sessions.tab();
+    full.switch(full.tabs.order()[0]);
+    folder
+        .publish(&LastTabs {
+            paths: vec![files[1].clone(), files[0].clone()],
+            active: Some(1),
+        })
+        .expect("B followed by already-open A");
+    let mut restores = offered(&folder);
+    assert_eq!(full.reopen(&mut restores, |_| Ok(())), Some(existing_a));
+    assert_eq!(full.sessions.tab(), existing_a);
+    assert_eq!(full.tabs.count(), MAX_TABS);
+    assert_eq!(
+        restores.outcomes()[0],
+        Some(Outcome::NotOpened(crate::tabs::full()))
+    );
+    assert_eq!(restores.outcomes()[1], Some(Outcome::AlreadyOpen));
+    assert!(restores.report()[0].starts_with("1 of 2 saved files are open"));
     println!("\nFCAD_30R_CANCEL_LATE_FULL_EXECUTED");
 }
 

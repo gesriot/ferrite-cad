@@ -306,7 +306,7 @@ fn display_name(path: &Path) -> String {
 
 /// The next thing a Reopen in progress does: each file that is not open yet is
 /// read through Open (one at a time); a file a tab already names is not read
-/// again; a full window ends the queue in words. Once every file was tried, the
+/// again; a full window refuses only files that need a new tab. Once every file was tried, the
 /// tab of the file shown last time is shown — or, when that file did not open, of
 /// the first listed file that is open — unless it is shown already.
 pub(crate) fn step(restores: &mut Restores, tabs: &Tabs, active: &Sessions) -> Step {
@@ -328,10 +328,9 @@ pub(crate) fn step(restores: &mut Restores, tabs: &Tabs, active: &Sessions) -> S
                 run.outcomes[index] = Some(Outcome::AlreadyOpen);
             }
             Opening::Refused(reason) => {
-                run.outcomes[index] = Some(Outcome::NotOpened(reason.clone()));
-                run.next = run.set.paths.len();
-                restores.stop(&reason);
-                return Step::Wait;
+                // Later entries may already be open. Account for them and still
+                // choose the previous active tab after the bounded list ends.
+                run.outcomes[index] = Some(Outcome::NotOpened(reason));
             }
         }
     }
