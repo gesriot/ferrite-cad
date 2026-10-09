@@ -918,8 +918,13 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
     let b_private = w.sessions.private_directory().expect("b").to_path_buf();
     w.close(b).expect("closed");
     let deadline = Instant::now() + Duration::from_secs(60);
-    while store.list().expect("list").active != 1 {
-        assert!(Instant::now() < deadline, "B's record was never retired");
+    // Retirement removes the lease before its directory. Seeing one active
+    // record does not yet mean the worker finished the directory removal.
+    while store.list().expect("list").active != 1 || record_dirs(store_root.path()) != 1 {
+        assert!(
+            Instant::now() < deadline,
+            "B's record was never fully retired"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(!b_private.exists() && a_private.exists());

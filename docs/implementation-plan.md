@@ -4730,8 +4730,11 @@ then passed (numeric checkpoint name `12` as a declared keyboard-layout adaptati
 both tabs' Apply/history/exports, repeated Open, New/Save As refusal, Close/Cancel/Discard
 and multi-tab Quit Save/Cancel. All-SQL and byte-equal CLI/STL/FBX comparisons plus six
 negative controls passed; pinned ufbx read both actual exports. Peak viewer footprint
-216.657 MiB, normal pressure, unchanged swap, exit 0. Exact-head CI and limitations
-are recorded in verification. The CLI is unchanged.
+216.657 MiB, normal pressure, unchanged swap, exit 0. Later CI exposed a cleanup-test
+race: its wait now requires directory removal as well as lease release; delayed cleanup
+passes and deliberately missing cleanup still fails. Production behavior is unchanged
+by that test correction. Exact-head CI and limitations are recorded in verification.
+The CLI is unchanged.
 
 *What remains of §30 after §30O:* restoring the tab set after a restart; per-tab drafts;
 branching, automatic or persisted-Undo revisions

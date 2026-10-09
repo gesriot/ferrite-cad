@@ -292,17 +292,41 @@ or recoverable record. Logs, name-adaptation runner, memory summary and FBX read
 are under `/private/tmp/ferrite-30o-review/`; window files and watchdog samples are
 under `/private/tmp/ferrite-30o-window-review/`. The earlier OOM cause remains unknown.
 
+### CI exposed an asynchronous test race
+
+The later documentation-head CI (run 37879009208, Ubuntu job 113654127167) failed the
+record-cleanup test: one active record remained, but two record directories still
+existed. `remove_record` unlinks/drops the lease before removing the directory; the
+test treated the former observation as a barrier for the latter. A temporary 500 ms
+pause at exactly that boundary reproduced the same executed assertion (`2 != 1`).
+The test now waits, under its existing 60-second deadline, for both one active record
+and one directory, retaining the final private-file and directory assertions. It
+passes with that delay. A second temporary probe omitted directory removal entirely:
+the corrected test failed on the executed `B's record was never fully retired`
+assertion after 60 seconds. Both probes compiled; neither is a compile failure or
+zero-test pass. Production recovery source was restored byte-for-byte. Logs are
+`cleanup-race-before.log`, `cleanup-race-delayed-after.log` and
+`cleanup-missing-negative.log` under the review log directory. This correction changes
+only the test's completion condition, not product cleanup or the GUI-tested binary.
+After restoring production source, the complete tabs suite passed again (16 harness
+cases: 13 executed, three environment-specific N/A); fmt and workspace all-targets /
+all-features clippy with `-D warnings` passed. The six-control headless comparator
+self-check and native two-model geometry gate both executed in that rerun.
+
 ### Remote review CI
 
-Code/workflow head: `85ef339113905002fb68766eb4cf25b52787728c`.
+Initial production/workflow head: `85ef339113905002fb68766eb4cf25b52787728c`.
 At this documentation update, [CI run 37875736052](https://github.com/gesriot/ferrite-cad/actions/runs/37875736052)
 has succeeded (7/7 jobs), and [PlaneGCS run 37875726448](https://github.com/gesriot/ferrite-cad/actions/runs/37875726448)
 has succeeded (4/4). The CI logs on all three OS were read independently: each actually
 emits the two-tab-crash, late-answer and stub markers and passes the three review
 regressions by exact name. [Combined runtime run 37875726425](https://github.com/gesriot/ferrite-cad/actions/runs/37875726425)
-is still running at the time of this documentation commit and is not claimed green
-here. This update changes only this record and the plan, so it does not change the
-runtime inputs. Merge remains contingent on that exact code run, an audit of its
-three-OS markers, and the final documentation-head CI. Their final results are recorded
-in [PR #95](https://github.com/gesriot/ferrite-cad/pull/95) before merge; local passes do
-not stand in for those checks.
+completed successfully on Linux and macOS; Windows was still running when the
+asynchronous test correction above was prepared. That initial run is not claimed as
+a complete final-head pass. The final commit contains the corrected test plus this
+record, while all production inputs remain identical to the GUI-tested `85ef339`.
+The existing CI, PlaneGCS and runtime workflows are required again on that final head;
+merge waits for successful completion and an independent audit of actual three-OS
+markers. The exact final SHA, run links and audit results are recorded in
+[PR #95](https://github.com/gesriot/ferrite-cad/pull/95) before merge. Earlier passes and
+local checks do not stand in for those final checks.
