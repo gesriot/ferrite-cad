@@ -359,7 +359,7 @@ fn a_failed_publication_keeps_the_previous_list_whole_and_touches_nothing_else()
         replace_with_new(
             &theirs,
             &folder.descriptor(),
-            &serialize(&previous).unwrap()
+            &serialize(&previous).expect("valid previous list")
         )
         .is_err()
     );
@@ -372,15 +372,18 @@ fn a_failed_publication_keeps_the_previous_list_whole_and_touches_nothing_else()
     // A failure after our own write removes only our partial.
     let own_partial = folder.root().join("own.partial");
     let blocked_destination = folder.root().join("occupied-directory");
-    std::fs::create_dir(&blocked_destination).unwrap();
-    std::fs::write(blocked_destination.join("keep"), b"keep").unwrap();
+    std::fs::create_dir(&blocked_destination).expect("occupied destination");
+    std::fs::write(blocked_destination.join("keep"), b"keep").expect("foreign bytes");
     assert!(replace_with_new(&own_partial, &blocked_destination, b"new list").is_err());
     assert!(!own_partial.exists());
     assert_eq!(
-        std::fs::read(blocked_destination.join("keep")).unwrap(),
+        std::fs::read(blocked_destination.join("keep")).expect("foreign bytes preserved"),
         b"keep"
     );
-    assert_eq!(std::fs::read(folder.descriptor()).unwrap(), kept);
+    assert_eq!(
+        std::fs::read(folder.descriptor()).expect("old descriptor preserved"),
+        kept
+    );
     assert_eq!(
         folder.read().expect("read"),
         Some(previous.clone()),
