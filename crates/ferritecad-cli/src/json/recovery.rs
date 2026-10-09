@@ -14,7 +14,8 @@ use crate::recovery::ExtractFailure;
 pub struct RecoveryList {
     folder: String,
     records: Vec<Record>,
-    /// Records held by windows that are running: never listed, claimed or removed.
+    /// Records some FerriteCAD process holds exclusively (a running window, a claim
+    /// or a removal): never listed, claimed or removed.
     active: usize,
 }
 

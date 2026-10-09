@@ -895,6 +895,16 @@ jobs:
           grep -Fq "test $gate ... " session-reopen-mixed.log
           grep -q '^test result: ok\. 1 passed; 0 failed' session-reopen-mixed.log
           grep -q '^FCAD_30R_MIXED_REOPEN_EXECUTED$' session-reopen-mixed.log
+          # §30S: Recover waiting for a reader of its record, through the production
+          # claim and Open CASCADE reading, on two tabs that each keep a form: Cancel,
+          # a late or stale answer, a refusal and Quit.
+          gate=sessions::tests::tabs::drafts::open_new_recover::recover_waiting_for_a_reader_obeys_cancel_late_answers_and_quit_beside_forms_in_two_tabs
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-reader-mixed.log
+          if grep -q 'skipped:' session-reader-mixed.log; then exit 1; fi
+          grep -Fq "test $gate ... " session-reader-mixed.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' session-reader-mixed.log
+          grep -q '^FCAD_30S_RECOVER_BESIDE_READER_EXECUTED$' session-reader-mixed.log
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log

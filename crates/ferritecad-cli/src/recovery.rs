@@ -2,9 +2,11 @@
 //! `list-recovery` and `extract-recovery` (§30M): the crash copies a window left,
 //! read through the same library claim the window recovers from.
 //!
-//! Neither command takes a record over. Listing changes nothing; extraction holds
-//! the record's lease only while it copies, publishes a new file by the shared
-//! no-clobber publication, and leaves the record in place.
+//! Neither command takes a record over. Listing changes nothing and only reads
+//! (a shared lock, so a concurrent extraction waits for it, bounded, and is never
+//! told a window has the record, §30S); extraction holds the record's lease only
+//! while it copies, publishes a new file by the shared no-clobber publication, and
+//! leaves the record in place.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -95,7 +97,7 @@ pub fn run_list(args: ListRecoveryArgs) -> Result<ExitCode> {
     }
     if listing.active > 0 {
         println!(
-            "{} more held by FerriteCAD windows that are running",
+            "{} more held by another FerriteCAD process (a running window, or a recovery in progress)",
             listing.active
         );
     }

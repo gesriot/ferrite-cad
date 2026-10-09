@@ -4836,7 +4836,41 @@ Actual files passed all-SQL/CLI comparisons, eight negative controls and pinned 
 Viewer peaks were 193.642/207.189 MiB, normal pressure, unchanged swap, both exit 0.
 No real window was run by the author. The CLI is unchanged.
 
-*What remains of §30 after §30R:* drafts across a restart or crash; Open over a running New; the recovery store's probe/claim race;
+**§30S — reading the recovery folder is not owning a record.** Pressing Recover (or
+running `extract-recovery`, or Delete) on a real orphan while anything else was
+listing the folder could be refused as "a FerriteCAD window that is still running":
+`list` and `claim` shared one inspection that took the record's exclusive lease and
+verified the copy under it. Reproduced on the base, deterministically, with a listing
+held inside its verification — in one process, across two, and with the real
+`ferritecad extract-recovery` — and fixed narrowly: a listing now takes the lease
+**shared**, per record and only while it verifies, so it knows nobody owns the record
+while it reads and does not exclude other readers; the owner, a claim and a removal
+stay exclusive, and a claim or removal waits for readers (never for a holder) at most 5 s
+off the event loop, ending the moment the window's Cancel or Quit cancels the Recover
+worker (a new token). A refused exclusive lock is now said for what it proves (a holder:
+a window, a claim or a removal — the lock cannot say which), and readers that stay are
+`busy`, additively (`recovery_refusal`, same exit code). No PID, age, daemon, registry,
+format or schema change; PR #96's explicit unlock and PR #97's cleanup are unchanged
+and now exact gates. Kernel-free gates (held reader in a thread and in a child process,
+two claims, claim vs removal, bound and cancellation, stale listing re-verified,
+listings racing an owner's publications), CLI gates with the real binary around a real
+edited source, and a window-owner gate on two tabs with forms (Cancel, late and stale
+answers, refusal, Quit) that also runs through Open CASCADE; two directed mutations:
+[contract and verification](recovery-inspection-contention.md). The window's visible
+change is words and time only. Independent review preserved I/O/unsupported shared-probe
+failures instead of falsely reporting an active holder, with a failing-first regression.
+The real macOS window passed listing under a held reader, busy, Cancel, recovery after
+release, occupied Save refusal and named/Untitled Save. Actual artifacts passed all-SQL
+and byte-equal CLI/STL/FBX comparisons, seven negative controls and pinned ufbx. Peak
+viewer footprint 203.439 MiB, unchanged swap; three preflights refused elevated system
+pressure before any viewer started and were retried only at normal pressure. Deliberate
+crash processes and normal Quit processes are distinguished in the verification record.
+No real window was run by the author. §30, Milestone 5C and the product remain open; nothing here
+closes the earlier OOM investigation.
+
+*What remains of §30 after §30S:* drafts across a restart or crash; Open over a running New; contention the
+lock cannot settle (a stream of listings starving a claim, a hung reader, builds older
+than §30S, lock-ignoring writers, filesystems without locks);
 branching, automatic or persisted-Undo revisions
 (not in scope: named checkpoints of the model only); recovery of Undo history and of
 draft form values; power-loss durability of the crash copy (`fsync` order only, not

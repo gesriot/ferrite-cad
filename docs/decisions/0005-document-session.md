@@ -457,3 +457,42 @@ to find each file again. The decision:
   is unchanged; parity is about models); power-loss durability.
 
 Contract and checks: [../restore-saved-tabs.md](../restore-saved-tabs.md).
+
+## §30S: reading the recovery folder is not owning a record
+
+**Proven before it was decided.** `RecoveryStore::list` and `claim` shared one
+`inspect`, which took the record's *exclusive* lease and verified the copy under it.
+While one process listed a record, a Recover, an `extract-recovery`, a Delete or another
+listing of it was refused as `active` — "a FerriteCAD window that is still running" —
+though the only other party was a reader. It reproduced deterministically on the base
+with a listing held inside its verification, in one process and across two, and with
+the real `ferritecad extract-recovery` (see the contract). PR #97 had fixed the same
+shape for the cleanup sweep only.
+
+* **Decision.** The lease's lock has two modes, and the folder's operations choose by
+  what they do. *Looking* (`list`) takes it **shared**, per record, only while that
+  record is verified. *Owning* (the record's owner, a claim, a removal) still takes it
+  **exclusive**. A shared lock cannot be granted while an exclusive holder exists, so a
+  reader knows nobody owns, claims or removes the record while it reads, and the bytes it
+  verifies cannot be mid-publication, mid-adoption or gone. Readers do not exclude each
+  other. No new file, format, PID, age, daemon or registry; the manifest, header and
+  layout are §30M's.
+* **A claim or removal waits for readers, not for holders.** When its exclusive try is
+  refused it asks for a shared lock: refused means an exclusive holder (`active`, said as
+  such — a window, a claim or a removal; the primitive cannot say which); granted means
+  only readers (let go at once), which end by themselves, so the caller polls for at most
+  5 s and ends the wait the moment its `CancelToken` is cancelled (`busy`, `cancelled`).
+  The wait is off the event loop: the Recover worker, the delete thread, the command
+  line's own thread. The window gives its Recover worker a token that Cancel and Quit
+  cancel. A listing never turns into a claim: the claim verifies the record again under
+  its own lock.
+* **Rejected.** A lock-free read (a changing record would be listed as damaged, or a
+  live one read mid-publication, and a pre-check would be a race of its own); a short
+  exclusive probe (still refuses a concurrent claim for its length); retrying `active`
+  (a real owner would be waited for and the answer would still be a guess); a larger
+  timeout; calling every busy record an orphan; PIDs or ages; a lock service.
+* **Honest limits.** Advisory, cooperative locks; old builds still list exclusively; a
+  stream of listings can starve a claim until its bound; a reader that hangs holds off
+  its record's claim until it dies or the bound passes. Windows and Linux legs are CI's.
+
+Contract and checks: [../recovery-inspection-contention.md](../recovery-inspection-contention.md).

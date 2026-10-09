@@ -1458,7 +1458,11 @@ pub(crate) fn recover_for_view(
     record: ferritecad_jobs::RecordId,
     context: &OperationContext,
 ) -> Result<(LoadedScene, DocumentSession)> {
-    let claim = store.claim(record).map_err(CadError::from)?;
+    // Waits, off the event loop, only for a reader of the record, and stops when the
+    // window cancels (§30S).
+    let claim = store
+        .claim_cancellable(record, context.cancel())
+        .map_err(CadError::from)?;
     let session =
         DocumentSession::recover_in(root, ferritecad_jobs::HistoryLimits::default(), claim)?;
     let mut kernel = ferritecad_occt::OcctKernel::new()?;
