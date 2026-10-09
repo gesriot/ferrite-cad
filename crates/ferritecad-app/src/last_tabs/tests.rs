@@ -479,7 +479,7 @@ fn paths_keep_their_native_units_exactly() {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStringExt as _;
+        use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
         let mut wide: Vec<u16> = user.join("x").as_os_str().encode_wide().collect();
         wide.pop();
         wide.extend([0xd800, u16::from(b'.'), u16::from(b'f')]);
