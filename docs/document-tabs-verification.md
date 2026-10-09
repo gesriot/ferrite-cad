@@ -248,5 +248,61 @@ Local stub review: 12 tests executed, including the three new regressions and
 the current test executable has no OCCT/PlaneGCS imports (`stub-imports.log`). An old
 Homebrew cache also remains in the target and is not used as stub evidence.
 
-Real-window evidence and remote CI will be added after execution. Neither is claimed
-by the headless comparator self-check.
+### Independent real-window run
+
+A fresh arm64, ad-hoc-signed bundle from code `85ef339` was staged at
+`/private/tmp/ferrite-30o-review/gui/layout/FerriteCAD.app`. One viewer (PID 79909)
+used only `/private/tmp/ferrite-30o-window-review/` and its private recovery folder.
+The initial fixtures came from the bundled CLI; all six final document/export files
+were produced by the real window. No GUI output was repaired or filled in by a script.
+
+The observed window sequence covered both tabs' Apply routes, switching back to A,
+A's Undo/Redo, checkpoint Restore/Undo, unsaved STL/FBX export from each tab, duplicate
+Open of A and B, New in a third tab, Save As refusal on A's occupied tab path,
+Close/Cancel then Close/Discard of Untitled, and Quit: Save B → Cancel A kept both
+open (B clean, A dirty); the next Quit saved A and exited normally. An additional
+clean-A + open Edit extrusion + Cmd+Q check kept the form/window alive with the
+explicit before-quitting reason, exercising the review fix in the real window.
+
+There were two declared recipe adaptations. The keyboard layout did not reliably
+enter Latin letters, so the actual checkpoint was named `12` instead of `A 12`;
+B's edit/export and the Untitled cases were done before A's checkpoint/edit sequence.
+A was still pristine when its checkpoint was made. The comparison changed only its
+literal expected name (`names == ["12"]`) temporarily; all other checks and all six
+negative controls ran unchanged on copies of the actual outputs. The test source was
+restored byte-for-byte afterwards (SHA-256
+`edc7345ad6de0ceb6cfc9a6a8c9ded5a9976181a9c98d4128d041ef856782657`). Production source and
+the running bundle were unchanged. This is a documented window-recipe variant, not a
+claim that the original Latin-name input was executed.
+
+`tools/document-tabs-gui.py --compare` executed exactly one real-artifact test:
+`FCAD_30O_GUI_COMPARE_OK negative_controls=6 all_SQL_cells=true`, exit 0. The saved
+models match their CLI peers in all SQL cells under the comparator's narrow allowlist;
+A's extracted checkpoint matches pristine A including timestamps, B has no checkpoint,
+and UUIDs/references are preserved. All four unsaved STL/FBX files are byte-identical
+to CLI exports. Independent geometry confirms A's 80×40×26 mm / 83 200 mm³ plate and
+B's centre (−3.5, 4.25), radius 8, height 15.25 cylinder. Pinned ufbx 0.23.0 also read
+both actual GUI FBX files: 6 checks, 0 failures each; 12 and 352 triangles.
+
+Watchdog: 3 097 samples, peak footprint **216.657 MiB**, pressure always normal (1),
+swap **1018.0625 MiB before and after**, at least **143.94 GiB** free disk. The viewer
+exited 0 after 1696 seconds; no watchdog abort. Its absence was verified by PID only;
+no CUA/getApp/getAX call was made after final Quit. The recovery folder has no active
+or recoverable record. Logs, name-adaptation runner, memory summary and FBX readings
+are under `/private/tmp/ferrite-30o-review/`; window files and watchdog samples are
+under `/private/tmp/ferrite-30o-window-review/`. The earlier OOM cause remains unknown.
+
+### Remote review CI
+
+Code/workflow head: `85ef339113905002fb68766eb4cf25b52787728c`.
+At this documentation update, [CI run 37875736052](https://github.com/gesriot/ferrite-cad/actions/runs/37875736052)
+has succeeded (7/7 jobs), and [PlaneGCS run 37875726448](https://github.com/gesriot/ferrite-cad/actions/runs/37875726448)
+has succeeded (4/4). The CI logs on all three OS were read independently: each actually
+emits the two-tab-crash, late-answer and stub markers and passes the three review
+regressions by exact name. [Combined runtime run 37875726425](https://github.com/gesriot/ferrite-cad/actions/runs/37875726425)
+is still running at the time of this documentation commit and is not claimed green
+here. This update changes only this record and the plan, so it does not change the
+runtime inputs. Merge remains contingent on that exact code run, an audit of its
+three-OS markers, and the final documentation-head CI. Their final results are recorded
+in [PR #95](https://github.com/gesriot/ferrite-cad/pull/95) before merge; local passes do
+not stand in for those checks.

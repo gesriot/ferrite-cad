@@ -4723,7 +4723,15 @@ unsaved exports, independent STL geometry and pinned ufbx, a no-solver gate, a s
 two directed mutations, a window recipe with an input generator and a comparator with six
 controls: [contract](document-tabs.md), [verification](document-tabs-verification.md),
 [decision](decisions/0005-document-session.md#30o-several-documents-in-tabs-of-one-window).
-No real window was run by the author. The CLI is unchanged.
+No real window was run by the author. Independent review fixed Quit bypassing open
+forms/foreground work and cancelled switches retaining a live result generation; the
+retired worker now keeps its input snapshot until it ends. The macOS window scenario
+then passed (numeric checkpoint name `12` as a declared keyboard-layout adaptation):
+both tabs' Apply/history/exports, alias Open, New/Save As refusal, Close/Cancel/Discard
+and multi-tab Quit Save/Cancel. All-SQL and byte-equal CLI/STL/FBX comparisons plus six
+negative controls passed; pinned ufbx read both actual exports. Peak viewer footprint
+216.657 MiB, normal pressure, unchanged swap, exit 0. Exact-head CI and limitations
+are recorded in verification. The CLI is unchanged.
 
 *What remains of §30 after §30O:* restoring the tab set after a restart; per-tab drafts;
 branching, automatic or persisted-Undo revisions
