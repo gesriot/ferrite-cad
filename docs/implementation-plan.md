@@ -4794,8 +4794,13 @@ controlled crash child, two directed mutations:
 [contract and verification](open-new-recover-with-drafts.md). Independent review fixed the recovery cleanup sweep incorrectly locking published
 orphans (a deterministic regression fails before the fix); the native scenario no
 longer waits for recorder lanes before Recover. Concurrent explicit list/claim probes
-retain the existing protocol. No real window was run by the author. The CLI is
-unchanged.
+retain the existing protocol. Review also fixed the drawing button overriding the
+window's transition permission. The real macOS recipe passed: literal text across
+Open, New drawing/Cancel, New publication, Recover beside A's form, Apply, exports
+and Save. Actual artifacts passed SQL/identity/geometry comparisons and eight
+negative controls; pinned ufbx read the actual GUI export and two CLI exports of
+GUI-saved documents. Viewer peak 209.251 MiB, normal pressure, unchanged swap, exit 0.
+No real window was run by the author. The CLI is unchanged.
 
 *What remains of §30 after §30Q:* restoring the tab set after a restart; drafts across a
 restart or crash; Open over a running New; the recovery store's probe/claim race;

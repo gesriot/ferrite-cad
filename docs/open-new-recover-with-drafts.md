@@ -322,14 +322,76 @@ output again before its first peer job. It reads only the window's outputs and r
 `FCAD_30Q_GUI_COMPARE_OK negative_controls=8 all_SQL_cells=true` (the comparison and
 controls listed above).
 
+### Independent macOS review — 2026-10-09
+
+Code/workflow commit `d1ec862d2b2baabb861139b5e0b9ac096054c7b6`, PR #97. The two
+review fixes described above were tested failing-first: the cleanup test failed
+while the sweeper held a published record's lease; the real drawing widget test
+failed while the old saved-form permission could override `can_begin`. Neither
+failure was a compiler error or an unexecuted test.
+
+The jobs suite passed (120 tests, one pre-existing ignored test); the release app
+suite passed (572 tests, one pre-existing ignored test, plus three integration
+tests). Configuration-only and environment-only gates are N/A in that app count.
+After the final widget fix, its debug regression passed and the native
+Open/New/Recover scenario passed eight consecutive times without waiting for other
+recorder lanes before Recover. Each run executed the geometry comparison and eight
+negative controls. Final fmt, workspace clippy (all targets/features, `-D warnings`),
+export boundary, 461 licence headers, actionlint, shellcheck and whitespace checks
+passed. The final OCCT/no-solver gate also executed and printed
+`FCAD_30Q_MIXED_OVER_FORMS_EXECUTED`.
+The separate final stub run executed seven checks: Open/New/Recover owners, the
+stub picture refusal, floating-form focus, the drawing permission regression and
+the cleanup regression. The same filtered harness also returned three N/A results
+(mixed, native and the environment-gated GUI comparator); these are not geometry
+executions. All five required §30Q stub markers were present. Its bridge cache
+disables OCCT discovery, and `otool -L` on the actual app test executable showed no
+OCCT or PlaneGCS imports.
+
+One freshly staged arm64 bundle was then run with the private inputs and recovery
+root `/private/tmp/ferrite-30q-window-review`. The actual window preserved the literal
+`2..6` across Open B and return to A, applied height 26, kept both pending vertex
+coordinates 90 across a new Circle drawing and Cancel, and created the separate
+50×30×7 Untitled tab. Before Recover, the test returned to A with its vertex form
+still open: Recover therefore exercised the transition beside a form in the real
+window too. A's two 90 values returned unchanged and were applied. The window wrote
+the two unsaved exports, saved A, saved the recovered C and new N, and quit normally.
+The floating form was collapsed temporarily to reach the drawing button. An
+automation misclick opened an empty Cut form after height Apply; it was cancelled
+without submitting a request or publishing a file.
+
+The real artifacts passed
+`FCAD_30Q_GUI_COMPARE_OK negative_controls=8 all_SQL_cells=true`. For A and C this
+compares every SQL cell except the write timestamp with CLI peers and keeps the
+original identities and references; N is checked as a distinct new document with
+the requested dimensions. A's actual pre-Save STL/FBX match the CLI and post-Save
+exports byte-for-byte. Independent STL volumes are 93600, 70400 and 10500 mm³.
+Pinned ufbx 0.23.0 read the actual GUI FBX (six checks, zero failures), plus the two
+FBX files exported by the bundled CLI from the GUI-saved C and N (six checks each,
+zero failures). All three STL/FBX triangle comparisons passed (12 triangles each).
+The latter two exports are CLI-derived evidence, not additional window exports.
+
+Viewer PID 38060 exited 0 after 503.8 seconds. The watchdog recorded 921 samples,
+peak physical footprint 209.251 MiB, pressure always normal (1), and swap unchanged
+at 1018.0625 MiB. It did not intervene. After Quit, only the PID was checked; no CUA
+app lookup was made. Review logs and bundle are under
+`/private/tmp/ferrite-30q-review`; native libraries were reused, not rebuilt.
+
+Remote verification of that exact code/workflow commit is tracked by
+[CI](https://github.com/gesriot/ferrite-cad/actions/runs/37961313137),
+[combined runtime layout](https://github.com/gesriot/ferrite-cad/actions/runs/37961306895)
+and [PlaneGCS pin](https://github.com/gesriot/ferrite-cad/actions/runs/37961306877).
+The final status and any later documentation-only head are recorded in
+[PR #97](https://github.com/gesriot/ferrite-cad/pull/97); local results above are not a
+claim of remote completion. The base's final post-merge checks were independently
+confirmed: 27/27 successful on `210b2e6`.
+
 ### Limits
 
 * No real window was run by the author; the owners' scenario and the headless widget
   test are not window evidence.
-* The window's per-frame wiring (`App::begin_new`/`end_new` placement in the frame, the
-  toolbar's flags, the drawing button's request) is exercised through the functions it
-  calls (`open_new`, `end_new`, `may_leave_tab`, `can_leave_tab`, `can_recover`,
-  `Editor::take_drawing_request`), not by a drawn window.
+* The macOS window recipe passed during review. Windows/Linux window interaction
+  remains untested; headless transition and widget tests are separate evidence.
 * Recovery cleanup was fixed during review; the native gate no longer waits it out.
 * Open still abandons an export in flight, as before §30Q (an export cannot coexist with
   an open form).
