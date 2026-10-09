@@ -4727,7 +4727,7 @@ No real window was run by the author. Independent review fixed Quit bypassing op
 forms/foreground work and cancelled switches retaining a live result generation; the
 retired worker now keeps its input snapshot until it ends. The macOS window scenario
 then passed (numeric checkpoint name `12` as a declared keyboard-layout adaptation):
-both tabs' Apply/history/exports, alias Open, New/Save As refusal, Close/Cancel/Discard
+both tabs' Apply/history/exports, repeated Open, New/Save As refusal, Close/Cancel/Discard
 and multi-tab Quit Save/Cancel. All-SQL and byte-equal CLI/STL/FBX comparisons plus six
 negative controls passed; pinned ufbx read both actual exports. Peak viewer footprint
 216.657 MiB, normal pressure, unchanged swap, exit 0. Exact-head CI and limitations
