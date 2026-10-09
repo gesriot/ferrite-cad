@@ -197,6 +197,9 @@ pub(crate) struct Editor {
     /// Publication is complete, but its picture has not yet been accepted.
     /// Keep one recovery draft without preventing the ordinary async Open.
     published_draft: Option<(PathBuf, Box<Editor>)>,
+    /// §30Q: the drawing for a new document was asked for and not yet taken. The
+    /// window opens it (`App::begin_new`) once the tab's own forms are set aside.
+    pending_drawing: bool,
 }
 /// How many draft checkpoints either editor keeps. One bound, one policy.
 const DRAFT_HISTORY: usize = 128;
@@ -395,6 +398,10 @@ impl Editor {
     }
     pub(crate) fn take_request(&mut self) -> Option<NewDocument> {
         self.pending.take()
+    }
+    /// §30Q: **Create sketch + Extrude…** was pressed.
+    pub(crate) fn take_drawing_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_drawing)
     }
     /// §30L: what the window says each frame about making a new document.
     pub(crate) fn set_create(&mut self, can_create: bool) {
@@ -920,7 +927,9 @@ impl Editor {
         choice.validate_coordinates(&request.vertices)?;
         Ok(request)
     }
-    fn begin(&mut self) {
+    /// Opens the drawing for a new document (§30Q: asked by the window once the
+    /// tab's own forms are set aside).
+    pub(crate) fn begin(&mut self) {
         self.dismiss();
         self.draft = Some(State::default());
         self.next = ["0".into(), "0".into()];
@@ -1122,6 +1131,15 @@ impl Editor {
         running: bool,
         outcome: &str,
     ) {
+        // §30Q: offered beside the tab's own forms too; the window sets them aside
+        // as the tab's draft before the drawing opens, so it never replaces them.
+        if !self.drawing_new()
+            && ui
+                .add_enabled(can_begin, egui::Button::new("Create sketch + Extrude…"))
+                .clicked()
+        {
+            self.pending_drawing = true;
+        }
         if self.constraints.active() {
             self.constraints.draw(ui, running);
             return;
@@ -1142,15 +1160,6 @@ impl Editor {
             return;
         }
         if !self.active() {
-            if ui
-                .add_enabled(
-                    can_begin || self.can_begin_sketch,
-                    egui::Button::new("Create sketch + Extrude…"),
-                )
-                .clicked()
-            {
-                self.begin();
-            }
             return;
         }
         crate::form_window(
@@ -2606,6 +2615,8 @@ pub(crate) mod tests {
     use super::*;
     pub(crate) mod analytic_apply;
     pub(crate) mod angle_apply;
+    /// §30Q: New over a tab's floating form, through real widgets.
+    mod new_over_forms;
 
     #[test]
     fn floating_forms_in_two_tabs_do_not_share_keyboard_focus() {
@@ -2973,7 +2984,7 @@ pub(crate) mod tests {
     fn a_dirty_document_can_open_a_new_drawing_without_enabling_copy_workflows() {
         let ctx = egui::Context::default();
         let mut editor = Editor::default();
-        let render = |editor: &mut Editor, events| {
+        let render = |editor: &mut Editor, permitted: bool, events| {
             let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -2983,23 +2994,29 @@ pub(crate) mod tests {
                     events,
                     ..Default::default()
                 },
-                // A dirty session withholds the old clean-only copy route.
-                |ui| editor.draw(ui, false, false, ""),
+                // New uses the window's permission, independently of whether a
+                // saved Sketch form can be opened (e.g. during a camera gesture).
+                |ui| editor.draw(ui, permitted, false, ""),
             );
             output.textures_delta.clear();
+            // §30Q: as the window does with nothing of a tab's to set aside.
+            if editor.take_drawing_request() {
+                editor.begin();
+            }
             output
         };
         for permitted in [false, true] {
-            // The same idle-session permission that opens saved Sketch forms;
-            // unlike the copy route it does not require a clean document.
-            editor.set_session(permitted, false, true);
+            // Even with saved-form permission, a held window must disable New.
+            // A dirty document still permits it when the window can be left.
+            editor.set_session(true, false, true);
             editor.set_create(permitted);
-            let out = render(&mut editor, vec![]);
+            let out = render(&mut editor, permitted, vec![]);
             let at = text_at(&out, "Create sketch + Extrude…");
-            render(&mut editor, vec![egui::Event::PointerMoved(at)]);
+            render(&mut editor, permitted, vec![egui::Event::PointerMoved(at)]);
             for pressed in [true, false] {
                 render(
                     &mut editor,
+                    permitted,
                     vec![egui::Event::PointerButton {
                         pos: at,
                         button: egui::PointerButton::Primary,
@@ -3031,6 +3048,10 @@ pub(crate) mod tests {
             |ui| e.draw(ui, true, running, ""),
         );
         output.textures_delta.clear();
+        // §30Q: as the window does with nothing of a tab's to set aside.
+        if e.take_drawing_request() {
+            e.begin();
+        }
         output
     }
     pub(super) fn text_at(output: &egui::FullOutput, label: &str) -> egui::Pos2 {

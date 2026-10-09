@@ -4378,7 +4378,8 @@ published copy of the accepted model; Undo history and draft form values remain 
 (3) Persistent revisions, a revision list, tabs. *(Status after §30N: named checkpoints
 of the model are stored in the document, listed, restored and deleted. After §30O:
 several documents in tabs of one window; after §30P each tab keeps its unfinished edit
-form; restoring the tab set after a restart remains.)* The macOS review added the AppKit
+form; after §30Q Open, New and Recover leave it with its tab; restoring the tab set after
+a restart remains.)* The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
 (4) Close the lock-ignoring-writer window only if a platform primitive allows a
 compare-and-replace; until then it is documented, not closed. The independent Mac window scenario now covers Apply, document Undo/Redo,
@@ -4769,8 +4770,35 @@ releases a dropped lease even while a duplicated Unix descriptor remains open, w
 a deterministic regression and the full jobs suite. Final-head CI evidence is recorded
 in verification. The CLI is unchanged.
 
-*What remains of §30 after §30P:* restoring the tab set after a restart; drafts across a
-restart or crash; Open/New/Recover while the shown tab has a form;
+**§30Q — Open, New and Recover beside an unfinished form.** In A, start a form (a
+literal invalid height too), then Open B, make a New document or drawing, or Recover a
+crash copy, without Apply, Cancel or Save of A: the new document is a tab of its own,
+and A's form comes back exactly as left when A is shown. One predicate
+(`may_leave_tab`; `can_leave_tab` adds loads and exports) serves the toolbar's Open and
+New, the drawing's button, Recover and their handlers; running work, New itself,
+gestures and native dialogs still hold the window; New/Recover also wait for exports.
+Open retains its previous export-cancellation behavior, and a newer Open still
+retires an older one. Open and Recover move A's forms with A in the existing
+`Bind::Open` statement; New first sets them aside as A's `tabs::Draft` (the same move,
+keyed by `TabId`, bound to A's snapshot), so New's form or drawing never writes into
+A's editor; Cancel gives them back, an accepted New hides A with them. The 8-tab limit
+is checked before reading, creating or claiming; every refusal keeps A's form, New's
+typed values and the crash copy; Close and Quit stop at a form set aside for New. Save,
+exports, checkpoints and crash copies read only accepted models. Kernel-free gates of
+the real owners (`Loads`, `Creates`, `Recoveries`, `Tabs`, `Sessions`, the forms) for
+Open/New/Recover through every answer, a real-egui focus gate, a stub gate, a no-solver
+gate, a native gate running the window recipe on the owners against the CLI (all SQL
+cells but the write stamp, ids/refs, exports before and after Save, independent
+geometry, pinned ufbx) with eight comparator controls, an input generator with the
+controlled crash child, two directed mutations:
+[contract and verification](open-new-recover-with-drafts.md). Independent review fixed the recovery cleanup sweep incorrectly locking published
+orphans (a deterministic regression fails before the fix); the native scenario no
+longer waits for recorder lanes before Recover. Concurrent explicit list/claim probes
+retain the existing protocol. No real window was run by the author. The CLI is
+unchanged.
+
+*What remains of §30 after §30Q:* restoring the tab set after a restart; drafts across a
+restart or crash; Open over a running New; the recovery store's probe/claim race;
 branching, automatic or persisted-Undo revisions
 (not in scope: named checkpoints of the model only); recovery of Undo history and of
 draft form values; power-loss durability of the crash copy (`fsync` order only, not

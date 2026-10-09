@@ -975,20 +975,19 @@ fn cancel_load(loads: &mut Loads, input: &mut ViewportInput) -> bool {
 }
 
 /// §30M: whether Recover (and Delete) may start: nothing reads or replaces the
-/// document, no form or operation is running, no other Recover is in flight.
+/// document, no operation is running, no other Recover is in flight. §30Q: the
+/// recovered copy is a new tab, so this is [`can_leave_tab`]: an idle form of the
+/// shown tab stays with it.
 fn can_recover(
     creates: &creates::Creates,
     loads: &Loads,
     exports: &exports::Exports,
     edits: &edits::Edits,
     sessions: &sessions::Sessions,
+    input: &ViewportInput,
     recoveries: &recoveries::Recoveries,
 ) -> bool {
-    can_begin_new(creates, loads, exports)
-        && !sessions.busy()
-        && !creates.busy()
-        && !edits.busy()
-        && !recoveries.running()
+    can_leave_tab(creates, loads, exports, edits, sessions, input) && !recoveries.running()
 }
 
 /// What the height form may offer this frame, from the state the window really has.
@@ -1033,12 +1032,30 @@ const FORM_BEFORE_CLOSING: &str = "This tab has an open form. Apply or Cancel it
 const FORM_BEFORE_QUITTING: &str = "This tab has an open form. Apply or Cancel it before \
                                     quitting; no tab was closed.";
 
-/// §30P: whether another tab may be shown or closed now; the one answer the tab
-/// row and its handlers share. Nothing may be running or waiting on the window —
-/// a session operation (Apply, Add, Undo, Redo, Save, a switch, Recover), a load,
-/// an export or its question, New (its form, drawing or worker), a copy worker —
-/// and no pointer gesture may be under way. An idle form over the shown document
-/// does not hold the window: it is kept with its tab (`Tabs::bind`).
+/// §30Q: whether the shown tab may be left for another document now — another tab
+/// shown, or a new one added by Open, New or Recover. The one answer the tab row,
+/// the toolbar's Open and New, the drawing's button, Recover and all their
+/// handlers share: no session operation (Apply, Add, Undo, Redo, Save, a switch,
+/// Recover), New (its form, drawing or worker), copy worker or pointer gesture
+/// holds the window. An idle form over the shown document does not: it stays with
+/// its tab (`Tabs::bind`), or is set aside while New is open (`Tabs::set_aside`).
+/// Open asks only this: a newer Open replaces a reading in flight and leaves an
+/// export behind, as before; everything else asks [`can_leave_tab`].
+fn may_leave_tab(
+    creates: &creates::Creates,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+    input: &ViewportInput,
+) -> bool {
+    !creates.making_new()
+        && !creates.sketch.gesturing()
+        && !edits.running()
+        && !sessions.busy()
+        && !input.is_dragging()
+}
+
+/// §30P: whether another tab may be shown or closed now (§30Q: or New or Recover
+/// started): [`may_leave_tab`], and no load, export or its question under way.
 fn can_leave_tab(
     creates: &creates::Creates,
     loads: &Loads,
@@ -1047,12 +1064,54 @@ fn can_leave_tab(
     sessions: &sessions::Sessions,
     input: &ViewportInput,
 ) -> bool {
-    !creates.making_new()
-        && !creates.sketch.gesturing()
-        && document_io_idle(loads, exports)
-        && !edits.running()
-        && !sessions.busy()
-        && !input.is_dragging()
+    may_leave_tab(creates, edits, sessions, input) && document_io_idle(loads, exports)
+}
+
+/// §30Q: opens New over the shown tab once [`can_leave_tab`] allowed it — `open`
+/// puts up its form or its drawing. The tab's open forms are first set aside as
+/// its own draft (`Tabs::set_aside`), so New starts on empty forms and nothing
+/// typed into New reaches them; if New did not open, they come straight back.
+fn open_new(
+    tabs: &mut tabs::Tabs,
+    sessions: &mut sessions::Sessions,
+    edits: &mut edits::Edits,
+    creates: &mut creates::Creates,
+    input: &mut ViewportInput,
+    open: impl FnOnce(&mut creates::Creates, &mut ViewportInput) -> bool,
+) -> bool {
+    tabs.set_aside(
+        sessions,
+        &mut tabs::Forms {
+            edits,
+            editor: &mut creates.sketch,
+        },
+    );
+    // Never over a form still shown: New's editor would replace it.
+    let opened = !(edits.form_open() || creates.sketch.active()) && open(creates, input);
+    if !opened {
+        end_new(tabs, sessions, edits, creates);
+    }
+    opened
+}
+
+/// §30Q: once New is no longer open (Cancel, or nothing made), the forms it set
+/// aside come back to the shown tab exactly as they were left. An accepted new
+/// document took them along with the tab it hid (`Tabs::bind`).
+fn end_new(
+    tabs: &mut tabs::Tabs,
+    sessions: &mut sessions::Sessions,
+    edits: &mut edits::Edits,
+    creates: &mut creates::Creates,
+) {
+    if !creates.making_new() {
+        tabs.bring_back(
+            sessions,
+            &mut tabs::Forms {
+                edits,
+                editor: &mut creates.sketch,
+            },
+        );
+    }
 }
 
 /// New is serialized with document loads and exports. Viewing remains available.
@@ -1306,6 +1365,8 @@ struct Sections<'a> {
     edits: &'a mut edits::Edits,
     stl_form: Option<&'a mut ferritecad_ui::StlExportForm>,
     can_edit: bool,
+    /// §30Q: New may be opened ([`can_leave_tab`]); the drawing's button asks it.
+    can_new: bool,
     /// What the height form may offer: Apply on the open document, and the copy
     /// workflow only while the document has nothing unsaved.
     height: ferritecad_ui::HeightState,
@@ -2874,7 +2935,7 @@ impl ApplicationHandler<AppEvent> for App {
                 // named; otherwise the window stays empty until Open, with
                 // no invented path and no load in flight.
                 if let Some(document) = self.document.clone() {
-                    self.open(document);
+                    self.open_chosen(document);
                 }
                 // Construction, resize and framing all owe the first picture.
                 // Do not depend on a platform happening to send another event
@@ -3402,10 +3463,14 @@ impl ApplicationHandler<AppEvent> for App {
                         .can_undo(live.scene.prepared.snapshot()),
                     orthographic: self.input.projection() == Projection::Orthographic,
                     // One document-changing action at a time; viewing remains available.
-                    can_create_document: !self.edits.busy()
-                        && !self.sessions.busy()
-                        && can_begin_new(&self.creates, &self.loads, &self.exports),
-                    can_open: !self.creates.busy() && !self.edits.busy() && !self.sessions.busy(),
+                    // §30Q: an idle form of the shown tab holds neither.
+                    can_create_document: leave,
+                    can_open: may_leave_tab(
+                        &self.creates,
+                        &self.edits,
+                        &self.sessions,
+                        &self.input,
+                    ),
                     can_cancel_create: self.creates.can_cancel(),
                     can_save: settled && self.sessions.can_save(),
                     can_save_as: settled && self.sessions.can_save_as(),
@@ -3531,6 +3596,7 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.exports,
                     &self.edits,
                     &self.sessions,
+                    &self.input,
                     &self.recoveries,
                 );
                 let (export_status, stl_form) = self.exports.presentation();
@@ -3624,6 +3690,7 @@ impl ApplicationHandler<AppEvent> for App {
                     Sections {
                         dialog_failure: self.dialogs.failure(),
                         can_edit,
+                        can_new: leave,
                         height,
                         held_back: self.sessions.dirty() && !self.sessions.busy(),
                         document_outcome: &self.sessions.status,
@@ -3714,13 +3781,11 @@ impl ApplicationHandler<AppEvent> for App {
                         // dialog runs its own event loop.
                         // Opening the form replaces nothing; the question about
                         // unsaved changes is asked when the document is made.
-                        if chosen.new_document && !self.edits.busy() {
-                            ask_new(
-                                &mut self.creates,
-                                &self.loads,
-                                &self.exports,
-                                &mut self.input,
-                            );
+                        if chosen.new_document {
+                            self.begin_new(false);
+                        }
+                        if self.creates.sketch.take_drawing_request() {
+                            self.begin_new(true);
                         }
                         if chosen.cancel_document {
                             // A switch's slot is released by the shown tab's own
@@ -3842,6 +3907,9 @@ impl ApplicationHandler<AppEvent> for App {
                         {
                             self.create_new(content);
                         }
+                        // §30Q: New closed this frame (its form's or drawing's
+                        // Cancel): the shown tab's forms come back.
+                        self.end_new();
                         // Asked for after the frame for the same reason, and
                         // before the answer to the replace question, because
                         // pressing Export is how a person replaces the
@@ -4043,7 +4111,7 @@ impl App {
 
     /// The Open dialog and what follows it.
     fn pick_and_open(&mut self) {
-        if self.creates.busy() || self.edits.busy() {
+        if !self.can_open() {
             return;
         }
         // A toolbar cannot be drawn without a live window, so reaching this
@@ -4071,7 +4139,23 @@ impl App {
             return;
         };
 
-        self.open(chosen);
+        self.open_chosen(chosen);
+    }
+
+    /// §30Q: whether the person may Open now: [`may_leave_tab`], the predicate the
+    /// toolbar's button asks. An idle form of the shown tab stays with it.
+    fn can_open(&self) -> bool {
+        may_leave_tab(&self.creates, &self.edits, &self.sessions, &self.input)
+    }
+
+    /// §30Q: the person's Open — the dialog's choice, or the document named at
+    /// start-up — read into a new tab beside the shown one and its open forms.
+    fn open_chosen(&mut self, path: PathBuf) {
+        if !self.can_open() {
+            self.input.request_redraw();
+            return;
+        }
+        self.read_document(path);
     }
 
     /// Asks the system where to write the model, and starts writing it there.
@@ -4187,6 +4271,44 @@ impl App {
         );
     }
 
+    /// §30Q: **New** (`drawing: false`) or **Create sketch + Extrude…**: opens New's
+    /// form or drawing over the shown tab, whose open forms are set aside as its
+    /// draft until New ends ([`open_new`]). Refused while anything but an idle form
+    /// holds the window ([`can_leave_tab`], the predicate the buttons ask).
+    fn begin_new(&mut self, drawing: bool) {
+        if !self.can_leave_tab() {
+            self.input.request_redraw();
+            return;
+        }
+        let (loads, exports) = (&self.loads, &self.exports);
+        open_new(
+            &mut self.tabs,
+            &mut self.sessions,
+            &mut self.edits,
+            &mut self.creates,
+            &mut self.input,
+            |creates, input| {
+                if drawing {
+                    creates.sketch.begin();
+                    input.request_redraw();
+                    true
+                } else {
+                    ask_new(creates, loads, exports, input)
+                }
+            },
+        );
+    }
+
+    /// §30Q: New is over without a new tab: the shown tab's forms come back.
+    fn end_new(&mut self) {
+        end_new(
+            &mut self.tabs,
+            &mut self.sessions,
+            &mut self.edits,
+            &mut self.creates,
+        );
+    }
+
     /// Makes a new document from a create form (§30L): no file dialog. Asked by
     /// every create form, so the question about an untitled or dirty document is
     /// asked here, at the moment it would be replaced, whichever toolbar route
@@ -4243,6 +4365,7 @@ impl App {
             &self.exports,
             &self.edits,
             &self.sessions,
+            &self.input,
             &self.recoveries,
         )
     }
@@ -5729,15 +5852,21 @@ impl App {
         );
     }
 
+    /// Opens the file a copy workflow has just published (Save new file… of an
+    /// edit form): its form went with the publication, so none is open now.
+    fn open(&mut self, path: PathBuf) {
+        if self.creates.busy() || self.edits.busy() {
+            return;
+        }
+        self.read_document(path);
+    }
+
     /// Starts reading a document on a thread of its own.
     ///
     /// Whatever was being read is abandoned. The reading that replaces it is
     /// the only one whose answer can reach the screen, however the two
     /// readings finish relative to each other.
-    fn open(&mut self, path: PathBuf) {
-        if self.creates.busy() || self.edits.busy() {
-            return;
-        }
+    fn read_document(&mut self, path: PathBuf) {
         // §30O: a file that is open already (by any name) is shown in its tab, not
         // opened a second time as a competing writer. Other copies are other tabs.
         match self.tabs.opening(&self.sessions, &path) {
@@ -6380,6 +6509,7 @@ impl Live {
             mut stl_form,
             edits,
             can_edit,
+            can_new,
             height,
             held_back,
             document_outcome,
@@ -6421,7 +6551,7 @@ impl Live {
                     scene.document.as_deref(),
                     scene.edit_source.as_ref(),
                 );
-                sketch.draw(ui, can_edit, creating || edits.running(), document_outcome);
+                sketch.draw(ui, can_new, creating || edits.running(), document_outcome);
             });
             if let Some(message) = dialog_failure {
                 ui.colored_label(ui.visuals().error_fg_color, message);
