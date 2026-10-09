@@ -85,7 +85,8 @@ looked at from. Each tab saves to its own file.
 
 ## Not here
 
-Restoring the tabs or their order after a restart, per-tab form drafts (*added by
+Restoring the tabs or their order after a restart (*§30R reopens the last window's saved
+files: [restore-saved-tabs.md](restore-saved-tabs.md)*), per-tab form drafts (*added by
 §30P: [tab-edit-drafts.md](tab-edit-drafts.md)*), background
 work in hidden tabs, several windows, docking, a workspace database, a CLI session
 protocol. The command line is unchanged: each command works on the file it is given

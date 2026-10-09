@@ -22,6 +22,8 @@ use ferritecad_viewport::{PickId, StandardView};
 #[non_exhaustive]
 pub struct Chosen {
     pub edit: crate::EditChoice,
+    /// §30R: what was pressed in the offer to reopen the last window's files.
+    pub reopen: crate::ReopenChoice,
     /// §30M: what was pressed in the start-up list of crash copies.
     pub recovery: crate::RecoveryChoice,
     /// §30N: what was pressed in the open document's checkpoints.

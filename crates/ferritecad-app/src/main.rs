@@ -36,9 +36,11 @@ mod dialogs;
 mod edits;
 mod exports;
 mod fillets;
+mod last_tabs;
 #[cfg(target_os = "macos")]
 mod macos_quit;
 mod recoveries;
+mod restores;
 mod sessions;
 mod sketch;
 mod tabs;
@@ -315,6 +317,10 @@ enum AppEvent {
     RecoveryListed {
         listing: Box<Result<ferritecad_jobs::RecoveryListing>>,
         outcome: Option<String>,
+    },
+    /// §30R: the list of files the last window kept for this start, or why not.
+    LastTabsRead {
+        read: Box<std::result::Result<Option<last_tabs::LastTabs>, last_tabs::LastTabsError>>,
     },
     /// §30M: a recovered document and its picture, or why not.
     Recovered {
@@ -990,6 +996,39 @@ fn can_recover(
     can_leave_tab(creates, loads, exports, edits, sessions, input) && !recoveries.running()
 }
 
+/// §30R: whether Open may start: [`may_leave_tab`], and no Reopen of the last
+/// window's files is reading one (a newer Open would replace its reading). The one
+/// answer the toolbar's Open, the dialog's handler and the start-up document ask.
+fn can_open(
+    creates: &creates::Creates,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+    input: &ViewportInput,
+    restores: &restores::Restores,
+) -> bool {
+    may_leave_tab(creates, edits, sessions, input) && !restores.running()
+}
+
+/// §30R: whether Reopen saved files may start: what Recover waits for (nothing
+/// reads or replaces a document, no operation, export, New, gesture or Recover),
+/// and an offer to reopen. The one answer its button and its handler share.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one predicate over the window's parts, as can_recover"
+)]
+fn can_restore(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+    input: &ViewportInput,
+    recoveries: &recoveries::Recoveries,
+    restores: &restores::Restores,
+) -> bool {
+    can_recover(creates, loads, exports, edits, sessions, input, recoveries) && restores.can_begin()
+}
+
 /// What the height form may offer this frame, from the state the window really has.
 ///
 /// Starting a *new* form needs no form open (`Edits::busy`); the open form's own
@@ -1388,6 +1427,8 @@ struct Sections<'a> {
     form: Option<&'a mut ferritecad_ui::NewDocumentForm>,
     /// What the last New did.
     created: Option<&'a str>,
+    /// §30R: the offer to reopen the last window's saved files.
+    reopen: ferritecad_ui::ReopenPanel<'a>,
     /// §30M: the start-up list of crash copies and the open document's copy line.
     recovery: ferritecad_ui::RecoveryPanel<'a>,
     /// §30N: the open document's checkpoints and the name being typed; absent
@@ -1721,6 +1762,51 @@ fn begin_window_quit(
     }
     tabs.begin_quit();
     true
+}
+
+/// What the end of a Quit pass came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QuitEnd {
+    /// The window ends: every tab was decided and the list of its saved files was
+    /// published (or could not be twice, or no folder is known).
+    Exit,
+    /// Not the end of a pass: nothing was published and nothing decided.
+    NotEnded,
+    /// The list could not be published: the pass stopped once, nothing closed.
+    Stay(String),
+}
+
+/// §30R: ends the window's Quit pass, only when it is at its end (`Tabs::quit_step`
+/// is `Exit`: every unsaved tab saved or answered Discard, no form): the saved
+/// files of the open tabs are published as the last window's list, whole, then
+/// every tab's end is decided. Anything else — no pass, a pass stopped by Cancel,
+/// a late continuation — publishes nothing. A list that cannot be published stops
+/// the pass once, in words; the next Quit tries again and ends the window anyway.
+fn end_window_quit(
+    tabs: &mut tabs::Tabs,
+    sessions: &mut sessions::Sessions,
+    form_open: bool,
+    restores: &mut restores::Restores,
+) -> QuitEnd {
+    if !tabs.quitting() || tabs.quit_step(sessions, form_open) != tabs::QuitStep::Exit {
+        return QuitEnd::NotEnded;
+    }
+    if let Some(folder) = restores.folder()
+        && let Err(error) = folder.publish(&tabs.saved_set(sessions))
+    {
+        if restores.publication_failed() {
+            tabs.abort_quit();
+            return QuitEnd::Stay(format!(
+                "The list of open files for the next start could not be kept: {error}. \
+                 Nothing was closed. Quit again to end the window anyway; the list is tried \
+                 once more."
+            ));
+        }
+        // Said, not hidden: the window is ending and has nowhere else to say it.
+        eprintln!("ferritecad: the list of open files was not kept: {error}");
+    }
+    tabs.decide_exit(sessions);
+    QuitEnd::Exit
 }
 
 /// What asking about a tab that is about to close led to.
@@ -2898,6 +2984,8 @@ struct App {
     tabs: tabs::Tabs,
     /// §30M: the start-up list of crash copies and the Recover in flight.
     recoveries: recoveries::Recoveries,
+    /// §30R: the last window's saved files offered at start, and their Reopen.
+    restores: restores::Restores,
     /// §30N: the name typed for the next checkpoint in the shown tab, kept between
     /// frames and cleared when a checkpoint made under it is accepted.
     checkpoint_name: String,
@@ -2931,6 +3019,8 @@ impl ApplicationHandler<AppEvent> for App {
                 self.live = Some(live);
                 // What an earlier window left behind is read off the event loop.
                 self.list_recoveries(None);
+                // §30R: and the list of files the last window kept.
+                self.read_last_tabs();
                 // The window is up. Reading starts only if a document was
                 // named; otherwise the window stays empty until Open, with
                 // no invented path and no load in flight.
@@ -3211,6 +3301,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
+            AppEvent::LastTabsRead { read } => {
+                self.restores.listed(*read);
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
             AppEvent::Recovered { generation, result } => {
                 // An answer nobody waits for is dropped, and with it the session
                 // and its claim: the record stays as it was.
@@ -3308,6 +3403,8 @@ impl ApplicationHandler<AppEvent> for App {
                 // complaint about the wrong file arriving after they moved on.
                 // Which of the two this is belongs to `Loads`, so the outcome
                 // is reported the same way whatever it turns out to be.
+                // §30R: whether `Loads` waits for this answer, asked before it is told.
+                let awaited = self.loads.accepted_path(generation).is_some();
                 let outcome = match (self.loads.accepted_path(generation), session) {
                     // Committed together: the picture, the session it was read
                     // from and the name of the document become current in one
@@ -3328,9 +3425,15 @@ impl ApplicationHandler<AppEvent> for App {
                     // removes its private files.
                     (None, _) => (*result).map(|_| ()),
                 };
+                // §30R: a Reopen's reading is told its own answer only.
+                let shown =
+                    awaited.then(|| outcome.as_ref().map(|_| ()).map_err(ToString::to_string));
                 let effect = finish_answer(&mut self.loads, &mut self.input, generation, outcome);
                 if let Some(error) = effect.error {
                     eprintln!("ferritecad: {error}");
+                }
+                if self.restores.answered(generation, shown) {
+                    self.continue_restore();
                 }
                 if self.input.take_redraw() {
                     self.request_frame_now(event_loop);
@@ -3465,11 +3568,12 @@ impl ApplicationHandler<AppEvent> for App {
                     // One document-changing action at a time; viewing remains available.
                     // §30Q: an idle form of the shown tab holds neither.
                     can_create_document: leave,
-                    can_open: may_leave_tab(
+                    can_open: can_open(
                         &self.creates,
                         &self.edits,
                         &self.sessions,
                         &self.input,
+                        &self.restores,
                     ),
                     can_cancel_create: self.creates.can_cancel(),
                     can_save: settled && self.sessions.can_save(),
@@ -3599,6 +3703,27 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.input,
                     &self.recoveries,
                 );
+                // §30R: the last window's files, and how the last Reopen went.
+                let can_restore = can_restore(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                    &self.input,
+                    &self.recoveries,
+                    &self.restores,
+                );
+                let reopen_words = self.restores.rows();
+                let reopen_rows: Vec<ferritecad_ui::ReopenRow<'_>> = reopen_words
+                    .iter()
+                    .map(|(name, folder, shown)| ferritecad_ui::ReopenRow {
+                        name,
+                        folder,
+                        shown: *shown,
+                    })
+                    .collect();
+                let reopen_report = self.restores.report();
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -3703,6 +3828,13 @@ impl ApplicationHandler<AppEvent> for App {
                         sketch,
                         creating,
                         created,
+                        reopen: ferritecad_ui::ReopenPanel {
+                            rows: &reopen_rows,
+                            refused: self.restores.refused(),
+                            can_act: can_restore,
+                            running: self.restores.running(),
+                            report: &reopen_report,
+                        },
                         recovery: ferritecad_ui::RecoveryPanel {
                             offers: &recovery_offers,
                             refused: self.recoveries.refused(),
@@ -3746,6 +3878,14 @@ impl ApplicationHandler<AppEvent> for App {
                         // as long as the user browsed.
                         if chosen.open {
                             self.ask_for_a_document();
+                        }
+                        match chosen.reopen {
+                            ferritecad_ui::ReopenChoice::Reopen => self.restore(),
+                            ferritecad_ui::ReopenChoice::NotNow => {
+                                self.restores.later();
+                                self.input.request_redraw();
+                            }
+                            ferritecad_ui::ReopenChoice::Waiting => {}
                         }
                         match chosen.recovery {
                             ferritecad_ui::RecoveryChoice::Recover(index) => {
@@ -3935,6 +4075,8 @@ impl ApplicationHandler<AppEvent> for App {
                         // about to be replaced by the one naming what stays.
                         if chosen.cancel {
                             cancel_load(&mut self.loads, &mut self.input);
+                            // §30R: the Reopen whose reading that was stops too.
+                            self.restores.cancel();
                         }
                         // The same, for the other thing this window can be
                         // busy with. Nothing on screen changes and no file is
@@ -4074,6 +4216,8 @@ impl App {
             })
         });
         let recoveries = recoveries::Recoveries::new(store);
+        // §30R: where the last window's list of saved files is kept.
+        let restores = restores::Restores::new(last_tabs::Folder::default_place());
         Self {
             dialogs: dialogs::Dialogs::default(),
             live: None,
@@ -4088,6 +4232,7 @@ impl App {
             sessions: sessions::Sessions::default(),
             tabs: tabs::Tabs::new(recorder),
             recoveries,
+            restores,
             checkpoint_name: String::new(),
             checkpoint_naming: None,
             modifiers: winit::keyboard::ModifiersState::default(),
@@ -4145,7 +4290,13 @@ impl App {
     /// §30Q: whether the person may Open now: [`may_leave_tab`], the predicate the
     /// toolbar's button asks. An idle form of the shown tab stays with it.
     fn can_open(&self) -> bool {
-        may_leave_tab(&self.creates, &self.edits, &self.sessions, &self.input)
+        can_open(
+            &self.creates,
+            &self.edits,
+            &self.sessions,
+            &self.input,
+            &self.restores,
+        )
     }
 
     /// §30Q: the person's Open — the dialog's choice, or the document named at
@@ -4356,6 +4507,63 @@ impl App {
         });
     }
 
+    /// §30R: reads the last window's list of saved files on a thread of its own.
+    /// Nothing is created or written.
+    fn read_last_tabs(&mut self) {
+        let Some(folder) = self.restores.folder().cloned() else {
+            return;
+        };
+        let proxy = self.proxy.clone();
+        // Joined by nobody: it reads one small file and ends; a closed loop is an
+        // ordinary end state for its answer.
+        let _ = std::thread::spawn(move || {
+            let read = folder.read();
+            let _ = proxy.send_event(AppEvent::LastTabsRead {
+                read: Box::new(read),
+            });
+        });
+    }
+
+    /// §30R: the person pressed Reopen saved files.
+    fn restore(&mut self) {
+        if !can_restore(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+            &self.input,
+            &self.recoveries,
+            &self.restores,
+        ) || !self.restores.begin()
+        {
+            self.input.request_redraw();
+            return;
+        }
+        self.continue_restore();
+    }
+
+    /// §30R: the next step of the Reopen in progress: read the next file through
+    /// Open, or, once every file was tried, show the tab that was shown last time.
+    fn continue_restore(&mut self) {
+        loop {
+            match restores::step(&mut self.restores, &self.tabs, &self.sessions) {
+                restores::Step::Read(path) => {
+                    let generation = self.start_reading(path);
+                    if self.restores.reading(generation) {
+                        break;
+                    }
+                }
+                restores::Step::Show(tab) => {
+                    self.switch_to(tab, None);
+                    break;
+                }
+                restores::Step::Wait => break,
+            }
+        }
+        self.input.request_redraw();
+    }
+
     /// Whether a Recover may start: nothing else is reading or replacing the
     /// document. The one predicate the buttons and the handler ask.
     fn can_recover(&self) -> bool {
@@ -4515,11 +4723,22 @@ impl App {
                     break;
                 }
                 tabs::QuitStep::Exit => {
-                    // Every unsaved document was saved or answered Discard: every
-                    // tab's crash copy goes with the window.
-                    self.tabs.decide_exit(&mut self.sessions);
-                    event_loop.exit();
-                    return;
+                    // Every unsaved document was saved or answered Discard: the
+                    // list of saved files is kept for the next start (§30R), and
+                    // every tab's crash copy goes with the window.
+                    match end_window_quit(
+                        &mut self.tabs,
+                        &mut self.sessions,
+                        form,
+                        &mut self.restores,
+                    ) {
+                        QuitEnd::Exit => {
+                            event_loop.exit();
+                            return;
+                        }
+                        QuitEnd::Stay(reason) => self.sessions.status = reason,
+                        QuitEnd::NotEnded => self.tabs.abort_quit(),
+                    }
                 }
             }
         }
@@ -5887,6 +6106,12 @@ impl App {
                 return;
             }
         }
+        self.start_reading(path);
+    }
+
+    /// Reads `path` into a new tab on a worker (§30R: also for a Reopen, which
+    /// decided `Tabs::opening` itself). The generation its answer will carry.
+    fn start_reading(&mut self, path: PathBuf) -> Option<LoadGeneration> {
         // The export in flight was of the document being left behind, and its
         // answer would describe a file nobody asked for beside a model that is
         // no longer on screen. Cancel before publication; abandon its answer
@@ -5945,7 +6170,7 @@ impl App {
                     },
                 )
             },
-        );
+        )
     }
 
     /// Answers "what is under this point" and chooses it.
@@ -6518,6 +6743,7 @@ impl Live {
             replacing,
             mut form,
             created,
+            reopen,
             recovery,
             mut checkpoints,
             tabs,
@@ -6531,6 +6757,7 @@ impl Live {
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
             chosen.tab = ferritecad_ui::tab_strip(ui, tabs);
+            chosen.reopen = ferritecad_ui::reopen_panel(ui, reopen);
             chosen.recovery = ferritecad_ui::recovery_panel(ui, recovery);
             if let Some((panel, name)) = &mut checkpoints {
                 chosen.checkpoint = ferritecad_ui::checkpoint_panel(ui, *panel, name);

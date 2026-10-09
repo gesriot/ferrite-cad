@@ -399,8 +399,61 @@ Open, New and Recover had to replace the document on screen. The decision:
   within the store's 32, one scene in memory and on the GPU at a time plus the
   transient picture being prepared for a switch. Nothing here proves the earlier OOM
   gone.
-* **Not decided here:** restoring the set or order of tabs after a restart, per-tab
+* **Not decided here:** restoring the set or order of tabs after a restart (*§30R
+  below reopens the saved files of the last window that quit*), per-tab
   drafts, background work in hidden tabs, several windows, docking, a CLI session
   protocol. The command line is unchanged.
 
 Contract and checks: [../document-tabs.md](../document-tabs.md).
+
+## §30R: reopen the saved files of the last window
+
+**Decided before implementation.** Until §30R a person who quit with A, B and C open had
+to find each file again. The decision:
+
+* **What is kept.** The logical paths of the open tabs' *saved files*, in the row's
+  order, and which one was shown — nothing else: no model, Undo, checkpoint state, form,
+  camera or selection, and no copy of any document. What a later start reopens is each
+  file as it is on disk then; unsaved accepted models after a crash remain §30M's. An
+  Untitled tab has no path and is left out; a named tab answered Discard is listed, and
+  its saved file is what reopens.
+* **When.** Only when the window's Quit pass really ends: `Tabs::quit_step` is `Exit`
+  (every unsaved tab saved or answered Discard, no form shown, hidden or set aside for
+  New, no worker). `end_window_quit` asks that itself, so no other route — a Cancel, a
+  failed Save, a late continuation, an exit nobody decided — can publish. An empty end
+  publishes an empty list, which clears the offer.
+* **Where and how.** One descriptor, `last-window`, in a per-user folder beside the
+  recovery folder (`~/Library/Application Support/FerriteCAD/Tabs`,
+  `%LOCALAPPDATA%\FerriteCAD\Tabs`, `$XDG_STATE_HOME/ferritecad/tabs`; the platform
+  rule is the recovery folder's own, shared through `per_user_state_folder`;
+  `FERRITECAD_TABS_DIR` names another). A publication writes a temporary file of its own
+  (exclusive create, unique name), syncs it and renames it over the descriptor: a reader
+  sees the previous whole list or the new whole list. Two windows (processes) that quit
+  one after the other each publish their whole list; the last rename stays; lists are
+  never merged; no process removes another's temporary file. Power-loss durability is
+  not claimed. A list that cannot be kept stops the Quit once, in words; the next Quit
+  ends the window anyway.
+* **Format.** Text, version 1: magic and version, platform, count (at most `MAX_TABS`),
+  shown index or `none`, then one line per path holding its native units in lowercase
+  hexadecimal (Unix bytes, Windows UTF-16 units) — lossless for Unicode, spaces,
+  newlines and names that are not UTF-8 or valid UTF-16. Size is bounded before reading;
+  every deviation is refused (`unknown-version`, `damaged`, `too-large`, `foreign` for a
+  link or a non-file, `io`) and the file is left as it is. Reading creates and writes
+  nothing.
+* **Reopen.** Offered at start, asked by one predicate (`can_restore`) for its button and
+  handler, started only by the person. A queue (`restores::Restores`) reads one file at a
+  time through the existing Open route (`Loads`, `open_for_view`, `Bind::Open`) and waits
+  for that reading's generation; there is no second session type, Open, parser or GPU
+  scene, and no new parallel foreground work. A file a tab already names is not read
+  again; copies with one `DocumentId` are separate tabs; the 8-tab limit ends the queue in
+  words; every file not opened is said by name and stays said until **Not now**. Cancel of
+  the reading stops the queue and keeps what opened; a late answer cannot revive it. At
+  the end the old shown file's tab is shown, or the first listed file that opened. While
+  the queue runs, Open waits for it (`can_open`); New, Recover, tab changes and Quit wait
+  for the reading as they always did. The crash-copy offer stays separate; neither
+  decides for the other.
+* **Not decided here:** form drafts, Undo or camera across a restart; several windows'
+  sets at once; a workspace or session database; a CLI for window tabs (the command line
+  is unchanged; parity is about models); power-loss durability.
+
+Contract and checks: [../restore-saved-tabs.md](../restore-saved-tabs.md).

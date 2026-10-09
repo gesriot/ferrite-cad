@@ -34,6 +34,7 @@ use ferritecad_types::{CadError, Result};
 use ferritecad_ui::ViewportInput;
 
 use crate::edits::{Edits, Form};
+use crate::last_tabs::LastTabs;
 use crate::sessions::{Bind, Sessions};
 use crate::sketch::Editor;
 
@@ -773,6 +774,28 @@ impl Tabs {
                     .is_some_and(|h| h.sessions.dirty() || h.draft.is_some())
             })
             .map_or(QuitStep::Exit, |tab| QuitStep::Show(*tab))
+    }
+
+    /// §30R: the saved files of the open tabs, in the row's order, each its
+    /// session's logical path (a tab answered Discard is its saved file; an
+    /// Untitled tab has none and is left out), and which of them is shown.
+    pub(crate) fn saved_set(&self, active: &Sessions) -> LastTabs {
+        let mut set = LastTabs::default();
+        for tab in &self.order {
+            let shown = active.has_session() && active.tab() == *tab;
+            let sessions = match self.hidden(*tab) {
+                _ if shown => active,
+                Some(hidden) => &hidden.sessions,
+                None => continue,
+            };
+            if let Some(path) = sessions.logical_path() {
+                if shown {
+                    set.active = Some(set.paths.len());
+                }
+                set.paths.push(path.to_path_buf());
+            }
+        }
+        set
     }
 
     /// The window ends by the person's decision: every tab's crash copy goes.
