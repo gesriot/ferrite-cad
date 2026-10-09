@@ -41,6 +41,7 @@ mod macos_quit;
 mod recoveries;
 mod sessions;
 mod sketch;
+mod tabs;
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -229,17 +230,17 @@ enum AppEvent {
     },
     /// An Apply's edit has finished: a private version, or why not.
     Applied {
-        generation: u64,
+        generation: sessions::Address,
         result: Box<Result<ferritecad_jobs::ProducedStep>>,
     },
     /// The picture of a version an Apply, Undo or Redo is waiting to show.
     SceneStaged {
-        generation: u64,
+        generation: sessions::Address,
         result: Box<Result<LoadedScene>>,
     },
     /// A Save or Save As has finished.
     Saved {
-        generation: u64,
+        generation: sessions::Address,
         result: Box<std::result::Result<ferritecad_jobs::Saved, ferritecad_jobs::SaveFailure>>,
     },
     /// An export has finished, or has finished failing to.
@@ -324,13 +325,18 @@ enum AppEvent {
     RecoveryChanged,
     /// §30N: a checkpoint change has finished: a private version, or why not.
     CheckpointStepped {
-        generation: u64,
+        generation: sessions::Address,
         result: Box<Result<sessions::CheckpointStep>>,
     },
     /// Form facts for a metadata-only Undo/Redo; the shown model stays.
     KeptFacts {
-        generation: u64,
+        generation: sessions::Address,
         result: Box<Result<ferritecad_document::ExtrudeEditSource>>,
+    },
+    /// §30O: the picture of a hidden tab that is being shown, or why not.
+    TabShown {
+        generation: u64,
+        result: Box<Result<LoadedScene>>,
     },
     /// A load has something new to say about how far along it is.
     ///
@@ -1304,6 +1310,8 @@ struct Sections<'a> {
     /// §30N: the open document's checkpoints and the name being typed; absent
     /// while no document is open.
     checkpoints: Option<(ferritecad_ui::CheckpointPanel<'a>, &'a mut String)>,
+    /// §30O: the row of open documents.
+    tabs: ferritecad_ui::TabStrip<'a>,
 }
 
 /// What accepting or discarding an answer did at the application boundary.
@@ -1454,9 +1462,35 @@ fn prepare_load<P>(
     loaded: Result<LoadedScene>,
     prepare: impl FnOnce(Arc<RenderSnapshot>, &[SketchDrawing]) -> Result<P>,
 ) -> Result<PreparedLoad<P>> {
-    let mut input = current_input.clone();
+    prepare_arrival(current_input.clone(), false, document, loaded, prepare)
+}
+
+/// §30O: [`prepare_load`] for a tab shown again: the picture arrives under the
+/// tab's own camera, `view`, which is kept rather than framed anew.
+fn prepare_view<P>(
+    view: ViewportInput,
+    document: &Path,
+    loaded: Result<LoadedScene>,
+    prepare: impl FnOnce(Arc<RenderSnapshot>, &[SketchDrawing]) -> Result<P>,
+) -> Result<PreparedLoad<P>> {
+    prepare_arrival(view, true, document, loaded, prepare)
+}
+
+fn prepare_arrival<P>(
+    mut input: ViewportInput,
+    keep_camera: bool,
+    document: &Path,
+    loaded: Result<LoadedScene>,
+    prepare: impl FnOnce(Arc<RenderSnapshot>, &[SketchDrawing]) -> Result<P>,
+) -> Result<PreparedLoad<P>> {
     let loaded = loaded?;
-    let snapshot = input.accept_load(Ok(loaded.snapshot))?;
+    let snapshot = if keep_camera {
+        // A gesture or question was about the picture being replaced.
+        input.forget_pending();
+        loaded.snapshot
+    } else {
+        input.accept_load(Ok(loaded.snapshot))?
+    };
     // Everything drawn, in the picture that arrived. Built here rather than
     // carried over: what was hidden was hidden in a picture nobody is looking
     // at any more, and a mask that outlived its picture would be a document
@@ -1489,6 +1523,117 @@ fn prepare_load<P>(
         // solve every sketch of the document a second time.
         sketch_solves: loaded.sketch_solves,
     })
+}
+
+/// What `App::show` does with an arriving picture, minus the graphics device
+/// (`prepare` is the upload). Everything that can fail happens before the commit:
+/// preparing the picture, then binding its document change (`Tabs::bind`: a staged
+/// version, a new tab, or a hidden tab made active); only then do the picture, what
+/// its parts are, the choice made in it and the camera become current together. A
+/// failure at any step leaves every tab, the picture and the camera as they were.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one arrival is one statement over the window's parts; see PreparedLoad"
+)]
+fn present<P>(
+    scene: &mut LiveScene<P>,
+    input: &mut ViewportInput,
+    sessions: &mut sessions::Sessions,
+    tabs: &mut tabs::Tabs,
+    checkpoint_name: &mut String,
+    document: &Path,
+    loaded: Result<LoadedScene>,
+    bind: sessions::Bind,
+    prepare: impl FnOnce(Arc<RenderSnapshot>, &[SketchDrawing]) -> Result<P>,
+) -> Result<()> {
+    let next = match &bind {
+        // A tab shown again keeps its own camera.
+        sessions::Bind::Switch(generation) => tabs
+            .view_for(*generation, input)
+            .ok_or_else(|| CadError::input("that tab is no longer being shown"))
+            .and_then(|view| prepare_view(view, document, loaded, prepare)),
+        sessions::Bind::Open(_) | sessions::Bind::Staged => {
+            prepare_load(input, document, loaded, prepare)
+        }
+    };
+    // Between preparing and showing, and the only fallible step between them: the
+    // session change and the scene change are one statement, so the version a
+    // person is looking at is the version Save would write.
+    let next = next.and_then(|next| {
+        tabs.bind(sessions, bind, input, checkpoint_name)
+            .map(|()| next)
+    });
+    commit_scene(scene, input, next)
+}
+
+/// §30O: closes `tab`. Closing the shown tab replaces the picture with an empty
+/// one in the same statement; the empty picture is prepared first (`empty` is the
+/// upload), so a device that refuses it keeps the tab and its picture. Returns the
+/// tab to show next.
+fn close_shown<P>(
+    scene: &mut LiveScene<P>,
+    input: &mut ViewportInput,
+    sessions: &mut sessions::Sessions,
+    tabs: &mut tabs::Tabs,
+    checkpoint_name: &mut String,
+    tab: tabs::TabId,
+    empty: impl FnOnce(Arc<RenderSnapshot>) -> Result<P>,
+) -> Result<Option<tabs::TabId>> {
+    if !(sessions.has_session() && sessions.tab() == tab) {
+        return tabs.close(sessions, tab);
+    }
+    let prepared = empty(Arc::new(SnapshotBuilder::new().build()))?;
+    let next = tabs.close(sessions, tab)?;
+    *scene = LiveScene::new(
+        None,
+        prepared,
+        Vec::new(),
+        FaceNames::default(),
+        EdgeNames::default(),
+        VertexNames::default(),
+        Visibility::default(),
+        Vec::new(),
+    );
+    input.forget_pending();
+    checkpoint_name.clear();
+    Ok(next)
+}
+
+/// Starts the window's Quit pass. Kept outside the event-loop adapter so the
+/// operation/form boundary is exercised with the window's real owners.
+fn begin_window_quit(
+    tabs: &mut tabs::Tabs,
+    sessions: &mut sessions::Sessions,
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+) -> bool {
+    // The accepted model may be clean while a form or a worker holds newer
+    // intent. Check before Quit's clean-document fast path, and before resetting
+    // an existing Quit pass whose Save may still be running.
+    if !can_begin_new(creates, loads, exports)
+        || sessions.busy()
+        || form_open(edits, &creates.sketch)
+    {
+        sessions.status = "Wait for the current operation to finish, or close the open form, \
+                           before quitting."
+            .to_owned();
+        return false;
+    }
+    tabs.begin_quit();
+    true
+}
+
+/// What asking about a tab that is about to close led to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    /// Nothing unsaved, or Discard: close it.
+    Go,
+    /// Save was chosen and has started; the close follows its publication.
+    Saving,
+    /// Cancel, a question that could not be asked, or something still running.
+    Stay,
 }
 
 /// Applies every texture upload and consumes it from egui's command set.
@@ -2647,23 +2792,19 @@ struct App {
     exports: exports::Exports,
     creates: creates::Creates,
     edits: edits::Edits,
-    /// The open document's session: the one owner of what is accepted, what is
-    /// saved and what can be undone. The picture in `live` is derived from it.
+    /// The shown tab's session: the one owner of what is accepted, what is saved
+    /// and what can be undone. The picture in `live` is derived from it. Empty
+    /// (no session) when no document is open.
     sessions: sessions::Sessions,
-    /// §30L: the new document a create form asked for while the open one had
-    /// unsaved changes and the user chose Save: made once that save is
-    /// published, dropped if it is not.
-    pending_create: Option<NewDocument>,
+    /// §30O: the other open documents, hidden, and the order of the tab row.
+    tabs: tabs::Tabs,
     /// §30M: the start-up list of crash copies and the Recover in flight.
     recoveries: recoveries::Recoveries,
-    /// §30M: the record a Recover asked for while the open document had unsaved
-    /// changes and the user chose Save: recovered once that save is published.
-    pending_recover: Option<ferritecad_jobs::RecordId>,
-    /// §30N: the name typed for the next checkpoint, kept between frames and
-    /// cleared when a checkpoint made under it is accepted.
+    /// §30N: the name typed for the next checkpoint in the shown tab, kept between
+    /// frames and cleared when a checkpoint made under it is accepted.
     checkpoint_name: String,
     /// §30N: the Create whose acceptance clears `checkpoint_name`.
-    checkpoint_naming: Option<u64>,
+    checkpoint_naming: Option<sessions::Address>,
     modifiers: winit::keyboard::ModifiersState,
 }
 
@@ -2726,8 +2867,10 @@ impl ApplicationHandler<AppEvent> for App {
         self.loads.stop_all();
         self.exports.stop_all();
         self.recoveries.stop_all();
-        // Last: it joins the session's workers and removes its private files.
+        // Last: they join the sessions' workers and remove their private files;
+        // the tab list ends the recovery worker once no tab's lane is left.
         self.sessions.stop_all();
+        self.tabs.stop_all();
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
@@ -2924,9 +3067,35 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                     match report.continuation {
                         Some(next) => self.continue_with(next, event_loop),
-                        // A save that was not published continues nothing, and
-                        // the document it was going to make is not made.
-                        None => self.pending_create = None,
+                        // A save that was not published continues nothing: a Quit
+                        // it was part of stops, and every tab stays open.
+                        None => self.tabs.abort_quit(),
+                    }
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
+            AppEvent::TabShown { generation, result } => {
+                // Only the switch still awaited, to a tab still open: anything else
+                // (cancelled, replaced by a newer switch) is dropped unseen.
+                if let Some(path) = self.tabs.switch_path(generation) {
+                    let outcome = self.show(&path, *result, sessions::Bind::Switch(generation));
+                    if outcome.is_ok() {
+                        self.loads.document_replaced();
+                    }
+                    if let Err(error) = &outcome {
+                        eprintln!("ferritecad: {error}");
+                    }
+                    match self
+                        .tabs
+                        .end_switch(&mut self.sessions, generation, &outcome)
+                    {
+                        Some(tabs::After::Quit) => self.continue_quit(event_loop),
+                        Some(tabs::After::Close) => {
+                            let tab = self.sessions.tab();
+                            self.close_tab(tab);
+                        }
+                        None => {}
                     }
                 }
                 self.input.request_redraw();
@@ -3384,6 +3553,28 @@ impl ApplicationHandler<AppEvent> for App {
                             .collect()
                     })
                     .unwrap_or_default();
+                // §30O: every tab's name and mark, read from its own session.
+                let tab_rows = self.tabs.labels(&self.sessions);
+                let tab_labels: Vec<ferritecad_ui::TabLabel<'_>> = tab_rows
+                    .iter()
+                    .map(|(tab, name, dirty, active)| ferritecad_ui::TabLabel {
+                        key: tab.key(),
+                        name,
+                        dirty: *dirty,
+                        active: *active,
+                    })
+                    .collect();
+                let tab_strip = ferritecad_ui::TabStrip {
+                    tabs: &tab_labels,
+                    available: if idle {
+                        Ok(())
+                    } else {
+                        Err(
+                            "Another tab can be shown or closed once the current operation has \
+                             finished and no form is open.",
+                        )
+                    },
+                };
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
@@ -3429,6 +3620,7 @@ impl ApplicationHandler<AppEvent> for App {
                                 &mut self.checkpoint_name,
                             )
                         }),
+                        tabs: tab_strip,
                     },
                 ) {
                     // A button pressed during this frame reaches the camera
@@ -3488,8 +3680,24 @@ impl ApplicationHandler<AppEvent> for App {
                             );
                         }
                         if chosen.cancel_document {
+                            // A switch's slot is released by the shown tab's own
+                            // Cancel; its worker is told to stop too.
                             self.sessions.cancel();
+                            self.tabs.cancel_switch();
                             self.input.request_redraw();
+                        }
+                        match chosen.tab {
+                            ferritecad_ui::TabChoice::Show(key) => {
+                                if let Some(tab) = self.tabs.by_key(key) {
+                                    self.switch_to(tab, None);
+                                }
+                            }
+                            ferritecad_ui::TabChoice::Close(key) => {
+                                if let Some(tab) = self.tabs.by_key(key) {
+                                    self.close_tab(tab);
+                                }
+                            }
+                            ferritecad_ui::TabChoice::Waiting => {}
                         }
                         if chosen.save {
                             self.save_document();
@@ -3747,16 +3955,13 @@ impl App {
         // one worker that keeps the open document's crash copy in it. Without a
         // folder the window works as before and says that copies are off.
         let store = ferritecad_jobs::RecoveryStore::open_default();
-        let mut sessions = sessions::Sessions::default();
-        if let Ok(store) = &store {
+        // §30O: one worker for the window; every tab writes through its own lane.
+        let recorder = store.as_ref().ok().map(|store| {
             let waking = proxy.clone();
-            sessions.keep_recovery(ferritecad_jobs::RecoveryRecorder::start(
-                store.clone(),
-                move || {
-                    let _ = waking.send_event(AppEvent::RecoveryChanged);
-                },
-            ));
-        }
+            ferritecad_jobs::RecoveryRecorder::start(store.clone(), move || {
+                let _ = waking.send_event(AppEvent::RecoveryChanged);
+            })
+        });
         let recoveries = recoveries::Recoveries::new(store);
         Self {
             dialogs: dialogs::Dialogs::default(),
@@ -3769,10 +3974,9 @@ impl App {
             exports: exports::Exports::default(),
             creates: creates::Creates::default(),
             edits: edits::Edits::default(),
-            sessions,
-            pending_create: None,
+            sessions: sessions::Sessions::default(),
+            tabs: tabs::Tabs::new(recorder),
             recoveries,
-            pending_recover: None,
             checkpoint_name: String::new(),
             checkpoint_naming: None,
             modifiers: winit::keyboard::ModifiersState::default(),
@@ -3789,20 +3993,12 @@ impl App {
     /// A cancelled dialog is an answer, not a failure, and leaves the document
     /// already on screen exactly as it was.
     fn ask_for_a_document(&mut self) {
-        if self.creates.busy() || self.edits.busy() {
-            return;
-        }
-        // With unsaved changes the user is asked first; Cancel (or a question that
-        // could not be asked) stays, and Save goes on to the dialog when it is done.
-        if !self.guard(sessions::Continuation::Open) {
-            return;
-        }
+        // §30O: the document on screen stays open in its tab, so nothing about it
+        // is asked.
         self.pick_and_open();
     }
 
-    /// The Open dialog and what follows it. Reached from [`Self::ask_for_a_document`]
-    /// once nothing is lost by replacing the document, and after a Save the user
-    /// asked for on the way here.
+    /// The Open dialog and what follows it.
     fn pick_and_open(&mut self) {
         if self.creates.busy() || self.edits.busy() {
             return;
@@ -3959,7 +4155,11 @@ impl App {
             self.input.request_redraw();
             return;
         }
-        if !self.guard_replacing(sessions::Continuation::Create, Some(&content)) {
+        // §30O: the new document is a new tab; the open one stays and is not asked
+        // about. A full window refuses before anything is made; the form stays.
+        if let Err(reason) = self.tabs.room() {
+            self.sessions.status = reason;
+            self.input.request_redraw();
             return;
         }
         let proxy = self.proxy.clone();
@@ -4011,15 +4211,13 @@ impl App {
             self.input.request_redraw();
             return;
         }
-        self.pending_recover = Some(record);
-        if !self.guard(sessions::Continuation::Recover) {
-            // Kept only for a Save that is running on the way to it.
-            if !self.sessions.busy() {
-                self.pending_recover = None;
-            }
+        // §30O: the recovered copy opens as a new tab beside the open documents,
+        // which are not asked about. A full window refuses; the copy is kept.
+        if let Err(reason) = self.tabs.room() {
+            self.sessions.status = reason;
+            self.input.request_redraw();
             return;
         }
-        self.pending_recover = None;
         let Some(store) = self.recoveries.store().cloned() else {
             return;
         };
@@ -4106,74 +4304,83 @@ impl App {
         self.settled() && !form_open(&self.edits, &self.creates.sketch)
     }
 
-    /// Native Quit and window close share the same guarded exit.
+    /// Native Quit and window close share the same guarded exit (§30O: over every
+    /// tab with unsaved changes, the shown one first, each shown before it is asked).
     fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
-        if self.guard(sessions::Continuation::Quit) {
-            // Nothing unsaved, or the user chose Discard: the crash copy goes.
-            self.sessions.decide_exit();
-            event_loop.exit();
+        if begin_window_quit(
+            &mut self.tabs,
+            &mut self.sessions,
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+        ) {
+            self.continue_quit(event_loop);
         } else {
             self.request_frame_now(event_loop);
         }
     }
 
-    /// Whether replacing the open document is allowed right now, asking the user
-    /// about unsaved changes first.
-    ///
-    /// `true` means go on now (nothing is lost, or the user chose Discard: the
-    /// changes stay in the session until the replacement is accepted, so cancelling
-    /// the file dialog afterwards loses nothing). `false` means stay: Cancel, a
-    /// question that could not be asked, an operation still finishing, or Save,
-    /// which goes on by itself when it has succeeded.
-    fn guard(&mut self, next: sessions::Continuation) -> bool {
-        self.guard_replacing(next, None)
+    /// The next step of the Quit pass. Discard lets the pass go on to the next
+    /// unsaved tab (the tab stays open until the window ends); Save goes on once it
+    /// is published; Cancel, a failed or cancelled save, a question that could not
+    /// be asked or a tab that could not be shown stops it, closing nothing.
+    fn continue_quit(&mut self, event_loop: &ActiveEventLoop) {
+        while self.tabs.quitting() {
+            match self.tabs.quit_step(&self.sessions) {
+                tabs::QuitStep::Ask => {
+                    let tab = self.sessions.tab();
+                    match self.ask_to_close(sessions::Continuation::Quit) {
+                        Asked::Go => self.tabs.discarded(tab),
+                        Asked::Saving => break,
+                        Asked::Stay => self.tabs.abort_quit(),
+                    }
+                }
+                tabs::QuitStep::Show(tab) => {
+                    if !self.switch_to(tab, Some(tabs::After::Quit)) {
+                        self.tabs.abort_quit();
+                    }
+                    break;
+                }
+                tabs::QuitStep::Exit => {
+                    // Every unsaved document was saved or answered Discard: every
+                    // tab's crash copy goes with the window.
+                    self.tabs.decide_exit(&mut self.sessions);
+                    event_loop.exit();
+                    return;
+                }
+            }
+        }
+        self.request_frame_now(event_loop);
     }
 
-    /// [`Self::guard`], with what a create form asked for when the replacement is
-    /// a new document: it is kept, and made only after a Save the user chose has
-    /// been published (§30L).
-    fn guard_replacing(
-        &mut self,
-        next: sessions::Continuation,
-        content: Option<&NewDocument>,
-    ) -> bool {
+    /// Asks Save / Discard / Cancel about the shown tab, which is about to be closed
+    /// (`next`: by itself, or with the window). `Go` means nothing is lost or the
+    /// person chose Discard; `Saving` means a Save the person chose has started and
+    /// `next` follows once it is published; `Stay` is Cancel, a question that could
+    /// not be asked, or something still running.
+    fn ask_to_close(&mut self, next: sessions::Continuation) -> Asked {
         if self.sessions.busy() {
             self.input.request_redraw();
-            return false;
+            return Asked::Stay;
         }
         if !self.sessions.dirty() {
-            return true;
+            return Asked::Go;
         }
-        // Something is still replacing or reading the document (an Open or a New on
-        // its way, an export): a Save started now would overlap it. Wait for it, or
-        // cancel it, and ask then. A create form asking is open itself, so for it
-        // the question is the create predicate rather than "no form is open".
-        let settled = match next {
-            sessions::Continuation::Create => self.can_create(),
-            _ => self.settled(),
-        };
-        if !settled {
+        // Something is still reading or writing the document (an Open or a New on
+        // its way, an export): a Save started now would overlap it.
+        if !self.settled() {
             self.input.request_redraw();
-            return false;
+            return Asked::Stay;
         }
         let request = match (next, self.sessions.untitled()) {
-            (sessions::Continuation::Open, false) => "Opening another document would replace it.",
-            (sessions::Continuation::Create, false) => "Making a new document would replace it.",
             (sessions::Continuation::Quit, false) => "Closing the window would lose them.",
-            (sessions::Continuation::Recover, false) => {
-                "Recovering another document would replace it."
-            }
-            (sessions::Continuation::Recover, true) => {
-                "It has never been saved. Recovering another document would replace it."
-            }
-            (sessions::Continuation::Open, true) => {
-                "It has never been saved. Opening another document would replace it."
-            }
-            (sessions::Continuation::Create, true) => {
-                "It has never been saved. Making a new document would replace it."
-            }
             (sessions::Continuation::Quit, true) => {
                 "It has never been saved. Closing the window would lose it."
+            }
+            (sessions::Continuation::Close, false) => "Closing its tab would lose them.",
+            (sessions::Continuation::Close, true) => {
+                "It has never been saved. Closing its tab would lose it."
             }
         };
         // A recovered copy was saved once, as another file; what is true of it now
@@ -4193,16 +4400,112 @@ impl App {
             _ => None,
         };
         match self.sessions.replacing(choice) {
-            sessions::Replace::Go | sessions::Replace::Discarded => true,
+            sessions::Replace::Go | sessions::Replace::Discarded => Asked::Go,
             sessions::Replace::AfterSave => {
-                self.pending_create = content.cloned();
-                if !self.save_then(Some(next)) {
-                    self.pending_create = None;
+                if self.save_then(Some(next)) {
+                    Asked::Saving
+                } else {
+                    Asked::Stay
                 }
-                false
             }
-            sessions::Replace::Stay => false,
+            sessions::Replace::Stay => Asked::Stay,
         }
+    }
+
+    /// §30O: starts showing hidden tab `tab` (and then `after`). Refused, with the
+    /// reason in the status line, while anything else is running or a form is open.
+    fn switch_to(&mut self, tab: tabs::TabId, after: Option<tabs::After>) -> bool {
+        if !self.document_idle() {
+            self.sessions.status = "Wait for the current operation to finish, or close the open \
+                                    form, before showing another tab."
+                .to_owned();
+            self.input.request_redraw();
+            return false;
+        }
+        let proxy = self.proxy.clone();
+        let started = self.tabs.begin_switch(
+            &mut self.sessions,
+            tab,
+            after,
+            |path, generation, cancel| {
+                sessions::spawn_scene(path, cancel.clone(), move |result| {
+                    let _ = proxy.send_event(AppEvent::TabShown {
+                        generation,
+                        result: Box::new(result),
+                    });
+                })
+            },
+        );
+        if let Err(reason) = &started {
+            self.sessions.status.clone_from(reason);
+        }
+        self.input.request_redraw();
+        started.is_ok()
+    }
+
+    /// §30O: the × of a tab. A clean tab closes; an unsaved one is shown (when
+    /// hidden) and asked about first.
+    fn close_tab(&mut self, tab: tabs::TabId) {
+        if !self.document_idle() {
+            self.sessions.status = "Wait for the current operation to finish, or close the open \
+                                    form, before closing a tab."
+                .to_owned();
+            self.input.request_redraw();
+            return;
+        }
+        match self.tabs.close_step(&self.sessions, tab) {
+            Some(tabs::CloseStep::Now) => self.close_now(tab),
+            Some(tabs::CloseStep::Show) => {
+                self.switch_to(tab, Some(tabs::After::Close));
+            }
+            Some(tabs::CloseStep::Ask) => {
+                // Save closes it once published (`continue_with`); Cancel keeps it.
+                let asked = self.ask_to_close(sessions::Continuation::Close);
+                if asked == Asked::Go {
+                    self.close_now(tab);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Closes `tab` now: nothing in it is unsaved or the person decided. Closing the
+    /// shown tab replaces the picture with an empty one in the same statement, then
+    /// shows the neighbouring tab, if any.
+    fn close_now(&mut self, tab: tabs::TabId) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        let renderer = &mut live.renderer;
+        let closed = close_shown(
+            &mut live.scene,
+            &mut self.input,
+            &mut self.sessions,
+            &mut self.tabs,
+            &mut self.checkpoint_name,
+            tab,
+            |snapshot| renderer.prepare(snapshot),
+        );
+        match closed {
+            Ok(next) => {
+                if !self.sessions.has_session() {
+                    // The document the forms and exports were about is gone.
+                    self.edits.cancel();
+                    self.creates.sketch.finish_session_change();
+                    exports::leave_document(&mut self.exports, &mut self.input);
+                    self.loads.document_replaced();
+                }
+                self.refresh_title();
+                if let Some(next) = next {
+                    self.switch_to(next, None);
+                }
+            }
+            Err(error) => {
+                eprintln!("ferritecad: {error}");
+                self.sessions.status = format!("The tab was not closed: {error}");
+            }
+        }
+        self.input.request_redraw();
     }
 
     /// Save, as the toolbar's Save does: in place for a document with a file, and
@@ -4223,23 +4526,11 @@ impl App {
     /// written, go on.
     fn continue_with(&mut self, next: sessions::Continuation, event_loop: &ActiveEventLoop) {
         match next {
-            sessions::Continuation::Open => self.pick_and_open(),
-            sessions::Continuation::Create => {
-                // Exactly once: the content is taken, and the document is clean
-                // now, so making it asks nothing more.
-                if let Some(content) = self.pending_create.take() {
-                    self.create_new(content);
-                }
-            }
-            sessions::Continuation::Quit => {
-                self.sessions.decide_exit();
-                event_loop.exit();
-            }
-            sessions::Continuation::Recover => {
-                // Exactly once, and the document is clean now.
-                if let Some(record) = self.pending_recover.take() {
-                    self.recover(record);
-                }
+            sessions::Continuation::Quit => self.continue_quit(event_loop),
+            // The saved tab is the shown one: nothing else ran while it saved.
+            sessions::Continuation::Close => {
+                let tab = self.sessions.tab();
+                self.close_now(tab);
             }
         }
     }
@@ -4249,6 +4540,16 @@ impl App {
         target: ferritecad_jobs::SaveTarget,
         after: Option<sessions::Continuation>,
     ) -> bool {
+        // §30O: one file, one writer. Another tab's file (by any name, existing or
+        // not) is not a Save As destination; the existing no-clobber and version
+        // guards still apply to everything else.
+        if let ferritecad_jobs::SaveTarget::As(path) = &target
+            && let Some(refusal) = self.tabs.save_as_refusal(&self.sessions, path)
+        {
+            self.sessions.status = refusal;
+            self.input.request_redraw();
+            return false;
+        }
         let proxy = self.proxy.clone();
         let started = self
             .sessions
@@ -4702,7 +5003,7 @@ impl App {
     }
 
     /// What an edit's or a checkpoint's answer leads to.
-    fn after_step(&mut self, generation: u64, edited: sessions::Edited) {
+    fn after_step(&mut self, generation: sessions::Address, edited: sessions::Edited) {
         match edited {
             sessions::Edited::Show(path) => self.stage_scene(generation, path),
             sessions::Edited::Keep(path) => self.keep_picture(generation, path),
@@ -4713,7 +5014,7 @@ impl App {
     /// §30N: accepts a version that draws what is on screen (only its checkpoints
     /// changed). The session's commit and the picture's re-pointing at the new
     /// version are one statement, as in [`Self::show`]; nothing is rebuilt.
-    fn keep_picture(&mut self, generation: u64, path: PathBuf) {
+    fn keep_picture(&mut self, generation: sessions::Address, path: PathBuf) {
         let outcome = match self.live.as_mut() {
             None => Err(CadError::input("there is no window to show the change in")),
             Some(live) => self
@@ -4760,7 +5061,10 @@ impl App {
 
     /// §30N: runs one checkpoint change on its worker, in the operation slot
     /// every document change shares.
-    fn start_checkpoint(&mut self, action: sessions::CheckpointAction) -> Option<u64> {
+    fn start_checkpoint(
+        &mut self,
+        action: sessions::CheckpointAction,
+    ) -> Option<sessions::Address> {
         let proxy = self.proxy.clone();
         let generation =
             self.sessions
@@ -4827,7 +5131,7 @@ impl App {
     }
 
     /// Builds the picture of a version that is waiting to become current.
-    fn stage_scene(&mut self, generation: u64, path: PathBuf) {
+    fn stage_scene(&mut self, generation: sessions::Address, path: PathBuf) {
         let Some(cancel) = self.sessions.scene_token(generation) else {
             return;
         };
@@ -5370,6 +5674,26 @@ impl App {
         if self.creates.busy() || self.edits.busy() {
             return;
         }
+        // §30O: a file that is open already (by any name) is shown in its tab, not
+        // opened a second time as a competing writer. Other copies are other tabs.
+        match self.tabs.opening(&self.sessions, &path) {
+            tabs::Opening::Load => {}
+            tabs::Opening::Shown => {
+                self.sessions.status = "That document is already open here.".to_owned();
+                self.input.request_redraw();
+                return;
+            }
+            tabs::Opening::Show(tab) => {
+                self.document = Some(path);
+                self.switch_to(tab, None);
+                return;
+            }
+            tabs::Opening::Refused(reason) => {
+                self.sessions.status = reason;
+                self.input.request_redraw();
+                return;
+            }
+        }
         // The export in flight was of the document being left behind, and its
         // answer would describe a file nobody asked for beside a model that is
         // no longer on screen. Cancel before publication; abandon its answer
@@ -5727,27 +6051,26 @@ impl App {
             return loaded.map(|_| ());
         };
 
-        // Everything that can fail happens inside `prepare_load`; committing
-        // cannot. No event observes the application in between, so the picture,
-        // what its parts are, the choice made in it and the camera all become
-        // current together – and only then is the document a thing the window
-        // may call ready.
-        let next = prepare_load(&self.input, document, loaded, |snapshot, drawings| {
-            // Both halves of one upload, and both before anything is
-            // committed. The drawings ride on the prepared picture, so a
-            // window cannot end up drawing this document's model beside the
-            // last document's sketches, and a device that refuses either
-            // leaves the whole arrival uncommitted.
-            let prepared = live.renderer.prepare(snapshot)?;
-            live.renderer.prepare_sketches(prepared, drawings)
-        });
-        // Between preparing and showing, and the only fallible step between them:
-        // the session change and the scene change are one statement, so the
-        // version a person is looking at is the version Save would write. A
-        // picture that could not be prepared never reaches this point, and one
-        // whose version cannot be made current is not shown either.
-        let next = next.and_then(|next| self.sessions.bind(bind).map(|()| next));
-        let committed = commit_scene(&mut live.scene, &mut self.input, next);
+        let renderer = &mut live.renderer;
+        let committed = present(
+            &mut live.scene,
+            &mut self.input,
+            &mut self.sessions,
+            &mut self.tabs,
+            &mut self.checkpoint_name,
+            document,
+            loaded,
+            bind,
+            |snapshot, drawings| {
+                // Both halves of one upload, and both before anything is
+                // committed. The drawings ride on the prepared picture, so a
+                // window cannot end up drawing this document's model beside the
+                // last document's sketches, and a device that refuses either
+                // leaves the whole arrival uncommitted.
+                let prepared = renderer.prepare(snapshot)?;
+                renderer.prepare_sketches(prepared, drawings)
+            },
+        );
         self.creates
             .sketch
             .draft_load_finished(document, committed.is_ok());
@@ -6001,6 +6324,7 @@ impl Live {
             created,
             recovery,
             mut checkpoints,
+            tabs,
         } = sections;
         let mut pointed_row = None;
         let mut output = egui.run_ui(raw_input, |ui| {
@@ -6009,6 +6333,7 @@ impl Live {
             // place for that is what stops a button and a keystroke drifting
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
+            chosen.tab = ferritecad_ui::tab_strip(ui, tabs);
             chosen.recovery = ferritecad_ui::recovery_panel(ui, recovery);
             if let Some((panel, name)) = &mut checkpoints {
                 chosen.checkpoint = ferritecad_ui::checkpoint_panel(ui, *panel, name);

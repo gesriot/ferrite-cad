@@ -1197,6 +1197,13 @@ fn resolved(path: &Path) -> PathBuf {
     }
 }
 
+/// Whether `a` and `b` name one file (§30O): the same place once links and `..` are
+/// resolved, whether or not a file is there yet, or one existing file reached by
+/// two names (another link, a hard link, another case on a case-insensitive disk).
+pub fn names_same_file(a: &Path, b: &Path) -> bool {
+    resolved(a) == resolved(b) || same_file::is_same_file(a, b).unwrap_or(false)
+}
+
 /// Whether `path` is `directory` or lies under it, by what each really names
 /// (links followed), whether or not `path` exists yet.
 pub fn is_inside(directory: &Path, path: &Path) -> bool {

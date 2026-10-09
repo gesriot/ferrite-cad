@@ -494,6 +494,12 @@ SQL, кроме `meta.modified_at` и доказанного соответст�
 `list-checkpoints`, `create-checkpoint`, `delete-checkpoint`, `extract-checkpoint`; потеря
 stdout после публикации — exit 7. Ядро не нужно ([контракт](named-document-checkpoints.md)).
 
+§30O: вкладки окна (несколько документов, у каждого своя session) — свойство окна, не CLI.
+CLI не меняется: каждая команда работает с переданным ей файлом, и те же модели
+достигаются существующими командами (`edit-extrude`, `edit-circle`, `extract-checkpoint`,
+`export-stl`, `export-fbx`; см. [контракт вкладок](document-tabs.md)). Новой команды,
+JSON-операции или протокола сессии нет.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

@@ -74,8 +74,9 @@ ferritecad extract-recovery RECORD --output PATH [--recovery-dir DIR] [--json]
    match; it opens read-only as a current-schema document whose id, content version
    and model version match. Each failure is a typed refusal of that record only:
    `active`, `unknown-version`, `damaged`, `mismatch`. Other records are unaffected.
-8. **Recover (window).** Asked only from the start-up list. A dirty open document is
-   guarded first (Save / Discard / Cancel, as for Open). The worker claims, restores
+8. **Recover (window).** Asked only from the start-up list. *Since §30O* the copy opens
+   as a new tab and the open documents are not asked about (before, a dirty open
+   document was guarded first with Save / Discard / Cancel). The worker claims, restores
    into a new untitled session (`DocumentSession::recover_in`, a private copy, the
    record left untouched) and prepares its picture; it is accepted through the same
    `Bind::Open` as Open. Any refusal or failure keeps the record and the current
@@ -92,6 +93,10 @@ ferritecad extract-recovery RECORD --output PATH [--recovery-dir DIR] [--json]
     the replacement document is accepted; Cancel, a failed Save and a failed or
     refused replacement keep it. Quit after the guard retires it; an exit without that
     decision keeps it. After a retirement no later request can rewrite that record.
+    *Since §30O* the record is the tab's: closing the tab after Save or Discard retires
+    that tab's record only, and Quit retires every tab's record only once every unsaved
+    tab was answered. One recorder worker serves all tabs, each through its own lane
+    ([tabs contract](document-tabs.md)).
 11. **Limits.** One manifest-selected copy per record (interrupted publication can
     leave unselected files until cleanup). At most 32 records; at the limit a new session
     gets no record and the status says so. Records with no manifest are removed when a

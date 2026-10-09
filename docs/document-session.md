@@ -164,6 +164,11 @@ next start offers it, and a recovered copy is a new untitled session. See
 session steps that keep the picture, Restore is one model step with its picture, and all
 three reach the file only through Save. See [checkpoints contract](named-document-checkpoints.md).
 
+§30O: several documents in tabs of one window, each tab one session with its own path,
+history, checkpoints, Save and crash copy. Open, New and Recover add a tab and ask
+nothing; closing a tab and Quit ask about each unsaved tab. One picture at a time. See
+[tabs contract](document-tabs.md).
+
 §30J adds a new Fillet through this same session, including while dirty (**Add
 fillet**). Save fillet copy, Add Chamfer and the other copies remain clean-only. See
 [Add Fillet session contract](add-fillet-session.md).

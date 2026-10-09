@@ -15,7 +15,10 @@ use std::collections::BTreeMap;
 
 pub(super) type Id = [u8; 16];
 
-fn start(s: &mut Sessions, r: &CircularCutRequest) -> (u64, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(
+    s: &mut Sessions,
+    r: &CircularCutRequest,
+) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {

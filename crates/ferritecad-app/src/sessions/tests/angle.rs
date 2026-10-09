@@ -9,7 +9,7 @@ use ferritecad_kernel::OperationContext;
 fn start(
     s: &mut Sessions,
     r: &EditRevolveAngleRequest,
-) -> (u64, mpsc::Receiver<Result<ProducedStep>>) {
+) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {

@@ -26,6 +26,8 @@ pub struct Chosen {
     pub recovery: crate::RecoveryChoice,
     /// §30N: what was pressed in the open document's checkpoints.
     pub checkpoint: crate::CheckpointChoice,
+    /// §30O: a tab pressed to be shown or closed.
+    pub tab: crate::TabChoice,
     pub stl: crate::StlChoice,
     /// A direction to look from.
     pub view: Option<StandardView>,
