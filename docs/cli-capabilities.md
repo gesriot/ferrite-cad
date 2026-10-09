@@ -475,12 +475,14 @@ SQL, кроме `meta.modified_at` и доказанного соответст�
 одну последнюю опубликованную копию текущей принятой версии каждого несохранённого
 документа и на следующем запуске предлагает **Recover**. CLI получает те же записи
 через ту же библиотечную claim: `list-recovery [--recovery-dir DIR] [--json]` только
-читает (записи работающих окон лишь считаются, `active`), `extract-recovery RECORD
+читает (записи, которые кто-то держит эксклюзивно, лишь считаются, `active`; с §30S чтение
+берёт блокировку shared, поэтому параллельный `extract-recovery` не получает ложный
+`active`, а ждёт читателей не дольше 5 с), `extract-recovery RECORD
 --output PATH [--recovery-dir DIR] [--json]` копирует модель со всеми UUID в новый
 `.fcad` no-clobber и оставляет запись на месте. Занятый путь, путь внутри каталога
 восстановления, активная, повреждённая или неизвестная запись — exit 2 с
-`error.recovery_refusal` (`active`, `damaged`, `mismatch`, `unknown-version`,
-`not-found`); usage остаётся текстом clap; потеря stdout после извлечения — exit 7,
+`error.recovery_refusal` (`active`, `busy` — читатели не ушли за 5 с, `damaged`,
+`mismatch`, `unknown-version`, `not-found`); usage остаётся текстом clap; потеря stdout после извлечения — exit 7,
 файл остаётся. Ядро не нужно ([контракт](document-crash-recovery.md)).
 
 §30N: именованные контрольные версии внутри документа (таблица `checkpoints`, схема v4;

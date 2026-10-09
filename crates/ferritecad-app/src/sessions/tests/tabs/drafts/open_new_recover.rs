@@ -162,7 +162,7 @@ impl Window {
     fn begin_recovery(&mut self, recoveries: &mut Recoveries, record: RecordId) -> Option<u64> {
         self.tabs.room().ok()?;
         let sessions = &mut self.sessions;
-        recoveries.begin(record, |generation| {
+        recoveries.begin(record, |generation, _| {
             sessions.hold_recovery(generation);
             std::thread::spawn(|| {})
         })
@@ -208,10 +208,21 @@ fn recovered(
     store: &RecoveryStore,
     record: RecordId,
 ) -> Result<(LoadedScene, DocumentSession)> {
+    recovered_unless(private, store, record, CancelToken::new())
+}
+
+/// The same worker, stoppable while it waits for a reader of its record (§30S).
+fn recovered_unless(
+    private: &Path,
+    store: &RecoveryStore,
+    record: RecordId,
+    cancel: CancelToken,
+) -> Result<(LoadedScene, DocumentSession)> {
     if ferritecad_occt::is_available() {
-        return recover_for_view(private, store, record, &OperationContext::default());
+        let context = OperationContext::default().with_cancel(cancel);
+        return recover_for_view(private, store, record, &context);
     }
-    let claim = store.claim(record)?;
+    let claim = store.claim_cancellable(record, &cancel)?;
     let session = DocumentSession::recover_in(private, HistoryLimits::default(), claim)?;
     let scene = mock_scene(session.current().path())?;
     Ok((scene, session))
@@ -1379,4 +1390,148 @@ fn native_open_new_recover_beside_forms_then_apply_save_and_compare_with_the_com
         volume(&c_stl)
     );
     println!("FCAD_30Q_SESSION_FILES_COMPARE_OK negative_controls=8 all_SQL_cells=true");
+}
+
+/// A reader that is not this window: any process holding the record's lease shared,
+/// as a listing does while it verifies.
+fn foreign_reader(root: &Path, record: RecordId) -> std::fs::File {
+    let lease = root.join(format!("r-{record}")).join("lease");
+    let file = std::fs::File::open(lease).expect("lease");
+    file.try_lock_shared().expect("nobody holds it exclusively");
+    file
+}
+
+/// §30S: a Recover whose record a reader is holding, through the window's owners and
+/// a real worker thread on two tabs that each keep a form. The worker waits, off the
+/// event loop; Cancel and a late, stale or refused answer open nothing, free no newer
+/// slot and delete nothing; the forms are as typed; once the reader is gone Recover
+/// succeeds; and the window's end does not wait for the reader's bound.
+#[test]
+fn recover_waiting_for_a_reader_obeys_cancel_late_answers_and_quit_beside_forms_in_two_tabs() {
+    let user = tempfile::tempdir().expect("user");
+    let a_file = user.path().join("a.fcad");
+    let b_file = user.path().join("b.fcad");
+    let c_file = user.path().join("crashed.fcad");
+    plate(&a_file, 12.0);
+    plate(&b_file, 15.0);
+    plate(&c_file, 12.0);
+    let root = tempfile::tempdir().expect("recovery");
+    let store = RecoveryStore::open(root.path()).expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let c = orphan(&store, &c_file, scratch.path(), 21.5);
+    let originals = contents(&[&a_file, &b_file, &c_file]);
+    let record_files = || {
+        let mut files: Vec<_> = std::fs::read_dir(root.path().join(format!("r-{c}")))
+            .expect("record")
+            .map(|e| e.expect("entry").path())
+            .map(|path| (path.clone(), std::fs::read(&path).expect("bytes")))
+            .collect();
+        files.sort();
+        files
+    };
+    let whole = record_files();
+
+    let mut w = Window::new(Drawn::Mock, None);
+    let mut recoveries = Recoveries::new(Ok(store.clone()));
+    w.open(&a_file);
+    let a = w.sessions.tab();
+    let feature_a = w.feature();
+    w.open_height_form();
+    w.edits.type_height(feature_a, "18");
+    w.open(&b_file);
+    let b = w.sessions.tab();
+    let feature_b = w.feature();
+    w.open_height_form();
+    w.edits.type_height(feature_b, "19");
+    let kept = |w: &Window| {
+        assert_eq!(w.sessions.tab(), b);
+        assert_eq!(w.edits.typed(), Some((Some(feature_b), "19")));
+        assert_eq!(w.tabs.count(), 2);
+        assert!(!w.sessions.busy(), "no foreground slot is held");
+        assert_eq!(recoverable(&store), [c], "listed beside a reader, whole");
+        assert_eq!(record_files(), whole, "the copy was not touched");
+    };
+
+    // One worker as `App::recover` starts it: its token comes from `Recoveries`.
+    let spawn = |w: &mut Window, recoveries: &mut Recoveries, record: RecordId| {
+        let (answers, receiver) = std::sync::mpsc::channel();
+        let (private, store) = (w.private.path().to_path_buf(), store.clone());
+        let sessions = &mut w.sessions;
+        let generation = recoveries
+            .begin(record, |generation, cancel| {
+                sessions.hold_recovery(generation);
+                std::thread::spawn(move || {
+                    let _ = answers.send(recovered_unless(&private, &store, record, cancel));
+                })
+            })
+            .expect("started");
+        (generation, receiver)
+    };
+
+    // Cancel while it waits: the worker answers at once, not at the end of its bound.
+    let reader = foreign_reader(root.path(), c);
+    let (cancelled, answers) = spawn(&mut w, &mut recoveries, c);
+    assert!(w.sessions.busy());
+    assert!(w.sessions.cancel());
+    recoveries.cancel();
+    let late = answers
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cancel ended the wait long before the 5 s bound");
+    assert!(matches!(late, Err(CadError::Cancelled)), "{:?}", late.err());
+    assert!(
+        !w.deliver_recovery(&mut recoveries, cancelled, late, Ok(())),
+        "a cancelled Recover opens nothing"
+    );
+    kept(&w);
+
+    // A newer Recover is not released by the older one's late answer.
+    let (newer, answers) = spawn(&mut w, &mut recoveries, c);
+    assert!(w.sessions.busy());
+    assert!(!w.deliver_recovery(&mut recoveries, cancelled, Err(CadError::Cancelled), Ok(())));
+    assert!(w.sessions.busy(), "the stale answer released nothing");
+
+    // The reader leaves: this Recover waited for it, and now succeeds.
+    drop(reader);
+    let answer = answers
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the reader left");
+    assert!(w.deliver_recovery(&mut recoveries, newer, answer, Ok(())));
+    assert_ne!(w.sessions.tab(), b);
+    assert!(w.sessions.recovered() && w.sessions.dirty());
+    assert_eq!(height_in(&w.sessions), 21.5);
+    assert!(recoverable(&store).is_empty(), "the copy is the new tab's");
+    w.round(a);
+    assert_eq!(w.edits.typed(), Some((Some(feature_a), "18")));
+    w.round(b);
+    assert_eq!(w.edits.typed(), Some((Some(feature_b), "19")));
+
+    // A refused one (the record is held by an owner now): nothing opens, the form
+    // stays, the holder is untouched.
+    let d = orphan(&store, &c_file, scratch.path(), 30.0);
+    let holder = store.claim(d).expect("held by this test");
+    let (refused, answers) = spawn(&mut w, &mut recoveries, d);
+    let answer = answers
+        .recv_timeout(Duration::from_secs(2))
+        .expect("held, not waited for");
+    assert!(answer.is_err());
+    assert!(!w.deliver_recovery(&mut recoveries, refused, answer, Ok(())));
+    assert_eq!(w.edits.typed(), Some((Some(feature_b), "19")));
+    assert!(!w.sessions.busy());
+    drop(holder);
+    assert_eq!(recoverable(&store), [d]);
+
+    // Quit: the window's end cancels the waiting worker instead of joining its bound.
+    let reader = foreign_reader(root.path(), d);
+    let (quit, _answers) = spawn(&mut w, &mut recoveries, d);
+    assert!(recoveries.accepts(quit));
+    let started = Instant::now();
+    recoveries.stop_all();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "Quit waited for the reader"
+    );
+    drop(reader);
+    assert_eq!(recoverable(&store), [d], "the copy is whole");
+    assert_eq!(contents(&[&a_file, &b_file, &c_file]), originals);
+    println!("\nFCAD_30S_RECOVER_BESIDE_READER_EXECUTED");
 }

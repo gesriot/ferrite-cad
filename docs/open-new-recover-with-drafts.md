@@ -102,8 +102,9 @@ is shown again the canvas sees no pressed button and reverts the unfinished drag
   unlock are unchanged. The deterministic regression holds the cleanup probe open
   while a claimant locks the same published orphan: it failed before the fix and
   passes afterward. The native New → Recover scenario no longer waits for unrelated
-  recorder lanes. Concurrent explicit listing/claim operations still use the existing
-  exclusive protocol; this change addresses automatic cleanup, not all contention.
+  recorder lanes. Concurrent explicit listing/claim operations still used the existing
+  exclusive protocol; this change addressed automatic cleanup, not all contention
+  (explicit listing was addressed by §30S: [contract](recovery-inspection-contention.md)).
 * **Drawing button permission (review).** The old saved-form fallback could enable
   Create sketch + Extrude during a camera gesture even though its handler refused
   the request. The button now uses the window's New permission alone. The real-widget

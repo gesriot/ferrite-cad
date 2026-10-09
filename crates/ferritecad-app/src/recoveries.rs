@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 use ferritecad_jobs::{
     RecordId, RecoveryEntry, RecoveryListing, RecoveryStore, RecoverySummary, format_utc,
 };
+use ferritecad_kernel::CancelToken;
 use ferritecad_types::Result;
 
 /// Which Recover an answer belongs to.
@@ -27,6 +28,10 @@ pub(crate) struct Recoveries {
     issued: RecoverGeneration,
     /// The Recover whose answer may still reach the screen.
     current: Option<(RecoverGeneration, RecordId)>,
+    /// What stops that Recover's worker, which may be waiting for a reader of the
+    /// record (§30S): Cancel and the window's end cancel it, and it gives its answer
+    /// at once instead of at the end of its bound.
+    cancel: CancelToken,
     workers: Vec<JoinHandle<()>>,
     /// What the last Recover or Delete did.
     outcome: Option<String>,
@@ -116,11 +121,12 @@ impl Recoveries {
         self.outcome.as_deref().or(self.unavailable.as_deref())
     }
 
-    /// Starts a Recover. `spawn` is handed the generation to label its answer with.
+    /// Starts a Recover. `spawn` is handed the generation to label its answer with
+    /// and the token that stops its waiting.
     pub(crate) fn begin(
         &mut self,
         record: RecordId,
-        spawn: impl FnOnce(RecoverGeneration) -> JoinHandle<()>,
+        spawn: impl FnOnce(RecoverGeneration, CancelToken) -> JoinHandle<()>,
     ) -> Option<RecoverGeneration> {
         if self.running() || self.store.is_none() {
             return None;
@@ -128,10 +134,17 @@ impl Recoveries {
         self.reap();
         self.issued += 1;
         let generation = self.issued;
-        self.workers.push(spawn(generation));
+        self.cancel = CancelToken::new();
+        self.workers.push(spawn(generation, self.cancel.clone()));
         self.current = Some((generation, record));
         self.outcome = Some("Recovering…".to_owned());
         Some(generation)
+    }
+
+    /// Cancel: the Recover in flight stops waiting. Its answer still arrives and is
+    /// refused as a cancelled one; nothing is opened and the copy is kept.
+    pub(crate) fn cancel(&self) {
+        self.cancel.cancel();
     }
 
     /// Whether this answer is the one the window waits for.
@@ -184,6 +197,7 @@ impl Recoveries {
 
     /// Joins every worker. Their answers change nothing any more.
     pub(crate) fn stop_all(&mut self) {
+        self.cancel.cancel();
         self.current = None;
         for worker in self.workers.drain(..) {
             let _ = worker.join();

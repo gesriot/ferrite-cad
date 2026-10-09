@@ -3929,8 +3929,10 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if chosen.cancel_document {
                             // A switch's slot is released by the shown tab's own
-                            // Cancel; its worker is told to stop too.
+                            // Cancel; its worker is told to stop too. So is a Recover
+                            // that is waiting for a reader of its record.
                             self.sessions.cancel();
+                            self.recoveries.cancel();
                             self.tabs.cancel_switch();
                             self.input.request_redraw();
                         }
@@ -4598,7 +4600,7 @@ impl App {
         exports::leave_document(&mut self.exports, &mut self.input);
         let proxy = self.proxy.clone();
         let sessions = &mut self.sessions;
-        self.recoveries.begin(record, move |generation| {
+        self.recoveries.begin(record, move |generation, cancel| {
             sessions.hold_recovery(generation);
             std::thread::spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4606,7 +4608,7 @@ impl App {
                         &std::env::temp_dir(),
                         &store,
                         record,
-                        &OperationContext::default(),
+                        &OperationContext::default().with_cancel(cancel),
                     )
                 }))
                 .unwrap_or_else(|_| {

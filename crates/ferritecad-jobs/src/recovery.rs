@@ -28,9 +28,21 @@
 //! The owner of a record holds an exclusive advisory lock on its `lease` for the
 //! record's whole life, and the operating system lets go of it when the process
 //! ends however it ends. A lease that can be locked (and carries the header) is
-//! an orphan; one that cannot belongs to a live window and is neither offered nor
-//! touched. A claim keeps holding the lock, so two processes never restore or
-//! extract one record at once. No PID, host name or age is consulted.
+//! an orphan; one that cannot is held, and is neither offered nor touched. A claim
+//! keeps holding the lock, so two processes never restore or extract one record at
+//! once. No PID, host name or age is consulted.
+//!
+//! # Reading is not owning (§30S)
+//!
+//! A listing takes the lease **shared**, only while it verifies that one record.
+//! A shared lock is refused exactly when somebody holds the lock exclusively, so a
+//! listing knows nobody owns, claims or removes the record while it reads, and
+//! nobody can start to until it lets go; two listings never exclude each other. A
+//! claim or removal still takes the lock exclusively: it *waits, bounded and
+//! cancellable, for readers* (they end by themselves) and never for a holder. What
+//! an exclusive refusal means is then proven rather than guessed: a shared
+//! try returning `WouldBlock` means an exclusive holder (a window, a claim or a removal — the primitive
+//! cannot say which), a granted one means only readers.
 //!
 //! # What a crash can leave
 //!
@@ -50,9 +62,10 @@ use std::str::FromStr;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferritecad_document::Document;
+use ferritecad_kernel::CancelToken;
 use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result};
 
 use crate::publish::{Existing, Temporary, path_entry_exists};
@@ -74,6 +87,12 @@ const MANIFEST_VERSION: u32 = 1;
 /// A manifest is a dozen short lines; anything bigger is not one of ours.
 const MANIFEST_LIMIT: u64 = 64 * 1024;
 const NAME_LIMIT: usize = 200;
+/// The most a claim or removal waits for readers of its record. A reader holds the
+/// lock for one verification (a SQLite open and a BLAKE3 pass over one copy), which
+/// ends by itself; this only bounds a reader that is stuck.
+const READER_WAIT: Duration = Duration::from_secs(5);
+/// How often that wait looks again. `File` has no timed lock.
+const READER_POLL: Duration = Duration::from_millis(5);
 
 /// Why a publication was not written: a newer one already was.
 pub const STALE_RECOVERY: &str =
@@ -192,9 +211,15 @@ pub struct RecoverySummary {
 
 /// Why one record cannot be used. Only that record is affected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RefusalKind {
-    /// A running FerriteCAD holds it.
+    /// Some FerriteCAD process holds the lock exclusively: a running window, a
+    /// claim or a removal. The lock cannot say which.
     Active,
+    /// Only readers held it, and still did when the bounded wait ended. Try again.
+    Busy,
+    /// The caller stopped waiting.
+    Cancelled,
     /// Written by a FerriteCAD that uses a manifest version this one does not read.
     UnknownVersion,
     /// Not a complete record: a missing, malformed or truncated part.
@@ -211,6 +236,8 @@ impl RefusalKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::Busy => "busy",
+            Self::Cancelled => "cancelled",
             Self::UnknownVersion => "unknown-version",
             Self::Damaged => "damaged",
             Self::Mismatch => "mismatch",
@@ -265,13 +292,13 @@ pub enum RecoveryEntry {
     Refused(RecoveryRefusal),
 }
 
-/// What [`RecoveryStore::list`] found. Records held by running windows are only
-/// counted.
+/// What [`RecoveryStore::list`] found. Records held exclusively are only counted.
 #[derive(Debug, Default)]
 pub struct RecoveryListing {
     /// Newest recoverable first, then refusals.
     pub entries: Vec<RecoveryEntry>,
-    /// Records a running FerriteCAD holds.
+    /// Records some FerriteCAD process holds exclusively (a running window, a claim
+    /// or a removal): never listed, claimed or removed here.
     pub active: usize,
     /// Orphaned records with nothing in them.
     pub empty: usize,
@@ -440,16 +467,16 @@ impl RecoveryStore {
         Ok(found)
     }
 
-    /// What is in the folder. Reads and verifies every orphaned record; changes
-    /// nothing and keeps no lease.
+    /// What is in the folder. Reads and verifies every record nobody holds
+    /// exclusively, each under a shared lock for the length of its own reading;
+    /// changes nothing and keeps no lease. The answer is advisory: a claim verifies
+    /// the record again under its own lock.
     pub fn list(&self) -> Result<RecoveryListing> {
         let mut listing = RecoveryListing::default();
         for record in self.record_ids()? {
-            match self.inspect(record) {
-                Inspected::Claimed(claim) => {
-                    listing
-                        .entries
-                        .push(RecoveryEntry::Recoverable(claim.summary.clone()));
+            match self.inspect(record, Hold::Read) {
+                Inspected::Verified(_, summary) => {
+                    listing.entries.push(RecoveryEntry::Recoverable(summary));
                 }
                 Inspected::Empty(_) => listing.empty += 1,
                 Inspected::Active => listing.active += 1,
@@ -474,10 +501,35 @@ impl RecoveryStore {
     }
 
     /// Takes an orphaned record and verifies it. The lease stays held until the
-    /// claim is dropped, finished, or handed to a recovered session.
+    /// claim is dropped, finished, or handed to a recovered session. Waits a
+    /// bounded time for readers of the record, never for a holder.
     pub fn claim(&self, record: RecordId) -> std::result::Result<RecoveryClaim, RecoveryRefusal> {
-        match self.inspect(record) {
-            Inspected::Claimed(claim) => Ok(claim),
+        self.claim_cancellable(record, &CancelToken::new())
+    }
+
+    /// [`Self::claim`] whose wait for readers ends at once when `cancel` is
+    /// cancelled, with [`RefusalKind::Cancelled`] and nothing taken.
+    pub fn claim_cancellable(
+        &self,
+        record: RecordId,
+        cancel: &CancelToken,
+    ) -> std::result::Result<RecoveryClaim, RecoveryRefusal> {
+        self.claim_within(record, cancel, READER_WAIT)
+    }
+
+    fn claim_within(
+        &self,
+        record: RecordId,
+        cancel: &CancelToken,
+        wait: Duration,
+    ) -> std::result::Result<RecoveryClaim, RecoveryRefusal> {
+        match self.inspect(record, Hold::Own(cancel, wait)) {
+            Inspected::Verified(lease, summary) => Ok(RecoveryClaim {
+                root: self.root.clone(),
+                directory: self.record_directory(record),
+                lease,
+                summary,
+            }),
             Inspected::Empty(_) => Err(RecoveryRefusal::new(
                 record,
                 RefusalKind::NotFound,
@@ -494,14 +546,26 @@ impl RecoveryStore {
     }
 
     /// Removes an orphaned record, recoverable or not: the person asked to. Only
-    /// the names a record is made of are removed; anything else stays.
+    /// the names a record is made of are removed; anything else stays. Waits a
+    /// bounded time for readers of the record, never for a holder.
     pub fn delete(&self, record: RecordId) -> std::result::Result<(), RecoveryRefusal> {
+        self.remove_within(record, &CancelToken::new(), READER_WAIT)
+    }
+
+    fn remove_within(
+        &self,
+        record: RecordId,
+        cancel: &CancelToken,
+        wait: Duration,
+    ) -> std::result::Result<(), RecoveryRefusal> {
         let directory = self.record_directory(record);
-        match take_lease(&directory) {
+        match own_lease(&directory, cancel, wait) {
             LeaseState::Held(lease) => {
                 remove_record(&directory, lease).map_err(|e| RecoveryRefusal::io(record, e))
             }
             LeaseState::Active => Err(active(record)),
+            LeaseState::Readers => Err(busy(record)),
+            LeaseState::Cancelled => Err(cancelled(record)),
             LeaseState::Unlockable => Err(unlockable(record)),
             LeaseState::Missing | LeaseState::NotOurs => Err(RecoveryRefusal::new(
                 record,
@@ -568,7 +632,10 @@ impl RecoveryStore {
         Err(last.unwrap_or_else(|| CadError::io("creating a recovery record", "no attempt")))
     }
 
-    fn inspect(&self, record: RecordId) -> Inspected {
+    /// Looks at one record under the lock `hold` asks for, verifying it if it has a
+    /// copy. The lock comes back with the answer; the caller keeps it (a claim) or
+    /// lets it go (a listing).
+    fn inspect(&self, record: RecordId, hold: Hold<'_>) -> Inspected {
         let directory = self.record_directory(record);
         match std::fs::symlink_metadata(&directory) {
             Ok(metadata) if metadata.is_dir() => {}
@@ -581,9 +648,14 @@ impl RecoveryStore {
             }
             Err(_) => return Inspected::NotOurs,
         }
-        let lease = match take_lease(&directory) {
+        let lease = match match hold {
+            Hold::Read => read_lease(&directory),
+            Hold::Own(cancel, wait) => own_lease(&directory, cancel, wait),
+        } {
             LeaseState::Held(lease) => lease,
             LeaseState::Active => return Inspected::Active,
+            LeaseState::Readers => return Inspected::Refused(busy(record)),
+            LeaseState::Cancelled => return Inspected::Refused(cancelled(record)),
             LeaseState::Unlockable => return Inspected::Refused(unlockable(record)),
             // Being made right now, or not ours: neither offered nor touched.
             LeaseState::Missing | LeaseState::NotOurs if !has_manifest(&directory) => {
@@ -606,19 +678,25 @@ impl RecoveryStore {
             return Inspected::Empty(lease);
         }
         match verify(record, &directory) {
-            Ok(summary) => Inspected::Claimed(RecoveryClaim {
-                root: self.root.clone(),
-                directory,
-                lease,
-                summary,
-            }),
+            Ok(summary) => Inspected::Verified(lease, summary),
             Err(refusal) => Inspected::Refused(refusal),
         }
     }
 }
 
+/// How a record is looked at.
+#[derive(Clone, Copy)]
+enum Hold<'a> {
+    /// A listing: a shared lock, so that nothing owns the record meanwhile.
+    Read,
+    /// A claim or removal: the exclusive lock, waiting this long for readers and
+    /// no longer once the token is cancelled.
+    Own(&'a CancelToken, Duration),
+}
+
 enum Inspected {
-    Claimed(RecoveryClaim),
+    /// Verified under the lock that is handed back.
+    Verified(Lease, RecoverySummary),
     Empty(#[allow(dead_code)] Lease),
     Active,
     NotOurs,
@@ -629,8 +707,28 @@ fn active(record: RecordId) -> RecoveryRefusal {
     RecoveryRefusal::new(
         record,
         RefusalKind::Active,
-        format!("recovery record {record} belongs to a FerriteCAD window that is still running"),
+        format!(
+            "recovery record {record} is held by another FerriteCAD process (a running window, or a recovery or removal in progress); it was left as it is"
+        ),
     )
+}
+
+fn busy(record: RecordId) -> RecoveryRefusal {
+    RecoveryRefusal::new(
+        record,
+        RefusalKind::Busy,
+        format!(
+            "recovery record {record} is still being read by another FerriteCAD process; try again in a moment, it was left as it is"
+        ),
+    )
+}
+
+fn cancelled(record: RecordId) -> RecoveryRefusal {
+    RecoveryRefusal {
+        record,
+        kind: RefusalKind::Cancelled,
+        error: CadError::Cancelled,
+    }
 }
 
 fn unlockable(record: RecordId) -> RecoveryRefusal {
@@ -673,7 +771,8 @@ fn create_private_directory(path: &Path) -> Result<()> {
 
 // --- the lease -------------------------------------------------------------------
 
-/// A held lease: the open, locked `lease` file of one record.
+/// A held lease: the open, locked `lease` file of one record. Exclusive for an
+/// owner, a claim or a removal; shared while a listing reads (never kept past it).
 #[derive(Debug)]
 struct Lease {
     file: File,
@@ -691,7 +790,12 @@ impl Drop for Lease {
 
 enum LeaseState {
     Held(Lease),
+    /// The lock is held exclusively (the shared try returned `WouldBlock`).
     Active,
+    /// An exclusive try was refused, but a shared one was granted: only readers.
+    Readers,
+    /// The caller stopped waiting for readers.
+    Cancelled,
     Unlockable,
     Missing,
     NotOurs,
@@ -727,7 +831,64 @@ fn create_lease(directory: &Path) -> Result<Lease> {
     Ok(Lease { file })
 }
 
+/// One try at the exclusive lease: ownership, claim, removal, empty-orphan cleanup.
 fn take_lease(directory: &Path) -> LeaseState {
+    lock_lease(directory, false)
+}
+
+/// One try at the shared lease: reading a record. Refused only by an exclusive
+/// holder, never by another reader.
+fn read_lease(directory: &Path) -> LeaseState {
+    lock_lease(directory, true)
+}
+
+/// The exclusive lease, waiting for readers and for nobody else: an exclusive
+/// holder is answered at once ([`LeaseState::Active`]); readers are polled for at
+/// most `wait` ([`LeaseState::Readers`] when they stay) and not at all once
+/// `cancel` is cancelled ([`LeaseState::Cancelled`]).
+fn own_lease(directory: &Path, cancel: &CancelToken, wait: Duration) -> LeaseState {
+    let deadline = Instant::now() + wait;
+    loop {
+        if cancel.is_cancelled() {
+            return LeaseState::Cancelled;
+        }
+        match take_lease(directory) {
+            LeaseState::Readers if Instant::now() < deadline => std::thread::sleep(READER_POLL),
+            other => return other,
+        }
+    }
+}
+
+/// Whether an exclusive try was refused by readers alone. A shared lock is granted
+/// exactly when nobody holds the lock exclusively; it is let go again at once.
+fn only_readers(file: &File) -> LeaseState {
+    shared_probe(file.try_lock_shared(), || file.unlock())
+}
+
+fn shared_probe(
+    probe: std::result::Result<(), std::fs::TryLockError>,
+    release: impl FnOnce() -> std::io::Result<()>,
+) -> LeaseState {
+    match probe {
+        Ok(()) => match release() {
+            Ok(()) => LeaseState::Readers,
+            Err(error) => {
+                LeaseState::Failed(CadError::io("releasing a recovery reader probe", error))
+            }
+        },
+        Err(std::fs::TryLockError::WouldBlock) => LeaseState::Active,
+        Err(std::fs::TryLockError::Error(error))
+            if error.kind() == std::io::ErrorKind::Unsupported =>
+        {
+            LeaseState::Unlockable
+        }
+        Err(std::fs::TryLockError::Error(error)) => {
+            LeaseState::Failed(CadError::io("probing a recovery lease", error))
+        }
+    }
+}
+
+fn lock_lease(directory: &Path, shared: bool) -> LeaseState {
     // All callers, including deletion and empty-orphan cleanup, must reject a
     // linked directory before opening any of its children.
     match std::fs::symlink_metadata(directory) {
@@ -745,18 +906,29 @@ fn take_lease(directory: &Path) -> LeaseState {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LeaseState::Missing,
         Err(error) => return LeaseState::Failed(CadError::io("reading a recovery lease", error)),
     }
+    // A reader opens the lease read-only: looking writes nothing.
     let mut file = match std::fs::OpenOptions::new()
         .read(true)
-        .write(true)
+        .write(!shared)
         .open(&path)
     {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LeaseState::Missing,
         Err(error) => return LeaseState::Failed(CadError::io("opening a recovery lease", error)),
     };
-    match file.try_lock() {
+    match if shared {
+        file.try_lock_shared()
+    } else {
+        file.try_lock()
+    } {
         Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => return LeaseState::Active,
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return if shared {
+                LeaseState::Active
+            } else {
+                only_readers(&file)
+            };
+        }
         Err(std::fs::TryLockError::Error(error))
             if error.kind() == std::io::ErrorKind::Unsupported =>
         {
@@ -1037,6 +1209,8 @@ fn verify(
     record: RecordId,
     directory: &Path,
 ) -> std::result::Result<RecoverySummary, RecoveryRefusal> {
+    #[cfg(test)]
+    reading::reached(record);
     let damaged = |why: String| RecoveryRefusal::new(record, RefusalKind::Damaged, why);
     let manifest_path = directory.join(MANIFEST);
     let metadata = std::fs::symlink_metadata(&manifest_path)
@@ -1810,9 +1984,173 @@ fn run(store: &RecoveryStore, receiver: &Receiver<Request>, notify: &dyn Fn()) {
     drop(records);
 }
 
+// --- test-only: holding a reader inside a verification -----------------------------
+
+/// Lets this crate's own tests hold a thread inside the verification of a record,
+/// after it took whatever protection it takes and before it reads anything. It is
+/// compiled into no build but the unit tests, so nothing outside can reach it.
 #[cfg(test)]
+mod reading {
+    use std::cell::RefCell;
+
+    use super::RecordId;
+
+    type Hook = Box<dyn Fn(RecordId)>;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn on_this_thread(hook: impl Fn(RecordId) + 'static) {
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn reached(record: RecordId) {
+        HOOK.with(|slot| {
+            if let Some(hook) = &*slot.borrow() {
+                hook(record);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, reason = "a gate that cannot fail is not a gate")]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+
+    use ferritecad_kernel::{CancelToken, OperationContext, mock::MockKernel};
+
     use super::*;
+    use crate::create::{NewDocument, PlateSize};
+    use crate::session::HistoryLimits;
+
+    /// A folder holding one orphaned record with a published copy of a new plate.
+    fn orphan() -> (tempfile::TempDir, RecoveryStore, RecordId) {
+        let root = tempfile::tempdir().expect("recovery folder");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let session = DocumentSession::create_document_in(
+            scratch.path(),
+            HistoryLimits::default(),
+            NewDocument::SamplePlate(PlateSize {
+                width: 70.0,
+                depth: 40.0,
+                height: 13.0,
+            }),
+            || -> Result<MockKernel> { Err(CadError::unsupported("no kernel was expected")) },
+            &OperationContext::default(),
+        )
+        .expect("a plate");
+        let store = RecoveryStore::open(root.path()).expect("store");
+        let mut record = store.create_record().expect("record");
+        record
+            .publish(1, &session.current(), "plate.fcad")
+            .expect("a copy");
+        let id = record.id();
+        drop(record);
+        (root, store, id)
+    }
+
+    /// Every file of a record: bytes and modification time, by name. The lease's
+    /// bytes are not read (a locked file cannot be read on Windows); its length and
+    /// modification time are.
+    fn bytes_and_times(
+        store: &RecoveryStore,
+        record: RecordId,
+    ) -> BTreeMap<String, (Vec<u8>, u64, std::time::SystemTime)> {
+        std::fs::read_dir(store.record_directory(record))
+            .expect("the record")
+            .map(|entry| {
+                let entry = entry.expect("entry");
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let metadata = entry.metadata().expect("metadata");
+                let bytes = if name == LEASE {
+                    Vec::new()
+                } else {
+                    std::fs::read(entry.path()).expect("bytes")
+                };
+                (
+                    name,
+                    (bytes, metadata.len(), metadata.modified().expect("mtime")),
+                )
+            })
+            .collect()
+    }
+
+    /// A listing on a thread of its own, held inside the verification of the
+    /// record until [`Self::finish`].
+    struct HeldListing {
+        release: mpsc::Sender<()>,
+        thread: std::thread::JoinHandle<Result<RecoveryListing>>,
+    }
+
+    impl HeldListing {
+        fn start(store: &RecoveryStore) -> Self {
+            let (reading_tx, reading) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel::<()>();
+            let store = store.clone();
+            let thread = std::thread::spawn(move || {
+                reading::on_this_thread(move |_| {
+                    let _ = reading_tx.send(());
+                    // Released by the test; the bound only keeps a failed test from
+                    // hanging (a dropped sender ends the wait at once).
+                    let _ = release_rx.recv_timeout(Duration::from_secs(60));
+                });
+                store.list()
+            });
+            reading
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the listing reached the verification of the record");
+            Self { release, thread }
+        }
+
+        fn finish(self) -> RecoveryListing {
+            self.release.send(()).expect("the listing is waiting");
+            self.thread
+                .join()
+                .expect("listing thread")
+                .expect("the listing")
+        }
+    }
+
+    /// The violation of §30S, deterministically: while one listing is inside the
+    /// verification of an orphaned record, another listing and a claim must see
+    /// an orphan and a reader, never "a window that is still running".
+    #[test]
+    fn a_listing_in_progress_neither_hides_the_record_nor_looks_like_its_owner() {
+        let (_root, store, record) = orphan();
+        let before = bytes_and_times(&store, record);
+        let held = HeldListing::start(&store);
+        let mut violations = Vec::new();
+
+        let other = store.list().expect("another listing");
+        if other.recoverable().count() != 1 || other.active != 0 {
+            violations.push(format!(
+                "a second listing found recoverable={} active={}",
+                other.recoverable().count(),
+                other.active
+            ));
+        }
+        let claim = store.claim_within(record, &CancelToken::new(), Duration::from_millis(50));
+        match &claim {
+            Err(refusal) if refusal.kind.as_str() == "busy" => {}
+            Err(refusal) => violations.push(format!(
+                "a claim beside a reader was refused as {}: {refusal}",
+                refusal.kind.as_str()
+            )),
+            Ok(_) => violations.push("a claim was granted beside a reader".to_owned()),
+        }
+        drop(claim);
+        assert!(violations.is_empty(), "{violations:#?}");
+
+        let listing = held.finish();
+        assert_eq!(listing.recoverable().count(), 1, "{listing:?}");
+        assert_eq!(listing.active, 0);
+        assert!(store.claim(record).is_ok(), "released: an orphan again");
+        assert_eq!(bytes_and_times(&store, record), before, "listing wrote");
+    }
 
     #[test]
     fn cleanup_never_holds_a_published_records_lease() {
@@ -1928,5 +2266,485 @@ mod tests {
             RefusalKind::Damaged
         );
         assert_eq!(kind("not a manifest"), RefusalKind::Damaged);
+    }
+
+    /// A claim or removal waits for readers alone, within its bound, and stops when
+    /// the caller does; a holder is answered at once; nobody releases what is not
+    /// theirs.
+    #[test]
+    fn a_claim_waits_for_readers_alone_within_its_bound_and_stops_when_cancelled() {
+        let (_root, store, record) = orphan();
+        let held = HeldListing::start(&store);
+
+        let started = Instant::now();
+        let refused = store
+            .claim_within(record, &CancelToken::new(), Duration::from_millis(100))
+            .map(|_| ())
+            .expect_err("a reader is still reading");
+        assert_eq!(refused.kind, RefusalKind::Busy, "{refused}");
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "a reader is waited for, to the end of the bound"
+        );
+        let refused = store
+            .remove_within(record, &CancelToken::new(), Duration::from_millis(100))
+            .expect_err("a reader is still reading");
+        assert_eq!(refused.kind, RefusalKind::Busy, "{refused}");
+
+        // Cancelled mid-wait: over long before a 30 s bound, nothing taken.
+        let cancel = CancelToken::new();
+        let stopper = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                cancel.cancel();
+            })
+        };
+        let started = Instant::now();
+        let refused = store
+            .claim_within(record, &cancel, Duration::from_secs(30))
+            .map(|_| ())
+            .expect_err("cancelled");
+        assert_eq!(refused.kind, RefusalKind::Cancelled, "{refused}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "cancel is prompt"
+        );
+        stopper.join().expect("stopper");
+
+        // The reader finished well: the record is still there, whole and claimable.
+        assert_eq!(held.finish().recoverable().count(), 1);
+        let cancelled = CancelToken::new();
+        cancelled.cancel();
+        let refused = store
+            .claim_within(record, &cancelled, Duration::from_secs(30))
+            .map(|_| ())
+            .expect_err("cancelled before it began");
+        assert_eq!(refused.kind, RefusalKind::Cancelled, "takes nothing");
+        let claim = store
+            .claim(record)
+            .expect("the cancelled attempts took nothing");
+
+        // A holder is not waited for, whatever the bound, and the refusals release
+        // nothing of the holder's.
+        let started = Instant::now();
+        let refused = store
+            .claim_within(record, &CancelToken::new(), Duration::from_secs(30))
+            .map(|_| ())
+            .expect_err("held");
+        assert_eq!(refused.kind, RefusalKind::Active, "{refused}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "no wait for a holder"
+        );
+        let refused = store
+            .remove_within(record, &CancelToken::new(), Duration::from_secs(30))
+            .expect_err("held");
+        assert_eq!(refused.kind, RefusalKind::Active, "{refused}");
+        assert_eq!(store.list().expect("list").active, 1);
+        assert!(matches!(
+            take_lease(&store.record_directory(record)),
+            LeaseState::Active
+        ));
+        drop(claim);
+        assert!(store.claim(record).is_ok());
+    }
+
+    /// A listing is advice: what it showed is verified again by the claim, under the
+    /// claim's own lock.
+    #[test]
+    fn a_stale_listing_is_verified_again_by_the_claim() {
+        let (_root, store, record) = orphan();
+        assert_eq!(store.list().expect("list").recoverable().count(), 1);
+        let copy = store.record_directory(record).join(copy_name(1));
+        let mut bytes = std::fs::read(&copy).expect("copy");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x55;
+        std::fs::write(&copy, bytes).expect("a bit flipped after the listing");
+        let refused = store.claim(record).map(|_| ()).expect_err("verified again");
+        assert_eq!(refused.kind, RefusalKind::Mismatch, "{refused}");
+        // Looking at it again says the same, and takes nothing.
+        let listing = store.list().expect("list");
+        assert!(
+            matches!(&listing.entries[..], [RecoveryEntry::Refused(r)] if r.kind == RefusalKind::Mismatch)
+        );
+        assert!(matches!(
+            take_lease(&store.record_directory(record)),
+            LeaseState::Held(_)
+        ));
+    }
+
+    /// Readers share the lock; an exclusive holder refuses them; a reader is told
+    /// from a holder; and ending a read releases it through a duplicated descriptor
+    /// (a concurrent spawn can briefly hold one), as PR #96 did for the owner.
+    #[test]
+    fn readers_share_and_are_told_from_holders_and_unlock_through_a_duplicate() {
+        // A failed probe is not evidence that another process owns the record.
+        // Feed the OS-result boundary without needing a broken filesystem, and
+        // require that a probe which took no lock releases nothing.
+        let failed = shared_probe(
+            Err(std::fs::TryLockError::Error(std::io::Error::other(
+                "probe transport failed",
+            ))),
+            || panic!("a failed probe must not unlock"),
+        );
+        assert!(
+            matches!(failed, LeaseState::Failed(CadError::Io { ref source, .. }) if source.to_string() == "probe transport failed"),
+            "an OS failure must not claim that another process owns the record"
+        );
+        assert!(matches!(
+            shared_probe(
+                Err(std::fs::TryLockError::Error(
+                    std::io::ErrorKind::Unsupported.into()
+                )),
+                || panic!("an unsupported probe must not unlock"),
+            ),
+            LeaseState::Unlockable
+        ));
+        assert!(matches!(
+            shared_probe(Err(std::fs::TryLockError::WouldBlock), || panic!(
+                "a refused probe must not unlock"
+            )),
+            LeaseState::Active
+        ));
+        assert!(matches!(
+            shared_probe(Ok(()), || Err(std::io::Error::other("unlock failed"))),
+            LeaseState::Failed(_)
+        ));
+        let root = tempfile::tempdir().expect("record directory");
+        drop(create_lease(root.path()).expect("lease"));
+        let first = read_lease(root.path());
+        let second = read_lease(root.path());
+        assert!(matches!(
+            (&first, &second),
+            (LeaseState::Held(_), LeaseState::Held(_))
+        ));
+        assert!(matches!(take_lease(root.path()), LeaseState::Readers));
+        drop(second);
+        assert!(matches!(take_lease(root.path()), LeaseState::Readers));
+        #[cfg(unix)]
+        {
+            let LeaseState::Held(read) = first else {
+                panic!("a reader holds the lease");
+            };
+            let duplicate = read.file.try_clone().expect("duplicated descriptor");
+            drop(read);
+            let owner = take_lease(root.path());
+            assert!(
+                matches!(owner, LeaseState::Held(_)),
+                "a dropped read must not remain a reader through a duplicate"
+            );
+            assert!(matches!(read_lease(root.path()), LeaseState::Active));
+            drop(duplicate);
+            assert!(matches!(take_lease(root.path()), LeaseState::Active));
+            drop(owner);
+        }
+        #[cfg(not(unix))]
+        drop(first);
+        assert!(matches!(take_lease(root.path()), LeaseState::Held(_)));
+    }
+
+    /// While an owner (an adopted claim) publishes copy after copy, listings never
+    /// see its changing files: only an orphan's whole copy of a version that was
+    /// really published, or nothing but a count.
+    #[test]
+    fn listings_racing_an_owner_never_see_a_record_change_under_them() {
+        let (root, store, record) = orphan();
+        let scratch = tempfile::tempdir().expect("scratch");
+        let versions: Vec<_> = (0..8)
+            .map(|n| {
+                DocumentSession::create_document_in(
+                    scratch.path(),
+                    HistoryLimits::default(),
+                    NewDocument::SamplePlate(PlateSize {
+                        width: 70.0,
+                        depth: 40.0,
+                        height: 14.0 + f64::from(n),
+                    }),
+                    || -> Result<MockKernel> { Err(CadError::unsupported("no kernel")) },
+                    &OperationContext::default(),
+                )
+                .expect("a plate")
+            })
+            .collect();
+        let mut known: Vec<ContentHash> = store
+            .list()
+            .expect("list")
+            .recoverable()
+            .map(|summary| summary.content)
+            .collect();
+        known.extend(versions.iter().map(|v| v.current().version().content));
+
+        let mut owner = store
+            .claim(record)
+            .expect("claimed")
+            .into_record()
+            .expect("adopted");
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let readers: Vec<_> = (0..3)
+            .map(|_| {
+                let (store, done, known) = (store.clone(), done.clone(), known.clone());
+                std::thread::spawn(move || {
+                    let (mut listings, mut wrong) = (0usize, Vec::new());
+                    while !done.load(Ordering::SeqCst) || listings == 0 {
+                        for entry in store.list().expect("a listing").entries {
+                            match entry {
+                                RecoveryEntry::Recoverable(summary)
+                                    if known.contains(&summary.content) => {}
+                                other => wrong.push(format!("{other:?}")),
+                            }
+                        }
+                        listings += 1;
+                    }
+                    (listings, wrong)
+                })
+            })
+            .collect();
+
+        for (order, version) in versions.iter().enumerate() {
+            owner
+                .publish(order as u64 + 1, &version.current(), "plate.fcad")
+                .expect("published beside the readers");
+        }
+        drop(owner);
+        done.store(true, Ordering::SeqCst);
+        for reader in readers {
+            let (listings, wrong) = reader.join().expect("reader");
+            assert!(listings > 0 && wrong.is_empty(), "{wrong:#?}");
+        }
+        let last = versions[7].current().version().content;
+        let found: Vec<_> = store.list().expect("list").recoverable().cloned().collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].content, last,
+            "the newest whole copy, once it is an orphan"
+        );
+        drop(root);
+    }
+
+    // --- two independent processes ---------------------------------------------------
+
+    const ROLE: &str = "FCAD_30S_ROLE";
+    const FOLDER: &str = "FCAD_30S_FOLDER";
+    const RECORD: &str = "FCAD_30S_RECORD";
+    const SAY: &str = "FCAD-30S-CHILD ";
+
+    /// The child process: this test binary, started by name, doing one role against
+    /// a folder and saying what happened. Ignored, so it runs only when asked.
+    #[test]
+    #[ignore = "run as a child process by the §30S process tests"]
+    fn child_process_30s() {
+        use std::io::{BufRead as _, Write as _};
+        let Ok(role) = std::env::var(ROLE) else {
+            return;
+        };
+        let folder = std::env::var_os(FOLDER).expect("a folder");
+        let store = RecoveryStore::at(Path::new(&folder)).expect("store");
+        let record = || -> RecordId {
+            std::env::var(RECORD)
+                .expect("a record")
+                .parse()
+                .expect("a record id")
+        };
+        let say = |line: &str| {
+            println!("{SAY}{line}");
+            let _ = std::io::stdout().flush();
+        };
+        // The parent lets the child go by writing a line (or by dying).
+        let until_released = || {
+            let _ = std::io::stdin().lock().read_line(&mut String::new());
+        };
+        match role.as_str() {
+            "reader" => {
+                reading::on_this_thread(move |_| {
+                    say("READING");
+                    until_released();
+                });
+                let listing = store.list().expect("the listing");
+                say(&format!(
+                    "LISTED recoverable={} active={}",
+                    listing.recoverable().count(),
+                    listing.active
+                ));
+            }
+            "claimer" => match store.claim(record()) {
+                Ok(claim) => {
+                    say("CLAIMED");
+                    until_released();
+                    drop(claim);
+                }
+                Err(refusal) => say(&format!("REFUSED {}", refusal.kind.as_str())),
+            },
+            "deleter" => match store.delete(record()) {
+                Ok(()) => say("DELETED"),
+                Err(refusal) => say(&format!("REFUSED {}", refusal.kind.as_str())),
+            },
+            other => panic!("unknown role {other}"),
+        }
+    }
+
+    /// A child process in one role. Killed and reaped when dropped unfinished, so a
+    /// failing test leaves none behind.
+    struct Child {
+        process: std::process::Child,
+        said: mpsc::Receiver<String>,
+        stdin: Option<std::process::ChildStdin>,
+    }
+
+    impl Child {
+        fn start(role: &str, folder: &Path, record: Option<RecordId>) -> Self {
+            use std::io::BufRead as _;
+            use std::process::{Command, Stdio};
+            let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+            command
+                .args([
+                    "recovery::tests::child_process_30s",
+                    "--exact",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(ROLE, role)
+                .env(FOLDER, folder)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit());
+            if let Some(record) = record {
+                command.env(RECORD, record.to_string());
+            }
+            let mut process = command.spawn().expect("a child process");
+            let stdout = process.stdout.take().expect("stdout");
+            let stdin = process.stdin.take();
+            let (sender, said) = mpsc::channel();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines() {
+                    let Ok(line) = line else { break };
+                    // libtest may have started the line with the test's name.
+                    if let Some(at) = line.find(SAY)
+                        && sender.send(line[at + SAY.len()..].to_owned()).is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            Self {
+                process,
+                said,
+                stdin,
+            }
+        }
+
+        /// The child's next sentence; the child is killed if it says nothing.
+        fn says(&self) -> String {
+            self.said
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the child said what it was started to say")
+        }
+
+        /// Lets a waiting child go on, expects its last sentence, and waits for it
+        /// to end well.
+        fn release_and_finish_after(mut self, last: &str) {
+            drop(self.stdin.take());
+            assert_eq!(self.says(), last);
+            self.release_and_finish();
+        }
+
+        /// Lets a waiting child go on, and waits for it to end well.
+        fn release_and_finish(mut self) {
+            drop(self.stdin.take());
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            loop {
+                if let Some(status) = self.process.try_wait().expect("waiting") {
+                    assert!(status.success(), "the child ended with {status}");
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the child never ended"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    impl Drop for Child {
+        fn drop(&mut self) {
+            if self.process.try_wait().ok().flatten().is_none() {
+                let _ = self.process.kill();
+                let _ = self.process.wait();
+            }
+        }
+    }
+
+    /// The violation across processes: a second process reading an orphan must not
+    /// hide it from a third, nor make it look like a window to a claim; and two
+    /// claims, a claim and a removal still exclude each other.
+    #[test]
+    fn processes_that_read_claim_and_remove_an_orphan_exclude_only_the_owners() {
+        let (root, store, record) = orphan();
+        let before = bytes_and_times(&store, record);
+        let mut violations = Vec::new();
+
+        // One process is reading the record; this one lists and claims meanwhile.
+        let reader = Child::start("reader", root.path(), None);
+        assert_eq!(reader.says(), "READING");
+        let beside = store.list().expect("a listing beside a reading process");
+        if beside.recoverable().count() != 1 || beside.active != 0 {
+            violations.push(format!(
+                "a listing beside a reading process found recoverable={} active={}",
+                beside.recoverable().count(),
+                beside.active
+            ));
+        }
+        match store.claim_within(record, &CancelToken::new(), Duration::from_millis(50)) {
+            Err(refusal) if refusal.kind.as_str() == "busy" => {}
+            Err(refusal) => violations.push(format!(
+                "a claim beside a reading process was refused as {}",
+                refusal.kind.as_str()
+            )),
+            Ok(_) => violations.push("a claim was granted beside a reader".to_owned()),
+        }
+        assert!(violations.is_empty(), "{violations:#?}");
+        reader.release_and_finish_after("LISTED recoverable=1 active=0");
+
+        // Two claims: one wins in this process; another process and a removal are
+        // refused as held; letting go frees it for exactly one more.
+        let claim = store
+            .claim(record)
+            .expect("an orphan once the reader is gone");
+        let loser = Child::start("claimer", root.path(), Some(record));
+        assert_eq!(loser.says(), "REFUSED active");
+        loser.release_and_finish();
+        let deleter = Child::start("deleter", root.path(), Some(record));
+        assert_eq!(deleter.says(), "REFUSED active");
+        deleter.release_and_finish();
+        assert_eq!(
+            bytes_and_times(&store, record),
+            before,
+            "the record changed"
+        );
+        drop(claim);
+        let winner = Child::start("claimer", root.path(), Some(record));
+        assert_eq!(winner.says(), "CLAIMED");
+        assert_eq!(
+            store.claim(record).map(|_| ()).expect_err("held").kind,
+            RefusalKind::Active
+        );
+        assert_eq!(store.list().expect("list").active, 1);
+        winner.release_and_finish();
+        assert_eq!(
+            bytes_and_times(&store, record),
+            before,
+            "the record changed"
+        );
+
+        // Removal is exclusive too, and final.
+        let deleter = Child::start("deleter", root.path(), Some(record));
+        assert_eq!(deleter.says(), "DELETED");
+        deleter.release_and_finish();
+        assert_eq!(
+            store.claim(record).map(|_| ()).expect_err("gone").kind,
+            RefusalKind::NotFound
+        );
     }
 }

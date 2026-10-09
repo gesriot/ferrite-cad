@@ -759,6 +759,27 @@ jobs:
             cargo test -p ferritecad-jobs --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-job.log
             if grep -q 'skipped:' recovery-job.log || ! grep -Fq "test $gate ... ok" recovery-job.log; then exit 1; fi
           done
+          # §30S: reading the recovery folder is not owning a record. A listing holds
+          # a shared lock only while it verifies; a claim or removal waits, bounded
+          # and cancellable, for readers and never for a holder. Held readers, two
+          # independent processes and a racing owner; the lease unlocks of PR #96 and
+          # the cleanup of PR #97 stay gated beside them. All kernel-free.
+          for gate in a_listing_in_progress_neither_hides_the_record_nor_looks_like_its_owner \
+            processes_that_read_claim_and_remove_an_orphan_exclude_only_the_owners \
+            a_claim_waits_for_readers_alone_within_its_bound_and_stops_when_cancelled \
+            a_stale_listing_is_verified_again_by_the_claim \
+            listings_racing_an_owner_never_see_a_record_change_under_them \
+            readers_share_and_are_told_from_holders_and_unlock_through_a_duplicate \
+            cleanup_never_holds_a_published_records_lease; do
+            cargo test -p ferritecad-jobs --lib "recovery::tests::$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-reading.log
+            if grep -q 'skipped:' recovery-reading.log || ! grep -Fq "test recovery::tests::$gate ... ok" recovery-reading.log; then exit 1; fi
+          done
+          if [ "$RUNNER_OS" != Windows ]; then
+            # A duplicated descriptor is a Unix situation (a concurrent spawn).
+            gate=recovery::tests::dropping_a_lease_unlocks_before_a_duplicated_descriptor_closes
+            cargo test -p ferritecad-jobs --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-descriptor.log
+            if grep -q 'skipped:' recovery-descriptor.log || ! grep -Fq "test $gate ... ok" recovery-descriptor.log; then exit 1; fi
+          fi
           # §30O: a killed window with two dirty tabs (two lanes of the one recorder)
           # leaves both copies. Prints its marker, so "ok" follows on its own line.
           gate=a_killed_window_with_two_tabs_leaves_both_dirty_documents_recoverable
@@ -784,7 +805,9 @@ jobs:
           for gate in list_and_extract_share_the_claim_keep_the_record_and_refuse_occupied_outputs \
             active_damaged_and_unknown_records_are_refused_as_data \
             a_missing_folder_lists_nothing_and_is_not_created_and_the_variable_names_the_folder \
-            usage_stays_text_and_a_lost_report_after_extraction_exits_7_and_keeps_the_file; do
+            usage_stays_text_and_a_lost_report_after_extraction_exits_7_and_keeps_the_file \
+            an_extraction_waits_for_a_reader_and_says_busy_only_when_the_reader_stays \
+            listings_in_other_processes_never_stop_an_extraction_or_change_anything; do
             cargo test -p ferritecad-cli --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-cli.log
             if grep -q 'skipped:' recovery-cli.log || ! grep -Fq "test $gate ... ok" recovery-cli.log; then exit 1; fi
           done
@@ -1016,7 +1039,8 @@ jobs:
             "sessions::tests::tabs::restore::an_empty_end_clears_the_offer_and_a_list_that_cannot_be_kept_stops_quit_once FCAD_30R_EMPTY_AND_FAILED_LIST_EXECUTED" \
             "sessions::tests::tabs::restore::reopen_restores_saved_files_beside_open_tabs_in_order_and_shows_the_last_shown FCAD_30R_REOPEN_EXECUTED" \
             "sessions::tests::tabs::restore::cancel_late_answers_and_a_full_window_never_revive_or_mix_a_reopen FCAD_30R_CANCEL_LATE_FULL_EXECUTED" \
-            "sessions::tests::tabs::restore::stub_reopen_is_refused_at_the_picture_and_keeps_the_open_tab FCAD_30R_STUB_REOPEN_EXECUTED"
+            "sessions::tests::tabs::restore::stub_reopen_is_refused_at_the_picture_and_keeps_the_open_tab FCAD_30R_STUB_REOPEN_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_new_recover::recover_waiting_for_a_reader_obeys_cancel_late_answers_and_quit_beside_forms_in_two_tabs FCAD_30S_RECOVER_BESIDE_READER_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"

@@ -65,10 +65,14 @@ ferritecad extract-recovery RECORD --output PATH [--recovery-dir DIR] [--json]
    and is never followed anywhere else.
 6. **Lease.** The owner holds an exclusive advisory lock on `lease` (header
    `FERRITECAD-RECOVERY-LEASE 1`) for the life of the record. A lockable lease with
-   the header is an orphan and may be claimed; a held lease is a live viewer's and is
-   not listed as recoverable, claimed or removed. A claim holds the lease until it is
-   dropped, finished or handed to a recovered session. No PID, host or age is used.
-   A filesystem that cannot lock refuses.
+   the header is an orphan and may be claimed; a lease held exclusively is not listed
+   as recoverable, claimed or removed. A claim holds the lease until it is dropped,
+   finished or handed to a recovered session. No PID, host or age is used. A filesystem
+   that cannot lock refuses. *Since §30S* a listing only reads, so it takes the lease
+   **shared** while it verifies one record and never keeps it; a claim or removal waits
+   a bounded time (5 s, cancellable) for readers, never for an exclusive holder, whose
+   refusal is `active` (a window, a claim or a removal — the lock cannot say which);
+   readers that stay are `busy` ([contract](recovery-inspection-contention.md)).
 7. **Validation of a claim.** Directory and files are plain (no symbolic links);
    manifest parses; its record id is the directory's; the copy's length and BLAKE3
    match; it opens read-only as a current-schema document whose id, content version
@@ -105,7 +109,7 @@ ferritecad extract-recovery RECORD --output PATH [--recovery-dir DIR] [--json]
     Lease acquisition rejects a record-directory symlink before accessing children;
     this also protects explicit deletion and the empty-orphan sweep.
 12. **CLI.** `list-recovery` reads the folder (no claim is kept, nothing is changed,
-    no kernel). `extract-recovery` claims the record, copies its model with the same
+    no kernel; shared lock per record since §30S). `extract-recovery` claims the record, copies its model with the same
     identities to `--output` by the shared no-clobber publication, and releases the
     claim: the record stays. It refuses an active record, an occupied output and an
     output inside the recovery folder.
