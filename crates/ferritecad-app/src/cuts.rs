@@ -336,7 +336,7 @@ impl Editor {
             Subject::Add(_) => "Add circular cut",
             Subject::Edit(_) => "Edit circular cut",
         };
-        egui::Window::new(title)
+        crate::form_window(ui, title)
             .default_width(560.)
             .resizable(false)
             .show(ui.ctx(), |ui| {

@@ -47,7 +47,9 @@ looked at from. Each tab saves to its own file.
 3. **One foreground operation.** A switch holds the shown tab's operation slot (as
    Recover does). Showing or closing another tab and Quit wait while any operation,
    Open, New, export or Recover runs, or while a form is open (forms describe one
-   picture and are never carried to another document). Every session answer carries
+   picture and are never carried to another document). *Since §30P an idle edit form
+   no longer holds the window: it stays with its own tab
+   ([tab-edit-drafts.md](tab-edit-drafts.md)).* Every session answer carries
    `Address { tab, generation }`; an answer for another tab, a closed tab or an older
    generation changes nothing and releases no slot. Cancel of a switch releases the
    slot at once; its late picture is dropped.
@@ -83,7 +85,8 @@ looked at from. Each tab saves to its own file.
 
 ## Not here
 
-Restoring the tabs or their order after a restart, per-tab form drafts, background
+Restoring the tabs or their order after a restart, per-tab form drafts (*added by
+§30P: [tab-edit-drafts.md](tab-edit-drafts.md)*), background
 work in hidden tabs, several windows, docking, a workspace database, a CLI session
 protocol. The command line is unchanged: each command works on the file it is given
 and reaches the same models (see the verification record). §30, Milestone 5C and the

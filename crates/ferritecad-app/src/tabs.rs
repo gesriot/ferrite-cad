@@ -12,6 +12,11 @@
 //! (Apply, Add, exports, Save, checkpoints, Recover) keeps working on exactly the
 //! accepted active session. A hidden tab has no picture: showing it builds one on
 //! a worker, and the tab becomes active in the same statement that shows it.
+//!
+//! §30P: so are the shown tab's edit forms — the window's `Edits` height form and
+//! its `sketch::Editor` with every other saved-object form. A hidden tab keeps
+//! them as a [`Draft`]: the same values, moved, never copied or re-read, in the
+//! statement that hides the tab, and given back in the one that shows it again.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,7 +28,9 @@ use ferritecad_kernel::CancelToken;
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::ViewportInput;
 
+use crate::edits::{Edits, Form};
 use crate::sessions::{Bind, Sessions};
+use crate::sketch::Editor;
 
 /// The most documents one window keeps open. Each tab may hold up to 64 private
 /// versions and 512 MiB of them, so the window as a whole holds at most eight
@@ -72,6 +79,62 @@ pub(crate) struct View {
 struct Hidden {
     sessions: Sessions,
     view: View,
+    /// §30P: the forms that were open when the tab was hidden; `None` when none was.
+    draft: Option<Draft>,
+}
+
+/// §30P: the edit forms of a hidden tab, exactly as they were left: typed text,
+/// picked ids, pending removals and additions, each form's own Undo and Redo.
+/// Only idle forms: a worker never leaves the window, and nothing here runs.
+pub(crate) struct Draft {
+    height: Option<Form>,
+    editor: Box<Editor>,
+    /// The accepted version the forms describe: the tab's current one when it was
+    /// hidden. Its identity, not its content: two copies of one file, or one
+    /// file's two equal versions, are not the same version.
+    base: Arc<Snapshot>,
+}
+
+/// §30P: the shown tab's forms as the window holds them, lent to the statements
+/// that hide and show a tab.
+pub(crate) struct Forms<'a> {
+    pub(crate) edits: &'a mut Edits,
+    pub(crate) editor: &'a mut Editor,
+}
+
+impl Forms<'_> {
+    /// Takes the open forms of the tab `of` is the controller of, leaving none
+    /// shown. `None` (and nothing taken) when no form about its document is open.
+    fn park(&mut self, of: &Sessions) -> Option<Draft> {
+        if !(self.edits.form_open() || self.editor.saved_object_open()) {
+            return None;
+        }
+        let base = of.export_source()?;
+        Some(Draft {
+            height: self.edits.take_form(),
+            editor: Box::new(std::mem::take(self.editor)),
+            base,
+        })
+    }
+
+    /// Gives `draft` back to the window, as it was left. A draft made on another
+    /// version than `to`'s current one comes back held: readable, cancellable,
+    /// never applied (`Sessions::hold_stale_draft`).
+    fn restore(&mut self, draft: Draft, to: &mut Sessions) {
+        let Draft {
+            height,
+            editor,
+            base,
+        } = draft;
+        if !to
+            .export_source()
+            .is_some_and(|current| Arc::ptr_eq(&current, &base))
+        {
+            to.hold_stale_draft();
+        }
+        self.edits.restore_form(height);
+        *self.editor = *editor;
+    }
 }
 
 /// What follows once a tab is shown.
@@ -111,18 +174,24 @@ pub(crate) enum Opening {
 pub(crate) enum CloseStep {
     /// Nothing would be lost: close it.
     Now,
-    /// Unsaved and hidden: show it first, then ask.
+    /// Unsaved, or keeping an open form (§30P), and hidden: show it first.
     Show,
     /// Unsaved and shown: ask Save / Discard / Cancel.
     Ask,
+    /// §30P: shown with a form open: the person finishes or cancels it first.
+    /// Nothing is closed, saved or applied.
+    Form,
 }
 
 /// The next thing a Quit pass does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuitStep {
+    /// §30P: the shown tab has a form open: the pass stops there, nothing closed.
+    Form,
     /// The shown tab is unsaved and has not been answered: ask about it.
     Ask,
-    /// This hidden tab is unsaved and has not been answered: show it first.
+    /// This hidden tab is unsaved, or keeps an open form, and has not been
+    /// answered: show it first.
     Show(TabId),
     /// Every unsaved tab was saved or answered Discard: the window may end.
     Exit,
@@ -211,6 +280,13 @@ impl Tabs {
         }
     }
 
+    /// §30P: whether hidden `tab` keeps an open form.
+    #[cfg(test)]
+    pub(crate) fn has_draft(&self, tab: TabId) -> bool {
+        self.hidden(tab)
+            .is_some_and(|hidden| hidden.draft.is_some())
+    }
+
     /// The tab whose document is the file at `path` (that file through any name),
     /// if one is open. A tab other than `except` only.
     pub(crate) fn owner_of(
@@ -281,20 +357,24 @@ impl Tabs {
     }
 
     /// Binds an arriving picture's document change. Called by the window between
-    /// preparing the picture and replacing the shown one, with the camera and the
-    /// typed checkpoint name of the tab being left (or of nothing, in an empty
-    /// window). An error leaves every tab and the picture as they were.
+    /// preparing the picture and replacing the shown one, with the camera, the
+    /// typed checkpoint name and the forms of the tab being left (or of nothing,
+    /// in an empty window). An error leaves every tab, form and the picture as
+    /// they were.
     pub(crate) fn bind(
         &mut self,
         active: &mut Sessions,
         bind: Bind,
         camera: &ViewportInput,
         checkpoint_name: &mut String,
+        forms: &mut Forms<'_>,
     ) -> Result<()> {
         match bind {
-            Bind::Open(session) => self.open(active, *session, camera, checkpoint_name),
+            Bind::Open(session) => self.open(active, *session, camera, checkpoint_name, forms),
             Bind::Staged => active.commit_staged(),
-            Bind::Switch(generation) => self.activate(active, generation, camera, checkpoint_name),
+            Bind::Switch(generation) => {
+                self.activate(active, generation, camera, checkpoint_name, forms)
+            }
         }
     }
 
@@ -306,6 +386,7 @@ impl Tabs {
         session: DocumentSession,
         camera: &ViewportInput,
         checkpoint_name: &mut String,
+        forms: &mut Forms<'_>,
     ) -> Result<()> {
         self.room().map_err(CadError::input)?;
         if let Some(path) = session.logical_path()
@@ -323,12 +404,15 @@ impl Tabs {
         let at = match previous.has_session() {
             true => {
                 let left = previous.tab();
+                // Forms about the document left stay with it, never with the new one.
+                let draft = forms.park(&previous);
                 self.hidden.push(Hidden {
                     sessions: previous,
                     view: View {
                         camera: camera.clone(),
                         checkpoint_name: std::mem::take(checkpoint_name),
                     },
+                    draft,
                 });
                 self.order
                     .iter()
@@ -417,13 +501,15 @@ impl Tabs {
 
     /// The statement that makes the switched-to tab active: only for the switch
     /// still awaited, whose slot is still held (not cancelled). The tab being
-    /// left is hidden with its camera and typed name.
+    /// left is hidden with its camera, typed name and open forms; the shown one's
+    /// forms come back as they were left (§30P).
     fn activate(
         &mut self,
         active: &mut Sessions,
         generation: u64,
         camera: &ViewportInput,
         checkpoint_name: &mut String,
+        forms: &mut Forms<'_>,
     ) -> Result<()> {
         let target = self
             .switch
@@ -437,9 +523,14 @@ impl Tabs {
         if !active.finish_switch(generation) {
             return Err(CadError::Cancelled);
         }
-        let Hidden { sessions, view } = self
+        let Hidden {
+            sessions,
+            view,
+            draft,
+        } = self
             .take_hidden(target)
             .expect("the target was found hidden above");
+        let left = forms.park(active);
         let previous = std::mem::replace(active, sessions);
         if previous.has_session() {
             self.hidden.push(Hidden {
@@ -448,10 +539,14 @@ impl Tabs {
                     camera: camera.clone(),
                     checkpoint_name: std::mem::take(checkpoint_name),
                 },
+                draft: left,
             });
         }
         *checkpoint_name = view.checkpoint_name;
         active.status.clear();
+        if let Some(draft) = draft {
+            forms.restore(draft, active);
+        }
         Ok(())
     }
 
@@ -518,17 +613,25 @@ impl Tabs {
 
     // --- closing ---------------------------------------------------------------
 
-    /// What closing `tab` needs first.
-    pub(crate) fn close_step(&self, active: &Sessions, tab: TabId) -> Option<CloseStep> {
+    /// What closing `tab` needs first. `form_open`: the shown tab has a form open.
+    /// A form is never closed behind the person's back, even over a clean model.
+    pub(crate) fn close_step(
+        &self,
+        active: &Sessions,
+        tab: TabId,
+        form_open: bool,
+    ) -> Option<CloseStep> {
         if active.has_session() && active.tab() == tab {
-            return Some(if active.dirty() {
+            return Some(if form_open {
+                CloseStep::Form
+            } else if active.dirty() {
                 CloseStep::Ask
             } else {
                 CloseStep::Now
             });
         }
         let hidden = self.hidden(tab)?;
-        Some(if hidden.sessions.dirty() {
+        Some(if hidden.sessions.dirty() || hidden.draft.is_some() {
             CloseStep::Show
         } else {
             CloseStep::Now
@@ -594,17 +697,24 @@ impl Tabs {
         }
     }
 
-    /// The next thing the Quit pass does: the shown tab first, then each unsaved
-    /// hidden tab in the row's order. Saved tabs are clean and need nothing.
-    pub(crate) fn quit_step(&self, active: &Sessions) -> QuitStep {
+    /// The next thing the Quit pass does: the shown tab first, then each hidden
+    /// tab that is unsaved or keeps a form (§30P), in the row's order. Saved tabs
+    /// without a form need nothing. `form_open`: the shown tab has a form open.
+    pub(crate) fn quit_step(&self, active: &Sessions, form_open: bool) -> QuitStep {
         let answered = self.quitting.as_deref().unwrap_or_default();
+        if active.has_session() && form_open {
+            return QuitStep::Form;
+        }
         if active.has_session() && active.dirty() && !answered.contains(&active.tab()) {
             return QuitStep::Ask;
         }
         self.order
             .iter()
             .filter(|tab| !answered.contains(tab))
-            .find(|tab| self.hidden(**tab).is_some_and(|h| h.sessions.dirty()))
+            .find(|tab| {
+                self.hidden(**tab)
+                    .is_some_and(|h| h.sessions.dirty() || h.draft.is_some())
+            })
             .map_or(QuitStep::Exit, |tab| QuitStep::Show(*tab))
     }
 
@@ -635,6 +745,16 @@ impl Tabs {
     #[cfg(test)]
     pub(crate) fn hidden_sessions(&self, tab: TabId) -> Option<&Sessions> {
         self.hidden(tab).map(|hidden| &hidden.sessions)
+    }
+
+    /// A hidden tab's controller, to change it behind the window's back (§30P:
+    /// what no window route can do while a tab is hidden).
+    #[cfg(test)]
+    pub(crate) fn hidden_sessions_mut(&mut self, tab: TabId) -> Option<&mut Sessions> {
+        self.hidden
+            .iter_mut()
+            .find(|hidden| hidden.sessions.tab() == tab)
+            .map(|hidden| &mut hidden.sessions)
     }
 
     #[cfg(test)]

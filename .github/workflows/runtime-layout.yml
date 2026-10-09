@@ -868,6 +868,15 @@ jobs:
           grep -Fq "test $gate ... " session-tabs-mixed.log
           grep -q '^test result: ok\. 1 passed; 0 failed' session-tabs-mixed.log
           grep -q '^FCAD_30O_MIXED_TABS_EXECUTED$' session-tabs-mixed.log
+          # §30P: two plates' height forms kept through switches drawn by Open
+          # CASCADE with no solver, and applied after returning.
+          gate=sessions::tests::tabs::drafts::mixed_drafts_switch_and_apply_with_occt_and_no_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-drafts-mixed.log
+          if grep -q 'skipped:' session-drafts-mixed.log; then exit 1; fi
+          grep -Fq "test $gate ... " session-drafts-mixed.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' session-drafts-mixed.log
+          grep -q '^FCAD_30P_MIXED_DRAFTS_EXECUTED$' session-drafts-mixed.log
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
@@ -1291,10 +1300,16 @@ jobs:
             windows) tabs_artifacts="$(cygpath -w "$tabs_artifacts")" ;;
           esac
           export FCAD_TABS_SESSION_ARTIFACTS="$tabs_artifacts"
-          # Both print their marker, so libtest's "ok" follows on a line of its own.
+          # §30P: forms left open in both tabs and applied after returning to each;
+          # its exports go to the same folder for the pinned reader.
+          export FCAD_TAB_DRAFTS_ARTIFACTS="$tabs_artifacts"
+          # Each prints its marker, so libtest's "ok" follows on a line of its own.
           for check in \
             "sessions::tests::tabs::native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_command_line FCAD_30O_NATIVE_TABS_EXECUTED" \
-            "sessions::tests::tabs::native_tabs_scenario_on_session_files_passes_the_comparator_and_its_controls FCAD_30O_SESSION_FILES_COMPARE_OK negative_controls=6 all_SQL_cells=true"
+            "sessions::tests::tabs::native_tabs_scenario_on_session_files_passes_the_comparator_and_its_controls FCAD_30O_SESSION_FILES_COMPARE_OK negative_controls=6 all_SQL_cells=true" \
+            "sessions::tests::tabs::drafts::native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_line FCAD_30P_NATIVE_DRAFTS_EXECUTED" \
+            "sessions::tests::tabs::drafts::native_replace_length_drafts_of_two_copies_apply_to_their_own_tab_like_the_command_line FCAD_30P_NATIVE_CONSTRAINT_DRAFTS_EXECUTED" \
+            "sessions::tests::tabs::drafts::native_tab_drafts_scenario_on_session_files_passes_the_comparator_and_its_controls FCAD_30P_SESSION_FILES_COMPARE_OK negative_controls=6 all_SQL_cells=true"
           do
             gate="${check%% *}"
             marker="${check#* }"
@@ -1305,11 +1320,12 @@ jobs:
             grep -q '^test result: ok\. 1 passed; 0 failed' session-tabs-native.log
             grep -Eq "^${marker}( |\$)" session-tabs-native.log
           done
-          for name in tabs-a tabs-b; do
+          for name in tabs-a tabs-b drafts-a drafts-b; do
             test -s "$tabs_dir/$name.fbx"
             test -s "$tabs_dir/$name.stl"
           done
           echo "FCAD_TABS_SESSION_FBX_DIR=$tabs_artifacts" >> "$GITHUB_ENV"
+          echo "FCAD_TAB_DRAFTS_FBX_DIR=$tabs_artifacts" >> "$GITHUB_ENV"
 
           fillet_dir="$RUNNER_TEMP/fillet-session"
           mkdir -p "$fillet_dir"
@@ -3001,6 +3017,7 @@ jobs:
           grep -q '^FCAD_RECOVERY_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHECKPOINT_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_TABS_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_TAB_DRAFTS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
 

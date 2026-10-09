@@ -362,7 +362,7 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Edit Chamfer distance")
+        crate::form_window(ui, "Edit Chamfer distance")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
@@ -553,7 +553,7 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Chamfer one vertical edge")
+        crate::form_window(ui, "Chamfer one vertical edge")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {

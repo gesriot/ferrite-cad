@@ -368,7 +368,9 @@ Open, New and Recover had to replace the document on screen. The decision:
 * **One foreground operation per window.** A switch reserves the active session's
   operation slot the way Recover does. Switching, closing and Quit wait while any
   operation, load, export or create is running or a form is open (a form never moves
-  to another document; the minimal honest rule, not per-tab drafts). Every session
+  to another document; the minimal honest rule, not per-tab drafts). *§30P replaced
+  the form part of this rule: an idle form is kept with its own tab, moved as a value in
+  the same statement as the switch ([../tab-edit-drafts.md](../tab-edit-drafts.md)).* Every session
   answer carries its tab and generation (`sessions::Address`); an answer for another
   tab, a closed tab or an older generation changes nothing and releases nothing.
 * **Open, New, Recover add a tab.** The document on screen stays, so nothing is asked

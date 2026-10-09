@@ -291,7 +291,7 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Edit Fillet radius")
+        crate::form_window(ui, "Edit Fillet radius")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
@@ -499,7 +499,7 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Fillet one vertical edge")
+        crate::form_window(ui, "Fillet one vertical edge")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {

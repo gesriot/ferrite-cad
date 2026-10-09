@@ -423,3 +423,12 @@ pub(crate) fn replace_length_offers_apply(
     let offered = painted(&out, "Apply constraints");
     (e, offered)
 }
+
+/// §30P: one press of `label` on a form the window holds, through the widgets.
+pub(crate) fn press(e: &mut Editor, label: &str) {
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        frame(&ctx, e, vec![]);
+    }
+    click(&ctx, e, label);
+}

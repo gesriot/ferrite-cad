@@ -980,10 +980,21 @@ jobs:
           grep -q '^test result: ok\. 1 passed; 0 failed' checkpoint-app.log
           grep -q '^FCAD_30N_STUB_CHECKPOINTS_EXECUTED$' checkpoint-app.log
           # §30O: late, cancelled and foreign answers through the tab list, and a
-          # switch refused at its picture without a kernel. Both print a marker.
+          # switch refused at its picture without a kernel. §30P: each tab's open
+          # forms kept, refused, closed, quit and drawn per tab, and a switch refused
+          # at its picture keeping both drafts. Every one prints a marker.
           for check in \
             "sessions::tests::tabs::late_cancelled_or_foreign_answers_change_no_tab_and_release_no_slot FCAD_30O_LATE_ANSWERS_EXECUTED" \
-            "sessions::tests::tabs::stub_switching_is_refused_at_the_picture_and_keeps_the_shown_tab FCAD_30O_STUB_TABS_EXECUTED"
+            "sessions::tests::tabs::stub_switching_is_refused_at_the_picture_and_keeps_the_shown_tab FCAD_30O_STUB_TABS_EXECUTED" \
+            "sessions::tests::tabs::drafts::height_drafts_of_two_copies_stay_literal_and_apply_only_to_their_own_tab FCAD_30P_HEIGHT_DRAFTS_EXECUTED" \
+            "sessions::tests::tabs::drafts::constraint_drafts_with_one_set_of_ids_keep_picks_changes_and_history_per_tab FCAD_30P_CONSTRAINT_DRAFTS_EXECUTED" \
+            "sessions::tests::tabs::drafts::vertex_drafts_of_two_copies_keep_their_own_text_and_draft_history FCAD_30P_VERTEX_DRAFTS_EXECUTED" \
+            "sessions::tests::tabs::drafts::running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts FCAD_30P_REFUSED_SWITCHES_EXECUTED" \
+            "sessions::tests::tabs::drafts::close_and_quit_keep_an_open_form_even_over_a_clean_model FCAD_30P_CLOSE_QUIT_FORMS_EXECUTED" \
+            "sessions::tests::tabs::drafts::a_draft_made_on_another_version_comes_back_held_and_is_never_applied FCAD_30P_STALE_DRAFT_EXECUTED" \
+            "sessions::tests::tabs::drafts::the_same_control_in_two_tabs_shares_no_focus_or_text FCAD_30P_FORM_FOCUS_EXECUTED" \
+            "sketch::tests::floating_forms_in_two_tabs_do_not_share_keyboard_focus FCAD_30P_FLOATING_FORM_FOCUS_EXECUTED" \
+            "sessions::tests::tabs::drafts::stub_a_refused_switch_keeps_both_drafts FCAD_30P_STUB_DRAFTS_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"

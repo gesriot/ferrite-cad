@@ -74,6 +74,19 @@ fn vertex(ctx: &egui::Context, e: &mut Editor, i: usize) -> egui::Pos2 {
         Canvas::points(e.draft.as_ref().expect("draft")).expect("numbers")[i],
     )
 }
+/// §30P: vertex 0 of the open draft pressed on the canvas and still held: the
+/// gesture is under way when this returns; `release_vertex` ends it.
+pub(crate) fn hold_vertex(e: &mut Editor) -> (egui::Context, egui::Pos2) {
+    let ctx = egui::Context::default();
+    frame(&ctx, e, vec![]);
+    frame(&ctx, e, vec![]);
+    let at = vertex(&ctx, e, 0);
+    press(&ctx, e, at);
+    (ctx, at)
+}
+pub(crate) fn release_vertex(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
+    button(ctx, e, at, false);
+}
 fn choose(ctx: &egui::Context, e: &mut Editor, label: &str) {
     let out = frame(ctx, e, vec![]);
     click(ctx, e, text_at(&out, label));
