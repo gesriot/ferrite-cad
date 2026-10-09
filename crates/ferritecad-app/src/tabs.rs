@@ -17,6 +17,11 @@
 //! its `sketch::Editor` with every other saved-object form. A hidden tab keeps
 //! them as a [`Draft`]: the same values, moved, never copied or re-read, in the
 //! statement that hides the tab, and given back in the one that shows it again.
+//!
+//! §30Q: New is opened over the shown tab without closing its forms: they are set
+//! aside as that tab's draft (the same [`Draft`], the same move) while New uses the
+//! window's forms, and come back when New ends without a new tab — or stay with
+//! their tab, hidden, when the new document is accepted.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -213,6 +218,8 @@ pub(crate) struct Tabs {
     issued: u64,
     /// The Quit pass in progress: the tabs answered Discard in it so far.
     quitting: Option<Vec<TabId>>,
+    /// §30Q: the shown tab's forms, set aside while New uses the window's forms.
+    aside: Option<(TabId, Draft)>,
 }
 
 impl Drop for Tabs {
@@ -231,6 +238,7 @@ impl Tabs {
             retired: Vec::new(),
             issued: 0,
             quitting: None,
+            aside: None,
         }
     }
 
@@ -405,7 +413,7 @@ impl Tabs {
             true => {
                 let left = previous.tab();
                 // Forms about the document left stay with it, never with the new one.
-                let draft = forms.park(&previous);
+                let draft = self.leaving(&previous, forms);
                 self.hidden.push(Hidden {
                     sessions: previous,
                     view: View {
@@ -427,6 +435,53 @@ impl Tabs {
         };
         self.order.insert(at, tab);
         Ok(())
+    }
+
+    /// The forms that go with tab `left` as it is hidden: the ones New set aside
+    /// for it (§30Q), or else the ones the window shows.
+    fn leaving(&mut self, left: &Sessions, forms: &mut Forms<'_>) -> Option<Draft> {
+        match self.aside.take() {
+            Some((tab, draft)) if tab == left.tab() => Some(draft),
+            aside => {
+                self.aside = aside;
+                forms.park(left)
+            }
+        }
+    }
+
+    // --- New over a tab's forms (§30Q) -----------------------------------------
+
+    /// New is opening over the shown tab: its open forms are set aside as its
+    /// draft — moved, exactly as left, as a switch would — so New starts on empty
+    /// forms and nothing typed for New reaches them. Nothing when none is open.
+    pub(crate) fn set_aside(&mut self, active: &Sessions, forms: &mut Forms<'_>) {
+        if self.aside.is_some() || !active.has_session() {
+            return;
+        }
+        if let Some(draft) = forms.park(active) {
+            self.aside = Some((active.tab(), draft));
+        }
+    }
+
+    /// New ended without a new tab (Cancel, or nothing it made was shown): the
+    /// forms set aside come back to the shown tab as they were left. Never over a
+    /// form the window shows: then they stay aside.
+    pub(crate) fn bring_back(&mut self, active: &mut Sessions, forms: &mut Forms<'_>) {
+        if forms.edits.form_open() || forms.editor.active() {
+            return;
+        }
+        if let Some((_, draft)) = self
+            .aside
+            .take_if(|(tab, _)| active.has_session() && *tab == active.tab())
+        {
+            forms.restore(draft, active);
+        }
+    }
+
+    /// §30Q: whether the shown tab's forms are set aside for New.
+    #[cfg(test)]
+    pub(crate) fn has_aside(&self) -> bool {
+        self.aside.is_some()
     }
 
     // --- showing another tab ---------------------------------------------------
@@ -530,7 +585,7 @@ impl Tabs {
         } = self
             .take_hidden(target)
             .expect("the target was found hidden above");
-        let left = forms.park(active);
+        let left = self.leaving(active, forms);
         let previous = std::mem::replace(active, sessions);
         if previous.has_session() {
             self.hidden.push(Hidden {
@@ -622,7 +677,8 @@ impl Tabs {
         form_open: bool,
     ) -> Option<CloseStep> {
         if active.has_session() && active.tab() == tab {
-            return Some(if form_open {
+            // §30Q: forms set aside for New are the shown tab's open forms too.
+            return Some(if form_open || self.aside.is_some() {
                 CloseStep::Form
             } else if active.dirty() {
                 CloseStep::Ask
@@ -702,7 +758,8 @@ impl Tabs {
     /// without a form need nothing. `form_open`: the shown tab has a form open.
     pub(crate) fn quit_step(&self, active: &Sessions, form_open: bool) -> QuitStep {
         let answered = self.quitting.as_deref().unwrap_or_default();
-        if active.has_session() && form_open {
+        // §30Q: forms set aside for New are the shown tab's open forms too.
+        if active.has_session() && (form_open || self.aside.is_some()) {
             return QuitStep::Form;
         }
         if active.has_session() && active.dirty() && !answered.contains(&active.tab()) {

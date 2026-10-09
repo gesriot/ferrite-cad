@@ -504,8 +504,8 @@ impl RecoveryStore {
         let mut kept = 0usize;
         for record in self.record_ids()? {
             let directory = self.record_directory(record);
-            match take_lease(&directory) {
-                LeaseState::Held(lease) if !has_manifest(&directory) => {
+            match empty_record_lease(&directory) {
+                Some(LeaseState::Held(lease)) if !has_manifest(&directory) => {
                     // Nothing recoverable: a session that ended before its first
                     // copy, or a crash before its first manifest.
                     if remove_record(&directory, lease).is_err() {
@@ -514,7 +514,7 @@ impl RecoveryStore {
                 }
                 // Nothing at all left in it (a removal that raced a reader on a
                 // platform that defers deletion): an empty folder of our name.
-                LeaseState::Missing if std::fs::remove_dir(&directory).is_ok() => {}
+                Some(LeaseState::Missing) if std::fs::remove_dir(&directory).is_ok() => {}
                 _ if std::fs::symlink_metadata(&directory).is_ok() => kept += 1,
                 _ => {}
             }
@@ -630,6 +630,15 @@ fn unlockable(record: RecordId) -> RecoveryRefusal {
 
 fn has_manifest(directory: &Path) -> bool {
     std::fs::symlink_metadata(directory.join(MANIFEST)).is_ok()
+}
+
+/// Cleanup has no business locking a published record: even a short probe would
+/// make a concurrent Recover mistake it for a live owner. A manifest of any kind
+/// means keep the record. When none is visible, take the lease, then the caller
+/// checks again under that lease before removing anything (publication may race
+/// the first check). Ownership and claim locks themselves are unchanged.
+fn empty_record_lease(directory: &Path) -> Option<LeaseState> {
+    (!has_manifest(directory)).then(|| take_lease(directory))
 }
 
 fn create_private_directory(path: &Path) -> Result<()> {
@@ -1789,6 +1798,30 @@ fn run(store: &RecoveryStore, receiver: &Receiver<Request>, notify: &dyn Fn()) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_never_holds_a_published_records_lease() {
+        let root = tempfile::tempdir().expect("record directory");
+        drop(create_lease(root.path()).expect("lease"));
+        // Cleanup must retain even damaged/unknown manifests without examining
+        // or locking them; verification belongs to the explicit reader/claim.
+        std::fs::write(root.path().join(MANIFEST), b"published").expect("manifest");
+        let sweep = empty_record_lease(root.path());
+        let claimant = take_lease(root.path());
+        assert!(
+            matches!(claimant, LeaseState::Held(_)),
+            "cleanup must not make an orphan look like a live window"
+        );
+        assert!(sweep.is_none());
+        assert!(matches!(take_lease(root.path()), LeaseState::Active));
+        drop(claimant);
+        drop(sweep);
+        // A genuinely empty orphan still needs an exclusive lease for cleanup.
+        std::fs::remove_file(root.path().join(MANIFEST)).expect("remove manifest");
+        let empty = empty_record_lease(root.path());
+        assert!(matches!(empty, Some(LeaseState::Held(_))));
+        assert!(matches!(take_lease(root.path()), LeaseState::Active));
+    }
 
     // A concurrently spawned child can hold a duplicated Unix descriptor until
     // exec closes it. Keep that descriptor alive deterministically: ending our

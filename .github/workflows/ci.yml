@@ -982,7 +982,9 @@ jobs:
           # §30O: late, cancelled and foreign answers through the tab list, and a
           # switch refused at its picture without a kernel. §30P: each tab's open
           # forms kept, refused, closed, quit and drawn per tab, and a switch refused
-          # at its picture keeping both drafts. Every one prints a marker.
+          # at its picture keeping both drafts. §30Q: Open, New and Recover beside
+          # open forms, New's focus apart from a tab's, and all three refused at
+          # their picture without a kernel. Every one prints a marker.
           for check in \
             "sessions::tests::tabs::late_cancelled_or_foreign_answers_change_no_tab_and_release_no_slot FCAD_30O_LATE_ANSWERS_EXECUTED" \
             "sessions::tests::tabs::stub_switching_is_refused_at_the_picture_and_keeps_the_shown_tab FCAD_30O_STUB_TABS_EXECUTED" \
@@ -994,7 +996,12 @@ jobs:
             "sessions::tests::tabs::drafts::a_draft_made_on_another_version_comes_back_held_and_is_never_applied FCAD_30P_STALE_DRAFT_EXECUTED" \
             "sessions::tests::tabs::drafts::the_same_control_in_two_tabs_shares_no_focus_or_text FCAD_30P_FORM_FOCUS_EXECUTED" \
             "sketch::tests::floating_forms_in_two_tabs_do_not_share_keyboard_focus FCAD_30P_FLOATING_FORM_FOCUS_EXECUTED" \
-            "sessions::tests::tabs::drafts::stub_a_refused_switch_keeps_both_drafts FCAD_30P_STUB_DRAFTS_EXECUTED"
+            "sessions::tests::tabs::drafts::stub_a_refused_switch_keeps_both_drafts FCAD_30P_STUB_DRAFTS_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_new_recover::open_over_unfinished_forms_keeps_them_with_their_tab_through_every_answer FCAD_30Q_OPEN_OVER_FORMS_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_new_recover::new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly FCAD_30Q_NEW_OVER_FORMS_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_new_recover::recover_over_an_unfinished_form_keeps_the_record_on_every_refusal FCAD_30Q_RECOVER_OVER_FORMS_EXECUTED" \
+            "sketch::tests::new_over_forms::new_opened_over_a_floating_form_shares_no_focus_or_text_with_it FCAD_30Q_NEW_FORM_FOCUS_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_new_recover::stub_open_new_and_recover_beside_a_form_are_refused_at_the_picture_and_keep_it FCAD_30Q_STUB_OVER_FORMS_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"

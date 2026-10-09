@@ -85,13 +85,15 @@ moved whole, as values, in the statement that hides or shows a tab.
 
 **Still blocking.** A **New** form or drawing, an export in progress (or its question,
 or the STL options form), any native dialog, any operation and any gesture. Open, New
-and Recover also still wait while the shown tab has a form, as before §30P.
+and Recover also still wait while the shown tab has a form, as before §30P. *Since §30Q
+they no longer wait for an idle form: Open and Recover move it with its tab, and New sets
+it aside until New ends ([open-new-recover-with-drafts.md](open-new-recover-with-drafts.md)).*
 
 ## Not here
 
 Drafts that survive a restart or crash, automatic Apply, several GPU scenes, work in
 hidden tabs, a draft marker in the tab row or any other UI change, Open/New/Recover
-over an open form. §30, Milestone 5C and the product stay open; the earlier OOM
+over an open form (*added by §30Q*). §30, Milestone 5C and the product stay open; the earlier OOM
 investigation is not closed by this slice.
 
 ## Verification
@@ -281,8 +283,8 @@ form left open at Quit applied (30), swapped exports, a recovery record left beh
 * The window's per-frame wiring (`forms_scope`, the release of a held draft once its
   form is closed, the tab row's availability) is exercised only through the functions
   it calls (`in_tab_scope`, `can_leave_tab`, `Sessions`), not by a drawn window.
-* Open, New and Recover still wait while the shown tab has a form; the tab row shows no
-  mark for a hidden tab that keeps one.
+* Open, New and Recover still wait while the shown tab has a form (*lifted by §30Q*);
+  the tab row shows no mark for a hidden tab that keeps one.
 * The *Save new file…* status line under the height form is the window's, not a tab's.
 
 ## Independent review (2026-10-09)

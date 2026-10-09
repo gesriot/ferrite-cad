@@ -9,6 +9,9 @@ use super::*;
 use crate::{Loads, exports::Exports};
 use ferritecad_ui::{PointerButton, ViewportEvent};
 
+/// §30Q: Open, New and Recover beside these forms, through the same owners.
+mod open_new_recover;
+
 impl Window {
     /// `App::begin_edit`: the height form on the shown tab's accepted version.
     fn open_height_form(&mut self) {
