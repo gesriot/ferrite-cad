@@ -183,14 +183,14 @@ fn current_sample_text_and_dot_leave_the_directory_unchanged() {
     let root = tempfile::tempdir().expect("directory");
     let path = root.path().join("plate.fcad");
     create_sample(&path);
-    assert_eq!(schema_version(&path), 3);
+    assert_eq!(schema_version(&path), 4);
     sentinel(&path, "-cache", b"foreign cache");
     sentinel(&path, "-other", b"private sentinel");
     let (first_text, first_dot) = rendered(root.path(), &path);
     let (second_text, second_dot) = rendered(root.path(), &path);
     assert_eq!(first_text, second_text);
     assert_eq!(first_dot, second_dot);
-    assert_eq!(schema_version(&path), 3);
+    assert_eq!(schema_version(&path), 4);
 }
 
 #[test]
@@ -568,7 +568,7 @@ fn text_keeps_evaluation_order_and_every_stored_need() {
     dot.push_str("}\n");
 
     assert_dump_bytes(root.path(), &path, text.as_bytes(), dot.as_bytes());
-    assert_eq!(schema_version(&path), 3);
+    assert_eq!(schema_version(&path), 4);
 }
 
 #[test]
@@ -576,7 +576,7 @@ fn empty_document_text_is_empty_and_dot_is_only_the_header() {
     let root = tempfile::tempdir().expect("directory");
     let path = root.path().join("empty.fcad");
     create_empty(&path);
-    assert_eq!(schema_version(&path), 3);
+    assert_eq!(schema_version(&path), 4);
     let dot =
         "digraph features {\n  rankdir=LR;\n  node [shape=box, fontname=\"sans-serif\"];\n}\n";
     assert_dump_bytes(root.path(), &path, b"", dot.as_bytes());

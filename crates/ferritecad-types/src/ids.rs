@@ -194,6 +194,13 @@ define_id! {
     StableEntityId
 }
 
+define_id! {
+    /// Identifies one named checkpoint of a document (§30N): a stored, immutable
+    /// copy of the model at a moment the user chose. The name a person gives it
+    /// is not its identity; two checkpoints may share a name and never an id.
+    CheckpointId
+}
+
 impl From<FeatureId> for ObjectId {
     fn from(id: FeatureId) -> Self {
         Self(*id.as_uuid())

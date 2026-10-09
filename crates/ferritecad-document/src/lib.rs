@@ -112,8 +112,9 @@ mod validate;
 
 pub use cache::{CacheEntry, CacheStore};
 pub use document::{
-    Access, Document, DocumentMeta, DocumentWriter, ObjectRecord, ReopenedStepImport,
-    StepImportRequest, StepImporter, StoredStepImport, StoredTopologyRef,
+    Access, CheckpointEntry, Document, DocumentMeta, DocumentWriter, MAX_CHECKPOINT_BYTES,
+    MAX_CHECKPOINT_NAME_CHARS, MAX_CHECKPOINTS, ObjectRecord, ReopenedStepImport,
+    StepImportRequest, StepImporter, StoredStepImport, StoredTopologyRef, checkpoint_name,
 };
 pub use edit::{DocumentVersion, ExtrudeChoice, ExtrudeEditSource, editable_extrude};
 pub use envelope::{Envelope, UnknownObject};

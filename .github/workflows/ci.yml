@@ -779,6 +779,40 @@ jobs:
             cargo test -p ferritecad-cli --test recovery "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-cli.log
             if grep -q 'skipped:' recovery-cli.log || ! grep -Fq "test $gate ... ok" recovery-cli.log; then exit 1; fi
           done
+          # §30N: named checkpoints inside the document. Storage on the committed
+          # schema v3 plate, the shared copies and session steps, and the CLI; none
+          # needs a kernel, so all run here on every platform.
+          for gate in schema::tests::a_schema_v3_document_is_read_as_it_is_and_reaches_v4_with_an_empty_catalog \
+            schema::tests::a_checkpoint_row_must_be_well_formed \
+            document::checkpoint::tests::a_name_is_trimmed_bounded_and_printable_and_need_not_be_unique; do
+            cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee checkpoint-schema.log
+            if grep -q 'skipped:' checkpoint-schema.log || ! grep -Fq "test $gate ... ok" checkpoint-schema.log; then exit 1; fi
+          done
+          for gate in a_schema_v3_document_is_listed_and_read_without_being_written \
+            in_a_v3_file_a_table_called_checkpoints_is_somebody_elses \
+            an_image_is_the_whole_model_of_its_moment_and_the_catalog_is_never_nested \
+            the_limits_refuse_an_addition_and_never_remove_anything \
+            a_deleted_checkpoint_leaves_none_of_its_bytes_in_the_file \
+            refused_checkpoint_outputs_never_remove_existing_files \
+            adding_an_image_of_an_older_model_is_refused_without_a_write \
+            an_oversized_catalog_is_refused_before_its_rows_are_collected \
+            damage_is_refused_by_name_and_foreign_images_are_not_stored; do
+            cargo test -p ferritecad-document --test checkpoints "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee checkpoint-document.log
+            if grep -q 'skipped:' checkpoint-document.log || ! grep -Fq "test $gate ... ok" checkpoint-document.log; then exit 1; fi
+          done
+          for gate in an_old_file_gets_checkpoints_in_the_session_and_on_disk_only_through_save \
+            restore_is_one_step_that_keeps_the_catalog_and_undo_redo_move_through_it \
+            an_empty_untitled_document_keeps_checkpoints_through_save_as_and_reopen \
+            copies_need_the_expected_version_refuse_occupied_aliased_and_racing_destinations \
+            a_crash_copy_carries_the_checkpoints_of_the_accepted_version; do
+            cargo test -p ferritecad-jobs --test checkpoints "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee checkpoint-job.log
+            if grep -q 'skipped:' checkpoint-job.log || ! grep -Fq "test $gate ... ok" checkpoint-job.log; then exit 1; fi
+          done
+          for gate in list_create_extract_and_delete_never_write_their_source \
+            a_lost_report_after_publication_exits_7_and_the_copy_stands; do
+            cargo test -p ferritecad-cli --test checkpoints "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee checkpoint-cli.log
+            if grep -q 'skipped:' checkpoint-cli.log || ! grep -Fq "test $gate ... ok" checkpoint-cli.log; then exit 1; fi
+          done
           saves="an_externally_modified_file_is_never_replaced_and_keeps_the_users_work \
             a_replaced_missing_or_foreign_file_is_a_typed_conflict_not_an_overwrite \
             save_as_refuses_an_occupied_path_and_succeeds_on_a_free_one \
@@ -902,7 +936,11 @@ jobs:
             sessions::tests::recovery::only_a_version_shown_with_its_picture_is_copied_and_saved_or_undone_states_have_no_copy \
             sessions::tests::recovery::discard_and_quit_end_the_copy_and_an_exit_nobody_chose_keeps_it \
             sessions::tests::recovery::recovery_reserves_document_mutation_and_cancel_rejects_its_late_answer \
-            sessions::tests::recovery::a_recovered_document_is_untitled_named_recovered_and_takes_over_its_record
+            sessions::tests::recovery::a_recovered_document_is_untitled_named_recovered_and_takes_over_its_record \
+            sessions::tests::checkpoints::checkpoint_steps_keep_the_picture_are_unsaved_and_undo_like_any_step \
+            sessions::tests::checkpoints::a_checkpoint_shares_the_operation_slot_and_a_cancelled_or_late_answer_changes_nothing \
+            sessions::tests::checkpoints::the_checkpoint_predicate_says_why_and_waits_for_forms_operations_names_and_the_limit \
+            sessions::tests::checkpoints::a_crash_copy_of_the_window_carries_its_checkpoints
           do
             cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-app.log
             if grep -q 'skipped:' session-app.log || ! grep -Fq "test $gate ... ok" session-app.log; then exit 1; fi
@@ -914,10 +952,19 @@ jobs:
           grep -Fq "test $gate ... " recovery-app.log
           grep -q '^test result: ok\. 1 passed; 0 failed' recovery-app.log
           grep -q '^FCAD_30M_STUB_RECOVERY_EXECUTED$' recovery-app.log
+          # §30N: Create, Delete and extraction without a kernel; Restore refused at
+          # its picture. Prints its marker, so "ok" follows on a line of its own.
+          gate=sessions::tests::checkpoints::stub_checkpoints_work_and_restore_is_refused_at_the_picture
+          cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee checkpoint-app.log
+          if grep -q 'skipped:' checkpoint-app.log; then exit 1; fi
+          grep -Fq "test $gate ... " checkpoint-app.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' checkpoint-app.log
+          grep -q '^FCAD_30N_STUB_CHECKPOINTS_EXECUTED$' checkpoint-app.log
           for gate in panels::tests::the_document_commands_are_offered_exactly_when_they_would_do_something \
             panels::tests::unsaved_changes_and_the_last_outcome_are_on_the_screen_in_words \
             panels::tests::new_form_create_asks_nothing_while_the_window_says_it_cannot \
-            recovery::tests::recover_and_delete_ask_nothing_while_the_window_says_they_cannot
+            recovery::tests::recover_and_delete_ask_nothing_while_the_window_says_they_cannot \
+            checkpoint::tests::the_buttons_ask_nothing_while_the_window_says_why_they_cannot
           do
             cargo test -p ferritecad-ui --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-ui.log
             if ! grep -Fq "test $gate ... ok" session-ui.log; then exit 1; fi

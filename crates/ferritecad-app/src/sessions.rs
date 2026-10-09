@@ -79,6 +79,44 @@ pub(crate) enum Kind {
     Redo,
     Save,
     SaveAs,
+    /// §30N: a checkpoint was added, restored or deleted.
+    Checkpoint(CheckpointKind),
+}
+
+/// §30N: which change to the checkpoints, for the sentences a person reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckpointKind {
+    Create,
+    Restore,
+    Delete,
+}
+
+/// §30N: what a checkpoint worker is asked to do. Ids, never names or rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CheckpointAction {
+    Create(String),
+    Restore(ferritecad_types::CheckpointId),
+    Delete(ferritecad_types::CheckpointId),
+}
+
+impl CheckpointAction {
+    fn kind(&self) -> CheckpointKind {
+        match self {
+            Self::Create(_) => CheckpointKind::Create,
+            Self::Restore(_) => CheckpointKind::Restore,
+            Self::Delete(_) => CheckpointKind::Delete,
+        }
+    }
+}
+
+/// §30N: a checkpoint worker's answer. `facts` is the new version's kernel-free
+/// edit facts, read on the worker exactly when the step keeps the picture (only
+/// the catalog changed): the picture stays, and what the forms read follows the
+/// new version without a rebuild.
+#[derive(Debug)]
+pub(crate) struct CheckpointStep {
+    pub(crate) step: ProducedStep,
+    pub(crate) facts: Option<ferritecad_document::ExtrudeEditSource>,
 }
 
 enum Staged {
@@ -102,6 +140,8 @@ struct Operation {
     cancel: CancelToken,
     worker: Option<JoinHandle<()>>,
     staged: Option<Staged>,
+    /// §30N: the edit facts of a staged version that keeps the shown picture.
+    kept: Option<ferritecad_document::ExtrudeEditSource>,
 }
 
 /// What the edit's answer means for the window.
@@ -116,6 +156,9 @@ pub(crate) enum Edited {
     NoChange,
     /// Build the picture of this version; it becomes current when it is shown.
     Show(PathBuf),
+    /// §30N: this version draws what is shown already (only its checkpoints
+    /// differ): accept it with the shown picture ([`Sessions::commit_kept`]).
+    Keep(PathBuf),
 }
 
 /// What a finished Save means for the window.
@@ -434,6 +477,7 @@ impl Sessions {
             cancel,
             worker: Some(worker),
             staged: None,
+            kept: None,
         });
         self.status = "Applying the change…".to_owned();
         Some(generation)
@@ -447,10 +491,18 @@ impl Sessions {
         if operation.generation != generation || operation.kind != Kind::Apply {
             return Edited::Ignore;
         }
+        self.finish_step(result)
+    }
+
+    /// The shared end of an edit or checkpoint worker's answer, once it is known
+    /// to belong to the operation in flight.
+    fn finish_step(&mut self, result: Result<ProducedStep>) -> Edited {
+        let operation = self.operation.as_mut().expect("the answer's operation");
         if let Some(worker) = operation.worker.take() {
             let _ = worker.join();
         }
         let cancelled = operation.cancel.is_cancelled();
+        let kind = operation.kind;
         let step = match result {
             Ok(step) if !cancelled => step,
             Ok(_) => {
@@ -463,7 +515,18 @@ impl Sessions {
                 self.status = if error.kind() == ErrorKind::Cancellation {
                     "Cancelled; nothing was changed.".to_owned()
                 } else {
-                    format!("Could not apply the change: {error}")
+                    match kind {
+                        Kind::Checkpoint(CheckpointKind::Create) => {
+                            format!("The checkpoint was not created: {error}")
+                        }
+                        Kind::Checkpoint(CheckpointKind::Restore) => {
+                            format!("The checkpoint was not restored: {error}")
+                        }
+                        Kind::Checkpoint(CheckpointKind::Delete) => {
+                            format!("The checkpoint was not deleted: {error}")
+                        }
+                        _ => format!("Could not apply the change: {error}"),
+                    }
                 };
                 return Edited::Failed;
             }
@@ -477,6 +540,82 @@ impl Sessions {
         let path = step.path().to_path_buf();
         self.operation.as_mut().expect("in flight").staged = Some(Staged::Step(step));
         Edited::Show(path)
+    }
+
+    // --- checkpoints (§30N) ----------------------------------------------
+
+    /// Starts a checkpoint change in the one operation slot Apply, Undo, Save,
+    /// Open and Recover share.
+    pub(crate) fn begin_checkpoint(
+        &mut self,
+        action: CheckpointAction,
+        spawn: impl FnOnce(StepTicket, CheckpointAction, u64, &CancelToken) -> JoinHandle<()>,
+    ) -> Option<u64> {
+        if self.busy() {
+            return None;
+        }
+        let session = self.session.as_mut()?;
+        let ticket = session.begin_step();
+        let kind = action.kind();
+        self.issued += 1;
+        let generation = self.issued;
+        let cancel = CancelToken::new();
+        let worker = spawn(ticket, action, generation, &cancel);
+        self.operation = Some(Operation {
+            generation,
+            kind: Kind::Checkpoint(kind),
+            cancel,
+            worker: Some(worker),
+            staged: None,
+            kept: None,
+        });
+        self.status = match kind {
+            CheckpointKind::Create => "Creating the checkpoint…",
+            CheckpointKind::Restore => "Restoring the checkpoint…",
+            CheckpointKind::Delete => "Deleting the checkpoint…",
+        }
+        .to_owned();
+        Some(generation)
+    }
+
+    /// The answer of a checkpoint worker: as an Apply's, except that a version
+    /// which only changes the checkpoints is accepted with the picture shown.
+    pub(crate) fn finish_checkpoint(
+        &mut self,
+        generation: u64,
+        result: Result<CheckpointStep>,
+    ) -> Edited {
+        let Some(operation) = self.operation.as_mut() else {
+            return Edited::Ignore;
+        };
+        if operation.generation != generation || !matches!(operation.kind, Kind::Checkpoint(_)) {
+            return Edited::Ignore;
+        }
+        let (step, facts) = match result {
+            Ok(CheckpointStep { step, facts }) => (Ok(step), facts),
+            Err(error) => (Err(error), None),
+        };
+        match self.finish_step(step) {
+            Edited::Show(path) if facts.is_some() => {
+                let operation = self.operation.as_mut().expect("in flight");
+                operation.kept = facts;
+                Edited::Keep(path)
+            }
+            other => other,
+        }
+    }
+
+    /// Makes a staged version that keeps the picture current, and hands back its
+    /// edit facts for the picture to carry. The statement that also re-points
+    /// the shown picture at the new version; see [`Self::commit_staged`].
+    pub(crate) fn commit_kept(&mut self) -> Result<ferritecad_document::ExtrudeEditSource> {
+        let facts = self
+            .operation
+            .as_mut()
+            .and_then(|op| op.kept.take())
+            .ok_or_else(|| CadError::input("no change is waiting to be shown"))?;
+        self.commit_staged()?;
+        Ok(facts)
     }
 
     // --- Undo and Redo ---------------------------------------------------
@@ -502,6 +641,7 @@ impl Sessions {
             cancel: CancelToken::new(),
             worker: None,
             staged: Some(Staged::Move(request)),
+            kept: None,
         });
         self.status = if undo { "Undoing…" } else { "Redoing…" }.to_owned();
         Some((generation, path))
@@ -540,6 +680,48 @@ impl Sessions {
         match op.staged.as_ref()? {
             Staged::Step(step) => Some(step.path().to_path_buf()),
             Staged::Move(request) => Some(request.path().to_path_buf()),
+        }
+    }
+
+    /// Metadata-only Undo/Redo uses the same picture as Create/Delete. Reading
+    /// the new form facts still happens on a worker, without opening a kernel.
+    pub(crate) fn staged_keeps_picture(&self, generation: u64) -> bool {
+        let Some(op) = self
+            .operation
+            .as_ref()
+            .filter(|op| op.generation == generation)
+        else {
+            return false;
+        };
+        match op.staged.as_ref() {
+            Some(Staged::Step(step)) => step.keeps_picture(),
+            Some(Staged::Move(request)) => self
+                .export_source()
+                .is_some_and(|current| current.drawn_model() == request.drawn_model()),
+            None => false,
+        }
+    }
+
+    pub(crate) fn finish_kept_facts(
+        &mut self,
+        generation: u64,
+        result: Result<ferritecad_document::ExtrudeEditSource>,
+    ) -> Edited {
+        let Some(path) = self.staged_path(generation) else {
+            return Edited::Ignore;
+        };
+        if !self.staged_keeps_picture(generation) {
+            return Edited::Ignore;
+        }
+        match result {
+            Ok(facts) => {
+                self.operation.as_mut().expect("staged").kept = Some(facts);
+                Edited::Keep(path)
+            }
+            Err(error) => {
+                self.finish_scene(generation, Err(error));
+                Edited::Failed
+            }
         }
     }
 
@@ -595,6 +777,20 @@ impl Sessions {
         }
         self.status = match (&shown, operation.kind) {
             (Ok(()), Kind::Apply) => "Applied. Undo is available; Save writes the file.".to_owned(),
+            (Ok(()), Kind::Checkpoint(CheckpointKind::Create)) => {
+                "Checkpoint created. It is kept in the document when you save; Undo removes it."
+                    .to_owned()
+            }
+            (Ok(()), Kind::Checkpoint(CheckpointKind::Restore)) => {
+                "Checkpoint restored as the working model. Undo returns to the previous one; \
+                 Save writes the file."
+                    .to_owned()
+            }
+            (Ok(()), Kind::Checkpoint(CheckpointKind::Delete)) => {
+                "Checkpoint deleted from the working document. Undo brings it back; Save writes \
+                 the file."
+                    .to_owned()
+            }
             (Ok(()), Kind::Undo) => "Undone.".to_owned(),
             (Ok(()), Kind::Redo) => "Redone.".to_owned(),
             (Err(error), _) if error.kind() == ErrorKind::Cancellation => {
@@ -635,6 +831,7 @@ impl Sessions {
             cancel,
             worker: Some(worker),
             staged: None,
+            kept: None,
         });
         self.after_save = after;
         self.status = "Saving…".to_owned();
@@ -1008,6 +1205,63 @@ pub(crate) fn spawn_apply_chamfer_distance(
     )
 }
 
+/// §30N: a checkpoint change on a worker of its own. No kernel: the library
+/// copies and checks files; a restored model is drawn afterwards by
+/// [`spawn_scene`] like any Apply's.
+pub(crate) fn spawn_checkpoint(
+    ticket: StepTicket,
+    action: CheckpointAction,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<CheckpointStep>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            let context = OperationContext::default().with_cancel(cancel);
+            let step = match &action {
+                CheckpointAction::Create(name) => ticket.create_checkpoint(name, &context)?,
+                CheckpointAction::Restore(id) => ticket.restore_checkpoint(*id, &context)?,
+                CheckpointAction::Delete(id) => ticket.delete_checkpoint(*id, &context)?,
+            };
+            let facts = if step.keeps_picture() {
+                Some(ferritecad_jobs::read_extrude_source(step.path())?)
+            } else {
+                None
+            };
+            Ok(CheckpointStep { step, facts })
+        },
+        deliver,
+        || {
+            Err(CadError::io(
+                "checkpoint",
+                "the checkpoint worker stopped unexpectedly",
+            ))
+        },
+    )
+}
+
+/// Form facts for a private version that retains the current picture.
+pub(crate) fn spawn_kept_facts(
+    path: PathBuf,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ferritecad_document::ExtrudeEditSource>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn(
+        move || {
+            cancel.check()?;
+            let facts = ferritecad_jobs::read_extrude_source(&path)?;
+            cancel.check()?;
+            Ok(facts)
+        },
+        deliver,
+        || {
+            Err(CadError::io(
+                "reading checkpoint version",
+                "worker stopped unexpectedly",
+            ))
+        },
+    )
+}
+
 /// The picture of one private version, read cold exactly as Open reads a file.
 pub(crate) fn spawn_scene(
     path: PathBuf,
@@ -1138,6 +1392,7 @@ mod tests {
     mod analytic;
     mod angle;
     mod chamfer;
+    mod checkpoints;
     mod cut;
     mod fillet;
     mod new_document;

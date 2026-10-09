@@ -13,11 +13,13 @@ use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result, Stab
 use serde::{Deserialize, Serialize};
 
 mod chamfer;
+mod checkpoint;
 pub(crate) mod constraints;
 mod fbx;
 mod import;
 mod recovery;
 mod validate;
+pub use checkpoint::{CheckpointCopied, CheckpointList};
 pub use fbx::ExportedFbx;
 pub use import::emit_import;
 pub use recovery::{RecoveryList, emit_recovery_extract};
@@ -54,6 +56,10 @@ pub enum Operation {
     Validate,
     ListRecovery,
     ExtractRecovery,
+    ListCheckpoints,
+    CreateCheckpoint,
+    DeleteCheckpoint,
+    ExtractCheckpoint,
 }
 
 #[derive(Serialize)]

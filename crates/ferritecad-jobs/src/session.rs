@@ -48,10 +48,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ferritecad_document::{Document, DocumentVersion};
+use ferritecad_document::{CheckpointEntry, Document, DocumentVersion};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
-use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
+use ferritecad_types::{CadError, CheckpointId, ContentHash, ObjectId, Result};
 
+use crate::checkpoint::{
+    CreateCheckpointRequest, DeleteCheckpointRequest, create_checkpoint_copy,
+    delete_checkpoint_copy, restore_checkpoint_copy,
+};
 use crate::create::{CreateDocumentRequest, NewDocument, create_document_with_kernel};
 use crate::edit::{
     CircularCutRequest, EdgeChamferRequest, EdgeFilletRequest, EditAnnulusRequest,
@@ -137,6 +141,12 @@ pub struct Snapshot {
     disk: DocumentVersion,
     /// The model content: what dirty is compared on.
     model: ContentHash,
+    /// §30N: the model with the checkpoint catalog set aside: what is drawn.
+    drawn: ContentHash,
+    /// §30N: this version's checkpoints, or why they cannot be listed. Read once
+    /// here, on the worker that made the version, so the window never runs SQL
+    /// to show them; a damaged list does not stop the model from opening.
+    checkpoints: std::result::Result<Vec<CheckpointEntry>, String>,
     bytes: u64,
     _directory: Arc<SessionDir>,
 }
@@ -150,6 +160,8 @@ impl Snapshot {
             content: document.content_version()?,
         };
         let model = document.model_version()?;
+        let drawn = document.model_without_checkpoints()?;
+        let checkpoints = document.checkpoints().map_err(|error| error.to_string());
         document.close()?;
         let bytes = std::fs::metadata(&path)
             .map_err(|e| CadError::io(format!("measuring {}", path.display()), e))?
@@ -158,6 +170,8 @@ impl Snapshot {
             path,
             disk,
             model,
+            drawn,
+            checkpoints,
             bytes,
             _directory: directory,
         }))
@@ -176,6 +190,21 @@ impl Snapshot {
 
     pub fn model(&self) -> ContentHash {
         self.model
+    }
+
+    /// §30N: the model with its checkpoints set aside; a checkpoint whose
+    /// `model` equals this holds what this version draws.
+    pub fn drawn_model(&self) -> ContentHash {
+        self.drawn
+    }
+
+    /// §30N: this version's checkpoints, oldest first, or why the list cannot be
+    /// read (the model itself is still this version).
+    pub fn checkpoints(&self) -> std::result::Result<&[CheckpointEntry], &str> {
+        self.checkpoints
+            .as_ref()
+            .map(Vec::as_slice)
+            .map_err(String::as_str)
     }
 }
 
@@ -1005,6 +1034,58 @@ impl StepTicket {
         })
     }
 
+    /// §30N: adds a checkpoint named `name` of the current model. The model is
+    /// unchanged, so the step [keeps the picture](ProducedStep::keeps_picture);
+    /// the catalog is document content, so the step is dirty until saved, and
+    /// Undo takes the checkpoint away again. No kernel.
+    pub fn create_checkpoint(self, name: &str, context: &OperationContext) -> Result<ProducedStep> {
+        self.run(|source, expected, destination| {
+            create_checkpoint_copy(
+                &CreateCheckpointRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    name: name.to_owned(),
+                    destination: destination.to_path_buf(),
+                },
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// §30N: removes one checkpoint; the model and the picture stay. No kernel.
+    pub fn delete_checkpoint(
+        self,
+        checkpoint: CheckpointId,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        self.run(|source, expected, destination| {
+            delete_checkpoint_copy(
+                &DeleteCheckpointRequest {
+                    source: source.to_path_buf(),
+                    expected,
+                    checkpoint,
+                    destination: destination.to_path_buf(),
+                },
+                context,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// §30N: the model of one checkpoint, with the current version's catalog,
+    /// as the next version. Its picture must be prepared like any Apply's; to a
+    /// model already current it is no change. No kernel here.
+    pub fn restore_checkpoint(
+        self,
+        checkpoint: CheckpointId,
+        context: &OperationContext,
+    ) -> Result<ProducedStep> {
+        self.run(|source, expected, destination| {
+            restore_checkpoint_copy(source, expected, checkpoint, destination, context).map(|_| ())
+        })
+    }
+
     fn check_form_version(&self, expected: DocumentVersion) -> Result<()> {
         if expected != self.source.version() {
             return Err(CadError::input(
@@ -1067,6 +1148,13 @@ impl ProducedStep {
     pub fn version(&self) -> DocumentVersion {
         self.snapshot.version()
     }
+
+    /// §30N: whether this version draws exactly what the version it was made
+    /// from draws (only its checkpoints differ), so the picture already shown is
+    /// its picture and nothing needs to be rebuilt.
+    pub fn keeps_picture(&self) -> bool {
+        self.snapshot.drawn == self.base.drawn
+    }
 }
 
 /// An Undo or Redo that has been asked for and not yet shown.
@@ -1081,6 +1169,11 @@ impl Move {
     /// The version to show, for the scene load that shows it.
     pub fn path(&self) -> &Path {
         self.target.path()
+    }
+
+    /// The model drawn by the target, excluding its checkpoint catalogue.
+    pub fn drawn_model(&self) -> ContentHash {
+        self.target.drawn_model()
     }
 }
 

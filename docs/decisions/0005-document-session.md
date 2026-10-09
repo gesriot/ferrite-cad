@@ -271,3 +271,74 @@ decision:
   session protocol.
 
 Contract and checks: [../document-crash-recovery.md](../document-crash-recovery.md).
+
+## §30N: named checkpoints inside the document
+
+**Decided before implementation.** Until §30N a useful version of the model lived
+only as long as the session's Undo history or as a separate file. The decision:
+
+* **Where.** In the `.fcad` itself: a new table `checkpoints`, SQL schema v4, added
+  by an ordinary migration. One row is one checkpoint: a UUIDv7 (`CheckpointId`, the
+  identity — never the name), the name, the SQLite UTC time it was made, the image's
+  length, BLAKE3 and model version, and `image`: a complete FerriteCAD document file
+  holding the model of that moment. Not the recovery folder (per-user, disposable)
+  and not `.fcad-cache` (regenerable by definition): a closed document stays one
+  self-contained file. `FORMAT_VERSION`, `MINIMUM_READER_VERSION` and every
+  capability are unchanged: a checkpoint stores a whole model; it adds no geometric
+  meaning, and the model inside an image carries its own capability declarations.
+* **Compatibility.** A schema v3 document stays readable without migration: the
+  read-only path accepts v3 and v4, and an absent table reads as an empty list.
+  Reading, listing and extracting never write the source. Anything that writes (an
+  Apply, a checkpoint change, every edit copy) writes a private copy or a new
+  destination, migrated to v4 there; the user's file becomes v4 only when the person
+  saves. A build that knows schema v3 refuses a v4 file as "written by a newer
+  FerriteCAD" (the existing SQL policy; an old build cannot be changed). Because a
+  migrated version has a different SQL schema, the session counts it as a change:
+  even a no-op Apply on a v3 file is dirty, which is the truth — Save would rewrite
+  the file in the new schema. `clear-cache` stops migrating the document it is
+  given (it only needs its name), so no read-only command upgrades a file.
+* **What an image is.** The current accepted version copied by the SQLite online
+  backup the session already uses (`snapshot_to`), its own checkpoint rows deleted,
+  then compacted with `VACUUM INTO` (which keeps row identities). Every table,
+  UUID, reference, dependency, parameter, imported source byte, unknown payload and
+  unknown table is the version's own; nothing is decoded or re-serialised. No draft
+  form value, GPU state or cache sidecar. Images never contain checkpoints, so size
+  is linear in the number of checkpoints, never recursive. Each image is verified
+  before it is stored: same document id, and its model with the catalog set aside
+  (`Document::model_without_checkpoints`) equals the version's.
+* **Ownership.** The catalog belongs to the working document, not to any model. A
+  stored row is immutable: nothing updates it; Create inserts a new UUID, Delete
+  removes one row. Restore replaces the model with the image's and keeps the working
+  version's catalog row for row (row identities included), so restoring never brings
+  back an old list, and a later edit never rewrites a checkpoint.
+* **Dirty, Undo, Save.** The catalog is document content, so the existing rule needs
+  no exception: `model_version` covers it, Create/Delete are ordinary session steps
+  (two-phase, version-guarded), the document is dirty until Save/Save As publishes
+  them through the existing guarded publication, Undo takes a created checkpoint
+  away or brings a deleted one back, Redo returns the same accepted file (same UUID,
+  no job re-run). A step whose model without the catalog is unchanged
+  (`ProducedStep::keeps_picture`) is accepted without a rebuild: the window keeps
+  its picture and re-reads only the kernel-free edit facts of the new version on a
+  worker. No geometric cache keys on the catalog (the sidecar keys object inputs).
+  Restore is a model step: its picture is prepared and accepted as one step, like
+  any Apply; a Restore to the model already shown is "no change".
+* **Limits.** At most 32 checkpoints and 16 MiB of images per document. A Create
+  past either limit is refused with the reason; nothing is ever deleted to make room.
+  With the catalog inside every private version, the session's existing bound
+  (64 versions, 512 MiB) still keeps at least 31 versions; a crash copy grows by at
+  most 16 MiB. Listing never reads an image; extraction streams one.
+* **Names.** Surrounding whitespace is trimmed; 1–80 characters; no control
+  characters. Equal names are allowed: the list shows the time beside each, and
+  every operation takes the UUID.
+* **Window and CLI.** A small panel lists the current version's checkpoints with
+  Create / Restore / Delete… (Delete asks first). The three reserve the same
+  operation slot as Apply/Undo/Save/Open/Recover and wait while a form is open, as
+  document Undo does. The CLI lists, extracts a checkpoint's model to a new file,
+  and creates/deletes a checkpoint in a copy (`--expect-version` required,
+  no-clobber, JSON v1 additive, exit 7 unchanged). Restore in the CLI is extraction.
+* **Recovery (§30M).** Unchanged: the crash copy is the accepted version file, so
+  the catalog travels with it.
+* **Not decided here:** tabs, persisted Undo history, branching or merging
+  checkpoints, automatic checkpoints, cloud sync.
+
+Contract and checks: [../named-document-checkpoints.md](../named-document-checkpoints.md).

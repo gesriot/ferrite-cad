@@ -160,6 +160,10 @@ recorder worker, as the last published crash copy in a per-user recovery folder;
 next start offers it, and a recovered copy is a new untitled session. See
 [crash recovery contract](document-crash-recovery.md).
 
+§30N: named checkpoints of the model are kept inside the document; Create and Delete are
+session steps that keep the picture, Restore is one model step with its picture, and all
+three reach the file only through Save. See [checkpoints contract](named-document-checkpoints.md).
+
 §30J adds a new Fillet through this same session, including while dirty (**Add
 fillet**). Save fillet copy, Add Chamfer and the other copies remain clean-only. See
 [Add Fillet session contract](add-fillet-session.md).

@@ -33,6 +33,12 @@ pub use panels::{
     open_failure_panel, replace_confirmation, selection_inspector, sketch_solves_panel, toolbar,
 };
 
+mod checkpoint;
+pub use checkpoint::{
+    CHECKPOINTS_HEADING, CREATE_CHECKPOINT, CheckpointChoice, CheckpointPanel, CheckpointRow,
+    DELETE_CHECKPOINT, RESTORE_CHECKPOINT, checkpoint_panel,
+};
+
 mod recovery;
 pub use recovery::{
     DELETE_RECOVERY, LATER, RECOVER, RECOVER_HEADING, RecoveryChoice, RecoveryOffer, RecoveryPanel,

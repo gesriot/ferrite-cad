@@ -35,6 +35,12 @@
 //! is written: an export is a cold read of the stored document, so the file is
 //! a function of what was saved rather than of what a viewer happens to hold.
 
+mod checkpoint;
+pub use checkpoint::{
+    CheckpointCopy, CheckpointListing, CreateCheckpointRequest, DeleteCheckpointRequest,
+    ExtractCheckpointRequest, create_checkpoint_copy, delete_checkpoint_copy, extract_checkpoint,
+    list_checkpoints,
+};
 mod create;
 mod polygon;
 pub use polygon::{

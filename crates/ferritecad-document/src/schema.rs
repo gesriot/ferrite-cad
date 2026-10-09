@@ -179,18 +179,57 @@ CREATE TABLE imported_source_refs (
 
 CREATE INDEX imported_source_refs_by_source ON imported_source_refs(source_id);
 "#,
+    // v4 (§30N): named checkpoints. Each row is a whole model the user chose to
+    // keep, as a complete document file whose own `checkpoints` table is empty,
+    // so a checkpoint never contains checkpoints. The catalog belongs to the
+    // working document: rows are only inserted and deleted, never updated. No
+    // foreign key: an image is opaque bytes here and names nothing in this file.
+    // The image is the last column so that listing never reads it.
+    r#"
+CREATE TABLE checkpoints (
+    id         BLOB    PRIMARY KEY NOT NULL CHECK (length(id) = 16),
+    name       TEXT    NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+    created_at TEXT    NOT NULL,
+    -- `Document::model_without_checkpoints` of the image.
+    model      BLOB    NOT NULL CHECK (length(model) = 32),
+    byte_len   INTEGER NOT NULL CHECK (byte_len > 0),
+    -- BLAKE3-256 of `image`, checked before the bytes are used.
+    image_hash BLOB    NOT NULL CHECK (length(image_hash) = 32),
+    image      BLOB    NOT NULL,
+    CHECK (length(image) = byte_len)
+) STRICT;
+"#,
 ];
+
+/// The oldest schema the read-only path reads as it is (§30N).
+///
+/// v4 only adds the `checkpoints` table, and its absence means exactly what an
+/// empty one means, so a v3 document is read without migrating it. Anything
+/// older still needs a migration that only a writer may perform.
+const READABLE_WITHOUT_MIGRATION: u32 = 3;
+
+/// The schema that added the `checkpoints` table.
+const CHECKPOINTS_SINCE: u32 = 4;
+
+/// Whether this document's schema has the checkpoint catalog (v4 and later).
+/// Decided by the schema version, not by a table's name: in an older document a
+/// table called `checkpoints` is somebody else's and is kept like any unknown one.
+pub(crate) fn has_checkpoint_table(conn: &Connection) -> Result<bool> {
+    Ok(schema_version(conn)? >= CHECKPOINTS_SINCE)
+}
 
 /// Refuses a document whose SQL schema cannot be read without changing it.
 ///
 /// The ordinary open path migrates older schemas. A caller that promised to
 /// leave the source file untouched needs the opposite contract: fail before a
 /// query depends on a column that an unapplied migration would have created.
+/// Schemas from [`READABLE_WITHOUT_MIGRATION`] on are read as they are; a query
+/// about a later table asks whether it exists first.
 pub(crate) fn require_current_document_schema(conn: &Connection) -> Result<()> {
     let current = schema_version(conn)?;
     let target = MIGRATIONS.len() as u32;
 
-    if current < target {
+    if current < READABLE_WITHOUT_MIGRATION {
         return Err(CadError::unsupported(format!(
             "this document uses schema v{current} and needs migration to v{target}; it was opened \
              read-only and will not be changed"
@@ -385,6 +424,7 @@ fn migrate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferritecad_types::ObjectId;
 
     #[test]
     fn application_ids_are_the_ascii_tags() {
@@ -396,10 +436,10 @@ mod tests {
     fn migration_is_idempotent() {
         let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
         migrate_document(&mut conn).expect("fresh database migrates");
-        assert_eq!(schema_version(&conn).expect("version readable"), 3);
+        assert_eq!(schema_version(&conn).expect("version readable"), 4);
 
         migrate_document(&mut conn).expect("re-running applies nothing");
-        assert_eq!(schema_version(&conn).expect("version readable"), 3);
+        assert_eq!(schema_version(&conn).expect("version readable"), 4);
     }
 
     /// Brings a database up to `version` and no further, as an older build
@@ -442,8 +482,8 @@ mod tests {
         )
         .expect("v2 accepts a topology reference");
 
-        migrate_document(&mut conn).expect("v2 migrates to v3");
-        assert_eq!(schema_version(&conn).expect("version readable"), 3);
+        migrate_document(&mut conn).expect("v2 migrates to the current schema");
+        assert_eq!(schema_version(&conn).expect("version readable"), 4);
 
         let (name, payload): (String, Vec<u8>) = conn
             .query_row(
@@ -471,6 +511,56 @@ mod tests {
             })
             .expect("imported_sources exists");
         assert_eq!(sources, 0);
+    }
+
+    #[test]
+    fn a_schema_v3_document_is_read_as_it_is_and_reaches_v4_with_an_empty_catalog() {
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        migrate_to(&mut conn, 3);
+        assert!(!has_checkpoint_table(&conn).expect("schema readable"));
+        require_current_document_schema(&conn).expect("v3 is read without migration");
+        assert_eq!(schema_version(&conn).expect("version readable"), 3);
+
+        let mut older = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        migrate_to(&mut older, 2);
+        let refused = require_current_document_schema(&older).expect_err("v2 needs a migration");
+        assert!(
+            refused.to_string().contains("needs migration to v4"),
+            "{refused}"
+        );
+
+        migrate_document(&mut conn).expect("v3 migrates to v4");
+        assert_eq!(schema_version(&conn).expect("version readable"), 4);
+        assert!(has_checkpoint_table(&conn).expect("schema readable"));
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM checkpoints", [], |row| row.get(0))
+            .expect("the catalog exists");
+        assert_eq!(rows, 0, "a migrated document has no checkpoints");
+    }
+
+    #[test]
+    fn a_checkpoint_row_must_be_well_formed() {
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        migrate_document(&mut conn).expect("fresh database migrates");
+        let insert = |name: &str, len: i64, image: &[u8]| {
+            conn.execute(
+                "INSERT INTO checkpoints (id, name, created_at, model, byte_len, image_hash, image)
+                 VALUES (?1, ?2, '2026-10-08T00:00:00.000Z', ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    ObjectId::new().to_bytes().as_slice(),
+                    name,
+                    [1u8; 32].as_slice(),
+                    len,
+                    [2u8; 32].as_slice(),
+                    image
+                ],
+            )
+        };
+        insert("A", 3, b"abc").expect("a well-formed row");
+        assert!(insert("", 3, b"abc").is_err(), "an empty name");
+        assert!(insert(&"x".repeat(81), 3, b"abc").is_err(), "81 characters");
+        assert!(insert("B", 4, b"abc").is_err(), "a length that disagrees");
+        assert!(insert("C", 0, b"").is_err(), "an empty image");
     }
 
     #[test]
