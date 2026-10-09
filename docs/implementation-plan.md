@@ -4828,8 +4828,13 @@ ufbx) with eight comparator controls, a window recipe for two launches, two dire
 mutations: [contract and verification](restore-saved-tabs.md). Independent review
 fixed publication overwriting unreadable/unknown/foreign descriptors and cleanup
 removing a temporary file whose exclusive creation had failed; both regressions
-failed before the fixes. No real window was run
-by the author. The CLI is unchanged.
+failed before the fixes. Review also fixed full-window refusal skipping a later
+already-open active tab, with a failing-first owner regression. Review passed the
+two-launch macOS recipe: real Quit publication, Reopen and repeated Reopen, Apply,
+exports before Save and the second Quit.
+Actual files passed all-SQL/CLI comparisons, eight negative controls and pinned ufbx.
+Viewer peaks were 193.642/207.189 MiB, normal pressure, unchanged swap, both exit 0.
+No real window was run by the author. The CLI is unchanged.
 
 *What remains of §30 after §30R:* drafts across a restart or crash; Open over a running New; the recovery store's probe/claim race;
 branching, automatic or persisted-Undo revisions

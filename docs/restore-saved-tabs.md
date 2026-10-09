@@ -51,7 +51,8 @@ listed under the path that save published. Tabs closed before Quit are gone.
 the one foreground route (`Loads`/`open_for_view`/`Bind::Open`): no second session
 type, Open, parser or GPU scene. A file a tab already names (by any name) is *already
 open* and not read again; two physical copies with one `DocumentId` are two tabs. The
-eight-tab limit refuses the rest of the queue in words. Each new tab is inserted after
+eight-tab limit refuses each file needing a new tab in words; already-open files
+later in the list are still counted and may be selected. Each new tab is inserted after
 the shown one, so successes keep the list's order; the shown tab's forms stay with it
 (`Tabs::open`). At the end the window shows the old shown file's tab when it is open;
 otherwise the first file of the list that is open; otherwise nothing changes. While the
@@ -121,7 +122,7 @@ Open button and its handler ask `can_open`, which also waits for the queue.
    and no Reopen running) in the button and the handler. Per file: `Opened`,
    `AlreadyOpen` (a tab names it by any name: not read again), `Failed(why)` (unreadable,
    damaged, unsupported or newer document, kernel or device refusal of its picture,
-   refusal at the bind), `NotOpened(why)` (the window full — the rest of the queue too —
+   refusal at the bind), `NotOpened(why)` (a file needing a new tab when the window is full,
    or cancelled). The account — *"k of n saved files are open, each as it is saved on
    disk now."* and one line per file not opened — is kept until **Not now** or the next
    Reopen; a file that opens never hides one that did not. Reopen again opens only what
@@ -141,6 +142,13 @@ Open button and its handler ask `can_open`, which also waits for the queue.
     unchanged.
 
 ## Found defects
+
+* Independent review also found that a full window stopped the queue before later
+  already-open files were counted or the old active tab selected. A deterministic
+  owner test failed (`None` instead of `Some(existing_a)`). Capacity now refuses only
+  files requiring a new tab, continues checking the bounded list for already-open
+  files, and applies the normal active-tab selection at the end. Cancel still stops
+  the queue immediately. The existing capacity/late-answer gate covers this case.
 
 * Independent review reproduced two publication bugs with executed failing assertions:
   a rejected descriptor (including foreign text and unknown versions) was overwritten
@@ -357,6 +365,68 @@ executed assertion; restored byte for byte — `main.rs` `7332652f…103a4acd`, 
 Logs are in the author's checkout under the ignored `target/30r-logs`,
 `target/30r-ci` and `target/30r-mutations`, not in the repository.
 
+### Independent review (2026-10-09)
+
+The two storage regressions above failed on executed assertions before the fixes
+(`failing-storage.log`: three passed, two failed, child helper ignored), then all five
+storage tests passed, including the two-process writer/reader scenario. The helper
+now distinguishes a failure to create from a failure after creating its own file.
+Foreign/unknown/damaged descriptor refusals are checked on publication as well as read.
+A test-only lint correction replaced `unwrap` with diagnostic `expect`; production
+code in the GUI bundle is identical across that correction.
+
+Local review checks using the existing native target and pinned libraries:
+
+* App: 586 harness passes, two existing ignored helpers, plus three integration tests.
+  Jobs: 120 passes and one existing ignored benchmark; UI: 109 passes.
+* Workspace all-target/all-feature clippy with `-D warnings`, fmt, export boundary,
+  licence headers, actionlint, shellcheck and whitespace checks passed. The initial
+  review-test lint failure was fixed and clippy rerun successfully. Initial Windows
+  CI then found the missing `OsStrExt` import in the native UTF-16 path test; the
+  Windows-only import was added and the cross-platform run restarted.
+* True stub: five descriptor tests plus six applicable restore owner tests pass.
+  The restore harness reports nine passes: one explicit native skip and the mixed
+  and environment-dependent GUI comparator return without work; those three are not
+  geometry evidence. `CMAKE_DISABLE_FIND_PACKAGE_OpenCASCADE=TRUE`; `otool -L` of
+  `ferritecad_viewer-98d3567b5f805b3f` has no OCCT or PlaneGCS imports.
+* Mixed OCCT/no-solver: the exact `mixed_reopen_with_occt_and_no_solver` gate executed
+  and printed `FCAD_30R_MIXED_REOPEN_EXECUTED` with one pass.
+
+The full-window correction was made after the window run below. Its deterministic
+owner assertion failed before the correction; the affected stub and native restore
+suites and workspace clippy then passed again. The window's successful two-file
+scenario did not reach the capacity branch; it is not claimed as a window run of
+that later correction.
+
+The final reviewed code is `0a51886a3f41122d58ea63f94079c16ec4c7ebb8`.
+Its remote records are [CI](https://github.com/gesriot/ferrite-cad/actions/runs/37981618623),
+[combined runtime layout](https://github.com/gesriot/ferrite-cad/actions/runs/37981613663)
+and [planegcs pin](https://github.com/gesriot/ferrite-cad/actions/runs/37981613583).
+The later documentation commit changes only this record and the implementation plan;
+it does not stand in for execution of the code/workflow revision above.
+
+The real macOS recipe below passed in two sequential launches of the fresh, ad-hoc
+signed arm64 bundle at `/private/tmp/ferrite-30r-review/gui/layout/FerriteCAD.app`.
+Private files and app-state roots: `/private/tmp/ferrite-30r-window-review`.
+First launch: Open B, show A, Apply height 26, Save, Quit. Its own descriptor passed
+`--between` and was copied for evidence; it was never fabricated or edited.
+Second launch: empty window visibly offered A (shown) and B; pressing **Reopen saved
+files** opened exactly those tabs in order and returned to A. Pressing it again kept
+two tabs. B's centre/radius were changed to (-3.5, 4.25)/8; actual STL and FBX were
+exported before Save, then B was saved and the window Quit normally.
+
+`FCAD_30R_GUI_COMPARE_OK negative_controls=8 all_SQL_cells=true` passed on those real
+files. Pinned ufbx 0.23.0 read the actual B export (`checks=6 failures=0`); independent
+STL/FBX comparison found 352 matching triangles (`worst_m=1.73e-18`). The first list
+marks A; the second marks B. No recovery record remains after the successful Quits.
+
+Watchdog limit 1536 MiB: PIDs 89101 and 89708, peaks 193.642 and 207.189 MiB, both
+exit 0 without abort, pressure normal, swap unchanged at 1,068,040,192 bytes. After
+Quit, completion was checked only through the guarded process/PID; no CUA access
+restarted either viewer. Logs and resource JSON are outside the checkout under the
+review and window roots above. Windows/Linux window interaction remains untested;
+this does not resolve the historical OOM cause.
+
 ### Real window recipe (macOS)
 
 Not run by the author. One freshly staged arm64 bundle `APP`, run twice in turn, each
@@ -420,11 +490,13 @@ Opens; the reviewer's eyes on steps 5–7 are that part of the evidence.
 
 ### Limits
 
-* No real window was run by the author; the owners' scenario and the headless widget
-  test are not window evidence. Windows/Linux window interaction is untested; their
+* The author ran no window; independent review ran the macOS recipe above. The
+  owners' scenario and headless widget test are separate evidence. Windows/Linux
+  window interaction is untested; their
   descriptor, owner and process gates run in CI only after this diff is pushed.
-* Publication runs on the event loop at the end of Quit (a few hundred bytes, one
-  `fsync`, one rename); reading runs on a thread at start.
+* Publication runs on the event loop at the end of Quit (a bounded validation read
+  of the existing descriptor, one write/`fsync`, one rename); startup reading runs on
+  a thread. The descriptor is bounded to about 1 MiB, usually a few hundred bytes.
 * Ownership of the folder is not checked by user id (no new dependency); it is created
   `0700`, and links and non-files are refused.
 * The race found above has probabilistic, not deterministic, failing evidence.
