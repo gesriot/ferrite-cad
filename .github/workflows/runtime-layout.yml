@@ -1538,7 +1538,7 @@ jobs:
           grep -q '^test result: ok\. 1 passed; 0 failed' quit-form-native.log
           grep -Fxq 'FCAD_30V_NATIVE_EXECUTED volume_a=83200.000 all_SQL_cells=true' quit-form-native.log
 
-      - name: Cancel Quit return New then create publish and compare to CLI
+      - name: Return New after Quit and navigate accepted Model editors against CLI
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
           FERRITECAD_REQUIRE_PLANEGCS: '1'
@@ -1567,6 +1567,26 @@ jobs:
           grep -Fq "test $gate ... " quit-new-native.log
           grep -q '^test result: ok\. 1 passed; 0 failed' quit-new-native.log
           grep -Fxq 'FCAD_30W_NATIVE_EXECUTED volume_n=700.000 all_SQL_cells=true' quit-new-native.log
+
+          tree_dir="$RUNNER_TEMP/model-tree-navigation"
+          mkdir -p "$tree_dir"
+          case '${{ matrix.name }}' in
+            windows) tree_dir="$(cygpath -w "$tree_dir")" ;;
+          esac
+          export FCAD_31A_ARTIFACTS="$tree_dir"
+          for check in \
+            "native_early_cut_navigation_apply_history_save_matches_existing_cli FCAD_31A_NATIVE_EXECUTED all_SQL_cells=true" \
+            "native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes FCAD_31A_NATIVE_ROUTES_EXECUTED routes=5"
+          do
+            gate="sessions::tests::tabs::drafts::model_tree::${check%% *}"
+            marker="${check#* }"
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee model-tree-native.log
+            if grep -q 'skipped:' model-tree-native.log; then exit 1; fi
+            grep -Fq "test $gate ... " model-tree-native.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' model-tree-native.log
+            grep -Fxq "$marker" model-tree-native.log
+          done
 
       - name: Create a saved polygon through the native CLI and sketch worker
         env:

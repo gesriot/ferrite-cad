@@ -532,3 +532,16 @@ aside and returns the window New above it. Published Saves stay saved, Discard
 is deferred, and LastTabs retains the same first/second-refusal policy. Running,
 queued and unaccepted Create still hold Quit; an accepted New is ordinary Untitled.
 No Editor copy, GUI persistence, automatic Create/Apply/Save or second Quit machine.
+
+
+## §31A: navigate accepted model history to the existing forms
+
+Decided before code in [model-tree-navigation.md](../model-tree-navigation.md).
+The kernel-free projection travels in the accepted `ExtrudeEditSource`; scene
+acceptance and checkpoint-only retargeting replace it with the other edit facts.
+Tabs owns only window navigation (TabId, object/occurrence UUIDs, expansion and a
+never-reused scene acceptance address), with no document or worker in that state.
+Body history is derived from tip/predecessor dependencies; shared profiles are
+references. Navigation selection is separate from topology pick. An explicit
+version-addressed action calls the existing typed begin-edit route, under one
+shared availability predicate. No form cancellation, hidden Apply or new reducer.

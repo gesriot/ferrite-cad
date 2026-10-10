@@ -806,7 +806,7 @@ pub(crate) mod tests {
         o.textures_delta.clear();
         o
     }
-    fn frame(ctx: &egui::Context, e: &mut Editor, running: bool) -> egui::FullOutput {
+    pub(crate) fn frame(ctx: &egui::Context, e: &mut Editor, running: bool) -> egui::FullOutput {
         run(ctx, e, Vec::new(), running)
     }
     fn click_at(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
@@ -825,7 +825,7 @@ pub(crate) mod tests {
             );
         }
     }
-    fn click(ctx: &egui::Context, e: &mut Editor, label: &str) {
+    pub(crate) fn click(ctx: &egui::Context, e: &mut Editor, label: &str) {
         let out = frame(ctx, e, false);
         let at = out
             .shapes
@@ -844,7 +844,7 @@ pub(crate) mod tests {
             .iter()
             .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(label)))
     }
-    fn enter_field(ctx: &egui::Context, e: &mut Editor, label: &str, value: &str) {
+    pub(crate) fn enter_field(ctx: &egui::Context, e: &mut Editor, label: &str, value: &str) {
         let out = frame(ctx, e, false);
         let at = out
             .shapes

@@ -1118,7 +1118,7 @@ jobs:
             grep -Fxq "$marker" quit-forms.log
           done
 
-      - name: Quit over idle New keeps every window and tab draft until final exit
+      - name: Keep Quit and New drafts and accepted Model navigation owners
         shell: bash
         env:
           CARGO_BUILD_JOBS: '1'
@@ -1134,7 +1134,11 @@ jobs:
             "sessions::tests::tabs::drafts::quit_new::real_new_quit_widgets_explain_loss_and_back_and_discard_address_the_actual_owners FCAD_30W_WIDGETS_EXECUTED" \
             "sessions::tests::tabs::drafts::quit_new::stub_real_creation_refusal_returns_idle_new_and_underlying_form FCAD_30W_STUB_EXECUTED" \
             "sessions::tests::tabs::drafts::quit_new::idle_new_transition_checks_foreground_and_gestures_before_taking_any_form FCAD_30W_GUARDS_EXECUTED" \
-            "sessions::tests::tabs::drafts::quit_new::new_contour_over_saved_sketch_returns_both_editors_with_functional_history FCAD_30W_SHARED_EDITOR_EXECUTED"
+            "sessions::tests::tabs::drafts::quit_new::new_contour_over_saved_sketch_returns_both_editors_with_functional_history FCAD_30W_SHARED_EDITOR_EXECUTED" \
+            "sessions::tests::tabs::drafts::model_tree::history_uses_dependencies_exact_uuids_and_honest_shared_references FCAD_31A_PROJECTION_EXECUTED cuts=16" \
+            "sessions::tests::tabs::drafts::model_tree::accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved FCAD_31A_OWNERS_EXECUTED" \
+            "sessions::tests::tabs::drafts::model_tree::navigation_open_uses_one_foreground_gesture_and_new_refusal FCAD_31A_GUARDS_EXECUTED" \
+            "sessions::tests::tabs::drafts::model_tree::real_widgets_select_uuid_then_send_the_supported_action_and_bound_the_list FCAD_31A_WIDGETS_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"
