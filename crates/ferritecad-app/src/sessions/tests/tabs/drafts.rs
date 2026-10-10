@@ -17,6 +17,8 @@ mod open_new_recover;
 mod open_over_new;
 /// §30V: all forms survive an aborted window Quit.
 mod quit_forms;
+/// §30W: window New stays whole through Quit.
+mod quit_new;
 
 impl Window {
     /// `App::begin_edit`: the height form on the shown tab's accepted version.

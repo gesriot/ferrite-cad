@@ -181,11 +181,19 @@ struct QuitModel {
     base: Arc<Snapshot>,
 }
 
+/// Window New is not a tab. Consent names both its opening and this Quit pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuitNewId {
+    generation: u64,
+    pub(crate) over: crate::creates::NewGeneration,
+}
+
 struct QuitPass {
     generation: u64,
     forms: Vec<QuitForm>,
     answered: Vec<QuitModel>,
     model: Option<QuitModel>,
+    new: Option<(QuitNewId, bool)>,
 }
 
 /// What follows once a tab is shown.
@@ -239,6 +247,8 @@ pub(crate) enum CloseStep {
 /// The next thing a Quit pass does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuitStep {
+    /// Decide the window's unfinished New before any tab form or model.
+    New,
     /// §30P: the shown tab has a form open: the pass stops there, nothing closed.
     Form,
     /// The shown tab is unsaved and has not been answered: ask about it.
@@ -946,7 +956,11 @@ impl Tabs {
     // --- Quit ------------------------------------------------------------------
 
     pub(crate) fn begin_quit(&mut self) {
-        if self.quitting() || self.closing_form() || self.aside.is_some() {
+        self.begin_quit_with_new(None);
+    }
+
+    pub(crate) fn begin_quit_with_new(&mut self, new: Option<crate::creates::NewGeneration>) {
+        if self.quitting() || self.closing_form() || (self.aside.is_some() && new.is_none()) {
             return;
         }
         self.quit_issued += 1;
@@ -955,7 +969,30 @@ impl Tabs {
             forms: Vec::new(),
             answered: Vec::new(),
             model: None,
+            new: new.map(|over| {
+                (
+                    QuitNewId {
+                        generation: self.quit_issued,
+                        over,
+                    },
+                    false,
+                )
+            }),
         });
+    }
+
+    pub(crate) fn quit_new_question(&self) -> Option<QuitNewId> {
+        let (id, confirmed) = self.quitting.as_ref()?.new?;
+        (!confirmed).then_some(id)
+    }
+
+    /// Only the still-pending New question can be confirmed or taken back.
+    pub(crate) fn confirm_quit_new(&mut self, id: QuitNewId) -> bool {
+        if self.quit_new_question() != Some(id) {
+            return false;
+        }
+        self.quitting.as_mut().expect("address checked").new = Some((id, true));
+        true
     }
 
     pub(crate) fn quitting(&self) -> bool {
@@ -1005,7 +1042,11 @@ impl Tabs {
         active: &Sessions,
         forms: &mut Forms<'_>,
     ) -> Option<QuitId> {
-        if active.busy() || self.aside.is_some() || self.closing_form() {
+        if active.busy()
+            || self.aside.is_some()
+            || self.closing_form()
+            || self.quit_new_question().is_some()
+        {
             return None;
         }
         let id = self.quit_id(active)?;
@@ -1068,7 +1109,7 @@ impl Tabs {
 
     /// Reserve the model question's exact accepted snapshot before any dialog or Save.
     pub(crate) fn ask_quit_model(&mut self, active: &Sessions) -> Option<QuitId> {
-        if active.busy() {
+        if active.busy() || self.quit_new_question().is_some() {
             return None;
         }
         let id = self.quit_id(active)?;
@@ -1115,6 +1156,9 @@ impl Tabs {
     /// tab that is unsaved or keeps a form (§30P), in the row's order. Saved tabs
     /// without a form need nothing. `form_open`: the shown tab has a form open.
     pub(crate) fn quit_step(&self, active: &Sessions, form_open: bool) -> QuitStep {
+        if self.quit_new_question().is_some() {
+            return QuitStep::New;
+        }
         let answered = |sessions: &Sessions| {
             self.quitting.as_ref().is_some_and(|pass| {
                 pass.answered

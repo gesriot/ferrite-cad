@@ -6,7 +6,7 @@ use crate::restores::Restores;
 use crate::tabs::{Forms, QuitId};
 
 impl Window {
-    fn park_quit_form(&mut self) -> QuitId {
+    pub(super) fn park_quit_form(&mut self) -> QuitId {
         self.tabs
             .ask_quit_form(
                 &self.sessions,
@@ -17,25 +17,24 @@ impl Window {
             )
             .expect("Quit form")
     }
-    fn confirm_quit(&mut self) -> QuitId {
+    pub(super) fn confirm_quit(&mut self) -> QuitId {
         let id = self.park_quit_form();
         assert!(self.tabs.confirm_quit_form(&self.sessions, id));
         id
     }
-    fn restore_after_quit(&mut self) {
-        self.tabs.bring_back(
+    pub(super) fn restore_after_quit(&mut self) {
+        crate::restore_window_quit(
+            &mut self.tabs,
             &mut self.sessions,
-            &mut Forms {
-                edits: &mut self.edits,
-                editor: &mut self.creates.sketch,
-            },
+            &mut self.edits,
+            &mut self.creates,
         );
     }
-    fn stop_quit(&mut self) {
+    pub(super) fn stop_quit(&mut self) {
         self.tabs.abort_quit();
         self.restore_after_quit();
     }
-    fn save_quit(&mut self, target: SaveTarget, cancelled: bool) -> SaveReport {
+    pub(super) fn save_quit(&mut self, target: SaveTarget, cancelled: bool) -> SaveReport {
         let id = self
             .tabs
             .ask_quit_model(&self.sessions)
@@ -78,12 +77,26 @@ impl Window {
         }
         report
     }
-    fn complete_quit(&mut self, restores: &mut Restores) -> crate::QuitEnd {
+    pub(super) fn complete_quit(&mut self, restores: &mut Restores) -> crate::QuitEnd {
         loop {
             match self.tabs.quit_step(
                 &self.sessions,
                 crate::form_open(&self.edits, &self.creates.sketch),
             ) {
+                QuitStep::New => {
+                    let id = self.tabs.quit_new_question().expect("New question");
+                    assert!(crate::answer_window_quit_new(
+                        &mut self.tabs,
+                        &mut self.sessions,
+                        &mut self.creates,
+                        &mut self.edits,
+                        &Loads::default(),
+                        &Exports::default(),
+                        &mut self.input,
+                        id,
+                        ferritecad_ui::CloseFormChoice::Discard
+                    ));
+                }
                 QuitStep::Form => {
                     self.confirm_quit();
                 }
@@ -91,6 +104,9 @@ impl Window {
                 QuitStep::Show(tab) => self.show_for_quit(tab),
                 QuitStep::Exit => {
                     let end = self.end_quit(restores);
+                    if end == crate::QuitEnd::Exit {
+                        self.creates.finish_quit_new();
+                    }
                     self.restore_after_quit();
                     return end;
                 }
@@ -544,7 +560,8 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
     assert!(!w.begin_quit());
     w.input.forget_pending();
     crate::sketch::tests::begin_drawing(&mut w.creates.sketch);
-    assert!(!w.begin_quit());
+    assert!(w.begin_quit());
+    w.stop_quit();
     w.creates.sketch.dismiss();
     let g = w
         .sessions
@@ -604,7 +621,8 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
         &w.input
     ));
     assert!(crate::creates::open_form(&mut w.creates, &mut w.input));
-    assert!(!w.begin_quit());
+    assert!(w.begin_quit());
+    w.stop_quit();
     w.creates = crate::creates::Creates::default();
     let source = w.sessions.export_path().expect("source");
     let reading = read_extrude_source(&source).expect("reading");

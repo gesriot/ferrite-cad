@@ -520,3 +520,15 @@ without a history step. Published Saves stay saved; model Discard is deferred.
 LastTabs publication still precedes final form destruction and recovery retirement,
 including the existing first-refusal/second-Quit rule. New and foreground holds
 remain; no form persistence, automatic Apply or document registry is introduced.
+
+## §30W: Quit with an idle unfinished New
+
+Decided before implementation in [quit-with-new-draft.md](../quit-with-new-draft.md).
+The one §30V QuitPass gains an addressed New question (Quit generation plus
+NewGeneration). Creates keeps the whole moved New form/Editor through that pass;
+no worker handle moves and no New tab/session is made. Checks precede the move.
+Late abort restores every tab form, parks the now-shown tab's form in its existing
+aside and returns the window New above it. Published Saves stay saved, Discard
+is deferred, and LastTabs retains the same first/second-refusal policy. Running,
+queued and unaccepted Create still hold Quit; an accepted New is ordinary Untitled.
+No Editor copy, GUI persistence, automatic Create/Apply/Save or second Quit machine.

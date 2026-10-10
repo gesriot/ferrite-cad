@@ -1816,26 +1816,42 @@ fn quit_waits_for_open_forms_and_foreground_work_even_when_tabs_are_clean() {
             _ => assert!(w.sessions.hold_switch(41)),
         }
         assert!(!w.sessions.dirty(), "the accepted model is clean");
-        assert!(
-            !crate::begin_window_quit(
+        let begun = crate::begin_window_quit(
+            &mut w.tabs,
+            &mut w.sessions,
+            &creates,
+            &loads,
+            &exports,
+            &edits,
+            &w.input,
+        );
+        if held == "new" {
+            assert!(begun, "§30W asks before discarding idle New");
+            assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::New);
+            let id = w.tabs.quit_new_question().expect("New question");
+            assert!(crate::answer_window_quit_new(
                 &mut w.tabs,
                 &mut w.sessions,
-                &creates,
+                &mut creates,
+                &mut edits,
                 &loads,
                 &exports,
-                &edits,
-                &w.input,
-            ),
-            "Quit must keep an open {held}"
-        );
-        assert!(
-            !w.tabs.quitting(),
-            "a blocked Quit must not enter its clean fast path"
-        );
+                &mut w.input,
+                id,
+                ferritecad_ui::CloseFormChoice::Back
+            ));
+            assert!(creates.form().is_some(), "Back lost idle New");
+        } else {
+            assert!(!begun, "Quit must keep an open {held}");
+            assert!(
+                !w.tabs.quitting(),
+                "a blocked Quit entered its clean fast path"
+            );
+            assert!(w.sessions.status.contains("before quitting"));
+        }
         assert_eq!(w.sessions.tab(), tab);
         assert_eq!(w.sessions.export_path().as_ref(), Some(&current));
         assert_eq!(std::fs::read(&file).expect("unchanged"), original);
-        assert!(w.sessions.status.contains("before quitting"));
         loads.stop_all();
     }
     let mut w = Window::new(Drawn::Mock, None);

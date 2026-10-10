@@ -1087,7 +1087,8 @@ fn may_leave_tab(
 }
 
 /// What [`may_leave_tab`] asks besides New itself: no session operation, copy
-/// worker or pointer gesture. Only [`can_open`] asks it without the rest (§30T).
+/// worker or pointer gesture. Open (§30T) and idle-New Quit (§30W) ask it
+/// without New itself holding the transition.
 fn idle_but_for_new(
     creates: &creates::Creates,
     edits: &edits::Edits,
@@ -1553,6 +1554,7 @@ struct Sections<'a> {
     /// §30U: the one form Close question, or its Save status.
     closing_form: bool,
     close_form: Option<ferritecad_ui::CloseFormPanel<'a>>,
+    quit_new: Option<&'a str>,
     /// What the last New did.
     created: Option<&'a str>,
     /// §30R: the offer to reopen the last window's saved files.
@@ -1882,15 +1884,107 @@ fn begin_window_quit(
     // an existing Quit pass whose Save may still be running.
     if tabs.closing_form()
         || tabs.quitting()
-        || !can_leave_tab(creates, loads, exports, edits, sessions, input)
+        || !can_quit_window(creates, loads, exports, edits, sessions, input)
     {
         sessions.status = "Wait for the current operation to finish, or close the open form, \
                            before quitting."
             .to_owned();
         return false;
     }
-    tabs.begin_quit();
+    if let Some(new) = creates.idle_new() {
+        tabs.begin_quit_with_new(Some(new));
+    } else {
+        tabs.begin_quit();
+    }
     tabs.quitting()
+}
+
+/// §30W drops only idle New's exclusion, retaining every operation/gesture hold.
+fn can_quit_window(
+    creates: &creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+    input: &ViewportInput,
+) -> bool {
+    creates.quit_idle()
+        && creates.asking().is_none()
+        && idle_but_for_new(creates, edits, sessions, input)
+        && document_io_idle(loads, exports)
+}
+
+/// The addressed New decision shares Tabs' one pass. Checks precede any move.
+#[allow(clippy::too_many_arguments)]
+fn answer_window_quit_new(
+    tabs: &mut tabs::Tabs,
+    sessions: &mut sessions::Sessions,
+    creates: &mut creates::Creates,
+    edits: &mut edits::Edits,
+    loads: &Loads,
+    exports: &exports::Exports,
+    input: &mut ViewportInput,
+    id: tabs::QuitNewId,
+    choice: ferritecad_ui::CloseFormChoice,
+) -> bool {
+    if tabs.quit_new_question() != Some(id)
+        || creates.quit_new_loss(id).is_none()
+        || !can_quit_window(creates, loads, exports, edits, sessions, input)
+    {
+        return false;
+    }
+    match choice {
+        ferritecad_ui::CloseFormChoice::Back => {
+            tabs.abort_quit();
+            input.request_redraw();
+            true
+        }
+        ferritecad_ui::CloseFormChoice::Discard => {
+            if !creates.hold_new_for_quit(id) {
+                return false;
+            }
+            assert!(
+                tabs.confirm_quit_new(id),
+                "New transition checked before move"
+            );
+            end_new(tabs, sessions, edits, creates);
+            input.request_redraw();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Return all tab forms first; place the window New over the now-shown tab.
+/// Its saved-object Editor is moved aside before New's shared Editor returns.
+fn restore_window_quit(
+    tabs: &mut tabs::Tabs,
+    sessions: &mut sessions::Sessions,
+    edits: &mut edits::Edits,
+    creates: &mut creates::Creates,
+) {
+    // A pending question or a newer New still owns the window. Its underlying
+    // tab form must stay aside, including on an unrelated late switch answer.
+    if creates.making_new() {
+        return;
+    }
+    tabs.bring_back(
+        sessions,
+        &mut tabs::Forms {
+            edits,
+            editor: &mut creates.sketch,
+        },
+    );
+    if !tabs.quitting() && creates.has_held_new() {
+        tabs.set_aside(
+            sessions,
+            &mut tabs::Forms {
+                edits,
+                editor: &mut creates.sketch,
+            },
+        );
+        creates.return_quit_new();
+    }
 }
 
 /// What the end of a Quit pass came to.
@@ -3963,6 +4057,8 @@ impl ApplicationHandler<AppEvent> for App {
                 );
                 let close_question = self.tabs.form_close_question(&self.sessions);
                 let quit_question = self.tabs.quit_form_question(&self.sessions);
+                let quit_new_question = self.tabs.quit_new_question();
+                let quit_new_loss = quit_new_question.and_then(|id| self.creates.quit_new_loss(id));
                 let closing_form = self.tabs.closing_form() || self.tabs.quitting();
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
@@ -3989,6 +4085,7 @@ impl ApplicationHandler<AppEvent> for App {
                             }
                         }),
                         closing_form,
+                        quit_new: quit_new_loss,
                         close_form: close_question
                             .as_ref()
                             .map(|(_, name)| ferritecad_ui::CloseFormPanel {
@@ -4046,6 +4143,21 @@ impl ApplicationHandler<AppEvent> for App {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
                     Ok((chosen, replace, asked, pointed_row, interface_has_pointer)) => {
+                        if let Some(id) = quit_new_question
+                            && answer_window_quit_new(
+                                &mut self.tabs,
+                                &mut self.sessions,
+                                &mut self.creates,
+                                &mut self.edits,
+                                &self.loads,
+                                &self.exports,
+                                &mut self.input,
+                                id,
+                                chosen.close_form,
+                            )
+                        {
+                            self.continue_quit(event_loop);
+                        }
                         if let Some((id, _)) = close_question
                             && chosen.close_form != ferritecad_ui::CloseFormChoice::Waiting
                         {
@@ -4932,15 +5044,18 @@ impl App {
     /// Native Quit and window close share the same guarded exit (§30O: over every
     /// tab with unsaved changes, the shown one first, each shown before it is asked).
     fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
-        if begin_window_quit(
-            &mut self.tabs,
-            &mut self.sessions,
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.input,
-        ) {
+        if !self.restores.running()
+            && !self.recoveries.running()
+            && begin_window_quit(
+                &mut self.tabs,
+                &mut self.sessions,
+                &self.creates,
+                &self.loads,
+                &self.exports,
+                &self.edits,
+                &self.input,
+            )
+        {
             self.continue_quit(event_loop);
         } else {
             self.request_frame_now(event_loop);
@@ -4955,6 +5070,7 @@ impl App {
         while self.tabs.quitting() {
             let form = form_open(&self.edits, &self.creates.sketch);
             match self.tabs.quit_step(&self.sessions, form) {
+                tabs::QuitStep::New => break,
                 tabs::QuitStep::Form => {
                     if self.tabs.quit_form_question(&self.sessions).is_none()
                         && self
@@ -5004,6 +5120,7 @@ impl App {
                         &mut self.restores,
                     ) {
                         QuitEnd::Exit => {
+                            self.creates.finish_quit_new();
                             event_loop.exit();
                             return;
                         }
@@ -5020,12 +5137,11 @@ impl App {
     }
 
     fn restore_quit_form(&mut self) {
-        self.tabs.bring_back(
+        restore_window_quit(
+            &mut self.tabs,
             &mut self.sessions,
-            &mut tabs::Forms {
-                edits: &mut self.edits,
-                editor: &mut self.creates.sketch,
-            },
+            &mut self.edits,
+            &mut self.creates,
         );
     }
 
@@ -7153,6 +7269,7 @@ impl Live {
             open_over_new,
             closing_form,
             close_form,
+            quit_new,
             created,
             reopen,
             recovery,
@@ -7167,7 +7284,11 @@ impl Live {
             // place for that is what stops a button and a keystroke drifting
             // apart.
             if closing_form {
-                chosen.close_form = ferritecad_ui::close_form_panel(ui, close_form);
+                chosen.close_form = if let Some(losing) = quit_new {
+                    ferritecad_ui::quit_new_panel(ui, losing)
+                } else {
+                    ferritecad_ui::close_form_panel(ui, close_form)
+                };
                 ui.label(document_outcome);
                 if activity.can_cancel_document && ui.button("Cancel operation").clicked() {
                     chosen.cancel_document = true;
