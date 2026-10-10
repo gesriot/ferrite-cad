@@ -245,7 +245,7 @@ impl Editor {
 
     /// Begin changing the distance of the saved Chamfer. The form opens on the
     /// stored distance.
-    fn begin_distance(
+    pub(crate) fn begin_distance(
         &mut self,
         path: &Path,
         source: &ExtrudeEditSource,

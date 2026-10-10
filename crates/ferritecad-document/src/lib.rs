@@ -107,6 +107,7 @@ pub use sketch_edit::{
 mod envelope;
 mod graph;
 mod model;
+mod model_tree;
 mod schema;
 mod validate;
 
@@ -152,3 +153,5 @@ pub use height_edit::{
     BaseHeightContext, PreparedExtrudeHeight, ProtectedCutFloor, prepare_extrude_height,
     validate_extrude_distance,
 };
+
+pub use model_tree::{ModelRowId, ModelTree, ModelTreeRow};

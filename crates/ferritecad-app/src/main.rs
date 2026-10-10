@@ -39,6 +39,7 @@ mod fillets;
 mod last_tabs;
 #[cfg(target_os = "macos")]
 mod macos_quit;
+mod model_tree;
 mod recoveries;
 mod restores;
 mod sessions;
@@ -1570,6 +1571,8 @@ struct Sections<'a> {
     /// no focus, cursor or selection of one tab's field reaches the field of the
     /// same name in another tab.
     forms_scope: u64,
+    model: Option<(u64, &'a mut ferritecad_ui::ModelNavigation)>,
+    model_available: std::result::Result<(), &'static str>,
 }
 
 /// What accepting or discarding an answer did at the application boundary.
@@ -1826,6 +1829,7 @@ fn present<P>(
             .map(|()| next)
     });
     commit_scene(scene, input, next)?;
+    tabs.model_arrived(sessions, scene.edit_source.as_ref());
     // Whatever else replaced the picture (Apply, Undo, Redo, another document),
     // forms about the saved objects of the old one are over: a request made from
     // them could only name the version that was replaced.
@@ -3959,6 +3963,15 @@ impl ApplicationHandler<AppEvent> for App {
                     })
                     .collect();
                 let reopen_report = self.restores.report();
+                let model_available = model_tree::availability(
+                    &self.creates,
+                    &self.edits,
+                    &self.sessions,
+                    &self.tabs,
+                    &self.loads,
+                    &self.exports,
+                    &self.input,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -4060,11 +4073,19 @@ impl ApplicationHandler<AppEvent> for App {
                 let quit_new_question = self.tabs.quit_new_question();
                 let quit_new_loss = quit_new_question.and_then(|id| self.creates.quit_new_loss(id));
                 let closing_form = self.tabs.closing_form() || self.tabs.quitting();
+                let model = self.sessions.has_session().then(|| {
+                    (
+                        self.sessions.tab().key(),
+                        self.tabs.model_navigation(self.sessions.tab()),
+                    )
+                });
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
                     activity,
                     Sections {
+                        model,
+                        model_available,
                         dialog_failure: self.dialogs.failure(),
                         can_edit,
                         can_new: leave,
@@ -4248,6 +4269,23 @@ impl ApplicationHandler<AppEvent> for App {
                                 }
                             }
                             ferritecad_ui::TabChoice::Waiting => {}
+                        }
+                        if let Some(asked) = chosen.model
+                            && let Some(live) = &self.live
+                            && let Some(source) = &live.scene.edit_source
+                        {
+                            model_tree::open(
+                                asked,
+                                source,
+                                &mut self.creates,
+                                &mut self.edits,
+                                &self.sessions,
+                                &self.tabs,
+                                &self.loads,
+                                &self.exports,
+                                &self.input,
+                            );
+                            self.input.request_redraw();
                         }
                         if chosen.save {
                             self.save_document();
@@ -5947,10 +5985,11 @@ impl App {
     fn keep_picture(&mut self, generation: sessions::Address, path: PathBuf) {
         let outcome = match self.live.as_mut() {
             None => Err(CadError::input("there is no window to show the change in")),
-            Some(live) => self
-                .sessions
-                .commit_kept()
-                .map(|facts| retarget_scene(&mut live.scene, path, facts)),
+            Some(live) => self.sessions.commit_kept().map(|facts| {
+                retarget_scene(&mut live.scene, path, facts);
+                self.tabs
+                    .model_arrived(&self.sessions, live.scene.edit_source.as_ref());
+            }),
         };
         if let Err(error) = &outcome {
             eprintln!("ferritecad: {error}");
@@ -7276,6 +7315,8 @@ impl Live {
             mut checkpoints,
             tabs,
             forms_scope,
+            mut model,
+            model_available,
         } = sections;
         let mut pointed_row = None;
         let mut output = egui.run_ui(raw_input, |ui| {
@@ -7297,6 +7338,45 @@ impl Live {
             }
             chosen = ferritecad_ui::toolbar(ui, activity);
             chosen.tab = ferritecad_ui::tab_strip(ui, tabs);
+            if let Some((tab, navigation)) = &mut model {
+                let rows: Vec<_> = scene
+                    .edit_source
+                    .as_ref()
+                    .map(|s| {
+                        s.model_tree
+                            .rows
+                            .iter()
+                            .map(|r| ferritecad_ui::ModelRow {
+                                key: r.id,
+                                parent: r.parent,
+                                depth: r.depth,
+                                name: &r.name,
+                                kind: &r.kind,
+                                note: &r.note,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                egui::Panel::left("model-panel")
+                    .default_size(260.)
+                    .size_range(180.0..=340.0)
+                    .show(ui, |ui| {
+                        chosen.model = ferritecad_ui::model_panel(
+                            ui,
+                            *tab,
+                            &rows,
+                            navigation,
+                            |key| {
+                                scene
+                                    .edit_source
+                                    .as_ref()
+                                    .map(|s| model_tree::actions(s, key))
+                                    .unwrap_or_default()
+                            },
+                            model_available,
+                        );
+                    });
+            }
             chosen.reopen = ferritecad_ui::reopen_panel(ui, reopen);
             chosen.recovery = ferritecad_ui::recovery_panel(ui, recovery);
             if let Some((panel, name)) = &mut checkpoints {

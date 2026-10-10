@@ -67,3 +67,6 @@ pub use close_form::{
     BACK_TO_FORM, CloseFormChoice, CloseFormPanel, DISCARD_FORM_AND_CLOSE, DISCARD_FORM_AND_QUIT,
     DISCARD_NEW_AND_QUIT, close_form_panel, quit_new_panel,
 };
+
+mod model;
+pub use model::{ModelAction, ModelEdit, ModelKey, ModelNavigation, ModelRow, model_panel};

@@ -137,6 +137,30 @@ impl Edits {
         true
     }
 
+    /// The selected tree UUID opens the same height form on its stored value.
+    pub(crate) fn begin_selected(
+        &mut self,
+        path: &Path,
+        reading: &ExtrudeEditSource,
+        id: ferritecad_types::ObjectId,
+    ) -> bool {
+        let Some(distance) = reading
+            .features
+            .iter()
+            .find(|f| f.feature == id && f.refusal.is_none())
+            .and_then(|f| f.distance_mm)
+        else {
+            return false;
+        };
+        if !self.begin(path, reading) {
+            return false;
+        }
+        let form = self.form.as_mut().expect("begun form");
+        form.shown.selected = Some(id);
+        form.shown.distance = distance.to_string();
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn draw(
         &mut self,

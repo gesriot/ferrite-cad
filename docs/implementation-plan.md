@@ -4977,4 +4977,33 @@ draft form values; power-loss durability of the crash copy (`fsync` order only, 
 proven); the lock-ignoring-writer window of Save (documented, not closed);
 copy-to-a-new-file routes that still need a saved, clean document; window evidence on
 Windows and Linux. §30, Milestone 5C and the product remain open; nothing here closes the
-earlier OOM investigation; no next slice has started.
+earlier OOM investigation.
+
+
+### §31A — Model history and navigation to existing editors
+
+A compact scrolling Model side panel shows the active tab's accepted Body history
+from stored tip/predecessor dependencies, profile references and other stored objects.
+Selection and expansion belong to runtime TabId plus object/occurrence UUIDs; they
+remain separate from topology picks. Explicit supported actions open the existing
+height, Sketch geometry/constraints, Cut, Fillet, Chamfer or Revolve angle form.
+An open form, New, work or gesture holds editor opening with the shared reason;
+selection alone changes no form or model. Successful scene acceptance updates the
+projection; refusal keeps it. No CLI, jobs, schema, kernel, solver or persistence
+change. Contract, concrete verification and independent window recipe:
+[model-tree-navigation.md](model-tree-navigation.md). Author ran no window.
+Four exact true-stub navigation gates, two exact native routes, the full 97-result
+tabs/forms block in both configurations, SQL/UUID/cold STL/FBX comparison, two
+compiling assertion-failing mutations with byte restoration, fmt and workspace
+clippy passed locally. Conditional/opt-in returns are N/A; uncommitted diff CI and
+real window interaction are not claimed. No further slice was started.
+§30, Milestone 5C, the product and the OOM investigation remain open.
+
+Independent review completed the macOS window scenario: early Cut draft across
+a same-UUID tab, Apply/Undo/Redo/Save, the distinct editor routes and actual
+SQL/STL/FBX comparison with three negative controls and pinned ufbx. Viewer
+peak 208.595 MiB, pressure 1, swap 0, exit 0. Review replaced missing-font
+disclosure glyphs with painted triangles and corrected the GUI comparator's
+expected tab order to the existing insert-after-active policy. Exact CI is
+recorded in PR #104. The overlapping legacy controls and full-window viewport
+remain a separate workspace-layout task; this slice does not solve them.

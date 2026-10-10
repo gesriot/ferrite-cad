@@ -170,7 +170,7 @@ impl Editor {
         self.can_apply = can_apply;
         self.unsaved = unsaved;
     }
-    fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, id: ObjectId) -> bool {
+    pub(crate) fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, id: ObjectId) -> bool {
         if self.active() || source.refusal.is_some() {
             return false;
         }

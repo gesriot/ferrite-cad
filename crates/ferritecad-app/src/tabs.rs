@@ -282,6 +282,9 @@ pub(crate) struct Tabs {
     /// §30U: the original form, held until actual Close or returned on failure.
     form_close: Option<FormClose>,
     close_issued: u64,
+    /// Window navigation only; no document, file, worker or form lives here.
+    model_navigation: std::collections::HashMap<TabId, ferritecad_ui::ModelNavigation>,
+    model_issued: u64,
 }
 
 impl Drop for Tabs {
@@ -291,6 +294,36 @@ impl Drop for Tabs {
 }
 
 impl Tabs {
+    /// Called only after successful scene/session acceptance (including kept
+    /// picture steps). Failure never consumes an address or changes selection.
+    pub(crate) fn model_arrived(
+        &mut self,
+        active: &Sessions,
+        source: Option<&ferritecad_document::ExtrudeEditSource>,
+    ) {
+        if !active.has_session() {
+            return;
+        }
+        self.model_issued += 1;
+        let state = self.model_navigation.entry(active.tab()).or_default();
+        state.epoch = self.model_issued;
+        let exists = |key| source.is_some_and(|s| s.model_tree.rows.iter().any(|r| r.id == key));
+        if state.selected.is_some_and(|key| !exists(key)) {
+            state.selected = None;
+        }
+        state.collapsed.retain(|key| exists(*key));
+    }
+
+    pub(crate) fn model_navigation(&mut self, tab: TabId) -> &mut ferritecad_ui::ModelNavigation {
+        self.model_navigation.entry(tab).or_default()
+    }
+
+    pub(crate) fn model_addressed(&self, tab: TabId, action: ferritecad_ui::ModelAction) -> bool {
+        self.model_navigation
+            .get(&tab)
+            .is_some_and(|s| s.epoch == action.epoch && s.selected == Some(action.row))
+    }
+
     pub(crate) fn new(recorder: Option<RecoveryRecorder>) -> Self {
         Self {
             order: Vec::new(),
@@ -304,6 +337,8 @@ impl Tabs {
             aside: None,
             form_close: None,
             close_issued: 0,
+            model_navigation: Default::default(),
+            model_issued: 0,
         }
     }
 
@@ -937,6 +972,7 @@ impl Tabs {
                 .sessions
         };
         self.order.remove(position);
+        self.model_navigation.remove(&tab);
         // Only now is closing irreversible. Release the draft lease before the
         // session removes its private snapshots. Every refusal above kept it.
         self.form_close = None;

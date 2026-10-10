@@ -168,7 +168,12 @@ impl Editor {
 
     /// Begin changing the radius of one saved Fillet. The form opens on the
     /// stored radius.
-    fn begin_radius(&mut self, path: &Path, source: &ExtrudeEditSource, feature: ObjectId) -> bool {
+    pub(crate) fn begin_radius(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        feature: ObjectId,
+    ) -> bool {
         if self.active() || source.refusal.is_some() {
             return false;
         }

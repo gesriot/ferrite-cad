@@ -246,6 +246,8 @@ impl Window {
     fn keep(&mut self, generation: Address, path: PathBuf) {
         let facts = self.sessions.commit_kept().expect("kept");
         crate::retarget_scene(&mut self.scene, path, facts);
+        self.tabs
+            .model_arrived(&self.sessions, self.scene.edit_source.as_ref());
         assert!(self.sessions.finish_scene(generation, Ok(())));
     }
 

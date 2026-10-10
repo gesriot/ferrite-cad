@@ -43,6 +43,8 @@ impl ExtrudeChoice {
 /// Facts carried alongside the accepted picture, never re-read by a form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtrudeEditSource {
+    /// Stored history projection from this exact accepted reading.
+    pub model_tree: crate::ModelTree,
     pub version: DocumentVersion,
     pub features: Vec<ExtrudeChoice>,
     /// Coordinate edit catalogue on this same version (legacy type name retained).
@@ -197,6 +199,7 @@ impl ExtrudeEditSource {
             })
             .collect();
         Ok(Self {
+            model_tree: crate::ModelTree::from_dependencies(&objects, document.dependencies()),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,
@@ -926,6 +929,7 @@ mod tests {
             })
             .collect();
         Ok(ExtrudeEditSource {
+            model_tree: crate::ModelTree::from_dependencies(&objects, document.dependencies()),
             sketches: crate::sketch_choices(document, &document.objects()?),
             constraint_sketches: crate::constraint_sketch_choices(document, &objects),
             circle_sketches: crate::circle_choices(document, &objects),

@@ -176,7 +176,7 @@ pub(super) fn sql(
     }
     result
 }
-fn same_sql(ours: &Path, theirs: &Path, before: &Path) {
+pub(super) fn same_sql(ours: &Path, theirs: &Path, before: &Path) {
     let old = refs(before);
     let (a, b) = (refs(ours), refs(theirs));
     assert_eq!(a.len(), b.len());
