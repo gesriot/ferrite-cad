@@ -4897,7 +4897,12 @@ directed mutations (a stop that abandons nothing; a Discard that erases the show
 form; a question not bound to its New): [contract and verification](open-during-new.md).
 The real-widget gate found the question drawn above New's form took the keyboard from the
 box being typed in; it now sits under the form through one shared function. The CLI is
-unchanged. No real window was run by the author and no remote CI has run for this diff.
+unchanged. Independent review (PR #100) corrected GitHub's 21,000-character run-block
+limit by moving the new native gate to its own step without weakening a check. The real
+macOS window passed Open Cancel, Back, Discard New, return to A's literal form, Apply,
+exports and Save; actual SQL/STL/FBX matched CLI, seven negative controls and strict ufbx
+passed. Watchdog peak 208.16 MiB, pressure normal, swap 0, exit 0. See the linked review
+record for exact local and remote evidence; Windows/Linux GUI remain untested.
 §30, Milestone 5C and the product remain open; nothing here closes the earlier OOM
 investigation.
 
