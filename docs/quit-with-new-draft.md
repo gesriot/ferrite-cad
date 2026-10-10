@@ -315,3 +315,26 @@ Watchdog: normal exit 0 after 1126.513 s, no abort, sampled peak footprint
 claimed fixed. Windows/Linux window interaction and the large STEP/GPU corpora
 were not rerun locally. Exact remote CI provenance is recorded after completion;
 local checks and the author's base CI are not substitutes for it.
+
+
+### Linux CI exposed a test scheduling assumption
+
+On `02ec2bd`, Linux ordinary CI failed the idle-New test at the immediate
+post-creation `begin_quit()`. The test helper had received and accepted the
+channel answer, but the worker could still be returning; the production
+`quit_idle()` guard intentionally also checks live worker handles. Receiving an
+answer is not a thread join. The idle scenarios now wait for that predicate with
+a bounded deadline, without changing owner state or production exclusions.
+The existing exact Create-barrier gate additionally holds a worker **after** its
+answer has been delivered, proves Quit still refuses, then releases it and proves
+idle New can enter and return from Quit. This separates the two moments without
+assuming scheduler timing. The failed CI run is retained as evidence and is not
+called successful. No production code changed for this test correction.
+
+Positive repeats after the correction: the §30W group executed on true stub
+(13 harness passes, one explicit native skip; mixed and the opt-in comparator
+N/A) and native (13 harness passes; conditional tests N/A). The idle case and
+Create-barrier gate each passed 20 further exact stub executions. Workspace
+clippy/fmt and the real-artifact comparator passed again. Evidence:
+`stub-ci-race-complete.log`, `stub-idle-repeat.log`, `native-ci-race-final.log`,
+`clippy-race-final.log`, `gui-compare-race-final.log` in the review folder.

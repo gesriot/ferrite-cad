@@ -8,6 +8,19 @@ use crate::tabs::QuitNewId;
 use ferritecad_ui::{CloseFormChoice, NewChoice, NewContent};
 
 impl Window {
+    /// A channel answer may arrive before the worker's final return. Quit keeps
+    /// that live-thread hold; an idle-Quit scenario must wait for it explicitly.
+    fn wait_for_create_idle(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !self.creates.quit_idle() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "creation did not become idle after its answer was accepted"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     fn answer_quit_new(&mut self, id: QuitNewId, choice: CloseFormChoice) -> bool {
         crate::answer_window_quit_new(
             &mut self.tabs,
@@ -78,6 +91,7 @@ impl Window {
         } else {
             assert!(reading.features.is_empty());
         }
+        self.wait_for_create_idle();
     }
 }
 
@@ -225,6 +239,7 @@ fn finish_returned_drawing(w: &mut Window, before: &(Vec<[String; 2]>, usize, us
         vec![[0., 0.], [20., 0.], [20., 10.]]
     );
     assert_eq!(reading.features[0].distance_mm, Some(10.));
+    w.wait_for_create_idle();
 }
 
 #[test]
@@ -530,6 +545,7 @@ fn running_queued_and_unaccepted_create_hold_quit_and_deliver_their_original_res
         assert!(!w.begin_quit(), "unaccepted candidate lost its hold");
         w.bind_candidate(candidate, Ok(()))
             .expect("same creation accepted");
+        w.wait_for_create_idle();
         assert!(w.begin_quit());
         assert!(w.tabs.quit_new_question().is_none());
         assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
@@ -554,10 +570,56 @@ fn running_queued_and_unaccepted_create_hold_quit_and_deliver_their_original_res
             .is_err()
     );
     assert!(matches!(w.creates.status(), CreateStatus::Failed { .. }));
+    w.wait_for_create_idle();
     w.hold_quit_new();
     w.stop_quit();
     w.assert_literal_new(NewContent::SamplePlate);
     w.create_returned_form(NewContent::SamplePlate);
+
+    // Receiving the result is not proof the thread exited: hold it after its
+    // answer, so this boundary does not depend on the host scheduler's speed.
+    let mut trailing = Window::new(Drawn::Mock, None);
+    assert!(trailing.begin_new(false));
+    trailing.literal_new(NewContent::Empty);
+    let (answered, answer) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let generation = crate::creates::begin_create(
+        &mut trailing.creates,
+        &mut trailing.input,
+        NewDocument::Empty,
+        move |_, generation, _| {
+            std::thread::spawn(move || {
+                answered.send(generation).expect("answer");
+                resume.recv().expect("release trailing worker");
+            })
+        },
+    )
+    .expect("start");
+    assert_eq!(
+        answer
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("answered while held"),
+        generation
+    );
+    assert!(
+        crate::creates::finish_create(
+            &mut trailing.creates,
+            &mut trailing.input,
+            generation,
+            Err(CadError::input("controlled creation refusal")),
+        )
+        .is_none()
+    );
+    let was_held = !trailing.begin_quit();
+    release.send(()).expect("let worker exit");
+    trailing.wait_for_create_idle();
+    assert!(
+        was_held,
+        "answered but live Create thread lost its Quit hold"
+    );
+    trailing.hold_quit_new();
+    trailing.stop_quit();
+    trailing.assert_literal_new(NewContent::Empty);
     println!("\nFCAD_30W_CREATE_BARRIERS_EXECUTED");
 }
 
@@ -726,6 +788,7 @@ fn stub_real_creation_refusal_returns_idle_new_and_underlying_form() {
     assert!(result.is_err(), "true stub unexpectedly drew a scene");
     assert!(crate::creates::finish_create(&mut w.creates, &mut w.input, g, result).is_none());
     assert!(matches!(w.creates.status(), CreateStatus::Failed { .. }));
+    w.wait_for_create_idle();
     w.hold_quit_new();
     w.stop_quit();
     w.assert_literal_new(NewContent::SamplePlate);
