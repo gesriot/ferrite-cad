@@ -338,3 +338,28 @@ Create-barrier gate each passed 20 further exact stub executions. Workspace
 clippy/fmt and the real-artifact comparator passed again. Evidence:
 `stub-ci-race-complete.log`, `stub-idle-repeat.log`, `native-ci-race-final.log`,
 `clippy-race-final.log`, `gui-compare-race-final.log` in the review folder.
+
+
+### Exact CI provenance
+
+Final code and test input: `3a5f2913f15871823c615babe3e49e403316a58d`.
+The following documentation-only recording does not change a runtime or test input.
+
+* [Ordinary CI 38060379068](https://github.com/gesriot/ferrite-cad/actions/runs/38060379068):
+  all seven jobs succeeded. Downloaded logs independently confirm ten named §30W
+  tests and ten execution markers on **each** of Linux, macOS and Windows (30/30),
+  each with one passed test and no skip in that block.
+* [PlaneGCS pin 38060375374](https://github.com/gesriot/ferrite-cad/actions/runs/38060375374):
+  all four jobs succeeded, including the cross-platform comparison.
+* [Combined runtime 38060375356](https://github.com/gesriot/ferrite-cad/actions/runs/38060375356)
+  is the code-head native/mixed/ufbx/packaging run. At this documentation recording
+  it is still running; its eventual conclusion is not inferred from local results.
+  Merge requires success, and the final per-platform log audit and docs-head checks
+  are recorded in [PR #103's merge assessment](https://github.com/gesriot/ferrite-cad/pull/103).
+
+The base `eb54c46` was separately confirmed at 27 successful check runs. Earlier
+branch attempts are superseded, not counted as success: `de7137e` was cancelled on
+update; `02ec2bd` includes the Linux scheduling failure described above and was
+superseded by its correction. The actual GUI bundle's production source is unchanged
+between `de7137e` and the final code head; only the comparator/tests and documentation
+changed. Local artifact digests are in `target/30w-review/gui-artifact-hashes.json`.
