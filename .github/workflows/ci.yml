@@ -97,6 +97,8 @@ jobs:
       # One crate owns the sketch solver boundary. Both halves keep compiling
       # if a second copy appears, so this is checked rather than remembered.
       - run: tools/check-solver-ownership.sh
+      # GitHub limits each run script; actionlint alone does not check this.
+      - run: python3 tools/check-actions-run-size.py
 
       # And one file owns planegcs's native build inputs. A second copy of a
       # version or a digest, or a Boost taken from a package manager, keeps
@@ -883,6 +885,10 @@ jobs:
           gate=model_version_sets_only_the_modified_stamp_aside
           cargo test -p ferritecad-document --test snapshot "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee model-version.log
           grep -Eq "^test $gate \.\.\. ok$" model-version.log
+      - name: Exercise session edits and tab holds without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
           for gate in sessions::tests::a_version_is_current_only_when_its_picture_is_shown \
             sessions::tests::a_failed_stale_or_cancelled_apply_changes_nothing \
             sessions::tests::a_cancelled_edit_that_still_finished_is_dropped_and_leaves_no_file \
@@ -988,6 +994,10 @@ jobs:
             cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-app.log
             if grep -q 'skipped:' session-app.log || ! grep -Fq "test $gate ... ok" session-app.log; then exit 1; fi
           done
+      - name: Exercise tab drafts and Close questions without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
           # §30M: prints its marker, so libtest's "ok" follows on a line of its own.
           gate=sessions::tests::recovery::stub_recovery_is_refused_at_the_picture_and_keeps_the_record_and_the_open_document
           cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee recovery-app.log
@@ -1055,7 +1065,14 @@ jobs:
             "sessions::tests::tabs::drafts::open_over_new::a_full_window_is_checked_before_anything_is_asked_or_discarded FCAD_30T_OPEN_OVER_NEW_FULL_WINDOW_EXECUTED" \
             "sessions::tests::tabs::drafts::open_over_new::open_alone_leaves_an_unfinished_new_and_every_other_hold_stays FCAD_30T_OPEN_NARROW_EXCEPTION_EXECUTED" \
             "sketch::tests::open_over_new::the_question_beside_new_keeps_its_text_and_focus_and_both_buttons_answer FCAD_30T_QUESTION_WIDGETS_EXECUTED" \
-            "sessions::tests::tabs::drafts::open_over_new::stub_open_over_a_running_new_is_refused_at_the_picture_and_new_stays_gone FCAD_30T_STUB_OPEN_OVER_NEW_EXECUTED"
+            "sessions::tests::tabs::drafts::open_over_new::stub_open_over_a_running_new_is_refused_at_the_picture_and_new_stays_gone FCAD_30T_STUB_OPEN_OVER_NEW_EXECUTED" \
+            "sessions::tests::tabs::drafts::close_form::same_document_tabs_keep_literal_forms_and_history_until_their_own_close_succeeds FCAD_30U_TAB_FORMS_EXECUTED" \
+            "sessions::tests::tabs::drafts::close_form::cancelled_close_and_refused_saves_return_the_original_form_and_accepted_model FCAD_30U_CANCEL_SAVE_EXECUTED" \
+            "sessions::tests::tabs::drafts::close_form::close_decisions_are_once_only_and_address_the_tab_attempt_and_snapshot FCAD_30U_ADDRESS_EXECUTED" \
+            "sessions::tests::tabs::drafts::close_form::every_existing_form_family_uses_the_same_move_and_keeps_its_entire_state FCAD_30U_FORM_FAMILIES_EXECUTED families=12" \
+            "sessions::tests::tabs::drafts::close_form::real_close_buttons_name_unapplied_values_and_parked_fields_cannot_take_typing FCAD_30U_WIDGETS_EXECUTED" \
+            "sessions::tests::tabs::drafts::close_form::close_request_preserves_foreground_work_and_gesture_holds FCAD_30U_HOLDS_EXECUTED" \
+            "sessions::tests::tabs::drafts::close_form::stub_hidden_close_refusal_keeps_both_forms_and_no_native_work_is_claimed FCAD_30U_STUB_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"

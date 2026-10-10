@@ -61,7 +61,9 @@ looked at from. Each tab saves to its own file.
 5. **Save As.** A destination that another tab names (by any name, on disk or not) is
    refused: *"Not saved: … is open in another tab."* Everything else is unchanged:
    no-clobber, the version guard, the private-folder refusal.
-6. **Close.** Clean → closed. Unsaved → shown, then *Save / Discard / Cancel*: Cancel,
+6. **Close.** A tab with an unfinished form now asks before Close (§30U:
+   [close-tab-with-draft.md](close-tab-with-draft.md)); every failure returns its
+   original form. With no form: clean → closed. Unsaved → shown, then *Save / Discard / Cancel*: Cancel,
    a cancelled dialog or a failed Save keep the tab and its model; a published Save or
    Discard close it. Closing frees that tab's private files and retires its crash copy
    only. Closing the shown tab replaces the picture with an empty one in the same

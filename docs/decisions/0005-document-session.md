@@ -496,3 +496,15 @@ shape for the cleanup sweep only.
   its record's claim until it dies or the bound passes. Windows and Linux legs are CI's.
 
 Contract and checks: [../recovery-inspection-contention.md](../recovery-inspection-contention.md).
+
+
+## §30U: close one tab with an unfinished form
+
+Decided before implementation in the [event/owner table](../close-tab-with-draft.md).
+The existing Forms/Draft owners move whole into one Close attempt in Tabs; no
+per-editor cancellation protocol or form copy. The attempt names runtime TabId,
+a once-only generation and the accepted snapshot identity. Back returns the exact
+form. Explicit form abandonment authorises continuing Close, while the Draft stays
+held through the existing dirty/Untitled question and Save continuation. Every
+cancel/refusal returns it; only actual successful Close drops it with its tab.
+Save reads only the accepted model. Quit and other transitions remain unchanged.

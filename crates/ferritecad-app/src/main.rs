@@ -1067,9 +1067,6 @@ fn form_open(edits: &edits::Edits, sketch: &sketch::Editor) -> bool {
 /// §30P: why another tab cannot be shown or closed right now.
 const LEAVE_WAIT: &str = "Another tab can be shown or closed once the current operation, \
                           export or New has finished. An open edit form stays with its tab.";
-/// §30P: closing a tab never closes its open form behind the person's back.
-const FORM_BEFORE_CLOSING: &str = "This tab has an open form. Apply or Cancel it before closing \
-                                   the tab; nothing was closed.";
 /// §30P: nor does Quit: the pass stops at the tab whose form is open.
 const FORM_BEFORE_QUITTING: &str = "This tab has an open form. Apply or Cancel it before \
                                     quitting; no tab was closed.";
@@ -1114,6 +1111,28 @@ fn can_leave_tab(
     input: &ViewportInput,
 ) -> bool {
     may_leave_tab(creates, edits, sessions, input) && document_io_idle(loads, exports)
+}
+
+/// §30U: the narrow Close-form entry, using the same foreground guards as ×.
+fn ask_form_close(
+    tabs: &mut tabs::Tabs,
+    sessions: &sessions::Sessions,
+    creates: &mut creates::Creates,
+    edits: &mut edits::Edits,
+    loads: &Loads,
+    exports: &exports::Exports,
+    input: &ViewportInput,
+) -> Option<tabs::FormCloseId> {
+    if !can_leave_tab(creates, loads, exports, edits, sessions, input) {
+        return None;
+    }
+    tabs.ask_form_close(
+        sessions,
+        &mut tabs::Forms {
+            edits,
+            editor: &mut creates.sketch,
+        },
+    )
 }
 
 /// §30Q: opens New over the shown tab once [`can_leave_tab`] allowed it — `open`
@@ -1534,6 +1553,9 @@ struct Sections<'a> {
     form: Option<&'a mut ferritecad_ui::NewDocumentForm>,
     /// §30T: the question asked when a file was chosen while New is unfinished.
     open_over_new: Option<ferritecad_ui::OpenOverNewPanel<'a>>,
+    /// §30U: the one form Close question, or its Save status.
+    closing_form: bool,
+    close_form: Option<ferritecad_ui::CloseFormPanel<'a>>,
     /// What the last New did.
     created: Option<&'a str>,
     /// §30R: the offer to reopen the last window's saved files.
@@ -1860,7 +1882,8 @@ fn begin_window_quit(
     // The accepted model may be clean while a form or a worker holds newer
     // intent. Check before Quit's clean-document fast path, and before resetting
     // an existing Quit pass whose Save may still be running.
-    if !can_begin_new(creates, loads, exports)
+    if tabs.closing_form()
+        || !can_begin_new(creates, loads, exports)
         || sessions.busy()
         || form_open(edits, &creates.sketch)
     {
@@ -3366,7 +3389,12 @@ impl ApplicationHandler<AppEvent> for App {
                         Some(next) => self.continue_with(next, event_loop),
                         // A save that was not published continues nothing: a Quit
                         // it was part of stops, and every tab stays open.
-                        None => self.tabs.abort_quit(),
+                        None => {
+                            self.tabs.abort_quit();
+                            if let Some(id) = self.tabs.form_close_id() {
+                                self.return_close_form(id);
+                            }
+                        }
                     }
                 }
                 self.input.request_redraw();
@@ -3577,6 +3605,7 @@ impl ApplicationHandler<AppEvent> for App {
             // stays the field's.
             WindowEvent::KeyboardInput { ref event, .. }
                 if event.state == ElementState::Pressed
+                    && !self.tabs.closing_form()
                     && document_command(
                         &event.logical_key,
                         event.text_with_all_modifiers(),
@@ -3624,7 +3653,7 @@ impl ApplicationHandler<AppEvent> for App {
                     && !self.sessions.busy();
                 let idle = settled && !form_open(&self.edits, &self.creates.sketch);
                 // §30P: a form held as made on another version is over once closed.
-                if !form_open(&self.edits, &self.creates.sketch) {
+                if !self.tabs.closing_form() && !form_open(&self.edits, &self.creates.sketch) {
                     self.sessions.release_stale_draft();
                 }
                 let leave = can_leave_tab(
@@ -3931,6 +3960,8 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.input,
                     &self.restores,
                 );
+                let close_question = self.tabs.form_close_question(&self.sessions);
+                let closing_form = self.tabs.closing_form();
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
@@ -3955,6 +3986,10 @@ impl ApplicationHandler<AppEvent> for App {
                                 can_discard,
                             }
                         }),
+                        closing_form,
+                        close_form: close_question
+                            .as_ref()
+                            .map(|(_, name)| ferritecad_ui::CloseFormPanel { document: name }),
                         sketch,
                         creating,
                         created,
@@ -3998,6 +4033,11 @@ impl ApplicationHandler<AppEvent> for App {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
                     Ok((chosen, replace, asked, pointed_row, interface_has_pointer)) => {
+                        if let Some((id, _)) = close_question
+                            && chosen.close_form != ferritecad_ui::CloseFormChoice::Waiting
+                        {
+                            self.answer_form_close(id, chosen.close_form);
+                        }
                         if let Some(view) = chosen.view {
                             self.input.handle(ViewportEvent::Look(view), false);
                         }
@@ -4396,6 +4436,9 @@ impl App {
 
     /// The Open dialog and what follows it.
     fn pick_and_open(&mut self) {
+        if self.tabs.closing_form() {
+            return;
+        }
         if !self.can_open() {
             return;
         }
@@ -4950,8 +4993,10 @@ impl App {
             (sessions::Continuation::Quit, true) => {
                 "It has never been saved. Closing the window would lose it."
             }
-            (sessions::Continuation::Close, false) => "Closing its tab would lose them.",
-            (sessions::Continuation::Close, true) => {
+            (sessions::Continuation::Close | sessions::Continuation::CloseForm(_), false) => {
+                "Closing its tab would lose them."
+            }
+            (sessions::Continuation::Close | sessions::Continuation::CloseForm(_), true) => {
                 "It has never been saved. Closing its tab would lose it."
             }
         };
@@ -4986,14 +5031,15 @@ impl App {
 
     /// The window may show or close another tab now (§30P: [`can_leave_tab`]).
     fn can_leave_tab(&self) -> bool {
-        can_leave_tab(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-            &self.input,
-        )
+        !self.tabs.closing_form()
+            && can_leave_tab(
+                &self.creates,
+                &self.loads,
+                &self.exports,
+                &self.edits,
+                &self.sessions,
+                &self.input,
+            )
     }
 
     /// §30O: starts showing hidden tab `tab` (and then `after`). Refused, with the
@@ -5027,8 +5073,8 @@ impl App {
     }
 
     /// §30O: the × of a tab. A clean tab closes; an unsaved one is shown (when
-    /// hidden) and asked about first. §30P: a tab with an open form is shown and
-    /// its form left for the person to Apply or Cancel; nothing is closed.
+    /// hidden) and asked about first. §30U asks before giving up an idle form,
+    /// keeping it until Close succeeds.
     fn close_tab(&mut self, tab: tabs::TabId) {
         if !self.can_leave_tab() {
             self.sessions.status = LEAVE_WAIT.to_owned();
@@ -5038,7 +5084,15 @@ impl App {
         let form = form_open(&self.edits, &self.creates.sketch);
         match self.tabs.close_step(&self.sessions, tab, form) {
             Some(tabs::CloseStep::Form) => {
-                self.sessions.status = FORM_BEFORE_CLOSING.to_owned();
+                ask_form_close(
+                    &mut self.tabs,
+                    &self.sessions,
+                    &mut self.creates,
+                    &mut self.edits,
+                    &self.loads,
+                    &self.exports,
+                    &self.input,
+                );
                 self.input.request_redraw();
             }
             Some(tabs::CloseStep::Now) => self.close_now(tab),
@@ -5056,6 +5110,53 @@ impl App {
         }
     }
 
+    /// §30U: one addressed answer. The original Draft stays in Tabs through the
+    /// model question and any Save; only successful actual Close destroys it.
+    fn answer_form_close(&mut self, id: tabs::FormCloseId, choice: ferritecad_ui::CloseFormChoice) {
+        match choice {
+            ferritecad_ui::CloseFormChoice::Back => {
+                self.return_close_form(id);
+            }
+            ferritecad_ui::CloseFormChoice::Discard => {
+                if !can_leave_tab(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                    &self.input,
+                ) || !self.tabs.confirm_form_close(&self.sessions, id)
+                {
+                    return;
+                }
+                match self.ask_to_close(sessions::Continuation::CloseForm(id)) {
+                    Asked::Go => {
+                        if self.tabs.decide_form_close(&self.sessions, id) {
+                            self.close_now(id.tab());
+                        }
+                    }
+                    Asked::Stay => {
+                        self.return_close_form(id);
+                    }
+                    Asked::Saving => {}
+                }
+            }
+            _ => {}
+        }
+        self.input.request_redraw();
+    }
+
+    fn return_close_form(&mut self, id: tabs::FormCloseId) {
+        self.tabs.cancel_form_close(
+            &mut self.sessions,
+            id,
+            &mut tabs::Forms {
+                edits: &mut self.edits,
+                editor: &mut self.creates.sketch,
+            },
+        );
+    }
+
     /// Closes `tab` now: nothing in it is unsaved or the person decided. Closing the
     /// shown tab replaces the picture with an empty one in the same statement, then
     /// shows the neighbouring tab, if any.
@@ -5064,6 +5165,7 @@ impl App {
             return;
         };
         let renderer = &mut live.renderer;
+        let close_id = self.tabs.form_close_id();
         let closed = close_shown(
             &mut live.scene,
             &mut self.input,
@@ -5090,6 +5192,9 @@ impl App {
             Err(error) => {
                 eprintln!("ferritecad: {error}");
                 self.sessions.status = format!("The tab was not closed: {error}");
+                if let Some(id) = close_id {
+                    self.return_close_form(id);
+                }
             }
         }
         self.input.request_redraw();
@@ -5114,6 +5219,11 @@ impl App {
     fn continue_with(&mut self, next: sessions::Continuation, event_loop: &ActiveEventLoop) {
         match next {
             sessions::Continuation::Quit => self.continue_quit(event_loop),
+            sessions::Continuation::CloseForm(id) => {
+                if !self.sessions.dirty() && self.tabs.decide_form_close(&self.sessions, id) {
+                    self.close_now(id.tab());
+                }
+            }
             // The saved tab is the shown one: nothing else ran while it saved.
             sessions::Continuation::Close => {
                 let tab = self.sessions.tab();
@@ -5156,7 +5266,7 @@ impl App {
     /// Writes the accepted changes to the document's own file, when there are any.
     /// An untitled document has no file yet: Save asks where, as Save As does.
     fn save_document(&mut self) {
-        if self.settled() && self.sessions.can_save() {
+        if !self.tabs.closing_form() && self.settled() && self.sessions.can_save() {
             self.save_then(None);
         }
     }
@@ -5165,7 +5275,7 @@ impl App {
     /// does nothing; an occupied name is refused by the save, keeping the accepted
     /// scene and any draft.
     fn ask_where_to_save_as(&mut self) {
-        if !(self.settled() && self.sessions.can_save_as()) {
+        if self.tabs.closing_form() || !(self.settled() && self.sessions.can_save_as()) {
             return;
         }
         if let Some(chosen) = self.choose_save_as_path() {
@@ -6924,6 +7034,8 @@ impl Live {
             replacing,
             mut form,
             open_over_new,
+            closing_form,
+            close_form,
             created,
             reopen,
             recovery,
@@ -6937,6 +7049,14 @@ impl Live {
             // request means to the camera is the reducer's, and having one
             // place for that is what stops a button and a keystroke drifting
             // apart.
+            if closing_form {
+                chosen.close_form = ferritecad_ui::close_form_panel(ui, close_form);
+                ui.label(document_outcome);
+                if activity.can_cancel_document && ui.button("Cancel operation").clicked() {
+                    chosen.cancel_document = true;
+                }
+                return;
+            }
             chosen = ferritecad_ui::toolbar(ui, activity);
             chosen.tab = ferritecad_ui::tab_strip(ui, tabs);
             chosen.reopen = ferritecad_ui::reopen_panel(ui, reopen);

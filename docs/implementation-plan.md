@@ -4906,7 +4906,27 @@ record for exact local and remote evidence; Windows/Linux GUI remain untested.
 §30, Milestone 5C and the product remain open; nothing here closes the earlier OOM
 investigation.
 
-*What remains of §30 after §30T:* drafts across a restart or crash; contention the
+**§30U — close a tab with an unfinished form.** × shows a hidden tab through the
+existing switch route, then names the document and asks whether to return to its
+form or give up the entered, unapplied form values and continue Close. One attempt
+in `Tabs` moves the existing `Forms` into one `Draft` and binds the decision to
+runtime `TabId`, a once-only attempt number and snapshot identity. Back returns it
+literally. A dirty/Untitled accepted model still asks Save / Discard / Cancel; Save
+reads that model alone. Cancel, Save As Cancel/refusal, failed/conflicting Save and
+refused empty-scene preparation return the original form, history and version.
+Only successful actual Close destroys the form and that tab's files/recovery.
+Existing foreground-work and gesture holds, Quit, New/Open/Recover/Reopen, CLI and
+schema stay unchanged. Kernel-free owners, all twelve Add/Edit form families, real
+egui buttons/focus, true stub, separate no-solver/native scenarios, SQL/UUID and
+STL/FBX CLI comparison, strict pinned ufbx, two directed mutations and an independent
+window recipe: [contract and verification](close-tab-with-draft.md). Independent
+review executed the real macOS hidden-Close → Back → model Cancel → Apply/export →
+Save-and-Close sequence; B retained its own form. Actual GUI SQL/UUID and byte-equal
+STL/FBX matched CLI, strict ufbx and three negative controls passed. Viewer peak
+211.55 MiB, pressure 1, swap 0, normal exit. Exact code CI is recorded separately
+in PR #101; the author's original uncommitted handoff did not claim remote CI.
+
+*What remains of §30 after §30U:* drafts across a restart or crash; contention the
 lock cannot settle (a stream of listings starving a claim, a hung reader, builds older
 than §30S, lock-ignoring writers, filesystems without locks);
 branching, automatic or persisted-Undo revisions

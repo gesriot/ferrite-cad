@@ -21,6 +21,8 @@ use ferritecad_viewport::{PickId, StandardView};
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Chosen {
+    /// §30U: decision about this tab's unfinished form.
+    pub close_form: crate::CloseFormChoice,
     pub edit: crate::EditChoice,
     /// §30R: what was pressed in the offer to reopen the last window's files.
     pub reopen: crate::ReopenChoice,

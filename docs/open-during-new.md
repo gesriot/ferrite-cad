@@ -1,5 +1,8 @@
 # §30T — Open while New is not finished
 
+Single-tab Close over a form is now described by [§30U](close-tab-with-draft.md);
+this slice's Open/New rules are unchanged.
+
 Markers `FCAD_30T_*`. Builds on [§30Q](open-new-recover-with-drafts.md),
 [§30O document tabs](document-tabs.md), [§30P](tab-edit-drafts.md) and
 [ADR 0005](decisions/0005-document-session.md). This one file is the contract and the

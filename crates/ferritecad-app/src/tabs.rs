@@ -143,6 +143,26 @@ impl Forms<'_> {
     }
 }
 
+/// One Close attempt: runtime tab identity and a never-reused question number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FormCloseId {
+    tab: TabId,
+    generation: u64,
+}
+
+impl FormCloseId {
+    pub(crate) fn tab(self) -> TabId {
+        self.tab
+    }
+}
+
+struct FormClose {
+    id: FormCloseId,
+    draft: Draft,
+    confirmed: bool,
+    model_decided: bool,
+}
+
 /// What follows once a tab is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum After {
@@ -184,8 +204,8 @@ pub(crate) enum CloseStep {
     Show,
     /// Unsaved and shown: ask Save / Discard / Cancel.
     Ask,
-    /// §30P: shown with a form open: the person finishes or cancels it first.
-    /// Nothing is closed, saved or applied.
+    /// §30U: shown with a form open: ask before continuing Close.
+    /// Nothing is closed, saved or applied by requesting it.
     Form,
 }
 
@@ -221,6 +241,9 @@ pub(crate) struct Tabs {
     quitting: Option<Vec<TabId>>,
     /// §30Q: the shown tab's forms, set aside while New uses the window's forms.
     aside: Option<(TabId, Draft)>,
+    /// §30U: the original form, held until actual Close or returned on failure.
+    form_close: Option<FormClose>,
+    close_issued: u64,
 }
 
 impl Drop for Tabs {
@@ -240,6 +263,8 @@ impl Tabs {
             issued: 0,
             quitting: None,
             aside: None,
+            form_close: None,
+            close_issued: 0,
         }
     }
 
@@ -378,6 +403,11 @@ impl Tabs {
         checkpoint_name: &mut String,
         forms: &mut Forms<'_>,
     ) -> Result<()> {
+        if self.closing_form() {
+            return Err(CadError::input(
+                "Answer the unfinished-form Close question first.",
+            ));
+        }
         match bind {
             Bind::Open(session) => self.open(active, *session, camera, checkpoint_name, forms),
             Bind::Staged => active.commit_staged(),
@@ -456,7 +486,7 @@ impl Tabs {
     /// draft — moved, exactly as left, as a switch would — so New starts on empty
     /// forms and nothing typed for New reaches them. Nothing when none is open.
     pub(crate) fn set_aside(&mut self, active: &Sessions, forms: &mut Forms<'_>) {
-        if self.aside.is_some() || !active.has_session() {
+        if self.closing_form() || self.aside.is_some() || !active.has_session() {
             return;
         }
         if let Some(draft) = forms.park(active) {
@@ -498,6 +528,9 @@ impl Tabs {
         after: Option<After>,
         spawn: impl FnOnce(PathBuf, u64, &CancelToken) -> JoinHandle<()>,
     ) -> std::result::Result<u64, String> {
+        if self.closing_form() {
+            return Err("Answer the unfinished-form Close question first.".to_owned());
+        }
         let lease = self
             .hidden(target)
             .and_then(|hidden| hidden.sessions.export_source())
@@ -669,6 +702,110 @@ impl Tabs {
 
     // --- closing ---------------------------------------------------------------
 
+    /// §30U: freeze one whole form using the existing move, never a copy. Call
+    /// only after the window's foreground-work and gesture checks, on a shown tab.
+    pub(crate) fn ask_form_close(
+        &mut self,
+        active: &Sessions,
+        forms: &mut Forms<'_>,
+    ) -> Option<FormCloseId> {
+        if self.closing_form() || self.aside.is_some() || active.busy() || !active.has_session() {
+            return None;
+        }
+        let draft = forms.park(active)?;
+        self.close_issued += 1;
+        let id = FormCloseId {
+            tab: active.tab(),
+            generation: self.close_issued,
+        };
+        self.form_close = Some(FormClose {
+            id,
+            draft,
+            confirmed: false,
+            model_decided: false,
+        });
+        Some(id)
+    }
+
+    pub(crate) fn closing_form(&self) -> bool {
+        self.form_close.is_some()
+    }
+
+    pub(crate) fn form_close_id(&self) -> Option<FormCloseId> {
+        self.form_close.as_ref().map(|close| close.id)
+    }
+
+    fn addressed_close(&self, active: &Sessions, id: FormCloseId) -> Option<&FormClose> {
+        self.form_close.as_ref().filter(|close| {
+            close.id == id
+                && active.has_session()
+                && active.tab() == id.tab
+                && active
+                    .export_source()
+                    .is_some_and(|base| Arc::ptr_eq(&base, &close.draft.base))
+        })
+    }
+
+    /// The question and its address are borrowed for this frame only. Once
+    /// confirmed it is no longer answerable, including by a repeated old click.
+    pub(crate) fn form_close_question(&self, active: &Sessions) -> Option<(FormCloseId, String)> {
+        let id = self.form_close.as_ref()?.id;
+        self.addressed_close(active, id)
+            .filter(|close| !close.confirmed)?;
+        Some((id, active.name()?))
+    }
+
+    pub(crate) fn confirm_form_close(&mut self, active: &Sessions, id: FormCloseId) -> bool {
+        if active.busy()
+            || self
+                .addressed_close(active, id)
+                .is_none_or(|close| close.confirmed)
+        {
+            return false;
+        }
+        self.form_close.as_mut().expect("address checked").confirmed = true;
+        true
+    }
+
+    /// Called only after the existing model question says Go (clean or explicit
+    /// Discard), or after a published Save continuation verifies the model is clean.
+    pub(crate) fn decide_form_close(&mut self, active: &Sessions, id: FormCloseId) -> bool {
+        if active.busy()
+            || !self
+                .addressed_close(active, id)
+                .is_some_and(|close| close.confirmed && !close.model_decided)
+        {
+            return false;
+        }
+        self.form_close
+            .as_mut()
+            .expect("address checked")
+            .model_decided = true;
+        true
+    }
+
+    /// Back, a cancelled dialog, failed Save or refused actual Close: return the
+    /// very same form. A foreign/late response never consumes another attempt.
+    /// Never overwrite a newer form; the held one stays owned here on refusal.
+    pub(crate) fn cancel_form_close(
+        &mut self,
+        active: &mut Sessions,
+        id: FormCloseId,
+        forms: &mut Forms<'_>,
+    ) -> bool {
+        if active.busy()
+            || active.tab() != id.tab
+            || forms.edits.form_open()
+            || forms.editor.active()
+            || !self.form_close.as_ref().is_some_and(|close| close.id == id)
+        {
+            return false;
+        }
+        let close = self.form_close.take().expect("address checked");
+        forms.restore(close.draft, active);
+        true
+    }
+
     /// What closing `tab` needs first. `form_open`: the shown tab has a form open.
     /// A form is never closed behind the person's back, even over a clean model.
     pub(crate) fn close_step(
@@ -701,6 +838,15 @@ impl Tabs {
     /// replaces the picture in the same statement. Returns the tab to show next,
     /// when the shown one was closed and others remain.
     pub(crate) fn close(&mut self, active: &mut Sessions, tab: TabId) -> Result<Option<TabId>> {
+        if let Some(close) = &self.form_close
+            && !self
+                .addressed_close(active, close.id)
+                .is_some_and(|asked| asked.id.tab == tab && asked.confirmed && asked.model_decided)
+        {
+            return Err(CadError::input(
+                "this Close attempt has not decided the form and model",
+            ));
+        }
         let position = self
             .order
             .iter()
@@ -717,6 +863,9 @@ impl Tabs {
                 .sessions
         };
         self.order.remove(position);
+        // Only now is closing irreversible. Release the draft lease before the
+        // session removes its private snapshots. Every refusal above kept it.
+        self.form_close = None;
         closed.decide_exit();
         drop(closed);
         if active.has_session() {
