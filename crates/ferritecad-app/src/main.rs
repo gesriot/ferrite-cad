@@ -996,9 +996,12 @@ fn can_recover(
     can_leave_tab(creates, loads, exports, edits, sessions, input) && !recoveries.running()
 }
 
-/// §30R: whether Open may start: [`may_leave_tab`], and no Reopen of the last
-/// window's files is reading one (a newer Open would replace its reading). The one
-/// answer the toolbar's Open, the dialog's handler and the start-up document ask.
+/// §30R: whether Open may start: everything [`may_leave_tab`] asks except that New
+/// is not finished (§30T: choosing a file then asks whether to give New up, and
+/// throws nothing away by itself), and no Reopen of the last window's files is
+/// reading one (a newer Open would replace its reading). The one answer the
+/// toolbar's Open, the dialog's handler, the question's Discard and the start-up
+/// document ask.
 fn can_open(
     creates: &creates::Creates,
     edits: &edits::Edits,
@@ -1006,7 +1009,7 @@ fn can_open(
     input: &ViewportInput,
     restores: &restores::Restores,
 ) -> bool {
-    may_leave_tab(creates, edits, sessions, input) && !restores.running()
+    idle_but_for_new(creates, edits, sessions, input) && !restores.running()
 }
 
 /// §30R: whether Reopen saved files may start: what Recover waits for (nothing
@@ -1078,19 +1081,26 @@ const FORM_BEFORE_QUITTING: &str = "This tab has an open form. Apply or Cancel i
 /// Recover), New (its form, drawing or worker), copy worker or pointer gesture
 /// holds the window. An idle form over the shown document does not: it stays with
 /// its tab (`Tabs::bind`), or is set aside while New is open (`Tabs::set_aside`).
-/// Open asks only this: a newer Open replaces a reading in flight and leaves an
-/// export behind, as before; everything else asks [`can_leave_tab`].
+/// Open asks the same without New being unfinished ([`can_open`]); everything else
+/// asks [`can_leave_tab`].
 fn may_leave_tab(
     creates: &creates::Creates,
     edits: &edits::Edits,
     sessions: &sessions::Sessions,
     input: &ViewportInput,
 ) -> bool {
-    !creates.making_new()
-        && !creates.sketch.gesturing()
-        && !edits.running()
-        && !sessions.busy()
-        && !input.is_dragging()
+    !creates.making_new() && idle_but_for_new(creates, edits, sessions, input)
+}
+
+/// What [`may_leave_tab`] asks besides New itself: no session operation, copy
+/// worker or pointer gesture. Only [`can_open`] asks it without the rest (§30T).
+fn idle_but_for_new(
+    creates: &creates::Creates,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+    input: &ViewportInput,
+) -> bool {
+    !creates.sketch.gesturing() && !edits.running() && !sessions.busy() && !input.is_dragging()
 }
 
 /// §30P: whether another tab may be shown or closed now (§30Q: or New or Recover
@@ -1151,6 +1161,103 @@ fn end_new(
             },
         );
     }
+}
+
+/// §30T: why a file cannot be opened while New is unfinished, if it cannot: the
+/// window is full, or the shown tab already is that file. A file a hidden tab names
+/// is no refusal: showing it leaves New, so it is asked about like any other.
+fn open_refusal(tabs: &tabs::Tabs, sessions: &sessions::Sessions, path: &Path) -> Option<String> {
+    match tabs.opening(sessions, path) {
+        tabs::Opening::Refused(reason) => Some(reason),
+        tabs::Opening::Shown => Some("That document is already open here.".to_owned()),
+        tabs::Opening::Load | tabs::Opening::Show(_) => None,
+    }
+}
+
+/// §30T: the file a person chose with Open: the path to read now, if there is one.
+/// Everything [`can_open`] asks comes first. When New is unfinished the choice is
+/// not an Open but a question (`Creates::ask_open`) and nothing is thrown away; a
+/// refusal ([`open_refusal`]) is said before anything is asked.
+fn choose_open(
+    creates: &mut creates::Creates,
+    tabs: &tabs::Tabs,
+    sessions: &mut sessions::Sessions,
+    edits: &edits::Edits,
+    input: &mut ViewportInput,
+    restores: &restores::Restores,
+    path: PathBuf,
+) -> Option<PathBuf> {
+    if !can_open(creates, edits, sessions, input, restores) {
+        input.request_redraw();
+        return None;
+    }
+    if !creates.making_new() {
+        return Some(path);
+    }
+    match open_refusal(tabs, sessions, &path) {
+        Some(reason) => sessions.status = reason,
+        None => {
+            creates.ask_open(path, input);
+        }
+    }
+    input.request_redraw();
+    None
+}
+
+/// §30T: *Discard New and open*. Everything is checked before anything is thrown
+/// away — the same [`can_open`] the button asked, and the room for the file
+/// ([`open_refusal`]) — and a refusal leaves New and the shown tab as they were.
+/// Then New ends (`Creates::stop_new`), the shown tab's forms come back, and the
+/// file to read now is returned.
+fn stop_new_for_open(
+    creates: &mut creates::Creates,
+    tabs: &mut tabs::Tabs,
+    sessions: &mut sessions::Sessions,
+    edits: &mut edits::Edits,
+    input: &mut ViewportInput,
+    restores: &restores::Restores,
+) -> Option<PathBuf> {
+    let (path, _) = creates.asking()?;
+    let path = path.to_path_buf();
+    if !can_open(creates, edits, sessions, input, restores) {
+        sessions.status = "Wait for the current operation to finish before giving up New; \
+                           nothing was discarded."
+            .to_owned();
+        input.request_redraw();
+        return None;
+    }
+    if let Some(reason) = open_refusal(tabs, sessions, &path) {
+        sessions.status = reason;
+        creates.keep_new(input);
+        return None;
+    }
+    let path = creates.stop_new(input)?;
+    end_new(tabs, sessions, edits, creates);
+    Some(path)
+}
+
+/// §30T: New ended some other way than the question's own buttons (its Cancel, or
+/// a tab of its own): a file chosen over it is opened by the ordinary Open beside
+/// whatever is shown now, and nothing is thrown away. If Open cannot start at
+/// this moment it is said, and the person chooses again.
+fn open_after_new(
+    creates: &mut creates::Creates,
+    tabs: &tabs::Tabs,
+    sessions: &mut sessions::Sessions,
+    edits: &edits::Edits,
+    input: &mut ViewportInput,
+    restores: &restores::Restores,
+) -> Option<PathBuf> {
+    let path = creates.new_ended()?;
+    if !can_open(creates, edits, sessions, input, restores) {
+        sessions.status = format!(
+            "{} was not opened: wait for the current operation to finish, then choose it again.",
+            short_name(&path)
+        );
+        input.request_redraw();
+        return None;
+    }
+    choose_open(creates, tabs, sessions, edits, input, restores, path)
 }
 
 /// New is serialized with document loads and exports. Viewing remains available.
@@ -1425,6 +1532,8 @@ struct Sections<'a> {
     /// The new-document form, while one is on screen. Borrowed mutably
     /// because it is the one thing here the user types into.
     form: Option<&'a mut ferritecad_ui::NewDocumentForm>,
+    /// §30T: the question asked when a file was chosen while New is unfinished.
+    open_over_new: Option<ferritecad_ui::OpenOverNewPanel<'a>>,
     /// What the last New did.
     created: Option<&'a str>,
     /// §30R: the offer to reopen the last window's saved files.
@@ -3373,6 +3482,8 @@ impl ApplicationHandler<AppEvent> for App {
                         outcome.map_err(|error| error.to_string()),
                     );
                 }
+                // §30T: a file chosen over this New opens beside the tab it became.
+                self.open_after_new();
                 if self.input.take_redraw() {
                     self.request_frame_now(event_loop);
                 }
@@ -3808,6 +3919,18 @@ impl ApplicationHandler<AppEvent> for App {
                     tabs: &tab_labels,
                     available: if leave { Ok(()) } else { Err(LEAVE_WAIT) },
                 };
+                // §30T: the question borrows nothing of `creates` past this line.
+                let asking = self
+                    .creates
+                    .asking()
+                    .map(|(path, losing)| (short_name(path), losing));
+                let can_discard = can_open(
+                    &self.creates,
+                    &self.edits,
+                    &self.sessions,
+                    &self.input,
+                    &self.restores,
+                );
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
@@ -3825,6 +3948,13 @@ impl ApplicationHandler<AppEvent> for App {
                         export,
                         replacing: replacing.as_deref(),
                         form,
+                        open_over_new: asking.as_ref().map(|(file, losing)| {
+                            ferritecad_ui::OpenOverNewPanel {
+                                file,
+                                losing,
+                                can_discard,
+                            }
+                        }),
                         sketch,
                         creating,
                         created,
@@ -4052,6 +4182,14 @@ impl ApplicationHandler<AppEvent> for App {
                         // §30Q: New closed this frame (its form's or drawing's
                         // Cancel): the shown tab's forms come back.
                         self.end_new();
+                        // §30T: the answer to a file chosen while New was unfinished.
+                        match chosen.open_over_new {
+                            ferritecad_ui::OpenOverNewChoice::Discard => self.stop_new_and_open(),
+                            ferritecad_ui::OpenOverNewChoice::Back => {
+                                self.creates.keep_new(&mut self.input);
+                            }
+                            _ => {}
+                        }
                         // Asked for after the frame for the same reason, and
                         // before the answer to the replace question, because
                         // pressing Export is how a person replaces the
@@ -4289,8 +4427,9 @@ impl App {
         self.open_chosen(chosen);
     }
 
-    /// §30Q: whether the person may Open now: [`may_leave_tab`], the predicate the
-    /// toolbar's button asks. An idle form of the shown tab stays with it.
+    /// §30Q: whether the person may Open now: [`can_open`], the predicate the
+    /// toolbar's button asks. An idle form of the shown tab stays with it; an
+    /// unfinished New is asked about, not in the way (§30T).
     fn can_open(&self) -> bool {
         can_open(
             &self.creates,
@@ -4303,12 +4442,50 @@ impl App {
 
     /// §30Q: the person's Open — the dialog's choice, or the document named at
     /// start-up — read into a new tab beside the shown one and its open forms.
+    ///
+    /// §30T: while New is not finished the choice is a question, not an Open; see
+    /// [`choose_open`].
     fn open_chosen(&mut self, path: PathBuf) {
-        if !self.can_open() {
-            self.input.request_redraw();
-            return;
+        if let Some(path) = choose_open(
+            &mut self.creates,
+            &self.tabs,
+            &mut self.sessions,
+            &self.edits,
+            &mut self.input,
+            &self.restores,
+            path,
+        ) {
+            self.read_document(path);
         }
-        self.read_document(path);
+    }
+
+    /// §30T: the person pressed *Discard New and open* ([`stop_new_for_open`]).
+    fn stop_new_and_open(&mut self) {
+        if let Some(path) = stop_new_for_open(
+            &mut self.creates,
+            &mut self.tabs,
+            &mut self.sessions,
+            &mut self.edits,
+            &mut self.input,
+            &self.restores,
+        ) {
+            self.read_document(path);
+        }
+    }
+
+    /// §30T: New is over, by any other way than the question's own buttons, with a
+    /// file chosen over it still waiting: the ordinary Open ([`open_after_new`]).
+    fn open_after_new(&mut self) {
+        if let Some(path) = open_after_new(
+            &mut self.creates,
+            &self.tabs,
+            &mut self.sessions,
+            &self.edits,
+            &mut self.input,
+            &self.restores,
+        ) {
+            self.read_document(path);
+        }
     }
 
     /// Asks the system where to write the model, and starts writing it there.
@@ -4442,7 +4619,7 @@ impl App {
             &mut self.input,
             |creates, input| {
                 if drawing {
-                    creates.sketch.begin();
+                    creates.begin_drawing();
                     input.request_redraw();
                     true
                 } else {
@@ -4453,6 +4630,7 @@ impl App {
     }
 
     /// §30Q: New is over without a new tab: the shown tab's forms come back.
+    /// §30T: and a file chosen over it is opened.
     fn end_new(&mut self) {
         end_new(
             &mut self.tabs,
@@ -4460,6 +4638,7 @@ impl App {
             &mut self.edits,
             &mut self.creates,
         );
+        self.open_after_new();
     }
 
     /// Makes a new document from a create form (§30L): no file dialog. Asked by
@@ -6744,6 +6923,7 @@ impl Live {
             export,
             replacing,
             mut form,
+            open_over_new,
             created,
             reopen,
             recovery,
@@ -6805,7 +6985,10 @@ impl Live {
             // Directly under the toolbar as well, and for the same reason: it
             // is the question the button that was just pressed asked, and
             // nothing is made until it is answered.
-            asked = ferritecad_ui::new_document_form(ui, form.as_deref_mut());
+            // §30T: the question under the form it is about, so the person sees what
+            // is lost and the form keeps the keyboard when it appears.
+            (asked, chosen.open_over_new) =
+                ferritecad_ui::new_document_section(ui, form.as_deref_mut(), open_over_new);
             // What the last New did. Its own section rather than a second
             // sentence in the status line: a document that was written and
             // then could not be shown is two facts, and both are needed.

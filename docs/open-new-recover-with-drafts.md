@@ -25,7 +25,7 @@ widget and its handler ask the same function.
 
 | Entry point | Widget availability | Handler (route) | Predicate | The shown tab's forms |
 |---|---|---|---|---|
-| Toolbar **Open…** (native dialog) | `Activity.can_open` | `App::pick_and_open` (asked before the modal dialog) → `open_chosen` (asked again) → `read_document` | `may_leave_tab` | stay in the window while the file is read; move with A in the `Bind::Open` statement (`Tabs::open` → `Tabs::leaving`) |
+| Toolbar **Open…** (native dialog) | `Activity.can_open` | `App::pick_and_open` (asked before the modal dialog) → `open_chosen` (asked again) → `read_document` | `may_leave_tab` (*§30T: `can_open`, the same without New unfinished*) | stay in the window while the file is read; move with A in the `Bind::Open` statement (`Tabs::open` → `Tabs::leaving`) |
 | Document named at start-up | — | `resumed` → `open_chosen` | `may_leave_tab` | none exist yet |
 | Platform file-open event | none: this build has no `openFiles`/opened-URL handler | — | N/A | — |
 | A file a tab already names (same path, link, hard link, other spelling) | as Open | `Tabs::opening`: `Shown` (words only) or `Show(tab)` → `switch_to` | `can_leave_tab` | that tab's own come back (§30P `Tabs::activate`); the left tab's are parked; never a ninth tab, also at 8 |
@@ -55,7 +55,8 @@ widget and its handler ask the same function.
    saved Circle/annulus forms). So opening New first **sets A's forms aside**
    (`Tabs::set_aside`, one `Option<(TabId, Draft)>`), leaving the window's forms empty;
    New never writes into A's. While New is open: New holds the window (no tab, Open,
-   Recover, Apply, document Undo, Save or Quit), as it did before §30Q. New's typed
+   Recover, Apply, document Undo, Save or Quit), as it did before §30Q. *Since §30T Open
+   alone is offered, and asks before it discards anything of New: [open-during-new.md](open-during-new.md).* New's typed
    values survive a size that is not a number, a document the kernel refuses, a picture
    the device refuses, a cancelled or late creation and a full window — the existing
    §30L promise — and A's forms stay aside meanwhile. **Cancel** discards New's values
@@ -116,7 +117,8 @@ is shown again the canvas sees no pressed button and reverts the unfinished drag
 ## Not here
 
 Drafts across a restart or crash, a draft marker in the tab row, Open over a running
-New, several foreground jobs, automatic Apply,
+New (*added by §30T: [open-during-new.md](open-during-new.md) — Open alone may leave an
+unfinished New, by asking first*), several foreground jobs, automatic Apply,
 new geometry. §30, Milestone 5C and the product stay open; the earlier OOM
 investigation is not closed by this slice.
 

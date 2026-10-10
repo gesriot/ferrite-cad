@@ -132,7 +132,7 @@ fn new_opened_over_a_floating_form_shares_no_focus_or_text_with_it() {
         &mut creates,
         &mut input,
         |creates, _| {
-            creates.sketch.begin();
+            creates.begin_drawing();
             true
         },
     ));

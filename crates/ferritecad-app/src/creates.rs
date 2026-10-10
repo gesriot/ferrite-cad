@@ -31,7 +31,7 @@
 //! Creating is filesystem and kernel work and runs on a thread of its own,
 //! cancelled and joined before this process ends.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
 use ferritecad_jobs::{DocumentSession, NewDocument, PlateSize};
@@ -45,6 +45,8 @@ const CREATING: &str = "Creating a new document…";
 /// The result of the last creation. This stays visible after Save or Open, so it
 /// must not claim the current document is still untitled or unsaved.
 const CREATED: &str = "Created a new document.";
+/// New was given up for an Open (§30T). Nothing was made.
+const CREATE_STOPPED: &str = "New was stopped to open another file; nothing was made.";
 /// A document that was not made, or not shown. Nothing on screen changed.
 const CREATE_FAILED: &str = "Could not create the new document";
 /// A creation the window gave up on. Nothing on screen changed.
@@ -83,6 +85,23 @@ fn not_a_number(field: &str, typed: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CreateGeneration(u64);
 
+/// Which New a question is about: one opening of the form or of the drawing, from
+/// its press to its end (its Cancel, a tab of its own, or a stop for an Open).
+///
+/// Monotonic and never reused, on the same terms as a creation's generation. An
+/// idle form has no creation to number, so the opening itself is numbered: a
+/// question asked over one New is never answered against the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NewGeneration(u64);
+
+/// A file chosen with Open while New was not finished (§30T): nothing is thrown
+/// away until the person says so. The only state the choice leaves behind.
+#[derive(Debug)]
+struct AskedOpen {
+    path: PathBuf,
+    over: NewGeneration,
+}
+
 /// A creation that has been started and not yet joined.
 struct Creating {
     cancel: CancelToken,
@@ -105,6 +124,8 @@ pub(crate) enum CreateStatus {
     Shown,
     /// Given up on. Nothing on screen changed.
     Cancelled,
+    /// New was stopped for an Open: its form, drawing and creation are gone.
+    Stopped,
     /// Could not be made or shown. Nothing on screen changed.
     Failed { message: String },
 }
@@ -118,6 +139,7 @@ impl CreateStatus {
             Self::Running { .. } | Self::Made => CREATING.to_owned(),
             Self::Shown => CREATED.to_owned(),
             Self::Cancelled => CREATE_CANCELLED.to_owned(),
+            Self::Stopped => CREATE_STOPPED.to_owned(),
             Self::Failed { message } => format!("{CREATE_FAILED}: {message}"),
         }
     }
@@ -132,6 +154,10 @@ impl CreateStatus {
 #[derive(Default)]
 pub(crate) struct Creates {
     issued: u64,
+    /// How many times New has been opened (§30T): the generation a question is about.
+    opened: u64,
+    /// §30T: the file chosen while New was unfinished, until it is answered.
+    asked: Option<AskedOpen>,
     cancel_requested: bool,
     /// The request whose answer may still reach the window.
     current: Option<CreateGeneration>,
@@ -168,6 +194,12 @@ impl Creates {
     #[cfg(test)]
     pub(crate) fn form(&mut self) -> Option<&mut NewDocumentForm> {
         self.form.as_mut()
+    }
+
+    /// How many creation workers are accounted for, running or not yet joined.
+    #[cfg(test)]
+    pub(crate) fn accounted(&self) -> usize {
+        self.running.len()
     }
 
     /// Whether a creation is running, which is what makes New unavailable.
@@ -261,6 +293,7 @@ impl Creates {
     /// Always a fresh one: the defaults come from the shared operation, so the
     /// window and the command line cannot suggest different plates.
     fn ask(&mut self) {
+        self.opened += 1;
         self.form = Some(NewDocumentForm {
             content: NewContent::Empty,
             width: millimetres(PlateSize::DEFAULT.width),
@@ -269,6 +302,99 @@ impl Creates {
             refusal: None,
             can_create: false,
         });
+    }
+
+    /// Opens the drawing for a new document: another opening of New (§30T).
+    pub(crate) fn begin_drawing(&mut self) {
+        self.opened += 1;
+        self.sketch.begin();
+    }
+
+    // --- Open while New is not finished (§30T) --------------------------------
+
+    /// Whether the New numbered `over` is the one in progress now.
+    fn in_progress(&self, over: NewGeneration) -> bool {
+        self.making_new() && over.0 == self.opened
+    }
+
+    /// What giving New up throws away, as a clause for the question.
+    fn losing(&self) -> &'static str {
+        if self.running() {
+            "the new document being made will be thrown away, and nothing of it is kept"
+        } else if self.sketch.drawing_new() {
+            "the sketch you drew for the new document will be discarded"
+        } else {
+            "the choices and sizes typed in the New form will be discarded"
+        }
+    }
+
+    /// A file was chosen with Open while New is unfinished: remembers the question
+    /// (a newer choice replaces an older one) and throws nothing away. `false`, and
+    /// nothing remembered, when no New is in progress.
+    pub(crate) fn ask_open(&mut self, path: PathBuf, input: &mut ViewportInput) -> bool {
+        if !self.making_new() {
+            return false;
+        }
+        self.asked = Some(AskedOpen {
+            path,
+            over: NewGeneration(self.opened),
+        });
+        input.request_redraw();
+        true
+    }
+
+    /// The question to put to the person: the file, and what discarding costs. Only
+    /// for the New in progress; a question about a New that has ended is not shown.
+    pub(crate) fn asking(&self) -> Option<(&Path, &'static str)> {
+        let asked = self.asked.as_ref()?;
+        self.in_progress(asked.over)
+            .then(|| (asked.path.as_path(), self.losing()))
+    }
+
+    /// *Back to New*: the question is withdrawn and nothing else changes.
+    pub(crate) fn keep_new(&mut self, input: &mut ViewportInput) {
+        if self.asked.take().is_some() {
+            input.request_redraw();
+        }
+    }
+
+    /// *Discard New and open*: the one moment New's draft may go. The New the
+    /// question was asked over, still in progress, ends: its form, its drawing and
+    /// its creation. The worker is told to stop and stays accounted until it ends,
+    /// and its answer, whenever it comes, is no longer anyone's. Returns the file
+    /// the question named. A question about a New that has ended is no decision
+    /// about the one now in progress: nothing is stopped, and [`Self::new_ended`]
+    /// hands the file back.
+    pub(crate) fn stop_new(&mut self, input: &mut ViewportInput) -> Option<PathBuf> {
+        if !self
+            .asked
+            .as_ref()
+            .is_some_and(|a| self.in_progress(a.over))
+        {
+            return None;
+        }
+        let asked = self.asked.take()?;
+        self.form = None;
+        self.sketch.dismiss();
+        for creating in &self.running {
+            creating.cancel.cancel();
+        }
+        self.current = None;
+        self.cancel_requested = false;
+        self.status = CreateStatus::Stopped;
+        input.request_redraw();
+        Some(asked.path)
+    }
+
+    /// The New a question was asked over has ended some other way (its Cancel, or a
+    /// tab of its own): returns the file to open by the ordinary Open. `None` while
+    /// that New is still in progress, or without a question.
+    pub(crate) fn new_ended(&mut self) -> Option<PathBuf> {
+        let over = self.asked.as_ref()?.over;
+        if self.in_progress(over) {
+            return None;
+        }
+        self.asked.take().map(|asked| asked.path)
     }
 
     /// Takes the form away without making anything.
@@ -390,6 +516,7 @@ impl Creates {
     pub(crate) fn stop_all(&mut self) {
         self.current = None;
         self.form = None;
+        self.asked = None;
         for creating in &self.running {
             creating.cancel.cancel();
         }
@@ -686,6 +813,77 @@ pub(crate) mod tests {
         let (answered_generation, result) = answered.recv().expect("the creation answered");
         let candidate = finish_create(creates, input, answered_generation, result);
         (Some(generation), candidate)
+    }
+
+    /// A creation whose worker is held at a barrier (§30T), started through the
+    /// window's own [`crate::start_new`]. `made_first`: the worker has already made
+    /// its candidate, and so its folder, when it waits.
+    pub(crate) struct Held {
+        pub(crate) generation: CreateGeneration,
+        reached: mpsc::Receiver<()>,
+        release: mpsc::Sender<()>,
+        answered: mpsc::Receiver<(CreateGeneration, Result<Candidate>)>,
+    }
+
+    impl Held {
+        /// Lets the worker go on and returns its answer undelivered, as the event
+        /// loop holds it between the worker's end and the `Created` handler.
+        pub(crate) fn finish(self) -> (CreateGeneration, Result<Candidate>) {
+            let _ = self.release.send(());
+            self.answered.recv().expect("the creation answered")
+        }
+
+        /// Blocks until the worker stands at its barrier.
+        pub(crate) fn at_barrier(&self) {
+            self.reached.recv().expect("the worker reached its barrier");
+        }
+    }
+
+    pub(crate) fn hold_creation(
+        creates: &mut Creates,
+        input: &mut ViewportInput,
+        root: &Path,
+        content: NewDocument,
+        made_first: bool,
+    ) -> Held {
+        let (ready, reached) = mpsc::channel();
+        let (release, resume) = mpsc::channel::<()>();
+        let (answers, answered) = mpsc::channel();
+        let root = root.to_path_buf();
+        let generation = crate::start_new(
+            creates,
+            &crate::Loads::default(),
+            &crate::exports::Exports::default(),
+            input,
+            content,
+            move |content, generation, cancel| {
+                let context = OperationContext::default().with_cancel(cancel.clone());
+                spawn_create(
+                    move || {
+                        if made_first {
+                            let made = test_candidate(&root, content, &context);
+                            let _ = ready.send(());
+                            let _ = resume.recv();
+                            made
+                        } else {
+                            let _ = ready.send(());
+                            let _ = resume.recv();
+                            test_candidate(&root, content, &context)
+                        }
+                    },
+                    move |result| {
+                        let _ = answers.send((generation, result));
+                    },
+                )
+            },
+        )
+        .expect("the creation started");
+        Held {
+            generation,
+            reached,
+            release,
+            answered,
+        }
     }
 
     /// The first Save of an untitled session: the production Save As.
@@ -1633,6 +1831,211 @@ pub(crate) mod tests {
             ErrorKind::Cancellation
         );
         assert!(entries(sessions.path()).is_empty());
+    }
+
+    // ------------------------------------------- Open while New is unfinished
+
+    /// A question belongs to the New it was asked over: a newer choice replaces an
+    /// older one, a New that ended (its Cancel) no longer puts it, and a later New —
+    /// even one that began before the question was settled — is never discarded by it.
+    #[test]
+    fn a_question_is_bound_to_the_new_it_was_asked_over() {
+        let mut creates = Creates::default();
+        let mut input = input();
+        let b = PathBuf::from("b.fcad");
+        let c = PathBuf::from("c.fcad");
+
+        assert!(
+            !creates.ask_open(b.clone(), &mut input),
+            "no New, no question"
+        );
+        assert!(creates.asking().is_none() && creates.new_ended().is_none());
+        assert!(creates.stop_new(&mut input).is_none());
+
+        assert!(open_form(&mut creates, &mut input));
+        {
+            let form = creates.form().expect("New's form");
+            form.content = NewContent::SamplePlate;
+            form.width = "1e999x".to_owned();
+        }
+        assert!(creates.ask_open(b, &mut input));
+        assert!(
+            creates.ask_open(c.clone(), &mut input),
+            "a newer choice replaces it"
+        );
+        let (asked, losing) = creates.asking().expect("the question is put");
+        assert_eq!(asked, c);
+        assert!(losing.contains("typed in the New form"), "{losing}");
+        assert!(creates.new_ended().is_none(), "New is still in progress");
+        // Back to New: withdrawn, nothing else.
+        creates.keep_new(&mut input);
+        assert!(creates.asking().is_none());
+        assert_eq!(creates.form().expect("kept").width, "1e999x");
+
+        // New's own Cancel ends this New: the question is no longer put, and the
+        // file it named is handed back for the ordinary Open.
+        assert!(creates.ask_open(c.clone(), &mut input));
+        assert!(answer_form(&mut creates, &mut input, NewChoice::Cancel).is_none());
+        assert!(
+            creates.asking().is_none(),
+            "a question about a New that ended"
+        );
+        assert_eq!(creates.new_ended(), Some(c.clone()));
+        assert!(creates.new_ended().is_none(), "answered once");
+
+        // A question whose New ended without anyone settling it must not discard the
+        // next New: a stop finds nothing to stop, and the file is handed back for the
+        // ordinary Open to decide again.
+        assert!(open_form(&mut creates, &mut input));
+        assert!(creates.ask_open(c.clone(), &mut input));
+        assert!(answer_form(&mut creates, &mut input, NewChoice::Cancel).is_none());
+        assert!(open_form(&mut creates, &mut input));
+        {
+            let form = creates.form().expect("New #2's form");
+            form.content = NewContent::SamplePlate;
+            form.depth = "-".to_owned();
+        }
+        assert_eq!(creates.stop_new(&mut input), None);
+        let form = creates.form().expect("New #2 survives a stale decision");
+        assert_eq!(form.depth, "-");
+        assert_ne!(creates.status(), &CreateStatus::Stopped);
+        assert_eq!(
+            creates.new_ended(),
+            Some(c),
+            "handed back, to be asked again"
+        );
+        assert!(creates.new_ended().is_none());
+        println!("\nFCAD_30T_QUESTION_GENERATION_EXECUTED");
+    }
+
+    /// Discarding New is the one moment its draft goes: the form, the drawing and a
+    /// creation under way end together; the worker stays accounted until it ends and
+    /// its scratch folder is removed only by whoever owns the candidate — never by
+    /// the decision. Three timings of the same creation: still working, candidate
+    /// already made and held, and its answer already queued for the event loop.
+    #[test]
+    fn stopping_new_ends_its_draft_and_leaves_the_worker_to_end_on_its_own() {
+        for timing in ["working", "made", "queued"] {
+            let sessions = tempfile::tempdir().expect("sessions");
+            let mut creates = Creates::default();
+            let mut input = input();
+            assert!(open_form(&mut creates, &mut input));
+            creates.form().expect("form").width = "1e999x".to_owned();
+            let held = hold_creation(
+                &mut creates,
+                &mut input,
+                sessions.path(),
+                NewDocument::Empty,
+                timing != "working",
+            );
+            held.at_barrier();
+            let (held, queued) = if timing == "queued" {
+                (None, Some(held.finish()))
+            } else {
+                (Some(held), None)
+            };
+            assert!(creates.running() && creates.making_new());
+            assert!(creates.ask_open(PathBuf::from("b.fcad"), &mut input));
+            let (_, losing) = creates.asking().expect("question");
+            assert!(losing.contains("being made"), "{losing}");
+
+            assert_eq!(
+                creates.stop_new(&mut input),
+                Some(PathBuf::from("b.fcad")),
+                "{timing}"
+            );
+            assert_eq!(creates.status(), &CreateStatus::Stopped, "{timing}");
+            assert!(creates.form().is_none(), "the draft ended");
+            assert!(!creates.making_new() && !creates.running() && !creates.busy());
+            assert!(!creates.can_cancel(), "nothing left to cancel");
+            assert!(creates.asking().is_none());
+            // Still accounted until it ends: stop does not join, and removes nothing.
+            if timing != "queued" {
+                assert_eq!(creates.running.len(), 1, "{timing}");
+            }
+            if timing != "working" {
+                assert_eq!(entries(sessions.path()).len(), 1, "{timing}: scratch kept");
+            }
+            let _ = input.take_redraw();
+
+            let (generation, result) = match (held, queued) {
+                (Some(held), None) => held.finish(),
+                (None, Some(answer)) => answer,
+                _ => unreachable!("one of the two"),
+            };
+            assert!(
+                finish_create(&mut creates, &mut input, generation, result).is_none(),
+                "{timing}: an abandoned creation was shown"
+            );
+            assert_eq!(creates.status(), &CreateStatus::Stopped, "{timing}");
+            assert!(!input.take_redraw(), "{timing}: a late answer owed a frame");
+            assert!(
+                entries(sessions.path()).is_empty(),
+                "{timing}: scratch left"
+            );
+            creates.stop_all();
+            assert!(creates.running.is_empty());
+        }
+        println!("\nFCAD_30T_STOP_NEW_EXECUTED");
+    }
+
+    /// The abandoned creation's answer cannot touch a newer one: New again, Create
+    /// again, then the old answer — the newer generation stays the one awaited, and
+    /// only its candidate is accepted.
+    #[test]
+    fn an_abandoned_creation_never_answers_for_a_newer_one() {
+        let sessions = tempfile::tempdir().expect("sessions");
+        let mut creates = Creates::default();
+        let mut input = input();
+        assert!(open_form(&mut creates, &mut input));
+        let old = hold_creation(
+            &mut creates,
+            &mut input,
+            sessions.path(),
+            NewDocument::Empty,
+            true,
+        );
+        old.at_barrier();
+        assert!(creates.ask_open(PathBuf::from("b.fcad"), &mut input));
+        creates.stop_new(&mut input).expect("stopped");
+
+        assert!(open_form(&mut creates, &mut input));
+        let new = hold_creation(
+            &mut creates,
+            &mut input,
+            sessions.path(),
+            NewDocument::Empty,
+            true,
+        );
+        new.at_barrier();
+        assert_ne!(old.generation, new.generation);
+        let newer = new.generation;
+
+        // The old answer arrives while the newer creation is awaited.
+        let (generation, result) = old.finish();
+        let _ = input.take_redraw();
+        assert!(finish_create(&mut creates, &mut input, generation, result).is_none());
+        assert_eq!(
+            creates.status(),
+            &CreateStatus::Running { generation: newer },
+            "the older answer changed the newer creation's status"
+        );
+        assert!(creates.running() && creates.accepts(newer));
+        assert!(!input.take_redraw());
+        assert_eq!(
+            entries(sessions.path()).len(),
+            1,
+            "only the newer candidate"
+        );
+
+        let (generation, result) = new.finish();
+        let candidate = finish_create(&mut creates, &mut input, generation, result)
+            .expect("the newer creation is accepted");
+        finish_shown(&mut creates, &mut input, Ok(()));
+        assert_eq!(creates.status(), &CreateStatus::Shown);
+        drop(candidate);
+        creates.stop_all();
+        println!("\nFCAD_30T_ABANDONED_NEVER_ANSWERS_EXECUTED");
     }
 
     #[test]

@@ -87,7 +87,8 @@ moved whole, as values, in the statement that hides or shows a tab.
 or the STL options form), any native dialog, any operation and any gesture. Open, New
 and Recover also still wait while the shown tab has a form, as before §30P. *Since §30Q
 they no longer wait for an idle form: Open and Recover move it with its tab, and New sets
-it aside until New ends ([open-new-recover-with-drafts.md](open-new-recover-with-drafts.md)).*
+it aside until New ends ([open-new-recover-with-drafts.md](open-new-recover-with-drafts.md)). Since §30T Open alone may leave an unfinished New, by
+asking first ([open-during-new.md](open-during-new.md)).*
 
 ## Not here
 

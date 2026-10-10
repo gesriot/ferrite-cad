@@ -4379,7 +4379,8 @@ published copy of the accepted model; Undo history and draft form values remain 
 of the model are stored in the document, listed, restored and deleted. After §30O:
 several documents in tabs of one window; after §30P each tab keeps its unfinished edit
 form; after §30Q Open, New and Recover leave it with its tab; after §30R the saved files
-of the last window that quit are offered at the next start and reopened in order.)* The macOS review added the AppKit
+of the last window that quit are offered at the next start and reopened in order; after §30T
+Open also leaves an unfinished New, by asking first.)* The macOS review added the AppKit
 Quit hook and exercised Cmd+Q → Cancel and Cmd+Q → Save in a real window.
 (4) Close the lock-ignoring-writer window only if a platform primitive allows a
 compare-and-replace; until then it is documented, not closed. The independent Mac window scenario now covers Apply, document Undo/Redo,
@@ -4868,7 +4869,39 @@ crash processes and normal Quit processes are distinguished in the verification 
 No real window was run by the author. §30, Milestone 5C and the product remain open; nothing here
 closes the earlier OOM investigation.
 
-*What remains of §30 after §30S:* drafts across a restart or crash; Open over a running New; contention the
+**§30T — Open while New is not finished.** In New's form or drawing, or while its document
+is being made, **Open…** is offered. Its one predicate (`can_open`) drops only the New hold:
+an operation, a pointer or vertex gesture, a copy worker and a Reopen still hold it, and
+the tab row, New, Recover and Reopen are unchanged. Cancelling or failing the file dialog
+changes nothing; choosing a file asks, under New's form, *Discard New and open* or *Back to
+New*, saying what is lost (the choices and sizes typed, the sketch drawn, the document
+being made) and that open documents are not touched. Back keeps every string, choice and
+drawing Undo/Redo literally. Discard is the only moment New's draft goes: the form, the
+drawing and a creation under way end, the worker is told to stop and stays accounted until
+it ends (never joined on the event loop), its candidate and scratch folder are removed only
+by their owner, and its late answer — success or refusal — can be neither shown nor change
+the status, the Open slot or a newer operation. The shown tab keeps its model, history,
+crash copy and its form, which comes back and travels with it when the file is accepted.
+The question is one typed value bound to the opening of New it was asked over
+(`NewGeneration`); the room for a tab is checked before asking and again before
+discarding; if New became a tab first, the chosen file opens beside it and nothing is
+discarded; an unreadable file or a cancelled reading leaves the shown tab and neither brings
+New back nor starts a creation. Tabs, alias dedup, `MAX_TABS`, the dirty prompt, Save As,
+Undo/Redo, checkpoints, recovery, §30S inspection and the §30R descriptor are unchanged.
+Kernel-free gates of the real owners with a creation held at a barrier in each timing
+(working, made, queued, refused), the narrow exception and every hold that stays, a full
+window, a real-egui gate, a stub gate, a no-solver gate, a native gate against the CLI (every
+SQL cell but the write stamp, ids and references, exports before and after Save, geometry)
+with seven comparator controls, an input generator and comparator for a window recipe, and
+directed mutations (a stop that abandons nothing; a Discard that erases the shown tab's
+form; a question not bound to its New): [contract and verification](open-during-new.md).
+The real-widget gate found the question drawn above New's form took the keyboard from the
+box being typed in; it now sits under the form through one shared function. The CLI is
+unchanged. No real window was run by the author and no remote CI has run for this diff.
+§30, Milestone 5C and the product remain open; nothing here closes the earlier OOM
+investigation.
+
+*What remains of §30 after §30T:* drafts across a restart or crash; contention the
 lock cannot settle (a stream of listings starving a claim, a hung reader, builds older
 than §30S, lock-ignoring writers, filesystems without locks);
 branching, automatic or persisted-Undo revisions

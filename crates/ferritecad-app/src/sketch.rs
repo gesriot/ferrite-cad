@@ -2617,6 +2617,8 @@ pub(crate) mod tests {
     pub(crate) mod angle_apply;
     /// §30Q: New over a tab's floating form, through real widgets.
     mod new_over_forms;
+    /// §30T: the question asked when a file is chosen over an unfinished New.
+    mod open_over_new;
 
     #[test]
     fn floating_forms_in_two_tabs_do_not_share_keyboard_focus() {
@@ -2720,6 +2722,26 @@ pub(crate) mod tests {
     /// §30P: the drawing window for a new document, open as its button opens it.
     pub(crate) fn begin_drawing(e: &mut Editor) {
         e.begin();
+    }
+
+    /// §30T: a triangle in the drawing for a new document, without history, so a
+    /// vertex can be pressed on the canvas.
+    pub(crate) fn fill_drawing(e: &mut Editor) {
+        e.draft.as_mut().expect("a drawing").points = [["0", "0"], ["20", "0"], ["20", "10"]]
+            .map(|p| p.map(str::to_owned))
+            .to_vec();
+    }
+
+    /// §30T: two changes to the drawing for a new document, literal text and all,
+    /// then one Undo: a draft with history in both directions, as typed.
+    pub(crate) fn scribble_drawing(e: &mut Editor) -> (Vec<[String; 2]>, usize, usize) {
+        for text in ["1e999x", " 33.0 "] {
+            let before = e.draft.clone().expect("a drawing");
+            e.draft.as_mut().expect("a drawing").points[0][0] = text.to_owned();
+            e.record(before);
+        }
+        e.undo();
+        vertex_draft(e).expect("a drawing")
     }
 
     /// §30P: the vertex draft as typed, and the depth of its Undo and Redo.

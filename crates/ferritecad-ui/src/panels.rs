@@ -24,6 +24,9 @@ pub struct Chosen {
     pub edit: crate::EditChoice,
     /// §30R: what was pressed in the offer to reopen the last window's files.
     pub reopen: crate::ReopenChoice,
+    /// §30T: what was pressed in the question asked when a file is chosen while
+    /// New is not finished.
+    pub open_over_new: crate::OpenOverNewChoice,
     /// §30M: what was pressed in the start-up list of crash copies.
     pub recovery: crate::RecoveryChoice,
     /// §30N: what was pressed in the open document's checkpoints.

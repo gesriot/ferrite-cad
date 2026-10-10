@@ -1008,7 +1008,11 @@ jobs:
           # forms kept, refused, closed, quit and drawn per tab, and a switch refused
           # at its picture keeping both drafts. §30Q: Open, New and Recover beside
           # open forms, New's focus apart from a tab's, and all three refused at
-          # their picture without a kernel. §30R: the last window's list — format,
+          # their picture without a kernel. §30T: Open while New is not finished —
+          # the question bound to its New, the abandoned creation and its late answer,
+          # a creation that became a tab first, the full window, the one narrow
+          # exception, the question's real widgets, and the refusals without a
+          # kernel. §30R: the last window's list — format,
           # refusals, a failed publication, native paths, two processes at once —
           # kept only at the end of Quit, reopened beside open tabs, Cancel and late
           # answers, and refused at the picture without a kernel. Every one prints a
@@ -1040,7 +1044,18 @@ jobs:
             "sessions::tests::tabs::restore::reopen_restores_saved_files_beside_open_tabs_in_order_and_shows_the_last_shown FCAD_30R_REOPEN_EXECUTED" \
             "sessions::tests::tabs::restore::cancel_late_answers_and_a_full_window_never_revive_or_mix_a_reopen FCAD_30R_CANCEL_LATE_FULL_EXECUTED" \
             "sessions::tests::tabs::restore::stub_reopen_is_refused_at_the_picture_and_keeps_the_open_tab FCAD_30R_STUB_REOPEN_EXECUTED" \
-            "sessions::tests::tabs::drafts::open_new_recover::recover_waiting_for_a_reader_obeys_cancel_late_answers_and_quit_beside_forms_in_two_tabs FCAD_30S_RECOVER_BESIDE_READER_EXECUTED"
+            "sessions::tests::tabs::drafts::open_new_recover::recover_waiting_for_a_reader_obeys_cancel_late_answers_and_quit_beside_forms_in_two_tabs FCAD_30S_RECOVER_BESIDE_READER_EXECUTED" \
+            "creates::tests::a_question_is_bound_to_the_new_it_was_asked_over FCAD_30T_QUESTION_GENERATION_EXECUTED" \
+            "creates::tests::stopping_new_ends_its_draft_and_leaves_the_worker_to_end_on_its_own FCAD_30T_STOP_NEW_EXECUTED" \
+            "creates::tests::an_abandoned_creation_never_answers_for_a_newer_one FCAD_30T_ABANDONED_NEVER_ANSWERS_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_over_new::open_over_an_unfinished_new_asks_first_and_discards_only_when_told FCAD_30T_OPEN_OVER_NEW_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_over_new::a_saved_object_form_survives_a_discarded_drawing_exactly FCAD_30T_SAVED_FORM_SURVIVES_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_over_new::a_creation_under_way_is_abandoned_and_its_late_answer_changes_nothing FCAD_30T_OPEN_OVER_RUNNING_NEW_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_over_new::a_creation_that_becomes_a_tab_first_is_never_discarded FCAD_30T_OPEN_AFTER_NEW_BECAME_A_TAB_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_over_new::a_full_window_is_checked_before_anything_is_asked_or_discarded FCAD_30T_OPEN_OVER_NEW_FULL_WINDOW_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_over_new::open_alone_leaves_an_unfinished_new_and_every_other_hold_stays FCAD_30T_OPEN_NARROW_EXCEPTION_EXECUTED" \
+            "sketch::tests::open_over_new::the_question_beside_new_keeps_its_text_and_focus_and_both_buttons_answer FCAD_30T_QUESTION_WIDGETS_EXECUTED" \
+            "sessions::tests::tabs::drafts::open_over_new::stub_open_over_a_running_new_is_refused_at_the_picture_and_new_stays_gone FCAD_30T_STUB_OPEN_OVER_NEW_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"
@@ -1056,7 +1071,8 @@ jobs:
             recovery::tests::recover_and_delete_ask_nothing_while_the_window_says_they_cannot \
             checkpoint::tests::the_buttons_ask_nothing_while_the_window_says_why_they_cannot \
             tabs::tests::tabs_show_names_marks_and_answer_with_their_key_only_when_available \
-            reopen::tests::reopen_asks_nothing_while_the_window_says_it_cannot_and_says_what_opens
+            reopen::tests::reopen_asks_nothing_while_the_window_says_it_cannot_and_says_what_opens \
+            open_over_new::tests::the_question_says_what_is_lost_and_both_buttons_answer
           do
             cargo test -p ferritecad-ui --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-ui.log
             if ! grep -Fq "test $gate ... ok" session-ui.log; then exit 1; fi
