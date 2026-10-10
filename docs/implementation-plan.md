@@ -4919,8 +4919,12 @@ Existing foreground-work and gesture holds, Quit, New/Open/Recover/Reopen, CLI a
 schema stay unchanged. Kernel-free owners, all twelve Add/Edit form families, real
 egui buttons/focus, true stub, separate no-solver/native scenarios, SQL/UUID and
 STL/FBX CLI comparison, strict pinned ufbx, two directed mutations and an independent
-window recipe: [contract and verification](close-tab-with-draft.md). No author
-window execution or remote CI for this uncommitted diff is claimed.
+window recipe: [contract and verification](close-tab-with-draft.md). Independent
+review executed the real macOS hidden-Close → Back → model Cancel → Apply/export →
+Save-and-Close sequence; B retained its own form. Actual GUI SQL/UUID and byte-equal
+STL/FBX matched CLI, strict ufbx and three negative controls passed. Viewer peak
+211.55 MiB, pressure 1, swap 0, normal exit. Exact code CI is recorded separately
+in PR #101; the author's original uncommitted handoff did not claim remote CI.
 
 *What remains of §30 after §30U:* drafts across a restart or crash; contention the
 lock cannot settle (a stream of listings starving a claim, a hung reader, builds older

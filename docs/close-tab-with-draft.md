@@ -162,7 +162,8 @@ probes. Reviewer: use one fresh arm64 bundle at pressure 1, the existing watchdo
 and a new external temporary directory. Source the native env directly in Bash
 without login, and set `FERRITECAD_RECOVERY_DIR` and `FERRITECAD_TABS_DIR` to this
 root's private folders. `APP` is the reviewer's fresh bundle from
-`tools/macos-bundle.sh`; generator makes inputs only:
+`tools/stage-runtime-layout.sh` (verified by the readers in
+`tools/macos-bundle.sh`); generator makes inputs only:
 
 ```sh
 source target/30t-review/env.sh
@@ -196,3 +197,65 @@ window artifact. Headless owner outputs are tested separately and never passed
 as GUI evidence. Windows/Linux window interaction remains untested. The full
 STEP/FBX/GPU corpus and native vendor rebuilds are outside this form slice; their
 existing CI gates remain.
+
+## Independent review — 2026-10-10
+
+Code/workflow commit `e5818db1b3ab533b04d63ff120afa1a9e5fe1f4f`,
+[PR #101](https://github.com/gesriot/ferrite-cad/pull/101). Review found no required
+production correction. The window recipe above was corrected to name the bundle
+writer rather than its sourced reader. Ownership, failed Save continuations,
+snapshot addressing, document shortcuts and the final Close boundary were read
+independently. Local fmt, workspace all-targets/all-features clippy, actionlint,
+shellcheck, export/solver boundaries, whitespace and 478 licence headers passed.
+The run-size checker inspected 199 blocks, maximum 20,432 bytes.
+
+The reviewer reran the Close module with native OCCT/PlaneGCS and with a verified
+kernel-free debug target. Seven relevant assertion tests executed in each build;
+the native-only/stub-only cases were counted in their own configurations. The
+mixed and optional window comparator returned N/A in those broad invocations.
+The existing tabs regression returned 66 passing harness results; that count does
+not claim 66 native or window scenarios. The separate exact mixed gate executed
+with OCCT and no PlaneGCS imports and printed `FCAD_30U_MIXED_EXECUTED`.
+Logs: `target/30u-review`.
+
+A fresh release CLI/viewer was built locally from that code, its closure measured,
+staged into `target/30u-review/gui/FerriteCAD.app`, and the complete bundle signature
+verified. One viewer, PID 68433, ran under the existing 1536 MiB watchdog with
+private models and recovery/tabs directories under
+`/private/tmp/ferrite-30u-review-window/run`.
+
+Actual window actions followed the recipe: A accepted height 18, then held invalid
+` 26x ` while B held Circle values `-3.5`, `4.25`, `8`. Closing hidden A showed A
+and the named form question. Back restored the invalid value and accepted 18.
+Cmd+S, Cmd+Z and typed `999` while the question was pending did not save, undo or
+edit the parked form. A second Close reached the native Save/Discard/Cancel sheet;
+Cancel returned the same form. Switching back to B showed its original values.
+The reviewer then applied 26 in A, exported STL and FBX before Save, opened a new
+` 99x ` form, and chose Close → discard form → Save. A alone closed, and B's same
+Circle form returned. B's form was cancelled and Cmd+Q ended the process normally;
+no app lookup occurred after Quit.
+
+The actual window outputs passed the separate comparator:
+`FCAD_30U_GUI_COMPARE_OK all_SQL_cells=true`. All SQL cells except the existing
+write stamp and all original UUID/refs matched the CLI peer; STL and FBX matched
+byte-for-byte. A measures 80 × 40 × 26 mm, volume 83,200 mm³; B is byte-identical
+to its input. Strict pinned ufbx read the real window FBX with six checks and zero
+failures. The independent STL/FBX join matched 12 triangles, worst error
+3.47e-18 m. The watchdog recorded peak physical footprint 211.55 MiB, pressure 1
+throughout, swap 0, exit 0 after 191.97 seconds, with no watchdog abort. This is a
+bounded smoke measurement, not a resolution of the earlier OOM investigation.
+
+Three negative controls used private copies of these actual window outputs:
+missing STL, changed B bytes, and an unrelated object-name change in saved A.
+They failed respectively on missing output, changed B, and the executed all-SQL
+comparison. The original window artifacts were not modified by those controls.
+
+Remote checks are deliberately separate. On code/workflow `e5818db`, ordinary
+[CI](https://github.com/gesriot/ferrite-cad/actions/runs/38023485206) passed all seven
+jobs, and [planegcs pin](https://github.com/gesriot/ferrite-cad/actions/runs/38023483132)
+passed all four jobs. The seven exact Close execution markers were independently
+confirmed in each OS's ordinary CI log. The combined runtime run was still in
+progress at this documentation checkpoint; its final status and the documentation
+head's checks are recorded in PR #101 before merge. Windows/Linux interactive GUI
+and additional fault injection into native system dialogs were not performed by
+the reviewer.
