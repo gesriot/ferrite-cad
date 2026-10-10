@@ -45,6 +45,12 @@ pub use recovery::{
     recovery_panel,
 };
 
+mod open_over_new;
+pub use open_over_new::{
+    BACK_TO_NEW, DISCARD_NEW_AND_OPEN, OPEN_OVER_NEW_HEADING, OpenOverNewChoice, OpenOverNewPanel,
+    new_document_section, open_over_new_panel,
+};
+
 mod reopen;
 pub use reopen::{
     NOT_NOW, REOPEN, REOPEN_HEADING, ReopenChoice, ReopenPanel, ReopenRow, reopen_panel,

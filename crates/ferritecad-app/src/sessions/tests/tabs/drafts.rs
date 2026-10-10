@@ -11,6 +11,8 @@ use ferritecad_ui::{PointerButton, ViewportEvent};
 
 /// §30Q: Open, New and Recover beside these forms, through the same owners.
 mod open_new_recover;
+/// §30T: Open while New is not finished.
+mod open_over_new;
 
 impl Window {
     /// `App::begin_edit`: the height form on the shown tab's accepted version.

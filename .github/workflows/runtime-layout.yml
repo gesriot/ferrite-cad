@@ -905,6 +905,16 @@ jobs:
           grep -Fq "test $gate ... " session-reader-mixed.log
           grep -q '^test result: ok\. 1 passed; 0 failed' session-reader-mixed.log
           grep -q '^FCAD_30S_RECOVER_BESIDE_READER_EXECUTED$' session-reader-mixed.log
+          # §30T: the production creation made and held, Discard New and open, the
+          # production reading accepted and the late candidate dropped, with Open
+          # CASCADE and no solver; A's form applied after returning.
+          gate=sessions::tests::tabs::drafts::open_over_new::mixed_open_over_a_running_new_with_occt_and_no_solver
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-open-over-new-mixed.log
+          if grep -q 'skipped:' session-open-over-new-mixed.log; then exit 1; fi
+          grep -Fq "test $gate ... " session-open-over-new-mixed.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' session-open-over-new-mixed.log
+          grep -q '^FCAD_30T_MIXED_OPEN_OVER_NEW_EXECUTED$' session-open-over-new-mixed.log
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
@@ -1418,6 +1428,34 @@ jobs:
           done
           echo "FCAD_CHAMFER_SESSION_FBX_DIR=$chamfer_artifacts" >> "$GITHUB_ENV"
 
+
+      - name: Confirm Open over New and reject its late creation result
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          # §30T: A changed and holding a form, New making its document with the
+          # candidate made and held, B chosen and the question confirmed, the late
+          # candidate dropped while B is read, A applied, exported and saved: every
+          # SQL cell, ids, CLI exports before and after Save, geometry, and the
+          # comparator's seven controls, on the owners' own files.
+          gate=sessions::tests::tabs::drafts::open_over_new::native_confirmed_open_over_a_running_new_then_late_create_and_back_to_a_match_the_command_line
+          cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee session-open-over-new-native.log
+          if grep -q 'skipped:' session-open-over-new-native.log; then exit 1; fi
+          grep -Fq "test $gate ... " session-open-over-new-native.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' session-open-over-new-native.log
+          grep -Eq '^FCAD_30T_NATIVE_OPEN_OVER_NEW_EXECUTED volume_a=93600\.000$' session-open-over-new-native.log
+          grep -Fxq 'FCAD_30T_SESSION_FILES_COMPARE_OK negative_controls=7 all_SQL_cells=true' session-open-over-new-native.log
 
       - name: Create a saved polygon through the native CLI and sketch worker
         env:

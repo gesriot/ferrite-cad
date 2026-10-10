@@ -13,7 +13,7 @@ use ferritecad_jobs::RecordId;
 
 impl Window {
     /// `App::read_document`: a reading of a file, numbered by the window's `Loads`.
-    fn begin_load(loads: &mut Loads, path: &Path) -> LoadGeneration {
+    pub(super) fn begin_load(loads: &mut Loads, path: &Path) -> LoadGeneration {
         Self::begin_watched_load(loads, path).0
     }
 
@@ -35,7 +35,7 @@ impl Window {
 
     /// What the reading worker answers for `path`: its session and its picture
     /// (on the mock kernel here; `open_for_view` in the kernel gates).
-    fn read(&self, path: &Path) -> Result<(LoadedScene, DocumentSession)> {
+    pub(super) fn read(&self, path: &Path) -> Result<(LoadedScene, DocumentSession)> {
         let session =
             DocumentSession::open_in(self.private.path(), path, HistoryLimits::default())?;
         let scene = self.picture(session.current().path())?;
@@ -45,7 +45,7 @@ impl Window {
     /// The window's `Loaded` handler and `App::show` without the device: the
     /// worker's answer, accepted with its picture only when its generation is the
     /// one `loads` waits for. Whether a tab was added.
-    fn deliver_load(
+    pub(super) fn deliver_load(
         &mut self,
         loads: &mut Loads,
         generation: LoadGeneration,
@@ -85,7 +85,7 @@ impl Window {
 
     /// `App::begin_new`: New's form (or, `drawing`, the drawing) over the shown
     /// tab, after the predicate its buttons ask. Whether New opened.
-    fn begin_new(&mut self, drawing: bool) -> bool {
+    pub(super) fn begin_new(&mut self, drawing: bool) -> bool {
         if !self.can_leave() {
             return false;
         }
@@ -97,7 +97,7 @@ impl Window {
             &mut self.input,
             |creates, input| {
                 if drawing {
-                    creates.sketch.begin();
+                    creates.begin_drawing();
                     true
                 } else {
                     crate::ask_new(creates, &Loads::default(), &Exports::default(), input)
@@ -117,7 +117,7 @@ impl Window {
     }
 
     /// The New form answered (`creates::answer_form` and what follows it).
-    fn answer_new(&mut self, choice: ferritecad_ui::NewChoice) -> Option<NewDocument> {
+    pub(super) fn answer_new(&mut self, choice: ferritecad_ui::NewChoice) -> Option<NewDocument> {
         let content = crate::creates::answer_form(&mut self.creates, &mut self.input, choice);
         self.end_new();
         content
@@ -140,7 +140,7 @@ impl Window {
     }
 
     /// The `Created` handler for a candidate made: shown, then New is told.
-    fn bind_candidate(
+    pub(super) fn bind_candidate(
         &mut self,
         candidate: crate::creates::Candidate,
         upload: Result<()>,
@@ -230,7 +230,12 @@ fn recovered_unless(
 
 /// A crash copy nobody holds: `file` changed to `millimetres` high and published,
 /// then its process "ended" (the record's lease let go).
-fn orphan(store: &RecoveryStore, file: &Path, private: &Path, millimetres: f64) -> RecordId {
+pub(super) fn orphan(
+    store: &RecoveryStore,
+    file: &Path,
+    private: &Path,
+    millimetres: f64,
+) -> RecordId {
     let mut session =
         DocumentSession::open_in(private, file, HistoryLimits::default()).expect("session");
     let feature = read_extrude_source(session.current().path())
@@ -266,7 +271,7 @@ fn recoverable(store: &RecoveryStore) -> Vec<RecordId> {
 }
 
 /// Every input file's bytes, to show nothing but Save ever writes one.
-fn contents(files: &[&Path]) -> Vec<Vec<u8>> {
+pub(super) fn contents(files: &[&Path]) -> Vec<Vec<u8>> {
     files
         .iter()
         .map(|file| std::fs::read(file).expect("input"))
@@ -557,8 +562,8 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
     assert!(w.begin_new(false));
     set_aside(&w);
     assert!(w.creates.form().is_some());
-    // While New is open the window is held: no tab, Open, Recover or Quit, and
-    // Close and Quit stop at A's forms although none is on screen.
+    // While New is open the window is held: no tab, Recover or Quit (Open only
+    // asks, §30T), and Close and Quit stop at A's forms although none is on screen.
     assert!(!w.can_leave());
     assert!(!crate::may_leave_tab(
         &w.creates,
