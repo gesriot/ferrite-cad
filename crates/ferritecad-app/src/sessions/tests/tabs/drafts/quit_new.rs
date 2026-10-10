@@ -966,11 +966,18 @@ fn compare_new_outputs(root: &Path) {
         .read()
         .expect("list")
         .expect("published");
-    assert_eq!(
-        listed.paths,
-        [root.join("a.fcad"), root.join("b.fcad"), saved],
-        "final LastTabs"
-    );
+    // The native Save dialog can spell /private/tmp as /tmp on macOS.
+    // LastTabs preserves the chosen spelling; compare the actual files in order.
+    let actual: Vec<_> = listed
+        .paths
+        .iter()
+        .map(|path| std::fs::canonicalize(path).expect("listed file"))
+        .collect();
+    let expected: Vec<_> = [root.join("a.fcad"), root.join("b.fcad"), saved]
+        .iter()
+        .map(|path| std::fs::canonicalize(path).expect("expected file"))
+        .collect();
+    assert_eq!(actual, expected, "final LastTabs");
     let records = RecoveryStore::open(&root.join("recovery"))
         .expect("store")
         .list()

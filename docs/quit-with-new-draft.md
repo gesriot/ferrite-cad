@@ -100,7 +100,8 @@ same-source SQL comparisons. New height 7 mm, volume 700 mm³; A 26 mm,
 83,200 mm³. LastTabs names A/B/n; no active/recoverable lane remains.
 Five negative controls run on copies: missing New FBX (no peer job), altered New
 SQL, wrong New FBX, changed B, wrong LastTabs. Original evidence is never changed.
-Generator refuses a destination under any checkout. No GUI pass is claimed here.
+Generator refuses a destination under any checkout. The author's handoff claimed
+no GUI pass; the independent window execution is recorded below.
 
 ## Executed local verification — 2026-10-10, macOS arm64
 
@@ -245,3 +246,72 @@ No add/commit/push/PR/merge, forbidden Git rewrite/cleanup or config change.
 ```
 
 Final diffstat including untracked files: 21 files, +2012 / -66 lines.
+
+
+## Independent review — 2026-10-10, PR #103
+
+The unstaged handoff above is historical. The implementation was committed as
+`de7137e5f99632fb98e4096897bda9ec1e987284` after review. The reviewer corrected two
+stale ownership/idle comments and the description of the observable stale-answer
+mutant. No production behaviour needed changing in that review.
+
+Local reviewer evidence is in `target/30w-review/`: fresh release CLI/app build,
+workspace clippy with all targets/features and `-D warnings`, fmt, licence headers
+(480), export boundary, solver ownership, actionlint, shellcheck, whitespace and
+Actions run-size checks passed. The full native tabs block returned 90 passes;
+the true-stub block also returned 90 harness passes, with 11 explicit native skips
+not counted as geometry. Ten mandatory stub tests were separately executed by
+exact name without skips (`stub-exact.log`). The exact OCCT-without-PlaneGCS test
+executed `FCAD_30W_MIXED_EXECUTED` (`mixed.log`). Conditional stub/mixed and opt-in
+GUI early returns in a whole-suite run remain N/A. Author mutation evidence was
+reviewed; the reviewer did not repeat those mutations.
+
+### Real macOS window and published files
+
+A fresh staged/signed arm64 bundle in `target/30w-review/gui/FerriteCAD.app` ran
+one viewer, PID 74281, under the 1536 MiB watchdog, without a DYLD override.
+Inputs and actual outputs are outside checkout in
+`/private/tmp/ferrite-30w-review-window/run`; only the input generator made A/B.
+The reviewer operated the live window with CUA. No post-Quit app lookup or AX
+capture was used, so this run did not relaunch the viewer outside its watchdog.
+
+Observed: Apply A=18 and B=22; retain A's invalid height and B's confirmed Circle
+draft/history; start a new triangle over A; Cmd+Q and Discard New; Save A then
+Cancel B; New and both forms return. A second late Cancel exercised New's Redo;
+a fresh Cmd+Q/Back left its invalid text intact. The returned contour created an
+Untitled tab, which was saved as `n-created.fcad`, edited to height 7, exported
+before Save, and saved as `n.fcad`. B retained centre (-3.5,4.25), radius 8 and
+working Undo/Redo; A retained its invalid 26x, then applied 26 and exported before
+Save. System window Close over a new invalid 99x form led through Save A and
+Discard B to a normal exit, with no old-New question after creation.
+
+Input deviations are recorded rather than called the exact recipe verbatim.
+While blurring the invalid first coordinate, the operator accidentally selected
+Revolve 360 before the first Quit; that variant was restored correctly. The
+operator then returned to Extrude, established invalid-text/Redo history and
+repeated the late-Cancel sequence before testing Back and creation. Returning the
+first coordinate to zero was explicit text entry. B's floating form was collapsed
+to reach the tabs, then expanded to verify its retained fields. No positive output
+was copied from CLI or a headless run.
+
+The first actual-file comparison failed at LastTabs: the native Save dialog
+spelled New's path `/tmp/.../n.fcad`, while the fixture used `/private/tmp/...`.
+Both resolve to the same file. The test now resolves paths before comparing the
+ordered file list; the application's chosen-path storage is unchanged. The
+unmodified window artifacts then passed the exact comparator, including its five
+negative controls, with `FCAD_30W_GUI_COMPARE_OK all_SQL_cells=true`
+(`gui-compare-fixed.log`). All-SQL comparisons (only the write stamp excluded),
+UUID/refs, cold rebuild and byte-equal STL/FBX against CLI passed. A is 26 mm /
+83,200 mm³; New is 7 mm / 700 mm³. B remains byte-identical to the input. LastTabs
+contains A/B/n in order and no recovery owner remains.
+
+Pinned ufbx 0.23.0 read both actual GUI FBX exports with six checks and zero
+failures each. Independent STL/FBX joins found 12 triangles for A (worst difference
+3.47e-18 m) and eight for New (0 m). Logs are `a-unsaved-reader.txt`,
+`n-unsaved-reader.txt` and their triangle files in the review folder.
+
+Watchdog: normal exit 0 after 1126.513 s, no abort, sampled peak footprint
+217.470 MiB, pressure always 1, swap always 0. The earlier OOM is not diagnosed or
+claimed fixed. Windows/Linux window interaction and the large STEP/GPU corpora
+were not rerun locally. Exact remote CI provenance is recorded after completion;
+local checks and the author's base CI are not substitutes for it.

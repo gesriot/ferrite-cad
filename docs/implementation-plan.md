@@ -4961,7 +4961,12 @@ Ten exact stub gates, native and mixed gates, full tabs/forms blocks (90 green
 harness results in each configuration), two compiling assertion-failing mutations,
 CLI SQL/UUID/refs/cold exports and the small pinned ufbx loop passed locally.
 Conditional and opt-in GUI returns are N/A. Contract, logs and independent window
-recipe: [quit-with-new-draft.md](quit-with-new-draft.md). Author runs no GUI.
+recipe: [quit-with-new-draft.md](quit-with-new-draft.md). Author ran no GUI.
+Independent review completed the real macOS late-Cancel/Back/returned-New creation
+and final Quit scenario. Actual SQL/UUID/refs and byte-equal STL/FBX matched CLI;
+five negative controls and pinned ufbx passed. Review corrected the comparator's
+literal `/tmp` versus `/private/tmp` path comparison, not production storage.
+Viewer peak 217.470 MiB, pressure 1, swap 0, normal exit. PR #103 records exact CI.
 
 *What remains of §30 after §30W:* drafts across a restart or crash; contention the
 lock cannot settle (a stream of listings starving a claim, a hung reader, builds older
