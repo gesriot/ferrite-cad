@@ -68,7 +68,7 @@ impl std::ops::Add<u64> for Address {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Continuation {
     /// Close the window (the Quit pass goes on to the next unsaved tab).
-    Quit,
+    Quit(crate::tabs::QuitId),
     /// Close this tab.
     Close,
     /// §30U: continue only this confirmed form Close attempt.
@@ -1899,14 +1899,14 @@ mod tests {
         let report = save(
             &mut sessions,
             SaveTarget::As(kept.clone()),
-            Some(Continuation::Quit),
+            Some(Continuation::Close),
         )
         .expect("answered");
         assert_eq!(
             report,
             SaveReport {
                 published: true,
-                continuation: Some(Continuation::Quit)
+                continuation: Some(Continuation::Close)
             }
         );
         assert!(!sessions.dirty());
@@ -4021,7 +4021,7 @@ mod tests {
         let generation = sessions
             .begin_save(
                 SaveTarget::InPlace,
-                Some(Continuation::Quit),
+                Some(Continuation::Close),
                 |plan, _, cancel| {
                     // Asked to stop before the file is replaced.
                     cancel.cancel();

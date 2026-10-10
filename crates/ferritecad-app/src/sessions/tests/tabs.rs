@@ -73,6 +73,13 @@ struct Window {
 }
 
 impl Window {
+    fn decide_quit(&mut self) {
+        let id = self
+            .tabs
+            .ask_quit_model(&self.sessions)
+            .expect("model question");
+        assert!(self.tabs.decide_quit_model(&self.sessions, id));
+    }
     fn new(drawn: Drawn, store: Option<&RecoveryStore>) -> Self {
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -690,13 +697,14 @@ fn quit_asks_every_unsaved_tab_in_turn_and_cancel_part_way_closes_nothing() {
     w.tabs.begin_quit();
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
     let c_file = user.path().join("c.fcad");
+    let quit_id = w.tabs.ask_quit_model(&w.sessions).expect("model question");
     let report = {
         let (tx, rx) = mpsc::channel();
         let generation = w
             .sessions
             .begin_save(
                 SaveTarget::As(c_file.clone()),
-                Some(Continuation::Quit),
+                Some(Continuation::Quit(quit_id)),
                 |plan, _, cancel| {
                     spawn_save(plan, cancel.clone(), move |v| tx.send(v).expect("save"))
                 },
@@ -706,7 +714,8 @@ fn quit_asks_every_unsaved_tab_in_turn_and_cancel_part_way_closes_nothing() {
             .finish_save(generation, wait(&rx))
             .expect("answered")
     };
-    assert_eq!(report.continuation, Some(Continuation::Quit));
+    assert_eq!(report.continuation, Some(Continuation::Quit(quit_id)));
+    assert!(w.tabs.decide_quit_model(&w.sessions, quit_id));
     assert_eq!(
         w.tabs.quit_step(&w.sessions, false),
         QuitStep::Show(a),
@@ -738,14 +747,14 @@ fn quit_asks_every_unsaved_tab_in_turn_and_cancel_part_way_closes_nothing() {
         w.sessions.replacing(Some(UnsavedChoice::Discard)),
         Replace::Discarded
     );
-    w.tabs.discarded(a);
+    w.decide_quit();
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
     assert!(w.sessions.dirty(), "Discard acts only when the window ends");
     // A pass Cancelled after Discard forgets that answer.
     w.tabs.abort_quit();
     w.tabs.begin_quit();
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
-    w.tabs.discarded(a);
+    w.decide_quit();
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
     settled(&w.sessions);
     w.tabs.decide_exit(&mut w.sessions);
@@ -1751,7 +1760,7 @@ fn native_tabs_scenario_on_session_files_passes_the_comparator_and_its_controls(
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
     assert!(w.save(SaveTarget::InPlace).published);
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Show(a));
-    w.switch(a);
+    w.show_for_quit(a);
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Ask);
     w.tabs.abort_quit();
     assert_eq!(w.tabs.order(), [a, b]);
@@ -1775,7 +1784,7 @@ fn quit_waits_for_open_forms_and_foreground_work_even_when_tabs_are_clean() {
     let file = user.path().join("clean.fcad");
     plate(&file, 12.0);
     let original = std::fs::read(&file).expect("source");
-    for held in ["new", "edit", "load", "session", "switch"] {
+    for held in ["new", "load", "session", "switch"] {
         let mut w = Window::new(Drawn::Mock, None);
         w.open(&file);
         let tab = w.sessions.tab();
@@ -1815,6 +1824,7 @@ fn quit_waits_for_open_forms_and_foreground_work_even_when_tabs_are_clean() {
                 &loads,
                 &exports,
                 &edits,
+                &w.input,
             ),
             "Quit must keep an open {held}"
         );
@@ -1837,6 +1847,7 @@ fn quit_waits_for_open_forms_and_foreground_work_even_when_tabs_are_clean() {
         &crate::Loads::default(),
         &crate::exports::Exports::default(),
         &crate::edits::Edits::default(),
+        &w.input,
     ));
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
 }

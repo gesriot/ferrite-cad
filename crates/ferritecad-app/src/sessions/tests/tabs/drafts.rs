@@ -15,6 +15,8 @@ mod close_form;
 mod open_new_recover;
 /// §30T: Open while New is not finished.
 mod open_over_new;
+/// §30V: all forms survive an aborted window Quit.
+mod quit_forms;
 
 impl Window {
     /// `App::begin_edit`: the height form on the shown tab's accepted version.
@@ -615,9 +617,11 @@ fn close_and_quit_keep_an_open_form_even_over_a_clean_model() {
             &Loads::default(),
             &Exports::default(),
             &w.edits,
+            &w.input,
         )
     };
-    assert!(!quit(&mut w), "Quit waits for the shown form");
+    assert!(quit(&mut w), "Quit offers the shown saved-object form");
+    w.tabs.abort_quit();
     w.round(b);
     assert!(quit(&mut w));
     assert_eq!(w.tabs.quit_step(&w.sessions, form(&w)), QuitStep::Show(a));
@@ -640,7 +644,7 @@ fn close_and_quit_keep_an_open_form_even_over_a_clean_model() {
     w.apply(19.0);
     assert!(quit(&mut w));
     assert_eq!(w.tabs.quit_step(&w.sessions, form(&w)), QuitStep::Ask);
-    w.tabs.discarded(b);
+    w.decide_quit();
     assert_eq!(w.tabs.quit_step(&w.sessions, form(&w)), QuitStep::Show(a));
     w.tabs.abort_quit();
 
@@ -1487,13 +1491,14 @@ fn native_tab_drafts_scenario_on_session_files_passes_the_comparator_and_its_con
             &Loads::default(),
             &Exports::default(),
             &w.edits,
+            &w.input,
         )
     };
     assert!(quit(&mut w));
     assert_eq!(w.tabs.quit_step(&w.sessions, form(&w)), QuitStep::Ask);
     assert!(w.save(SaveTarget::InPlace).published);
     assert_eq!(w.tabs.quit_step(&w.sessions, form(&w)), QuitStep::Show(a));
-    w.switch(a);
+    w.show_for_quit(a);
     assert_eq!(w.tabs.quit_step(&w.sessions, form(&w)), QuitStep::Form);
     w.tabs.abort_quit();
     assert_eq!(w.tabs.order(), [a, b]);

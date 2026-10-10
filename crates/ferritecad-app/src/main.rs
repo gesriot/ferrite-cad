@@ -1067,9 +1067,6 @@ fn form_open(edits: &edits::Edits, sketch: &sketch::Editor) -> bool {
 /// §30P: why another tab cannot be shown or closed right now.
 const LEAVE_WAIT: &str = "Another tab can be shown or closed once the current operation, \
                           export or New has finished. An open edit form stays with its tab.";
-/// §30P: nor does Quit: the pass stops at the tab whose form is open.
-const FORM_BEFORE_QUITTING: &str = "This tab has an open form. Apply or Cancel it before \
-                                    quitting; no tab was closed.";
 
 /// §30Q: whether the shown tab may be left for another document now — another tab
 /// shown, or a new one added by Open, New or Recover. The one answer the tab row,
@@ -1878,14 +1875,14 @@ fn begin_window_quit(
     loads: &Loads,
     exports: &exports::Exports,
     edits: &edits::Edits,
+    input: &ViewportInput,
 ) -> bool {
     // The accepted model may be clean while a form or a worker holds newer
     // intent. Check before Quit's clean-document fast path, and before resetting
     // an existing Quit pass whose Save may still be running.
     if tabs.closing_form()
-        || !can_begin_new(creates, loads, exports)
-        || sessions.busy()
-        || form_open(edits, &creates.sketch)
+        || tabs.quitting()
+        || !can_leave_tab(creates, loads, exports, edits, sessions, input)
     {
         sessions.status = "Wait for the current operation to finish, or close the open form, \
                            before quitting."
@@ -1893,7 +1890,7 @@ fn begin_window_quit(
         return false;
     }
     tabs.begin_quit();
-    true
+    tabs.quitting()
 }
 
 /// What the end of a Quit pass came to.
@@ -3390,7 +3387,7 @@ impl ApplicationHandler<AppEvent> for App {
                         // A save that was not published continues nothing: a Quit
                         // it was part of stops, and every tab stays open.
                         None => {
-                            self.tabs.abort_quit();
+                            self.abort_quit();
                             if let Some(id) = self.tabs.form_close_id() {
                                 self.return_close_form(id);
                             }
@@ -3420,7 +3417,7 @@ impl ApplicationHandler<AppEvent> for App {
                             let tab = self.sessions.tab();
                             self.close_tab(tab);
                         }
-                        None => {}
+                        None => self.restore_quit_form(),
                     }
                 }
                 self.input.request_redraw();
@@ -3606,6 +3603,7 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::KeyboardInput { ref event, .. }
                 if event.state == ElementState::Pressed
                     && !self.tabs.closing_form()
+                    && !self.tabs.quitting()
                     && document_command(
                         &event.logical_key,
                         event.text_with_all_modifiers(),
@@ -3653,7 +3651,10 @@ impl ApplicationHandler<AppEvent> for App {
                     && !self.sessions.busy();
                 let idle = settled && !form_open(&self.edits, &self.creates.sketch);
                 // §30P: a form held as made on another version is over once closed.
-                if !self.tabs.closing_form() && !form_open(&self.edits, &self.creates.sketch) {
+                if !self.tabs.closing_form()
+                    && !self.tabs.quitting()
+                    && !form_open(&self.edits, &self.creates.sketch)
+                {
                     self.sessions.release_stale_draft();
                 }
                 let leave = can_leave_tab(
@@ -3961,7 +3962,8 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.restores,
                 );
                 let close_question = self.tabs.form_close_question(&self.sessions);
-                let closing_form = self.tabs.closing_form();
+                let quit_question = self.tabs.quit_form_question(&self.sessions);
+                let closing_form = self.tabs.closing_form() || self.tabs.quitting();
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
@@ -3989,7 +3991,18 @@ impl ApplicationHandler<AppEvent> for App {
                         closing_form,
                         close_form: close_question
                             .as_ref()
-                            .map(|(_, name)| ferritecad_ui::CloseFormPanel { document: name }),
+                            .map(|(_, name)| ferritecad_ui::CloseFormPanel {
+                                document: name,
+                                quitting: false,
+                            })
+                            .or_else(|| {
+                                quit_question.as_ref().map(|(_, name)| {
+                                    ferritecad_ui::CloseFormPanel {
+                                        document: name,
+                                        quitting: true,
+                                    }
+                                })
+                            }),
                         sketch,
                         creating,
                         created,
@@ -4037,6 +4050,11 @@ impl ApplicationHandler<AppEvent> for App {
                             && chosen.close_form != ferritecad_ui::CloseFormChoice::Waiting
                         {
                             self.answer_form_close(id, chosen.close_form);
+                        }
+                        if let Some((id, _)) = quit_question
+                            && chosen.close_form != ferritecad_ui::CloseFormChoice::Waiting
+                        {
+                            self.answer_quit_form(id, chosen.close_form, event_loop);
                         }
                         if let Some(view) = chosen.view {
                             self.input.handle(ViewportEvent::Look(view), false);
@@ -4436,7 +4454,7 @@ impl App {
 
     /// The Open dialog and what follows it.
     fn pick_and_open(&mut self) {
-        if self.tabs.closing_form() {
+        if self.tabs.closing_form() || self.tabs.quitting() {
             return;
         }
         if !self.can_open() {
@@ -4474,13 +4492,15 @@ impl App {
     /// toolbar's button asks. An idle form of the shown tab stays with it; an
     /// unfinished New is asked about, not in the way (§30T).
     fn can_open(&self) -> bool {
-        can_open(
-            &self.creates,
-            &self.edits,
-            &self.sessions,
-            &self.input,
-            &self.restores,
-        )
+        !self.tabs.quitting()
+            && !self.tabs.closing_form()
+            && can_open(
+                &self.creates,
+                &self.edits,
+                &self.sessions,
+                &self.input,
+                &self.restores,
+            )
     }
 
     /// §30Q: the person's Open — the dialog's choice, or the document named at
@@ -4791,15 +4811,17 @@ impl App {
     /// Whether a Recover may start: nothing else is reading or replacing the
     /// document. The one predicate the buttons and the handler ask.
     fn can_recover(&self) -> bool {
-        can_recover(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-            &self.input,
-            &self.recoveries,
-        )
+        !self.tabs.quitting()
+            && !self.tabs.closing_form()
+            && can_recover(
+                &self.creates,
+                &self.loads,
+                &self.exports,
+                &self.edits,
+                &self.sessions,
+                &self.input,
+                &self.recoveries,
+            )
     }
 
     /// §30M: Recover from the start-up list. A dirty document is asked about first,
@@ -4880,13 +4902,15 @@ impl App {
 
     /// The one `can_create` predicate, asked by the forms' buttons and here.
     fn can_create(&self) -> bool {
-        can_create(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        )
+        !self.tabs.quitting()
+            && !self.tabs.closing_form()
+            && can_create(
+                &self.creates,
+                &self.loads,
+                &self.exports,
+                &self.edits,
+                &self.sessions,
+            )
     }
 
     /// Nothing that reads or replaces the document is running or waiting.
@@ -4899,7 +4923,10 @@ impl App {
 
     /// As [`Self::settled`], and no form is open over the picture it describes.
     fn document_idle(&self) -> bool {
-        self.settled() && !form_open(&self.edits, &self.creates.sketch)
+        !self.tabs.quitting()
+            && !self.tabs.closing_form()
+            && self.settled()
+            && !form_open(&self.edits, &self.creates.sketch)
     }
 
     /// Native Quit and window close share the same guarded exit (§30O: over every
@@ -4912,6 +4939,7 @@ impl App {
             &self.loads,
             &self.exports,
             &self.edits,
+            &self.input,
         ) {
             self.continue_quit(event_loop);
         } else {
@@ -4927,22 +4955,41 @@ impl App {
         while self.tabs.quitting() {
             let form = form_open(&self.edits, &self.creates.sketch);
             match self.tabs.quit_step(&self.sessions, form) {
-                // §30P: shown with its form; the person finishes it, then quits.
                 tabs::QuitStep::Form => {
-                    self.sessions.status = FORM_BEFORE_QUITTING.to_owned();
-                    self.tabs.abort_quit();
+                    if self.tabs.quit_form_question(&self.sessions).is_none()
+                        && self
+                            .tabs
+                            .ask_quit_form(
+                                &self.sessions,
+                                &mut tabs::Forms {
+                                    edits: &mut self.edits,
+                                    editor: &mut self.creates.sketch,
+                                },
+                            )
+                            .is_none()
+                    {
+                        self.abort_quit();
+                    }
+                    break;
                 }
                 tabs::QuitStep::Ask => {
-                    let tab = self.sessions.tab();
-                    match self.ask_to_close(sessions::Continuation::Quit) {
-                        Asked::Go => self.tabs.discarded(tab),
+                    let Some(id) = self.tabs.ask_quit_model(&self.sessions) else {
+                        self.abort_quit();
+                        break;
+                    };
+                    match self.ask_to_close(sessions::Continuation::Quit(id)) {
+                        Asked::Go => {
+                            if !self.tabs.decide_quit_model(&self.sessions, id) {
+                                self.abort_quit();
+                            }
+                        }
                         Asked::Saving => break,
-                        Asked::Stay => self.tabs.abort_quit(),
+                        Asked::Stay => self.abort_quit(),
                     }
                 }
                 tabs::QuitStep::Show(tab) => {
                     if !self.switch_to(tab, Some(tabs::After::Quit)) {
-                        self.tabs.abort_quit();
+                        self.abort_quit();
                     }
                     break;
                 }
@@ -4960,13 +5007,60 @@ impl App {
                             event_loop.exit();
                             return;
                         }
-                        QuitEnd::Stay(reason) => self.sessions.status = reason,
-                        QuitEnd::NotEnded => self.tabs.abort_quit(),
+                        QuitEnd::Stay(reason) => {
+                            self.restore_quit_form();
+                            self.sessions.status = reason;
+                        }
+                        QuitEnd::NotEnded => self.abort_quit(),
                     }
                 }
             }
         }
         self.request_frame_now(event_loop);
+    }
+
+    fn restore_quit_form(&mut self) {
+        self.tabs.bring_back(
+            &mut self.sessions,
+            &mut tabs::Forms {
+                edits: &mut self.edits,
+                editor: &mut self.creates.sketch,
+            },
+        );
+    }
+
+    fn abort_quit(&mut self) {
+        self.tabs.abort_quit();
+        self.restore_quit_form();
+    }
+
+    fn answer_quit_form(
+        &mut self,
+        id: tabs::QuitId,
+        choice: ferritecad_ui::CloseFormChoice,
+        event_loop: &ActiveEventLoop,
+    ) {
+        match choice {
+            ferritecad_ui::CloseFormChoice::Back
+                if self.tabs.back_quit_form(&self.sessions, id) =>
+            {
+                self.restore_quit_form();
+            }
+            ferritecad_ui::CloseFormChoice::Discard
+                if can_leave_tab(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                    &self.input,
+                ) && self.tabs.confirm_quit_form(&self.sessions, id) =>
+            {
+                self.continue_quit(event_loop);
+            }
+            _ => {}
+        }
+        self.input.request_redraw();
     }
 
     /// Asks Save / Discard / Cancel about the shown tab, which is about to be closed
@@ -4989,8 +5083,8 @@ impl App {
             return Asked::Stay;
         }
         let request = match (next, self.sessions.untitled()) {
-            (sessions::Continuation::Quit, false) => "Closing the window would lose them.",
-            (sessions::Continuation::Quit, true) => {
+            (sessions::Continuation::Quit(_), false) => "Closing the window would lose them.",
+            (sessions::Continuation::Quit(_), true) => {
                 "It has never been saved. Closing the window would lose it."
             }
             (sessions::Continuation::Close | sessions::Continuation::CloseForm(_), false) => {
@@ -5032,6 +5126,7 @@ impl App {
     /// The window may show or close another tab now (§30P: [`can_leave_tab`]).
     fn can_leave_tab(&self) -> bool {
         !self.tabs.closing_form()
+            && !self.tabs.quitting()
             && can_leave_tab(
                 &self.creates,
                 &self.loads,
@@ -5046,7 +5141,18 @@ impl App {
     /// reason in the status line, while anything else is running. An idle form of
     /// the shown tab stays with it (§30P).
     fn switch_to(&mut self, tab: tabs::TabId, after: Option<tabs::After>) -> bool {
-        if !self.can_leave_tab() {
+        if !(if after == Some(tabs::After::Quit) {
+            can_leave_tab(
+                &self.creates,
+                &self.loads,
+                &self.exports,
+                &self.edits,
+                &self.sessions,
+                &self.input,
+            )
+        } else {
+            self.can_leave_tab()
+        }) {
             self.sessions.status = LEAVE_WAIT.to_owned();
             self.input.request_redraw();
             return false;
@@ -5218,7 +5324,11 @@ impl App {
     /// written, go on.
     fn continue_with(&mut self, next: sessions::Continuation, event_loop: &ActiveEventLoop) {
         match next {
-            sessions::Continuation::Quit => self.continue_quit(event_loop),
+            sessions::Continuation::Quit(id) => {
+                if !self.sessions.dirty() && self.tabs.decide_quit_model(&self.sessions, id) {
+                    self.continue_quit(event_loop);
+                }
+            }
             sessions::Continuation::CloseForm(id) => {
                 if !self.sessions.dirty() && self.tabs.decide_form_close(&self.sessions, id) {
                     self.close_now(id.tab());
@@ -5266,7 +5376,11 @@ impl App {
     /// Writes the accepted changes to the document's own file, when there are any.
     /// An untitled document has no file yet: Save asks where, as Save As does.
     fn save_document(&mut self) {
-        if !self.tabs.closing_form() && self.settled() && self.sessions.can_save() {
+        if !self.tabs.closing_form()
+            && !self.tabs.quitting()
+            && self.settled()
+            && self.sessions.can_save()
+        {
             self.save_then(None);
         }
     }
@@ -5275,7 +5389,10 @@ impl App {
     /// does nothing; an occupied name is refused by the save, keeping the accepted
     /// scene and any draft.
     fn ask_where_to_save_as(&mut self) {
-        if self.tabs.closing_form() || !(self.settled() && self.sessions.can_save_as()) {
+        if self.tabs.closing_form()
+            || self.tabs.quitting()
+            || !(self.settled() && self.sessions.can_save_as())
+        {
             return;
         }
         if let Some(chosen) = self.choose_save_as_path() {

@@ -47,7 +47,8 @@ moved whole, as values, in the statement that hides or shows a tab.
    forms with its camera, and gives back the target's forms. A refused picture, a
    kernel refusal, Cancel, a stale or foreign answer never reach it: both drafts stay
    where they were. §30O's fixes are kept: Cancel retires the switch at once, its input
-   lease lives until its worker ends, Quit still refuses a shown form or running work.
+   lease lives until its worker ends. Since §30V Quit asks about saved-object forms
+   and keeps every original until final exit; running work still holds Quit.
    `present` ends forms about a replaced picture after an Apply, Undo, Redo or Open
    arrival, as before, but not after a switch (the forms are that tab's own).
 3. **What holds the window.** One predicate, `can_leave_tab`, answers for the tab row
@@ -74,16 +75,18 @@ moved whole, as values, in the statement that hides or shows a tab.
    restart.
 7. **Close and Quit never lose a form.** *§30U replaces the Close refusal below
    with an addressed question and retains the original form until actual Close:
-   [close-tab-with-draft.md](close-tab-with-draft.md). Quit is unchanged.*
+   [close-tab-with-draft.md](close-tab-with-draft.md). §30V replaces the Quit refusal
+   with a pass that holds every original form until final exit:
+   [quit-with-tab-drafts.md](quit-with-tab-drafts.md).*
    Originally, × on a tab with a form — hidden (shown first)
    or shown, clean or not — leaves the form for the person to Apply or Cancel: *"This
    tab has an open form. Apply or Cancel it before closing the tab; nothing was
-   closed."* Quit refuses while the shown tab has a form (as before); its pass also
-   shows each hidden tab that keeps a form (clean or not) and stops there with the same
+   closed."* Originally Quit refused while the shown tab had a form; its pass also
+   showed each hidden tab that kept a form (clean or not) and stopped there with the same
    words for quitting. Nothing is closed, saved or applied by that stop.
 8. **Limits.** Still 8 tabs and one GPU scene. A hidden draft holds its form values and
    one lease of its tab's current version; a hundred switches copy no history and make
-   no file. Closing a tab (only possible once its form is done) frees only its own
+   no file. Closing a tab after its form/model decisions frees only its own
    files and crash copy. CLI, document schema, capabilities and JSON v1 are unchanged.
 
 **Still blocking.** A **New** form or drawing, an export in progress (or its question,

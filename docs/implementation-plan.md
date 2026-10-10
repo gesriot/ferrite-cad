@@ -4926,7 +4926,27 @@ STL/FBX matched CLI, strict ufbx and three negative controls passed. Viewer peak
 211.55 MiB, pressure 1, swap 0, normal exit. Exact code CI is recorded separately
 in PR #101; the author's original uncommitted handoff did not claim remote CI.
 
-*What remains of §30 after §30U:* drafts across a restart or crash; contention the
+### §30V — Quit with unfinished saved-object forms
+
+One Quit attempt owns every parked form until the whole window exits. Back, late
+model Cancel, Save refusal, switch refusal or the first LastTabs publication refusal
+return all original forms, including previously confirmed ones. Published Saves
+stay saved; Discard is deferred. Runtime TabId, attempt generation and accepted
+snapshot address form/model decisions and Save continuations. Single-tab Close
+retains §30U. New, foreground jobs, dialogs, exports and gestures retain their holds.
+
+Native/stub/mixed gates, SQL/UUID and STL/FBX comparison, two directed mutations,
+and the independent window recipe are recorded in
+[contract and verification](quit-with-tab-drafts.md). Independent review found two
+older native comparator scenarios still using an ordinary tab switch during Quit;
+they now use the existing Quit switch route without weakening the production guard.
+Independent macOS window review completed late Cancel after a published Save,
+returned literal forms and working draft Undo/Redo, Back, then Apply/unsaved export
+and final Save/Discard Quit. Actual GUI SQL/UUID and byte-equal STL/FBX matched CLI;
+pinned ufbx and three negative controls passed. Viewer peak 310.11 MiB, pressure 1,
+swap 0, exit 0. Exact code and docs CI are recorded separately in PR #102.
+
+*What remains of §30 after §30V:* drafts across a restart or crash; contention the
 lock cannot settle (a stream of listings starving a claim, a hung reader, builds older
 than §30S, lock-ignoring writers, filesystems without locks);
 branching, automatic or persisted-Undo revisions

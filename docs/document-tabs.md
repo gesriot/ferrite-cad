@@ -70,6 +70,9 @@ looked at from. Each tab saves to its own file.
    statement (prepared first; a device that refuses keeps the tab), then the
    neighbouring tab is shown.
 7. **Quit.** The pass asks the shown tab, then shows and asks each unsaved hidden tab.
+   Since §30V it also asks about idle saved-object forms, clean models included:
+   [Quit with tab drafts](quit-with-tab-drafts.md). Every original form stays owned
+   through the entire attempt; Back or any later Cancel/refusal returns all of them.
    *Save* goes on after the file is published; *Discard* goes on and acts only when the
    window ends. *Cancel*, a failed or cancelled Save, or a tab that cannot be shown stop
    the pass: no tab is closed, files saved during the pass stay saved, and tabs answered

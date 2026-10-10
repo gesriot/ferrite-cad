@@ -1095,6 +1095,29 @@ jobs:
             if ! grep -Fq "test $gate ... ok" session-ui.log; then exit 1; fi
           done
 
+      - name: Keep every unfinished tab form until the whole Quit succeeds
+        shell: bash
+        run: |
+          set -euo pipefail
+          for check in \
+            "sessions::tests::tabs::drafts::quit_forms::late_cancel_returns_all_forms_and_published_save_then_final_quit_cleans_up FCAD_30V_LATE_CANCEL_EXECUTED all_forms=true saved_a=18" \
+            "sessions::tests::tabs::drafts::quit_forms::deferred_discard_and_refused_saves_keep_forms_and_models FCAD_30V_SAVE_REFUSALS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_forms::form_and_model_answers_address_attempt_tab_and_snapshot_once FCAD_30V_ADDRESS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_forms::switch_and_first_last_tabs_refusal_return_previously_confirmed_forms FCAD_30V_SWITCH_LASTTABS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_forms::real_quit_widgets_name_loss_back_and_repeat_preserve_literal_form FCAD_30V_WIDGETS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_forms::quit_keeps_foreground_new_export_and_gesture_holds FCAD_30V_HOLDS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_forms::stub_quit_switch_refusal_keeps_both_original_forms FCAD_30V_STUB_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_forms::every_saved_form_family_returns_whole_after_confirmed_quit_is_aborted FCAD_30V_FORM_FAMILIES_EXECUTED families=12"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee quit-forms.log
+            if grep -q 'skipped:' quit-forms.log; then exit 1; fi
+            grep -Fq "test $gate ... " quit-forms.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' quit-forms.log
+            grep -Fxq "$marker" quit-forms.log
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |
