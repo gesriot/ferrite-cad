@@ -120,6 +120,7 @@ fn quit_allowed(w: &mut Window, loads: &Loads) -> bool {
         loads,
         &Exports::default(),
         &w.edits,
+        &w.input,
     )
 }
 
@@ -1013,6 +1014,7 @@ fn open_over_new_recipe_on_owners(root: &Path) {
         &Loads::default(),
         &Exports::default(),
         &w.edits,
+        &w.input,
     ));
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
     w.tabs.decide_exit(&mut w.sessions);

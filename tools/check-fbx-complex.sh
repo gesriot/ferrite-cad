@@ -1101,6 +1101,21 @@ if [ -n "${FCAD_CLOSE_DRAFT_FBX_DIR:-}" ]; then
     echo "FCAD_30U_UFBX_EXECUTED"
 fi
 
+# §30V: form returned after late Quit Cancel, applied and exported before Save.
+if [ -n "${FCAD_QUIT_DRAFT_FBX_DIR:-}" ]; then
+    python="$(command -v python3 || command -v python || true)"
+    name=quit-draft-a
+    "$reader" --identity "$FCAD_QUIT_DRAFT_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+    grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"
+    "$reader" --triangles "$FCAD_QUIT_DRAFT_FBX_DIR/$name.fbx" > "$work/$name-triangles.txt"
+    grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[0-9]* failures=0$' "$work/$name-triangles.txt"
+    "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+        "$FCAD_QUIT_DRAFT_FBX_DIR/$name.stl" "$(native "$work/$name-triangles.txt")" \
+        | tee "$work/$name-match.txt"
+    grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
+    echo "FCAD_30V_UFBX_EXECUTED"
+fi
+
 if [ -n "${FCAD_RESTORE_SAVED_TABS_FBX_DIR:-}" ]; then
     python="$(command -v python3 || command -v python || true)"
     # §30R: B reopened from the last window's list, edited and exported unsaved;

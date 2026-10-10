@@ -24,6 +24,9 @@ Quit, New, Open, Recover and Reopen keep their existing rules. No automatic Appl
 form persistence, background hidden work, geometry/schema/CLI changes. §30,
 Milestone 5C, the product and the old OOM investigation remain open.
 
+Quit later gains its own whole-window form hold in [§30V](quit-with-tab-drafts.md);
+the single-tab Close contract here is preserved.
+
 ## Base
 
 Fresh fetch: `main = origin/main = f0c9471a2427159a3fe3ba7be063a4c8a39240a4`,

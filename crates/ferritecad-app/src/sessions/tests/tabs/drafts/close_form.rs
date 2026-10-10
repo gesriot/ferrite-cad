@@ -351,7 +351,8 @@ fn close_decisions_are_once_only_and_address_the_tab_attempt_and_snapshot() {
         &w.creates,
         &Loads::default(),
         &Exports::default(),
-        &w.edits
+        &w.edits,
+        &w.input,
     ));
     let mut other = Sessions::default();
     other.adopt(
@@ -377,6 +378,11 @@ fn close_decisions_are_once_only_and_address_the_tab_attempt_and_snapshot() {
 
 #[test]
 fn every_existing_form_family_uses_the_same_move_and_keeps_its_entire_state() {
+    form_families(false);
+    println!("\nFCAD_30U_FORM_FAMILIES_EXECUTED families=12");
+}
+
+pub(super) fn form_families(quit: bool) {
     let root = tempfile::tempdir().expect("fixtures");
     let polygon = crate::fillets::tests::plate();
     let cut = crate::cuts::tests::session_apply::fixture(1);
@@ -522,13 +528,40 @@ fn every_existing_form_family_uses_the_same_move_and_keeps_its_entire_state() {
         }
         let editor = format!("{:?}", w.creates.sketch);
         let height = w.edits.typed().map(|(id, text)| (id, text.to_owned()));
-        let id = w.ask_form_close();
-        assert!(
-            !w.creates.sketch.active() && !w.edits.form_open(),
-            "{kind} not parked"
-        );
-        w.confirm_form_close(id);
-        assert!(w.back_from_form_close(id));
+        if quit {
+            w.tabs.begin_quit();
+            let id = w
+                .tabs
+                .ask_quit_form(
+                    &w.sessions,
+                    &mut Forms {
+                        edits: &mut w.edits,
+                        editor: &mut w.creates.sketch,
+                    },
+                )
+                .expect("form");
+            assert!(w.tabs.confirm_quit_form(&w.sessions, id));
+            assert!(
+                !w.creates.sketch.active() && !w.edits.form_open(),
+                "{kind} not parked"
+            );
+            w.tabs.abort_quit();
+            w.tabs.bring_back(
+                &mut w.sessions,
+                &mut Forms {
+                    edits: &mut w.edits,
+                    editor: &mut w.creates.sketch,
+                },
+            );
+        } else {
+            let id = w.ask_form_close();
+            assert!(
+                !w.creates.sketch.active() && !w.edits.form_open(),
+                "{kind} not parked"
+            );
+            w.confirm_form_close(id);
+            assert!(w.back_from_form_close(id));
+        }
         assert_eq!(format!("{:?}", w.creates.sketch), editor, "{kind}");
         assert_eq!(
             w.edits.typed().map(|(id, text)| (id, text.to_owned())),
@@ -537,16 +570,23 @@ fn every_existing_form_family_uses_the_same_move_and_keeps_its_entire_state() {
         );
         assert!(!w.sessions.dirty());
     }
-    println!("\nFCAD_30U_FORM_FAMILIES_EXECUTED families=12");
 }
 
-fn form_frame(
+pub(super) fn form_frame(
     w: &mut Window,
     ctx: &egui::Context,
     events: Vec<egui::Event>,
 ) -> (egui::FullOutput, ferritecad_ui::CloseFormChoice) {
     let mut choice = ferritecad_ui::CloseFormChoice::Waiting;
-    let question = w.tabs.form_close_question(&w.sessions);
+    let question = w
+        .tabs
+        .form_close_question(&w.sessions)
+        .map(|(_, name)| (name, false))
+        .or_else(|| {
+            w.tabs
+                .quit_form_question(&w.sessions)
+                .map(|(_, name)| (name, true))
+        });
     let mut output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -557,12 +597,15 @@ fn form_frame(
             ..Default::default()
         },
         |ui| {
-            if w.tabs.closing_form() {
+            if w.tabs.closing_form() || w.tabs.quitting() {
                 choice = ferritecad_ui::close_form_panel(
                     ui,
                     question
                         .as_ref()
-                        .map(|(_, name)| ferritecad_ui::CloseFormPanel { document: name }),
+                        .map(|(name, quitting)| ferritecad_ui::CloseFormPanel {
+                            document: name,
+                            quitting: *quitting,
+                        }),
                 );
                 return;
             }
@@ -575,7 +618,7 @@ fn form_frame(
     output.textures_delta.clear();
     (output, choice)
 }
-fn centre(out: &egui::FullOutput, label: &str) -> egui::Pos2 {
+pub(super) fn centre(out: &egui::FullOutput, label: &str) -> egui::Pos2 {
     out.shapes
         .iter()
         .find_map(|s| match &s.shape {
@@ -586,7 +629,7 @@ fn centre(out: &egui::FullOutput, label: &str) -> egui::Pos2 {
         })
         .unwrap_or_else(|| panic!("not painted: {label}"))
 }
-fn click_form(
+pub(super) fn click_form(
     w: &mut Window,
     ctx: &egui::Context,
     at: egui::Pos2,
@@ -819,7 +862,7 @@ fn close_recipe(root: &Path) {
 }
 
 const CLOSE_OUTPUTS: [&str; 3] = ["a.fcad", "a-unsaved.stl", "a-unsaved.fbx"];
-fn compare_close(root: &Path) {
+pub(super) fn compare_close(root: &Path) {
     use super::super::super::checkpoints::{all_sql, ids_and_refs, stl_facts};
     for name in CLOSE_OUTPUTS {
         assert!(root.join(name).is_file(), "missing real GUI output: {name}");

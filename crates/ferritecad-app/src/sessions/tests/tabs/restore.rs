@@ -137,13 +137,13 @@ impl Window {
     }
 
     /// `end_window_quit` with this window's own form state.
-    fn end_quit(&mut self, restores: &mut Restores) -> QuitEnd {
+    pub(super) fn end_quit(&mut self, restores: &mut Restores) -> QuitEnd {
         let form = crate::form_open(&self.edits, &self.creates.sketch);
         crate::end_window_quit(&mut self.tabs, &mut self.sessions, form, restores)
     }
 
     /// `begin_window_quit` with nothing else running.
-    fn begin_quit(&mut self) -> bool {
+    pub(super) fn begin_quit(&mut self) -> bool {
         crate::begin_window_quit(
             &mut self.tabs,
             &mut self.sessions,
@@ -151,11 +151,12 @@ impl Window {
             &Loads::default(),
             &Exports::default(),
             &self.edits,
+            &self.input,
         )
     }
 
     /// Shows hidden `tab` for the Quit pass (`After::Quit`), as the window does.
-    fn show_for_quit(&mut self, tab: TabId) {
+    pub(super) fn show_for_quit(&mut self, tab: TabId) {
         let (generation, rx) = self.begin_switch(tab, Some(After::Quit));
         let (shown, after) = self
             .deliver_switch(generation, wait(&rx), Ok(()))
@@ -275,9 +276,10 @@ fn quit_keeps_the_saved_files_only_when_the_window_really_ends() {
         Edited::Failed
     );
 
-    // A form open on the shown tab holds Quit too.
+    // A saved-object form now offers a Quit decision (§30V).
     w.type_height("2..6");
-    assert!(!w.begin_quit());
+    assert!(w.begin_quit());
+    w.tabs.abort_quit();
     assert_eq!(w.end_quit(&mut restores), QuitEnd::NotEnded);
     unchanged("an open form");
     w.edits.cancel();
@@ -293,7 +295,7 @@ fn quit_keeps_the_saved_files_only_when_the_window_really_ends() {
         w.sessions.replacing(Some(UnsavedChoice::Discard)),
         Replace::Discarded
     );
-    w.tabs.discarded(a);
+    w.decide_quit();
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Show(b));
     w.show_for_quit(b);
     assert_eq!(w.tabs.quit_step(&w.sessions, true), QuitStep::Form);
@@ -356,23 +358,24 @@ fn quit_keeps_the_saved_files_only_when_the_window_really_ends() {
         w.sessions.replacing(Some(UnsavedChoice::Discard)),
         Replace::Discarded
     );
-    w.tabs.discarded(u2);
+    w.decide_quit();
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Show(a));
     w.show_for_quit(a);
     assert_eq!(
         w.sessions.replacing(Some(UnsavedChoice::Discard)),
         Replace::Discarded
     );
-    w.tabs.discarded(a);
+    w.decide_quit();
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Show(u1));
     w.show_for_quit(u1);
     let u1_file = user.path().join("u1.fcad");
+    let quit_id = w.tabs.ask_quit_model(&w.sessions).expect("model question");
     let (tx, rx) = mpsc::channel();
     let generation = w
         .sessions
         .begin_save(
             SaveTarget::As(u1_file.clone()),
-            Some(Continuation::Quit),
+            Some(Continuation::Quit(quit_id)),
             |plan, _, cancel| spawn_save(plan, cancel.clone(), move |v| tx.send(v).expect("save")),
         )
         .expect("a save");
@@ -380,7 +383,8 @@ fn quit_keeps_the_saved_files_only_when_the_window_really_ends() {
         .sessions
         .finish_save(generation, wait(&rx))
         .expect("answered");
-    assert_eq!(report.continuation, Some(Continuation::Quit));
+    assert_eq!(report.continuation, Some(Continuation::Quit(quit_id)));
+    assert!(w.tabs.decide_quit_model(&w.sessions, quit_id));
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
     unchanged("nothing is published before the end");
     assert_eq!(w.end_quit(&mut restores), QuitEnd::Exit);
@@ -476,7 +480,7 @@ fn an_empty_end_clears_the_offer_and_a_list_that_cannot_be_kept_stops_quit_once(
         w.sessions.replacing(Some(UnsavedChoice::Discard)),
         Replace::Discarded
     );
-    w.tabs.discarded(w.sessions.tab());
+    w.decide_quit();
     assert_eq!(w.end_quit(&mut restores), QuitEnd::Exit);
     assert_eq!(folder.read().expect("read"), Some(LastTabs::default()));
     let next = offered(&folder);
@@ -500,7 +504,7 @@ fn an_empty_end_clears_the_offer_and_a_list_that_cannot_be_kept_stops_quit_once(
         w.sessions.replacing(Some(UnsavedChoice::Discard)),
         Replace::Discarded
     );
-    w.tabs.discarded(a);
+    w.decide_quit();
     let QuitEnd::Stay(reason) = w.end_quit(&mut restores) else {
         panic!("the first failure keeps the window");
     };
@@ -520,7 +524,7 @@ fn an_empty_end_clears_the_offer_and_a_list_that_cannot_be_kept_stops_quit_once(
         w.sessions.replacing(Some(UnsavedChoice::Discard)),
         Replace::Discarded
     );
-    w.tabs.discarded(a);
+    w.decide_quit();
     assert_eq!(w.end_quit(&mut restores), QuitEnd::Exit);
     assert_eq!(bytes(&blocked), b"a file");
     assert_eq!(height_of(&a_file), 12.0);

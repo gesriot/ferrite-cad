@@ -578,6 +578,7 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
         &Loads::default(),
         &Exports::default(),
         &w.edits,
+        &w.input,
     ));
     assert_eq!(
         w.tabs.close_step(&w.sessions, a, false),
@@ -1169,6 +1170,7 @@ fn recipe_on_owners(root: &Path) {
         &Loads::default(),
         &Exports::default(),
         &w.edits,
+        &w.input,
     ));
     assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::Exit);
     w.tabs.decide_exit(&mut w.sessions);

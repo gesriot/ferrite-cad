@@ -508,3 +508,15 @@ form. Explicit form abandonment authorises continuing Close, while the Draft sta
 held through the existing dirty/Untitled question and Save continuation. Every
 cancel/refusal returns it; only actual successful Close drops it with its tab.
 Save reads only the accepted model. Quit and other transitions remain unchanged.
+
+## §30V: Quit with unfinished saved-object forms
+
+Decided before implementation in [quit-with-tab-drafts.md](../quit-with-tab-drafts.md).
+One Quit pass in Tabs holds the existing whole Drafts, including already confirmed
+ones. Form answers, model questions, Save continuations and switch arrivals name
+that pass, runtime TabId and accepted snapshot identity. Hidden tabs use the existing
+switch route before being asked. Back or any refusal returns every original form
+without a history step. Published Saves stay saved; model Discard is deferred.
+LastTabs publication still precedes final form destruction and recovery retirement,
+including the existing first-refusal/second-Quit rule. New and foreground holds
+remain; no form persistence, automatic Apply or document registry is introduced.

@@ -163,6 +163,31 @@ struct FormClose {
     model_decided: bool,
 }
 
+/// One window Quit attempt and one runtime tab, never a DocumentId or row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuitId {
+    tab: TabId,
+    generation: u64,
+}
+
+struct QuitForm {
+    id: QuitId,
+    draft: Draft,
+    confirmed: bool,
+}
+
+struct QuitModel {
+    id: QuitId,
+    base: Arc<Snapshot>,
+}
+
+struct QuitPass {
+    generation: u64,
+    forms: Vec<QuitForm>,
+    answered: Vec<QuitModel>,
+    model: Option<QuitModel>,
+}
+
 /// What follows once a tab is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum After {
@@ -180,6 +205,8 @@ struct Switch {
     after: Option<After>,
     /// Keeps the version being drawn alive while the worker reads it.
     _lease: Arc<Snapshot>,
+    /// §30V: the Quit pass that asked to show this runtime tab.
+    quit: Option<QuitId>,
 }
 
 /// What an Open of a path does (§30O).
@@ -237,8 +264,9 @@ pub(crate) struct Tabs {
     /// Both are released only after the worker ends.
     retired: Vec<(JoinHandle<()>, Arc<Snapshot>)>,
     issued: u64,
-    /// The Quit pass in progress: the tabs answered Discard in it so far.
-    quitting: Option<Vec<TabId>>,
+    /// §30V: decisions and whole moved forms, held until the window really ends.
+    quitting: Option<QuitPass>,
+    quit_issued: u64,
     /// §30Q: the shown tab's forms, set aside while New uses the window's forms.
     aside: Option<(TabId, Draft)>,
     /// §30U: the original form, held until actual Close or returned on failure.
@@ -262,6 +290,7 @@ impl Tabs {
             retired: Vec::new(),
             issued: 0,
             quitting: None,
+            quit_issued: 0,
             aside: None,
             form_close: None,
             close_issued: 0,
@@ -403,7 +432,7 @@ impl Tabs {
         checkpoint_name: &mut String,
         forms: &mut Forms<'_>,
     ) -> Result<()> {
-        if self.closing_form() {
+        if self.closing_form() || (self.quitting() && !matches!(bind, Bind::Switch(_))) {
             return Err(CadError::input(
                 "Answer the unfinished-form Close question first.",
             ));
@@ -486,7 +515,7 @@ impl Tabs {
     /// draft — moved, exactly as left, as a switch would — so New starts on empty
     /// forms and nothing typed for New reaches them. Nothing when none is open.
     pub(crate) fn set_aside(&mut self, active: &Sessions, forms: &mut Forms<'_>) {
-        if self.closing_form() || self.aside.is_some() || !active.has_session() {
+        if self.closing_form() || self.quitting() || self.aside.is_some() || !active.has_session() {
             return;
         }
         if let Some(draft) = forms.park(active) {
@@ -528,7 +557,11 @@ impl Tabs {
         after: Option<After>,
         spawn: impl FnOnce(PathBuf, u64, &CancelToken) -> JoinHandle<()>,
     ) -> std::result::Result<u64, String> {
-        if self.closing_form() {
+        if self.closing_form()
+            || (self.quitting()
+                && (after != Some(After::Quit)
+                    || self.quit_step(active, false) != QuitStep::Show(target)))
+        {
             return Err("Answer the unfinished-form Close question first.".to_owned());
         }
         let lease = self
@@ -551,6 +584,14 @@ impl Tabs {
             worker: Some(worker),
             after,
             _lease: lease,
+            quit: self
+                .quitting
+                .as_ref()
+                .filter(|_| after == Some(After::Quit))
+                .map(|pass| QuitId {
+                    tab: target,
+                    generation: pass.generation,
+                }),
         });
         active.status = format!(
             "Showing {}…",
@@ -609,6 +650,21 @@ impl Tabs {
         if self.hidden(target).is_none() {
             return Err(CadError::input("that tab was closed"));
         }
+        let switch = self.switch.as_ref().expect("address checked");
+        if let Some(id) = switch.quit
+            && (self
+                .quitting
+                .as_ref()
+                .is_none_or(|pass| pass.generation != id.generation)
+                || !self
+                    .hidden(target)
+                    .and_then(|h| h.sessions.export_source())
+                    .is_some_and(|base| Arc::ptr_eq(&base, &switch._lease)))
+        {
+            return Err(CadError::input(
+                "that Quit switch no longer addresses this version",
+            ));
+        }
         if !active.finish_switch(generation) {
             return Err(CadError::Cancelled);
         }
@@ -662,7 +718,7 @@ impl Tabs {
                 format!("The other document could not be shown; this one stays: {error}")
             };
             if switch.after == Some(After::Quit) {
-                self.quitting = None;
+                self.abort_quit();
             }
             return None;
         }
@@ -677,7 +733,7 @@ impl Tabs {
             .as_ref()
             .is_some_and(|switch| switch.after == Some(After::Quit))
         {
-            self.quitting = None;
+            self.abort_quit();
         }
         // Cancel invalidates the address now. Otherwise a late answer could
         // prepare a discarded picture and overwrite a newer Apply's status.
@@ -709,7 +765,12 @@ impl Tabs {
         active: &Sessions,
         forms: &mut Forms<'_>,
     ) -> Option<FormCloseId> {
-        if self.closing_form() || self.aside.is_some() || active.busy() || !active.has_session() {
+        if self.closing_form()
+            || self.quitting()
+            || self.aside.is_some()
+            || active.busy()
+            || !active.has_session()
+        {
             return None;
         }
         let draft = forms.park(active)?;
@@ -838,6 +899,9 @@ impl Tabs {
     /// replaces the picture in the same statement. Returns the tab to show next,
     /// when the shown one was closed and others remain.
     pub(crate) fn close(&mut self, active: &mut Sessions, tab: TabId) -> Result<Option<TabId>> {
+        if self.quitting() {
+            return Err(CadError::input("Answer the window Quit question first."));
+        }
         if let Some(close) = &self.form_close
             && !self
                 .addressed_close(active, close.id)
@@ -882,7 +946,16 @@ impl Tabs {
     // --- Quit ------------------------------------------------------------------
 
     pub(crate) fn begin_quit(&mut self) {
-        self.quitting = Some(Vec::new());
+        if self.quitting() || self.closing_form() || self.aside.is_some() {
+            return;
+        }
+        self.quit_issued += 1;
+        self.quitting = Some(QuitPass {
+            generation: self.quit_issued,
+            forms: Vec::new(),
+            answered: Vec::new(),
+            model: None,
+        });
     }
 
     pub(crate) fn quitting(&self) -> bool {
@@ -893,34 +966,194 @@ impl Tabs {
     /// pass stops. Nothing it did is undone (saved files stay saved), and nothing
     /// it was told is acted on (tabs answered Discard stay open and unsaved).
     pub(crate) fn abort_quit(&mut self) {
-        self.quitting = None;
+        let Some(pass) = self.quitting.take() else {
+            return;
+        };
+        for form in pass.forms {
+            if let Some(hidden) = self
+                .hidden
+                .iter_mut()
+                .find(|h| h.sessions.tab() == form.id.tab)
+            {
+                debug_assert!(hidden.draft.is_none());
+                hidden.draft = Some(form.draft);
+            } else {
+                // The shown form returns through the existing aside/restore
+                // owner, including after a refused switch or LastTabs write.
+                debug_assert!(self.aside.is_none());
+                self.aside = Some((form.id.tab, form.draft));
+            }
+        }
     }
 
-    /// The shown tab was answered Discard in this pass.
-    pub(crate) fn discarded(&mut self, tab: TabId) {
-        if let Some(answered) = &mut self.quitting {
-            answered.push(tab);
+    fn quit_id(&self, active: &Sessions) -> Option<QuitId> {
+        active.has_session().then_some(QuitId {
+            tab: active.tab(),
+            generation: self.quitting.as_ref()?.generation,
+        })
+    }
+
+    fn same_model(active: &Sessions, model: &QuitModel) -> bool {
+        active.tab() == model.id.tab
+            && active
+                .export_source()
+                .is_some_and(|base| Arc::ptr_eq(&base, &model.base))
+    }
+
+    pub(crate) fn ask_quit_form(
+        &mut self,
+        active: &Sessions,
+        forms: &mut Forms<'_>,
+    ) -> Option<QuitId> {
+        if active.busy() || self.aside.is_some() || self.closing_form() {
+            return None;
         }
+        let id = self.quit_id(active)?;
+        let pass = self.quitting.as_mut()?;
+        if pass.forms.iter().any(|form| form.id.tab == id.tab) {
+            return None;
+        }
+        let draft = forms.park(active)?;
+        pass.forms.push(QuitForm {
+            id,
+            draft,
+            confirmed: false,
+        });
+        Some(id)
+    }
+
+    pub(crate) fn quit_form_question(&self, active: &Sessions) -> Option<(QuitId, String)> {
+        let id = self.quit_id(active)?;
+        self.quitting.as_ref()?.forms.iter().find(|form| {
+            form.id == id
+                && !form.confirmed
+                && active
+                    .export_source()
+                    .is_some_and(|base| Arc::ptr_eq(&base, &form.draft.base))
+        })?;
+        Some((id, active.name()?))
+    }
+
+    pub(crate) fn confirm_quit_form(&mut self, active: &Sessions, id: QuitId) -> bool {
+        if active.busy()
+            || self
+                .quit_form_question(active)
+                .is_none_or(|(asked, _)| asked != id)
+        {
+            return false;
+        }
+        self.quitting
+            .as_mut()
+            .expect("address checked")
+            .forms
+            .iter_mut()
+            .find(|form| form.id == id)
+            .expect("address checked")
+            .confirmed = true;
+        true
+    }
+
+    /// Back is once-only too: an old click cannot abort a later attempt.
+    pub(crate) fn back_quit_form(&mut self, active: &Sessions, id: QuitId) -> bool {
+        if active.busy()
+            || self
+                .quit_form_question(active)
+                .is_none_or(|(asked, _)| asked != id)
+        {
+            return false;
+        }
+        self.abort_quit();
+        true
+    }
+
+    /// Reserve the model question's exact accepted snapshot before any dialog or Save.
+    pub(crate) fn ask_quit_model(&mut self, active: &Sessions) -> Option<QuitId> {
+        if active.busy() {
+            return None;
+        }
+        let id = self.quit_id(active)?;
+        let base = active.export_source()?;
+        let pass = self.quitting.as_mut()?;
+        if pass.model.is_some()
+            || pass
+                .answered
+                .iter()
+                .any(|model| model.id == id && Self::same_model(active, model))
+            || pass.forms.iter().any(|form| {
+                form.id == id && (!form.confirmed || !Arc::ptr_eq(&base, &form.draft.base))
+            })
+        {
+            return None;
+        }
+        pass.model = Some(QuitModel { id, base });
+        Some(id)
+    }
+
+    /// Only this model answer (or its published Save continuation) may advance.
+    pub(crate) fn decide_quit_model(&mut self, active: &Sessions, id: QuitId) -> bool {
+        if active.busy() || self.quit_id(active) != Some(id) {
+            return false;
+        }
+        let pass = self.quitting.as_mut().expect("address checked");
+        if !pass
+            .model
+            .as_ref()
+            .is_some_and(|model| model.id == id && Self::same_model(active, model))
+            || pass
+                .forms
+                .iter()
+                .any(|form| form.id == id && !form.confirmed)
+        {
+            return false;
+        }
+        pass.answered
+            .push(pass.model.take().expect("address checked"));
+        true
     }
 
     /// The next thing the Quit pass does: the shown tab first, then each hidden
     /// tab that is unsaved or keeps a form (§30P), in the row's order. Saved tabs
     /// without a form need nothing. `form_open`: the shown tab has a form open.
     pub(crate) fn quit_step(&self, active: &Sessions, form_open: bool) -> QuitStep {
-        let answered = self.quitting.as_deref().unwrap_or_default();
+        let answered = |sessions: &Sessions| {
+            self.quitting.as_ref().is_some_and(|pass| {
+                pass.answered
+                    .iter()
+                    .any(|model| Self::same_model(sessions, model))
+            })
+        };
+        let held = self
+            .quitting
+            .as_ref()
+            .and_then(|pass| pass.forms.iter().find(|form| form.id.tab == active.tab()));
         // §30Q: forms set aside for New are the shown tab's open forms too.
-        if active.has_session() && (form_open || self.aside.is_some()) {
+        if active.has_session()
+            && (form_open || self.aside.is_some() || held.is_some_and(|form| !form.confirmed))
+        {
             return QuitStep::Form;
         }
-        if active.has_session() && active.dirty() && !answered.contains(&active.tab()) {
+        let model_pending = self.quitting.as_ref().is_some_and(|pass| {
+            pass.model
+                .as_ref()
+                .is_some_and(|model| model.id.tab == active.tab())
+        });
+        if active.has_session()
+            && (active.dirty() || held.is_some() || model_pending)
+            && !answered(active)
+        {
             return QuitStep::Ask;
         }
         self.order
             .iter()
-            .filter(|tab| !answered.contains(tab))
             .find(|tab| {
-                self.hidden(**tab)
-                    .is_some_and(|h| h.sessions.dirty() || h.draft.is_some())
+                self.hidden(**tab).is_some_and(|h| {
+                    !answered(&h.sessions)
+                        && (h.sessions.dirty()
+                            || h.draft.is_some()
+                            || self.quitting.as_ref().is_some_and(|pass| {
+                                pass.forms.iter().any(|form| form.id.tab == **tab)
+                            }))
+                })
             })
             .map_or(QuitStep::Exit, |tab| QuitStep::Show(*tab))
     }
@@ -949,6 +1182,13 @@ impl Tabs {
 
     /// The window ends by the person's decision: every tab's crash copy goes.
     pub(crate) fn decide_exit(&mut self, active: &mut Sessions) {
+        // Final LastTabs success (or the explicitly announced second refusal)
+        // is the first point where all held forms may be destroyed.
+        self.quitting = None;
+        self.aside = None;
+        for hidden in &mut self.hidden {
+            hidden.draft = None;
+        }
         active.decide_exit();
         for hidden in &mut self.hidden {
             hidden.sessions.decide_exit();
@@ -958,6 +1198,8 @@ impl Tabs {
     /// Stops and joins everything: the switch, every hidden tab (each ends its own
     /// crash copy as decided), and last the recovery worker once no lane is left.
     pub(crate) fn stop_all(&mut self) {
+        self.quitting = None;
+        self.aside = None;
         self.retire_switch();
         for (worker, _lease) in self.retired.drain(..) {
             let _ = worker.join();
