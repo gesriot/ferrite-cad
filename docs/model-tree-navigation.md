@@ -192,8 +192,9 @@ python3 tools/watch-viewer-memory.py --log "$ROOT/watch.jsonl" --limit-mib 1536 
    Revolve's Sketch reference: vertices and constraints are distinct actions;
    open each in turn and Cancel. Simple selection must change no geometry pick.
    Existing definitions, Frame/Hide/Isolate and topology inspector remain reachable.
-4. Return to cuts and **Quit** normally. The five named tabs remain in their opening
-   order in LastTabs, with cuts shown. Require the watchdog's own PID to exit, without
+4. Return to cuts and **Quit** normally. Open inserts after the active tab, so
+   LastTabs is `cuts, fillets, chamfer, revolve, copy`, with cuts shown.
+   Require the watchdog's own PID to exit, without
    looking it up or relaunching after exit. Record interactions, peak footprint,
    pressure/swap and exit separately from comparator evidence.
 5. Build the current peer CLI if needed, then compare the actual output files:
@@ -212,3 +213,47 @@ unchanged copies/other models, recovery cleanup and actual LastTabs file identit
 `/tmp` and `/private/tmp` aliases are compared by canonical file identity. Three
 negative controls require missing FBX, altered SQL and a stale export to fail.
 Headless owner outputs never substitute for these real window outputs.
+
+## Independent review — macOS, 2026-10-10
+
+The fresh arm64 bundle from code `2300a10` ran under the existing 1536 MiB
+watchdog. Inputs and actual window outputs are outside the checkout at
+`/private/tmp/ferrite-31a-review-window/run`; review logs are in
+`target/31a-review`. The owned viewer PID 75697 exited normally (0), after
+941 seconds; sampled peak footprint 208.595 MiB, pressure 1 throughout, swap 0.
+No CUA query was made after Quit.
+
+The window demonstrated Body collapse/expand, exact early-Cut selection,
+Confirm/Undo/Redo of radius 1.375 -> 1.625, refusal to replace its open form with
+a height editor, independent navigation of a same-UUID copy tab and retained
+Cut draft on return. Apply retained the selected UUID; actual unsaved STL/FBX,
+Undo STL, Redo and Save came from the window. Fillet radius 2.375, Chamfer
+distance 2.375, Revolve angle 210 and both distinct Sketch editors opened from
+their selected tree rows; they were cancelled without changing those documents.
+Selection left the geometry inspector at Nothing selected.
+
+Two review corrections followed the window evidence. Disclosure glyphs rendered
+as missing-font squares; they now use egui's painted triangle with Expand/Collapse
+widget labels. The comparator incorrectly expected append-only tab order: the
+existing Open route inserts after the active tab. Its first executed run failed
+explicitly on LastTabs after SQL and export comparisons had passed. The recipe
+and expected list now match `cuts, fillets, chamfer, revolve, copy`; production
+tab ordering was not changed.
+
+CUA misdirected one batched Open to an unchanged Revolve and one click to the
+Open dialog. The extra tab was closed and the dialog cancelled; the intended
+file was then selected by its observed native path field. These retries are
+operator/tool deviations, not counted as successful intended actions.
+
+After correction the exact real-output comparator passed, including all three
+negative controls. SQL/UUID/refs, unsaved and saved byte-equal STL/FBX, original
+Undo STL, cold rebuild, untouched other files, LastTabs and recovery cleanup
+were checked against the actual files. Pinned ufbx read the window FBX: 532
+triangles, 6 checks, 0 failures. The corrected code passed the seven-entry native
+module (six executed gates, one opt-in N/A), UI 110 tests, fmt and workspace
+clippy all-targets/all-features with warnings denied.
+
+A separately staged fresh bundle verified painted arrows, collapse/expand and
+Cut selection in the window, then exited 0 under its own watchdog. The main
+scenario was not rerun for this glyph-only production change. Windows/Linux
+window interaction and the separate mixed build remain N/A locally.

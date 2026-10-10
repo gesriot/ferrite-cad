@@ -99,7 +99,25 @@ pub fn model_panel(
                         ui.add_space(row.depth as f32 * 12.);
                         if rows.iter().any(|r| r.parent == Some(row.key)) {
                             let collapsed = navigation.collapsed.contains(&row.key);
-                            if ui.small_button(if collapsed { "▶" } else { "▼" }).clicked() {
+                            // Paint the disclosure arrow: these Unicode glyphs are
+                            // not present in every bundled font.
+                            let (_, toggle) = ui.allocate_exact_size(
+                                egui::vec2(18., ui.spacing().interact_size.y),
+                                egui::Sense::click(),
+                            );
+                            toggle.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    if collapsed { "Expand" } else { "Collapse" },
+                                )
+                            });
+                            egui::collapsing_header::paint_default_icon(
+                                ui,
+                                if collapsed { 0. } else { 1. },
+                                &toggle,
+                            );
+                            if toggle.clicked() {
                                 if collapsed {
                                     navigation.collapsed.remove(&row.key);
                                 } else {

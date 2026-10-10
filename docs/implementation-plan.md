@@ -4998,3 +4998,12 @@ compiling assertion-failing mutations with byte restoration, fmt and workspace
 clippy passed locally. Conditional/opt-in returns are N/A; uncommitted diff CI and
 real window interaction are not claimed. No further slice was started.
 §30, Milestone 5C, the product and the OOM investigation remain open.
+
+Independent review completed the macOS window scenario: early Cut draft across
+a same-UUID tab, Apply/Undo/Redo/Save, the distinct editor routes and actual
+SQL/STL/FBX comparison with three negative controls and pinned ufbx. Viewer
+peak 208.595 MiB, pressure 1, swap 0, exit 0. Review replaced missing-font
+disclosure glyphs with painted triangles and corrected the GUI comparator's
+expected tab order to the existing insert-after-active policy. Exact CI is
+recorded in PR #104. The overlapping legacy controls and full-window viewport
+remain a separate workspace-layout task; this slice does not solve them.

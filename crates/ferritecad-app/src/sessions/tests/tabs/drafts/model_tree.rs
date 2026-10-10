@@ -843,7 +843,9 @@ fn compare_window(root: &Path) {
         .iter()
         .map(|p| std::fs::canonicalize(p).expect("listed file"))
         .collect();
-    let expected: Vec<_> = ["cuts", "copy", "fillets", "chamfer", "revolve"]
+    // Open inserts after the active tab. The recipe returns to cuts before
+    // opening the other three models, leaving copy at the end.
+    let expected: Vec<_> = ["cuts", "fillets", "chamfer", "revolve", "copy"]
         .iter()
         .map(|n| std::fs::canonicalize(root.join(format!("work/{n}.fcad"))).expect("work file"))
         .collect();
