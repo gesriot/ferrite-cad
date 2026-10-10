@@ -4940,7 +4940,11 @@ and the independent window recipe are recorded in
 [contract and verification](quit-with-tab-drafts.md). Independent review found two
 older native comparator scenarios still using an ordinary tab switch during Quit;
 they now use the existing Quit switch route without weakening the production guard.
-Window execution and remote CI are recorded separately after independent review.
+Independent macOS window review completed late Cancel after a published Save,
+returned literal forms and working draft Undo/Redo, Back, then Apply/unsaved export
+and final Save/Discard Quit. Actual GUI SQL/UUID and byte-equal STL/FBX matched CLI;
+pinned ufbx and three negative controls passed. Viewer peak 310.11 MiB, pressure 1,
+swap 0, exit 0. Exact code and docs CI are recorded separately in PR #102.
 
 *What remains of §30 after §30V:* drafts across a restart or crash; contention the
 lock cannot settle (a stream of listings starving a claim, a hung reader, builds older

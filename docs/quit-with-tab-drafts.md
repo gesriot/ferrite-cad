@@ -153,10 +153,10 @@ was still in progress. Four other merge-base workflows completed success. These
 are base/PR records, not remote CI for this uncommitted diff (`base-ci-final.json`,
 `base-pr.json`, `base-code-checks.json`).
 
-## Working-tree manifest
+## Author handoff manifest
 
-All changes remain unstaged/uncommitted on `quit-with-tab-drafts`; HEAD, main and
-origin/main remain the exact base above. Full final numstat, including untracked
+At the author handoff all changes were unstaged/uncommitted on `quit-with-tab-drafts`; HEAD, main and
+origin/main were the exact base above. Full final numstat, including untracked
 files, is in `target/30v-check/diffstat-all.txt`; full status is in
 `target/30v-check/status-final.txt`. No add/commit/push/PR/merge or Git config change.
 
@@ -201,3 +201,56 @@ that route. Their switch now uses the existing `show_for_quit` helper. No produc
 guard or assertion was weakened. The initial failure is retained in
 `target/30v-review/native-tabs.log`; subsequent review checks and window evidence
 are recorded separately. The implementation plan now includes this slice.
+
+
+Independent local results (`target/30v-review/`): the complete native tabs block
+passed 77/77 after the two test-route corrections (`native-tabs-fixed.log`). The
+true stub tabs block passed 77/77 harness results (`stub-tabs.log`); native/mixed
+and opt-in GUI early returns there are N/A, not geometry evidence. All eight new
+stub execution markers are present. The stub executable and peer CLI were inspected
+with `otool -L`: zero OCCT/PlaneGCS imports. The native executable imports 50 libTK
+libraries and PlaneGCS; the exact mixed gate passed with
+`FCAD_30V_MIXED_EXECUTED` (`mixed.log`). Workspace clippy all targets/features with
+`-D warnings`, fmt, licence/boundary/ownership checks, actionlint, shellcheck,
+whitespace and workflow run-size checks passed. Builds remained sequential, jobs=1.
+
+### Independent real window — 2026-10-10
+
+The freshly staged arm64 bundle was
+`target/30v-review/gui/FerriteCAD.app`, built from the reviewed production code.
+Its measured CLI/viewer runtime closures and strict ad-hoc signature checks passed.
+Inputs and actual window outputs are outside the checkout at
+`/private/tmp/ferrite-30v-review-window/run`.
+
+The reviewer operated the actual window with CUA:
+
+- A: Apply 18, reopen height and leave ` 26x `. B: circle centre -3.5/4.25,
+  radius 8; Confirm draft numbers, Undo and Redo without Apply. New → Empty →
+  Create produced the third, Untitled tab.
+- Cmd+Q from A: confirm A's form, Save A; confirm B's form; Cancel at Untitled.
+  All three tabs remained. A was clean at accepted height 18 with its `26x`
+  input restored. B's numbers and functional Undo/Redo were restored. Untitled
+  remained unsaved. A second Cmd+Q followed by Back to Form also returned A.
+- Correct returned A input to 26 and Apply. Export actual `a-unsaved.stl` and
+  `a-unsaved.fbx` before Save, then leave a new invalid ` 99x ` height draft.
+  System window Close asked about A's form and accepted-model Save separately,
+  then B's form and Untitled Discard. The owned viewer exited normally.
+
+The first click/focus attempt in the restored height box did not enter text;
+its visible value was checked and the field refocused before typing. No invisible
+or headless substitute was used for any output. Windows/Linux GUI was not run.
+
+`gui-compare.log` contains one executed comparator and
+`FCAD_30V_GUI_COMPARE_OK all_SQL_cells=true`: saved height 26, volume 83,200 mm³,
+every SQL cell except the write stamp, UUIDs/refs and byte-identical STL/FBX against
+CLI; B byte-identical to its input; final LastTabs contains A/B; no recovery lanes.
+Strict pinned ufbx 0.23.0 read the actual FBX: 6 checks, 0 failures; its 12 triangles
+match the actual STL with worst difference 3.47e-18 m. Three private negative
+controls were rejected for their intended reasons: missing STL, changed B and an
+altered SQL object name (`gui-negative-controls.log`). Original window evidence
+was not changed by those controls.
+
+Watchdog `watch.jsonl`: owned PID 98329, 426.4 seconds, exit 0, `aborted:false`,
+peak sampled footprint **310.11 MiB**, pressure always 1, swap always 0. No CUA
+application lookup was made after exit. This bounded result does not establish
+the cause or resolution of the previous OOM.
