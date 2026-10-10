@@ -77,7 +77,10 @@ widget and its handler ask the same function.
    belongs to the new tab only (closing it retires that record only). Cancel releases
    the slot at once and the late answer is refused (`Sessions::finish_recovery`); the
    explicit lease unlock of PR #96 is unchanged.
-6. **The accepted model only.** Save, Save As, exports, checkpoints, crash copies and
+6. **The accepted model only.** *§30U changes only single-tab Close: it asks about
+   the form and keeps it until actual Close ([contract](close-tab-with-draft.md));
+   Quit and all the transitions here keep their rules.*
+   Save, Save As, exports, checkpoints, crash copies and
    document Undo/Redo still read only accepted versions; A stays unsaved through
    Open/New/Recover. Close and Quit stop at any open form, also one set aside for New
    (`Tabs::close_step`/`quit_step` count the set-aside draft); a Save or Discard answer

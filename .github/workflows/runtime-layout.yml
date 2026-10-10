@@ -915,6 +915,13 @@ jobs:
           grep -Fq "test $gate ... " session-open-over-new-mixed.log
           grep -q '^test result: ok\. 1 passed; 0 failed' session-open-over-new-mixed.log
           grep -q '^FCAD_30T_MIXED_OPEN_OVER_NEW_EXECUTED$' session-open-over-new-mixed.log
+          gate=sessions::tests::tabs::drafts::close_form::mixed_close_with_occt_and_no_solver_keeps_the_form_on_cancel
+          cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee close-form-mixed.log
+          if grep -q 'skipped:' close-form-mixed.log; then exit 1; fi
+          grep -Fq "test $gate ... " close-form-mixed.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' close-form-mixed.log
+          grep -Fxq 'FCAD_30U_MIXED_EXECUTED' close-form-mixed.log
           gate=sessions::tests::fillet::mixed_radius_apply_uses_occt_without_solver
           cargo test --release -p ferritecad-app --bin ferritecad-viewer "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee session-fillet-mixed.log
@@ -1456,6 +1463,36 @@ jobs:
           grep -q '^test result: ok\. 1 passed; 0 failed' session-open-over-new-native.log
           grep -Eq '^FCAD_30T_NATIVE_OPEN_OVER_NEW_EXECUTED volume_a=93600\.000$' session-open-over-new-native.log
           grep -Fxq 'FCAD_30T_SESSION_FILES_COMPARE_OK negative_controls=7 all_SQL_cells=true' session-open-over-new-native.log
+
+      - name: Close a tab with unapplied form values through the native owners
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          close_dir="$RUNNER_TEMP/close-draft-session"
+          mkdir -p "$close_dir"
+          case '${{ matrix.name }}' in
+            windows) close_dir="$(cygpath -w "$close_dir")" ;;
+          esac
+          export FCAD_CLOSE_DRAFT_ARTIFACTS="$close_dir"
+          echo "FCAD_CLOSE_DRAFT_FBX_DIR=$close_dir" >> "$GITHUB_ENV"
+          gate=sessions::tests::tabs::drafts::close_form::native_close_cancel_apply_export_save_and_close_matches_cli_and_keeps_b
+          cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee close-form-native.log
+          if grep -q 'skipped:' close-form-native.log; then exit 1; fi
+          grep -Fq "test $gate ... " close-form-native.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' close-form-native.log
+          grep -Fxq 'FCAD_30U_NATIVE_EXECUTED volume_a=83200.000 all_SQL_cells=true' close-form-native.log
 
       - name: Create a saved polygon through the native CLI and sketch worker
         env:
@@ -3107,6 +3144,7 @@ jobs:
           grep -q '^FCAD_TABS_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_TAB_DRAFTS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_OPEN_NEW_RECOVER_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_30U_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_RESTORE_SAVED_TABS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SESSION_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CHAMFER_SESSION_UFBX_EXECUTED$' fbx-json-tests.log

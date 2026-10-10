@@ -72,7 +72,10 @@ moved whole, as values, in the statement that hides or shows a tab.
 6. **Save is the accepted model.** Save, Save As, exports, checkpoints, crash copies
    and document Undo/Redo never read a form. Drafts are not kept across a crash or a
    restart.
-7. **Close and Quit never lose a form.** × on a tab with a form — hidden (shown first)
+7. **Close and Quit never lose a form.** *§30U replaces the Close refusal below
+   with an addressed question and retains the original form until actual Close:
+   [close-tab-with-draft.md](close-tab-with-draft.md). Quit is unchanged.*
+   Originally, × on a tab with a form — hidden (shown first)
    or shown, clean or not — leaves the form for the person to Apply or Cancel: *"This
    tab has an open form. Apply or Cancel it before closing the tab; nothing was
    closed."* Quit refuses while the shown tab has a form (as before); its pass also

@@ -9,6 +9,8 @@ use super::*;
 use crate::{Loads, exports::Exports};
 use ferritecad_ui::{PointerButton, ViewportEvent};
 
+/// §30U: Close with an unfinished form.
+mod close_form;
 /// §30Q: Open, New and Recover beside these forms, through the same owners.
 mod open_new_recover;
 /// §30T: Open while New is not finished.

@@ -71,6 +71,8 @@ pub(crate) enum Continuation {
     Quit,
     /// Close this tab.
     Close,
+    /// §30U: continue only this confirmed form Close attempt.
+    CloseForm(crate::tabs::FormCloseId),
 }
 
 /// The answer to "this document has unsaved changes".
