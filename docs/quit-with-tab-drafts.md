@@ -15,8 +15,9 @@ model Discard stays deferred. LastTabs publication precedes destruction of forms
 and recovery retirement. The first publication refusal returns every form; the
 next Quit retries and may exit after a second refusal, as in §30R.
 
-Only idle saved-object forms participate. New, foreground operations, dialogs,
-exports and gestures retain their guards. Hidden tabs use the existing switch
+Only idle saved-object forms participate in this slice. [§30W](quit-with-new-draft.md)
+adds idle New to this same pass; running/queued Create, foreground operations,
+dialogs, exports and gestures retain their guards. Hidden tabs use the existing switch
 worker before any question. Single-tab Close retains §30U ownership and address.
 
 Base after fetch: `main = origin/main = 9d23f42c61b3bb435490c643e10a400efdd89eff`,

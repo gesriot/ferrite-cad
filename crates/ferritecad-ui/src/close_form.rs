@@ -4,6 +4,22 @@
 pub const BACK_TO_FORM: &str = "Back to form";
 pub const DISCARD_FORM_AND_QUIT: &str = "Discard form and continue Quit";
 pub const DISCARD_FORM_AND_CLOSE: &str = "Discard form and continue Close";
+use crate::BACK_TO_NEW;
+pub const DISCARD_NEW_AND_QUIT: &str = "Discard New and continue Quit";
+
+/// §30W: New is window-owned; this decision creates/applies/saves nothing.
+pub fn quit_new_panel(ui: &mut egui::Ui, losing: &str) -> CloseFormChoice {
+    let mut choice = CloseFormChoice::Waiting;
+    ui.push_id("quit-unfinished-new", |ui| {
+        ui.strong("New is not finished");
+        ui.label(format!("If the whole Quit succeeds, {losing}. Nothing from New will be created or saved. Back to New cancels the whole Quit. A later Cancel or refusal returns New and every tab form. Saves already published stay saved."));
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(BACK_TO_NEW).clicked() { choice = CloseFormChoice::Back; }
+            if ui.button(DISCARD_NEW_AND_QUIT).clicked() { choice = CloseFormChoice::Discard; }
+        });
+    });
+    choice
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct CloseFormPanel<'a> {

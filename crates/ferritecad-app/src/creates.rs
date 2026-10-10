@@ -108,6 +108,13 @@ struct Creating {
     worker: JoinHandle<()>,
 }
 
+/// Whole idle New, held through the existing Quit pass. No worker moves here.
+struct HeldNew {
+    id: crate::tabs::QuitNewId,
+    form: Option<NewDocumentForm>,
+    sketch: Box<crate::sketch::Editor>,
+}
+
 /// What the window says about the document it was last asked to make.
 ///
 /// Entirely separate from what it says about opening one.
@@ -170,6 +177,7 @@ pub(crate) struct Creates {
     /// pressed New, holding numbers they typed for a document they decided not
     /// to make.
     form: Option<NewDocumentForm>,
+    held_new: Option<HeldNew>,
     pub(crate) sketch: crate::sketch::Editor,
 }
 
@@ -212,9 +220,65 @@ impl Creates {
     }
 
     /// §30P: New is under way — a creation running, the New form, or a drawing
-    /// for a new document. None of it belongs to a tab, so it holds the window.
+    /// for a new document. None of it belongs to a tab; idle New may enter the
+    /// separately addressed Quit question while other transitions stay held.
     pub(crate) fn making_new(&self) -> bool {
         self.running() || self.form.is_some() || self.sketch.drawing_new()
+    }
+
+    /// Running, queued and handed-out-but-unaccepted candidates all hold Quit.
+    pub(crate) fn quit_idle(&self) -> bool {
+        !self.running()
+            && self.current.is_none()
+            && self.status != CreateStatus::Made
+            && self
+                .running
+                .iter()
+                .all(|worker| worker.worker.is_finished())
+    }
+
+    pub(crate) fn idle_new(&self) -> Option<NewGeneration> {
+        (self.quit_idle() && self.making_new() && self.held_new.is_none())
+            .then_some(NewGeneration(self.opened))
+    }
+
+    pub(crate) fn quit_new_loss(&self, id: crate::tabs::QuitNewId) -> Option<&'static str> {
+        (self.idle_new() == Some(id.over)).then(|| self.losing())
+    }
+
+    /// Validate before moving the shared Editor. Handles remain accounted here.
+    pub(crate) fn hold_new_for_quit(&mut self, id: crate::tabs::QuitNewId) -> bool {
+        if self.idle_new() != Some(id.over) {
+            return false;
+        }
+        self.held_new = Some(HeldNew {
+            id,
+            form: self.form.take(),
+            sketch: Box::new(std::mem::take(&mut self.sketch)),
+        });
+        true
+    }
+
+    pub(crate) fn has_held_new(&self) -> bool {
+        self.held_new.is_some()
+    }
+
+    /// Caller first parks the shown tab's form. Never replace a live New/editor.
+    pub(crate) fn return_quit_new(&mut self) -> bool {
+        if self.making_new() || self.sketch.active() {
+            return false;
+        }
+        let Some(held) = self.held_new.take() else {
+            return false;
+        };
+        debug_assert_eq!(held.id.over, NewGeneration(self.opened));
+        self.form = held.form;
+        self.sketch = *held.sketch;
+        true
+    }
+
+    pub(crate) fn finish_quit_new(&mut self) {
+        self.held_new = None;
     }
 
     /// The saved Sketch form is the caller of Apply, not an operation blocking it.
@@ -306,6 +370,9 @@ impl Creates {
 
     /// Opens the drawing for a new document: another opening of New (§30T).
     pub(crate) fn begin_drawing(&mut self) {
+        if self.has_held_new() {
+            return;
+        }
         self.opened += 1;
         self.sketch.begin();
     }
@@ -517,6 +584,7 @@ impl Creates {
         self.current = None;
         self.form = None;
         self.asked = None;
+        self.held_new = None;
         for creating in &self.running {
             creating.cancel.cancel();
         }
@@ -543,7 +611,7 @@ pub(crate) fn open_form(creates: &mut Creates, input: &mut ViewportInput) -> boo
     // Pressing New while one is being made would start a second document and
     // leave the window to decide which of the two to show. The toolbar already
     // refuses to offer it; this is the same rule where it can be exercised.
-    if creates.busy() {
+    if creates.busy() || creates.has_held_new() {
         return false;
     }
     creates.ask();
@@ -629,7 +697,7 @@ pub(crate) fn begin_create(
     content: NewDocument,
     spawn: impl FnOnce(NewDocument, CreateGeneration, &CancelToken) -> JoinHandle<()>,
 ) -> Option<CreateGeneration> {
-    if creates.running() {
+    if creates.running() || creates.has_held_new() {
         return None;
     }
     let generation = creates.start(content, spawn);

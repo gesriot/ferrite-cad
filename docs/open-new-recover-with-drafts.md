@@ -54,8 +54,8 @@ widget and its handler ask the same function.
    forms live in (the drawing's polygon, circle and annulus states share fields with the
    saved Circle/annulus forms). So opening New first **sets A's forms aside**
    (`Tabs::set_aside`, one `Option<(TabId, Draft)>`), leaving the window's forms empty;
-   New never writes into A's. While New is open: New holds the window (no tab, Open,
-   Recover, Apply, document Undo, Save or Quit), as it did before §30Q. *Since §30T Open
+   New never writes into A's. While New is open: New holds tab changes,
+   Recover, Apply, document Undo and Save, as it did before §30Q. *Since §30T Open
    alone is offered, and asks before it discards anything of New: [open-during-new.md](open-during-new.md).* New's typed
    values survive a size that is not a number, a document the kernel refuses, a picture
    the device refuses, a cancelled or late creation and a full window — the existing
@@ -63,7 +63,8 @@ widget and its handler ask the same function.
    (as before) and gives A's back exactly (`Tabs::bring_back`, never over a form the
    window shows). An **accepted** New is a separate Untitled tab with no form, and A is
    hidden with the set-aside draft in the same statement. An unfilled New form is not a
-   tab.
+   tab. [§30W](quit-with-new-draft.md) adds addressed consent for idle New to the
+   existing Quit pass, holding it whole until successful exit; running Create stays held.
 3. **Open and Recover accept together.** A new tab, its session and its picture become
    current in the one `Bind::Open` statement after the picture is prepared. Cancel of
    the dialog, an unreadable file, a refused CPU/GPU preparation, a cancelled, stale or
@@ -79,12 +80,12 @@ widget and its handler ask the same function.
    explicit lease unlock of PR #96 is unchanged.
 6. **The accepted model only.** *§30U changes only single-tab Close: it asks about
    the form and keeps it until actual Close ([contract](close-tab-with-draft.md));
-   Quit and all the transitions here keep their rules.*
+   [§30V](quit-with-tab-drafts.md) asks about saved-object forms and
+   [§30W](quit-with-new-draft.md) also asks about idle New in the same Quit pass.*
    Save, Save As, exports, checkpoints, crash copies and
    document Undo/Redo still read only accepted versions; A stays unsaved through
-   Open/New/Recover. Close and Quit stop at any open form, also one set aside for New
-   (`Tabs::close_step`/`quit_step` count the set-aside draft); a Save or Discard answer
-   about the accepted model never closes a form.
+   Open/New/Recover. Close and Quit ask separately about unfinished forms;
+   a Save or Discard answer about the accepted model never applies a form.
 7. **Unchanged.** One GPU scene; at most 8 tabs; copy workflows still need a saved,
    clean document; every Apply/Add keeps its version guard; a running worker, a
    gesture, a native dialog and New itself still hold the window. New/Recover also

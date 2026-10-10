@@ -65,5 +65,5 @@ pub use tabs::{CLOSE_TAB, TabChoice, TabLabel, TabStrip, tab_strip, tab_title};
 mod close_form;
 pub use close_form::{
     BACK_TO_FORM, CloseFormChoice, CloseFormPanel, DISCARD_FORM_AND_CLOSE, DISCARD_FORM_AND_QUIT,
-    close_form_panel,
+    DISCARD_NEW_AND_QUIT, close_form_panel, quit_new_panel,
 };

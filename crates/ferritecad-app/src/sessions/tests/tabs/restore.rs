@@ -329,7 +329,7 @@ fn quit_keeps_the_saved_files_only_when_the_window_really_ends() {
     unchanged("a refused Save As");
     assert_eq!(bytes(&occupied), b"theirs");
 
-    // New over a form sets it aside: Quit waits for New.
+    // New over a form sets it aside: §30W asks, and no LastTabs is published yet.
     w.switch(a);
     w.type_height("3");
     assert!(crate::open_new(
@@ -341,9 +341,22 @@ fn quit_keeps_the_saved_files_only_when_the_window_really_ends() {
         |creates, input| crate::ask_new(creates, &Loads::default(), &Exports::default(), input),
     ));
     assert!(w.tabs.has_aside());
-    assert!(!w.begin_quit());
+    assert!(w.begin_quit());
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::New);
     assert_eq!(w.end_quit(&mut restores), QuitEnd::NotEnded);
     unchanged("New's set-aside forms");
+    let id = w.tabs.quit_new_question().expect("New question");
+    assert!(crate::answer_window_quit_new(
+        &mut w.tabs,
+        &mut w.sessions,
+        &mut w.creates,
+        &mut w.edits,
+        &Loads::default(),
+        &Exports::default(),
+        &mut w.input,
+        id,
+        ferritecad_ui::CloseFormChoice::Back
+    ));
     crate::creates::answer_form(&mut w.creates, &mut w.input, NewChoice::Cancel);
     crate::end_new(&mut w.tabs, &mut w.sessions, &mut w.edits, &mut w.creates);
     assert!(!w.tabs.has_aside());

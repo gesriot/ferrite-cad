@@ -54,7 +54,7 @@ file name and a number: no document, tab or session is made to hold it.
 | Full window (8 tabs) | `Tabs::opening` before asking and again before stopping | refused in words; nothing asked, nothing discarded |
 | Open fails / refused picture | `Loaded` handler, `Tabs::bind` | A stays shown with its forms; New is not recreated |
 | Cancel of the reading | `cancel_load` | A stays; New is not recreated |
-| Quit | `begin_window_quit` | unchanged: New's form or a worker holds it; after a stop, A's forms and the reading are what hold it |
+| Quit | `begin_window_quit` | [§30W](quit-with-new-draft.md) asks about idle New in the existing Quit pass; running/queued Create and §30T's pending Open decision keep their holds. Open-over-New is unchanged. |
 
 ## Rules
 

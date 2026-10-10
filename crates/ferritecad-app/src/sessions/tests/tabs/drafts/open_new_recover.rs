@@ -125,7 +125,11 @@ impl Window {
 
     /// `App::create_new` and the `Created` handler: the room check first, then
     /// the window's creation worker; the candidate is accepted with its picture.
-    fn create_from_new(&mut self, content: NewDocument, upload: Result<()>) -> Result<()> {
+    pub(super) fn create_from_new(
+        &mut self,
+        content: NewDocument,
+        upload: Result<()>,
+    ) -> Result<()> {
         self.tabs.room().map_err(CadError::input)?;
         let (_, candidate) = crate::creates::tests::run_to_completion(
             &mut self.creates,
@@ -562,8 +566,8 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
     assert!(w.begin_new(false));
     set_aside(&w);
     assert!(w.creates.form().is_some());
-    // While New is open the window is held: no tab, Recover or Quit (Open only
-    // asks, §30T), and Close and Quit stop at A's forms although none is on screen.
+    // New still holds tab changes and Recover; §30T Open asks, and §30W Quit
+    // asks before taking New. A's set-aside forms remain owned on Back.
     assert!(!w.can_leave());
     assert!(!crate::may_leave_tab(
         &w.creates,
@@ -571,7 +575,7 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
         &w.sessions,
         &w.input
     ));
-    assert!(!crate::begin_window_quit(
+    assert!(crate::begin_window_quit(
         &mut w.tabs,
         &mut w.sessions,
         &w.creates,
@@ -579,6 +583,19 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
         &Exports::default(),
         &w.edits,
         &w.input,
+    ));
+    assert_eq!(w.tabs.quit_step(&w.sessions, false), QuitStep::New);
+    let id = w.tabs.quit_new_question().expect("idle New question");
+    assert!(crate::answer_window_quit_new(
+        &mut w.tabs,
+        &mut w.sessions,
+        &mut w.creates,
+        &mut w.edits,
+        &Loads::default(),
+        &Exports::default(),
+        &mut w.input,
+        id,
+        ferritecad_ui::CloseFormChoice::Back
     ));
     assert_eq!(
         w.tabs.close_step(&w.sessions, a, false),

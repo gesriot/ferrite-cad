@@ -1118,6 +1118,33 @@ jobs:
             grep -Fxq "$marker" quit-forms.log
           done
 
+      - name: Quit over idle New keeps every window and tab draft until final exit
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+        run: |
+          set -euo pipefail
+          for check in \
+            "sessions::tests::tabs::drafts::quit_new::idle_empty_and_sample_new_back_late_abort_and_original_create_are_executable FCAD_30W_IDLE_FORMS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_new::late_cancel_after_save_or_deferred_discard_returns_new_above_b_and_both_tab_forms FCAD_30W_LATE_CANCEL_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_new::consent_names_quit_and_new_once_and_never_skips_the_dirty_model FCAD_30W_ADDRESS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_new::save_refusals_dialog_cancel_save_as_and_external_conflict_return_whole_new FCAD_30W_SAVE_REFUSALS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_new::scene_switch_refusals_and_first_last_tabs_error_return_all_owners_second_error_exits FCAD_30W_SWITCH_LASTTABS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_new::running_queued_and_unaccepted_create_hold_quit_and_deliver_their_original_result FCAD_30W_CREATE_BARRIERS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_new::real_new_quit_widgets_explain_loss_and_back_and_discard_address_the_actual_owners FCAD_30W_WIDGETS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_new::stub_real_creation_refusal_returns_idle_new_and_underlying_form FCAD_30W_STUB_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_new::idle_new_transition_checks_foreground_and_gestures_before_taking_any_form FCAD_30W_GUARDS_EXECUTED" \
+            "sessions::tests::tabs::drafts::quit_new::new_contour_over_saved_sketch_returns_both_editors_with_functional_history FCAD_30W_SHARED_EDITOR_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee quit-new.log
+            if grep -q 'skipped:' quit-new.log; then exit 1; fi
+            grep -Fq "test $gate ... " quit-new.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' quit-new.log
+            grep -Fxq "$marker" quit-new.log
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |
