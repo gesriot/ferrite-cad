@@ -23,8 +23,8 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
-    Camera, FacePickId, Hovered, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder,
-    StandardView, VERTEX_FLOATS, Visibility,
+    Camera, FacePickId, Hovered, Marked, PickId, PixelRect, Projection, RenderSnapshot,
+    SnapshotBuilder, StandardView, VERTEX_FLOATS, Visibility,
 };
 use ferritecad_viewport_gpu::{
     Frame, Renderer, VERTEX_MARK_RADIUS_PIXELS, VERTEX_PICK_RADIUS_PIXELS,
@@ -7535,4 +7535,262 @@ fn a_chosen_corner_follows_the_camera_through_both_projections() {
             }
         }
     }
+}
+
+/// §31B: the model drawn into a part of a window texture, and picked there.
+///
+/// The window's pass and the pick's pass are two renderings of one camera. The
+/// window draws into a rectangle of a larger texture, the pick reads a frame
+/// the size of that rectangle, and a click arrives in the window's pixels. All
+/// three have to agree on where the rectangle is, so this draws a known part
+/// through the window's own pass and asks, with the origin neither at zero nor
+/// a round fraction of anything:
+///
+/// * Frame all fits the whole extent inside the rectangle, by the rectangle's
+///   aspect and not the texture's;
+/// * every pixel of the texture outside the rectangle is the clear colour, even
+///   when the model is zoomed past the rectangle's edges, and every pixel inside
+///   is the pixel the pick's frame has - the same image, moved;
+/// * a face, an edge and a corner are found at the pixels the camera projects
+///   them to, translated by the origin and back; and the same window pixel
+///   without the translation answers with something else.
+#[test]
+fn a_model_in_a_shifted_region_stays_in_it_and_is_picked_through_the_same_geometry() {
+    let mut renderer = renderer_or_skip!();
+    let target = (480u32, 360u32);
+    let region = PixelRect::new(137, 59, 301, 254);
+    let (snapshot, mut camera) = cornered_pair(region.width(), region.height());
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let clear = [0u8, 0, 0, 255];
+    let inside = |x: u32, y: u32| {
+        x >= region.x()
+            && x < region.x() + region.width()
+            && y >= region.y()
+            && y < region.y() + region.height()
+    };
+
+    // Frame all, by the rectangle's aspect: every corner of the extent lands
+    // inside the rectangle's own pixels.
+    let (low, high) = snapshot.bounds().expect("something is drawn");
+    for x in [low[0], high[0]] {
+        for y in [low[1], high[1]] {
+            for z in [low[2], high[2]] {
+                let world = [f64::from(x), f64::from(y), f64::from(z)];
+                assert!(
+                    pixel_of(&camera, world).is_some(),
+                    "Frame all left {world:?} outside the {}x{} region",
+                    region.width(),
+                    region.height()
+                );
+            }
+        }
+    }
+    assert_eq!(
+        (camera.width(), camera.height()),
+        (region.width(), region.height())
+    );
+
+    for (what, zoom) in [("framed", 0.0f32), ("zoomed past the edges", 1.2)] {
+        camera.zoom(zoom);
+        let frame = draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Hovered::Nothing,
+            &visibility,
+        );
+        assert_eq!(
+            (frame.width(), frame.height()),
+            (region.width(), region.height()),
+            "the pick's frame is the region's size"
+        );
+        let image = renderer
+            .draw_window_image(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+                target,
+                region,
+            )
+            .expect("the window's pass draws into the region");
+        assert_eq!((image.width(), image.height()), target);
+
+        let mut drawn = 0usize;
+        for y in 0..target.1 {
+            for x in 0..target.0 {
+                let pixel = image.colour_at(x, y).expect("in the window");
+                if inside(x, y) {
+                    let theirs = frame
+                        .colour_at(x - region.x(), y - region.y())
+                        .expect("in the frame");
+                    assert_eq!(
+                        pixel, theirs,
+                        "{what}: window pixel {x},{y} differs from the pick frame's"
+                    );
+                    drawn += usize::from(pixel != clear);
+                } else {
+                    assert_eq!(
+                        pixel, clear,
+                        "{what}: the model reached {x},{y}, outside its region"
+                    );
+                }
+            }
+        }
+        assert!(
+            drawn > 2000,
+            "{what}: only {drawn} pixels were drawn at all"
+        );
+    }
+
+    // Back to Frame all for the probes.
+    let (snapshot, camera) = cornered_pair(region.width(), region.height());
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let frame = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    // The click arrives in the window's pixels; the origin is subtracted once,
+    // and what is found is what the camera projects to the picture's pixel.
+    let click = |local: (u32, u32)| {
+        let window = region.window((local.0 as f32, local.1 as f32));
+        assert!(region.contains(window));
+        let (x, y) = region.local(window);
+        (x as u32, y as u32)
+    };
+    let upper = snapshot.face_of(0, 1).expect("numbered");
+    let lower = snapshot.face_of(0, 0).expect("numbered");
+    let upper_at = pixel_of(&camera, placed([-2.89, 0.0, 5.67], -24.0)).expect("on screen");
+    let lower_at = pixel_of(&camera, placed([-4.55, 0.0, -4.78], -24.0)).expect("on screen");
+    assert_eq!(
+        frame.hit_at(click(upper_at).0, click(upper_at).1).face(),
+        upper
+    );
+    assert_eq!(
+        frame.hit_at(click(lower_at).0, click(lower_at).1).face(),
+        lower
+    );
+    assert_eq!(
+        frame
+            .hit_at(click(upper_at).0, click(upper_at).1)
+            .definition(),
+        snapshot.pick_of(0).expect("drawn")
+    );
+
+    let edge_at = pixel_of(
+        &camera,
+        placed(between(FINE_ARC[0], [0.0, 0.0, -16.0]), -24.0),
+    )
+    .expect("on screen");
+    assert_eq!(
+        edge_near(&frame, click(edge_at)),
+        snapshot.edge_of(0, 1).expect("numbered"),
+        "the edge was not found at its projected pixel"
+    );
+
+    let corner = snapshot.vertex_of(0, 2).expect("numbered");
+    let corner_at = pixel_of(&camera, placed([0.0, 0.0, -16.0], -24.0)).expect("on screen");
+    assert_eq!(
+        frame.vertex_at(click(corner_at).0, click(corner_at).1),
+        corner,
+        "the corner was not found at its projected pixel"
+    );
+
+    // The same window pixel with the origin left in is another place: it is
+    // outside this frame or on something other than what was meant.
+    let unshifted = |at: (u32, u32)| {
+        let window = region.window((at.0 as f32, at.1 as f32));
+        (window.0 as u32, window.1 as u32)
+    };
+    let (x, y) = unshifted(upper_at);
+    assert_ne!(
+        frame.hit_at(x, y).face(),
+        upper,
+        "the face survived a lost origin"
+    );
+    let (x, y) = unshifted(corner_at);
+    assert_ne!(
+        frame.vertex_at(x, y),
+        corner,
+        "the corner survived a lost origin"
+    );
+    println!("\nFCAD_31B_GPU_REGION_EXECUTED");
+}
+
+/// §31B: a window with no room for the picture, a camera sized for some other
+/// rectangle and a rectangle that is not in the window are three different
+/// mistakes, and each one is answered rather than drawn.
+#[test]
+fn a_region_with_no_area_clears_and_a_region_that_disagrees_is_refused() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(96, 80);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let target = (160u32, 120u32);
+    let image = |renderer: &mut Renderer, camera: &Camera, region: PixelRect| {
+        renderer.draw_window_image(
+            &prepared,
+            camera,
+            Marked::Nothing,
+            Hovered::Nothing,
+            &visibility,
+            target,
+            region,
+        )
+    };
+
+    // No area: the clear, and nothing else, and no error. A minimised window
+    // and a layout that left no room both come to this.
+    for empty in [
+        PixelRect::default(),
+        PixelRect::new(40, 30, 0, 50),
+        PixelRect::new(40, 30, 50, 0),
+    ] {
+        let cleared =
+            image(&mut renderer, &camera, empty).expect("an empty region is not an error");
+        for y in 0..target.1 {
+            for x in 0..target.0 {
+                assert_eq!(
+                    cleared.colour_at(x, y),
+                    Some([0, 0, 0, 255]),
+                    "{empty:?} at {x},{y}"
+                );
+            }
+        }
+    }
+
+    // A camera of another size than its region would stretch the model.
+    let error = image(&mut renderer, &camera, PixelRect::new(10, 10, 90, 80))
+        .expect_err("a camera that disagrees with its region draws nothing");
+    assert_eq!(error.kind(), ErrorKind::Rendering);
+    assert!(error.to_string().contains("stretch"), "{error}");
+
+    // A region that is not inside the window.
+    for outside in [
+        PixelRect::new(100, 10, 96, 80),
+        PixelRect::new(10, 60, 96, 80),
+        PixelRect::new(u32::MAX, 0, 96, 80),
+    ] {
+        let error = image(&mut renderer, &camera, outside)
+            .expect_err("a region outside the window draws nothing");
+        assert_eq!(error.kind(), ErrorKind::Rendering, "{outside:?}");
+    }
+
+    // And the right one still draws, after all of that.
+    let drawn = image(&mut renderer, &camera, PixelRect::new(10, 10, 96, 80)).expect("draws");
+    assert!(
+        (0..target.1)
+            .flat_map(|y| (0..target.0).map(move |x| (x, y)))
+            .any(|(x, y)| drawn.colour_at(x, y) != Some([0, 0, 0, 255])),
+        "nothing was drawn into a region that agrees with its camera"
+    );
+    println!("\nFCAD_31B_GPU_REFUSALS_EXECUTED");
 }

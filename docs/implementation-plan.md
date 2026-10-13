@@ -5007,3 +5007,121 @@ disclosure glyphs with painted triangles and corrected the GUI comparator's
 expected tab order to the existing insert-after-active policy. Exact CI is
 recorded in PR #104. The overlapping legacy controls and full-window viewport
 remain a separate workspace-layout task; this slice does not solve them.
+
+
+### §31B — A separate 3D viewport and the window's working layout
+
+The model has one explicit rectangle in the middle of the window and the controls
+have their own panels: file/view actions and tabs on top, the §31A Model tree on the
+left, Actions and Details (questions and outcomes, recovery and checkpoints, the
+Create/Add/Edit routes, definitions with visibility, the topology inspector, solve
+status) on the right and a fixed-height status strip below. Panels are bounded and
+scroll, so a long message, name or list moves and covers nothing. The rectangle is the
+layout's leftover, converted once from points to physical pixels; the camera's size
+and aspect, Frame all/selected, the renderer's viewport and scissor, the pick frame
+and the pointer translation all read it, a rectangle that moves forgets what was
+asked in the old one, a press beside it starts no gesture, and each tab keeps its own
+view fitted to the present rectangle. No new CAD operation, schema, dependency,
+persistence, autosave, history or second store. Contract, executed results and the
+independent window scenario: [workspace-viewport-layout.md](workspace-viewport-layout.md).
+The author ran no window; the true-stub block (22 exact gates), the native block, the
+device gates under the memory watchdog, both whole viewer suites (651 passed in each
+configuration), fmt, workspace clippy and three compiling mutations passed locally.
+Exact CI of this diff, Windows/Linux windows and the real window are not claimed. §30,
+Milestone 5C, the product and the OOM investigation remain open.
+
+### §31C — Object snaps in the Sketch editor (planned)
+
+Accepted interaction contract, 2026-10-13. Implement the algorithms and regression
+tests independently against this contract. The current viewport-layout work stays
+separate; no snap implementation is claimed here.
+
+- First families: endpoint, midpoint, circle centre and finite-segment intersection,
+  where the editor actually displays that geometry. Do not invent document objects
+  or silently widen the supported Sketch model to make a candidate available.
+  Quadrants, nearest point, deferred tangency and apparent intersections are later
+  drafting modes, outside this first slice.
+- Object snap is editor state alongside the grid step, not document data. Typed X/Y
+  strings remain exact and bypass snapping. A hit neither creates Coincident nor
+  consumes an Undo step; only the resulting coordinate edit does. Degenerate geometry
+  remains a visible draft and uses the existing validation/publication path.
+- Aperture and comparison distances use logical UI points, as the existing 9-point
+  vertex-picking radius does, not physical Retina pixels. Convert using the canvas
+  transform for the query; millimetres remain document coordinates.
+- Ranking has two passes. Find the minimum distance inside the aperture, then retain
+  candidates whose distance differs from that minimum by **strictly less than one
+  logical point**. Rank this group by intersection, endpoint, midpoint, centre, then
+  by distance and stable saved order. At a gap of exactly one point the nearest
+  wins. Do not use a pairwise epsilon comparator (it is not transitive), or a fixed
+  bonus proportional to aperture. A midpoint of a segment longer than two screen
+  points must be selectable when it is sufficiently nearer; shorter segments may
+  honestly resolve to their endpoint. Keyboard cycling can be added later.
+- Object snap inside the aperture wins over grid snap. Apply the grid only when no
+  object candidate exists; never snap the chosen object point to the grid again.
+- A drag freezes candidate geometry at press, like the grid step. Exclude the dragged
+  vertex and points coincident with its press-time position within a named, justified
+  coincidence tolerance distinct from the aperture. Keep press-time midpoints of its
+  incident edges; do not recompute moving midpoints from the changing draft. Candidate
+  identity/order comes from stored entities, not hash iteration or screen labels.
+- A typed SnapKind participates in ranking. Its human label is rendered beside the
+  cursor for the frame only, never stored in the document or used as a comparison key.
+
+Required scenarios include crowded short segments, exact one-point ties, coincident
+vertices, reversed segment order, finite intersections versus line extensions,
+object/grid competition, 1x/2x display scale, invalid coordinate drafts, Escape,
+one gesture/one Undo, and unchanged typed input. Use real editor interaction tests
+as well as geometry tests; helper-only coverage does not establish a reachable UI.
+
+### §31D — Gesture guides and temporary dimensional input (planned)
+
+After basic object snaps: orthogonal and polar guides from an explicit visible
+anchor, with a length entry that writes the same coordinate strings as dragging.
+It is not a persistent dimensional constraint; adding one is a later explicit action.
+
+- A provisional hover anchor is acquired inside the aperture and released outside
+  twice the aperture. Another candidate replaces it only when nearer by **more than
+  one logical point**, avoiding jitter between endpoints.
+- The anchor confirmed by a gesture's start stays fixed until completion or Escape.
+  Do not release it merely because the cursor moved farther than twice the aperture:
+  long segments must retain their origin. Direction acquisition measures distance
+  to the guide, not distance to its origin.
+- Hover, anchor changes, guide display and snap labels do not enter history. A
+  completed coordinate gesture is one history step. End/Escape clears gesture guides;
+  cancellation follows the existing draft/history rules.
+
+### Following slices — constraints, expressions and launch diagnostics (planned)
+
+**Constraint adapters.** A diameter input may use the existing Radius with `R = D/2`,
+with existing value validation and no second solver equation. Collinearity, angle,
+tangency and symmetry require the full document → solver contract → C ABI/shim →
+residual/diagnosis → capability → shared UI/CLI operation route. The present shim's
+last kind is `FC_GCS_CIRCLE_RADIUS = 8`; spare point/circle fields do not by themselves
+implement another kind. Preserve explicit refusal of unknown kinds and verify ABI
+layout/version compatibility when adding them.
+
+**Directed Sketch angle.** Name both vectors with explicit endpoint references.
+The value is counter-clockwise from the first to the second, canonically in
+`(-180°, 180°]` (with explicit conversion at the internal unit boundary). Zero means
+codirectional; ±180° means opposite and is stored only as +180°. Exchanging vectors
+negates then normalises; reversing either adds 180° then normalises. Zero-length
+vectors are refused. Measurement must distinguish the sign, e.g. `atan2(cross, dot)`;
+the adapter/residual must distinguish +30° from −30° and 0° from 180°. Existing
+Parallel still accepts either direction through its zero cross-product residual.
+The Revolve angle's domain is a separate body parameter and supplies no policy here.
+
+**Expressions (wave 5E).** Parse and dimension-check the source, resolve parameter
+names to stable ObjectIds, evaluate finite values, apply existing geometric validity
+checks and rebuild the dependent model through the existing transaction/publication
+path. Any failure leaves the accepted source/value pairs and accepted geometry
+unchanged; the new text remains in the draft. Do not publish partially updated
+parameters or silently divergent source/value pairs. Define rename/removal semantics,
+dependency invalidation, cycles, unknown names, division by zero, non-finite results,
+and bounded parsing/evaluation before broadening the language. A second transaction
+mechanism or a name-only cache is not the planned solution.
+
+**Launch journal.** A separate small slice for Finder launches: bounded local log
+files (16 MiB each), rotation/retention and an independent file for each concurrent
+instance. A second instance neither rotates the first instance's active file nor
+waits for its lock. No automatic upload of logs or model contents. Test simultaneous
+instances and unwritable destinations. This does not diagnose the earlier OOM or
+capture a loader failure before `main`; neither is declared resolved.

@@ -430,7 +430,7 @@ it, and closing the window stops and waits for it. Cancellation observed before
 publication leaves the destination untouched. Once publication succeeds, late
 cancellation or an answer the window no longer needs leaves the file in place.
 
-An `Export` section under the toolbar says what happened: `Exporting…`, and
+An `Export` section in the Actions panel says what happened: `Exporting…`, and
 then the file with the bytes, nodes, geometry objects and materials the writer
 counted. If some of the document could not be given triangles it says
 `Exported with missing geometry` and lists every one of them — the definition
@@ -483,7 +483,16 @@ results](docs/stl-export-verification.md).
 cargo run -p ferritecad-app --bin ferritecad-viewer
 ```
 
-Opens an empty window. `New…` offers an empty document or a sample plate template.
+Opens an empty window. The model has the middle of it and the controls have panels
+around it (§31B): file and view actions and the tabs along the top, the Model tree on
+the left, **Actions** and **Details** on the right (questions and outcomes, recovery
+and checkpoints, the Create/Add/Edit routes, the definitions with their visibility, the
+topology inspector and the sketch solve status), and a status strip below. All panels
+are bounded and scroll: a long message or list never widens one or covers the model.
+What no panel covers is the viewport, and the camera's aspect ratio, framing, orbit,
+pan, zoom, hover and picking all use that one rectangle; a press on a panel never
+starts a 3D gesture. [Contract](docs/workspace-viewport-layout.md).
+`New…` offers an empty document or a sample plate template.
 Plate dimensions are in **millimetres**, initially 60 × 40 × 10, just like
 `ferritecad create --sample`. **Create document** makes it at once, with no file
 dialog (§30L): the window shows it as `*Untitled`, and editing, Undo/Redo and
@@ -807,7 +816,7 @@ looking at; a document that could not be read, or that you stopped waiting for,
 leaves both exactly as they were.
 
 When a document cannot be opened because a drawing in it holds constraints that
-cannot all hold at once, `Open failed` appears under the toolbar and says which
+cannot all hold at once, `Open failed` appears in the Actions panel and says which
 ones. It is about the attempt, not about the model on screen, and says so: it
 names the file that was being opened and the whole identifier of the sketch
 inside it, and then gives each blamed constraint twice over – the identifier

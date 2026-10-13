@@ -18,9 +18,21 @@
 //! A consumed event still updates where the pointer is. Ignoring it entirely
 //! would leave the last known position at the far side of a panel, and the
 //! first drag afterwards would jump the model by the width of it.
+//!
+//! # The picture is a region of the window
+//!
+//! Panels stand beside the model, so the picture is only a part of the window.
+//! Events arrive in the window's physical pixels; the reducer holds the
+//! [`PixelRect`] the picture occupies and is the one place that turns a window
+//! point into a point of the picture. A press outside the region never begins a
+//! gesture, whoever claimed it, and a gesture that began inside keeps its
+//! button until it is released wherever the pointer has gone. Whatever was
+//! asked about the picture - a click, what the pointer is over - is expressed
+//! in the picture's own pixels and is forgotten the moment the region moves or
+//! changes size, because the same numbers would name a different place.
 
 use ferritecad_types::{CadError, Result};
-use ferritecad_viewport::{Camera, Projection, RenderSnapshot, StandardView};
+use ferritecad_viewport::{Camera, PixelRect, Projection, RenderSnapshot, StandardView};
 
 /// How far a wheel notch moves the camera.
 ///
@@ -111,17 +123,22 @@ const CLICK_SLOP: f32 = 4.0;
 #[derive(Debug, Clone)]
 pub struct ViewportInput {
     camera: Camera,
+    /// Where the picture is in the window. The camera's size is always this
+    /// rectangle's size; they are set together, in [`Self::set_region`].
+    region: PixelRect,
+    /// In the window's pixels, as the events gave it.
     pointer: Option<(f32, f32)>,
     dragging: Option<PointerButton>,
-    /// Where an unclaimed primary press landed, while it might still become a
-    /// click rather than a drag.
+    /// Where an unclaimed primary press landed, in the window's pixels, while
+    /// it might still become a click rather than a drag.
     pressed_at: Option<(f32, f32)>,
-    /// Where the user asked what something is, until somebody answers.
+    /// Where the user asked what something is, in the picture's own pixels,
+    /// until somebody answers.
     pick: Option<(f32, f32)>,
     /// What the pointer is asking about, until somebody answers. Overwritten
     /// rather than queued: a hand crossing the window asks about where it
     /// stopped, and answering every place it passed through would be a
-    /// readback for each one.
+    /// readback for each one. In the picture's own pixels.
     hover: Hover,
     /// Where the view was before a smart magnification, while one is in
     /// effect and the view has not been moved by hand since.
@@ -143,6 +160,7 @@ impl ViewportInput {
     pub fn new() -> Self {
         Self {
             camera: Camera::new(),
+            region: PixelRect::default(),
             pointer: None,
             dragging: None,
             pressed_at: None,
@@ -163,19 +181,60 @@ impl ViewportInput {
         self.dragging.is_some()
     }
 
-    /// Records a new window size and returns the size to configure with.
+    /// Where the picture is in the window.
+    pub fn region(&self) -> PixelRect {
+        self.region
+    }
+
+    /// Gives the picture its rectangle, and says whether that changed anything.
     ///
-    /// One call, one size, used for the camera here and returned for the
-    /// surface. The two must agree exactly – a camera with one aspect ratio
-    /// drawing into a surface with another stretches the model – and the way
-    /// to be sure they do is for there to be only one place the number comes
-    /// from.
+    /// One call, one rectangle, used for the camera's size here and read back
+    /// for the renderer's viewport. The two must agree exactly - a camera with
+    /// one aspect ratio drawing into a viewport with another stretches the
+    /// model - and the way to be sure they do is for there to be only one place
+    /// the number comes from.
+    ///
+    /// A rectangle that moved, even at the same size, is a different place for
+    /// every pixel: a click or a hover recorded in the picture's pixels, and a
+    /// press that might still become a click, belonged to the old one and are
+    /// forgotten rather than answered in the new. A gesture already under way
+    /// is not ended; it moves the camera by deltas, which do not care where the
+    /// picture is.
+    pub fn set_region(&mut self, region: PixelRect) -> bool {
+        if self.region == region {
+            return false;
+        }
+        // A picture of a different size shows a different view, so one
+        // remembered for the old size is not the view to go back to.
+        self.by_hand(|camera| camera.resize(region.width(), region.height()));
+        self.region = region;
+        self.pick = None;
+        self.pressed_at = None;
+        self.hover = Hover::Cleared;
+        self.redraw = true;
+        true
+    }
+
+    /// Makes the picture the whole of a window of this size, and returns the
+    /// size to configure a surface with.
+    ///
+    /// The picture of a window with nothing beside it: a region at the origin.
+    /// Kept as the way to say it so that what has no panels - and every test of
+    /// the arithmetic that does not care about them - does not have to invent
+    /// a layout.
     pub fn resize(&mut self, width: u32, height: u32) -> (u32, u32) {
-        // A window of a different size shows a different picture, so a view
-        // remembered for the old one is not the view to go back to.
-        self.by_hand(|camera| camera.resize(width, height));
+        self.set_region(PixelRect::sized(width, height));
         self.redraw = true;
         (self.camera.width(), self.camera.height())
+    }
+
+    /// Whether the pointer is known and is somewhere other than the picture.
+    ///
+    /// An unknown pointer is not outside: a wheel with nowhere to aim zooms
+    /// about the middle, as it always has.
+    fn pointer_outside(&self) -> bool {
+        self.pointer
+            .is_some_and(|point| !self.region.contains(point))
     }
 
     /// Points the camera at a box.
@@ -235,9 +294,10 @@ impl ViewportInput {
                     // about what it is over. A movement the interface wanted
                     // is a question about the interface, and the model under
                     // a panel was not being pointed at.
-                    self.hover = if claimed_by_ui {
+                    self.hover = if claimed_by_ui || !self.region.contains((x, y)) {
                         Hover::Cleared
                     } else {
+                        let (x, y) = self.region.local((x, y));
                         Hover::At(x, y)
                     };
                     return;
@@ -276,10 +336,11 @@ impl ViewportInput {
                 self.redraw = true;
             }
             ViewportEvent::PointerPressed(button) => {
-                if claimed_by_ui {
-                    // The interface wanted this press, so no gesture begins,
-                    // the release that follows will find nothing to end, and
-                    // nothing in the model was asked about.
+                if claimed_by_ui || self.pointer_outside() {
+                    // The interface wanted this press, or it landed beside the
+                    // picture, so no gesture begins, the release that follows
+                    // will find nothing to end, and nothing in the model was
+                    // asked about.
                     return;
                 }
                 self.dragging = Some(button);
@@ -305,7 +366,7 @@ impl ViewportInput {
                     && (to_x - from_x).abs() <= CLICK_SLOP
                     && (to_y - from_y).abs() <= CLICK_SLOP
                 {
-                    self.pick = Some((from_x, from_y));
+                    self.pick = Some(self.region.local((from_x, from_y)));
                     // The application answers picks while drawing a frame.
                     // Without a redraw request here, an ordinary click would
                     // be answered only if egui or the OS happened to ask for
@@ -330,7 +391,7 @@ impl ViewportInput {
                 self.hover = Hover::Cleared;
             }
             ViewportEvent::Wheel { delta } => {
-                if claimed_by_ui {
+                if claimed_by_ui || self.pointer_outside() {
                     return;
                 }
                 // A notch is a step, not a camera amount, so it is scaled into
@@ -338,13 +399,13 @@ impl ViewportInput {
                 self.zoom_by(delta * WHEEL_ZOOM);
             }
             ViewportEvent::Pinch { delta } => {
-                if claimed_by_ui {
+                if claimed_by_ui || self.pointer_outside() {
                     return;
                 }
                 self.zoom_by(delta);
             }
             ViewportEvent::Roll { radians } => {
-                if claimed_by_ui {
+                if claimed_by_ui || self.pointer_outside() {
                     return;
                 }
                 let before = self.camera;
@@ -381,6 +442,7 @@ impl ViewportInput {
                 // Pixels from the middle, positive right and up. This is where
                 // the window's idea of which way `y` grows meets the camera's,
                 // the same as it does for a drag.
+                let (x, y) = self.region.local((x, y));
                 let right = x - self.camera.width() as f32 * 0.5;
                 let up = self.camera.height() as f32 * 0.5 - y;
                 self.by_hand(|camera| camera.zoom_at(amount, right, up));
@@ -2455,5 +2517,211 @@ mod tests {
             "a named view stepped back from the model"
         );
         assert!(input.take_redraw());
+    }
+
+    /// A picture laid out beside a panel, 1x: the model's region of an 800x600
+    /// surface when 200 logical points are taken on the left and 40 on top.
+    fn beside_a_panel() -> ViewportInput {
+        let mut input = ViewportInput::new();
+        assert!(input.set_region(PixelRect::from_points(
+            [200.0, 40.0],
+            [800.0, 600.0],
+            1.0,
+            (800, 600)
+        )));
+        input
+            .frame(([-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]))
+            .expect("frames");
+        input.take_redraw();
+        input
+    }
+
+    #[test]
+    fn the_camera_is_the_size_of_the_region_and_not_of_the_window() {
+        let input = beside_a_panel();
+        assert_eq!(input.region(), PixelRect::new(200, 40, 600, 560));
+        assert_eq!(
+            (input.camera().width(), input.camera().height()),
+            (600, 560)
+        );
+        assert!((input.camera().aspect() - 600.0 / 560.0).abs() < 1e-6);
+
+        // The same layout at twice the pixels: twice the region, same aspect.
+        let mut sharp = ViewportInput::new();
+        sharp.set_region(PixelRect::from_points(
+            [200.0, 40.0],
+            [800.0, 600.0],
+            2.0,
+            (1600, 1200),
+        ));
+        assert_eq!(sharp.region(), PixelRect::new(400, 80, 1200, 1120));
+        assert_eq!(sharp.camera().aspect(), input.camera().aspect());
+    }
+
+    #[test]
+    fn a_click_is_expressed_in_the_pixels_of_the_picture_not_of_the_window() {
+        let mut input = beside_a_panel();
+        click(&mut input, (250.0, 100.0), false);
+        assert_eq!(input.take_pick(), Some((50.0, 60.0)));
+
+        input.handle(ViewportEvent::PointerMoved { x: 500.0, y: 340.0 }, false);
+        assert_eq!(input.take_hover(), Hover::At(300.0, 300.0));
+
+        // And the same window point after the panel grew by 40 points: a
+        // different place in the picture.
+        input.set_region(PixelRect::new(240, 40, 560, 560));
+        click(&mut input, (250.0, 100.0), false);
+        assert_eq!(input.take_pick(), Some((10.0, 60.0)));
+    }
+
+    #[test]
+    fn a_press_beside_the_picture_begins_nothing_even_if_nobody_claimed_it() {
+        let mut input = beside_a_panel();
+        let before = *input.camera();
+
+        // Over the panel on the left, and over the strip along the top.
+        for at in [(100.0, 300.0), (500.0, 10.0), (199.9, 300.0)] {
+            click(&mut input, at, false);
+            assert_eq!(input.take_pick(), None, "a click at {at:?} chose something");
+            input.handle(ViewportEvent::PointerMoved { x: at.0, y: at.1 }, false);
+            input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+            assert!(!input.is_dragging(), "a press at {at:?} began a gesture");
+            input.handle(
+                ViewportEvent::PointerMoved {
+                    x: at.0 + 30.0,
+                    y: at.1 + 20.0,
+                },
+                false,
+            );
+            input.handle(
+                ViewportEvent::PointerReleased(PointerButton::Primary),
+                false,
+            );
+        }
+        assert_eq!(*input.camera(), before);
+
+        // Hovering the panel asks the picture nothing and forgets the old
+        // answer, so a highlight from before cannot outlive the pointer's
+        // visit to the panel.
+        input.handle(ViewportEvent::PointerMoved { x: 400.0, y: 300.0 }, false);
+        assert_eq!(input.take_hover(), Hover::At(200.0, 260.0));
+        input.handle(ViewportEvent::PointerMoved { x: 100.0, y: 300.0 }, false);
+        assert_eq!(input.take_hover(), Hover::Cleared);
+    }
+
+    #[test]
+    fn wheel_pinch_and_turn_beside_the_picture_are_not_about_the_picture() {
+        let mut input = beside_a_panel();
+        input.handle(ViewportEvent::PointerMoved { x: 60.0, y: 300.0 }, false);
+        let before = *input.camera();
+        input.handle(ViewportEvent::Wheel { delta: 4.0 }, false);
+        input.handle(ViewportEvent::Pinch { delta: 0.5 }, false);
+        input.handle(ViewportEvent::Roll { radians: 0.7 }, false);
+        assert_eq!(*input.camera(), before);
+        assert!(!input.take_redraw());
+
+        // And over it they are, aimed at the pointer's place in the picture.
+        input.handle(ViewportEvent::PointerMoved { x: 500.0, y: 320.0 }, false);
+        input.handle(ViewportEvent::Wheel { delta: 4.0 }, false);
+        assert_ne!(*input.camera(), before);
+    }
+
+    #[test]
+    fn a_zoom_is_aimed_at_the_pointer_measured_from_the_middle_of_the_picture() {
+        // The middle of the picture, in the window, is not the middle of the
+        // window. Zooming there must keep the middle where it is.
+        let mut beside = beside_a_panel();
+        let middle = (200.0 + 300.0, 40.0 + 280.0);
+        let before = *beside.camera();
+        beside.handle(
+            ViewportEvent::PointerMoved {
+                x: middle.0,
+                y: middle.1,
+            },
+            false,
+        );
+        beside.handle(ViewportEvent::Wheel { delta: 2.0 }, false);
+        assert_ne!(*beside.camera(), before);
+        assert!(
+            beside
+                .camera()
+                .target()
+                .iter()
+                .zip(before.target())
+                .all(|(after, before)| (after - before).abs() < 1e-3),
+            "zooming at the middle of the picture moved what it looks at"
+        );
+    }
+
+    #[test]
+    fn a_drag_that_began_in_the_picture_ends_correctly_across_a_panel() {
+        let mut input = beside_a_panel();
+        input.handle(ViewportEvent::PointerMoved { x: 400.0, y: 300.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        assert!(input.is_dragging());
+        let start = *input.camera();
+
+        // Across the panel: the interface claims the movement, the gesture
+        // does not stop, and it is not a click on release.
+        input.handle(ViewportEvent::PointerMoved { x: 100.0, y: 300.0 }, true);
+        assert_ne!(*input.camera(), start, "the drag stopped at the panel");
+        input.handle(ViewportEvent::PointerReleased(PointerButton::Primary), true);
+        assert!(!input.is_dragging());
+        assert_eq!(input.take_pick(), None);
+    }
+
+    #[test]
+    fn a_moved_region_forgets_what_was_asked_in_the_old_one_even_at_the_same_size() {
+        let mut input = beside_a_panel();
+        let size_before = (input.camera().width(), input.camera().height());
+        click(&mut input, (250.0, 100.0), false);
+        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 110.0 }, false);
+        // A press that might still become a click, too.
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::GestureCancelled, false);
+        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 110.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+
+        // The panel moved the picture sideways: same size, different origin.
+        assert!(input.set_region(PixelRect::new(240, 40, 600, 560)));
+        assert_eq!(
+            (input.camera().width(), input.camera().height()),
+            size_before
+        );
+        assert_eq!(input.take_pick(), None, "an old click survived the move");
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        assert_eq!(
+            input.take_pick(),
+            None,
+            "a press from the old region became a click in the new one"
+        );
+        assert!(input.take_redraw());
+
+        // The same region again changes nothing and owes nothing.
+        assert!(!input.set_region(PixelRect::new(240, 40, 600, 560)));
+        assert!(!input.take_redraw());
+    }
+
+    #[test]
+    fn an_empty_region_is_a_picture_with_no_place_to_point_at() {
+        let mut input = beside_a_panel();
+        assert!(input.set_region(PixelRect::default()));
+        assert!(!input.camera().is_drawable());
+        click(&mut input, (0.0, 0.0), false);
+        assert_eq!(input.take_pick(), None);
+        input.handle(ViewportEvent::PointerMoved { x: 3.0, y: 3.0 }, false);
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        // Nothing here may put a NaN in a matrix.
+        assert!(
+            input
+                .camera()
+                .view_projection()
+                .iter()
+                .all(|v| v.is_finite())
+        );
     }
 }

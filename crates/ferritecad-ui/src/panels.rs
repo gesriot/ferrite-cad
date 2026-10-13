@@ -1227,6 +1227,24 @@ pub struct Activity<'a> {
 /// rather than composing it here is what keeps one account of what is going
 /// on.
 pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
+    let mut chosen = toolbar_actions(ui, activity);
+    let lines = activity_lines(ui, activity);
+    chosen.cancel = lines.cancel;
+    chosen.cancel_create = lines.cancel_create;
+    chosen.cancel_document = lines.cancel_document;
+    chosen.cancel_export = lines.cancel_export;
+    chosen
+}
+
+/// The buttons of [`toolbar`], without the lines under them.
+///
+/// For a window that gives the two different places: these buttons are always
+/// the same ones, so the strip they stand in is always the same size, and the
+/// lines are what a person reads and may need room for. The buttons that stop
+/// something - which exist only while it runs - belong to [`activity_lines`],
+/// beside what is running; a button that came and went in this row would move
+/// everything under it each time an operation started.
+pub fn toolbar_actions(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
     let mut chosen = Chosen::default();
     ui.horizontal_wrapped(|ui| {
         // First, and separated: opening replaces everything else on screen,
@@ -1245,9 +1263,6 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
                 egui::Button::new(NEW_DOCUMENT),
             )
             .clicked();
-        if activity.can_cancel_create {
-            chosen.cancel_create = ui.button("Cancel creation").clicked();
-        }
         // The document's own actions, together: what is accepted is written by
         // Save and by nothing else, and each accepted change is one step of
         // Undo and Redo. Named plainly (the local Undo of a form is "Undo
@@ -1277,11 +1292,6 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
                 "Bring back the change taken back ({SHORTCUT_PRIMARY}+Shift+Z)"
             ))
             .clicked();
-        // Only while one of them is running: a button that is there all the time
-        // and does nothing most of the time teaches people not to trust it.
-        if activity.can_cancel_document {
-            chosen.cancel_document = ui.button("Cancel operation").clicked();
-        }
         // Beside it, because it is the other thing a person does to a whole
         // document rather than to the view of one. Disabled rather than
         // hidden, on the same terms as every other action here, and disabled
@@ -1295,14 +1305,6 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             .clicked()
         {
             chosen.stl = crate::StlChoice::Begin;
-        }
-        // Offered only while there is an export to stop, for the reason the
-        // Cancel beside the reading progress is: a button that is there all
-        // the time and does nothing most of the time teaches people not to
-        // trust it. Named rather than called Cancel, because a window can be
-        // reading one document and writing another out at the same time.
-        if activity.can_cancel_export {
-            chosen.cancel_export = ui.button(CANCEL_EXPORT).clicked();
         }
         ui.separator();
 
@@ -1381,13 +1383,43 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             }
         }
     });
+    chosen
+}
 
-    // Keep activity below the controls so a failed first Open remains visible
-    // even in a narrow window. File names and errors may need several lines.
-    if let Some(fraction) = activity.progress {
-        ui.horizontal(|ui| {
-            chosen.cancel = ui.button("Cancel").clicked();
-            ui.add(egui::ProgressBar::new(fraction).desired_width(80.0));
+/// What the window is doing, in the lines [`toolbar`] draws under its buttons:
+/// the buttons that stop it, the reading's progress, the activity sentence, the
+/// unsaved mark and the document's last outcome. Returns what was pressed, in
+/// [`Chosen::cancel`] (the reading), [`Chosen::cancel_create`],
+/// [`Chosen::cancel_document`] and [`Chosen::cancel_export`].
+///
+/// Each stop is offered only while there is something to stop: a button that is
+/// there all the time and does nothing most of the time teaches people not to
+/// trust it. The export's is named rather than called Cancel, because a window
+/// can be reading one document and writing another out at the same time.
+///
+/// Keep activity below the controls so a failed first Open remains visible
+/// even in a narrow window. File names and errors may need several lines.
+pub fn activity_lines(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
+    let mut chosen = Chosen::default();
+    let stoppable = activity.progress.is_some()
+        || activity.can_cancel_create
+        || activity.can_cancel_document
+        || activity.can_cancel_export;
+    if stoppable {
+        ui.horizontal_wrapped(|ui| {
+            if let Some(fraction) = activity.progress {
+                chosen.cancel = ui.button("Cancel").clicked();
+                ui.add(egui::ProgressBar::new(fraction).desired_width(80.0));
+            }
+            if activity.can_cancel_create {
+                chosen.cancel_create = ui.button("Cancel creation").clicked();
+            }
+            if activity.can_cancel_document {
+                chosen.cancel_document = ui.button("Cancel operation").clicked();
+            }
+            if activity.can_cancel_export {
+                chosen.cancel_export = ui.button(CANCEL_EXPORT).clicked();
+            }
         });
     }
     ui.add(egui::Label::new(activity.line).wrap());
@@ -1588,6 +1620,75 @@ mod tests {
                 ..Default::default()
             },
         )
+    }
+
+    /// The action row's height and the words of the status lines, in a window
+    /// this many points wide.
+    fn action_row_and_lines(activity: Activity<'_>, width: f32) -> (f32, Vec<String>) {
+        let context = egui::Context::default();
+        let mut height = 0.0;
+        let mut lines = Vec::new();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 600.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            height = ui
+                .scope(|ui| toolbar_actions(ui, activity))
+                .response
+                .rect
+                .height();
+            ui.scope(|ui| activity_lines(ui, activity));
+        });
+        output.textures_delta.clear();
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text) = &clipped.shape {
+                lines.push(text.galley.text().to_owned());
+            }
+        }
+        (height, lines)
+    }
+
+    #[test]
+    fn the_stop_buttons_stand_with_the_activity_and_never_resize_the_action_row() {
+        let idle = Activity {
+            line: "Ready",
+            can_open: true,
+            can_export: true,
+            ..Activity::default()
+        };
+        let running = Activity {
+            can_cancel_create: true,
+            can_cancel_document: true,
+            can_cancel_export: true,
+            progress: Some(0.25),
+            ..idle
+        };
+        // At any width: an operation starting must not move what is under the
+        // action row, or the picture under the panels would move with it.
+        for width in [420.0, 700.0, 1000.0, 1600.0] {
+            let (quiet, lines) = action_row_and_lines(idle, width);
+            let (busy, words) = action_row_and_lines(running, width);
+            assert_eq!(quiet, busy, "the action row changed height at {width}");
+            for stop in [
+                "Cancel",
+                "Cancel creation",
+                "Cancel operation",
+                CANCEL_EXPORT,
+            ] {
+                assert!(
+                    !lines.iter().any(|line| line == stop),
+                    "{stop} offered with nothing to stop"
+                );
+                assert!(
+                    words.iter().any(|line| line == stop),
+                    "{stop} is not among the lines while something runs at {width}"
+                );
+            }
+        }
     }
 
     /// The same, for a window that is in the middle of reading something.

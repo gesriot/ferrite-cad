@@ -45,6 +45,7 @@
 
 mod camera;
 mod grid;
+mod region;
 mod sketch;
 mod snapshot;
 
@@ -56,6 +57,7 @@ mod snapshot;
 
 pub use camera::{Camera, Projection, StandardView};
 pub use grid::{GridPlan, HALF_LINES, MAJOR_EVERY, MAX_PIXELS, MIN_PIXELS, plan as grid_plan};
+pub use region::PixelRect;
 pub use sketch::{SketchDrawing, SketchDrawingBuilder, SketchPoint, SketchStroke, SketchStyle};
 pub use snapshot::{
     DrawItem, EdgePickId, FacePickId, Hovered, Marked, PackedMesh, PickId, RenderSnapshot,

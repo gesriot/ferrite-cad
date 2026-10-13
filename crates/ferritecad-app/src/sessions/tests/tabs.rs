@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 mod drafts;
 /// §30R: the last window's saved files, kept at Quit and reopened.
 mod restore;
+/// §31B: the window's layout and the viewport's rectangle.
+mod workspace;
 
 /// How a picture is built for a test: on the mock kernel (kernel-free gates) or
 /// by the window's own scene worker on Open CASCADE (native gates).
