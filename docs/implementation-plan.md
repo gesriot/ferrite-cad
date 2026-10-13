@@ -5038,11 +5038,11 @@ unobserved manual gestures are listed separately in the verification document.
 Exact remote CI is recorded in PR #105. Windows/Linux windows, §30, Milestone 5C,
 the product and the OOM investigation remain open.
 
-### §31C — Object snaps in the Sketch editor (planned)
+### §31C — Object snaps in the Sketch editor (endpoint, midpoint, crossing implemented; centre deferred)
 
-Accepted interaction contract, 2026-10-13. Implement the algorithms and regression
-tests independently against this contract. The current viewport-layout work stays
-separate; no snap implementation is claimed here.
+Accepted interaction contract, 2026-10-13. The slice below implements it for the
+geometry the Line canvas actually draws; the centre of a circle is **not**
+implemented and not claimed (see the status after the contract).
 
 - First families: endpoint, midpoint, circle centre and finite-segment intersection,
   where the editor actually displays that geometry. Do not invent document objects
@@ -5079,6 +5079,22 @@ vertices, reversed segment order, finite intersections versus line extensions,
 object/grid competition, 1x/2x display scale, invalid coordinate drafts, Escape,
 one gesture/one Undo, and unchanged typed input. Use real editor interaction tests
 as well as geometry tests; helper-only coverage does not establish a reachable UI.
+
+**Status, author handoff (unstaged, uncommitted; branch `sketch-object-snaps`).** The
+Line canvas of a New drawing and of a saved Sketch has an **Object snap** switch in the
+grid-step row (editor state, off for a new editor, nothing persisted). With it on, a
+click or a vertex drag lands exactly on the nearest endpoint, midpoint or
+finite-segment crossing of the contour as drawn; the marker and the name of the choice
+(`Endpoint`, `Midpoint`, `Intersection`) are painted beside the pointer for the frame.
+Typed X/Y are untouched, no constraint or ID is made, only the resulting coordinate
+edit is an Undo step. The **circle centre is not available**: Circle and Annulus are
+numeric forms, the canvas draws no circle, and no invisible candidate was added; it
+stays the next §31C addition. Quadrants, nearest, tangency, apparent crossings and all
+of §31D remain later. Contract, rules for degenerate geometry, executed gates,
+mutations, resources and the independent window recipe:
+[sketch-object-snaps.md](sketch-object-snaps.md). The author ran no window; the diff
+has no CI of its own yet. §30, Milestone 5C, the product and the OOM investigation
+remain open.
 
 ### §31D — Gesture guides and temporary dimensional input (planned)
 

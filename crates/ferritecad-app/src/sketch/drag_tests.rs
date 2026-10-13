@@ -25,7 +25,7 @@ fn setup() -> (egui::Context, Editor) {
     frame(&ctx, &mut e, vec![]);
     (ctx, e)
 }
-fn canvas(output: &egui::FullOutput) -> egui::Rect {
+pub(super) fn canvas(output: &egui::FullOutput) -> egui::Rect {
     output
         .shapes
         .iter()
@@ -39,11 +39,11 @@ fn canvas(output: &egui::FullOutput) -> egui::Rect {
         })
         .expect("painted canvas")
 }
-fn press(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
+pub(super) fn press(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
     frame(ctx, e, vec![egui::Event::PointerMoved(at)]);
     button(ctx, e, at, true);
 }
-fn button(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2, pressed: bool) {
+pub(super) fn button(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2, pressed: bool) {
     frame(
         ctx,
         e,
@@ -55,10 +55,10 @@ fn button(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2, pressed: bool) {
         }],
     );
 }
-fn move_to(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) -> egui::FullOutput {
+pub(super) fn move_to(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) -> egui::FullOutput {
     frame(ctx, e, vec![egui::Event::PointerMoved(at)])
 }
-fn key(key: egui::Key) -> egui::Event {
+pub(super) fn key(key: egui::Key) -> egui::Event {
     egui::Event::Key {
         key,
         physical_key: None,
@@ -67,7 +67,7 @@ fn key(key: egui::Key) -> egui::Event {
         modifiers: Default::default(),
     }
 }
-fn vertex(ctx: &egui::Context, e: &mut Editor, i: usize) -> egui::Pos2 {
+pub(super) fn vertex(ctx: &egui::Context, e: &mut Editor, i: usize) -> egui::Pos2 {
     let rect = canvas(&frame(ctx, e, vec![]));
     e.canvas.screen(
         rect,
@@ -616,10 +616,49 @@ pub(crate) fn sql_facts(
         })
         .collect()
 }
+/// What a published dragged copy of the editor's L must contain, in mm: its
+/// vertices in saved order, the X of the first Line's far end (the side face),
+/// the box's high corner and the volume; and where an independent reader may
+/// pick the files up (an environment variable naming a directory, and a stem).
+pub(super) struct Published {
+    pub(super) vertices: [[f64; 2]; 6],
+    pub(super) side_x: f64,
+    pub(super) high: [f64; 3],
+    pub(super) volume_mm3: f64,
+    pub(super) artifacts: (&'static str, &'static str),
+}
+
 pub(super) fn verify_publications(
     source: &std::path::Path,
     ui: &std::path::Path,
     cli: &std::path::Path,
+) {
+    verify_published(
+        source,
+        ui,
+        cli,
+        &Published {
+            vertices: [
+                [0., 0.],
+                [80., 0.],
+                [80., 20.],
+                [20., 20.],
+                [20., 40.],
+                [0., 40.],
+            ],
+            side_x: 80.,
+            high: [80., 40., 10.],
+            volume_mm3: 20000.,
+            artifacts: ("FCAD_SKETCH_DRAG_ARTIFACT_DIR", "drag"),
+        },
+    );
+}
+
+pub(super) fn verify_published(
+    source: &std::path::Path,
+    ui: &std::path::Path,
+    cli: &std::path::Path,
+    expected: &Published,
 ) {
     use crate::creates::tests::ferritecad;
     use ferritecad_document::Document;
@@ -642,14 +681,7 @@ pub(super) fn verify_publications(
             .iter()
             .map(|v| v.start_mm)
             .collect::<Vec<_>>(),
-        [
-            [0., 0.],
-            [80., 0.],
-            [80., 20.],
-            [20., 20.],
-            [20., 40.],
-            [0., 40.]
-        ]
+        expected.vertices
     );
     let selected = choices.sketches[0].sketch;
     for old in original.objects().expect("objects") {
@@ -699,7 +731,7 @@ pub(super) fn verify_publications(
                     choices.sketches[0].vertices.as_ref().expect("vertices")[0].curve_id
                 );
                 assert!(points.iter().all(|p| p[1] == 0.));
-                assert!(points.iter().any(|p| p[0] == 80.));
+                assert!(points.iter().any(|p| p[0] == expected.side_x as f32));
             }
             _ => panic!("unexpected reference"),
         }
@@ -760,16 +792,17 @@ pub(super) fn verify_publications(
             + v[2] * (v[3] * v[7] - v[4] * v[6]);
     }
     assert_eq!(lo, [0., 0., 0.]);
-    assert_eq!(hi, [80., 40., 10.]);
+    assert_eq!(hi, expected.high);
     // Same 1 ppm tolerance as §25B; planar integer vertices are exact in f32.
-    assert!((volume6.abs() / 6. - 20000.).abs() < 0.02);
-    if let Some(dir) = std::env::var_os("FCAD_SKETCH_DRAG_ARTIFACT_DIR") {
+    assert!((volume6.abs() / 6. - expected.volume_mm3).abs() < expected.volume_mm3 * 1e-6);
+    if let Some(dir) = std::env::var_os(expected.artifacts.0) {
         let dir = PathBuf::from(dir);
         std::fs::create_dir_all(&dir).expect("artifact directory");
+        let stem = expected.artifacts.1;
         for (from, name) in [
-            (ui.to_path_buf(), "drag.fcad"),
-            (ui.with_extension("stl"), "drag.stl"),
-            (ui.with_extension("fbx"), "drag.fbx"),
+            (ui.to_path_buf(), format!("{stem}.fcad")),
+            (ui.with_extension("stl"), format!("{stem}.stl")),
+            (ui.with_extension("fbx"), format!("{stem}.fbx")),
         ] {
             std::fs::copy(from, dir.join(name)).expect("retain artifacts for independent reader");
         }
