@@ -1588,6 +1588,17 @@ jobs:
             grep -Fxq "$marker" model-tree-native.log
           done
 
+          # The viewport's native/device proof is required on pull requests too;
+          # OCCT pin is manual and cannot enforce the new window coordinate path.
+          gate=tests::a_native_part_is_framed_picked_and_drawn_only_inside_a_shifted_viewport
+          FERRITECAD_REQUIRE_GPU=1 cargo test --release --features planegcs -p ferritecad-app \
+            --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 \
+            2>&1 | tee workspace-native-gpu.log
+          if grep -q 'skipped:' workspace-native-gpu.log; then exit 1; fi
+          grep -Fq "test $gate ... " workspace-native-gpu.log
+          grep -q '^test result: ok\. 1 passed; 0 failed' workspace-native-gpu.log
+          grep -Fxq 'FCAD_31B_NATIVE_REGION_EXECUTED picks=6 scales=2 kinds=face,edge,corner' workspace-native-gpu.log
+
       - name: Create a saved polygon through the native CLI and sketch worker
         env:
           FERRITECAD_REQUIRE_OCCT: '1'

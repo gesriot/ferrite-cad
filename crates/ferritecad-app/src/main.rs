@@ -45,6 +45,7 @@ mod restores;
 mod sessions;
 mod sketch;
 mod tabs;
+mod workspace;
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -2138,6 +2139,8 @@ struct Live {
     egui: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    /// A fast load can finish before the first layout establishes camera aspect.
+    viewport_ready: bool,
 }
 
 /// The GPU picture and the transient state that belongs to it.
@@ -3724,15 +3727,16 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             WindowEvent::Resized(size) => {
-                // One size, applied to both. The reducer holds the camera and
-                // hands back what the surface must be configured with, so the
-                // two cannot be given different numbers.
-                let (width, height) = self.input.resize(size.width, size.height);
-                if let Err(error) = live.surface.resize(&live.renderer, width, height) {
+                // The window's size is the surface's. The camera's is the
+                // viewport's, which the next frame's layout finds out and
+                // hands the reducer along with its place, so the two are
+                // never given different numbers by being given them twice.
+                if let Err(error) = live.surface.resize(&live.renderer, size.width, size.height) {
                     eprintln!("ferritecad: {error}");
                     event_loop.exit();
                     return;
                 }
+                self.input.request_redraw();
             }
             WindowEvent::RedrawRequested => {
                 self.frames.frame_started();
@@ -4081,7 +4085,7 @@ impl ApplicationHandler<AppEvent> for App {
                 });
                 let (form, sketch) = self.creates.forms();
                 match live.draw(
-                    &self.input,
+                    &mut self.input,
                     activity,
                     Sections {
                         model,
@@ -7130,9 +7134,10 @@ impl App {
         // The adapter is chosen for this surface, not for the machine: see
         // Renderer::for_surface.
         let mut renderer = Renderer::for_surface(&instance, &surface)?;
+        // The surface is the window's; where the model goes in it is the
+        // layout's, and is found when the first frame is laid out.
         let size = window.inner_size();
-        let (width, height) = self.input.resize(size.width, size.height);
-        let window_surface = WindowSurface::new(&renderer, surface, width, height)?;
+        let window_surface = WindowSurface::new(&renderer, surface, size.width, size.height)?;
 
         // Empty until a document is accepted. The window is worth opening
         // before then: it is how the user opens one, and, when a file was
@@ -7191,19 +7196,23 @@ impl App {
             egui,
             egui_state,
             egui_renderer,
+            viewport_ready: false,
         })
     }
 }
 
 impl Live {
-    /// One frame: the model, then the interface, then publication.
+    /// One frame: the interface is laid out, the model goes where it left room,
+    /// then the interface is drawn over the rest, then publication.
     ///
-    /// One texture, acquired once. The order is not a convention here – the
-    /// seam enforces it, because the model's pass is what clears the target
-    /// and the type only offers a view to draw into afterwards.
+    /// One texture, acquired once. The order is not a convention here - the
+    /// seam enforces it, because the model's pass is what clears the target and
+    /// the type only offers a view to draw into afterwards. The layout comes
+    /// before the model's pass because the model's rectangle is whatever the
+    /// layout leaves; the interface is only *computed* first, and painted after.
     fn draw(
         &mut self,
-        input: &ViewportInput,
+        input: &mut ViewportInput,
         activity: Activity<'_>,
         sections: Sections<'_>,
     ) -> Result<(
@@ -7225,6 +7234,7 @@ impl Live {
             egui,
             egui_state,
             egui_renderer,
+            viewport_ready,
         } = self;
 
         // What each definition is, and what the document calls the chosen
@@ -7278,190 +7288,62 @@ impl Live {
                 false,
             ));
         };
+        let surface_size = frame.size();
+
+        // Laid out first, because what the panels leave is where the model
+        // goes. Only the arithmetic happens here: the interface is painted
+        // after the model, below.
+        let raw_input = egui_state.take_egui_input(window);
+        let mut view = workspace::View {
+            activity,
+            sections,
+            scene: workspace::Scene {
+                document: scene.document.as_deref(),
+                edit_source: scene.edit_source.as_ref(),
+                definitions: &definitions,
+                chosen_row,
+                offers: &offers,
+                described,
+                solves: &solves,
+            },
+        };
+        let mut answers = workspace::Answers::default();
+        let mut output = egui.run_ui(raw_input, |ui| {
+            // The panels return what was asked for and apply nothing. What a
+            // request means to the camera is the reducer's, and having one
+            // place for that is what stops a button and a keystroke drifting
+            // apart.
+            answers = workspace::compose(ui, &mut view);
+        });
+
+        // The one rectangle of the window the model is drawn into and pointed
+        // at in. Handed to the reducer, which sizes the camera from it and
+        // forgets whatever was asked about the old one, and then to the
+        // renderer, so that the camera, the viewport and the pick frame all
+        // have the size the layout left.
+        let region = workspace::region_of(answers.central, egui.pixels_per_point(), surface_size);
+        workspace::place_view(
+            input,
+            region,
+            scene.visibility.bounds(scene.prepared.snapshot()),
+            viewport_ready,
+        )?;
         let frame = frame.draw_scene(
             &scene.prepared,
             input.camera(),
             scene.selection.marked(),
             scene.hovered,
             &scene.visibility,
+            region,
         )?;
 
-        let raw_input = egui_state.take_egui_input(window);
-        let mut chosen = Chosen::default();
-        let mut replace = ferritecad_ui::ReplaceChoice::default();
-        let mut asked = NewChoice::default();
-        let Sections {
-            dialog_failure,
-            sketch,
-            creating,
-            mut stl_form,
-            edits,
-            can_edit,
-            can_new,
-            height,
-            held_back,
-            document_outcome,
-            failure,
-            export,
-            replacing,
-            mut form,
-            open_over_new,
-            closing_form,
-            close_form,
-            quit_new,
-            created,
-            reopen,
-            recovery,
-            mut checkpoints,
-            tabs,
-            forms_scope,
-            mut model,
-            model_available,
-        } = sections;
-        let mut pointed_row = None;
-        let mut output = egui.run_ui(raw_input, |ui| {
-            // The panel returns what was asked for and applies nothing. What a
-            // request means to the camera is the reducer's, and having one
-            // place for that is what stops a button and a keystroke drifting
-            // apart.
-            if closing_form {
-                chosen.close_form = if let Some(losing) = quit_new {
-                    ferritecad_ui::quit_new_panel(ui, losing)
-                } else {
-                    ferritecad_ui::close_form_panel(ui, close_form)
-                };
-                ui.label(document_outcome);
-                if activity.can_cancel_document && ui.button("Cancel operation").clicked() {
-                    chosen.cancel_document = true;
-                }
-                return;
-            }
-            chosen = ferritecad_ui::toolbar(ui, activity);
-            chosen.tab = ferritecad_ui::tab_strip(ui, tabs);
-            if let Some((tab, navigation)) = &mut model {
-                let rows: Vec<_> = scene
-                    .edit_source
-                    .as_ref()
-                    .map(|s| {
-                        s.model_tree
-                            .rows
-                            .iter()
-                            .map(|r| ferritecad_ui::ModelRow {
-                                key: r.id,
-                                parent: r.parent,
-                                depth: r.depth,
-                                name: &r.name,
-                                kind: &r.kind,
-                                note: &r.note,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                egui::Panel::left("model-panel")
-                    .default_size(260.)
-                    .size_range(180.0..=340.0)
-                    .show(ui, |ui| {
-                        chosen.model = ferritecad_ui::model_panel(
-                            ui,
-                            *tab,
-                            &rows,
-                            navigation,
-                            |key| {
-                                scene
-                                    .edit_source
-                                    .as_ref()
-                                    .map(|s| model_tree::actions(s, key))
-                                    .unwrap_or_default()
-                            },
-                            model_available,
-                        );
-                    });
-            }
-            chosen.reopen = ferritecad_ui::reopen_panel(ui, reopen);
-            chosen.recovery = ferritecad_ui::recovery_panel(ui, recovery);
-            if let Some((panel, name)) = &mut checkpoints {
-                chosen.checkpoint = ferritecad_ui::checkpoint_panel(ui, *panel, name);
-            }
-            if held_back {
-                ui.label(
-                    "Copy workflows require a saved document with no unsaved changes. \
-                     Height, vertices, constraints, Circle, annulus, a saved partial Revolve \
-                     angle, existing Cut parameters, Fillet radii and Chamfer distances can \
-                     still be changed with Apply, and a new Cut, Fillet or Chamfer added with \
-                     Add cut, Add fillet or Add chamfer.",
-                );
-            }
-            in_tab_scope(ui, "tab-forms", forms_scope, |ui| {
-                sketch.draw_choices(
-                    ui,
-                    can_edit,
-                    scene.document.as_deref(),
-                    scene.edit_source.as_ref(),
-                );
-                sketch.draw(ui, can_new, creating || edits.running(), document_outcome);
-            });
-            if let Some(message) = dialog_failure {
-                ui.colored_label(ui.visuals().error_fg_color, message);
-            }
-            ui.separator();
-            let unavailable = scene
-                .edit_source
-                .as_ref()
-                .map(|source| source.unavailable_reason())
-                .unwrap_or(Some("Open a document to edit an extrusion."));
-            chosen.edit = in_tab_scope(ui, "tab-height", forms_scope, |ui| {
-                edits.draw_with(ui, can_edit, unavailable, height)
-            });
-            let stl = ferritecad_ui::stl_export_form(ui, stl_form.as_deref_mut());
-            if stl != ferritecad_ui::StlChoice::Waiting {
-                chosen.stl = stl;
-            }
-            // Directly under the toolbar, because it is a question about the
-            // button that was just pressed and nothing is written until it is
-            // answered.
-            replace = ferritecad_ui::replace_confirmation(ui, replacing);
-            // Directly under the toolbar as well, and for the same reason: it
-            // is the question the button that was just pressed asked, and
-            // nothing is made until it is answered.
-            // §30T: the question under the form it is about, so the person sees what
-            // is lost and the form keeps the keyboard when it appears.
-            (asked, chosen.open_over_new) =
-                ferritecad_ui::new_document_section(ui, form.as_deref_mut(), open_over_new);
-            // What the last New did. Its own section rather than a second
-            // sentence in the status line: a document that was written and
-            // then could not be shown is two facts, and both are needed.
-            ferritecad_ui::create_panel(ui, created);
-            // What the last export did. Its own section rather than a second
-            // sentence in the status line: an export that failed is not a
-            // document that failed to open, and the two must not be read as
-            // one.
-            ferritecad_ui::export_panel(ui, export);
-            // Why the last attempt to open a document failed, when there is
-            // more to it than the line the toolbar already shows. Beside the
-            // status line because that is what it belongs to, and above
-            // everything that describes the model because it describes another
-            // document: the picture below is the one that did open.
-            ferritecad_ui::open_failure_panel(ui, failure);
-            // Every definition in the picture, whether or not any of it is on
-            // screen: a part hidden behind another, too small to hit or out of
-            // shot is reachable here and nowhere else.
-            let rows = ferritecad_ui::definitions_panel(ui, &definitions, chosen_row, &offers);
-            chosen.definition = rows.pressed;
-            chosen.row_visibility = rows.visibility;
-            pointed_row = rows.hovered;
-            ui.separator();
-            // Read-only, and the only place the choice is described. What it
-            // is allowed to say is decided by `Selected`, which cannot name
-            // anything that means something only to this frame.
-            ferritecad_ui::selection_inspector(ui, described);
-            ui.separator();
-            // What the rebuild behind this picture found out about the
-            // drawings it was built from. Not an inspector and not part of the
-            // choice: a sketch is not drawn in the viewport and cannot be
-            // picked, so this is a third kind of thing the window knows and it
-            // is shown as one.
-            ferritecad_ui::sketch_solves_panel(ui, &solves);
-        });
+        let workspace::Answers {
+            chosen,
+            replace,
+            asked,
+            pointed_row,
+            ..
+        } = answers;
         // Asked after the pass, when egui knows the areas it just laid out.
         // `EventResponse::consumed` deliberately means something narrower for
         // CursorMoved and is false for an idle pointer over a toolbar.
@@ -7537,7 +7419,13 @@ fn in_tab_scope<R>(
 /// only from the title and ignores the parent Ui's tab scope. Include that scope
 /// explicitly so their fields, text undo state and focus belong to one tab too.
 fn form_window<'a>(ui: &egui::Ui, title: &'a str) -> egui::Window<'a> {
-    egui::Window::new(title).id(ui.make_persistent_id(("form-window", title)))
+    let window = egui::Window::new(title).id(ui.make_persistent_id(("form-window", title)));
+    // §31B: a form first appears in front of the viewport, not on the panels
+    // beside it. Only where it first appears: it is the person's to move.
+    match workspace::central_of(ui.ctx()) {
+        Some(central) => window.default_pos(central.min + egui::vec2(16.0, 16.0)),
+        None => window,
+    }
 }
 
 /// Turns one window event into what this application means by it.
@@ -21877,6 +21765,279 @@ mod tests {
         );
         sketch.dismiss();
         assert!(!form_open(&edits, &sketch));
+    }
+
+    /// Where a world point lands in the pixels of a camera, or `None` outside
+    /// them. Through the matrix the shader was given, so a probe cannot disagree
+    /// with the picture about where something is.
+    fn lands_inside(camera: &Camera, world: [f32; 3]) -> bool {
+        let m = camera.view_projection();
+        let mut clip = [0.0f64; 4];
+        for (row, value) in clip.iter_mut().enumerate() {
+            *value = f64::from(m[row]) * f64::from(world[0])
+                + f64::from(m[4 + row]) * f64::from(world[1])
+                + f64::from(m[8 + row]) * f64::from(world[2])
+                + f64::from(m[12 + row]);
+        }
+        clip[3].abs() > 1e-9 && (0..2).all(|axis| (-1.0..=1.0).contains(&(clip[axis] / clip[3])))
+    }
+
+    /// §31B: a native part is framed, picked and drawn inside a viewport that the
+    /// production layout shifted away from the window's origin.
+    ///
+    /// The layout is `workspace::compose`, the region is `region_of`, the click
+    /// is delivered in window pixels through the reducer, the pick is read from a
+    /// frame the size of the region, and the window's own pass draws the same
+    /// camera into a texture the size of the window. For a face, an edge and a
+    /// corner the document names, at one and two pixels per point: the click's
+    /// pixel is the pixel it was made at, the selection is that exact thing, the
+    /// window pass draws it as chosen at the window pixel the click was made at,
+    /// every pixel outside the region is the clear colour, and the same window
+    /// pixel without the origin removed names something else.
+    #[test]
+    fn a_native_part_is_framed_picked_and_drawn_only_inside_a_shifted_viewport() {
+        let Some((_directory_face, faces)) = native_plate_scene() else {
+            return;
+        };
+        let Some((_directory_edge, edges)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let Some((_directory_corner, corners)) = native_plate_with_named_cap_vertices() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let ctx = egui::Context::default();
+        let clear = [0u8, 0, 0, 255];
+        let mut chosen_things = 0;
+
+        for (pixels_per_point, surface) in [(1.0f32, (1024u32, 768u32)), (2.0, (2048, 1536))] {
+            let laid = workspace::quiet_layout(
+                &ctx,
+                (
+                    surface.0 as f32 / pixels_per_point,
+                    surface.1 as f32 / pixels_per_point,
+                ),
+                pixels_per_point,
+            );
+            let region = workspace::region_of(laid.central, pixels_per_point, surface);
+            assert!(
+                region.x() > 0 && region.y() > 0 && region.width() < surface.0 - region.x() + 1,
+                "the production layout did not shift the viewport: {region:?}"
+            );
+            assert!(
+                region.width() > 300 && region.height() > 300,
+                "{region:?} is no viewport"
+            );
+
+            for (what, scene) in [("face", &faces), ("edge", &edges), ("corner", &corners)] {
+                let picture = std::sync::Arc::new(scene.snapshot.clone());
+                let prepared = renderer
+                    .prepare(std::sync::Arc::clone(&picture))
+                    .expect("uploads");
+                let visibility = Visibility::new(&picture);
+                let mut input = ViewportInput::new();
+                // A fast command-line Open finishes before any window layout.
+                // It must fit on the first frame, without pressing Frame all.
+                input
+                    .accept_load(Ok((*picture).clone()))
+                    .expect("early load");
+                let mut viewport_ready = false;
+                workspace::place_view(
+                    &mut input,
+                    region,
+                    visibility.bounds(&picture),
+                    &mut viewport_ready,
+                )
+                .expect("first layout");
+                assert!(viewport_ready);
+                let initially_framed = *input.camera();
+
+                // Frame all, by the same function the button and the key call.
+                assert!(frame_scene(&visibility, &picture, &mut input).expect("frames"));
+                assert_eq!(
+                    *input.camera(),
+                    initially_framed,
+                    "the first layout required a corrective Frame all"
+                );
+                let (low, high) = picture.bounds().expect("somewhere");
+                assert_eq!(
+                    (input.camera().width(), input.camera().height()),
+                    (region.width(), region.height()),
+                    "the camera is not the region's size"
+                );
+                for x in [low[0], high[0]] {
+                    for y in [low[1], high[1]] {
+                        for z in [low[2], high[2]] {
+                            assert!(
+                                lands_inside(input.camera(), [x, y, z]),
+                                "{what}: Frame all left {:?} outside the region",
+                                [x, y, z]
+                            );
+                        }
+                    }
+                }
+
+                // Turned off the axis, by a drag in the window's own pixels.
+                let at = |x: f32, y: f32| {
+                    let (x, y) = region.window((x, y));
+                    (x, y)
+                };
+                let (fx, fy) = at(200.0, 200.0);
+                let (tx, ty) = at(260.0, 150.0);
+                input.handle(ViewportEvent::PointerMoved { x: fx, y: fy }, false);
+                input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+                input.handle(ViewportEvent::PointerMoved { x: tx, y: ty }, false);
+                input.handle(
+                    ViewportEvent::PointerReleased(PointerButton::Primary),
+                    false,
+                );
+                assert_eq!(input.take_pick(), None, "an orbit picked");
+
+                let plain = renderer
+                    .render(
+                        &prepared,
+                        input.camera(),
+                        Marked::Nothing,
+                        Hovered::Nothing,
+                        &visibility,
+                    )
+                    .expect("draws");
+                assert_eq!(
+                    (plain.width(), plain.height()),
+                    (region.width(), region.height())
+                );
+
+                // A pixel of the thing the document names, in the region's own
+                // pixels.
+                let (x, y) = (0..plain.height())
+                    .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+                    .find(|(x, y)| {
+                        let hit = plain.hit_at(*x, *y);
+                        match what {
+                            "face" => {
+                                hit.face() != FacePickId::NOTHING
+                                    && hit.edge() == EdgePickId::NOTHING
+                                    && hit.vertex() == ferritecad_viewport::VertexPickId::NOTHING
+                                    && !scene.faces.of(hit.face(), &picture).is_empty()
+                            }
+                            "edge" => {
+                                hit.edge() != EdgePickId::NOTHING
+                                    && hit.vertex() == ferritecad_viewport::VertexPickId::NOTHING
+                                    && !scene.edges.of(hit.edge(), &picture).is_empty()
+                            }
+                            _ => {
+                                hit.vertex() != ferritecad_viewport::VertexPickId::NOTHING
+                                    && !scene.vertices.of(hit.vertex(), &picture).is_empty()
+                            }
+                        }
+                    })
+                    .unwrap_or_else(|| panic!("the part draws no {what} the document names"));
+
+                // The click, made at that pixel of the window.
+                let (wx, wy) = region.window((x as f32, y as f32));
+                input.handle(ViewportEvent::PointerMoved { x: wx, y: wy }, false);
+                input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+                input.handle(
+                    ViewportEvent::PointerReleased(PointerButton::Primary),
+                    false,
+                );
+                let (px, py) = input.take_pick().expect("a click in the viewport asks");
+                assert_eq!(
+                    (px.round() as u32, py.round() as u32),
+                    (x, y),
+                    "{what}: the click is not at the pixel it was made at"
+                );
+                let hit = plain.hit_at(px.round() as u32, py.round() as u32);
+                let chosen =
+                    selection_at(hit, &picture, &scene.faces, &scene.edges, &scene.vertices);
+                match (what, &chosen) {
+                    ("face", Selection::Face(face)) => {
+                        assert_eq!(face.face(), hit.face());
+                    }
+                    ("edge", Selection::Edge(edge)) => assert_eq!(edge.edge(), hit.edge()),
+                    ("corner", Selection::Vertex(vertex)) => {
+                        assert_eq!(vertex.vertex(), hit.vertex());
+                    }
+                    _ => panic!("{what}: the click chose {chosen:?}"),
+                }
+
+                // Without the origin removed, the same window pixel is another
+                // place: this is what a lost origin looks like. A face is large
+                // enough to be under both, so only the small things say so.
+                if what != "face" {
+                    let wrong = plain.hit_at(wx as u32, wy as u32);
+                    assert_ne!(
+                        selection_at(wrong, &picture, &scene.faces, &scene.edges, &scene.vertices),
+                        chosen,
+                        "{what}: the click without the origin removed found the same thing"
+                    );
+                }
+
+                // The window's own pass: the same camera, into a texture the
+                // size of the window, with the chosen thing marked and not.
+                let mut drawn = |marked: Marked| {
+                    renderer
+                        .draw_window_image(
+                            &prepared,
+                            input.camera(),
+                            marked,
+                            Hovered::Nothing,
+                            &visibility,
+                            surface,
+                            region,
+                        )
+                        .expect("the window pass draws")
+                };
+                let unmarked = drawn(Marked::Nothing);
+                let marked = drawn(chosen.marked());
+                let mut inside_drawn = 0usize;
+                for py in 0..surface.1 {
+                    for px in 0..surface.0 {
+                        let pixel = unmarked.colour_at(px, py).expect("in the window");
+                        let in_region = px >= region.x()
+                            && px < region.x() + region.width()
+                            && py >= region.y()
+                            && py < region.y() + region.height();
+                        if in_region {
+                            inside_drawn += usize::from(pixel != clear);
+                        } else {
+                            assert_eq!(
+                                pixel, clear,
+                                "{what}: the part reached {px},{py}, outside its viewport"
+                            );
+                            assert_eq!(marked.colour_at(px, py), Some(clear));
+                        }
+                    }
+                }
+                assert!(
+                    inside_drawn > 1000,
+                    "{what}: only {inside_drawn} pixels drawn"
+                );
+                // And what was chosen is drawn as chosen at the window pixel the
+                // click was made at (a mark may be a few pixels wide: look near).
+                let reach = 3i64;
+                let changed = (-reach..=reach)
+                    .flat_map(|dy| (-reach..=reach).map(move |dx| (dx, dy)))
+                    .any(|(dx, dy)| {
+                        let (ax, ay) = (wx as i64 + dx, wy as i64 + dy);
+                        u32::try_from(ax)
+                            .ok()
+                            .zip(u32::try_from(ay).ok())
+                            .is_some_and(|(ax, ay)| {
+                                marked.colour_at(ax, ay) != unmarked.colour_at(ax, ay)
+                            })
+                    });
+                assert!(
+                    changed,
+                    "{what}: the chosen thing was not drawn as chosen where the click was made"
+                );
+                chosen_things += 1;
+            }
+        }
+        assert_eq!(chosen_things, 6);
+        println!(
+            "\nFCAD_31B_NATIVE_REGION_EXECUTED picks={chosen_things} scales=2 kinds=face,edge,corner"
+        );
     }
 
     /// §30A: the window is named for the user's file with a mark while there are

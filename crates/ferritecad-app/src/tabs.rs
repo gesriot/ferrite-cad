@@ -659,7 +659,9 @@ impl Tabs {
     }
 
     /// The camera the arriving picture of switch `generation` is shown with: the
-    /// tab's own, fitted to the window's present size.
+    /// tab's own, fitted to where the window's viewport is now - its size and
+    /// its place, because the panels around it are the window's and not the
+    /// tab's.
     pub(crate) fn view_for(
         &self,
         generation: u64,
@@ -670,7 +672,7 @@ impl Tabs {
             .as_ref()
             .filter(|s| s.generation == generation)?;
         let mut camera = self.hidden(switch.target)?.view.camera.clone();
-        camera.resize(window.camera().width(), window.camera().height());
+        camera.set_region(window.region());
         Some(camera)
     }
 

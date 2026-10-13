@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use ferritecad_types::{CadError, Result};
 use ferritecad_viewport::{
-    Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, RenderSnapshot, SketchDrawing,
-    SketchStyle, VERTEX_FLOATS, VertexPickId, Visibility,
+    Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, PixelRect, RenderSnapshot,
+    SketchDrawing, SketchStyle, VERTEX_FLOATS, VertexPickId, Visibility,
 };
 use wgpu::util::DeviceExt as _;
 
@@ -803,9 +803,20 @@ impl Renderer {
     /// for the second on every one of the first would be paying continuously
     /// for something wanted occasionally. Picking renders offscreen, through
     /// [`Self::render`], at the same camera.
-    // Seven of these are one thing each: what to draw, from where, what is
-    // chosen, where to put it, and the three facts about that target. A struct
-    // built at the one call site would hide the count rather than reduce it.
+    ///
+    /// The model is drawn into `region` and nowhere else on the target. The
+    /// whole target is cleared, so what is outside the region is the clear
+    /// colour for an interface to cover; the viewport maps the camera's clip
+    /// space onto the region, and the scissor rectangle keeps anything the
+    /// viewport transform does not bound - a wide line, a marker - from
+    /// reaching a neighbouring panel. The camera must have the region's size:
+    /// its aspect ratio is the one thing that would stretch the model, so a
+    /// disagreement is refused rather than drawn.
+    ///
+    /// An empty region draws nothing but the clear.
+    // Eight of these are one thing each: what to draw, from where, what is
+    // chosen, where to put it, and the facts about that target. A struct built
+    // at the one call site would hide the count rather than reduce it.
     #[expect(clippy::too_many_arguments, reason = "see above")]
     pub(crate) fn draw_into(
         &mut self,
@@ -818,8 +829,32 @@ impl Renderer {
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
+        region: PixelRect,
     ) -> Result<()> {
         self.require_own(prepared)?;
+        if u64::from(region.x()) + u64::from(region.width()) > u64::from(width)
+            || u64::from(region.y()) + u64::from(region.height()) > u64::from(height)
+        {
+            return Err(CadError::rendering(format!(
+                "the viewport region {}x{} at ({}, {}) does not lie inside the {width}x{height} target",
+                region.width(),
+                region.height(),
+                region.x(),
+                region.y()
+            )));
+        }
+        if !region.is_empty()
+            && (camera.width(), camera.height()) != (region.width(), region.height())
+        {
+            return Err(CadError::rendering(format!(
+                "the camera is {}x{} but the viewport region is {}x{}: drawing through one \
+                 and pointing through the other would stretch the model",
+                camera.width(),
+                camera.height(),
+                region.width(),
+                region.height()
+            )));
+        }
 
         self.ensure_surface_pipeline(format)?;
         let depth = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -838,15 +873,17 @@ impl Renderer {
         });
         let depth_view = depth.create_view(&Default::default());
 
-        self.write_globals(
-            camera,
-            prepared,
-            selected,
-            hovered,
-            [width as f32, height as f32],
-        );
-        let grid = self.write_grid(camera, prepared.snapshot());
-        self.write_sketch(camera, [width as f32, height as f32]);
+        // The size the camera projects to, which is the region's and not the
+        // target's: a line's width in pixels is a width in the picture's.
+        let viewport = [region.width() as f32, region.height() as f32];
+        let drawn = !region.is_empty();
+        if drawn {
+            self.write_globals(camera, prepared, selected, hovered, viewport);
+        }
+        let grid = drawn && self.write_grid(camera, prepared.snapshot());
+        if drawn {
+            self.write_sketch(camera, viewport);
+        }
 
         let mut encoder = self
             .device
@@ -881,6 +918,21 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if !drawn {
+                // Nothing to draw into: the clear is the whole frame.
+                drop(pass);
+                self.queue.submit(Some(encoder.finish()));
+                return Ok(());
+            }
+            pass.set_viewport(
+                region.x() as f32,
+                region.y() as f32,
+                region.width() as f32,
+                region.height() as f32,
+                0.0,
+                1.0,
+            );
+            pass.set_scissor_rect(region.x(), region.y(), region.width(), region.height());
 
             if grid {
                 let grid_pipeline = self
@@ -942,6 +994,66 @@ impl Renderer {
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(())
+    }
+
+    /// What a window frame looks like, read back.
+    ///
+    /// The very pass [`Self::draw_into`] runs for a window - the same pipelines,
+    /// the same viewport and scissor - into a texture this renderer owns, so
+    /// that where the model lands in a window can be checked without one.
+    /// `target` is the size of the window's texture and `region` the part of it
+    /// the model is drawn into; the colour is linear RGBA, the clear colour
+    /// everywhere else.
+    // Seven of these are one thing each, as for `draw_into`, which this is the
+    // readable twin of.
+    #[expect(clippy::too_many_arguments, reason = "see above")]
+    pub fn draw_window_image(
+        &mut self,
+        prepared: &PreparedSnapshot,
+        camera: &Camera,
+        selected: Marked,
+        hovered: Hovered,
+        visibility: &Visibility,
+        target: (u32, u32),
+        region: PixelRect,
+    ) -> Result<WindowImage> {
+        let (width, height) = target;
+        if width == 0 || height == 0 {
+            return Err(CadError::input("a window image needs an area to draw into"));
+        }
+        let layout = self.validate_frame(width, height)?;
+        let extent = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture = self.target("ferritecad window image", extent, COLOUR_FORMAT);
+        let view = texture.create_view(&Default::default());
+        self.draw_into(
+            prepared,
+            camera,
+            selected,
+            hovered,
+            visibility,
+            &view,
+            COLOUR_FORMAT,
+            width,
+            height,
+            region,
+        )?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ferritecad window image readback"),
+            });
+        let readback = self.readback(&mut encoder, &texture, extent, layout);
+        self.queue.submit(Some(encoder.finish()));
+        let colour = self.take(readback, height, layout)?;
+        Ok(WindowImage {
+            width,
+            height,
+            colour,
+        })
     }
 
     /// Refuses buffers that live on another device.
@@ -3078,6 +3190,38 @@ fn build_pipeline(
     })
 }
 
+/// A window texture as the window path drew it, read back.
+///
+/// Colour only: a window frame writes no identities. See
+/// [`Renderer::draw_window_image`].
+#[derive(Debug)]
+pub struct WindowImage {
+    width: u32,
+    height: u32,
+    colour: Vec<u8>,
+}
+
+impl WindowImage {
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The colour at one pixel of the window, or `None` outside it.
+    pub fn colour_at(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let at = (y as usize * self.width as usize + x as usize) * 4;
+        self.colour
+            .get(at..at + 4)
+            .map(|bytes| [bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+}
+
 /// One drawn frame, and the snapshot it was drawn from.
 #[derive(Debug)]
 pub struct Frame {
@@ -3444,6 +3588,7 @@ mod tests {
                 format,
                 width,
                 height,
+                PixelRect::sized(width, height),
             )
             .expect("one-target pass accepts the one-target pipeline");
 
@@ -3522,7 +3667,16 @@ mod tests {
         let view = target.create_view(&Default::default());
         renderer
             .draw_into(
-                prepared, camera, selected, hovered, visibility, &view, format, width, height,
+                prepared,
+                camera,
+                selected,
+                hovered,
+                visibility,
+                &view,
+                format,
+                width,
+                height,
+                PixelRect::sized(width, height),
             )
             .expect("the window path draws");
 

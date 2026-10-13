@@ -1089,7 +1089,11 @@ jobs:
             checkpoint::tests::the_buttons_ask_nothing_while_the_window_says_why_they_cannot \
             tabs::tests::tabs_show_names_marks_and_answer_with_their_key_only_when_available \
             reopen::tests::reopen_asks_nothing_while_the_window_says_it_cannot_and_says_what_opens \
-            open_over_new::tests::the_question_says_what_is_lost_and_both_buttons_answer
+            open_over_new::tests::the_question_says_what_is_lost_and_both_buttons_answer \
+            panels::tests::the_stop_buttons_stand_with_the_activity_and_never_resize_the_action_row \
+            input::tests::a_click_is_expressed_in_the_pixels_of_the_picture_not_of_the_window \
+            input::tests::a_moved_region_forgets_what_was_asked_in_the_old_one_even_at_the_same_size \
+            input::tests::a_press_beside_the_picture_begins_nothing_even_if_nobody_claimed_it
           do
             cargo test -p ferritecad-ui --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee session-ui.log
             if ! grep -Fq "test $gate ... ok" session-ui.log; then exit 1; fi
@@ -1138,7 +1142,15 @@ jobs:
             "sessions::tests::tabs::drafts::model_tree::history_uses_dependencies_exact_uuids_and_honest_shared_references FCAD_31A_PROJECTION_EXECUTED cuts=16" \
             "sessions::tests::tabs::drafts::model_tree::accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved FCAD_31A_OWNERS_EXECUTED" \
             "sessions::tests::tabs::drafts::model_tree::navigation_open_uses_one_foreground_gesture_and_new_refusal FCAD_31A_GUARDS_EXECUTED" \
-            "sessions::tests::tabs::drafts::model_tree::real_widgets_select_uuid_then_send_the_supported_action_and_bound_the_list FCAD_31A_WIDGETS_EXECUTED"
+            "sessions::tests::tabs::drafts::model_tree::real_widgets_select_uuid_then_send_the_supported_action_and_bound_the_list FCAD_31A_WIDGETS_EXECUTED" \
+            "sessions::tests::tabs::workspace::long_messages_and_long_lists_cannot_move_the_viewport_or_paint_over_it FCAD_31B_LAYOUT_BOUNDS_EXECUTED" \
+            "sessions::tests::tabs::workspace::the_same_layout_at_two_pixels_per_point_is_the_same_rectangle_twice_as_large FCAD_31B_SCALE_EXECUTED" \
+            "sessions::tests::tabs::workspace::an_empty_window_and_an_empty_document_stay_controllable FCAD_31B_EMPTY_EXECUTED" \
+            "sessions::tests::tabs::workspace::panels_keep_their_presses_and_the_viewport_keeps_its_own FCAD_31B_OWNERSHIP_EXECUTED" \
+            "sessions::tests::tabs::workspace::dragging_a_panel_moves_the_viewport_and_what_was_asked_in_the_old_one_is_dropped FCAD_31B_REGION_MOVE_EXECUTED" \
+            "sessions::tests::tabs::workspace::each_tab_keeps_its_camera_across_a_layout_change_and_is_fitted_to_the_present_viewport FCAD_31B_TABS_EXECUTED" \
+            "sessions::tests::tabs::workspace::a_question_that_must_be_answered_first_leaves_the_layout_and_the_viewport_alone FCAD_31B_MODAL_EXECUTED" \
+            "sessions::tests::tabs::workspace::a_form_keeps_its_focus_and_text_when_the_groups_above_it_come_and_go FCAD_31B_FORM_IDS_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"

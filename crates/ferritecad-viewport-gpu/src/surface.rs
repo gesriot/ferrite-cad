@@ -16,7 +16,7 @@
 use ferritecad_types::{CadError, Result};
 
 use crate::renderer::{PreparedSnapshot, Renderer, RendererId};
-use ferritecad_viewport::{Camera, Hovered, Marked, Visibility};
+use ferritecad_viewport::{Camera, Hovered, Marked, PixelRect, Visibility};
 
 /// Whether a frame reached the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,7 +334,7 @@ impl WindowSurface {
     ///
     /// ```no_run
     /// # use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
-    /// # use ferritecad_viewport::{Camera, Hovered, Marked, Visibility};
+    /// # use ferritecad_viewport::{Camera, Hovered, Marked, PixelRect, Visibility};
     /// fn compose(
     ///     surface: &mut WindowSurface,
     ///     renderer: &mut Renderer,
@@ -345,8 +345,15 @@ impl WindowSurface {
     ///     let Some(frame) = surface.begin(renderer)? else {
     ///         return Ok(()); // Nothing to draw into, and nothing wrong.
     ///     };
-    ///     let frame =
-    ///         frame.draw_scene(prepared, camera, Marked::Nothing, Hovered::Nothing, visibility)?;
+    ///     let region = PixelRect::sized(camera.width(), camera.height());
+    ///     let frame = frame.draw_scene(
+    ///         prepared,
+    ///         camera,
+    ///         Marked::Nothing,
+    ///         Hovered::Nothing,
+    ///         visibility,
+    ///         region,
+    ///     )?;
     ///     // An interface would draw into `frame.view()` here, on top of the
     ///     // model and before anything is published.
     ///     frame.present();
@@ -409,6 +416,9 @@ impl WindowSurface {
     /// window with no area, or a frame the compositor was not ready to hand
     /// over. Neither is an error, and treating them as one would make an
     /// ordinary minimise look like a fault.
+    // One more than a frame with nothing above it needs, and the same one as
+    // `draw_scene`: where in the window the model goes is never implied.
+    #[expect(clippy::too_many_arguments, reason = "see above")]
     pub fn present(
         &mut self,
         renderer: &mut Renderer,
@@ -417,11 +427,12 @@ impl WindowSurface {
         selected: Marked,
         hovered: Hovered,
         visibility: &Visibility,
+        region: PixelRect,
     ) -> Result<Presented> {
         let Some(frame) = self.begin(renderer)? else {
             return Ok(Presented::Skipped);
         };
-        let frame = frame.draw_scene(prepared, camera, selected, hovered, visibility)?;
+        let frame = frame.draw_scene(prepared, camera, selected, hovered, visibility, region)?;
         frame.present();
         Ok(Presented::Drawn)
     }
@@ -454,6 +465,14 @@ pub struct SurfaceFrame<'a> {
 }
 
 impl<'a> SurfaceFrame<'a> {
+    /// The size of the texture this frame draws into, which is the window's.
+    ///
+    /// Known before anything is drawn, because where the model goes in it is
+    /// decided by an interface that has to be laid out against this size.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
     /// Draws the model, clearing first.
     ///
     /// Consumes the uncomposed frame and returns the only type that exposes its
@@ -464,6 +483,11 @@ impl<'a> SurfaceFrame<'a> {
     /// `selected` is drawn as chosen and `hovered` as merely pointed at, each
     /// covering all of its placements. A pick from another snapshot is neither:
     /// see `Renderer::write_globals`.
+    ///
+    /// The model goes into `region`, a part of the texture; the rest of it is
+    /// cleared for the interface to cover. The camera has to be the size of
+    /// that region, which is how the same rectangle that places the picture
+    /// also shapes it.
     pub fn draw_scene(
         self,
         prepared: &PreparedSnapshot,
@@ -471,6 +495,7 @@ impl<'a> SurfaceFrame<'a> {
         selected: Marked,
         hovered: Hovered,
         visibility: &Visibility,
+        region: PixelRect,
     ) -> Result<ComposedSurfaceFrame<'a>> {
         self.renderer.draw_into(
             prepared,
@@ -482,6 +507,7 @@ impl<'a> SurfaceFrame<'a> {
             self.surface.format,
             self.width,
             self.height,
+            region,
         )?;
         Ok(ComposedSurfaceFrame { frame: self })
     }

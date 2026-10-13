@@ -46,7 +46,7 @@ fn open_action(w: &mut Window, asked: ModelAction) -> bool {
 
 // Kernel-free facts arrival seam: an explicitly empty render snapshot. This is
 // not geometry evidence; native tests below use the production scene worker.
-fn facts_scene(path: &Path) -> Result<LoadedScene> {
+pub(in crate::sessions::tests::tabs) fn facts_scene(path: &Path) -> Result<LoadedScene> {
     Ok(LoadedScene {
         edit_source: Some(read_extrude_source(path)?),
         snapshot: ferritecad_viewport::SnapshotBuilder::new().build(),
@@ -58,7 +58,7 @@ fn facts_scene(path: &Path) -> Result<LoadedScene> {
         sketch_presentations: vec![],
     })
 }
-fn open_facts(w: &mut Window, path: &Path) {
+pub(in crate::sessions::tests::tabs) fn open_facts(w: &mut Window, path: &Path) {
     let session = DocumentSession::open_in(w.private.path(), path, HistoryLimits::default())
         .expect("session");
     let path = session.current().path().to_path_buf();
@@ -70,7 +70,7 @@ fn open_facts(w: &mut Window, path: &Path) {
     )
     .expect("facts accepted");
 }
-fn switch_facts(w: &mut Window, tab: TabId) {
+pub(in crate::sessions::tests::tabs) fn switch_facts(w: &mut Window, tab: TabId) {
     let (tx, rx) = mpsc::channel();
     let generation = w
         .tabs
@@ -385,60 +385,16 @@ fn widget_frame(
     ctx: &egui::Context,
     events: Vec<egui::Event>,
 ) -> (egui::FullOutput, Option<ModelAction>) {
-    let reading = source(w).clone();
-    let rows: Vec<_> = reading
-        .model_tree
-        .rows
-        .iter()
-        .map(|r| ferritecad_ui::ModelRow {
-            key: r.id,
-            parent: r.parent,
-            depth: r.depth,
-            name: &r.name,
-            kind: &r.kind,
-            note: &r.note,
-        })
-        .collect();
-    let available = availability(
-        &w.creates,
-        &w.edits,
-        &w.sessions,
-        &w.tabs,
-        &Loads::default(),
-        &Exports::default(),
-        &w.input,
+    // The window's own layout (§31B), not a layout of the test's.
+    let laid = super::super::workspace::frame(
+        w,
+        ctx,
+        (1100., 800.),
+        1.0,
+        events,
+        super::super::workspace::QUIET,
     );
-    let mut asked = None;
-    let tab = w.sessions.tab();
-    let navigation = w.tabs.model_navigation(tab);
-    let mut output = ctx.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1100., 800.),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ui| {
-            ui.label("Toolbar and tabs");
-            egui::Panel::left("model-panel")
-                .default_size(260.)
-                .size_range(180.0..=340.0)
-                .show(ui, |ui| {
-                    asked = ferritecad_ui::model_panel(
-                        ui,
-                        tab.key(),
-                        &rows,
-                        navigation,
-                        |key| actions(&reading, key),
-                        available,
-                    );
-                });
-        },
-    );
-    output.textures_delta.clear();
-    (output, asked)
+    (laid.out, laid.answers.chosen.model)
 }
 fn text_rect(out: &egui::FullOutput, label: &str) -> egui::Rect {
     out.shapes
@@ -502,7 +458,7 @@ fn real_widgets_select_uuid_then_send_the_supported_action_and_bound_the_list() 
         cut_rects.len() < 16,
         "16 Cuts must scroll instead of filling the screen"
     );
-    assert!(cut_rects[0].top() > text_rect(&out, "Toolbar and tabs").bottom());
+    assert!(cut_rects[0].top() > text_rect(&out, "Open…").bottom());
     assert!(click_widget(&mut w, &ctx, cut_rects[0].center()).is_none());
     let early = crate::cuts::tests::session_apply::selected(&reading, 0).feature;
     assert_eq!(

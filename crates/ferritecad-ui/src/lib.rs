@@ -29,8 +29,9 @@ pub use panels::{
     NewDocumentForm, OmittedDefinition, OpenFailure, PROJECTION_KEY, PublishedFile, REDO_DOCUMENT,
     REPLACE_EXISTING, RedundantExplanation, ReplaceChoice, RowVisibility, Rows, SAMPLE_PLATE, SAVE,
     SAVE_AS, SHORTCUT_PRIMARY, SHOW_ALL_KEY, Selected, SolvedSketch, TopologyName, UNDO_DOCUMENT,
-    VIEWS, VertexName, create_panel, definitions_panel, export_panel, new_document_form,
-    open_failure_panel, replace_confirmation, selection_inspector, sketch_solves_panel, toolbar,
+    VIEWS, VertexName, activity_lines, create_panel, definitions_panel, export_panel,
+    new_document_form, open_failure_panel, replace_confirmation, selection_inspector,
+    sketch_solves_panel, toolbar, toolbar_actions,
 };
 
 mod checkpoint;
