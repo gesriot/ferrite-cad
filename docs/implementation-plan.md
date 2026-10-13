@@ -5080,10 +5080,10 @@ object/grid competition, 1x/2x display scale, invalid coordinate drafts, Escape,
 one gesture/one Undo, and unchanged typed input. Use real editor interaction tests
 as well as geometry tests; helper-only coverage does not establish a reachable UI.
 
-**Status, author handoff (unstaged, uncommitted; branch `sketch-object-snaps`).** The
+**Status, reviewed implementation (PR #106).** The
 Line canvas of a New drawing and of a saved Sketch has an **Object snap** switch in the
 grid-step row (editor state, off for a new editor, nothing persisted). With it on, a
-click or a vertex drag lands exactly on the nearest endpoint, midpoint or
+click that adds a point, or a vertex drag, uses the ranked endpoint, midpoint or
 finite-segment crossing of the contour as drawn; the marker and the name of the choice
 (`Endpoint`, `Midpoint`, `Intersection`) are painted beside the pointer for the frame.
 Typed X/Y are untouched, no constraint or ID is made, only the resulting coordinate
@@ -5092,9 +5092,12 @@ numeric forms, the canvas draws no circle, and no invisible candidate was added;
 stays the next §31C addition. Quadrants, nearest, tangency, apparent crossings and all
 of §31D remain later. Contract, rules for degenerate geometry, executed gates,
 mutations, resources and the independent window recipe:
-[sketch-object-snaps.md](sketch-object-snaps.md). The author ran no window; the diff
-has no CI of its own yet. §30, Milestone 5C, the product and the OOM investigation
-remain open.
+[sketch-object-snaps.md](sketch-object-snaps.md). Independent review fixed a
+query-window boundary omission with a failing-first regression. The macOS window
+verified all three labels, saved drag/Undo/Redo, typed text, object-over-grid choice,
+Apply/Save and real STL/FBX exports against the CLI (14000 mm³; peak 204.892 MiB,
+exit 0). Remote CI is recorded separately. §30, Milestone 5C, the product and the OOM
+investigation remain open.
 
 ### §31D — Gesture guides and temporary dimensional input (planned)
 
@@ -5112,6 +5115,17 @@ It is not a persistent dimensional constraint; adding one is a later explicit ac
 - Hover, anchor changes, guide display and snap labels do not enter history. A
   completed coordinate gesture is one history step. End/Escape clears gesture guides;
   cancellation follows the existing draft/history rules.
+
+**Next bounded slice, §31D-1:** guides and temporary length from an unambiguous
+displayed origin: the last vertex when adding a New point, or the press-time vertex
+when dragging. Use the existing coordinate/history route and explicit editor-local
+Off / Orthogonal / Polar 45° controls. An optional positive length measures from
+that displayed origin; it creates coordinates, not a persistent constraint. Define
+object/guide/grid precedence and reject conflicting explicit length input visibly.
+Acquiring a different origin by hovering, with the hysteresis specified above,
+remains the following extension; it is not required to move a long gesture's fixed
+origin. The missing circle-centre snap remains open until circles are displayed on
+an appropriate canvas. Neither omission prevents this Line-canvas slice.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 

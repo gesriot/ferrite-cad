@@ -176,7 +176,41 @@ After the fix, the 25 object-snap tests passed with OCCT and PlaneGCS, including
 the native publication comparison. Workspace clippy with all targets/features and
 `-D warnings` passed. Local logs are in the ignored `target/31c-review/` directory.
 The window recipe also explicitly restores the snapped coordinate after its separate
-manual-text probe. Window and remote CI results will be recorded after execution.
+manual-text probe. The independent macOS window run used the fresh staged bundle from code commit
+`9dfe3f3`, a private copy of the L input, and the production memory watchdog. In the
+saved editor, an inexact drag of vertex 3 from (60, 20) snapped to exactly (40, 20).
+One Undo restored (60, 20), Redo restored (40, 20). Switching object snap off allowed
+free pixel-following coordinates; typing `40.5` with the switch on preserved that
+text. Undo restored the snapped draft before **Apply vertices → Save**.
+
+The resulting file was made by the window before constructing its CLI comparison.
+All SQL cells equal the explicit-coordinate CLI copy; compared with the source,
+only the selected Sketch's `objects.payload` and `payload_hash` differ. UUIDs and
+refs are unchanged. The original input hash is unchanged. Both copies pass validate
+and cold rebuild. The actual window exports and both cold CLI exports are byte-equal:
+STL 1084 bytes, 20 triangles, closed directed edges, bounds 60 × 40 × 10 mm and signed
+volume 14000 mm³; FBX 4913 bytes, pinned ufbx 0.23.0 strict `checks=6 failures=0`.
+An unchanged-source negative control has volume 16000 mm³ and different SQL/STL.
+
+In a separate unaccepted New contour, all three glyphs and labels were observed:
+Intersection, Midpoint, Endpoint. With grid 5 mm enabled, adding the crossing kept
+its computed Y near 25.047 rather than rounding to 25; adding the midpoint kept
+40.047. Clicking just outside the existing vertex-selection radius added the exact
+endpoint. Closing that repeated-vertex draft produced the existing visible refusal;
+it remained editable and was then cancelled without publication.
+
+The one viewer (PID 77588) exited normally with code 0 after 319 seconds. Sampled peak
+footprint was **204.892 MiB**, pressure stayed 1 and swap stayed 0; the 1536 MiB watchdog
+did not abort. Exit was checked by PID, without another CUA app lookup. Held-drag
+Escape, busy/covered-canvas and 1x/2x scenarios were checked by the event tests, not
+claimed as additional window observations. OOM remains unexplained.
+
+Independent true-stub rerun: 24 non-native tests executed; one native test explicitly
+returned with `skipped: no OCCT` (25 harness successes, not 25 geometry executions).
+The rebuilt stub reports Open CASCADE unavailable. Logs, the SQL/STL comparator,
+window measurement and ufbx output are in ignored `target/31c-review/`.
+Remote CI is tracked on [PR #106](https://github.com/gesriot/ferrite-cad/pull/106);
+the local results above do not claim completion of that separate matrix.
 
 ## Manifest
 
