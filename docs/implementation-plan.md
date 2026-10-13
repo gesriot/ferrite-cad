@@ -5027,8 +5027,16 @@ independent window scenario: [workspace-viewport-layout.md](workspace-viewport-l
 The author ran no window; the true-stub block (22 exact gates), the native block, the
 device gates under the memory watchdog, both whole viewer suites (651 passed in each
 configuration), fmt, workspace clippy and three compiling mutations passed locally.
-Exact CI of this diff, Windows/Linux windows and the real window are not claimed. §30,
-Milestone 5C, the product and the OOM investigation remain open.
+Independent review fixed first-open framing before the first usable layout and
+made the native 1x/2x region/pick gate mandatory in PR runtime CI. The real macOS
+window covered initial framing, window zoom/restoration, face picking, Model →
+Cut Apply → unsaved export → Undo/Redo → Save and five tabs with existing editors.
+The unchanged comparator confirmed SQL/UUID/refs and byte-identical STL/FBX
+against CLI, with three negative controls; strict ufbx passed. Final viewer exit 0,
+peak 207.782 MiB, pressure 1, swap 0. A previous run hit the watchdog time limit;
+unobserved manual gestures are listed separately in the verification document.
+Exact remote CI is recorded in PR #105. Windows/Linux windows, §30, Milestone 5C,
+the product and the OOM investigation remain open.
 
 ### §31C — Object snaps in the Sketch editor (planned)
 

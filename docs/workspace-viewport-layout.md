@@ -332,7 +332,7 @@ python3 tools/watch-viewer-memory.py --log "$ROOT/watch.jsonl" --limit-mib 1536 
   A Retina display doubles pixels, not points: coordinates are physical pixels in the
   window and logical points in the layout, converted once.
 
-## Not claimed
+## Limits at the author handoff
 
 §30, Milestone 5C, the product and the earlier OOM investigation remain open. This
 is a layout slice: there is no new CAD operation, schema, dependency, autosave,
@@ -340,7 +340,7 @@ history, docking framework or second state store, and no STEP assembly explorer.
 Exact CI of this diff, Windows and Linux window behaviour and the real window are
 not claimed. The next slice was not started.
 
-## Manifest of the uncommitted diff
+## Manifest at the author handoff
 
 Base `4410bd6d2595bc01ec7d9e5620b40a551629e4b9`, branch `workspace-viewport-layout`,
 nothing staged (`git diff --cached` is empty), nothing committed. Full status,
@@ -401,3 +401,66 @@ The exact execution marker, one-test summary and refusal of skips are retained.
 The window recipe was corrected to include all five tabs required by the existing
 comparator. Verification results below describe reviewer runs separately from
 the author's local runs above.
+
+### Review checks and real window
+
+Code/workflow commit: `4e80206fc016846020a1c5b203212c6248cf8a08`.
+The local native environment is `target/30t-review/env.sh`; the genuine stub uses
+`target/30u-stub` and `target/30u-check/stub-env.sh`. Reviewer logs are in ignored
+`target/31b-review/`.
+
+- All eight §31B workspace gates executed in both native and true stub, with their
+  execution markers and no skips (`layout-after-fix.log`, `stub-final.log`).
+- UI and viewport unit suites: 119 and 17 passed. The native device gate passed
+  after the initial-frame fix: six face/edge/corner picks at two scale factors.
+  It ran under the memory watchdog (`gpu-fixed.stdout`, `gpu-fixed.jsonl`).
+- Fresh release CLI/viewer, fmt, workspace clippy with all targets/features and
+  `-D warnings`, actionlint, Actions run-size, licence and boundary checks passed.
+
+The fresh relocatable bundle in `target/31b-review/gui-fixed/FerriteCAD.app` used
+only private fixtures under `/private/tmp/ferrite-31b-review-window/final`.
+Observed in the macOS window: the initial part fits without pressing Frame all;
+window zoom and restoration keep the view inside the panels; Iso/Top and Frame
+all work; a face selection appears in Details. Model selects the first Cut and
+opens its editor. The typed radius survives switching to another tab and back.
+Confirm draft numbers → Apply cut changes the accepted model; STL and FBX export
+before Save. Undo restores the original model; Redo and Save accept and persist
+the changed model. All five fixture tabs were opened, with their distinct views;
+Model opened the existing Fillet, Chamfer and Revolve editors, then their forms
+were cancelled and the Cut tab restored.
+
+The unchanged §31A file comparator executed against actual window outputs:
+`FCAD_31A_GUI_COMPARE_OK all_SQL_cells=true controls=3`. It compared saved SQL,
+UUIDs and refs, the unsaved STL/FBX against the CLI operation and the Undo STL
+against the original model, and rejected all three negative controls. Pinned
+ufbx 0.23.0 read the actual unsaved FBX: 532 triangles, six checks, zero failures
+(`gui-compare.log`, `gui-ufbx.log`). The comparator does not prove window layout.
+
+The window work used two runs of the fixed build. PID 17217 produced unsaved
+exports and the Undo export, but reached the 2400-second watchdog time limit
+(exit -15, explicitly not a completed window pass). Its sampled peak was
+212.970 MiB. PID 26221 repeated the edit from the unchanged source, performed
+Undo/Redo/Save and completed the five-tab scenario; normal Quit returned 0 with
+sampled peak 207.782 MiB. Both runs had pressure 1 and swap 0. The initial
+regression probe (PID 5288) also quit normally, peak 189.798 MiB. No exited viewer
+was queried through CUA, and no test viewer remains running. Logs:
+`window-watch.jsonl`, `window-final.jsonl`, `window-complete.jsonl`.
+
+Operator limitation: a full path entered in the native Save name field became
+a colon-separated filename in the working directory. The three actual GUI
+exports were renamed to the comparator's expected paths without modifying their
+bytes. No positive GUI output was substituted with a CLI-generated file.
+
+Live panel-border dragging, orbit/pan across a panel, minimise/restore and GUI
+edge/corner picking were not established by the window run. They are not claimed
+as manual passes; deterministic input/layout tests and the offscreen device gate
+provide their corresponding automated coverage. Windows/Linux windows and a
+second physical display scale were not tested locally. The old OOM remains
+unexplained; no memory cap was exceeded during these review runs.
+
+Remote CI is tracked in [PR #105](https://github.com/gesriot/ferrite-cad/pull/105)
+on the exact code/workflow commit above. The initial Windows PlaneGCS job failed
+with a locked compiler metadata file (`os error 32`); rerunning that failed job
+passed, including the three-platform comparison. The runtime workflow checks the
+new GPU marker on Linux, macOS and Windows; a later documentation-only commit
+must not be mistaken for execution of that native matrix.
