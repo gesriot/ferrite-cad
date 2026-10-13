@@ -13,6 +13,8 @@ use ferritecad_jobs::{
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
+mod object_snap;
+
 #[derive(Debug, Clone, PartialEq)]
 struct State {
     points: Vec<[String; 2]>,
@@ -2176,6 +2178,16 @@ struct Canvas {
     gesture: Option<VertexDrag>,
     claimed_press: bool,
     snap: Snap,
+    /// §31C: snap to the drawn contour's endpoints, midpoints and crossings.
+    /// Editor state beside the grid step: off for a new editor, never persisted.
+    object_snap: bool,
+}
+
+/// A change of the snap row, replayed at the event that made it (see `draw`).
+#[derive(Debug, Clone, Copy)]
+enum SnapChange {
+    Grid(Snap),
+    Objects(bool),
 }
 
 /// Editor-only step. Not model data, not a preference, not persisted.
@@ -2197,6 +2209,12 @@ struct VertexDrag {
     start: [f64; 2],
     before: State,
     snap: Snap,
+    /// §31C: the object candidates as the press found them (the grid step is
+    /// frozen the same way), or none when Object snap was off at the press. Held
+    /// here, not in the draft or the history; a toggle changes the next gesture.
+    objects: Option<Vec<object_snap::Candidate>>,
+    /// The object point the last preview used and the pointer that found it.
+    hit: Option<(object_snap::Candidate, egui::Pos2)>,
 }
 
 /// Preview frames do not enter history. Each changed release supplies one
@@ -2253,10 +2271,46 @@ impl Default for Canvas {
             gesture: None,
             claimed_press: false,
             snap: Snap::Off,
+            object_snap: false,
         }
     }
 }
+/// Where in `events` a control's accepted click belongs: its pointer release, else
+/// the last Space/Enter press, else after every event. Used to replay a change of
+/// the snap row at the moment it was made, in order with the canvas gestures.
+fn release_index(events: &[egui::Event], response: &egui::Response) -> usize {
+    events
+        .iter()
+        .rposition(|event| {
+            matches!(event,
+                egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary,
+                    pressed: false, ..
+                } if response.rect.contains(*pos)
+            )
+        })
+        .or_else(|| {
+            events.iter().rposition(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Space | egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    }
+                )
+            })
+        })
+        .unwrap_or(events.len())
+}
+
 impl Canvas {
+    fn apply_snap_change(&mut self, change: SnapChange) {
+        match change {
+            SnapChange::Grid(step) => self.snap = step,
+            SnapChange::Objects(on) => self.object_snap = on,
+        }
+    }
     fn fit(&mut self, points: &[[f64; 2]]) {
         if points.is_empty() {
             return;
@@ -2319,13 +2373,80 @@ impl Canvas {
             *draft = drag.before;
         }
     }
-    fn preview(&self, draft: &mut State, at: egui::Pos2) {
-        if let Some(drag) = &self.gesture {
+    /// The document point (mm) under a screen position of the canvas `rect`.
+    fn document(&self, rect: egui::Rect, pos: egui::Pos2) -> [f64; 2] {
+        let origin = rect.left_bottom();
+        [
+            self.minimum[0] + f64::from(pos.x - origin.x) / f64::from(self.scale),
+            self.minimum[1] + f64::from(origin.y - pos.y) / f64::from(self.scale),
+        ]
+    }
+    /// What is visible of the canvas `rect`, as a document rectangle: snap points
+    /// outside it are not offered, as vertices outside it cannot be picked.
+    fn visible_window(&self, rect: egui::Rect, visible: egui::Rect) -> object_snap::Window {
+        object_snap::Window::new(
+            self.document(rect, visible.left_bottom()),
+            self.document(rect, visible.right_top()),
+        )
+    }
+    /// The object snap under the pointer `at` for the contour as drawn now (a click
+    /// or hover; a drag uses what it froze at its press).
+    fn object_hit(
+        &self,
+        rect: egui::Rect,
+        visible: egui::Rect,
+        draft: &State,
+        at: egui::Pos2,
+    ) -> Option<object_snap::Candidate> {
+        let points = Self::points(draft)?;
+        let cursor = self.document(rect, at);
+        let points_per_mm = f64::from(self.scale);
+        let near =
+            object_snap::Window::around(cursor, object_snap::APERTURE_POINTS / points_per_mm);
+        object_snap::pick(
+            &object_snap::collect(&points, draft.closed, Some(near)),
+            &object_snap::Query {
+                cursor,
+                points_per_mm,
+                visible: self.visible_window(rect, visible),
+            },
+        )
+    }
+    fn preview(&mut self, draft: &mut State, at: egui::Pos2, visible: object_snap::Window) {
+        if let Some(drag) = &mut self.gesture {
             // Preserve the grab offset and original strings on untouched axes.
             let delta = [
                 f64::from(at.x) - f64::from(drag.press.x),
                 f64::from(drag.press.y) - f64::from(at.y),
             ];
+            // The object point nearest where the vertex would be; none for a
+            // press that has not moved, which keeps its strings like the grid.
+            drag.hit = drag
+                .objects
+                .as_deref()
+                .filter(|_| delta != [0.0, 0.0])
+                .and_then(|objects| {
+                    object_snap::pick(
+                        objects,
+                        &object_snap::Query {
+                            cursor: [
+                                drag.start[0] + delta[0] / drag.scale,
+                                drag.start[1] + delta[1] / drag.scale,
+                            ],
+                            points_per_mm: drag.scale,
+                            visible,
+                        },
+                    )
+                })
+                .map(|hit| (hit, at));
+            if let Some((hit, _)) = drag.hit {
+                // An object point wins outright: neither the grid nor three
+                // decimals touch it.
+                for axis in 0..2 {
+                    draft.points[drag.vertex][axis] = object_snap::coordinate(hit.at[axis]);
+                }
+                return;
+            }
             for (axis, delta) in delta.into_iter().enumerate() {
                 draft.points[drag.vertex][axis] = if delta == 0.0 {
                     drag.before.points[drag.vertex][axis].clone()
@@ -2360,32 +2481,20 @@ impl Canvas {
                         // egui evaluates the control before we replay canvas
                         // events. Defer its accepted click to the actual release
                         // so a later Snap choice cannot rewrite an earlier drag.
-                        let event = events
-                            .iter()
-                            .rposition(|event| {
-                                matches!(event,
-                                    egui::Event::PointerButton {
-                                        pos, button: egui::PointerButton::Primary,
-                                        pressed: false, ..
-                                    } if response.rect.contains(*pos)
-                                )
-                            })
-                            .or_else(|| {
-                                events.iter().rposition(|event| {
-                                    matches!(
-                                        event,
-                                        egui::Event::Key {
-                                            key: egui::Key::Space | egui::Key::Enter,
-                                            pressed: true,
-                                            ..
-                                        }
-                                    )
-                                })
-                            })
-                            .unwrap_or(events.len());
-                        snap_changes.push((event, value));
+                        snap_changes
+                            .push((release_index(&events, &response), SnapChange::Grid(value)));
                         ui.ctx().request_repaint();
                     }
+                }
+                ui.separator();
+                // §31C: the same deferral, so a toggle changes the next gesture.
+                let mut on = self.object_snap;
+                let response = ui.checkbox(&mut on, "Object snap").on_hover_text(
+                    "Snap to endpoints, midpoints and finite crossings of the drawn contour",
+                );
+                if response.clicked() {
+                    snap_changes.push((release_index(&events, &response), SnapChange::Objects(on)));
+                    ui.ctx().request_repaint();
                 }
             });
         });
@@ -2399,12 +2508,14 @@ impl Canvas {
         };
         let pointer = ui.input(|i| i.pointer.clone());
         let mut checkpoints = Vec::new();
+        let visible_rect = rect.intersect(ui.clip_rect());
+        let visible = self.visible_window(rect, visible_rect);
         // Aggregate pointer state loses ordering when one frame contains the
         // release of an old gesture and the press (or whole gesture) of another.
         // Own gestures at their actual press and process every event in order.
         for (index, event) in events.iter().enumerate() {
-            for &(_, value) in snap_changes.iter().filter(|(at, _)| *at == index) {
-                self.snap = value;
+            for &(_, change) in snap_changes.iter().filter(|(at, _)| *at == index) {
+                self.apply_snap_change(change);
             }
             match *event {
                 egui::Event::PointerButton {
@@ -2418,8 +2529,7 @@ impl Canvas {
                         && rect.intersect(ui.clip_rect()).contains(pos)
                         && ui.ctx().layer_id_at(pos) == Some(ui.layer_id())
                         && let Some(points) = Self::points(draft)
-                        && let Some(vertex) =
-                            self.hit(rect, rect.intersect(ui.clip_rect()), &points, pos)
+                        && let Some(vertex) = self.hit(rect, visible_rect, &points, pos)
                     {
                         self.selected = Some(vertex);
                         self.claimed_press = true;
@@ -2431,17 +2541,21 @@ impl Canvas {
                             start: points[vertex],
                             before: draft.clone(),
                             snap: self.snap,
+                            objects: self.object_snap.then(|| {
+                                object_snap::frozen(&points, draft.closed, points[vertex])
+                            }),
+                            hit: None,
                         });
                     }
                 }
-                egui::Event::PointerMoved(pos) => self.preview(draft, pos),
+                egui::Event::PointerMoved(pos) => self.preview(draft, pos, visible),
                 egui::Event::PointerButton {
                     pos,
                     button: egui::PointerButton::Primary,
                     pressed: false,
                     ..
                 } => {
-                    self.preview(draft, pos);
+                    self.preview(draft, pos, visible);
                     if let Some(drag) = self.gesture.take()
                         && *draft != drag.before
                     {
@@ -2467,8 +2581,8 @@ impl Canvas {
             }
         }
         // Accessibility/programmatic activation can have no pointer/key event.
-        for &(_, value) in snap_changes.iter().filter(|(at, _)| *at == events.len()) {
-            self.snap = value;
+        for &(_, change) in snap_changes.iter().filter(|(at, _)| *at == events.len()) {
+            self.apply_snap_change(change);
         }
         // A lost release must not leave a preview or a permanently owned drag.
         if !ui.input(|i| i.focused) || !pointer.primary_down() {
@@ -2481,8 +2595,24 @@ impl Canvas {
         let hover = response.hover_pos().and_then(|pos| {
             points
                 .as_ref()
-                .and_then(|points| self.hit(rect, rect.intersect(ui.clip_rect()), points, pos))
+                .and_then(|points| self.hit(rect, visible_rect, points, pos))
         });
+        // The object point a press would use and the pointer that found it: the
+        // gesture's own while one is held, else what a click here would place.
+        let marker = if let Some(drag) = &self.gesture {
+            drag.hit
+        } else if self.object_snap
+            && hover.is_none()
+            && !draft.closed
+            && draft.points.len() < PolygonExtrusion::MAX_POINTS
+        {
+            response.hover_pos().and_then(|at| {
+                self.object_hit(rect, visible_rect, draft, at)
+                    .map(|hit| (hit, at))
+            })
+        } else {
+            None
+        };
         if matches!(change, CanvasEdit::Ordinary)
             && response.clicked_by(egui::PointerButton::Primary)
         {
@@ -2494,9 +2624,16 @@ impl Canvas {
             {
                 let offset = to_document(pos, rect.left_bottom(), self.scale);
                 let at = [self.minimum[0] + offset[0], self.minimum[1] + offset[1]];
-                draft.points.push(match self.snap {
-                    Snap::Off => [format!("{:.3}", at[0]), format!("{:.3}", at[1])],
-                    snap => [snap.apply(at[0]), snap.apply(at[1])],
+                // An object point beats the grid and is taken as it is.
+                let object = if self.object_snap {
+                    self.object_hit(rect, visible_rect, draft, pos)
+                } else {
+                    None
+                };
+                draft.points.push(match (object, self.snap) {
+                    (Some(hit), _) => hit.at.map(object_snap::coordinate),
+                    (None, Snap::Off) => [format!("{:.3}", at[0]), format!("{:.3}", at[1])],
+                    (None, snap) => [snap.apply(at[0]), snap.apply(at[1])],
                 });
             }
         }
@@ -2524,7 +2661,11 @@ impl Canvas {
         painter.text(
             rect.left_top() + egui::vec2(5., 5.),
             egui::Align2::LEFT_TOP,
-            format!("grid: {grid} mm · snap: {}", self.snap.label()),
+            format!(
+                "grid: {grid} mm · snap: {} · object snap: {}",
+                self.snap.label(),
+                if self.object_snap { "on" } else { "off" }
+            ),
             egui::FontId::proportional(12.),
             egui::Color32::WHITE,
         );
@@ -2588,6 +2729,9 @@ impl Canvas {
                 );
             }
         }
+        if let Some((hit, pointer)) = marker {
+            paint_object_snap(&painter, rect, screen(hit.at), hit.kind, pointer);
+        }
         ui.label(
             self.selected
                 .and_then(|i| draft.points.get(i).map(|p| (i, p)))
@@ -2596,6 +2740,61 @@ impl Canvas {
         );
         change
     }
+}
+/// The colour of the object-snap marker, which tests also look for.
+const SNAP_MARKER: egui::Color32 = egui::Color32::from_rgb(255, 214, 10);
+
+/// A glyph per kind at the snapped point and its name beside the pointer, for the
+/// frame only: nothing of it is stored.
+fn paint_object_snap(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    at: egui::Pos2,
+    kind: object_snap::SnapKind,
+    pointer: egui::Pos2,
+) {
+    let stroke = egui::Stroke::new(2., SNAP_MARKER);
+    let r = 5.;
+    match kind {
+        object_snap::SnapKind::Endpoint => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(at, egui::vec2(2. * r, 2. * r)),
+                0.,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+        }
+        object_snap::SnapKind::Midpoint => {
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    at + egui::vec2(0., -r),
+                    at + egui::vec2(r, r),
+                    at + egui::vec2(-r, r),
+                ],
+                stroke,
+            ));
+        }
+        object_snap::SnapKind::Intersection => {
+            painter.line_segment([at + egui::vec2(-r, -r), at + egui::vec2(r, r)], stroke);
+            painter.line_segment([at + egui::vec2(-r, r), at + egui::vec2(r, -r)], stroke);
+        }
+    }
+    let galley = painter.layout_no_wrap(
+        kind.label().into(),
+        egui::FontId::proportional(12.),
+        SNAP_MARKER,
+    );
+    let size = galley.size();
+    let corner = egui::pos2(
+        (pointer.x + 14.).min(rect.right() - size.x - 4.),
+        (pointer.y + 14.).min(rect.bottom() - size.y - 4.),
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_size(corner, size).expand(2.),
+        2.,
+        egui::Color32::from_black_alpha(200),
+    );
+    painter.galley(corner, galley, SNAP_MARKER);
 }
 fn number(s: &str) -> Result<f64> {
     s.trim()
@@ -3052,7 +3251,7 @@ pub(crate) mod tests {
             assert!(editor.take_request().is_none(), "opening is not creation");
         }
     }
-    fn frame_running(
+    pub(super) fn frame_running(
         ctx: &egui::Context,
         e: &mut Editor,
         events: Vec<egui::Event>,
@@ -7310,3 +7509,6 @@ pub(crate) mod tests {
 #[cfg(test)]
 #[path = "sketch/drag_tests.rs"]
 pub(crate) mod drag_tests;
+#[cfg(test)]
+#[path = "sketch/object_snap_tests.rs"]
+pub(crate) mod object_snap_tests;

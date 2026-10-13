@@ -1128,6 +1128,10 @@ jobs:
           CARGO_BUILD_JOBS: '1'
         run: |
           set -euo pipefail
+          # §31C: the Sketch object snaps (candidate geometry, ranking and the real
+          # canvas, editor and tabs) are the last nineteen gates of this loop. Each
+          # runs alone by exact name, prints its marker only after its last
+          # assertion, and a skip or a missing marker fails the step.
           for check in \
             "sessions::tests::tabs::drafts::quit_new::idle_empty_and_sample_new_back_late_abort_and_original_create_are_executable FCAD_30W_IDLE_FORMS_EXECUTED" \
             "sessions::tests::tabs::drafts::quit_new::late_cancel_after_save_or_deferred_discard_returns_new_above_b_and_both_tab_forms FCAD_30W_LATE_CANCEL_EXECUTED" \
@@ -1150,7 +1154,26 @@ jobs:
             "sessions::tests::tabs::workspace::dragging_a_panel_moves_the_viewport_and_what_was_asked_in_the_old_one_is_dropped FCAD_31B_REGION_MOVE_EXECUTED" \
             "sessions::tests::tabs::workspace::each_tab_keeps_its_camera_across_a_layout_change_and_is_fitted_to_the_present_viewport FCAD_31B_TABS_EXECUTED" \
             "sessions::tests::tabs::workspace::a_question_that_must_be_answered_first_leaves_the_layout_and_the_viewport_alone FCAD_31B_MODAL_EXECUTED" \
-            "sessions::tests::tabs::workspace::a_form_keeps_its_focus_and_text_when_the_groups_above_it_come_and_go FCAD_31B_FORM_IDS_EXECUTED"
+            "sessions::tests::tabs::workspace::a_form_keeps_its_focus_and_text_when_the_groups_above_it_come_and_go FCAD_31B_FORM_IDS_EXECUTED" \
+            "sketch::object_snap::tests::crowded_short_segments_resolve_either_side_of_two_points FCAD_31C_CROWDED_EXECUTED" \
+            "sketch::object_snap::tests::a_gap_of_exactly_one_point_gives_the_nearest_and_less_gives_the_kind FCAD_31C_ONE_POINT_GAP_EXECUTED" \
+            "sketch::object_snap::tests::ties_follow_kind_then_distance_then_stored_order_in_any_layout FCAD_31C_TIES_EXECUTED" \
+            "sketch::object_snap::tests::crossings_are_of_finite_segments_not_of_their_extensions FCAD_31C_FINITE_CROSSING_EXECUTED" \
+            "sketch::object_snap::tests::degenerate_parallel_overlapping_and_shared_cases_make_no_crossing FCAD_31C_DEGENERATE_EXECUTED" \
+            "sketch::object_snap::tests::a_window_makes_exactly_the_unrestricted_candidates_inside_it FCAD_31C_WINDOW_EXECUTED" \
+            "sketch::object_snap::tests::a_drag_keeps_the_press_candidates_without_the_vertex_and_what_sits_on_it FCAD_31C_FROZEN_EXECUTED" \
+            "sketch::object_snap::tests::the_largest_drawing_has_a_bounded_finite_set_and_a_cheap_pointer_query FCAD_31C_LARGEST_EXECUTED" \
+            "sketch::object_snap_tests::the_switch_sits_beside_the_grid_step_and_changes_only_editor_state FCAD_31C_SWITCH_EXECUTED" \
+            "sketch::object_snap_tests::new_points_take_crossing_midpoint_and_endpoint_with_a_marker_and_a_name FCAD_31C_NEW_POINTS_EXECUTED" \
+            "sketch::object_snap_tests::an_object_point_beats_the_grid_is_never_rounded_and_typed_text_stays_exact FCAD_31C_GRID_AND_TEXT_EXECUTED" \
+            "sketch::object_snap_tests::a_drag_lands_on_the_frozen_incident_midpoint_never_on_itself_and_is_one_undo FCAD_31C_DRAG_EXECUTED" \
+            "sketch::object_snap_tests::a_snap_that_breaks_the_contour_stays_a_draft_and_cancelling_leaves_history_alone FCAD_31C_CANCEL_AND_INVALID_EXECUTED" \
+            "sketch::object_snap_tests::packed_events_keep_order_and_a_switch_in_the_frame_changes_only_the_next_gesture FCAD_31C_PACKED_EXECUTED" \
+            "sketch::object_snap_tests::off_busy_and_covered_canvases_offer_no_snap FCAD_31C_BLOCKED_EXECUTED" \
+            "sketch::object_snap_tests::one_and_two_pixels_per_point_and_other_canvas_scales_pick_the_same_point FCAD_31C_SCALE_PIXELS_EXECUTED" \
+            "sketch::object_snap_tests::only_what_the_canvas_shows_is_offered FCAD_31C_VISIBLE_EXECUTED" \
+            "sketch::object_snap_tests::saved_vertices_drag_to_a_midpoint_and_ask_for_the_request_typed_numbers_make FCAD_31C_SAVED_EXECUTED" \
+            "sessions::tests::tabs::drafts::object_snap_and_its_snapped_draft_follow_their_tab FCAD_31C_TABS_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"

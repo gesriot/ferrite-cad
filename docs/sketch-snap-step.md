@@ -53,3 +53,7 @@ SQL cells, snapshot/version/Keep guards не менялись. CLI не имит
 20000 mm³.
 
 [Исполненные проверки](sketch-snap-step-verification.md).
+
+Объектные привязки (конец, середина, конечное пересечение) — отдельный переключатель
+рядом с этим шагом; там, где объект найден, он побеждает шаг:
+[sketch-object-snaps.md](sketch-object-snaps.md).

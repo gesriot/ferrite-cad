@@ -854,6 +854,68 @@ fn vertex_drafts_of_two_copies_keep_their_own_text_and_draft_history() {
     println!("\nFCAD_30P_VERTEX_DRAFTS_EXECUTED");
 }
 
+/// §31C: Object snap and a snapped draft belong to their tab's editor, like the
+/// grid step and the typed text: hidden with it, shown with it, no second store.
+#[test]
+fn object_snap_and_its_snapped_draft_follow_their_tab() {
+    let (root, path, _) = crate::fillets::tests::plate();
+    let a_file = root.path().join("a.fcad");
+    let b_file = root.path().join("b.fcad");
+    std::fs::copy(&path, &a_file).expect("a");
+    std::fs::copy(&path, &b_file).expect("b");
+    let mut w = Window::new(Drawn::Mock, None);
+    let draft = |w: &mut Window, to: &str| {
+        let current = w.sessions.export_path().expect("shown");
+        let reading = read_extrude_source(&current).expect("reading");
+        let sketch = reading.sketches[0].sketch;
+        let (editor, _asked) =
+            crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", to);
+        w.creates.sketch = editor;
+    };
+    w.open(&a_file);
+    let a = w.sessions.tab();
+    draft(&mut w, "41.25");
+    assert!(!crate::sketch::object_snap_tests::object_snap_on(
+        &w.creates.sketch
+    ));
+    let (placed, middle) =
+        crate::sketch::object_snap_tests::drag_vertex_one_to_its_edge_middle(&mut w.creates.sketch);
+    assert_eq!(placed, middle, "snapped to the middle, exactly");
+    let a_draft = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A");
+    assert!(crate::sketch::object_snap_tests::object_snap_on(
+        &w.creates.sketch
+    ));
+    w.open(&b_file);
+    let b = w.sessions.tab();
+    assert_eq!(crate::sketch::tests::vertex_draft(&w.creates.sketch), None);
+    draft(&mut w, "44.5");
+    assert!(
+        !crate::sketch::object_snap_tests::object_snap_on(&w.creates.sketch),
+        "B's editor has its own switch"
+    );
+    let b_draft = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("B");
+    w.round(a);
+    assert_eq!(
+        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        Some(a_draft.clone())
+    );
+    assert!(crate::sketch::object_snap_tests::object_snap_on(
+        &w.creates.sketch
+    ));
+    crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
+    let undone = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A");
+    assert_eq!((undone.1, undone.2), (a_draft.1 - 1, a_draft.2 + 1));
+    w.round(b);
+    assert_eq!(
+        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        Some(b_draft)
+    );
+    assert!(!crate::sketch::object_snap_tests::object_snap_on(
+        &w.creates.sketch
+    ));
+    println!("\nFCAD_31C_TABS_EXECUTED");
+}
+
 /// Without a kernel, showing a tab is refused at its picture: both tabs' drafts
 /// stay exactly where they were (executes only in a build with no kernel).
 #[test]

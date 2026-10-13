@@ -150,6 +150,16 @@ if [ -n "${FCAD_SKETCH_DRAG_FBX:-}" ]; then
     echo "FCAD_SKETCH_DRAG_UFBX_EXECUTED"
 fi
 
+# §31C: the object-snap drag's worker publication, read by the same pinned reader.
+if [ -n "${FCAD_SKETCH_SNAP_FBX:-}" ]; then
+    "$reader" --identity "$FCAD_SKETCH_SNAP_FBX" | tee "$work/sketch-snap-reader.txt"
+    count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/sketch-snap-reader.txt")"
+    [ -n "$count" ] && [ "$count" -ge 6 ] || {
+        echo "error: pinned reader did not verify the object-snap Sketch FBX" >&2; exit 1;
+    }
+    echo "FCAD_SKETCH_SNAP_UFBX_EXECUTED"
+fi
+
 # §25E reuses this same pinned reader for the actual H/V publications;
 # Later constraint slices add their actual process/worker publications to the
 # same reader build; §25I includes the slanted relative-orientation models.

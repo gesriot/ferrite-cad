@@ -5038,11 +5038,11 @@ unobserved manual gestures are listed separately in the verification document.
 Exact remote CI is recorded in PR #105. Windows/Linux windows, §30, Milestone 5C,
 the product and the OOM investigation remain open.
 
-### §31C — Object snaps in the Sketch editor (planned)
+### §31C — Object snaps in the Sketch editor (endpoint, midpoint, crossing implemented; centre deferred)
 
-Accepted interaction contract, 2026-10-13. Implement the algorithms and regression
-tests independently against this contract. The current viewport-layout work stays
-separate; no snap implementation is claimed here.
+Accepted interaction contract, 2026-10-13. The slice below implements it for the
+geometry the Line canvas actually draws; the centre of a circle is **not**
+implemented and not claimed (see the status after the contract).
 
 - First families: endpoint, midpoint, circle centre and finite-segment intersection,
   where the editor actually displays that geometry. Do not invent document objects
@@ -5080,6 +5080,25 @@ object/grid competition, 1x/2x display scale, invalid coordinate drafts, Escape,
 one gesture/one Undo, and unchanged typed input. Use real editor interaction tests
 as well as geometry tests; helper-only coverage does not establish a reachable UI.
 
+**Status, reviewed implementation (PR #106).** The
+Line canvas of a New drawing and of a saved Sketch has an **Object snap** switch in the
+grid-step row (editor state, off for a new editor, nothing persisted). With it on, a
+click that adds a point, or a vertex drag, uses the ranked endpoint, midpoint or
+finite-segment crossing of the contour as drawn; the marker and the name of the choice
+(`Endpoint`, `Midpoint`, `Intersection`) are painted beside the pointer for the frame.
+Typed X/Y are untouched, no constraint or ID is made, only the resulting coordinate
+edit is an Undo step. The **circle centre is not available**: Circle and Annulus are
+numeric forms, the canvas draws no circle, and no invisible candidate was added; it
+stays the next §31C addition. Quadrants, nearest, tangency, apparent crossings and all
+of §31D remain later. Contract, rules for degenerate geometry, executed gates,
+mutations, resources and the independent window recipe:
+[sketch-object-snaps.md](sketch-object-snaps.md). Independent review fixed a
+query-window boundary omission with a failing-first regression. The macOS window
+verified all three labels, saved drag/Undo/Redo, typed text, object-over-grid choice,
+Apply/Save and real STL/FBX exports against the CLI (14000 mm³; peak 204.892 MiB,
+exit 0). Remote CI is recorded separately. §30, Milestone 5C, the product and the OOM
+investigation remain open.
+
 ### §31D — Gesture guides and temporary dimensional input (planned)
 
 After basic object snaps: orthogonal and polar guides from an explicit visible
@@ -5096,6 +5115,17 @@ It is not a persistent dimensional constraint; adding one is a later explicit ac
 - Hover, anchor changes, guide display and snap labels do not enter history. A
   completed coordinate gesture is one history step. End/Escape clears gesture guides;
   cancellation follows the existing draft/history rules.
+
+**Next bounded slice, §31D-1:** guides and temporary length from an unambiguous
+displayed origin: the last vertex when adding a New point, or the press-time vertex
+when dragging. Use the existing coordinate/history route and explicit editor-local
+Off / Orthogonal / Polar 45° controls. An optional positive length measures from
+that displayed origin; it creates coordinates, not a persistent constraint. Define
+object/guide/grid precedence and reject conflicting explicit length input visibly.
+Acquiring a different origin by hovering, with the hysteresis specified above,
+remains the following extension; it is not required to move a long gesture's fixed
+origin. The missing circle-centre snap remains open until circles are displayed on
+an appropriate canvas. Neither omission prevents this Line-canvas slice.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
