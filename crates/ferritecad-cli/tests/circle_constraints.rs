@@ -1451,3 +1451,374 @@ fn occt_without_solver_builds_plain_circles_and_refuses_circle_constraints() {
     assert_eq!(a.faces, 4);
     assert!((a.volume - PI * (100. - 16.) * 15.).abs() < 1e-6);
 }
+
+fn diameter_add(curve: &str, mm: f64) -> Value {
+    json!({"rule":"diameter","curve_id":curve,"diameter_mm":mm})
+}
+
+/// Every SQL cell of two published copies equals the other's, except the
+/// selected Sketch's payload (the newly minted constraint UUIDs live in it) and
+/// its hash, and the copy's own modified timestamp.
+fn same_sql_but_the_sketch_payload(a: &Path, b: &Path, sketch: ferritecad_types::ObjectId) {
+    let (first, second) = (tables(a), tables(b));
+    assert_eq!(
+        first.keys().collect::<Vec<_>>(),
+        second.keys().collect::<Vec<_>>()
+    );
+    let selected = rusqlite::types::Value::Blob(sketch.to_bytes().to_vec());
+    let mut compared = 0;
+    for (table, (columns, rows)) in &first {
+        let (_, other) = &second[table];
+        assert_eq!(rows.len(), other.len(), "{table} row count");
+        for (x, y) in rows.iter().zip(other) {
+            for (i, cell) in x.iter().enumerate() {
+                compared += 1;
+                if cell == &y[i] {
+                    continue;
+                }
+                let column = columns[i].as_str();
+                let allowed = match table.as_str() {
+                    "objects" => {
+                        x.contains(&selected) && matches!(column, "payload" | "payload_hash")
+                    }
+                    "meta" => column == "modified_at",
+                    _ => false,
+                };
+                assert!(allowed, "{table}.{column} differs between the two copies");
+            }
+        }
+    }
+    assert!(
+        compared > 50,
+        "a comparison of {compared} cells is not a comparison"
+    );
+}
+
+/// §31E: the strict `diameter` form. Every malformed spelling is refused as input
+/// before anything is read or written; the well-formed one reaches the shared
+/// operation. Needs neither a kernel nor a solver.
+#[test]
+fn circle_diameter_request_is_strict_and_converts_without_native() {
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("cylinder.fcad");
+    let curve = write_circle_document(&source, [12., -7.], 10., 15.).to_string();
+    let catalog = inspect(&source);
+    let before = std::fs::read(&source).expect("bytes");
+    let request = root.path().join("request.json");
+    let out = root.path().join("copy.fcad");
+    write(&request, &json!({"request_version":1,"remove":[],"add":[]}));
+    let names = entries(root.path());
+    let ask = |add: &str| -> Output {
+        std::fs::write(
+            &request,
+            format!(r#"{{"request_version":1,"remove":[],"add":[{add}]}}"#),
+        )
+        .expect("raw request");
+        cli()
+            .arg(OP)
+            .arg(&source)
+            .args([
+                "--sketch",
+                catalog["sketches"][0]["sketch_id"].as_str().expect("id"),
+            ])
+            .args([
+                "--expect-version",
+                catalog["content_version"].as_str().expect("version"),
+            ])
+            .arg("--request")
+            .arg(&request)
+            .arg("-o")
+            .arg(&out)
+            .arg("--json")
+            .output()
+            .expect("process")
+    };
+    let rule = |fields: &str| format!(r#"{{"rule":"diameter","curve_id":"{curve}",{fields}}}"#);
+    let mut malformed = vec![
+        (
+            "the radius spelling inside a diameter",
+            rule(r#""radius_mm":6.75"#),
+        ),
+        (
+            "both numbers",
+            rule(r#""diameter_mm":13.5,"radius_mm":6.75"#),
+        ),
+        ("a stray field", rule(r#""diameter_mm":13.5,"x_mm":1.0"#)),
+        (
+            "a duplicate key",
+            rule(r#""diameter_mm":13.5,"diameter_mm":9.0"#),
+        ),
+        (
+            "no number",
+            format!(r#"{{"rule":"diameter","curve_id":"{curve}"}}"#),
+        ),
+        (
+            "no circle",
+            r#"{"rule":"diameter","diameter_mm":13.5}"#.to_owned(),
+        ),
+        (
+            "a diameter in a radius",
+            format!(r#"{{"rule":"radius","curve_id":"{curve}","diameter_mm":13.5}}"#),
+        ),
+        (
+            "not a UUID",
+            r#"{"rule":"diameter","curve_id":"not a uuid","diameter_mm":13.5}"#.to_owned(),
+        ),
+        ("a number as text", rule(r#""diameter_mm":"13.5""#)),
+        ("null", rule(r#""diameter_mm":null"#)),
+        ("a boolean", rule(r#""diameter_mm":true"#)),
+        (
+            "another spelling of the rule",
+            format!(r#"{{"rule":"Diameter","curve_id":"{curve}","diameter_mm":13.5}}"#),
+        ),
+        (
+            "the unit in the rule",
+            format!(r#"{{"rule":"diameter_mm","curve_id":"{curve}","diameter_mm":13.5}}"#),
+        ),
+        (
+            "an array in place of the object",
+            format!(r#"["diameter","{curve}",13.5]"#),
+        ),
+    ];
+    // Numbers JSON cannot spell, and numbers that are not a diameter. The last
+    // two are subnormal: half of the smallest positive value is zero, half of
+    // the next odd one is not half of it.
+    for bad in [
+        "0",
+        "-0.0",
+        "-4",
+        "NaN",
+        "Infinity",
+        "-Infinity",
+        "1e999",
+        "1e-999",
+        "5e-324",
+        "1.5e-323",
+    ] {
+        malformed.push((
+            "a number that is no diameter",
+            rule(&format!(r#""diameter_mm":{bad}"#)),
+        ));
+    }
+    for (what, add) in &malformed {
+        let v = reply(ask(add), OP, 2);
+        assert_eq!(v["error"]["kind"], "input", "{what}: {}", v["error"]);
+        assert_eq!(std::fs::read(&source).expect("source"), before, "{what}");
+        assert_eq!(entries(root.path()), names, "{what} wrote something");
+    }
+    // The halving that loses the value is named, not reported as "not positive".
+    let v = reply(ask(&rule(r#""diameter_mm":5e-324"#)), OP, 2);
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .expect("message")
+            .contains("halve"),
+        "{}",
+        v["error"]
+    );
+    // Past the circle policy the same document rule that refuses a radius refuses D/2.
+    let v = reply(ask(&rule(r#""diameter_mm":4e6"#)), OP, 2);
+    assert!(
+        matches!(v["error"]["kind"].as_str(), Some("input" | "unsupported")),
+        "{}",
+        v["error"]
+    );
+    assert_eq!(entries(root.path()), names);
+
+    // The well-formed form is accepted and goes on to the shared operation. A
+    // build without a solver stops there, at the same refusal a radius gets.
+    if !solver_available() {
+        let v = reply(ask(&rule(r#""diameter_mm":13.5"#)), OP, 2);
+        assert_eq!(v["error"]["kind"], "unsupported", "{}", v["error"]);
+        assert_eq!(entries(root.path()), names);
+        assert_eq!(std::fs::read(&source).expect("source"), before);
+    }
+    println!("\nFCAD_31E_CLI_STRICT_EXECUTED");
+}
+
+/// §31E, native: a diameter is the stored Radius `D/2` in the Radius slot, and
+/// replacing or removing it is the existing exact-UUID operation.
+#[test]
+fn native_circle_diameter_is_the_stored_radius_in_the_same_slot() {
+    if !native() {
+        return;
+    }
+    let f = Fixture::cylinder();
+    let source_bytes = std::fs::read(&f.source).expect("source");
+    let before = stored(&f.source);
+    let curve = f.curve().to_owned();
+
+    // The same circle sized by a diameter and by the radius that is its half.
+    let by_diameter = f.root.path().join("by-diameter.fcad");
+    let by_radius = f.root.path().join("by-radius.fcad");
+    f.ask(
+        &[],
+        &[diameter_add(&curve, 13.5), center_add(&curve, -3.5, 4.25)],
+    );
+    let d = reply(f.edit(&by_diameter).output().expect("process"), OP, 0);
+    f.ask(
+        &[],
+        &[radius_add(&curve, 6.75), center_add(&curve, -3.5, 4.25)],
+    );
+    let r = reply(f.edit(&by_radius).output().expect("process"), OP, 0);
+
+    // The response names a radius, with the fields it always had.
+    let rule = &d["result"]["added_constraints"][0]["rule"];
+    assert_eq!(
+        *rule,
+        json!({"kind":"radius","curve_id":curve,"radius":6.75})
+    );
+    assert_eq!(*rule, r["result"]["added_constraints"][0]["rule"]);
+    for key in [
+        "destination",
+        "sketch_id",
+        "added_constraints",
+        "removed_constraint_ids",
+        "solve",
+    ] {
+        assert!(d["result"].get(key).is_some(), "{key} missing from {d}");
+    }
+    let keys =
+        |v: &Value| -> Vec<String> { v.as_object().expect("object").keys().cloned().collect() };
+    assert_eq!(keys(&d["result"]), keys(&r["result"]));
+    assert_eq!(
+        keys(&d["result"]["added_constraints"][0]),
+        keys(&r["result"]["added_constraints"][0])
+    );
+    assert_eq!(d["result"]["solve"], r["result"]["solve"]);
+    assert_eq!(d["result"]["solve"]["degrees_of_freedom"], 0);
+    assert_eq!(std::fs::read(&f.source).expect("source"), source_bytes);
+
+    // Stored: the same Radius under the same circle, and nothing else moved.
+    let (sd, sr) = (stored(&by_diameter), stored(&by_radius));
+    let texts = |s: &Stored| {
+        let mut t: Vec<_> = s.constraints.iter().map(|(_, k)| k.clone()).collect();
+        t.sort();
+        t
+    };
+    assert_eq!(texts(&sd), ["fixed center (-3.5, 4.25)", "radius 6.75"]);
+    assert_eq!(texts(&sd), texts(&sr));
+    for s in [&sd, &sr] {
+        assert_eq!(s.curve, before.curve);
+        assert_eq!((s.center, s.radius), (before.center, before.radius));
+        assert_eq!(s.refs, before.refs, "same reference UUIDs and roles");
+        assert_eq!(s.schema_version, 3);
+    }
+    let minted: std::collections::BTreeSet<_> = sd
+        .constraints
+        .iter()
+        .chain(&sr.constraints)
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(minted.len(), 4, "each publication minted its own UUIDs");
+    only_the_constraint_payload_changed(&f.source, &by_diameter, before.sketch);
+    same_sql_but_the_sketch_payload(&by_diameter, &by_radius, before.sketch);
+    analytic_matches(&analytic(&by_diameter), before.curve, 6.75, 15.);
+    mesh_matches(
+        &mesh(&by_diameter, &by_diameter.with_extension("stl")),
+        [-3.5, 4.25],
+        6.75,
+        15.,
+    );
+
+    // One circle, one Radius slot, whichever unit filled it.
+    let never = f.root.path().join("never.fcad");
+    let names = entries(f.root.path());
+    for add in [
+        vec![diameter_add(&curve, 13.5), radius_add(&curve, 6.75)],
+        vec![radius_add(&curve, 6.75), diameter_add(&curve, 13.5)],
+        vec![diameter_add(&curve, 13.5), diameter_add(&curve, 9.)],
+    ] {
+        f.ask(&[], &add);
+        let v = reply(f.edit(&never).output().expect("process"), OP, 2);
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("only one radius"),
+            "{}",
+            v["error"]
+        );
+    }
+    assert_eq!(entries(f.root.path()), names, "a refusal published");
+    // A stored Radius also occupies it against a later diameter.
+    let catalog = inspect(&by_diameter);
+    let stored_constraints = catalog["sketches"][0]["constraint_edit"]["constraints"]
+        .as_array()
+        .expect("constraints")
+        .clone();
+    let find = |kind: &str| {
+        stored_constraints
+            .iter()
+            .find(|c| c["rule"]["kind"] == kind)
+            .unwrap_or_else(|| panic!("no stored {kind}"))["constraint_id"]
+            .clone()
+    };
+    let (radius_id, pin_id) = (find("radius"), find("fixed"));
+    f.ask(&[], &[diameter_add(&curve, 9.)]);
+    reply(
+        f.edit_from(&by_diameter, &catalog, &never)
+            .output()
+            .expect("process"),
+        OP,
+        2,
+    );
+    assert_eq!(entries(f.root.path()), names);
+
+    // Replacement: remove exactly the stored Radius and add a diameter, in one
+    // atomic request; the pin keeps its identity.
+    let replaced = f.root.path().join("replaced.fcad");
+    f.ask(
+        std::slice::from_ref(&radius_id),
+        &[diameter_add(&curve, 17.)],
+    );
+    let v = reply(
+        f.edit_from(&by_diameter, &catalog, &replaced)
+            .output()
+            .expect("process"),
+        OP,
+        0,
+    );
+    assert_eq!(v["result"]["removed_constraint_ids"], json!([radius_id]));
+    assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 0);
+    let wide = stored(&replaced);
+    assert_eq!(texts(&wide), ["fixed center (-3.5, 4.25)", "radius 8.5"]);
+    assert!(
+        wide.constraints
+            .iter()
+            .any(|(id, _)| id.to_string() == pin_id.as_str().expect("id"))
+    );
+    assert!(
+        wide.constraints
+            .iter()
+            .all(|(id, _)| id.to_string() != radius_id.as_str().expect("id")),
+        "the replaced Radius kept its UUID"
+    );
+    assert_eq!((wide.center, wide.radius), (before.center, before.radius));
+    analytic_matches(&analytic(&replaced), before.curve, 8.5, 15.);
+
+    // Removal of that Radius by its UUID alone hands the circle back to the
+    // stored guess, still pinned.
+    let catalog = inspect(&replaced);
+    let new_radius = catalog["sketches"][0]["constraint_edit"]["constraints"]
+        .as_array()
+        .expect("constraints")
+        .iter()
+        .find(|c| c["rule"]["kind"] == "radius")
+        .expect("the replacement Radius")["constraint_id"]
+        .clone();
+    let freed = f.root.path().join("freed.fcad");
+    f.ask(&[new_radius], &[]);
+    reply(
+        f.edit_from(&replaced, &catalog, &freed)
+            .output()
+            .expect("process"),
+        OP,
+        0,
+    );
+    let rest = stored(&freed);
+    assert_eq!(texts(&rest), ["fixed center (-3.5, 4.25)"]);
+    analytic_matches(&analytic(&freed), before.curve, 10., 15.);
+    assert_eq!(std::fs::read(&f.source).expect("source"), source_bytes);
+    println!("\nFCAD_31E_CLI_CIRCLE_EXECUTED");
+}

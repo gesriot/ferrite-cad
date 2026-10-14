@@ -5146,7 +5146,7 @@ placement, Cancel, Apply, unsaved exports and Save As. The actual GUI file match
 CLI SQL/UUID/refs and STL/FBX (14500 mm³); peak footprint 212.095 MiB, exit 0,
 pressure 1 and swap 0. Remote CI is separate from these local checks.
 
-### §31E — Diameter input through Radius (next)
+### §31E — Diameter input through Radius (implemented; awaiting review)
 
 Add an explicit diameter entry to the existing constraint editor and an additive
 strict `diameter` request form to the CLI. Both must use one checked conversion
@@ -5159,10 +5159,28 @@ that underflows to zero; use the same occupied slot as Radius. Cover Circle and 
 Annulus circles by their own UUIDs. Hover-anchor acquisition and circle-centre snaps
 remain open, not completed by this adapter.
 
+**Status, author handoff.** The constraint form of one Circle or of a ring has a
+**Diameter mm** box and an **Add diameter** button on their own row under the Radius
+row (editor state, blank for a new form, nothing persisted, frozen while a job runs);
+adding a positive finite diameter stores the same `Radius` with `R = D/2` for the
+circle that is picked by its UUID, as one draft step, through the draft history and
+`validate_edits` the Radius box already uses. The CLI request v1 gains
+`{"rule":"diameter","curve_id":"…","diameter_mm":13.5}`, strict like its neighbours
+(no `radius_mm`, no extra, missing or mistyped field, no non-finite or non-positive
+number). Both adapters call `CircleRadiusMm::from_diameter_mm`, the one conversion,
+which also refuses a `D` whose half is not exactly representable (near the subnormal boundary). A
+Radius and a diameter for one circle occupy the one Radius slot; replacing is the
+existing exact remove + add. Discovery and responses still say `radius`, with the
+fields they always had. Contract, executed gates, mutations, resources and the
+independent window recipe: [circle-diameter-input.md](circle-diameter-input.md).
+**Not done:** hover-anchor acquisition (§31D), the circle centre snap (§31C), a
+Diameter constraint of its own (none is wanted), and every later adapter; so §31C,
+§31D, §30, Milestone 5C, the product and the OOM investigation stay open.
+
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
-**Constraint adapters.** A diameter input may use the existing Radius with `R = D/2`,
-with existing value validation and no second solver equation. Collinearity, angle,
+**Constraint adapters.** A diameter input uses the existing Radius with `R = D/2`,
+with existing value validation and no second solver equation (§31E, above). Collinearity, angle,
 tangency and symmetry require the full document → solver contract → C ABI/shim →
 residual/diagnosis → capability → shared UI/CLI operation route. The present shim's
 last kind is `FC_GCS_CIRCLE_RADIUS = 8`; spare point/circle fields do not by themselves

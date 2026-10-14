@@ -212,6 +212,11 @@ worker, устаревший ответ и отказ последующего O
 требует solver: общий copy job сначала cold-rebuild'ит исходник и проверяет его
 refs.
 
+Диаметр каждой из двух окружностей вводится тем же способом, что и у одной
+(§31E): строка `Diameter mm`/`Add diameter` у выбранной по UUID окружности и
+форма `{"rule":"diameter",…}` в request v1 дают прежний `Radius` с `R = D/2`;
+роли boundary/bore остаются сохранёнными ([контракт](circle-diameter-input.md)).
+
 ## Рецепт
 
 Нужны OCCT, planegcs, `FERRITECAD` и `FCAD_UFBX_READER`.

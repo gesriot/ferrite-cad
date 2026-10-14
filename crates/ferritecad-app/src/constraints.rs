@@ -87,6 +87,10 @@ struct Draft {
     /// radius are different dimensions of different geometry, and one box for
     /// both would carry a number from one family into the other.
     radius_mm: String,
+    /// The circle diameter being typed (§31E). A box of its own beside
+    /// `radius_mm`, so no one text is ever read in two units; adding it stores
+    /// the same Radius, `D/2`.
+    diameter_mm: String,
     endpoint: LineEndpoint,
     pin_x_mm: String,
     pin_y_mm: String,
@@ -161,6 +165,13 @@ impl Editor {
             )
         })
     }
+    /// §31E, tests: the picked circle and the unapplied Diameter text.
+    #[cfg(test)]
+    pub(crate) fn draft_diameter(&self) -> Option<(Option<StableEntityId>, String)> {
+        self.draft
+            .as_ref()
+            .map(|d| (d.selected, d.diameter_mm.clone()))
+    }
     pub(crate) fn session(&self) -> (bool, bool, bool) {
         (self.can_begin, self.can_apply, self.unsaved)
     }
@@ -188,6 +199,7 @@ impl Editor {
             selected: None,
             length_mm: String::new(),
             radius_mm: String::new(),
+            diameter_mm: String::new(),
             endpoint: LineEndpoint::Start,
             pin_x_mm: String::new(),
             pin_y_mm: String::new(),
@@ -455,7 +467,8 @@ impl Editor {
                             ui.add(
                                 egui::TextEdit::singleline(&mut draft.radius_mm)
                                     .char_limit(32)
-                                    .desired_width(90.),
+                                    .desired_width(90.)
+                                    .interactive(!running),
                             );
                             if ui
                                 .add_enabled(
@@ -550,6 +563,56 @@ impl Editor {
                                 }
                             }
                         });
+                        // §31E: a diameter is another way to type the same Radius.
+                        // Its own row under the radius row, its own box: nothing
+                        // above is widened or hidden, and no box is ever read in
+                        // two units.
+                        ui.horizontal(|ui| {
+                            ui.label("Diameter mm");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut draft.diameter_mm)
+                                    .id_salt("circle-diameter-mm")
+                                    .char_limit(32)
+                                    .desired_width(90.)
+                                    // egui lets a focused box take text even when
+                                    // disabled; a running job must freeze it.
+                                    .interactive(!running),
+                            );
+                            if ui
+                                .add_enabled(
+                                    draft.selected.is_some(),
+                                    egui::Button::new("Add diameter"),
+                                )
+                                .clicked()
+                            {
+                                // D/2 is the document type's rule, shared with the
+                                // command line; the Radius it yields is then judged
+                                // like any typed radius.
+                                let radius = match draft.diameter_mm.trim().parse::<f64>() {
+                                    Ok(diameter) => CircleRadiusMm::from_diameter_mm(diameter)
+                                        .map_err(|e| e.to_string()),
+                                    Err(_) => Err("Enter a positive diameter in mm.".to_owned()),
+                                };
+                                match radius {
+                                    Ok(radius) => {
+                                        let mut proposed = draft.edits.clone();
+                                        proposed.add.push(AddSketchConstraint::Circle {
+                                            curve: draft.selected.expect("selected"),
+                                            kind: CircleConstraintKind::Radius(radius),
+                                        });
+                                        match draft.choice.validate_edits(&proposed) {
+                                            Ok(()) => {
+                                                draft.history.change(&mut draft.edits, proposed);
+                                                draft.refusal = None;
+                                            }
+                                            Err(e) => draft.refusal = Some(e.to_string()),
+                                        }
+                                    }
+                                    Err(refusal) => draft.refusal = Some(refusal),
+                                }
+                            }
+                            ui.small("Stored as Radius = Diameter / 2");
+                        });
                     }
                     if circles.is_empty() {
                     ui.horizontal(|ui| {
@@ -582,7 +645,7 @@ impl Editor {
                     ui.horizontal(|ui| {
                         ui.label("Line length (mm):");
                         ui.add(egui::TextEdit::singleline(&mut draft.length_mm)
-                            .id_salt("line-length-mm").desired_width(100.));
+                            .id_salt("line-length-mm").desired_width(100.).interactive(!running));
                         if ui.add_enabled(draft.selected.is_some(), egui::Button::new("Add length")).clicked() {
                             let length = draft.length_mm.trim().parse::<f64>()
                                 .map_err(|_| ferritecad_types::CadError::input("enter a finite positive Line length in mm"))
@@ -672,10 +735,10 @@ impl Editor {
                     ui.horizontal(|ui| {
                         ui.label("Fixed X (mm):");
                         ui.add(egui::TextEdit::singleline(&mut draft.pin_x_mm)
-                            .id_salt("fixed-x-mm").desired_width(80.));
+                            .id_salt("fixed-x-mm").desired_width(80.).interactive(!running));
                         ui.label("Fixed Y (mm):");
                         ui.add(egui::TextEdit::singleline(&mut draft.pin_y_mm)
-                            .id_salt("fixed-y-mm").desired_width(80.));
+                            .id_salt("fixed-y-mm").desired_width(80.).interactive(!running));
                         if circles.is_empty() && ui
                             .add_enabled(draft.selected.is_some(), egui::Button::new("Add Fixed point"))
                             .clicked()
@@ -1081,6 +1144,8 @@ pub(crate) mod tests {
     use super::*;
     use ferritecad_document::Document;
     use ferritecad_kernel::OperationContext;
+    /// §31E: a diameter typed for a circle, which is the Radius `D/2`.
+    pub(crate) mod diameter;
     /// §27G: the same editor on the profile of a Revolve with a bore.
     pub(crate) mod revolve;
     /// §30C: the same editor applying into the open document.

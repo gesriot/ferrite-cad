@@ -1425,3 +1425,158 @@ fn occt_without_solver_builds_plain_annuli_and_refuses_annular_constraints() {
     assert_eq!(entries(f.root.path()), names);
     assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
 }
+
+fn diameter_add(curve: &str, mm: f64) -> Value {
+    json!({"rule":"diameter","curve_id":curve,"diameter_mm":mm})
+}
+
+/// §31E, native: a diameter names its circle by UUID. The request lists the bore
+/// before the boundary, and the document is run once with the boundary stored
+/// first and once with the bore stored first; neither order decides who is who.
+#[test]
+fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
+    if !native() {
+        return;
+    }
+    for bore_first in [false, true] {
+        let f = Fixture::drawn(bore_first);
+        let source_bytes = std::fs::read(&f.source).expect("source");
+        let saved = stored(&f.source);
+        let (boundary, bore) = (f.boundary().to_owned(), f.bore().to_owned());
+        assert_eq!(saved.stored_order[0].to_string() == bore, bore_first);
+        let (boundary_id, bore_id): (
+            ferritecad_types::StableEntityId,
+            ferritecad_types::StableEntityId,
+        ) = (boundary.parse().expect("UUID"), bore.parse().expect("UUID"));
+
+        let sized = f.root.path().join("sized.fcad");
+        f.ask(
+            &[],
+            &[
+                concentric_add(&boundary, &bore),
+                diameter_add(&bore, 4.25),
+                diameter_add(&boundary, 13.5),
+                center_add(&boundary, -3.5, 4.25),
+            ],
+        );
+        let v = reply(f.edit(&sized).output().expect("process"), OP, 0);
+        assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 0);
+        // The response keeps calling them radii, with the fields it always had.
+        let radii: Vec<(String, f64)> = v["result"]["added_constraints"]
+            .as_array()
+            .expect("added")
+            .iter()
+            .filter(|c| c["rule"]["kind"] == "radius")
+            .map(|c| {
+                (
+                    c["rule"]["curve_id"].as_str().expect("curve").to_owned(),
+                    c["rule"]["radius"].as_f64().expect("radius"),
+                )
+            })
+            .collect();
+        assert_eq!(radii, [(bore.clone(), 2.125), (boundary.clone(), 6.75)]);
+
+        let kept = stored(&sized);
+        assert_eq!(kept.stored_order, saved.stored_order, "curve order moved");
+        assert_eq!(kept.circles, saved.circles, "the guess was overwritten");
+        assert_eq!(kept.refs, saved.refs);
+        let rules: Vec<String> = kept.constraints.iter().map(|c| c.1.clone()).collect();
+        for expected in [
+            format!("radius 6.75 of {boundary_id}"),
+            format!("radius 2.125 of {bore_id}"),
+        ] {
+            assert!(
+                rules.contains(&expected),
+                "{expected} missing from {rules:?}"
+            );
+        }
+        analytic_matches(&analytic(&sized), boundary_id, bore_id, 6.75, 2.125, 15.0);
+        if bore_first {
+            check_annular_mesh(
+                &mesh(&sized, &f.root.path().join("sized.stl")),
+                [-3.5, 4.25],
+                6.75,
+                2.125,
+                15.0,
+            );
+        }
+
+        // Roles are the saved ones: the same two diameters given to the wrong
+        // circles cross the pair over, and that publishes nothing.
+        let never = f.root.path().join("never.fcad");
+        let names = entries(f.root.path());
+        f.ask(
+            &[],
+            &[
+                concentric_add(&boundary, &bore),
+                diameter_add(&boundary, 4.25),
+                diameter_add(&bore, 13.5),
+                center_add(&boundary, -3.5, 4.25),
+            ],
+        );
+        let refused = reply(f.edit(&never).output().expect("process"), OP, 2);
+        assert!(
+            matches!(
+                refused["error"]["kind"].as_str(),
+                Some("input" | "unsupported" | "constraint")
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(entries(f.root.path()), names, "a refusal left something");
+
+        // One Radius slot per circle, whichever unit filled it; replacing the
+        // bore's keeps the boundary's radius, the pair and the pin as they were.
+        let catalog = inspect(&sized);
+        let stored_rules = catalog["sketches"][0]["constraint_edit"]["constraints"]
+            .as_array()
+            .expect("constraints")
+            .clone();
+        let bore_radius = stored_rules
+            .iter()
+            .find(|c| c["rule"]["kind"] == "radius" && c["rule"]["curve_id"] == bore)
+            .expect("the bore's Radius")["constraint_id"]
+            .clone();
+        f.ask(&[], &[diameter_add(&bore, 5.5)]);
+        reply(
+            f.edit_from(&sized, &catalog, &never)
+                .output()
+                .expect("process"),
+            OP,
+            2,
+        );
+        assert_eq!(entries(f.root.path()), names, "the occupied slot published");
+        let replaced = f.root.path().join("replaced.fcad");
+        f.ask(
+            std::slice::from_ref(&bore_radius),
+            &[diameter_add(&bore, 5.5)],
+        );
+        let v = reply(
+            f.edit_from(&sized, &catalog, &replaced)
+                .output()
+                .expect("process"),
+            OP,
+            0,
+        );
+        assert_eq!(v["result"]["removed_constraint_ids"], json!([bore_radius]));
+        let after = stored(&replaced);
+        let ids = |s: &Stored| -> std::collections::BTreeSet<_> {
+            s.constraints.iter().map(|(id, _)| *id).collect()
+        };
+        assert_eq!(
+            ids(&after).intersection(&ids(&kept)).count(),
+            3,
+            "three kept their UUIDs"
+        );
+        assert!(
+            after
+                .constraints
+                .iter()
+                .any(|c| c.1 == format!("radius 2.75 of {bore_id}")),
+            "{:?}",
+            after.constraints
+        );
+        analytic_matches(&analytic(&replaced), boundary_id, bore_id, 6.75, 2.75, 15.0);
+        assert_eq!(std::fs::read(&f.source).expect("source"), source_bytes);
+    }
+    println!("\nFCAD_31E_CLI_ANNULUS_EXECUTED");
+}

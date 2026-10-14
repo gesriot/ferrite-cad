@@ -944,7 +944,8 @@ Line polygon (§25A) and add/remove persisted H/V in a new copy (§25E), with
 explicit Coincident closure; the same editor persists one length per Line (§25F),
 one pinned endpoint per profile (§25G), one equal length per pair of Lines
 (§25H) and one relative orientation — parallel or perpendicular — per pair of
-Lines (§25I). The same editor gives one saved analytic circle a radius and a
+Lines (§25I). The same editor gives one saved analytic circle a radius (or a diameter,
+stored as the same radius `D/2`, §31E) and a
 pinned centre (§25N). A saved annulus supports a radius per circle, explicit
 concentricity and one pinned centre through the same UI/CLI operation
 ([§25O](docs/annular-circle-constraints.md)). Other constraint families are

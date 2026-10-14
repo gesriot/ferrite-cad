@@ -1917,6 +1917,23 @@ remove/add. Если решение меняет роли стенки и отв
 кольца, публикации нет. Operation, schema и коды 0/2/7 прежние.
 [Полный контракт и исполняемый рецепт](annular-circle-constraints.md).
 
+§31E добавляет в тот же request v1 ещё одну строгую форму для круга и для каждой
+из двух окружностей кольца — диаметр в mm:
+
+```json
+{"rule":"diameter","curve_id":"UUID_FROM_DISCOVERY","diameter_mm":13.5}
+```
+
+Она готовит прежнее ограничение `Radius` с `R = D/2` для окружности `curve_id`
+(`CircleRadiusMm::from_diameter_mm`), а не новое: `kind:"radius"`, `radius`,
+`radius_mm` в discovery и в ответе остаются прежними, единица ввода не
+сохраняется. `diameter_mm` — конечное положительное число, которое делится
+пополам без потери (самое малое subnormal отвергается как «слишком малое»);
+`radius_mm` в этой форме, лишние, пропущенные и дублированные поля, строковые и
+`null`-числа, неверный UUID и иное написание правила — `kind:"input"`, код 2, без
+публикации. Radius и diameter одной окружности занимают один слот; замена —
+прежний атомарный remove exact UUID + add. [Контракт](circle-diameter-input.md).
+
 §25F сохраняет operation/schema/request v1. В `add` команды
 `edit-sketch-constraints-copy` доступны `{curve_id,rule:"horizontal"}`,
 `{curve_id,rule:"vertical"}` и `{curve_id,rule:"distance",distance_mm:N}`.

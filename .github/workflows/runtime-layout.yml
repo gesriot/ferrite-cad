@@ -1993,6 +1993,27 @@ jobs:
               echo "::error::circle constraint UI gate did not execute"; exit 1
             fi
           done
+          # §31E: a diameter is the stored Radius D/2, through the same process and
+          # worker. Each gate prints its marker after its last assertion; a skip, a
+          # missing marker or a test that did not run fails the step.
+          export FCAD_DIAMETER_ARTIFACT_DIR="$artifacts"
+          for check in \
+            "ferritecad-cli|--test circle_constraints|native_circle_diameter_is_the_stored_radius_in_the_same_slot|FCAD_31E_CLI_CIRCLE_EXECUTED" \
+            "ferritecad-cli|--test annular_constraints|native_diameter_on_each_circle_follows_the_uuid_not_the_order|FCAD_31E_CLI_ANNULUS_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::diameter::native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid|FCAD_31E_NATIVE_EXECUTED radii=6.75,2.125 constraints=4 faces=4" \
+            "ferritecad-app|--bin ferritecad-viewer|sessions::tests::tabs::drafts::a_typed_diameter_and_the_picked_circle_follow_their_tab|FCAD_31E_TABS_EXECUTED"
+          do
+            IFS='|' read -r package target gate marker <<< "$check"
+            read -r -a target <<< "$target"
+            cargo test --release --features planegcs -p "$package" "${target[@]}" "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee diameter.log
+            if grep -q 'skipped:' diameter.log \
+               || ! grep -q '^test result: ok\. 1 passed; 0 failed' diameter.log \
+               || ! grep -Fxq "$marker" diameter.log; then
+              echo "::error::diameter gate $gate did not execute and pass"; exit 1
+            fi
+          done
+          echo "FCAD_DIAMETER_FBX=$artifacts/diameter.fbx" >> "$GITHUB_ENV"
           echo "FCAD_CIRCLE_CONSTRAINT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
       - name: Constrain a saved ring's radii, centre and concentricity through CLI and worker
@@ -3264,6 +3285,7 @@ jobs:
           grep -q '^FCAD_SKETCH_DRAG_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SKETCH_SNAP_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SKETCH_GUIDE_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_DIAMETER_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SKETCH_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CIRCLE_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ANNULUS_UFBX_EXECUTED$' fbx-json-tests.log

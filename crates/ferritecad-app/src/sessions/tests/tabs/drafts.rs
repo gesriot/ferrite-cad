@@ -205,6 +205,15 @@ impl Window {
         self.creates.sketch.constraints = editor;
     }
 
+    /// §31E: the shown tab's constraints form on its circle, a Diameter typed
+    /// through the widgets and, if asked, added.
+    fn diameter_draft(&mut self, text: &str, add: bool) {
+        let current = self.sessions.export_path().expect("shown");
+        let reading = read_extrude_source(&current).expect("reading");
+        self.creates.sketch.constraints =
+            crate::constraints::tests::diameter::typed_diameter(&current, &reading, text, add);
+    }
+
     /// Shows `tab` and checks that every tab's unsaved state stayed as it was.
     fn round(&mut self, tab: TabId) {
         assert!(self.can_leave(), "an idle form holds no window");
@@ -401,6 +410,104 @@ fn constraint_drafts_with_one_set_of_ids_keep_picks_changes_and_history_per_tab(
         "nothing was written"
     );
     println!("\nFCAD_30P_CONSTRAINT_DRAFTS_EXECUTED");
+}
+
+/// §31E: two copies of one cylinder (one set of ids, the same controls) keep each
+/// their own picked circle and Diameter text, refused text included, through every
+/// switch; adding in one tab changes that tab's draft only.
+#[test]
+fn a_typed_diameter_and_the_picked_circle_follow_their_tab() {
+    if !ferritecad_occt::is_available() {
+        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        eprintln!("skipped: the picture of a circle in a tab needs OCCT");
+        return;
+    }
+    let user = tempfile::tempdir().expect("user");
+    let a_file = user.path().join("cylinder.fcad");
+    ferritecad_jobs::create_document_with_kernel(
+        CreateDocumentRequest::new(
+            &a_file,
+            NewDocument::CircleExtrude(
+                ferritecad_document::CircleExtrusion::new([12., -7.], 10., 15.).expect("a circle"),
+            ),
+            "keep",
+        ),
+        ferritecad_occt::OcctKernel::new,
+        &OperationContext::default(),
+    )
+    .expect("a cylinder");
+    let b_file = user.path().join("copy.fcad");
+    std::fs::copy(&a_file, &b_file).expect("copy");
+
+    let mut w = Window::new(Drawn::Native, None);
+    w.open(&a_file);
+    let a = w.sessions.tab();
+    w.diameter_draft("13.5", false);
+    let facts = |w: &Window| {
+        (
+            w.creates
+                .sketch
+                .constraints
+                .draft_diameter()
+                .expect("a form"),
+            w.creates.sketch.constraints.draft_state().expect("a form"),
+        )
+    };
+    let a_state = facts(&w);
+    assert_eq!(a_state.0.1, "13.5");
+    assert!(a_state.0.0.is_some(), "the circle was picked");
+    w.open(&b_file);
+    let b = w.sessions.tab();
+    assert!(
+        !w.creates.sketch.constraints.active(),
+        "a new tab opens with no form"
+    );
+    assert!(w.tabs.has_draft(a));
+    // B holds text the box refuses: Add diameter keeps it, with its picked circle.
+    w.diameter_draft("abc", true);
+    let b_state = facts(&w);
+    assert_eq!(b_state.0.1, "abc");
+    assert_eq!(b_state.1.3, 0, "a refused add made no step");
+    assert_ne!(a_state, b_state);
+
+    for _ in 0..20 {
+        w.round(a);
+        assert_eq!(facts(&w), a_state);
+        w.round(b);
+        assert_eq!(facts(&w), b_state);
+    }
+    // An accepted add in A is A's one step; B is where it was.
+    w.round(a);
+    crate::constraints::tests::session_apply::press(
+        &mut w.creates.sketch.constraints,
+        "Add diameter",
+    );
+    let added = w.creates.sketch.constraints.draft_edits().expect("A");
+    assert_eq!(added.add.len(), 1);
+    let a_added = facts(&w);
+    assert_eq!((a_added.1.3, a_added.1.4), (1, 0));
+    assert_eq!(
+        a_added.0, a_state.0,
+        "the text and the pick are not consumed"
+    );
+    w.round(b);
+    assert_eq!(facts(&w), b_state);
+    assert!(
+        w.creates
+            .sketch
+            .constraints
+            .draft_edits()
+            .expect("B")
+            .add
+            .is_empty()
+    );
+    w.round(a);
+    assert_eq!(facts(&w), a_added);
+    assert!(
+        !w.sessions.dirty() && !w.hidden(b).dirty(),
+        "a draft is not a change"
+    );
+    println!("\nFCAD_31E_TABS_EXECUTED");
 }
 
 /// Showing another tab waits for everything that is not an idle form; a switch

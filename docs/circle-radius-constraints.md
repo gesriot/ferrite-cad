@@ -233,6 +233,11 @@ Circle. У каждого есть `Remove`: замена радиуса — о�
 исходник и проверяет его refs. `solve: null` относится к результату без
 оставшихся ограничений, а не отменяет проверку исходника.
 
+Диаметр — не второе ограничение: §31E добавляет к этой форме строку
+`Diameter mm`/`Add diameter` и к request v1 строгую форму
+`{"rule":"diameter","curve_id":…,"diameter_mm":…}`; обе готовят тот же `Radius`
+с `R = D/2` и тот же слот ([контракт](circle-diameter-input.md)).
+
 ## Рецепт
 
 Нужны OCCT, planegcs, `FERRITECAD` и `FCAD_UFBX_READER`.
