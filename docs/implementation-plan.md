@@ -5231,7 +5231,7 @@ UUIDs are normalised); the measured reflex turn changes from -70° to -50°.
 Peak footprint 198.704 MiB, pressure 1, swap 0, normal exit. Remote validation is
 tracked separately in PR #109.
 
-### §31G — Collinear saved Lines (author handoff, not yet reviewed or merged)
+### §31G — Collinear saved Lines (reviewed implementation, PR #110)
 
 Add one explicit relation between two non-construction Lines of a supported saved
 XY profile. Collinearity requires the same supporting line, not merely parallel
@@ -5246,14 +5246,14 @@ Carry the new vocabulary through payload/capability refusal, strict CLI discover
 and requests, editor Apply/copy, Undo/Redo and atomic Save. Hover anchors and circle
 centre snapping remain separate open work; this slice does not close §31 or 5C.
 
-**Status, author handoff.** Two whole Lines of a saved Line profile can be put on
+**Status, reviewed implementation.** Two whole Lines of a saved Line profile can be put on
 one infinite line: `Add Collinear` beside Parallel/Perpendicular on the pair
 row of the constraint form, and the strict request `{"rule":"collinear",
-"a_curve_id","b_curve_id"}` of `edit-sketch-constraints-copy` (no number, no
+"a_curve_id":"…","b_curve_id":"…"}` of `edit-sketch-constraints-copy` (no number, no
 direction: reversing a Line or exchanging A/B is the same relation, and the segments
 may be disjoint or run opposite ways). The document stores
 `SketchConstraintRule::Collinear` in payload **v5** with the capability
-`sketch.constraints.collinear.v1` (SQLite schema unchanged; main keeps the file and
+`sketch.constraints.collinear.v1` (SQLite schema unchanged; the previous main keeps the file and
 refuses it, measured); the pair shares the Parallel/Perpendicular/DirectedAngle slot
 (`EqualLength` stays independent). The solver gets `Constraint::Collinear` and the shim
 a new named kind `FC_GCS_COLLINEAR = 10`, stated as **two** PlaneGCS `PointOnLine`
@@ -5268,6 +5268,14 @@ start positions) is documented, not hidden. Contract, executed recipe, gates, mu
 resources and the independent window recipe:
 [collinear-sketch-lines.md](collinear-sketch-lines.md),
 [collinear-sketch-lines-verification.md](collinear-sketch-lines-verification.md).
+Independent macOS window review passed Add/Undo/Redo, the occupied-pair refusal,
+Save Cancel, session Apply/Undo/Redo, export before Save, exact replacement by
+Parallel, async Open and tab-local draft preservation. The wider form remained
+usable at about 990×771 logical points. GUI/CLI SQL identities and STL/FBX agreed;
+the measured rim offset fell from 2 mm to below 2.7e-6 mm and returned to 2 mm
+with Parallel. Pinned ufbx passed. Peak footprint 190.376 MiB, pressure 1, swap 0,
+normal exit; remote CI is recorded separately. No production-code repair was
+needed in this review.
 **Not done:** hover-anchor acquisition (§31D) and the circle centre snap (§31C), so
 §31C, §31D, §30, Milestone 5C, the product and the OOM investigation stay open.
 
