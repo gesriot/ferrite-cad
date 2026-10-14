@@ -57,6 +57,14 @@ pub use planegcs::Drag;
 /// squared quantities that equal-length and perpendicularity produce.
 pub const RESIDUAL_LIMIT: f64 = 1e-6;
 
+/// The shortest vector a directed angle may be measured against, in the
+/// sketch's own length unit (millimetres in the product).
+///
+/// Below it a vector has no direction worth the name: `atan2(0, 0)` is `0`, so
+/// a collapsed vector would "satisfy" a `0°` angle, and its gradient divides by
+/// the squared length. Refused at the start and judged again in the answer.
+pub(crate) const MIN_ANGLE_VECTOR: f64 = 1e-9;
+
 /// Whether this build can solve a sketch at all.
 ///
 /// Asked rather than assumed. The cargo feature can be on while no library was

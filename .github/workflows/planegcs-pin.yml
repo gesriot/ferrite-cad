@@ -575,6 +575,35 @@ jobs:
             check product.txt "$gate"
           done
 
+          # §31F: the directed angle on the real library (its sign, its half turn,
+          # its equivalent spellings, its diagnosis with caller identifiers, the
+          # collapsed vector the measured residual refuses) and the C boundary written
+          # by hand. A marker is printed after a gate's last assertion.
+          for gate in \
+            'a_positive_and_a_negative_angle_are_different_solutions' \
+            'zero_is_codirectional_and_one_hundred_eighty_is_opposite_and_neither_is_the_other' \
+            'the_turn_across_plus_and_minus_one_hundred_eighty_is_the_short_way' \
+            'a_swapped_or_turned_vector_is_the_same_relation_with_the_documented_angle' \
+            'parallel_still_accepts_both_directions_and_does_not_invent_one' \
+            'degrees_of_freedom_come_from_the_solver_and_one_angle_removes_exactly_one' \
+            'a_fourth_right_angle_of_a_closed_contour_is_redundant_and_a_wrong_one_conflicts' \
+            'a_vector_the_solver_collapses_is_never_a_satisfied_angle' \
+            'a_drag_keeps_the_angle_while_its_end_follows_the_pointer' \
+            'planegcs::tests::the_shim_names_the_new_kind_and_refuses_what_the_header_forbids'
+          do
+            check product.txt "$gate"
+          done
+          for marker in \
+            FCAD_31F_SOLVER_SIGN_EXECUTED FCAD_31F_SOLVER_WRAP_EXECUTED \
+            FCAD_31F_SOLVER_EQUIVALENT_FORMS_EXECUTED FCAD_31F_SOLVER_DIAGNOSIS_EXECUTED \
+            FCAD_31F_RESIDUAL_EXECUTED
+          do
+            if ! grep -Fxq "$marker" product.txt; then
+              echo "::error::the directed angle gate behind $marker did not run to its end"
+              missing=$((missing + 1))
+            fi
+          done
+
           # The bench: that the corpus still passes through the product path.
           for gate in \
             'against_planegcs::both_solvers_agree_about_the_geometry' \

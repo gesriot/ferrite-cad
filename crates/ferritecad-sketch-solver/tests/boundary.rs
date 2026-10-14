@@ -337,3 +337,92 @@ fn the_residual_limit_is_the_one_the_comparison_was_made_against() {
     // looking at.
     assert_eq!(solver::RESIDUAL_LIMIT, 1e-6);
 }
+
+/// Four points: `A→B` along +X, `C→D` up, plus a coincident `E` for a vector
+/// with no length.
+fn angled(angle: f64, a: (PointId, PointId), b: (PointId, PointId)) -> Sketch {
+    let mut sketch = Sketch::new();
+    sketch
+        .add_point(PointId(1), 0.0, 0.0)
+        .add_point(PointId(2), 10.0, 0.0)
+        .add_point(PointId(3), 4.0, 4.0)
+        .add_point(PointId(4), 4.0, 9.0)
+        .add_point(PointId(5), 0.0, 0.0);
+    sketch.add_constraint(ConstraintId(8), Constraint::DirectedAngle { a, b, angle });
+    sketch
+}
+
+#[test]
+fn a_directed_angle_outside_the_canonical_range_is_refused_not_wrapped() {
+    use std::f64::consts::PI;
+    let (a, b) = ((PointId(1), PointId(2)), (PointId(3), PointId(4)));
+    for bad in [
+        -PI,
+        -PI - 1e-12,
+        PI + 1e-12,
+        270f64.to_radians(),
+        2.0 * PI,
+        -4.0,
+    ] {
+        assert_eq!(
+            solver::solve(&angled(bad, a, b)).expect_err("outside (-pi, pi]"),
+            SolverError::AngleOutOfRange(ConstraintId(8)),
+            "{bad} rad"
+        );
+    }
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            solver::diagnose(&angled(bad, a, b)).expect_err("not a number"),
+            SolverError::NotFinite(NotFinite::ConstraintParameter(ConstraintId(8)))
+        );
+    }
+    // The canonical bounds are not an out-of-range error; with no library the
+    // next answer is the typed Unavailable, and with one a diagnosis.
+    for fine in [0.0, -0.0, PI, -PI + 1e-9, 1.0] {
+        match solver::diagnose(&angled(fine, a, b)) {
+            Ok(_) => assert!(solver::is_available()),
+            Err(error) => assert!(error.is_unavailable(), "{fine} rad: {error}"),
+        }
+    }
+    println!("\nFCAD_31F_SOLVER_RANGE_EXECUTED");
+}
+
+#[test]
+fn a_directed_angle_against_a_vector_with_no_direction_is_refused_before_native() {
+    let degenerate = |sketch: Sketch| {
+        assert_eq!(
+            solver::solve(&sketch).expect_err("a vector with no direction"),
+            SolverError::DegenerateVector(ConstraintId(8))
+        );
+    };
+    let line = (PointId(1), PointId(2));
+    let up = (PointId(3), PointId(4));
+    // One point twice, in either vector.
+    degenerate(angled(0.5, (PointId(1), PointId(1)), up));
+    degenerate(angled(0.5, line, (PointId(4), PointId(4))));
+    // Two points that sit on each other.
+    degenerate(angled(0.5, (PointId(1), PointId(5)), up));
+    degenerate(angled(0.5, line, (PointId(5), PointId(1))));
+    println!("\nFCAD_31F_SOLVER_DEGENERATE_EXECUTED");
+}
+
+#[test]
+fn every_point_of_a_directed_angle_is_checked_against_the_sketch() {
+    let missing = PointId(4242);
+    for (slot, a, b) in [
+        (0, (missing, PointId(2)), (PointId(3), PointId(4))),
+        (1, (PointId(1), missing), (PointId(3), PointId(4))),
+        (2, (PointId(1), PointId(2)), (missing, PointId(4))),
+        (3, (PointId(1), PointId(2)), (PointId(3), missing)),
+    ] {
+        assert_eq!(
+            solver::solve(&angled(0.5, a, b)).expect_err("a dangling reference"),
+            SolverError::UnknownPoint {
+                constraint: ConstraintId(8),
+                point: missing,
+            },
+            "reference {slot}"
+        );
+    }
+    println!("\nFCAD_31F_SOLVER_REFERENCES_EXECUTED");
+}

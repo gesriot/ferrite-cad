@@ -2975,6 +2975,156 @@ mod constraint_write_tests {
             .expect("the honest plan");
     }
 
+    /// §31F: the writer re-derives the plan against the document it consumes. A
+    /// forged plan that is internally consistent — its list is the stored list
+    /// plus what it claims to add — still may not put a second answer on an
+    /// angled pair, and a stored angle may not be turned or re-valued under its
+    /// own UUID.
+    #[test]
+    fn a_forged_plan_may_not_stack_a_second_answer_on_an_angled_pair_or_rewrite_a_stored_angle() {
+        use crate::{
+            AddLineConstraint, AddSketchConstraint, DirectedAngle, DirectedLine, LineEndpoint,
+            SketchConstraint, SketchSegmentRef,
+        };
+        let curves = square();
+        let ids: Vec<_> = curves.iter().map(|c| c.id).collect();
+        let (_root, mut d, id) = fixture(curves);
+        let vector = |i: usize, from: LineEndpoint| {
+            DirectedLine::new(ids[i], from, from.other()).expect("a vector")
+        };
+        let edit = |add: Vec<AddSketchConstraint>| crate::SketchConstraintEdits {
+            remove: Vec::new(),
+            add,
+        };
+        let angled = prepare_sketch_constraints(
+            &d,
+            id,
+            &edit(vec![AddSketchConstraint::Line(
+                AddLineConstraint::DirectedAngle {
+                    a: vector(0, LineEndpoint::Start),
+                    b: vector(1, LineEndpoint::Start),
+                    angle: DirectedAngle::from_degrees(30.).expect("angle"),
+                },
+            )]),
+        )
+        .expect("plan");
+        d.write_sketch_constraints(&angled).expect("write");
+        let stored = sketch_of(&d.object(id).expect("row").expect("present")).clone();
+        let angle = *stored
+            .constraints
+            .iter()
+            .find(|c| matches!(c.rule, SketchConstraintRule::DirectedAngle { .. }))
+            .expect("the stored angle");
+        let SketchConstraintRule::DirectedAngle { a, b, angle: value } = angle.rule else {
+            panic!("an angle")
+        };
+        let honest = prepare_sketch_constraints(
+            &d,
+            id,
+            &edit(vec![AddSketchConstraint::Line(AddLineConstraint::Line {
+                curve: ids[2],
+                kind: crate::LineConstraintKind::Vertical,
+            })]),
+        )
+        .expect("plan");
+
+        // 1 and 2: another answer about the same pair, claimed as an addition so
+        //    the lists agree and only the slot can refuse it. One is a second
+        //    angle said the other way round, one is a Parallel.
+        let whole = |curve: StableEntityId| {
+            SketchSegmentRef::new(
+                SketchPointRef::new(curve, SketchPointSelector::Start),
+                SketchPointRef::new(curve, SketchPointSelector::End),
+            )
+        };
+        for (name, rule) in [
+            (
+                "a second angle, swapped and negated",
+                SketchConstraintRule::DirectedAngle {
+                    a: b,
+                    b: a,
+                    angle: -value,
+                },
+            ),
+            (
+                "a Parallel",
+                SketchConstraintRule::Parallel {
+                    a: whole(ids[1]),
+                    b: whole(ids[0]),
+                },
+            ),
+        ] {
+            let mut forged = honest.clone();
+            let extra = SketchConstraint {
+                id: StableEntityId::new(),
+                rule,
+            };
+            sketch_mut(&mut forged.object).constraints.push(extra);
+            forged.added.push(extra);
+            assert!(
+                d.write_sketch_constraints(&forged).is_err(),
+                "{name} was written onto an angled pair"
+            );
+        }
+
+        // 3 and 4: the stored angle keeps its UUID and says something else.
+        for (name, rule) in [
+            (
+                "its vectors turned",
+                SketchConstraintRule::DirectedAngle {
+                    a: SketchSegmentRef::new(a.to, a.from),
+                    b,
+                    angle: value,
+                },
+            ),
+            (
+                "its value changed",
+                SketchConstraintRule::DirectedAngle {
+                    a,
+                    b,
+                    angle: value + 0.001,
+                },
+            ),
+            (
+                "a different pair",
+                SketchConstraintRule::DirectedAngle {
+                    a,
+                    b: whole(ids[3]),
+                    angle: value,
+                },
+            ),
+        ] {
+            let mut forged = honest.clone();
+            for c in &mut sketch_mut(&mut forged.object).constraints {
+                if c.id == angle.id {
+                    c.rule = rule;
+                }
+            }
+            assert!(
+                d.write_sketch_constraints(&forged).is_err(),
+                "a stored angle was rewritten: {name}"
+            );
+        }
+
+        // 5: a value outside (-pi, pi] never reaches the row.
+        let mut forged = honest.clone();
+        for c in &mut sketch_mut(&mut forged.object).constraints {
+            if c.id == angle.id {
+                c.rule = SketchConstraintRule::DirectedAngle { a, b, angle: 4.0 };
+            }
+        }
+        assert!(d.write_sketch_constraints(&forged).is_err());
+
+        // Nothing above changed the document; the honest plan still writes.
+        assert_eq!(
+            sketch_of(&d.object(id).expect("row").expect("present")).constraints,
+            stored.constraints
+        );
+        d.write_sketch_constraints(&honest)
+            .expect("the honest plan");
+        println!("\nFCAD_31F_WRITER_GUARD_EXECUTED");
+    }
+
     #[test]
     fn concentricity_needs_exactly_two_circles_to_relate() {
         let ask = |curves: Vec<SketchCurve>, a: usize, b: usize| {

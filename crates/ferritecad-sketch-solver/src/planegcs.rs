@@ -102,6 +102,7 @@ mod linked {
     const PERPENDICULAR: i32 = 6;
     const PARALLEL: i32 = 7;
     const CIRCLE_RADIUS: i32 = 8;
+    const DIRECTED_ANGLE: i32 = 9;
 
     /// One circle as the shim reads it: a centre by point index, and a radius.
     #[repr(C)]
@@ -114,15 +115,15 @@ mod linked {
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub(super) struct RawConstraint {
-        kind: i32,
-        points: [i32; 4],
+        pub(super) kind: i32,
+        pub(super) points: [i32; 4],
         /// Circle references, never point references. The shim checks that
         /// whichever array a kind does not use is left empty, so an index put
         /// in the wrong one is refused rather than resolved against the wrong
         /// geometry.
-        circles: [i32; 2],
-        value: f64,
-        value2: f64,
+        pub(super) circles: [i32; 2],
+        pub(super) value: f64,
+        pub(super) value2: f64,
     }
 
     /// The layout the shim `static_assert`s on its own side.
@@ -223,6 +224,14 @@ mod linked {
                 Constraint::Parallel { a, b } => RawConstraint {
                     kind: PARALLEL,
                     points: [at(a.0), at(a.1), at(b.0), at(b.1)],
+                    ..blank
+                },
+                // The angle crosses in radians in `value`; `value2` is unused
+                // and stays zero, which the shim checks for this kind.
+                Constraint::DirectedAngle { a, b, angle } => RawConstraint {
+                    kind: DIRECTED_ANGLE,
+                    points: [at(a.0), at(a.1), at(b.0), at(b.1)],
+                    value: angle,
                     ..blank
                 },
             })
@@ -785,6 +794,146 @@ mod tests {
         impl<T: ?Sized> AmbiguousIfSync<()> for T {}
         impl<T: ?Sized + Sync> AmbiguousIfSync<Yes> for T {}
         <Drag as AmbiguousIfSync<_>>::check();
+    }
+
+    /// The C boundary itself, written by hand: the shim refuses what the
+    /// contract above it would never send, and the kinds are what they were.
+    #[cfg(planegcs_linked)]
+    #[test]
+    fn the_shim_names_the_new_kind_and_refuses_what_the_header_forbids() {
+        use linked::{RawCircle, RawConstraint};
+        // The layout both sides assert is the one the old kinds already used.
+        linked::assert_abi_layout();
+        let start = [0.0, 0.0, 10.0, 0.0, 4.0, 4.0, 4.0, 9.0];
+        let blank = RawConstraint {
+            kind: 0,
+            points: [-1; 4],
+            circles: [-1; 2],
+            value: 0.0,
+            value2: 0.0,
+        };
+        let angle = RawConstraint {
+            kind: 9,
+            points: [0, 1, 2, 3],
+            value: 0.5,
+            ..blank
+        };
+        let build = |constraints: &[RawConstraint], start: &[f64]| {
+            // SAFETY: both slices live across the call and their lengths travel
+            // with them; the shim range-checks every reference again.
+            let raw = unsafe {
+                linked::fc_gcs_session_create(
+                    start.as_ptr(),
+                    start.len() / 2,
+                    std::ptr::null::<RawCircle>(),
+                    0,
+                    constraints.as_ptr(),
+                    constraints.len(),
+                )
+            };
+            if raw.is_null() {
+                return false;
+            }
+            // SAFETY: just made, never shared, destroyed exactly once.
+            unsafe { linked::fc_gcs_session_destroy(raw) };
+            true
+        };
+        assert!(
+            build(&[angle], &start),
+            "the kind this slice names is built"
+        );
+        for pi in [std::f64::consts::PI, 0.0, -0.0, -3.0] {
+            assert!(
+                build(&[RawConstraint { value: pi, ..angle }], &start),
+                "{pi}"
+            );
+        }
+        // Refused: an unused field that is not empty, in either array.
+        assert!(!build(
+            &[RawConstraint {
+                value2: 1.0,
+                ..angle
+            }],
+            &start
+        ));
+        assert!(!build(
+            &[RawConstraint {
+                circles: [0, -1],
+                ..angle
+            }],
+            &start
+        ));
+        assert!(!build(
+            &[RawConstraint {
+                points: [0, 1, 2, -1],
+                ..angle
+            }],
+            &start
+        ));
+        // Refused: outside the canonical half-open range, or not a number.
+        for bad in [-std::f64::consts::PI, 3.2, 7.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                !build(
+                    &[RawConstraint {
+                        value: bad,
+                        ..angle
+                    }],
+                    &start
+                ),
+                "{bad}"
+            );
+        }
+        // Refused: a vector with no direction, by index or by position.
+        assert!(!build(
+            &[RawConstraint {
+                points: [0, 0, 2, 3],
+                ..angle
+            }],
+            &start
+        ));
+        assert!(!build(
+            &[RawConstraint {
+                points: [0, 1, 3, 3],
+                ..angle
+            }],
+            &start
+        ));
+        let coincident = [0.0, 0.0, 0.0, 0.0, 4.0, 4.0, 4.0, 9.0];
+        assert!(!build(&[angle], &coincident));
+        // Refused: a point that is not there, and a kind that nobody named.
+        assert!(!build(
+            &[RawConstraint {
+                points: [0, 1, 2, 4],
+                ..angle
+            }],
+            &start
+        ));
+        for unknown in [-1, 10, 11, 255, i32::MAX] {
+            assert!(
+                !build(
+                    &[RawConstraint {
+                        kind: unknown,
+                        ..angle
+                    }],
+                    &start
+                ),
+                "{unknown}"
+            );
+        }
+        // The numbers the old kinds were stored under did not move.
+        for (kind, points) in [(5, [0, 1, 2, 3]), (6, [0, 1, 2, 3]), (7, [0, 1, 2, 3])] {
+            assert!(
+                build(
+                    &[RawConstraint {
+                        kind,
+                        points,
+                        ..blank
+                    }],
+                    &start
+                ),
+                "kind {kind}"
+            );
+        }
     }
 
     #[cfg(planegcs_linked)]

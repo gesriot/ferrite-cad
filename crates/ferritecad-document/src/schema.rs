@@ -35,6 +35,7 @@ pub const SUPPORTED_CAPABILITIES: &[&str] = &[
     "exchange.step.imported.v1",
     "sketch.constraints.v1",
     "sketch.constraints.circle.v1",
+    "sketch.constraints.angle.v1",
     "feature.predecessor.v1",
     "feature.through-all.v1",
     "feature.revolve.v1",

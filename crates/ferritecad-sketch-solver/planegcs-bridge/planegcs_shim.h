@@ -52,7 +52,13 @@ enum {
    * and no point at all: a circle's centre is already one of the sketch's
    * points and is constrained by naming that point, not by naming the circle
    * a second way. */
-  FC_GCS_CIRCLE_RADIUS = 8
+  FC_GCS_CIRCLE_RADIUS = 8,
+  /* The counter-clockwise turn from the vector points[0]->points[1] to the
+   * vector points[2]->points[3], in radians in `value`, canonical in
+   * (-pi, pi]. `value2` is unused and must be 0, `circles` empty. Unlike
+   * FC_GCS_PARALLEL it has a sign and a direction. A vector naming one point
+   * twice, or of zero length at the start, is refused. */
+  FC_GCS_DIRECTED_ANGLE = 9
 };
 
 /* One circle of the sketch: a centre that is one of the sketch's points, and a
@@ -80,7 +86,9 @@ typedef struct FcGcsCircle {
  * would build and solve and be wrong. Every kind uses one array or the other
  * and the shim checks that the array it does not use is empty.
  *
- * `value` carries a distance, a radius, or the x of a Fixed; `value2` its y. */
+ * `value` carries a distance, a radius, an angle in radians, or the x of a Fixed;
+ * `value2` the y of a Fixed. Every other kind leaves `value2` zero, and a
+ * FC_GCS_DIRECTED_ANGLE with a non-zero one is refused. */
 typedef struct FcGcsConstraint {
   int32_t kind;
   int32_t points[4];

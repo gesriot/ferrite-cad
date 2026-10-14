@@ -74,6 +74,15 @@ enum Rule {
         curve_id: StableEntityId,
         radius: f64,
     },
+    /// §31F, additive: the counter-clockwise turn from vector `a` to vector
+    /// `b` in degrees, canonical in (-180, 180]. Each segment is a directed
+    /// run `from -> to`, exactly as stored; unlike `parallel`/`perpendicular`
+    /// the direction matters.
+    DirectedAngle {
+        a: Segment,
+        b: Segment,
+        angle_deg: f64,
+    },
     Unknown,
 }
 impl From<SketchConstraintRule> for Rule {
@@ -117,6 +126,16 @@ impl From<SketchConstraintRule> for Rule {
                 curve_id: curve,
                 radius,
             },
+            SketchConstraintRule::DirectedAngle { a, b, angle } => {
+                match ferritecad_document::DirectedAngle::from_radians(angle) {
+                    Ok(angle) => Self::DirectedAngle {
+                        a: a.into(),
+                        b: b.into(),
+                        angle_deg: angle.degrees(),
+                    },
+                    Err(_) => Self::Unknown,
+                }
+            }
             _ => Self::Unknown,
         }
     }

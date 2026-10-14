@@ -181,6 +181,20 @@ if [ -n "${FCAD_DIAMETER_FBX:-}" ]; then
     echo "FCAD_DIAMETER_UFBX_EXECUTED"
 fi
 
+# §31F: the dart whose reflex corner a directed angle turned the other way (the
+# command line's copy) and the same kind of angle set through the window's worker,
+# read by the same pinned reader. Small files, actually read rather than produced.
+if [ -n "${FCAD_DIRECTED_ANGLE_FBX_DIR:-}" ]; then
+    for name in dart ui; do
+        "$reader" --identity "$FCAD_DIRECTED_ANGLE_FBX_DIR/angle-$name.fbx" | tee "$work/angle-$name-reader.txt"
+        count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/angle-$name-reader.txt")"
+        [ -n "$count" ] && [ "$count" -ge 6 ] || {
+            echo "error: pinned reader did not verify directed angle $name FBX" >&2; exit 1;
+        }
+    done
+    echo "FCAD_DIRECTED_ANGLE_UFBX_EXECUTED"
+fi
+
 # §25E reuses this same pinned reader for the actual H/V publications;
 # Later constraint slices add their actual process/worker publications to the
 # same reader build; §25I includes the slanted relative-orientation models.

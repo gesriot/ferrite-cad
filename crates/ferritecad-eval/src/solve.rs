@@ -540,6 +540,16 @@ impl Translation {
                 a: segment(a)?,
                 b: segment(b)?,
             },
+            // Both vectors keep the direction they were written in, and the
+            // angle crosses in radians as stored: this is the one family where
+            // `from` and `to` are the vector and not just which Line.
+            SketchConstraintRule::DirectedAngle { a, b, angle } => {
+                solver::Constraint::DirectedAngle {
+                    a: segment(a)?,
+                    b: segment(b)?,
+                    angle,
+                }
+            }
             ref other => {
                 return Err(CadError::unsupported(format!(
                     "constraint {} is a {} constraint, which this build stores but cannot state to \
@@ -791,6 +801,14 @@ impl Translation {
                     self.name(*constraint)
                 ))
             }
+            solver::SolverError::AngleOutOfRange(constraint) => CadError::constraint(format!(
+                "constraint {} asks for a directed angle outside (-180°, 180°]",
+                self.name(*constraint)
+            )),
+            solver::SolverError::DegenerateVector(constraint) => CadError::constraint(format!(
+                "constraint {} measures a directed angle against a vector of no length",
+                self.name(*constraint)
+            )),
             solver::SolverError::Native(failure) => {
                 CadError::constraint(format!("this sketch was refused: {failure}"))
             }
@@ -863,6 +881,7 @@ fn rule_name(rule: &SketchConstraintRule) -> &'static str {
         SketchConstraintRule::EqualLength { .. } => "equal length",
         SketchConstraintRule::Perpendicular { .. } => "perpendicular",
         SketchConstraintRule::Parallel { .. } => "parallel",
+        SketchConstraintRule::DirectedAngle { .. } => "directed angle",
         _ => "kind this build does not name",
     }
 }
@@ -1233,6 +1252,66 @@ mod tests {
             ),
             "the second segment was stated the way round it was not written"
         );
+    }
+
+    /// §31F: both vectors cross in the direction they were written, the angle
+    /// crosses in the radians stored, and neither is sorted away.
+    #[test]
+    fn a_directed_angle_keeps_both_directions_and_crosses_in_radians() {
+        use SketchPointSelector::{End, Start};
+        let (a, b) = (StableEntityId::new(), StableEntityId::new());
+        let curves = || {
+            vec![
+                line(a, (0.0, 0.0), (10.0, 0.0)),
+                line(b, (10.0, 0.0), (10.0, 8.0)),
+            ]
+        };
+        let seg = |c, from, to| SketchSegmentRef::new(at(c, from), at(c, to));
+        for (first, second, angle) in [
+            (seg(a, Start, End), seg(b, Start, End), 0.5),
+            (seg(a, End, Start), seg(b, Start, End), -2.5),
+            (seg(b, Start, End), seg(a, Start, End), -0.5),
+            (seg(a, Start, End), seg(b, End, Start), std::f64::consts::PI),
+        ] {
+            let translation = Translation::read(&sketch(
+                curves(),
+                vec![rule(SketchConstraintRule::DirectedAngle {
+                    a: first,
+                    b: second,
+                    angle,
+                })],
+            ))
+            .expect("translates");
+            let ends =
+                |s: SketchSegmentRef| (named(&translation, s.from), named(&translation, s.to));
+            assert_eq!(
+                only_constraint(&translation),
+                solver::Constraint::DirectedAngle {
+                    a: ends(first),
+                    b: ends(second),
+                    angle,
+                },
+                "a directed angle was not stated as itself, in the way round it was written"
+            );
+        }
+        // And the two new refusals are said about the document's own constraint.
+        let (_, translation, _) = four_constraints();
+        for refusal in [
+            translation.refusal(&solver::SolverError::AngleOutOfRange(solver::ConstraintId(
+                0,
+            ))),
+            translation.refusal(&solver::SolverError::DegenerateVector(
+                solver::ConstraintId(0),
+            )),
+        ] {
+            let message = refusal.to_string();
+            assert!(
+                !message.contains("cannot restate") && message.contains("angle"),
+                "{message}"
+            );
+            assert!(SketchConflict::of(&refusal).is_none());
+        }
+        println!("\nFCAD_31F_TRANSLATION_EXECUTED");
     }
 
     #[test]

@@ -79,9 +79,9 @@ impl Position {
 
 /// One relationship a solved sketch has to satisfy.
 ///
-/// The eight the solver comparison measured, plus the radius of a circle.
-/// Arcs, tangency and symmetry are what planegcs was chosen for and are still
-/// not here.
+/// The eight the solver comparison measured, plus the radius of a circle and
+/// the directed angle between two vectors. Arcs, tangency and symmetry are
+/// what planegcs was chosen for and are still not here.
 ///
 /// A circle's *centre* takes no family of its own: it is a [`PointId`], so
 /// [`Constraint::Fixed`] and everything else that names a point already names
@@ -121,6 +121,22 @@ pub enum Constraint {
         a: (PointId, PointId),
         b: (PointId, PointId),
     },
+    /// The vector `b.0 -> b.1` is the vector `a.0 -> a.1` turned counter-
+    /// clockwise by `angle` radians, in the sketch's own XY.
+    ///
+    /// Unlike [`Constraint::Parallel`], which scores the cross product and so
+    /// accepts both directions, this one has a sign and a direction: `+30°`
+    /// does not satisfy `-30°` and `0` does not satisfy `π`. The canonical
+    /// value is in `(-π, π]`; the opposite is `+π` only. A value outside is
+    /// refused rather than wrapped, because wrapping would be a second policy
+    /// chosen by floating-point arithmetic. A vector no longer than `1e-9`
+    /// of the sketch's length unit has no direction and is refused, at the
+    /// start and again in the answer.
+    DirectedAngle {
+        a: (PointId, PointId),
+        b: (PointId, PointId),
+        angle: f64,
+    },
 }
 
 impl Constraint {
@@ -137,9 +153,10 @@ impl Constraint {
             | Self::Distance { a, b, .. }
             | Self::Horizontal { a, b }
             | Self::Vertical { a, b } => vec![a, b],
-            Self::EqualLength { a, b } | Self::Perpendicular { a, b } | Self::Parallel { a, b } => {
-                vec![a.0, a.1, b.0, b.1]
-            }
+            Self::EqualLength { a, b }
+            | Self::Perpendicular { a, b }
+            | Self::Parallel { a, b }
+            | Self::DirectedAngle { a, b, .. } => vec![a.0, a.1, b.0, b.1],
         }
     }
 
@@ -162,6 +179,7 @@ impl Constraint {
             Self::Fixed { x, y, .. } => vec![x, y],
             Self::Distance { distance, .. } => vec![distance],
             Self::Radius { radius, .. } => vec![radius],
+            Self::DirectedAngle { angle, .. } => vec![angle],
             _ => Vec::new(),
         }
     }

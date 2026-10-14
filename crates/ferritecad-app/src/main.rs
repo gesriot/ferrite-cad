@@ -2986,6 +2986,15 @@ fn describe_constraint(rule: &SketchConstraintRule) -> String {
                 segment(b)
             )
         }
+        SketchConstraintRule::DirectedAngle { a, b, angle } => {
+            format!(
+                "Directed angle: from {} to {} is {}° counter-clockwise",
+                segment(a),
+                segment(b),
+                ferritecad_document::DirectedAngle::from_radians(angle)
+                    .map_or(f64::NAN, ferritecad_document::DirectedAngle::degrees)
+            )
+        }
         _ => "A kind of relationship this build has no words for".to_owned(),
     }
 }
@@ -18660,6 +18669,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// §31F: a directed angle is said with both directions as stored and its
+    /// value in degrees, never as the radians the document holds.
+    #[test]
+    fn a_directed_angle_is_said_with_both_directions_and_its_value_in_degrees() {
+        use ferritecad_document::SketchConstraintRule as Rule;
+        use ferritecad_document::SketchPointSelector::{End, Start};
+        use ferritecad_document::{DirectedAngle, SketchPointRef, SketchSegmentRef};
+
+        let (first, second) = two_curves();
+        let point = SketchPointRef::new;
+        let rule = |a: SketchSegmentRef, b: SketchSegmentRef, degrees: f64| Rule::DirectedAngle {
+            a,
+            b,
+            angle: DirectedAngle::from_degrees(degrees)
+                .expect("an angle")
+                .radians(),
+        };
+        let forward = |c| SketchSegmentRef::new(point(c, Start), point(c, End));
+        let backward = |c| SketchSegmentRef::new(point(c, End), point(c, Start));
+        let said = describe_constraint(&rule(forward(first), backward(second), -30.));
+        assert_eq!(
+            said,
+            format!(
+                "Directed angle: from {first}.start to {first}.end to {second}.end to \
+                 {second}.start is -30° counter-clockwise"
+            )
+        );
+        // The directions are what is written down: turning either one changes the
+        // sentence, and the value is not the radians (-0.5235987755982988).
+        for other in [
+            describe_constraint(&rule(backward(first), backward(second), -30.)),
+            describe_constraint(&rule(forward(first), forward(second), -30.)),
+            describe_constraint(&rule(forward(second), backward(first), -30.)),
+            describe_constraint(&rule(forward(first), backward(second), 30.)),
+        ] {
+            assert_ne!(other, said);
+        }
+        assert!(!said.contains("0.52") && !said.contains("rad"), "{said}");
+        assert!(!said.contains("no words"), "{said}");
+        println!("\nFCAD_31F_SENTENCE_EXECUTED");
     }
 
     #[test]

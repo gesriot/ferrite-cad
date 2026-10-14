@@ -101,6 +101,16 @@ pub enum SolverError {
     #[error(transparent)]
     NotFinite(#[from] NotFinite),
 
+    /// A directed angle outside `(-π, π]`. Refused, never wrapped: `270°`
+    /// would otherwise be read as `-90°` by arithmetic nobody chose.
+    #[error("constraint {0:?} asks for a directed angle outside (-pi, pi] radians")]
+    AngleOutOfRange(ConstraintId),
+
+    /// A directed angle measured against a vector that has no direction: it
+    /// names one point twice, or its ends coincide at the start.
+    #[error("constraint {0:?} measures an angle against a vector of zero length")]
+    DegenerateVector(ConstraintId),
+
     /// A starting state that is not one position per point of the sketch.
     #[error("this sketch has {expected} point(s) and the starting state has {actual}")]
     StateSize { expected: usize, actual: usize },
