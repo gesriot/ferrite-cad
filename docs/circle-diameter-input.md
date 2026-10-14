@@ -333,5 +333,56 @@ harness entry is the explicitly skipped native worker. Formatting, workspace cli
 (all targets/features, warnings denied), actionlint, shellcheck, licence and boundary
 checks passed; the Actions maximum is still 20 432 bytes (limit 21 000).
 
-The fresh bundle was built from this code and its ad-hoc signature verified. Window
-verification is in progress and is not yet counted as complete at this commit.
+The fresh bundle was built from the reviewed code and its ad-hoc signature verified.
+The independent macOS arm64 window check completed on 2026-10-14, using private
+copies in `/private/tmp/ferrite-31e-review-window.5rcfmgh5/` and one viewer under
+the 1536 MiB watchdog. Observed in the actual window:
+
+- No selection disables Add diameter. Invalid text remained visible with an error
+  and no history change. Typing 13.5 made no step; Add made Radius 6.75 and one
+  Undo/Redo step. Cancel in the system Save-copy dialog preserved the draft.
+- A second diameter and an ordinary Radius both refused the occupied slot. Apply,
+  exact Remove plus diameter 17, two draft Undo/Redo steps and document Undo/Redo
+  produced the accepted radius 8.5. STL/FBX were exported before Save As.
+- The ring's Bore received diameter 4.25 and Boundary 13.5, followed by Concentric
+  (A = Bore, B = Boundary) and Fixed centre (-3.5, 4.25) on Boundary. Switching to
+  the cylinder tab and back retained the selection, fields and four pending rules.
+  Apply yielded DOF 0 with no redundant constraints; Save As and exports succeeded.
+- Replacing only the Bore's Radius with diameter 20 refused Apply because the hole
+  would exceed its boundary. The accepted model stayed saved; the draft retained
+  the selected Bore, text 20, exact removal and pending Radius 10. Cancel dismissed it.
+
+The script `target/31e-review/compare-window.py` compared these actual files with
+independent CLI requests against the same source UUIDs. Every SQL cell was equal
+except `objects.payload` and `objects.payload_hash` of the Sketch. Substituting
+only the newly allocated constraint UUIDs made the payload bytes equal too;
+`modified_at` happened to be equal in this run and required no allowance. The stored
+curves, other objects, document ID, dependencies and references matched exactly.
+Both original inputs and working source copies retained their SHA-256.
+
+`validate` and cold rebuild passed on GUI and CLI copies (3/3 cylinder and 4/4 ring
+references). The pre-Save GUI STL and FBX matched both the independent-request CLI
+exports and fresh exports from the saved GUI files **byte for byte**. An independent
+binary-STL parser checked byte length, closed directed edges, height 15, radii about
+the intended centre, and mesh volume separately from the analytic reference:
+
+| Actual window output | STL triangles / bytes | Mesh volume, mm³ | Analytic reference, mm³ | FBX bytes |
+| --- | --- | --- | --- | --- |
+| Cylinder D17 | 364 / 18 284 | 3402.054915 | 3404.701038 | 67 264 |
+| Ring D13.5 / D4.25 | 512 / 25 684 | 1932.849057 | 1934.288414 | 94 120 |
+
+Both FBX files passed pinned ufbx 0.23.0 (`checks=6 failures=0` each). Mesh radii
+were within 1e-5 mm of 8.5 and of 6.75/2.125 respectively; chordal meshes were not
+treated as exact cylinders. Logs: `window-comparison.log`, `gui.jsonl` and the
+private output directory. Viewer PID 20884 exited normally, code 0, after 1102 s;
+sampled peak footprint 206.329 MiB, pressure 1 throughout, swap 0, no watchdog abort.
+No CUA query was made against the app after Quit.
+
+Limits: this window run used the boundary-first ring; the bore-first case remains
+covered by the native worker test. Only one malformed string was entered in the
+window; the complete malformed-number matrix and input freeze during a job remain
+automated widget/process checks. Multicharacter CUA typing initially dropped letters
+and a key-name period followed the active layout; verified per-character text input
+was used for the final numbers. These input-delivery attempts are not product failures.
+Windows/Linux window tests were not run. Remote CI is reported separately in PR #108;
+it was still running when this evidence was committed. OOM remains unresolved.

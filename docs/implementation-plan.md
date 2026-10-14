@@ -5146,7 +5146,7 @@ placement, Cancel, Apply, unsaved exports and Save As. The actual GUI file match
 CLI SQL/UUID/refs and STL/FBX (14500 mm³); peak footprint 212.095 MiB, exit 0,
 pressure 1 and swap 0. Remote CI is separate from these local checks.
 
-### §31E — Diameter input through Radius (implemented; awaiting review)
+### §31E — Diameter input through Radius (reviewed implementation, PR #108)
 
 Add an explicit diameter entry to the existing constraint editor and an additive
 strict `diameter` request form to the CLI. Both must use one checked conversion
@@ -5173,9 +5173,29 @@ Radius and a diameter for one circle occupy the one Radius slot; replacing is th
 existing exact remove + add. Discovery and responses still say `radius`, with the
 fields they always had. Contract, executed gates, mutations, resources and the
 independent window recipe: [circle-diameter-input.md](circle-diameter-input.md).
+Independent review also fixed focused Radius, Line length and Fixed fields accepting
+text while a job was running, with a failing-first widget regression. The macOS
+window verified Circle and Annulus, exact replacement, draft/document Undo/Redo,
+Save Cancel, tab retention, failed Apply, unsaved exports and Save As. Actual GUI
+outputs matched CLI SQL after normalising only new constraint UUIDs and matched
+STL/FBX byte for byte; pinned ufbx passed both files. Viewer peak 206.329 MiB,
+exit 0, pressure 1, swap 0. Remote CI is separate from these local checks.
 **Not done:** hover-anchor acquisition (§31D), the circle centre snap (§31C), a
 Diameter constraint of its own (none is wanted), and every later adapter; so §31C,
 §31D, §30, Milestone 5C, the product and the OOM investigation stay open.
+
+### §31F — Directed angle between two saved Lines (next, not implemented)
+
+Extend the existing constraint editor and shared UI/CLI constraint operation with
+the directed Sketch angle defined below. Scope the first route to two existing
+non-construction Lines in the currently supported XY Line profile. Name each
+vector's ordered endpoints explicitly; show the selected direction and signed
+angle in the editor. Persist a genuine constraint, not pre-rotated coordinates.
+Carry it through the document capability/version policy, PlaneGCS bridge,
+residual and diagnostics, Apply/copy, Undo/Redo and strict CLI request/discovery.
+Measure positive and negative solutions and reversed vectors after cold rebuild;
+the existing Parallel semantics and Revolve parameters remain unchanged. Hover
+anchors and circle-centre snapping remain open independent work.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
