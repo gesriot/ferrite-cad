@@ -5184,7 +5184,7 @@ exit 0, pressure 1, swap 0. Remote CI is separate from these local checks.
 Diameter constraint of its own (none is wanted), and every later adapter; so §31C,
 §31D, §30, Milestone 5C, the product and the OOM investigation stay open.
 
-### §31F — Directed angle between two saved Lines (implementation awaiting independent review)
+### §31F — Directed angle between two saved Lines (reviewed implementation, PR #109)
 
 Extend the existing constraint editor and shared UI/CLI constraint operation with
 the directed Sketch angle defined below. Scope the first route to two existing
@@ -5214,10 +5214,37 @@ wrapped residual that also refuses a collapsed vector. The angle shares the pair
 slot with Parallel/Perpendicular (any equivalent spelling is a structural refusal);
 redundancy and conflict are the real solver's. Contract, executed recipe, gates,
 mutations, resources and the independent window recipe:
-[directed-sketch-angle.md](directed-sketch-angle.md). **Not done:** the independent
-window review, hover-anchor acquisition (§31D) and the circle centre snap (§31C), so
+[directed-sketch-angle.md](directed-sketch-angle.md). **Not done:**
+hover-anchor acquisition (§31D) and the circle centre snap (§31C), so
 §31C, §31D, §30, Milestone 5C, the product and the OOM investigation stay open.
-Remote CI of this diff has not run.
+
+Independent review corrected lossy degree reporting: short decimal output is used
+only when converting it back reproduces the stored radians exactly; tiny nonzero
+angles must not appear as zero, and a noncanonical negative half-turn must not be
+invented. Nonzero degree input that underflows to zero radians is refused. The real
+macOS window also exposed missing arrow glyphs in the new direction controls;
+their labels now use the bundled font's supported `>` character.
+The window completed exact-UUID replacement, draft and document Undo/Redo, Save
+Cancel, Apply, export before Save, Save As and form retention across tabs. Its SQL
+and cold STL/FBX match independent CLI requests (only newly allocated constraint
+UUIDs are normalised); the measured reflex turn changes from -70° to -50°.
+Peak footprint 198.704 MiB, pressure 1, swap 0, normal exit. Remote validation is
+tracked separately in PR #109.
+
+### §31G — Collinear saved Lines (planned next constraint adapter)
+
+Add one explicit relation between two non-construction Lines of a supported saved
+XY profile. Collinearity requires the same supporting line, not merely parallel
+directions: disjoint segments and reversed endpoints are allowed, a zero-length
+vector is not. Keep stored coordinates and identities; solve the relation through
+the existing PlaneGCS adapter and shared constraint operation. Measure both the
+angular residual and the perpendicular offset after cold rebuild. The pair owns
+one relation slot with Parallel, Perpendicular and DirectedAngle; EqualLength stays
+independent. Replacing an existing relation requires removing its exact UUID in
+the same request. Do not add a second solver or infer Coincident endpoints.
+Carry the new vocabulary through payload/capability refusal, strict CLI discovery
+and requests, editor Apply/copy, Undo/Redo and atomic Save. Hover anchors and circle
+centre snapping remain separate open work; this slice does not close §31 or 5C.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
