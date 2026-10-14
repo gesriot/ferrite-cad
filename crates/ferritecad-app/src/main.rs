@@ -2986,6 +2986,13 @@ fn describe_constraint(rule: &SketchConstraintRule) -> String {
                 segment(b)
             )
         }
+        SketchConstraintRule::Collinear { a, b } => {
+            format!(
+                "Collinear: {} and {} lie on one infinite line",
+                segment(a),
+                segment(b)
+            )
+        }
         SketchConstraintRule::DirectedAngle { a, b, angle } => {
             format!(
                 "Directed angle: from {} to {} is {}° counter-clockwise",
@@ -18711,6 +18718,56 @@ mod tests {
         assert!(!said.contains("0.52") && !said.contains("rad"), "{said}");
         assert!(!said.contains("no words"), "{said}");
         println!("\nFCAD_31F_SENTENCE_EXECUTED");
+    }
+
+    /// §31G: a collinearity is said as itself, with both Lines written out as
+    /// stored, and is never the "no words" fallback or another family's sentence.
+    #[test]
+    fn a_collinear_is_said_with_both_lines_and_is_neither_parallel_nor_no_words() {
+        use ferritecad_document::SketchConstraintRule as Rule;
+        use ferritecad_document::SketchPointSelector::{End, Start};
+        use ferritecad_document::{SketchPointRef, SketchSegmentRef};
+
+        let (first, second) = two_curves();
+        let point = SketchPointRef::new;
+        let forward = |c| SketchSegmentRef::new(point(c, Start), point(c, End));
+        let backward = |c| SketchSegmentRef::new(point(c, End), point(c, Start));
+        let said = describe_constraint(&Rule::Collinear {
+            a: forward(first),
+            b: forward(second),
+        });
+        assert_eq!(
+            said,
+            format!(
+                "Collinear: {first}.start to {first}.end and {second}.start to {second}.end \
+                 lie on one infinite line"
+            )
+        );
+        // What is written down is what is said, in the order stored.
+        assert_ne!(
+            describe_constraint(&Rule::Collinear {
+                a: forward(second),
+                b: forward(first),
+            }),
+            said
+        );
+        assert_ne!(
+            describe_constraint(&Rule::Collinear {
+                a: backward(first),
+                b: forward(second),
+            }),
+            said
+        );
+        let parallel = describe_constraint(&Rule::Parallel {
+            a: forward(first),
+            b: forward(second),
+        });
+        assert!(
+            !said.contains("no words") && !said.starts_with("Parallel"),
+            "{said}"
+        );
+        assert!(!parallel.contains("Collinear"), "{parallel}");
+        println!("\nFCAD_31G_SENTENCE_EXECUTED");
     }
 
     #[test]

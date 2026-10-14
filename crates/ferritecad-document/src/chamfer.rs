@@ -169,6 +169,7 @@ fn rule_name(rule: &SketchConstraintRule) -> &'static str {
         SketchConstraintRule::Perpendicular { .. } => "Perpendicular",
         SketchConstraintRule::Parallel { .. } => "Parallel",
         SketchConstraintRule::DirectedAngle { .. } => "DirectedAngle",
+        SketchConstraintRule::Collinear { .. } => "Collinear",
         _ => "other",
     }
 }

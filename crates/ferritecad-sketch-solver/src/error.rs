@@ -106,9 +106,10 @@ pub enum SolverError {
     #[error("constraint {0:?} asks for a directed angle outside (-pi, pi] radians")]
     AngleOutOfRange(ConstraintId),
 
-    /// A directed angle measured against a vector that has no direction: it
-    /// names one point twice, or its ends coincide at the start.
-    #[error("constraint {0:?} measures an angle against a vector of zero length")]
+    /// A directed angle or a collinearity measured against a vector that has
+    /// no direction: it names one point twice, or its ends coincide at the
+    /// start.
+    #[error("constraint {0:?} is measured against a vector of zero length")]
     DegenerateVector(ConstraintId),
 
     /// A starting state that is not one position per point of the sketch.

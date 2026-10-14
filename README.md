@@ -946,7 +946,9 @@ one pinned endpoint per profile (§25G), one equal length per pair of Lines
 (§25H) and one relative orientation — parallel or perpendicular — per pair of
 Lines (§25I). The same pair slot also takes a directed angle in degrees between
 two explicit Line directions, counter-clockwise from the first to the second
-(`-180 < θ ≤ 180`, §31F, [docs/directed-sketch-angle.md](docs/directed-sketch-angle.md)). The same editor gives one saved analytic circle a radius (or a diameter,
+(`-180 < θ ≤ 180`, §31F, [docs/directed-sketch-angle.md](docs/directed-sketch-angle.md)), or puts
+the two Lines on one infinite line (`Add Collinear`, §31G,
+[docs/collinear-sketch-lines.md](docs/collinear-sketch-lines.md)). The same editor gives one saved analytic circle a radius (or a diameter,
 stored as the same radius `D/2`, §31E) and a
 pinned centre (§25N). A saved annulus supports a radius per circle, explicit
 concentricity and one pinned centre through the same UI/CLI operation

@@ -3753,6 +3753,92 @@ mod tests {
         println!("\nFCAD_31F_SESSION_EXECUTED");
     }
 
+    /// §31G: a collinearity of a U's two rims typed into the form, Applied into
+    /// an unsaved session after a height step, exported before Save, undone,
+    /// redone and saved, each against the command line doing the same to the
+    /// same profile.
+    #[test]
+    fn native_collinear_of_a_u_is_applied_like_the_command_line() {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("u.fcad");
+        ferritecad_jobs::create_document_with_kernel(
+            ferritecad_jobs::CreateDocumentRequest::new(
+                &path,
+                ferritecad_jobs::NewDocument::SketchExtrude(
+                    ferritecad_document::PolygonExtrusion::new(
+                        crate::constraints::tests::collinear::U_PROFILE.to_vec(),
+                        10.,
+                    )
+                    .expect("a U"),
+                ),
+                "test",
+            ),
+            ferritecad_occt::OcctKernel::new,
+            &OperationContext::default(),
+        )
+        .expect("source");
+        // A profile that already holds its closure joints (what removing the last
+        // constraint leaves), so that the collinearity is the one thing the edit
+        // adds.
+        {
+            use ferritecad_document::{
+                AddLineConstraint, AddSketchConstraint, LineConstraintKind, SketchConstraintEdits,
+                prepare_sketch_constraints,
+            };
+            let mut document = Document::open(&path).expect("document");
+            let choice = ferritecad_document::ExtrudeEditSource::read(&document)
+                .expect("catalog")
+                .constraint_sketches[0]
+                .clone();
+            let curve = choice.stored.as_ref().expect("stored").curves[0].id;
+            let prepared = prepare_sketch_constraints(
+                &document,
+                choice.sketch,
+                &SketchConstraintEdits {
+                    remove: vec![],
+                    add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
+                        curve,
+                        kind: LineConstraintKind::Horizontal,
+                    })],
+                },
+            )
+            .expect("prepare");
+            let horizontal = prepared.added.last().expect("the Horizontal").id;
+            document
+                .write_sketch_constraints(&prepared)
+                .expect("joints");
+            let prepared = prepare_sketch_constraints(
+                &document,
+                choice.sketch,
+                &SketchConstraintEdits {
+                    remove: vec![horizontal],
+                    add: vec![],
+                },
+            )
+            .expect("prepare");
+            document
+                .write_sketch_constraints(&prepared)
+                .expect("removed");
+            document.close().expect("close");
+        }
+        native_constraint_gate(root.path(), &path, 9.5, |path, source, _| {
+            // The rims are Lines 1 and 5.
+            crate::constraints::tests::collinear::collinear_apply(path, source, (1, 5))
+        });
+        println!("\nFCAD_31G_SESSION_EXECUTED");
+    }
+
     #[test]
     fn native_radius_and_fixed_centre_of_a_circle_are_applied_like_the_command_line() {
         if !native() {

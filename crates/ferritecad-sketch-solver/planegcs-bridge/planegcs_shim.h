@@ -58,7 +58,16 @@ enum {
    * (-pi, pi]. `value2` is unused and must be 0, `circles` empty. Unlike
    * FC_GCS_PARALLEL it has a sign and a direction. A vector naming one point
    * twice, or of zero length at the start, is refused. */
-  FC_GCS_DIRECTED_ANGLE = 9
+  FC_GCS_DIRECTED_ANGLE = 9,
+  /* The segment points[0]->points[1] lies on the same infinite line as the
+   * segment points[2]->points[3]: both ends of the first lie on the line
+   * through the second (two planegcs PointOnLine equations under this one tag,
+   * each a signed point-to-line distance in length units). Direction and offset
+   * are both held; the segments need not touch or overlap and either may run
+   * either way. `value` and `value2` are unused and must be 0, `circles` empty.
+   * A segment naming one point twice, or of zero length at the start, is
+   * refused. */
+  FC_GCS_COLLINEAR = 10
 };
 
 /* One circle of the sketch: a centre that is one of the sketch's points, and a
@@ -88,7 +97,8 @@ typedef struct FcGcsCircle {
  *
  * `value` carries a distance, a radius, an angle in radians, or the x of a Fixed;
  * `value2` the y of a Fixed. Every other kind leaves `value2` zero, and a
- * FC_GCS_DIRECTED_ANGLE with a non-zero one is refused. */
+ * FC_GCS_DIRECTED_ANGLE with a non-zero one is refused; a FC_GCS_COLLINEAR
+ * carries neither number and is refused if either is non-zero. */
 typedef struct FcGcsConstraint {
   int32_t kind;
   int32_t points[4];

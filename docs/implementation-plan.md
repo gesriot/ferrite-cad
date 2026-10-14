@@ -5231,7 +5231,7 @@ UUIDs are normalised); the measured reflex turn changes from -70° to -50°.
 Peak footprint 198.704 MiB, pressure 1, swap 0, normal exit. Remote validation is
 tracked separately in PR #109.
 
-### §31G — Collinear saved Lines (planned next constraint adapter)
+### §31G — Collinear saved Lines (author handoff, not yet reviewed or merged)
 
 Add one explicit relation between two non-construction Lines of a supported saved
 XY profile. Collinearity requires the same supporting line, not merely parallel
@@ -5246,13 +5246,38 @@ Carry the new vocabulary through payload/capability refusal, strict CLI discover
 and requests, editor Apply/copy, Undo/Redo and atomic Save. Hover anchors and circle
 centre snapping remain separate open work; this slice does not close §31 or 5C.
 
+**Status, author handoff.** Two whole Lines of a saved Line profile can be put on
+one infinite line: `Add Collinear` beside Parallel/Perpendicular on the pair
+row of the constraint form, and the strict request `{"rule":"collinear",
+"a_curve_id","b_curve_id"}` of `edit-sketch-constraints-copy` (no number, no
+direction: reversing a Line or exchanging A/B is the same relation, and the segments
+may be disjoint or run opposite ways). The document stores
+`SketchConstraintRule::Collinear` in payload **v5** with the capability
+`sketch.constraints.collinear.v1` (SQLite schema unchanged; main keeps the file and
+refuses it, measured); the pair shares the Parallel/Perpendicular/DirectedAngle slot
+(`EqualLength` stays independent). The solver gets `Constraint::Collinear` and the shim
+a new named kind `FC_GCS_COLLINEAR = 10`, stated as **two** PlaneGCS `PointOnLine`
+equations under one tag (both ends of the first Line on the line through the second:
+signed distance in mm; ABI layout and pin unchanged), judged by a residual that holds
+both the sine of the angle and the four end-to-line distances and refuses a collapsed
+segment. Measured on the real library: the freedom taken is two for a disjoint pair and
+one for an already closed pair, whose second equation is the direction and is needed;
+PlaneGCS calls a tag redundant only when every equation under it is, so a partly
+redundant relation is not named. The limit it keeps (redundancy is ranked at the stored
+start positions) is documented, not hidden. Contract, executed recipe, gates, mutations,
+resources and the independent window recipe:
+[collinear-sketch-lines.md](collinear-sketch-lines.md),
+[collinear-sketch-lines-verification.md](collinear-sketch-lines-verification.md).
+**Not done:** hover-anchor acquisition (§31D) and the circle centre snap (§31C), so
+§31C, §31D, §30, Milestone 5C, the product and the OOM investigation stay open.
+
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
 **Constraint adapters.** A diameter input uses the existing Radius with `R = D/2`,
 with existing value validation and no second solver equation (§31E, above). Collinearity,
-tangency and symmetry (the angle: §31F) require the full document → solver contract → C ABI/shim →
+tangency and symmetry (the angle: §31F; collinearity: §31G) require the full document → solver contract → C ABI/shim →
 residual/diagnosis → capability → shared UI/CLI operation route. The present shim's
-last kinds are `FC_GCS_CIRCLE_RADIUS = 8` and, since §31F, `FC_GCS_DIRECTED_ANGLE = 9`;
+last kinds are `FC_GCS_CIRCLE_RADIUS = 8`, since §31F `FC_GCS_DIRECTED_ANGLE = 9` and since §31G `FC_GCS_COLLINEAR = 10`;
 spare point/circle fields do not by themselves implement another kind. Preserve explicit refusal of unknown kinds and verify ABI
 layout/version compatibility when adding them.
 

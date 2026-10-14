@@ -24,7 +24,8 @@ pub struct EditConstraintsArgs {
     expect_version: ContentHash,
     /// Request v1: remove exact constraint UUIDs, then add Line H/V, length in mm,
     /// one Fixed Line endpoint at explicit X/Y mm, equal length, parallel or
-    /// perpendicular between two Lines, a directed angle in degrees between two
+    /// perpendicular between two Lines, two Lines on one infinite line
+    /// (`collinear`), a directed angle in degrees between two
     /// directed Lines (`directed_angle`), or — on a Sketch that is one analytic
     /// Circle, or two making an annulus — a radius in mm per Circle (or its
     /// diameter in mm, stored as the same radius D/2), a Fixed centre at
@@ -130,6 +131,15 @@ enum Addition {
         b_curve_id: StableEntityId,
     },
     Perpendicular {
+        a_curve_id: StableEntityId,
+        b_curve_id: StableEntityId,
+    },
+    /// The two named whole Lines lie on one infinite line (§31G): the offset
+    /// between them is held as well as the direction. Neither leads, neither
+    /// carries a direction of its own, and nothing else is read: a request
+    /// that could say `from`/`to` here would let `directed_angle`'s vectors
+    /// pass for a part of this one.
+    Collinear {
         a_curve_id: StableEntityId,
         b_curve_id: StableEntityId,
     },
@@ -280,6 +290,16 @@ impl Addition {
                     a: a_curve_id,
                     b: b_curve_id,
                     relation: LineRelation::Perpendicular,
+                });
+            }
+            Self::Collinear {
+                a_curve_id,
+                b_curve_id,
+            } => {
+                return Ok(AddLineConstraint::Relation {
+                    a: a_curve_id,
+                    b: b_curve_id,
+                    relation: LineRelation::Collinear,
                 });
             }
             Self::DirectedAngle { a, b, angle_deg } => {

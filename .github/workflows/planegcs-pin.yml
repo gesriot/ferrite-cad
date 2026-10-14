@@ -604,6 +604,36 @@ jobs:
             fi
           done
 
+          # §31G: collinearity on the real library (the offset a Parallel does not
+          # hold, either spelling, the freedom it takes, the equation a closed pair
+          # still needs, the conflict that names it, the collapsed segment the measured
+          # residual refuses, a drag) and the C boundary of its kind written by hand.
+          for gate in \
+            'disjoint_parallel_segments_on_different_lines_are_brought_onto_one_and_parallel_alone_is_not' \
+            'an_inclined_pair_holds_the_same_line_whichever_way_each_segment_is_written' \
+            'a_collinear_removes_two_degrees_of_freedom_from_a_separate_pair' \
+            'a_closed_pair_keeps_the_direction_part_of_a_collinear_and_it_is_not_called_redundant' \
+            'a_pinned_offset_makes_a_collinear_conflict_and_the_conflict_names_it' \
+            'a_repeated_collinear_is_redundant_by_its_own_id_only_when_every_equation_is' \
+            'a_dependency_that_holds_only_on_the_solved_line_is_not_seen_at_the_start_but_is_solved' \
+            'a_segment_the_solver_collapses_is_never_a_satisfied_collinear' \
+            'a_drag_keeps_the_segments_collinear_while_one_end_follows_the_pointer' \
+            'planegcs::tests::the_shim_names_the_collinear_kind_and_refuses_what_the_header_forbids'
+          do
+            check product.txt "$gate"
+          done
+          for marker in \
+            FCAD_31G_SOLVER_OFFSET_EXECUTED FCAD_31G_SOLVER_SPELLINGS_EXECUTED \
+            FCAD_31G_SOLVER_DOF_EXECUTED FCAD_31G_SOLVER_PARTIAL_EXECUTED \
+            FCAD_31G_SOLVER_REDUNDANT_EXECUTED FCAD_31G_SOLVER_COLLAPSE_EXECUTED \
+            FCAD_31G_SOLVER_DRAG_EXECUTED FCAD_31G_SHIM_EXECUTED FCAD_31G_RESIDUAL_EXECUTED
+          do
+            if ! grep -Fxq "$marker" product.txt; then
+              echo "::error::the collinear gate behind $marker did not run to its end"
+              missing=$((missing + 1))
+            fi
+          done
+
           # The bench: that the corpus still passes through the product path.
           for gate in \
             'against_planegcs::both_solvers_agree_about_the_geometry' \

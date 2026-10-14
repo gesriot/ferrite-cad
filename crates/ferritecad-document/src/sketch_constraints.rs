@@ -100,12 +100,16 @@ pub enum LineConstraintKind {
 pub enum LineRelation {
     Parallel,
     Perpendicular,
+    /// Both Lines on one infinite line (§31G): their offset is held as well
+    /// as their direction. Neither Line's own direction is part of it.
+    Collinear,
 }
 impl LineRelation {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Parallel => "Parallel",
             Self::Perpendicular => "Perpendicular",
+            Self::Collinear => "Collinear",
         }
     }
 }
@@ -595,15 +599,17 @@ fn equal_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityI
     };
     related(a, b)
 }
-/// The two distinct Lines a stored Parallel, Perpendicular or directed angle
-/// relates. Which of the three it is does not change the slot: they are three
-/// answers to one question. The direction of a directed angle's vectors is read
-/// by nothing here: `related` names the Lines, not the way they point.
+/// The two distinct Lines a stored Parallel, Perpendicular, directed angle or
+/// collinearity relates. Which of the four it is does not change the slot: they
+/// are four answers to one question. The direction of a directed angle's
+/// vectors is read by nothing here: `related` names the Lines, not the way they
+/// point.
 fn relation_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
     match rule {
         SketchConstraintRule::Parallel { a, b }
         | SketchConstraintRule::Perpendicular { a, b }
-        | SketchConstraintRule::DirectedAngle { a, b, .. } => related(a, b),
+        | SketchConstraintRule::DirectedAngle { a, b, .. }
+        | SketchConstraintRule::Collinear { a, b } => related(a, b),
         _ => None,
     }
 }
@@ -641,9 +647,10 @@ enum Slot {
     Pin,
     /// Sorted, so (A,B) and (B,A) are the same occupied slot.
     Equal(StableEntityId, StableEntityId),
-    /// Sorted for the same reason. Parallel and Perpendicular answer one
-    /// question about the pair, so they share this slot; an equal length on the
-    /// same pair is a different question and has its own.
+    /// Sorted for the same reason. Parallel, Perpendicular, a directed angle
+    /// and a collinearity answer one question about the pair, so they share
+    /// this slot; an equal length on the same pair is a different question and
+    /// has its own.
     Relation(StableEntityId, StableEntityId),
     /// The one radius of one circle.
     ///
@@ -812,7 +819,7 @@ fn occupied(slot: Slot) -> &'static str {
             "these two Lines already hold an equal length; remove it in the same request"
         }
         Slot::Relation(..) => {
-            "these two Lines already hold a Parallel, Perpendicular or directed angle; remove it in the same request"
+            "these two Lines already hold a Parallel, Perpendicular, directed angle or Collinear; remove it in the same request"
         }
         Slot::Orientation(_) => "a Line may hold only one H/V; remove its current constraint first",
         Slot::Radius(_) => "a circle may hold only one radius; remove its current constraint first",
@@ -845,7 +852,7 @@ fn managed(sketch: &Sketch, family: Family) -> Result<()> {
                         "constraint edit refuses a duplicate equal length on one pair of Lines"
                     }
                     Slot::Relation(..) => {
-                        "constraint edit refuses more than one Parallel, Perpendicular or directed angle on one pair of Lines"
+                        "constraint edit refuses more than one Parallel, Perpendicular, directed angle or Collinear on one pair of Lines"
                     }
                     _ => "constraint edit refuses duplicate orientation or length on a Line",
                 }));
@@ -859,13 +866,13 @@ fn managed(sketch: &Sketch, family: Family) -> Result<()> {
             }
         } else {
             return Err(CadError::unsupported(
-                "constraint edit supports only Line H/V, positive Start/End length, one finite Fixed Line endpoint, equal length or Parallel/Perpendicular/directed angle between two whole Lines and adjacent-joint Coincident families",
+                "constraint edit supports only Line H/V, positive Start/End length, one finite Fixed Line endpoint, equal length or Parallel/Perpendicular/directed angle/Collinear between two whole Lines and adjacent-joint Coincident families",
             ));
         }
     }
     if !lines.is_empty() && joins != expected {
         return Err(CadError::unsupported(
-            "existing H/V, length, equal length, Parallel/Perpendicular/directed angle or Fixed endpoint require all persisted Coincident closure links",
+            "existing H/V, length, equal length, Parallel/Perpendicular/directed angle/Collinear or Fixed endpoint require all persisted Coincident closure links",
         ));
     }
     Ok(())
@@ -953,7 +960,7 @@ fn retained(
             })?;
         if family_slot_of(family, c.rule).is_none() {
             return Err(CadError::input(
-                "only H/V, Line length, equal length, Parallel/Perpendicular/directed angle, the Fixed endpoint, a circle radius, a fixed centre or a concentricity may be removed; Line closure links are retained",
+                "only H/V, Line length, equal length, Parallel/Perpendicular/directed angle/Collinear, the Fixed endpoint, a circle radius, a fixed centre or a concentricity may be removed; Line closure links are retained",
             ));
         }
     }
@@ -1193,6 +1200,7 @@ pub fn prepare_sketch_constraints(
                 match relation {
                     LineRelation::Parallel => SketchConstraintRule::Parallel { a, b },
                     LineRelation::Perpendicular => SketchConstraintRule::Perpendicular { a, b },
+                    LineRelation::Collinear => SketchConstraintRule::Collinear { a, b },
                 }
             }
             // The directions are stored as said, never sorted or rewritten.

@@ -164,11 +164,17 @@ impl Prepared {
                 return Err(NotFinite::ConstraintParameter(id).into());
             }
             // A directed angle is canonical in (-pi, pi]: refused outside, not
-            // wrapped. Its two vectors must also have a direction to measure.
-            if let Constraint::DirectedAngle { a, b, angle } = constraint {
-                if angle <= -std::f64::consts::PI || angle > std::f64::consts::PI {
-                    return Err(SolverError::AngleOutOfRange(id));
-                }
+            // wrapped.
+            if let Constraint::DirectedAngle { angle, .. } = constraint
+                && (angle <= -std::f64::consts::PI || angle > std::f64::consts::PI)
+            {
+                return Err(SolverError::AngleOutOfRange(id));
+            }
+            // An angle and a collinearity both need two vectors that have a
+            // direction to measure.
+            if let Constraint::DirectedAngle { a, b, .. } | Constraint::Collinear { a, b } =
+                constraint
+            {
                 let length = |(from, to): (PointId, PointId)| {
                     let slot = |point: PointId| {
                         *index_of

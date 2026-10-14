@@ -36,6 +36,7 @@ pub const SUPPORTED_CAPABILITIES: &[&str] = &[
     "sketch.constraints.v1",
     "sketch.constraints.circle.v1",
     "sketch.constraints.angle.v1",
+    "sketch.constraints.collinear.v1",
     "feature.predecessor.v1",
     "feature.through-all.v1",
     "feature.revolve.v1",
