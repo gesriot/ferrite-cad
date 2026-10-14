@@ -81,6 +81,7 @@ bool has_valid_references(const FcGcsConstraint &constraint, size_t point_count,
     case FC_GCS_PERPENDICULAR:
     case FC_GCS_PARALLEL:
     case FC_GCS_DIRECTED_ANGLE:
+    case FC_GCS_COLLINEAR:
       points_used = 4;
       break;
     case FC_GCS_CIRCLE_RADIUS:
@@ -195,6 +196,15 @@ extern "C" FcGcsSession *fc_gcs_session_create(
       if (!has_valid_references(c, point_count, circle_count)) {
         return nullptr;
       }
+      // The start length of a vector the angle and collinear kinds are
+      // measured against. Only called for indices already range-checked.
+      const auto length = [&](int32_t from, int32_t to) {
+        return std::hypot(
+            session->state[static_cast<size_t>(to) * 2] -
+                session->state[static_cast<size_t>(from) * 2],
+            session->state[static_cast<size_t>(to) * 2 + 1] -
+                session->state[static_cast<size_t>(from) * 2 + 1]);
+      };
 
       switch (c.kind) {
         case FC_GCS_COINCIDENT:
@@ -261,13 +271,6 @@ extern "C" FcGcsSession *fc_gcs_session_create(
               c.points[2] == c.points[3]) {
             return nullptr;
           }
-          const auto length = [&](int32_t from, int32_t to) {
-            return std::hypot(
-                session->state[static_cast<size_t>(to) * 2] -
-                    session->state[static_cast<size_t>(from) * 2],
-                session->state[static_cast<size_t>(to) * 2 + 1] -
-                    session->state[static_cast<size_t>(from) * 2 + 1]);
-          };
           if (!(length(c.points[0], c.points[1]) > 0.0) ||
               !(length(c.points[2], c.points[3]) > 0.0)) {
             return nullptr;
@@ -278,6 +281,30 @@ extern "C" FcGcsSession *fc_gcs_session_create(
               session->points[c.points[0]], session->points[c.points[1]],
               session->points[c.points[2]], session->points[c.points[3]],
               &session->values[slot], tag);
+          break;
+        }
+        case FC_GCS_COLLINEAR: {
+          // Both ends of the first segment on the line through the second. The
+          // line needs a direction to be a line, and the first segment one to
+          // say anything about it; neither number of the constraint is used.
+          if (c.value != 0.0 || c.value2 != 0.0 || c.points[0] == c.points[1] ||
+              c.points[2] == c.points[3]) {
+            return nullptr;
+          }
+          if (!(length(c.points[0], c.points[1]) > 0.0) ||
+              !(length(c.points[2], c.points[3]) > 0.0)) {
+            return nullptr;
+          }
+          // One tag for both equations, so a diagnosis names the constraint
+          // the caller wrote. planegcs calls a tag redundant only if every
+          // equation under it is; one that repeats something already held is
+          // "partially redundant" and is not reported as redundant.
+          session->system.addConstraintPointOnLine(
+              session->points[c.points[0]], session->points[c.points[2]],
+              session->points[c.points[3]], tag);
+          session->system.addConstraintPointOnLine(
+              session->points[c.points[1]], session->points[c.points[2]],
+              session->points[c.points[3]], tag);
           break;
         }
         case FC_GCS_CIRCLE_RADIUS: {

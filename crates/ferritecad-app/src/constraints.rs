@@ -866,8 +866,21 @@ impl Editor {
                             ),
                             ("Add Parallel", Some(LineRelation::Parallel)),
                             ("Add Perpendicular", Some(LineRelation::Perpendicular)),
+                            ("Add Collinear", Some(LineRelation::Collinear)),
                         ] {
-                            if !ui.add_enabled(both, egui::Button::new(label)).clicked() {
+                            let button = ui.add_enabled(both, egui::Button::new(label));
+                            // §31G: the A/B directions of the row above belong to
+                            // the directed angle only; this one reads neither.
+                            let button = if make == Some(LineRelation::Collinear) {
+                                button.on_hover_text(
+                                    "Both Lines on one infinite line: the same direction and \
+                                     no offset between them. They may be apart, and either may \
+                                     run either way; the A/B start>end buttons are not used.",
+                                )
+                            } else {
+                                button
+                            };
+                            if !button.clicked() {
                                 continue;
                             }
                             let (a, b) = (
@@ -1009,6 +1022,10 @@ impl Editor {
                                     ),
                                     SketchConstraintRule::Perpendicular { a, b } => (
                                         LineRelation::Perpendicular.as_str().to_owned(),
+                                        Some(two_lines(a.from.curve, b.from.curve, "and")),
+                                    ),
+                                    SketchConstraintRule::Collinear { a, b } => (
+                                        LineRelation::Collinear.as_str().to_owned(),
                                         Some(two_lines(a.from.curve, b.from.curve, "and")),
                                     ),
                                     SketchConstraintRule::DirectedAngle { a, b, angle } => (
@@ -1308,6 +1325,8 @@ pub(crate) mod tests {
     use ferritecad_kernel::OperationContext;
     /// §31F: a directed angle between two saved Lines.
     pub(crate) mod angle;
+    /// §31G: two saved Lines on one infinite line.
+    pub(crate) mod collinear;
     /// §31E: a diameter typed for a circle, which is the Radius `D/2`.
     pub(crate) mod diameter;
     /// §27G: the same editor on the profile of a Revolve with a bore.
@@ -1358,6 +1377,7 @@ pub(crate) mod tests {
                 let rule = match relation {
                     LineRelation::Parallel => "parallel",
                     LineRelation::Perpendicular => "perpendicular",
+                    LineRelation::Collinear => "collinear",
                 };
                 return format!(r#"{{"rule":"{rule}","a_curve_id":"{a}","b_curve_id":"{b}"}}"#);
             }

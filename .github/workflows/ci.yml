@@ -224,6 +224,31 @@ jobs:
             cargo test -p "$package" "${target[@]}" "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee angle.log
             if grep -q 'skipped:' angle.log || ! grep -q '^test result: ok\. 1 passed; 0 failed' angle.log || ! grep -Fxq "$marker" angle.log; then exit 1; fi
           done
+          # §31G: two saved Lines on one infinite line, with no kernel or solver: the
+          # residual's offset, the pair slot and layout v5, the strict request, the
+          # writer's re-derivation, the translation and the widgets.
+          for check in \
+            "ferritecad-sketch-solver|--lib|residual::tests::the_collinear_residual_holds_direction_and_offset_and_nothing_else|FCAD_31G_RESIDUAL_EXECUTED" \
+            "ferritecad-sketch-solver|--test boundary|a_collinear_against_a_segment_with_no_direction_is_refused_before_native|FCAD_31G_SOLVER_DEGENERATE_EXECUTED" \
+            "ferritecad-sketch-solver|--test boundary|every_point_of_a_collinear_is_checked_against_the_sketch|FCAD_31G_SOLVER_REFERENCES_EXECUTED" \
+            "ferritecad-document|--test collinear|a_collinear_is_stored_in_layout_v5_as_its_own_kind_and_declares_its_own_capability|FCAD_31G_DOCUMENT_V5_EXECUTED" \
+            "ferritecad-document|--test collinear|a_collinear_shares_the_relation_slot_in_either_order_and_only_an_exact_replace_frees_it|FCAD_31G_DOCUMENT_SLOT_EXECUTED" \
+            "ferritecad-document|--test collinear|what_a_sketch_declares_is_decided_by_what_it_holds_and_collinear_is_never_an_older_kind|FCAD_31G_DOCUMENT_LAYOUT_EXECUTED" \
+            "ferritecad-document|--test collinear|a_profile_with_a_construction_line_takes_no_collinear_on_any_pair|FCAD_31G_DOCUMENT_CONSTRUCTION_EXECUTED" \
+            "ferritecad-document|--lib|document::constraint_write_tests::a_forged_plan_may_not_stack_a_second_answer_on_a_collinear_pair_or_downgrade_it|FCAD_31G_WRITER_GUARD_EXECUTED" \
+            "ferritecad-eval|--lib|solve::tests::a_collinear_is_stated_as_the_two_segments_it_names_and_not_as_a_parallel|FCAD_31G_TRANSLATION_EXECUTED" \
+            "ferritecad-cli|--test collinear|a_collinear_request_is_strict_and_refuses_before_anything_is_published|FCAD_31G_CLI_STRICT_EXECUTED" \
+            "ferritecad-cli|--test collinear|discovery_names_a_stored_collinear_and_both_lines_and_leaves_the_older_forms_alone|FCAD_31G_CLI_DISCOVERY_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::collinear::a_collinear_is_one_step_on_a_picked_pair_and_reads_neither_vector_direction|FCAD_31G_WIDGETS_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::collinear::a_stored_collinear_is_replaced_by_a_parallel_in_one_exact_remove_and_add|FCAD_31G_REPLACE_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|sessions::tests::tabs::drafts::a_picked_pair_and_a_pending_collinear_follow_their_tab|FCAD_31G_TABS_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|tests::a_collinear_is_said_with_both_lines_and_is_neither_parallel_nor_no_words|FCAD_31G_SENTENCE_EXECUTED"
+          do
+            IFS='|' read -r package target gate marker <<< "$check"
+            read -r -a target <<< "$target"
+            cargo test -p "$package" "${target[@]}" "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee collinear.log
+            if grep -q 'skipped:' collinear.log || ! grep -q '^test result: ok\. 1 passed; 0 failed' collinear.log || ! grep -Fxq "$marker" collinear.log; then exit 1; fi
+          done
 
       - name: Discover Revolve profile constraints without native geometry
         shell: bash

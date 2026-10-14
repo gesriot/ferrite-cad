@@ -1965,6 +1965,33 @@ UUID). Sketch с таким ограничением — payload v4 и capabilit
 Operation, schema и коды 0/2/7 прежние.
 [Контракт и исполняемый рецепт](directed-sketch-angle.md).
 
+§31G добавляет в тот же request v1 строгую форму коллинеарности двух Lines:
+
+```json
+{"rule":"collinear",
+ "a_curve_id":"UUID_FROM_DISCOVERY",
+ "b_curve_id":"UUID_FROM_DISCOVERY"}
+```
+
+Обе Lines лежат на одной бесконечной прямой: связь держит и направление, и смещение
+(Parallel — только направление). Нет ни чисел, ни направлений: разворот любого отрезка и
+порядок A/B — одна и та же связь, отрезки могут не касаться. Оба UUID обязательны, Lines
+разные и принадлежат выбранному Sketch. Лишние, пропущенные и дублированные поля (в том
+числе `from`/`to`, объекты `a`/`b` формы `directed_angle`, `angle_deg`), не-UUID,
+число/`null`/bool/массив вместо UUID и иное написание правила — `kind:"input"`, код 2,
+без публикации. В discovery, `added_constraints` и `constraint_conflict` новый вид —
+`kind:"collinear"` с `a`/`b` в прежней `Segment`-форме (обе Lines целиком,
+`start → end`). Пара делит слот с `parallel`, `perpendicular` и `directed_angle`:
+эквивалентная запись, повтор или иной ответ о той же паре — структурный отказ,
+замена — remove exact UUID + add; `equal_length` той же пары — отдельный слот.
+Избыточность и конфликт устанавливает solver (`redundant_constraint_ids`,
+`constraint_conflict` с UUID); обычная проверка многоугольника остаётся последним
+рубежом (две соседние Lines, сделанные коллинеарными, и дно выемки, сведённое с низом,
+не публикуются). Sketch с такой связью — payload v5 и capability
+`sketch.constraints.collinear.v1`: сборка без неё сохраняет файл и отказывает.
+Operation, schema и коды 0/2/7 прежние.
+[Контракт и исполняемый рецепт](collinear-sketch-lines.md).
+
 §25F сохраняет operation/schema/request v1. В `add` команды
 `edit-sketch-constraints-copy` доступны `{curve_id,rule:"horizontal"}`,
 `{curve_id,rule:"vertical"}` и `{curve_id,rule:"distance",distance_mm:N}`.

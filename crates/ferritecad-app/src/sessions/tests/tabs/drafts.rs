@@ -224,6 +224,13 @@ impl Window {
             crate::constraints::tests::angle::typed_angle(&current, &reading, text, add);
     }
 
+    fn collinear_draft(&mut self, pair: (usize, usize), add: bool) {
+        let current = self.sessions.export_path().expect("shown");
+        let reading = read_extrude_source(&current).expect("reading");
+        self.creates.sketch.constraints =
+            crate::constraints::tests::collinear::typed_collinear(&current, &reading, pair, add);
+    }
+
     /// Shows `tab` and checks that every tab's unsaved state stayed as it was.
     fn round(&mut self, tab: TabId) {
         assert!(self.can_leave(), "an idle form holds no window");
@@ -509,6 +516,74 @@ fn a_typed_angle_its_pair_and_directions_follow_their_tab() {
         "a draft is not a change"
     );
     println!("\nFCAD_31F_TABS_EXECUTED");
+}
+
+/// §31G: two copies of one plate (one set of ids, the same controls) keep each
+/// their own picked pair and pending collinearity through every switch; adding in
+/// one tab changes that tab's draft only, and neither the pair nor the vector
+/// directions of the angle row are consumed by the add.
+#[test]
+fn a_picked_pair_and_a_pending_collinear_follow_their_tab() {
+    let user = tempfile::tempdir().expect("user");
+    let a_file = user.path().join("plate.fcad");
+    plate(&a_file, 12.0);
+    let b_file = user.path().join("copy.fcad");
+    std::fs::copy(&a_file, &b_file).expect("copy");
+
+    let mut w = Window::new(Drawn::Mock, None);
+    w.open(&a_file);
+    let a = w.sessions.tab();
+    w.collinear_draft((1, 3), true);
+    let facts = |w: &Window| {
+        (
+            w.creates.sketch.constraints.draft_angle().expect("a form"),
+            w.creates.sketch.constraints.draft_state().expect("a form"),
+            w.creates.sketch.constraints.draft_edits().expect("a form"),
+        )
+    };
+    let a_state = facts(&w);
+    assert_eq!(a_state.2.add.len(), 1, "A holds its collinearity");
+    assert_eq!((a_state.1.3, a_state.1.4), (1, 0));
+    w.open(&b_file);
+    let b = w.sessions.tab();
+    assert!(
+        !w.creates.sketch.constraints.active(),
+        "a new tab opens with no form"
+    );
+    assert!(w.tabs.has_draft(a));
+    // B picks another pair and adds nothing.
+    w.collinear_draft((2, 4), false);
+    let b_state = facts(&w);
+    assert!(b_state.2.add.is_empty());
+    assert_ne!(a_state.0.0, b_state.0.0, "the pairs differ");
+
+    for _ in 0..20 {
+        w.round(a);
+        assert_eq!(facts(&w), a_state);
+        w.round(b);
+        assert_eq!(facts(&w), b_state);
+    }
+    // An accepted add in B is B's one step; A is where it was.
+    crate::constraints::tests::session_apply::press(
+        &mut w.creates.sketch.constraints,
+        "Add Collinear",
+    );
+    let b_added = facts(&w);
+    assert_eq!(b_added.2.add.len(), 1);
+    assert_eq!((b_added.1.3, b_added.1.4), (1, 0));
+    assert_eq!(
+        b_added.0, b_state.0,
+        "the pair and the directions are not consumed"
+    );
+    w.round(a);
+    assert_eq!(facts(&w), a_state);
+    w.round(b);
+    assert_eq!(facts(&w), b_added);
+    assert!(
+        !w.sessions.dirty() && !w.hidden(a).dirty(),
+        "a draft is not a change"
+    );
+    println!("\nFCAD_31G_TABS_EXECUTED");
 }
 
 /// §31E: two copies of one cylinder (one set of ids, the same controls) keep each

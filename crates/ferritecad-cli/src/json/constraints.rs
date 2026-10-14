@@ -83,6 +83,12 @@ enum Rule {
         b: Segment,
         angle_deg: f64,
     },
+    /// §31G, additive: both segments lie on one infinite line. Each is named
+    /// whole, as stored; the direction of neither is part of the relation.
+    Collinear {
+        a: Segment,
+        b: Segment,
+    },
     Unknown,
 }
 impl From<SketchConstraintRule> for Rule {
@@ -125,6 +131,10 @@ impl From<SketchConstraintRule> for Rule {
             SketchConstraintRule::Radius { curve, radius } => Self::Radius {
                 curve_id: curve,
                 radius,
+            },
+            SketchConstraintRule::Collinear { a, b } => Self::Collinear {
+                a: a.into(),
+                b: b.into(),
             },
             SketchConstraintRule::DirectedAngle { a, b, angle } => {
                 match ferritecad_document::DirectedAngle::from_radians(angle) {

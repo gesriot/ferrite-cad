@@ -24,7 +24,7 @@ fn angle_of(a: DirectedLine, b: DirectedLine, degrees: f64) -> AddSketchConstrai
     })
 }
 
-fn opened_form(path: &Path, source: &ExtrudeEditSource) -> (Editor, egui::Context) {
+pub(super) fn opened_form(path: &Path, source: &ExtrudeEditSource) -> (Editor, egui::Context) {
     let mut e = Editor::default();
     assert!(e.begin(path, source, source.constraint_sketches[0].sketch));
     let ctx = egui::Context::default();
@@ -35,7 +35,7 @@ fn opened_form(path: &Path, source: &ExtrudeEditSource) -> (Editor, egui::Contex
 }
 
 /// Lines `a` and `b` (1-based, as the list numbers them) picked as the pair.
-fn pair(ctx: &egui::Context, e: &mut Editor, a: usize, b: usize) {
+pub(super) fn pair(ctx: &egui::Context, e: &mut Editor, a: usize, b: usize) {
     click(ctx, e, &format!("Segment {a}"));
     click(ctx, e, "Pair Line A");
     click(ctx, e, &format!("Segment {b}"));
@@ -89,8 +89,10 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     let (mut e, ctx) = opened_form(&path, &source);
 
     // The rows are there, say which way each vector runs and which way the angle
-    // turns, and widen nothing: text that was already in the form reaches at
-    // least as far right as the new rows do.
+    // turns. They were first held to the width of the form's widest paragraph;
+    // §31G puts `Add Collinear` on the same relation row, which cannot fit in
+    // that width, so what is held now is that the row stays one row (no
+    // taller form) and that the whole form stays inside a bounded width.
     let out = frame(&ctx, &mut e, vec![]);
     for label in [
         "A: start>end",
@@ -100,6 +102,7 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
         "Add directed angle",
         "Add Parallel",
         "Add Perpendicular",
+        "Add Collinear",
         "Add Equal length",
     ] {
         assert!(painted(&out, label), "{label} is not painted");
@@ -112,9 +115,29 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     let (newest, oldest) = (right_edge(&out, new_row), right_edge(&out, |t| !new_row(t)));
     println!("Directed angle rows right edge {newest} pt, rest of the form {oldest} pt");
     assert!(
-        newest <= oldest,
-        "the angle rows ({newest}) reach past the rest of the form ({oldest})"
+        newest.max(oldest) <= 700.,
+        "the form reaches {newest}/{oldest} pt, past the 700 pt this row was budgeted"
     );
+    let top_of = |label: &str| {
+        out.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                Some(t.visual_bounding_rect().top())
+            }
+            _ => None,
+        })
+    };
+    for label in [
+        "Add Equal length",
+        "Add Parallel",
+        "Add Collinear",
+        ANGLE_BOX,
+    ] {
+        assert_eq!(
+            top_of(label),
+            top_of("Add Perpendicular"),
+            "{label} left the relation row, which would make the form taller"
+        );
+    }
 
     // Nothing is picked: nothing is added.
     click(&ctx, &mut e, "Add directed angle");

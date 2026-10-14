@@ -426,3 +426,56 @@ fn every_point_of_a_directed_angle_is_checked_against_the_sketch() {
     }
     println!("\nFCAD_31F_SOLVER_REFERENCES_EXECUTED");
 }
+
+/// The five points of [`angled`] with a collinearity in place of the angle.
+fn collinear(a: (PointId, PointId), b: (PointId, PointId)) -> Sketch {
+    let mut sketch = Sketch::new();
+    sketch
+        .add_point(PointId(1), 0.0, 0.0)
+        .add_point(PointId(2), 10.0, 0.0)
+        .add_point(PointId(3), 4.0, 4.0)
+        .add_point(PointId(4), 4.0, 9.0)
+        .add_point(PointId(5), 0.0, 0.0);
+    sketch.add_constraint(ConstraintId(8), Constraint::Collinear { a, b });
+    sketch
+}
+
+#[test]
+fn a_collinear_against_a_segment_with_no_direction_is_refused_before_native() {
+    let degenerate = |sketch: Sketch| {
+        assert_eq!(
+            solver::solve(&sketch).expect_err("a segment with no direction"),
+            SolverError::DegenerateVector(ConstraintId(8))
+        );
+    };
+    let line = (PointId(1), PointId(2));
+    let up = (PointId(3), PointId(4));
+    // One point twice, in either segment.
+    degenerate(collinear((PointId(1), PointId(1)), up));
+    degenerate(collinear(line, (PointId(4), PointId(4))));
+    // Two points that sit on each other.
+    degenerate(collinear((PointId(1), PointId(5)), up));
+    degenerate(collinear(line, (PointId(5), PointId(1))));
+    println!("\nFCAD_31G_SOLVER_DEGENERATE_EXECUTED");
+}
+
+#[test]
+fn every_point_of_a_collinear_is_checked_against_the_sketch() {
+    let missing = PointId(4242);
+    for (slot, a, b) in [
+        (0, (missing, PointId(2)), (PointId(3), PointId(4))),
+        (1, (PointId(1), missing), (PointId(3), PointId(4))),
+        (2, (PointId(1), PointId(2)), (missing, PointId(4))),
+        (3, (PointId(1), PointId(2)), (PointId(3), missing)),
+    ] {
+        assert_eq!(
+            solver::solve(&collinear(a, b)).expect_err("a dangling reference"),
+            SolverError::UnknownPoint {
+                constraint: ConstraintId(8),
+                point: missing,
+            },
+            "reference {slot}"
+        );
+    }
+    println!("\nFCAD_31G_SOLVER_REFERENCES_EXECUTED");
+}

@@ -79,9 +79,10 @@ impl Position {
 
 /// One relationship a solved sketch has to satisfy.
 ///
-/// The eight the solver comparison measured, plus the radius of a circle and
-/// the directed angle between two vectors. Arcs, tangency and symmetry are
-/// what planegcs was chosen for and are still not here.
+/// The eight the solver comparison measured, plus the radius of a circle, the
+/// directed angle between two vectors and the collinearity of two segments.
+/// Arcs, tangency and symmetry are what planegcs was chosen for and are still
+/// not here.
 ///
 /// A circle's *centre* takes no family of its own: it is a [`PointId`], so
 /// [`Constraint::Fixed`] and everything else that names a point already names
@@ -137,6 +138,21 @@ pub enum Constraint {
         b: (PointId, PointId),
         angle: f64,
     },
+    /// The segment `a.0 -> a.1` lies on the same infinite line as the segment
+    /// `b.0 -> b.1`, in the sketch's own XY.
+    ///
+    /// Neither the direction nor the order of the ends matters, and the
+    /// segments need not touch or overlap. It is not [`Constraint::Parallel`]:
+    /// two parallel segments on different lines are not collinear. Two
+    /// equations stand behind it, both ends of `a` on the line through `b`: for
+    /// two segments sharing no point it removes two degrees of freedom, the
+    /// direction and the offset.
+    /// Neither segment may have zero length (no longer than `1e-9` of the
+    /// sketch's length unit), at the start and again in the answer.
+    Collinear {
+        a: (PointId, PointId),
+        b: (PointId, PointId),
+    },
 }
 
 impl Constraint {
@@ -156,7 +172,8 @@ impl Constraint {
             Self::EqualLength { a, b }
             | Self::Perpendicular { a, b }
             | Self::Parallel { a, b }
-            | Self::DirectedAngle { a, b, .. } => vec![a.0, a.1, b.0, b.1],
+            | Self::DirectedAngle { a, b, .. }
+            | Self::Collinear { a, b } => vec![a.0, a.1, b.0, b.1],
         }
     }
 

@@ -124,6 +124,23 @@ pub const SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.circl
 /// their other relationships is still v2 and an unconstrained one still v1.
 pub const SKETCH_ANGLE_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.angle.v1";
 
+/// The capability a sketch depends on once a constraint says two Lines lie on
+/// one infinite line (§31G).
+///
+/// An older build must not read a collinearity as one of the families it knows.
+/// `Parallel` scores a cross product and so accepts two parallel Lines on
+/// different lines; reading a collinear pair as `Parallel` would silently drop
+/// the offset it holds. So the layout moves with the meaning, as it did for
+/// circles and angles: a sketch holding such a constraint is stored
+/// at payload v5, which is not in `ObjectKind::readable_schema_versions` of any
+/// earlier build; that build keeps the object verbatim and opens the document
+/// read-only. This capability is what makes the reason legible.
+///
+/// v5 is cumulative: a reader that implements the collinear vocabulary
+/// implements the angle and circle ones too. Declared only by a sketch that
+/// actually holds one.
+pub const SKETCH_COLLINEAR_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.collinear.v1";
+
 /// The capability a reference to a face carried through a boolean depends on.
 ///
 /// `CarriedCap` and `CarriedSide` are roles a build written before booleans
@@ -351,6 +368,11 @@ impl ObjectKind {
                 SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
                 SKETCH_ANGLE_CONSTRAINTS_CAPABILITY.to_owned(),
             ],
+            (Self::Sketch, 5) => vec![
+                CORE_CAPABILITY.to_owned(),
+                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
+                SKETCH_COLLINEAR_CONSTRAINTS_CAPABILITY.to_owned(),
+            ],
             (Self::Extrude, 2) => vec![
                 CORE_CAPABILITY.to_owned(),
                 FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
@@ -403,6 +425,7 @@ impl ObjectKind {
                 SKETCH_CONSTRAINTS_CAPABILITY,
                 SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
                 SKETCH_ANGLE_CONSTRAINTS_CAPABILITY,
+                SKETCH_COLLINEAR_CONSTRAINTS_CAPABILITY,
             ],
             Self::Extrude => &[
                 CORE_CAPABILITY,
@@ -439,10 +462,11 @@ impl ObjectKind {
             Self::ImportedStep => 3,
             // v2 added the constraint list. v3 added the vocabulary that
             // speaks about circles. v4 added the directed angle between two
-            // vectors (§31F). v1-v3 sketches are still read and still written
-            // as themselves, because what a sketch is stored at is decided by
-            // what it holds; see [`Sketch::schema_version`].
-            Self::Sketch => 4,
+            // vectors (§31F). v5 added the collinearity of two Lines (§31G).
+            // v1-v4 sketches are still read and still written as themselves,
+            // because what a sketch is stored at is decided by what it holds;
+            // see [`Sketch::schema_version`].
+            Self::Sketch => 5,
             // v2 added the feature a feature consumes; v3 gave a Cut the
             // ThroughAll intent. v1 and v2 extrusions are still read and still
             // written as themselves, because what a feature is stored at is
@@ -467,7 +491,7 @@ impl ObjectKind {
     pub fn readable_schema_versions(self) -> &'static [u32] {
         match self {
             Self::ImportedStep => &[3, 2, 1],
-            Self::Sketch => &[4, 3, 2, 1],
+            Self::Sketch => &[5, 4, 3, 2, 1],
             Self::Extrude => &[3, 2, 1],
             Self::Revolve => &[4, 3, 2, 1],
             Self::Fillet => &[2, 1],
@@ -832,6 +856,16 @@ pub enum SketchConstraintRule {
         b: SketchSegmentRef,
         angle: f64,
     },
+    /// The two segments lie on the same infinite line (§31G).
+    ///
+    /// Neither the direction nor the order of the ends matters, and the
+    /// segments need not touch. Not `Parallel`, which two parallel segments on
+    /// different lines also satisfy: the offset between the lines is part of
+    /// what this holds.
+    Collinear {
+        a: SketchSegmentRef,
+        b: SketchSegmentRef,
+    },
 }
 
 impl SketchConstraintRule {
@@ -852,7 +886,8 @@ impl SketchConstraintRule {
             Self::EqualLength { a, b }
             | Self::Perpendicular { a, b }
             | Self::Parallel { a, b }
-            | Self::DirectedAngle { a, b, .. } => vec![a.from, a.to, b.from, b.to],
+            | Self::DirectedAngle { a, b, .. }
+            | Self::Collinear { a, b } => vec![a.from, a.to, b.from, b.to],
         }
     }
 
@@ -890,13 +925,20 @@ impl SketchConstraintRule {
         matches!(self, Self::DirectedAngle { .. })
     }
 
+    /// Whether this rule needs the collinear vocabulary (§31G) to be
+    /// understood. The same single place as [`Self::needs_circle_vocabulary`].
+    pub fn needs_collinear_vocabulary(&self) -> bool {
+        matches!(self, Self::Collinear { .. })
+    }
+
     /// The segments this rule names, which is none for the point families.
     fn segments(&self) -> Vec<SketchSegmentRef> {
         match *self {
             Self::EqualLength { a, b }
             | Self::Perpendicular { a, b }
             | Self::Parallel { a, b }
-            | Self::DirectedAngle { a, b, .. } => vec![a, b],
+            | Self::DirectedAngle { a, b, .. }
+            | Self::Collinear { a, b } => vec![a, b],
             _ => Vec::new(),
         }
     }
@@ -990,6 +1032,12 @@ impl Sketch {
     pub fn schema_version(&self) -> u32 {
         if self.constraints.is_empty() {
             1
+        } else if self
+            .constraints
+            .iter()
+            .any(|c| c.rule.needs_collinear_vocabulary())
+        {
+            5
         } else if self
             .constraints
             .iter()

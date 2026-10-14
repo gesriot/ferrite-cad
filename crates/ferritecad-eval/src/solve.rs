@@ -550,6 +550,13 @@ impl Translation {
                     angle,
                 }
             }
+            // Stated as the two segments it names, in the order stored. The
+            // solver reads neither the direction nor the order of the ends:
+            // what it holds is the line, and the offset to it.
+            SketchConstraintRule::Collinear { a, b } => solver::Constraint::Collinear {
+                a: segment(a)?,
+                b: segment(b)?,
+            },
             ref other => {
                 return Err(CadError::unsupported(format!(
                     "constraint {} is a {} constraint, which this build stores but cannot state to \
@@ -806,7 +813,8 @@ impl Translation {
                 self.name(*constraint)
             )),
             solver::SolverError::DegenerateVector(constraint) => CadError::constraint(format!(
-                "constraint {} measures a directed angle against a vector of no length",
+                "constraint {} is measured against a vector of no length, which has no \
+                 direction (a directed angle and a collinearity both need one)",
                 self.name(*constraint)
             )),
             solver::SolverError::Native(failure) => {
@@ -882,6 +890,7 @@ fn rule_name(rule: &SketchConstraintRule) -> &'static str {
         SketchConstraintRule::Perpendicular { .. } => "perpendicular",
         SketchConstraintRule::Parallel { .. } => "parallel",
         SketchConstraintRule::DirectedAngle { .. } => "directed angle",
+        SketchConstraintRule::Collinear { .. } => "collinear",
         _ => "kind this build does not name",
     }
 }
@@ -1312,6 +1321,52 @@ mod tests {
             assert!(SketchConflict::of(&refusal).is_none());
         }
         println!("\nFCAD_31F_TRANSLATION_EXECUTED");
+    }
+
+    /// §31G: a collinearity crosses as the two segments it names, in the order
+    /// stored, and stays distinct from a Parallel on the same pair.
+    #[test]
+    fn a_collinear_is_stated_as_the_two_segments_it_names_and_not_as_a_parallel() {
+        use SketchPointSelector::{End, Start};
+        let (a, b) = (StableEntityId::new(), StableEntityId::new());
+        let curves = || {
+            vec![
+                line(a, (0.0, 0.0), (10.0, 0.0)),
+                line(b, (20.0, 5.0), (30.0, 5.0)),
+            ]
+        };
+        let seg = |c, from, to| SketchSegmentRef::new(at(c, from), at(c, to));
+        for (first, second) in [
+            (seg(a, Start, End), seg(b, Start, End)),
+            (seg(b, Start, End), seg(a, Start, End)),
+            (seg(a, End, Start), seg(b, Start, End)),
+            (seg(a, Start, End), seg(b, End, Start)),
+        ] {
+            let translation = Translation::read(&sketch(
+                curves(),
+                vec![rule(SketchConstraintRule::Collinear {
+                    a: first,
+                    b: second,
+                })],
+            ))
+            .expect("translates");
+            let ends =
+                |s: SketchSegmentRef| (named(&translation, s.from), named(&translation, s.to));
+            let expected = solver::Constraint::Collinear {
+                a: ends(first),
+                b: ends(second),
+            };
+            assert_eq!(only_constraint(&translation), expected);
+            assert_ne!(
+                only_constraint(&translation),
+                solver::Constraint::Parallel {
+                    a: ends(first),
+                    b: ends(second),
+                },
+                "a collinearity was stated as a Parallel, which drops its offset"
+            );
+        }
+        println!("\nFCAD_31G_TRANSLATION_EXECUTED");
     }
 
     #[test]

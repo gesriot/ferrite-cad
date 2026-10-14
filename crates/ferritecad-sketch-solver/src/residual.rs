@@ -77,6 +77,10 @@ pub(crate) fn worst(prepared: &Prepared, state: &[f64], radii: &[f64]) -> f64 {
                 let b = delta(state, slot(b.1), slot(b.0));
                 note(directed_angle_error(a, b, angle));
             }
+            Constraint::Collinear { a, b } => {
+                let ends = |(from, to): (_, _)| (at(slot(from)), at(slot(to)));
+                note(collinear_error(ends(a), ends(b)));
+            }
         }
     }
     worst
@@ -110,8 +114,50 @@ fn directed_angle_error(a: (f64, f64), b: (f64, f64), angle: f64) -> f64 {
     }
 }
 
+/// How far two segments are from lying on one line: the worst of
+///
+/// * the sine of the angle between them, which is dimensionless, and
+/// * the distance of each end of each segment from the line through the
+///   other, which is a length.
+///
+/// Both are needed. The sine alone is the cross product, which two parallel
+/// segments on different lines also zero; the distances alone say little about
+/// the direction of a short segment. Taking each segment's ends against the
+/// other's line makes the answer the same whichever segment is called `a`.
+/// Neither the direction nor the order of the ends enters, and the segments
+/// need not touch. A segment with no length has no line and is infinitely far.
+fn collinear_error(a: ((f64, f64), (f64, f64)), b: ((f64, f64), (f64, f64))) -> f64 {
+    let run = |(from, to): ((f64, f64), (f64, f64))| (to.0 - from.0, to.1 - from.1);
+    let cross = |u: (f64, f64), v: (f64, f64)| u.0 * v.1 - u.1 * v.0;
+    let (ra, rb) = (run(a), run(b));
+    let (la, lb) = (ra.0.hypot(ra.1), rb.0.hypot(rb.1));
+    if la <= crate::MIN_ANGLE_VECTOR || lb <= crate::MIN_ANGLE_VECTOR {
+        return f64::INFINITY;
+    }
+    // Signed distance of `p` from the line through `from` along `along`.
+    let off = |p: (f64, f64), from: (f64, f64), along: (f64, f64), length: f64| {
+        cross(along, (p.0 - from.0, p.1 - from.1)) / length
+    };
+    let measured = [
+        cross(ra, rb) / (la * lb),
+        off(a.0, b.0, rb, lb),
+        off(a.1, b.0, rb, lb),
+        off(b.0, a.0, ra, la),
+        off(b.1, a.0, ra, la),
+    ];
+    // `f64::max` skips a NaN, so a state that is not a number would otherwise
+    // read as the best answer there is.
+    if measured.iter().any(|value| !value.is_finite()) {
+        return f64::INFINITY;
+    }
+    measured
+        .into_iter()
+        .fold(0.0, |worst: f64, value| worst.max(value.abs()))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::collinear_error;
     use super::directed_angle_error as error;
     use std::f64::consts::PI;
 
@@ -152,5 +198,65 @@ mod tests {
             assert_eq!(error(a, b, 0.0), f64::INFINITY, "{a:?} {b:?}");
         }
         println!("\nFCAD_31F_RESIDUAL_EXECUTED");
+    }
+
+    #[test]
+    fn the_collinear_residual_holds_direction_and_offset_and_nothing_else() {
+        let on_x = ((0.0, 0.0), (4.0, 0.0));
+        let flip = |s: ((f64, f64), (f64, f64))| (s.1, s.0);
+        // Disjoint, reversed, nested and touching segments of one line are
+        // satisfied alike: neither overlap nor order is part of the relation.
+        for other in [
+            ((10.0, 0.0), (30.0, 0.0)),
+            ((30.0, 0.0), (10.0, 0.0)),
+            ((-9.0, 0.0), (-2.0, 0.0)),
+            ((1.0, 0.0), (2.0, 0.0)),
+            ((4.0, 0.0), (6.0, 0.0)),
+        ] {
+            for (a, b) in [(on_x, other), (other, on_x), (flip(on_x), other)] {
+                assert_eq!(collinear_error(a, b), 0.0, "{a:?} {b:?}");
+            }
+        }
+        // Parallel is not enough: the cross product is zero here and the
+        // segments are a full 3 units apart, which is what the offset says.
+        let parallel = ((10.0, 3.0), (30.0, 3.0));
+        assert_eq!(collinear_error(on_x, parallel), 3.0);
+        assert_eq!(collinear_error(parallel, on_x), 3.0);
+        assert_eq!(collinear_error(on_x, flip(parallel)), 3.0);
+        // A segment turned about a point of the line: its far end is 1 away
+        // from it, whichever segment is called `a`.
+        let turned = ((10.0, 0.0), (20.0, 1.0));
+        assert_eq!(collinear_error(on_x, turned), 1.0);
+        assert_eq!(collinear_error(turned, on_x), 1.0);
+        // Among short segments the angle is what is wrong, and it is read as a
+        // dimensionless sine (about 1e-3) rather than as the 1e-6 length that
+        // the far end happens to be off the line.
+        let small = ((0.0, 0.0), (1e-3, 0.0));
+        let small_turned = ((2e-3, 0.0), (3e-3, 1e-6));
+        let got = collinear_error(small, small_turned);
+        assert!((got - 1e-3).abs() < 1e-6, "{got}");
+        assert_eq!(got, collinear_error(small_turned, small), "symmetric");
+        // An offset that is tiny against the lengths still counts as itself.
+        let nudged = ((10.0, 1e-5), (30.0, 1e-5));
+        assert!((collinear_error(on_x, nudged) - 1e-5).abs() < 1e-15);
+        let nudged = ((10.0, 1e-7), (30.0, 1e-7));
+        assert!(collinear_error(on_x, nudged) < crate::RESIDUAL_LIMIT);
+        // A segment with no length has no line, and lies on every line.
+        for (a, b) in [
+            (on_x, ((9.0, 0.0), (9.0, 0.0))),
+            (((9.0, 0.0), (9.0, 0.0)), on_x),
+            (on_x, ((9.0, 0.0), (9.0 + 1e-10, 0.0))),
+        ] {
+            assert_eq!(collinear_error(a, b), f64::INFINITY, "{a:?} {b:?}");
+        }
+        // And a state that is not a number is not a satisfied one.
+        for bad in [f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                collinear_error(on_x, ((10.0, bad), (30.0, 0.0))),
+                f64::INFINITY,
+                "{bad}"
+            );
+        }
+        println!("\nFCAD_31G_RESIDUAL_EXECUTED");
     }
 }

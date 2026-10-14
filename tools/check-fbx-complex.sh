@@ -195,6 +195,20 @@ if [ -n "${FCAD_DIRECTED_ANGLE_FBX_DIR:-}" ]; then
     echo "FCAD_DIRECTED_ANGLE_UFBX_EXECUTED"
 fi
 
+# §31G: the U whose parallel rims a collinearity brought onto one line (the command
+# line's copy), the Z whose ledges run opposite ways, and the same relation set through
+# the window's worker, read by the same pinned reader.
+if [ -n "${FCAD_COLLINEAR_FBX_DIR:-}" ]; then
+    for name in u z ui; do
+        "$reader" --identity "$FCAD_COLLINEAR_FBX_DIR/collinear-$name.fbx" | tee "$work/collinear-$name-reader.txt"
+        count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/collinear-$name-reader.txt")"
+        [ -n "$count" ] && [ "$count" -ge 6 ] || {
+            echo "error: pinned reader did not verify collinear $name FBX" >&2; exit 1;
+        }
+    done
+    echo "FCAD_COLLINEAR_UFBX_EXECUTED"
+fi
+
 # §25E reuses this same pinned reader for the actual H/V publications;
 # Later constraint slices add their actual process/worker publications to the
 # same reader build; §25I includes the slanted relative-orientation models.

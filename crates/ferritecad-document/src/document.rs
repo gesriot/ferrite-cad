@@ -3125,6 +3125,149 @@ mod constraint_write_tests {
         println!("\nFCAD_31F_WRITER_GUARD_EXECUTED");
     }
 
+    /// §31G: the writer re-derives the plan against the document it consumes. A
+    /// forged plan that is internally consistent still may not stack a second
+    /// answer on a collinear pair, and a stored collinearity may not be turned
+    /// into a Parallel (which would drop the offset it holds) or moved under its
+    /// own UUID.
+    #[test]
+    fn a_forged_plan_may_not_stack_a_second_answer_on_a_collinear_pair_or_downgrade_it() {
+        use crate::{
+            AddLineConstraint, AddSketchConstraint, DirectedAngle, SketchConstraint,
+            SketchSegmentRef,
+        };
+        let curves = square();
+        let ids: Vec<_> = curves.iter().map(|c| c.id).collect();
+        let (_root, mut d, id) = fixture(curves);
+        let edit = |add: Vec<AddSketchConstraint>| crate::SketchConstraintEdits {
+            remove: Vec::new(),
+            add,
+        };
+        let whole = |curve: StableEntityId| {
+            SketchSegmentRef::new(
+                SketchPointRef::new(curve, SketchPointSelector::Start),
+                SketchPointRef::new(curve, SketchPointSelector::End),
+            )
+        };
+        let collinear = prepare_sketch_constraints(
+            &d,
+            id,
+            &edit(vec![AddSketchConstraint::Line(
+                AddLineConstraint::Relation {
+                    a: ids[0],
+                    b: ids[2],
+                    relation: crate::LineRelation::Collinear,
+                },
+            )]),
+        )
+        .expect("plan");
+        d.write_sketch_constraints(&collinear).expect("write");
+        let stored = sketch_of(&d.object(id).expect("row").expect("present")).clone();
+        let kept = *stored
+            .constraints
+            .iter()
+            .find(|c| matches!(c.rule, SketchConstraintRule::Collinear { .. }))
+            .expect("the stored collinearity");
+        let honest = prepare_sketch_constraints(
+            &d,
+            id,
+            &edit(vec![AddSketchConstraint::Line(AddLineConstraint::Line {
+                curve: ids[1],
+                kind: crate::LineConstraintKind::Vertical,
+            })]),
+        )
+        .expect("plan");
+
+        // Another answer about the same pair, claimed as an addition so the
+        // lists agree and only the slot can refuse it.
+        let angle = DirectedAngle::from_degrees(0.).expect("angle").radians();
+        for (name, rule) in [
+            (
+                "a Parallel",
+                SketchConstraintRule::Parallel {
+                    a: whole(ids[2]),
+                    b: whole(ids[0]),
+                },
+            ),
+            (
+                "a Perpendicular",
+                SketchConstraintRule::Perpendicular {
+                    a: whole(ids[0]),
+                    b: whole(ids[2]),
+                },
+            ),
+            (
+                "a directed angle",
+                SketchConstraintRule::DirectedAngle {
+                    a: whole(ids[0]),
+                    b: whole(ids[2]),
+                    angle,
+                },
+            ),
+            (
+                "a second collinearity, swapped",
+                SketchConstraintRule::Collinear {
+                    a: whole(ids[2]),
+                    b: whole(ids[0]),
+                },
+            ),
+        ] {
+            let mut forged = honest.clone();
+            let extra = SketchConstraint {
+                id: StableEntityId::new(),
+                rule,
+            };
+            sketch_mut(&mut forged.object).constraints.push(extra);
+            forged.added.push(extra);
+            assert!(
+                d.write_sketch_constraints(&forged).is_err(),
+                "{name} was written onto a collinear pair"
+            );
+        }
+
+        // The stored collinearity keeps its UUID and says something else.
+        let SketchConstraintRule::Collinear { a, b } = kept.rule else {
+            panic!("a collinearity")
+        };
+        for (name, rule) in [
+            ("a Parallel", SketchConstraintRule::Parallel { a, b }),
+            (
+                "its segments turned",
+                SketchConstraintRule::Collinear {
+                    a: SketchSegmentRef::new(a.to, a.from),
+                    b,
+                },
+            ),
+            (
+                "a different pair",
+                SketchConstraintRule::Collinear {
+                    a,
+                    b: whole(ids[3]),
+                },
+            ),
+        ] {
+            let mut forged = honest.clone();
+            for c in &mut sketch_mut(&mut forged.object).constraints {
+                if c.id == kept.id {
+                    c.rule = rule;
+                }
+            }
+            assert!(
+                d.write_sketch_constraints(&forged).is_err(),
+                "a stored collinearity was rewritten: {name}"
+            );
+        }
+
+        // Nothing above changed the document; the honest plan still writes.
+        assert_eq!(
+            sketch_of(&d.object(id).expect("row").expect("present")).constraints,
+            stored.constraints
+        );
+        d.write_sketch_constraints(&honest)
+            .expect("the honest plan");
+        println!("\nFCAD_31G_WRITER_GUARD_EXECUTED");
+    }
+
     #[test]
     fn concentricity_needs_exactly_two_circles_to_relate() {
         let ask = |curves: Vec<SketchCurve>, a: usize, b: usize| {

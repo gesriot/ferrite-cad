@@ -103,6 +103,7 @@ mod linked {
     const PARALLEL: i32 = 7;
     const CIRCLE_RADIUS: i32 = 8;
     const DIRECTED_ANGLE: i32 = 9;
+    const COLLINEAR: i32 = 10;
 
     /// One circle as the shim reads it: a centre by point index, and a radius.
     #[repr(C)]
@@ -232,6 +233,13 @@ mod linked {
                     kind: DIRECTED_ANGLE,
                     points: [at(a.0), at(a.1), at(b.0), at(b.1)],
                     value: angle,
+                    ..blank
+                },
+                // No number crosses: the shim states two PointOnLine equations
+                // under this one tag, and checks that both values are zero.
+                Constraint::Collinear { a, b } => RawConstraint {
+                    kind: COLLINEAR,
+                    points: [at(a.0), at(a.1), at(b.0), at(b.1)],
                     ..blank
                 },
             })
@@ -908,7 +916,7 @@ mod tests {
             }],
             &start
         ));
-        for unknown in [-1, 10, 11, 255, i32::MAX] {
+        for unknown in [-1, 11, 12, 255, i32::MAX] {
             assert!(
                 !build(
                     &[RawConstraint {
@@ -934,6 +942,160 @@ mod tests {
                 "kind {kind}"
             );
         }
+    }
+
+    /// §31G: the collinear kind at the C boundary, written by hand. The layout
+    /// is the one every older kind uses, the new number is the next one, and
+    /// the shim refuses what the header forbids rather than reading it as
+    /// something else.
+    #[cfg(planegcs_linked)]
+    #[test]
+    fn the_shim_names_the_collinear_kind_and_refuses_what_the_header_forbids() {
+        use linked::{RawCircle, RawConstraint};
+        linked::assert_abi_layout();
+        let start = [0.0, 0.0, 10.0, 0.0, 4.0, 4.0, 4.0, 9.0];
+        let collinear = RawConstraint {
+            kind: 10,
+            points: [0, 1, 2, 3],
+            circles: [-1; 2],
+            value: 0.0,
+            value2: 0.0,
+        };
+        let build = |constraint: RawConstraint, start: &[f64]| {
+            let constraints = [constraint];
+            // SAFETY: both slices live across the call and their lengths travel
+            // with them; the shim range-checks every reference again.
+            let raw = unsafe {
+                linked::fc_gcs_session_create(
+                    start.as_ptr(),
+                    start.len() / 2,
+                    std::ptr::null::<RawCircle>(),
+                    0,
+                    constraints.as_ptr(),
+                    constraints.len(),
+                )
+            };
+            if raw.is_null() {
+                return false;
+            }
+            // SAFETY: just made, never shared, destroyed exactly once.
+            unsafe { linked::fc_gcs_session_destroy(raw) };
+            true
+        };
+        assert!(
+            build(collinear, &start),
+            "the kind this slice names is built"
+        );
+        // A segment may name its ends in either order, and either may lead.
+        for points in [[1, 0, 2, 3], [0, 1, 3, 2], [2, 3, 0, 1]] {
+            assert!(
+                build(
+                    RawConstraint {
+                        points,
+                        ..collinear
+                    },
+                    &start
+                ),
+                "{points:?}"
+            );
+        }
+        // Refused: a number the kind does not carry, even a vanishing one, and
+        // a circle or a missing/foreign point reference.
+        for value in [
+            1.0,
+            -1.0,
+            1e-300,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert!(
+                !build(RawConstraint { value, ..collinear }, &start),
+                "value {value}"
+            );
+            assert!(
+                !build(
+                    RawConstraint {
+                        value2: value,
+                        ..collinear
+                    },
+                    &start
+                ),
+                "value2 {value}"
+            );
+        }
+        for bad in [
+            RawConstraint {
+                circles: [0, -1],
+                ..collinear
+            },
+            RawConstraint {
+                circles: [-1, 0],
+                ..collinear
+            },
+            RawConstraint {
+                points: [0, 1, 2, -1],
+                ..collinear
+            },
+            RawConstraint {
+                points: [0, 1, 2, 4],
+                ..collinear
+            },
+            RawConstraint {
+                points: [0, 1, 2, i32::MAX],
+                ..collinear
+            },
+        ] {
+            assert!(!build(bad, &start), "{bad:?}");
+        }
+        // Refused: a segment with no direction, by index or by position, in
+        // either of the two places.
+        for points in [[0, 0, 2, 3], [0, 1, 3, 3], [2, 2, 0, 1], [0, 1, 1, 1]] {
+            assert!(
+                !build(
+                    RawConstraint {
+                        points,
+                        ..collinear
+                    },
+                    &start
+                ),
+                "{points:?}"
+            );
+        }
+        for coincident in [
+            [0.0, 0.0, 0.0, 0.0, 4.0, 4.0, 4.0, 9.0],
+            [0.0, 0.0, 10.0, 0.0, 4.0, 4.0, 4.0, 4.0],
+        ] {
+            assert!(!build(collinear, &coincident));
+        }
+        // Refused: a kind nobody named, on the same layout; the numbers up to
+        // the angle's are unchanged.
+        for unknown in [-1, 11, 12, 255, i32::MAX] {
+            assert!(
+                !build(
+                    RawConstraint {
+                        kind: unknown,
+                        ..collinear
+                    },
+                    &start
+                ),
+                "{unknown}"
+            );
+        }
+        for (kind, value) in [(7, 0.0), (9, 0.5)] {
+            assert!(
+                build(
+                    RawConstraint {
+                        kind,
+                        value,
+                        ..collinear
+                    },
+                    &start
+                ),
+                "kind {kind}"
+            );
+        }
+        println!("\nFCAD_31G_SHIM_EXECUTED");
     }
 
     #[cfg(planegcs_linked)]
