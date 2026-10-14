@@ -916,6 +916,62 @@ fn object_snap_and_its_snapped_draft_follow_their_tab() {
     println!("\nFCAD_31C_TABS_EXECUTED");
 }
 
+/// §31D-1: the Guides choice, the Length text and a guided draft belong to their
+/// tab's editor, like Object snap, the grid step and the typed text: hidden with it,
+/// shown with it, no second store.
+#[test]
+fn guides_a_typed_length_and_the_guided_draft_follow_their_tab() {
+    let (root, path, _) = crate::fillets::tests::plate();
+    let a_file = root.path().join("a.fcad");
+    let b_file = root.path().join("b.fcad");
+    std::fs::copy(&path, &a_file).expect("a");
+    std::fs::copy(&path, &b_file).expect("b");
+    let mut w = Window::new(Drawn::Mock, None);
+    let draft = |w: &mut Window, to: &str| {
+        let current = w.sessions.export_path().expect("shown");
+        let reading = read_extrude_source(&current).expect("reading");
+        let sketch = reading.sketches[0].sketch;
+        let (editor, _asked) =
+            crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", to);
+        w.creates.sketch = editor;
+    };
+    use crate::sketch::guide_tests::{drag_vertex_one_west_by_a_typed_length, guide_state};
+    w.open(&a_file);
+    let a = w.sessions.tab();
+    draft(&mut w, "41.25");
+    assert_eq!(guide_state(&w.creates.sketch), ("Off", String::new()));
+    let placed = drag_vertex_one_west_by_a_typed_length(&mut w.creates.sketch, "15");
+    assert_eq!(placed, ["26.25", "3.25"], "15 mm west of (41.25, 3.25)");
+    assert_eq!(guide_state(&w.creates.sketch), ("Orthogonal", "15".into()));
+    let a_draft = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A");
+    w.open(&b_file);
+    let b = w.sessions.tab();
+    assert_eq!(crate::sketch::tests::vertex_draft(&w.creates.sketch), None);
+    draft(&mut w, "44.5");
+    assert_eq!(
+        guide_state(&w.creates.sketch),
+        ("Off", String::new()),
+        "B's editor has its own choice and its own box"
+    );
+    let b_draft = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("B");
+    w.round(a);
+    assert_eq!(
+        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        Some(a_draft.clone())
+    );
+    assert_eq!(guide_state(&w.creates.sketch), ("Orthogonal", "15".into()));
+    crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
+    let undone = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A");
+    assert_eq!((undone.1, undone.2), (a_draft.1 - 1, a_draft.2 + 1));
+    w.round(b);
+    assert_eq!(
+        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        Some(b_draft)
+    );
+    assert_eq!(guide_state(&w.creates.sketch), ("Off", String::new()));
+    println!("\nFCAD_31D_TABS_EXECUTED");
+}
+
 /// Without a kernel, showing a tab is refused at its picture: both tabs' drafts
 /// stay exactly where they were (executes only in a build with no kernel).
 #[test]

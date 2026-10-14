@@ -1715,6 +1715,38 @@ jobs:
           fi
           echo "FCAD_SKETCH_SNAP_FBX=$artifacts/snap.fbx" >> "$GITHUB_ENV"
 
+      - name: Guide saved Sketch vertices by a typed length through the native worker and peer CLI
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/sketch-guide"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_SKETCH_GUIDE_ARTIFACT_DIR="$artifacts"
+          cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer \
+            sketch::guide_tests::native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee sketch-guide.log
+          # §31D-1: the marker is printed after the last assertion, so a skip cannot
+          # print it. Exactly one test ran, none skipped.
+          if grep -q 'skipped:' sketch-guide.log || \
+             ! grep -q '^test result: ok\. 1 passed; 0 failed' sketch-guide.log || \
+             ! grep -q '^test sketch::guide_tests::native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry \.\.\. ' sketch-guide.log || \
+             ! grep -Fxq 'FCAD_31D_NATIVE_EXECUTED sql_cells=2 volume=14500 triangles=20' sketch-guide.log; then
+            echo "::error::native guide gate did not execute and pass"
+            exit 1
+          fi
+          echo "FCAD_SKETCH_GUIDE_FBX=$artifacts/guide.fbx" >> "$GITHUB_ENV"
+
       - name: Persist and solve Line H/V through the native CLI and worker
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -3231,6 +3263,7 @@ jobs:
           source tools/check-fbx-complex.sh --release --features planegcs 2>&1 | tee fbx-json-tests.log
           grep -q '^FCAD_SKETCH_DRAG_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SKETCH_SNAP_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_SKETCH_GUIDE_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SKETCH_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CIRCLE_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ANNULUS_UFBX_EXECUTED$' fbx-json-tests.log
