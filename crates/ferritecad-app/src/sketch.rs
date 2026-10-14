@@ -13,6 +13,7 @@ use ferritecad_jobs::{
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
+mod guide;
 mod object_snap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2169,6 +2170,9 @@ pub(crate) fn finish_annulus_edit(
     edits.finish_annulus(generation, result)
 }
 
+/// Vertices beyond this are not drawn: the canvas shows no contour that has one.
+const DRAWABLE_MM: f64 = 1e6;
+
 /// Drawing coordinates are a view of numbers, never a source of modelling rules.
 #[derive(Debug)]
 struct Canvas {
@@ -2181,6 +2185,16 @@ struct Canvas {
     /// §31C: snap to the drawn contour's endpoints, midpoints and crossings.
     /// Editor state beside the grid step: off for a new editor, never persisted.
     object_snap: bool,
+    /// §31D-1: orthogonal or 45° guides from an explicit anchor. Editor state beside
+    /// the grid step: off for a new editor, never persisted.
+    guides: guide::Mode,
+    /// The Length mm field as typed (blank = none). A temporary input to the next
+    /// guided point or drag, owned by this editor, never a constraint or a
+    /// document value; a gesture reads it once, at its start.
+    length: String,
+    /// The guide the hovering pointer last held over the open drawing and the anchor
+    /// it belongs to, so a click keeps the choice the hover showed. Frame state.
+    held_guide: Option<([f64; 2], usize)>,
 }
 
 /// A change of the snap row, replayed at the event that made it (see `draw`).
@@ -2188,6 +2202,7 @@ struct Canvas {
 enum SnapChange {
     Grid(Snap),
     Objects(bool),
+    Guides(guide::Mode),
 }
 
 /// Editor-only step. Not model data, not a preference, not persisted.
@@ -2215,6 +2230,12 @@ struct VertexDrag {
     objects: Option<Vec<object_snap::Candidate>>,
     /// The object point the last preview used and the pointer that found it.
     hit: Option<(object_snap::Candidate, egui::Pos2)>,
+    /// §31D-1: the guide settings as the press found them (none when Guides were
+    /// Off), with the guide held so far. The anchor is `start`: where the vertex
+    /// was at the press, not a moving point.
+    guide: Option<(guide::Settings, Option<usize>)>,
+    /// The guide outcome of the last preview (a guide or a refusal) and the pointer.
+    guided: Option<(guide::Outcome, egui::Pos2)>,
 }
 
 /// Preview frames do not enter history. Each changed release supplies one
@@ -2272,6 +2293,9 @@ impl Default for Canvas {
             claimed_press: false,
             snap: Snap::Off,
             object_snap: false,
+            guides: guide::Mode::Off,
+            length: String::new(),
+            held_guide: None,
         }
     }
 }
@@ -2309,6 +2333,7 @@ impl Canvas {
         match change {
             SnapChange::Grid(step) => self.snap = step,
             SnapChange::Objects(on) => self.object_snap = on,
+            SnapChange::Guides(mode) => self.guides = mode,
         }
     }
     fn fit(&mut self, points: &[[f64; 2]]) {
@@ -2331,16 +2356,14 @@ impl Canvas {
             lo[1] - 30.0 / f64::from(self.scale),
         ];
     }
+    /// One vertex as a drawable point: finite numbers within [`DRAWABLE_MM`].
+    fn vertex(p: &[String; 2]) -> Option<[f64; 2]> {
+        let [x, y] = [number(&p[0]).ok()?, number(&p[1]).ok()?];
+        (x.is_finite() && y.is_finite() && x.abs() <= DRAWABLE_MM && y.abs() <= DRAWABLE_MM)
+            .then_some([x, y])
+    }
     fn points(draft: &State) -> Option<Vec<[f64; 2]>> {
-        draft
-            .points
-            .iter()
-            .map(|p| {
-                let [x, y] = [number(&p[0]).ok()?, number(&p[1]).ok()?];
-                (x.is_finite() && y.is_finite() && x.abs() <= 1e6 && y.abs() <= 1e6)
-                    .then_some([x, y])
-            })
-            .collect()
+        draft.points.iter().map(Self::vertex).collect()
     }
     fn screen(&self, rect: egui::Rect, p: [f64; 2]) -> egui::Pos2 {
         rect.left_bottom()
@@ -2412,6 +2435,58 @@ impl Canvas {
             },
         )
     }
+    /// §31D-1: the anchor a guide measures from when a point is added: the last
+    /// vertex of an open drawing that has room for another, if Guides are on and the
+    /// canvas shows it. No first-point anchor exists, and no hidden one is invented.
+    fn add_anchor(&self, rect: egui::Rect, visible: egui::Rect, draft: &State) -> Option<[f64; 2]> {
+        if self.guides == guide::Mode::Off
+            || draft.closed
+            || draft.points.len() >= PolygonExtrusion::MAX_POINTS
+        {
+            return None;
+        }
+        let last = Self::vertex(draft.points.last()?)?;
+        visible.contains(self.screen(rect, last)).then_some(last)
+    }
+    /// What a click (or the hover that previews it) at `at` would place on an open
+    /// drawing: the object point of §31C, the guide of §31D-1, or neither. One
+    /// function draws and writes, so the point shown is the point written. Also the
+    /// guide to hold next, with its anchor.
+    fn add_placement(
+        &self,
+        rect: egui::Rect,
+        visible: egui::Rect,
+        draft: &State,
+        at: egui::Pos2,
+    ) -> (guide::Outcome, Option<([f64; 2], usize)>) {
+        let object = if self.object_snap {
+            self.object_hit(rect, visible, draft, at)
+        } else {
+            None
+        };
+        let Some(anchor) = self.add_anchor(rect, visible, draft) else {
+            return (
+                object.map_or(guide::Outcome::Open, guide::Outcome::Object),
+                None,
+            );
+        };
+        let cursor = self.document(rect, at);
+        let reach = guide::Reach {
+            anchor,
+            offset: [cursor[0] - anchor[0], cursor[1] - anchor[1]],
+            points_per_mm: f64::from(self.scale),
+            held: self
+                .held_guide
+                .filter(|(held_at, _)| *held_at == anchor)
+                .map(|(_, heading)| heading),
+        };
+        let settings = guide::Settings {
+            mode: self.guides,
+            length: guide::Length::parse(&self.length),
+        };
+        let (outcome, held) = guide::resolve(settings, &reach, object);
+        (outcome, held.map(|heading| (anchor, heading)))
+    }
     fn preview(&mut self, draft: &mut State, at: egui::Pos2, visible: object_snap::Window) {
         if let Some(drag) = &mut self.gesture {
             // Preserve the grab offset and original strings on untouched axes.
@@ -2421,7 +2496,8 @@ impl Canvas {
             ];
             // The object point nearest where the vertex would be; none for a
             // press that has not moved, which keeps its strings like the grid.
-            drag.hit = drag
+            let offset = [delta[0] / drag.scale, delta[1] / drag.scale];
+            let object = drag
                 .objects
                 .as_deref()
                 .filter(|_| delta != [0.0, 0.0])
@@ -2429,23 +2505,54 @@ impl Canvas {
                     object_snap::pick(
                         objects,
                         &object_snap::Query {
-                            cursor: [
-                                drag.start[0] + delta[0] / drag.scale,
-                                drag.start[1] + delta[1] / drag.scale,
-                            ],
+                            cursor: [drag.start[0] + offset[0], drag.start[1] + offset[1]],
                             points_per_mm: drag.scale,
                             visible,
                         },
                     )
-                })
-                .map(|hit| (hit, at));
-            if let Some((hit, _)) = drag.hit {
-                // An object point wins outright: neither the grid nor three
-                // decimals touch it.
-                for axis in 0..2 {
-                    draft.points[drag.vertex][axis] = object_snap::coordinate(hit.at[axis]);
+                });
+            // The guides of this gesture, frozen at its press, measured from the
+            // vertex's press-time position; they rank below the object and above
+            // the grid. A press that has not moved has no direction.
+            let outcome = match &mut drag.guide {
+                Some((settings, held)) if delta != [0.0, 0.0] => {
+                    let reach = guide::Reach {
+                        anchor: drag.start,
+                        offset,
+                        points_per_mm: drag.scale,
+                        held: *held,
+                    };
+                    let (outcome, next) = guide::resolve(*settings, &reach, object);
+                    *held = next;
+                    outcome
                 }
-                return;
+                _ => object.map_or(guide::Outcome::Open, guide::Outcome::Object),
+            };
+            drag.hit = None;
+            drag.guided = None;
+            match outcome {
+                guide::Outcome::Object(hit) => {
+                    // An object point wins outright: neither the grid nor three
+                    // decimals touch it.
+                    drag.hit = Some((hit, at));
+                    for axis in 0..2 {
+                        draft.points[drag.vertex][axis] = object_snap::coordinate(hit.at[axis]);
+                    }
+                    return;
+                }
+                guide::Outcome::Guide(ref guided) => {
+                    draft.points[drag.vertex] =
+                        guide::strings(guided.heading, guided.at, &drag.before.points[drag.vertex]);
+                    drag.guided = Some((outcome, at));
+                    return;
+                }
+                guide::Outcome::Refused { .. } => {
+                    // A length that cannot be used moves nothing.
+                    draft.points[drag.vertex] = drag.before.points[drag.vertex].clone();
+                    drag.guided = Some((outcome, at));
+                    return;
+                }
+                guide::Outcome::Open => {}
             }
             for (axis, delta) in delta.into_iter().enumerate() {
                 draft.points[drag.vertex][axis] = if delta == 0.0 {
@@ -2497,6 +2604,49 @@ impl Canvas {
                     ui.ctx().request_repaint();
                 }
             });
+            // §31D-1: the guide choice and the optional typed length. The length is
+            // keyboard-only text read at the start of a gesture, so nothing has to be
+            // typed while a mouse button is held; the row is off during a drag.
+            ui.horizontal(|ui| {
+                ui.label("Guides:");
+                for (value, label) in guide::Mode::CHOICES {
+                    let response = ui.selectable_label(self.guides == value, label);
+                    if response.clicked() {
+                        snap_changes
+                            .push((release_index(&events, &response), SnapChange::Guides(value)));
+                        ui.ctx().request_repaint();
+                    }
+                }
+                ui.separator();
+                let name = ui.label("Length mm");
+                // A disabled box that still has the keyboard focus would keep
+                // taking text, so while a gesture holds it, a job runs or Guides
+                // are off it is also not interactive.
+                let usable = ui.is_enabled() && self.guides != guide::Mode::Off;
+                ui.add_enabled(
+                    self.guides != guide::Mode::Off,
+                    egui::TextEdit::singleline(&mut self.length)
+                        .char_limit(64)
+                        .desired_width(70.)
+                        .hint_text("optional")
+                        .interactive(usable),
+                )
+                .labelled_by(name.id)
+                .on_hover_text(
+                    "Distance from the ringed anchor along a shown guide. Temporary: it places \
+                     coordinates only and is not a constraint.",
+                );
+            });
+            let (note, refused) = guide::note(
+                self.guides,
+                guide::Length::parse(&self.length),
+                &self.length,
+            );
+            if refused {
+                ui.colored_label(ui.visuals().error_fg_color, note);
+            } else {
+                ui.small(note);
+            }
         });
         let (response, painter) =
             ui.allocate_painter(egui::vec2(510., 250.), egui::Sense::click_and_drag());
@@ -2545,6 +2695,16 @@ impl Canvas {
                                 object_snap::frozen(&points, draft.closed, points[vertex])
                             }),
                             hit: None,
+                            guide: (self.guides != guide::Mode::Off).then(|| {
+                                (
+                                    guide::Settings {
+                                        mode: self.guides,
+                                        length: guide::Length::parse(&self.length),
+                                    },
+                                    None,
+                                )
+                            }),
+                            guided: None,
                         });
                     }
                 }
@@ -2597,21 +2757,27 @@ impl Canvas {
                 .as_ref()
                 .and_then(|points| self.hit(rect, visible_rect, points, pos))
         });
-        // The object point a press would use and the pointer that found it: the
-        // gesture's own while one is held, else what a click here would place.
-        let marker = if let Some(drag) = &self.gesture {
-            drag.hit
-        } else if self.object_snap
-            && hover.is_none()
+        // What the pointer would place (hovering over an open drawing) or is placing
+        // (a held drag): the object point of §31C or the guide of §31D-1, with the
+        // pointer that found it. A hover also keeps the guide it holds for a click.
+        let (marker, guided) = if let Some(drag) = &self.gesture {
+            self.held_guide = None;
+            (drag.hit, drag.guided.clone())
+        } else if hover.is_none()
             && !draft.closed
             && draft.points.len() < PolygonExtrusion::MAX_POINTS
+            && let Some(at) = response.hover_pos()
         {
-            response.hover_pos().and_then(|at| {
-                self.object_hit(rect, visible_rect, draft, at)
-                    .map(|hit| (hit, at))
-            })
+            let (outcome, held) = self.add_placement(rect, visible_rect, draft, at);
+            self.held_guide = held;
+            match outcome {
+                guide::Outcome::Object(hit) => (Some((hit, at)), None),
+                guide::Outcome::Open => (None, None),
+                shown => (None, Some((shown, at))),
+            }
         } else {
-            None
+            self.held_guide = None;
+            (None, None)
         };
         if matches!(change, CanvasEdit::Ordinary)
             && response.clicked_by(egui::PointerButton::Primary)
@@ -2624,17 +2790,29 @@ impl Canvas {
             {
                 let offset = to_document(pos, rect.left_bottom(), self.scale);
                 let at = [self.minimum[0] + offset[0], self.minimum[1] + offset[1]];
-                // An object point beats the grid and is taken as it is.
-                let object = if self.object_snap {
-                    self.object_hit(rect, visible_rect, draft, pos)
-                } else {
-                    None
-                };
-                draft.points.push(match (object, self.snap) {
-                    (Some(hit), _) => hit.at.map(object_snap::coordinate),
-                    (None, Snap::Off) => [format!("{:.3}", at[0]), format!("{:.3}", at[1])],
-                    (None, snap) => [snap.apply(at[0]), snap.apply(at[1])],
-                });
+                // An object point beats a guide and the grid and is taken as it is;
+                // a guide beats the grid, which is not applied to its point.
+                match self.add_placement(rect, visible_rect, draft, pos).0 {
+                    guide::Outcome::Object(hit) => {
+                        draft.points.push(hit.at.map(object_snap::coordinate));
+                    }
+                    guide::Outcome::Guide(guided) => {
+                        let anchor = draft
+                            .points
+                            .last()
+                            .expect("a guide has an anchor, the last vertex")
+                            .clone();
+                        draft
+                            .points
+                            .push(guide::strings(guided.heading, guided.at, &anchor));
+                    }
+                    // A typed length that cannot be used places nothing.
+                    guide::Outcome::Refused { .. } => {}
+                    guide::Outcome::Open => draft.points.push(match self.snap {
+                        Snap::Off => [format!("{:.3}", at[0]), format!("{:.3}", at[1])],
+                        snap => [snap.apply(at[0]), snap.apply(at[1])],
+                    }),
+                }
             }
         }
         if !pointer.primary_down() {
@@ -2662,9 +2840,18 @@ impl Canvas {
             rect.left_top() + egui::vec2(5., 5.),
             egui::Align2::LEFT_TOP,
             format!(
-                "grid: {grid} mm · snap: {} · object snap: {}",
+                "grid: {grid} mm · snap: {} · object snap: {} · guides: {}{}",
                 self.snap.label(),
-                if self.object_snap { "on" } else { "off" }
+                if self.object_snap { "on" } else { "off" },
+                self.guides.label(),
+                match guide::Length::parse(&self.length) {
+                    _ if self.guides == guide::Mode::Off => String::new(),
+                    guide::Length::None => String::new(),
+                    guide::Length::Millimetres(_) => {
+                        format!(" · length: {} mm", self.length.trim())
+                    }
+                    guide::Length::Refused => " · length: refused".into(),
+                }
             ),
             egui::FontId::proportional(12.),
             egui::Color32::WHITE,
@@ -2732,6 +2919,33 @@ impl Canvas {
         if let Some((hit, pointer)) = marker {
             paint_object_snap(&painter, rect, screen(hit.at), hit.kind, pointer);
         }
+        // §31D-1: the anchor is drawn apart from the target point, and so are the
+        // guide held and its words; all of it for the frame only.
+        let (anchor, role) = if let Some(drag) = &self.gesture {
+            (
+                drag.guide.is_some().then_some(drag.start),
+                guide::Role::Drag {
+                    vertex: drag.vertex,
+                },
+            )
+        } else {
+            (
+                self.add_anchor(rect, visible_rect, draft),
+                guide::Role::Add {
+                    after: draft.points.len().saturating_sub(1),
+                },
+            )
+        };
+        if let Some(anchor) = anchor {
+            paint_guide(
+                &painter,
+                rect,
+                screen(anchor),
+                guided.as_ref().map(|(outcome, pointer)| {
+                    (outcome, role, *pointer, outcome_target(outcome).map(screen))
+                }),
+            );
+        }
         ui.label(
             self.selected
                 .and_then(|i| draft.points.get(i).map(|p| (i, p)))
@@ -2779,11 +2993,18 @@ fn paint_object_snap(
             painter.line_segment([at + egui::vec2(-r, r), at + egui::vec2(r, -r)], stroke);
         }
     }
-    let galley = painter.layout_no_wrap(
-        kind.label().into(),
-        egui::FontId::proportional(12.),
-        SNAP_MARKER,
-    );
+    paint_pointer_label(painter, rect, pointer, kind.label(), SNAP_MARKER);
+}
+
+/// A name beside the pointer on a dark plate, clamped into the canvas.
+fn paint_pointer_label(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    pointer: egui::Pos2,
+    text: &str,
+    colour: egui::Color32,
+) {
+    let galley = painter.layout_no_wrap(text.into(), egui::FontId::proportional(12.), colour);
     let size = galley.size();
     let corner = egui::pos2(
         (pointer.x + 14.).min(rect.right() - size.x - 4.),
@@ -2794,7 +3015,55 @@ fn paint_object_snap(
         2.,
         egui::Color32::from_black_alpha(200),
     );
-    painter.galley(corner, galley, SNAP_MARKER);
+    painter.galley(corner, galley, colour);
+}
+
+/// The colours of the guide anchor, ray, target and words, which tests also look for.
+const GUIDE_COLOUR: egui::Color32 = egui::Color32::from_rgb(64, 224, 160);
+const GUIDE_REFUSED: egui::Color32 = egui::Color32::from_rgb(255, 110, 100);
+
+/// Where a guided outcome puts the point, in the document.
+fn outcome_target(outcome: &guide::Outcome) -> Option<[f64; 2]> {
+    match outcome {
+        guide::Outcome::Guide(guided) => Some(guided.at),
+        _ => None,
+    }
+}
+
+/// The anchor ring and, when the pointer holds a guide, the ray, the target and the
+/// words. The anchor is drawn apart from the target, and never moves with the
+/// pointer.
+fn paint_guide(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    anchor: egui::Pos2,
+    held: Option<(&guide::Outcome, guide::Role, egui::Pos2, Option<egui::Pos2>)>,
+) {
+    painter.circle_stroke(anchor, 8., egui::Stroke::new(2., GUIDE_COLOUR));
+    let Some((outcome, role, pointer, target)) = held else {
+        return;
+    };
+    let (heading, colour) = match outcome {
+        guide::Outcome::Guide(guided) => (guided.heading, GUIDE_COLOUR),
+        guide::Outcome::Refused { heading } => (*heading, GUIDE_REFUSED),
+        guide::Outcome::Open | guide::Outcome::Object(_) => return,
+    };
+    // The screen's y axis points down; the guide's does not.
+    let unit = guide::unit(heading);
+    let far = anchor + egui::vec2(unit[0] as f32, -unit[1] as f32) * rect.size().length();
+    painter.extend(egui::Shape::dashed_line(
+        &[anchor, far],
+        egui::Stroke::new(1., colour),
+        6.,
+        4.,
+    ));
+    if let Some(target) = target {
+        painter.line_segment([anchor, target], egui::Stroke::new(2., colour));
+        painter.circle_stroke(target, 4., egui::Stroke::new(2., colour));
+    }
+    if let Some(words) = guide::label(outcome, role) {
+        paint_pointer_label(painter, rect, pointer, &words, colour);
+    }
 }
 fn number(s: &str) -> Result<f64> {
     s.trim()
@@ -7509,6 +7778,9 @@ pub(crate) mod tests {
 #[cfg(test)]
 #[path = "sketch/drag_tests.rs"]
 pub(crate) mod drag_tests;
+#[cfg(test)]
+#[path = "sketch/guide_tests.rs"]
+pub(crate) mod guide_tests;
 #[cfg(test)]
 #[path = "sketch/object_snap_tests.rs"]
 pub(crate) mod object_snap_tests;

@@ -5099,7 +5099,7 @@ Apply/Save and real STL/FBX exports against the CLI (14000 mm³; peak 204.892 Mi
 exit 0). Remote CI is recorded separately. §30, Milestone 5C, the product and the OOM
 investigation remain open.
 
-### §31D — Gesture guides and temporary dimensional input (planned)
+### §31D — Gesture guides and temporary dimensional input (§31D-1 implemented; hover anchors deferred)
 
 After basic object snaps: orthogonal and polar guides from an explicit visible
 anchor, with a length entry that writes the same coordinate strings as dragging.
@@ -5116,16 +5116,28 @@ It is not a persistent dimensional constraint; adding one is a later explicit ac
   completed coordinate gesture is one history step. End/Escape clears gesture guides;
   cancellation follows the existing draft/history rules.
 
-**Next bounded slice, §31D-1:** guides and temporary length from an unambiguous
-displayed origin: the last vertex when adding a New point, or the press-time vertex
-when dragging. Use the existing coordinate/history route and explicit editor-local
-Off / Orthogonal / Polar 45° controls. An optional positive length measures from
-that displayed origin; it creates coordinates, not a persistent constraint. Define
-object/guide/grid precedence and reject conflicting explicit length input visibly.
-Acquiring a different origin by hovering, with the hysteresis specified above,
-remains the following extension; it is not required to move a long gesture's fixed
-origin. The missing circle-centre snap remains open until circles are displayed on
-an appropriate canvas. Neither omission prevents this Line-canvas slice.
+**§31D-1 (author handoff, unreviewed; no window run).** The Line canvas of a New
+drawing and of a saved Sketch has a **Guides: Off / Orthogonal / Polar 45°** row under
+the grid step and a keyboard-only **Length mm** box beside it (editor state, off and
+blank for a new editor, nothing persisted). With a guide choice on, a clicked new
+point is measured from the last vertex and a dragged vertex from where it was
+pressed; the anchor is drawn as a ring apart from the target, a dashed ray and the
+words (`90° · 25.5 mm from vertex 3`, or `180° · Length 15 mm · vertex 3 moved from
+its start`) are painted beside the pointer for the frame only. Precedence: object
+snap (§31C) → guide → grid → free point; the grid step is **not** applied to a guided
+point. A positive Length makes the point from the shown anchor (never rounded to or replaced by the
+grid); an object point is taken only if it lies at that length within the document
+tolerance, otherwise the length is kept and the conflict is named; any other text is
+refused visibly, places nothing and is never read as zero. One drag or one added
+point is one Undo step; Escape, lost focus and a vanished pointer restore the
+press-time strings. Nothing is a constraint, a Distance or a document field. Contract,
+constants, executed gates, mutations, resources and the independent window recipe:
+[sketch-gesture-guides.md](sketch-gesture-guides.md). **Not done:** acquiring another
+anchor by hovering with the hysteresis specified above (acquire inside the aperture,
+release outside twice it, replace only when nearer by more than one point), the
+circle centre (no circle is drawn on this canvas), angles and every constraint
+adapter. The §31D bullets about hover anchors therefore remain open, and so do
+§31C's centre, §30, Milestone 5C, the product and the OOM investigation.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 

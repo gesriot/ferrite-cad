@@ -11,7 +11,7 @@ use super::{
 };
 
 /// The editor's own L, closed: 60 × 20 foot with a 20-wide column to y = 40.
-const L: [[&str; 2]; 6] = [
+pub(super) const L: [[&str; 2]; 6] = [
     ["0", "0"],
     ["60", "0"],
     ["60", "20"],
@@ -21,18 +21,18 @@ const L: [[&str; 2]; 6] = [
 ];
 /// An open zigzag with exactly one crossing, at (10, 10), between its first and
 /// last edges; midpoints (15, 15), (30, 15) and (15, 7.5).
-const ZIGZAG: [[&str; 2]; 4] = [["0", "0"], ["30", "30"], ["30", "0"], ["0", "15"]];
+pub(super) const ZIGZAG: [[&str; 2]; 4] = [["0", "0"], ["30", "30"], ["30", "0"], ["0", "15"]];
 
 /// A context whose windows appear at once, so painted colours are the real ones
 /// (a fading window paints everything translucent).
-fn context() -> egui::Context {
+pub(super) fn context() -> egui::Context {
     let ctx = egui::Context::default();
     ctx.all_styles_mut(|style| style.animation_time = 0.0);
     ctx
 }
 
 /// A drawing for a new document, as typed, on a canvas that has laid itself out.
-fn open(points: &[[&str; 2]], closed: bool) -> (egui::Context, Editor) {
+pub(super) fn open(points: &[[&str; 2]], closed: bool) -> (egui::Context, Editor) {
     let ctx = context();
     let mut e = Editor::default();
     e.begin();
@@ -46,7 +46,7 @@ fn open(points: &[[&str; 2]], closed: bool) -> (egui::Context, Editor) {
 
 /// The same drawing as a saved Sketch being edited: the form that has Apply and
 /// Save, with no document behind it.
-fn saved(points: &[[&str; 2]]) -> (egui::Context, Editor, EditSketchRequest) {
+pub(super) fn saved(points: &[[&str; 2]]) -> (egui::Context, Editor, EditSketchRequest) {
     let (ctx, mut e) = open(points, true);
     let vertices: Vec<_> = Canvas::points(e.draft.as_ref().expect("draft"))
         .expect("points")
@@ -86,43 +86,43 @@ fn saved(points: &[[&str; 2]]) -> (egui::Context, Editor, EditSketchRequest) {
     (ctx, e, request)
 }
 
-fn rect(ctx: &egui::Context, e: &mut Editor) -> egui::Rect {
+pub(super) fn rect(ctx: &egui::Context, e: &mut Editor) -> egui::Rect {
     canvas(&frame(ctx, e, vec![]))
 }
 /// Where a document point (mm) is on the screen now.
-fn at(ctx: &egui::Context, e: &mut Editor, mm: [f64; 2]) -> egui::Pos2 {
+pub(super) fn at(ctx: &egui::Context, e: &mut Editor, mm: [f64; 2]) -> egui::Pos2 {
     let rect = rect(ctx, e);
     e.canvas.screen(rect, mm)
 }
-fn switch(ctx: &egui::Context, e: &mut Editor) {
+pub(super) fn switch(ctx: &egui::Context, e: &mut Editor) {
     let out = frame(ctx, e, vec![]);
     click(ctx, e, text_at(&out, "Object snap"));
 }
-fn choose(ctx: &egui::Context, e: &mut Editor, label: &str) {
+pub(super) fn choose(ctx: &egui::Context, e: &mut Editor, label: &str) {
     let out = frame(ctx, e, vec![]);
     click(ctx, e, text_at(&out, label));
 }
 /// The pointer rests at `pos`; the frame that shows what it would do.
-fn hover(ctx: &egui::Context, e: &mut Editor, pos: egui::Pos2) -> egui::FullOutput {
+pub(super) fn hover(ctx: &egui::Context, e: &mut Editor, pos: egui::Pos2) -> egui::FullOutput {
     frame(ctx, e, vec![egui::Event::PointerMoved(pos)]);
     frame(ctx, e, vec![])
 }
-fn label_at(out: &egui::FullOutput, text: &str) -> Option<egui::Pos2> {
+pub(super) fn label_at(out: &egui::FullOutput, text: &str) -> Option<egui::Pos2> {
     out.shapes.iter().find_map(|c| match &c.shape {
         egui::Shape::Text(t) if t.galley.text() == text => Some(t.visual_bounding_rect().center()),
         _ => None,
     })
 }
-fn painted(out: &egui::FullOutput, text: &str) -> bool {
+pub(super) fn painted(out: &egui::FullOutput, text: &str) -> bool {
     label_at(out, text).is_some()
 }
-fn painted_containing(out: &egui::FullOutput, text: &str) -> bool {
+pub(super) fn painted_containing(out: &egui::FullOutput, text: &str) -> bool {
     out.shapes
         .iter()
         .any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text().contains(text)))
 }
 /// Where the marker is: the middle of whatever was drawn in the marker's colour.
-fn marker(out: &egui::FullOutput) -> Option<egui::Pos2> {
+pub(super) fn marker(out: &egui::FullOutput) -> Option<egui::Pos2> {
     let centres: Vec<_> = out
         .shapes
         .iter()
@@ -142,13 +142,13 @@ fn marker(out: &egui::FullOutput) -> Option<egui::Pos2> {
         )
     })
 }
-fn strings(e: &Editor, i: usize) -> [String; 2] {
+pub(super) fn strings(e: &Editor, i: usize) -> [String; 2] {
     e.draft.as_ref().expect("draft").points[i].clone()
 }
-fn pair(x: &str, y: &str) -> [String; 2] {
+pub(super) fn pair(x: &str, y: &str) -> [String; 2] {
     [x.to_owned(), y.to_owned()]
 }
-fn escape(ctx: &egui::Context, e: &mut Editor) {
+pub(super) fn escape(ctx: &egui::Context, e: &mut Editor) {
     frame(ctx, e, vec![key(egui::Key::Escape)]);
 }
 

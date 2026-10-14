@@ -723,6 +723,9 @@ jobs:
           # gate returns "ok" without a kernel, so only its marker, printed after
           # the last assertion, shows that it ran.
           grep -Fxq 'FCAD_31C_NATIVE_EXECUTED sql_cells=2 volume=14000 triangles=20' app-tests.log
+          # §31D-1: the same for the guided length drag: its marker, printed after the
+          # last assertion, is the only proof that the gate did not return at once.
+          grep -Fxq 'FCAD_31D_NATIVE_EXECUTED sql_cells=2 volume=14500 triangles=20' app-tests.log
 
           # And the shared job itself, which is what both of them call.
           cargo test -p ferritecad-jobs --lib -- --nocapture

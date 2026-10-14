@@ -1184,6 +1184,53 @@ jobs:
             grep -Fxq "$marker" quit-new.log
           done
 
+      - name: Keep Sketch gesture guides, the typed Length and their owners
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+        run: |
+          set -euo pipefail
+          # §31D-1: guides and the temporary Length (direction choice, precedence,
+          # refusals, the real canvas, editor and tabs) by exact name. Each prints its
+          # marker only after its last assertion; a skip, a missing marker or a test
+          # that did not run fails the step. The native publication gate is run by the
+          # native workflows below, where it cannot skip.
+          for check in \
+            "sketch::guide::tests::axes_and_diagonals_are_in_the_xy_plane_with_y_up FCAD_31D_HEADINGS_EXECUTED" \
+            "sketch::guide::tests::a_guide_is_held_within_the_aperture_across_it_and_not_beyond FCAD_31D_APERTURE_EXECUTED" \
+            "sketch::guide::tests::distance_is_to_the_guide_not_to_its_origin_so_far_pointers_still_hold_it FCAD_31D_FAR_ANCHOR_EXECUTED" \
+            "sketch::guide::tests::the_anchor_itself_a_zero_vector_and_non_finite_numbers_offer_no_guide FCAD_31D_ZERO_EXECUTED" \
+            "sketch::guide::tests::a_held_guide_is_kept_until_another_is_nearer_by_more_than_one_point FCAD_31D_HYSTERESIS_EXECUTED" \
+            "sketch::guide::tests::a_first_choice_among_near_equal_guides_is_axis_then_distance_then_table_order FCAD_31D_TIES_EXECUTED" \
+            "sketch::guide::tests::the_same_pointer_in_points_picks_the_same_guide_at_any_scale FCAD_31D_SCALES_EXECUTED" \
+            "sketch::guide::tests::object_over_guide_over_free_point_and_the_grid_is_not_applied_to_a_guide FCAD_31D_GEOMETRY_PRECEDENCE_EXECUTED" \
+            "sketch::guide::tests::a_typed_length_is_exact_and_beats_the_pointer_the_grid_and_a_foreign_object FCAD_31D_GEOMETRY_LENGTH_EXECUTED" \
+            "sketch::guide::tests::a_length_that_is_not_a_positive_finite_number_is_refused_never_zero FCAD_31D_GEOMETRY_REFUSED_EXECUTED" \
+            "sketch::guide::tests::axis_guides_keep_the_anchor_text_and_labels_say_what_the_length_measures FCAD_31D_LABELS_EXECUTED" \
+            "sketch::guide_tests::the_guides_row_follows_the_snap_row_and_changes_only_editor_state FCAD_31D_ROW_EXECUTED" \
+            "sketch::guide_tests::a_new_point_follows_a_shown_guide_from_the_last_vertex_with_the_anchor_drawn_apart FCAD_31D_NEW_POINTS_EXECUTED" \
+            "sketch::guide_tests::polar_diagonals_and_the_first_point_and_what_the_canvas_does_not_show FCAD_31D_POLAR_AND_ANCHORS_EXECUTED" \
+            "sketch::guide_tests::a_typed_length_places_the_exact_point_and_one_that_cannot_be_used_places_nothing FCAD_31D_LENGTH_EXECUTED" \
+            "sketch::guide_tests::an_object_point_beats_a_guide_and_only_a_matching_length_keeps_it FCAD_31D_PRECEDENCE_EXECUTED" \
+            "sketch::guide_tests::the_grid_step_is_not_applied_to_a_guided_point_but_still_rules_a_free_one FCAD_31D_GRID_EXECUTED" \
+            "sketch::guide_tests::a_saved_vertex_drag_measures_from_where_it_was_pressed_and_keeps_that_anchor FCAD_31D_SAVED_DRAG_EXECUTED" \
+            "sketch::guide_tests::a_new_contour_drag_is_a_guided_one_step_and_escape_focus_and_pointer_loss_restore_it FCAD_31D_CANCEL_EXECUTED" \
+            "sketch::guide_tests::packed_events_keep_their_order_and_the_settings_belong_to_the_press FCAD_31D_PACKED_EXECUTED" \
+            "sketch::guide_tests::off_busy_and_covered_canvases_offer_no_guide FCAD_31D_BLOCKED_EXECUTED" \
+            "sketch::guide_tests::one_and_two_pixels_per_point_and_other_canvas_scales_hold_the_same_guide FCAD_31D_SCALE_PIXELS_EXECUTED" \
+            "sketch::guide_tests::typed_text_stays_exact_and_restore_saved_vertices_keeps_the_editor_settings FCAD_31D_TEXT_AND_RESTORE_EXECUTED" \
+            "sketch::guide_tests::a_guided_result_that_breaks_the_contour_stays_a_visible_draft_and_is_refused_as_before FCAD_31D_DEGENERATE_EXECUTED" \
+            "sessions::tests::tabs::drafts::guides_a_typed_length_and_the_guided_draft_follow_their_tab FCAD_31D_TABS_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee sketch-guides.log
+            if grep -q 'skipped:' sketch-guides.log; then exit 1; fi
+            grep -Fq "test $gate ... " sketch-guides.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' sketch-guides.log
+            grep -Fxq "$marker" sketch-guides.log
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |
