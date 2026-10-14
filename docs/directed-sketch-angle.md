@@ -17,7 +17,7 @@ Diameter-подобные «новые операции» не входят. Hov
 ## Семантика (принято, не заменять другой)
 
 * Вектор назван **двумя упорядоченными концами** Line: из `from` в `to`
-  (`start→end` либо `end→start`). Угол — **против часовой стрелки** от первого
+  (`start>end` либо `end>start`). Угол — **против часовой стрелки** от первого
   вектора ко второму в локальных XY эскиза (Y вверх):
   `θ = atan2(cross(a, b), dot(a, b))`.
 * Канонический диапазон `(−180°, 180°]`. `0` — сонаправленность, `180` —
@@ -131,14 +131,14 @@ payload-версии и capability достаточно.
 строки):
 
 ```
-Line pair: [Pair Line A] [Pair Line B] Pair: A ab12cd · B ef34gh  [A: start→end] [B: start→end]
-[Add Equal length] [Add Parallel] [Add Perpendicular]  A→B (°): [ CCW + ] [Add directed angle]
+Line pair: [Pair Line A] [Pair Line B] Pair: A ab12cd · B ef34gh  [A: start>end] [B: start>end]
+[Add Equal length] [Add Parallel] [Add Perpendicular]  A>B (°): [ CCW + ] [Add directed angle]
 ```
 
-Кнопки `A: start→end` / `B: start→end` явно говорят, откуда и куда идёт вектор
-выбранной Line, и разворачивают его нажатием (`A: end→start`); подсказка
+Кнопки `A: start>end` / `B: start>end` явно говорят, откуда и куда идёт вектор
+выбранной Line, и разворачивают его нажатием (`A: end>start`); подсказка
 (tooltip) называет сохранённые координаты `A runs (0, 0) → (40, 0) mm (stored, Line
-ab12cd)`. Выбор направления — не шаг истории. Поле подписано `A→B (°)`, с
+ab12cd)`. Выбор направления — не шаг истории. Поле подписано `A>B (°)`, с
 подсказкой `CCW +` в пустом поле и tooltip «против часовой от вектора A к вектору B,
 Y вверх; 0 — то же направление, 180 — противоположное; вне −180…180 ничего не
 оборачивается». У поля свой `id` (`directed-angle-deg`): оно не смешано ни с длиной
@@ -149,8 +149,8 @@ Line, ни с углом Revolve, ни с `Length` направляющей. `Ad
 и один `AddLineConstraint::DirectedAngle` в запросе, который проверяет тот же
 `validate_edits`; повторный ответ о паре (`−150` с развёрнутым A, Parallel) отказывает
 словом «directed angle». В «Pending additions» запись читается как `Directed angle
-30° · A: Line … start→end · B: Line … end→start`; в «Persisted constraints» —
-`Directed angle −70° · <UUID>` и `A Line … start→end → B Line … end→start`, со своим
+30° · A: Line … start>end · B: Line … end>start`; в «Persisted constraints» —
+`Directed angle −70° · <UUID>` и `A Line … start>end → B Line … end>start`, со своим
 `Remove`; **remove exact UUID + Add** заменяет его тем же запросом. Undo/Redo, Cancel
 Save, отказ solver, Apply к несохранённой `DocumentSession`, экспорт до Save и
 переключение вкладок проходят через прежний код: форма и её draft — те же. Пока
@@ -473,7 +473,7 @@ FCAD_31F_RECIPE_OK reflex=-70.000 mirror=50.000 replaced=-60.000 volumes=2533.36
 | Поломка | Ворота и результат |
 | --- | --- |
 | знак потерян (`value: angle.abs()` при кодировании для shim) | `tests/angle.rs` — 4 из 9 падают на выполненных утверждениях; CLI dart-тест падает |
-| направление потеряно (`DirectedLine::segment` всегда `start→end`) | `tests/directed_angle.rs` — «хранится как сказано» падает; CLI dart-тест падает |
+| направление потеряно (`DirectedLine::segment` всегда `start>end`) | `tests/directed_angle.rs` — «хранится как сказано» падает; CLI dart-тест падает |
 | capability потеряна (`sketch.constraints.angle.v1` вне `SUPPORTED_CAPABILITIES`) | документ открывается read-only — тест падает; повторная правка файла с углом (CLI replace/remove) падает |
 | проверка writer потеряна (`rederive` не зовёт `managed`) | подложенный план со вторым ответом на пару проходит бы — тест падает |
 
@@ -537,7 +537,7 @@ for name, pts in {"dart": [[0, 0], [40, 0], [10, 10], [0, 40]],
 Сценарий (≈10 минут; окно открывает ревьюер, сравнение — через CLI):
 
 1. Открыть `dart.fcad` → `Edit constraints …`. Выбрать `Segment 2` → `Pair Line A`,
-   `Segment 3` → `Pair Line B`, нажать `B: start→end` (станет `B: end→start`),
+   `Segment 3` → `Pair Line B`, нажать `B: start>end` (станет `B: end>start`),
    ввести `110`, `Add directed angle`. В «Pending additions» — одна запись с обоими
    направлениями; `Undo`/`Redo` меняют её, не запуская job.
 2. Тот же `Add directed angle` ещё раз и `Add Parallel` на той же паре — отказ словом

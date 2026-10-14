@@ -42,7 +42,7 @@ fn pair(ctx: &egui::Context, e: &mut Editor, a: usize, b: usize) {
     click(ctx, e, "Pair Line B");
 }
 
-const ANGLE_BOX: &str = "A→B (°):";
+const ANGLE_BOX: &str = "A>B (°):";
 
 /// The right edge of the widest painted text for which `pick` holds.
 fn right_edge(out: &egui::FullOutput, pick: impl Fn(&str) -> bool) -> f32 {
@@ -65,7 +65,7 @@ pub(crate) fn typed_angle(
 ) -> Editor {
     let (mut e, ctx) = opened_form(path, source);
     pair(&ctx, &mut e, 1, 2);
-    click(&ctx, &mut e, "B: start→end");
+    click(&ctx, &mut e, "B: start>end");
     enter_field(&ctx, &mut e, ANGLE_BOX, text, false);
     if add {
         click(&ctx, &mut e, "Add directed angle");
@@ -93,8 +93,8 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     // least as far right as the new rows do.
     let out = frame(&ctx, &mut e, vec![]);
     for label in [
-        "A: start→end",
-        "B: start→end",
+        "A: start>end",
+        "B: start>end",
         ANGLE_BOX,
         "CCW +",
         "Add directed angle",
@@ -122,14 +122,14 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     // The pair is the two Lines picked, and each vector says which way it runs.
     pair(&ctx, &mut e, 1, 2);
     let out = frame(&ctx, &mut e, vec![]);
-    assert!(painted(&out, "A: start→end") && painted(&out, "B: start→end"));
+    assert!(painted(&out, "A: start>end") && painted(&out, "B: start>end"));
     // A turned vector is shown turned, and turned back is shown as it was.
-    click(&ctx, &mut e, "A: start→end");
+    click(&ctx, &mut e, "A: start>end");
     let out = frame(&ctx, &mut e, vec![]);
-    assert!(painted(&out, "A: end→start") && painted(&out, "B: start→end"));
-    assert!(!painted(&out, "A: start→end"));
-    click(&ctx, &mut e, "A: end→start");
-    assert!(painted(&frame(&ctx, &mut e, vec![]), "A: start→end"));
+    assert!(painted(&out, "A: end>start") && painted(&out, "B: start>end"));
+    assert!(!painted(&out, "A: start>end"));
+    click(&ctx, &mut e, "A: end>start");
+    assert!(painted(&frame(&ctx, &mut e, vec![]), "A: start>end"));
     assert!(
         e.draft.as_ref().expect("draft").history.undo.is_empty(),
         "choosing a direction is not a step"
@@ -195,7 +195,7 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
         painted(
             &out,
             &format!(
-                "Directed angle 30° · A: Line {} start→end · B: Line {} start→end",
+                "Directed angle 30° · A: Line {} start>end · B: Line {} start>end",
                 curve(0),
                 curve(1)
             )
@@ -206,7 +206,7 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     // One pair has one relative-orientation slot, whichever way it is said.
     let kept = history_state(&e);
     enter_field(&ctx, &mut e, ANGLE_BOX, "-150", false);
-    click(&ctx, &mut e, "A: start→end");
+    click(&ctx, &mut e, "A: start>end");
     click(&ctx, &mut e, "Add directed angle");
     assert!(
         e.draft
@@ -218,7 +218,7 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
         "the same relation with A turned is a second answer to one question"
     );
     assert_eq!(history_state(&e), kept);
-    click(&ctx, &mut e, "A: end→start");
+    click(&ctx, &mut e, "A: end>start");
     click(&ctx, &mut e, "Add Parallel");
     assert!(
         e.draft
@@ -234,7 +234,7 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     // Another pair, the second vector turned, and the opposite spelt -180: the
     // stored value is +180, the direction is as said.
     pair(&ctx, &mut e, 3, 4);
-    click(&ctx, &mut e, "B: start→end");
+    click(&ctx, &mut e, "B: start>end");
     enter_field(&ctx, &mut e, ANGLE_BOX, "-180", false);
     click(&ctx, &mut e, "Add directed angle");
     let second = angle_of(
@@ -249,7 +249,7 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     assert!(painted(
         &frame(&ctx, &mut e, vec![]),
         &format!(
-            "Directed angle 180° · A: Line {} start→end · B: Line {} end→start",
+            "Directed angle 180° · A: Line {} start>end · B: Line {} end>start",
             curve(2),
             curve(3)
         )
@@ -376,7 +376,7 @@ fn a_stored_angle_is_replaced_by_another_in_one_exact_remove_and_add() {
     assert!(painted(
         &frame(&ctx, &mut e, vec![]),
         &format!(
-            "A Line {} start→end → B Line {} end→start",
+            "A Line {} start>end > B Line {} end>start",
             short(c[0]),
             short(c[1])
         )
@@ -438,7 +438,7 @@ pub(crate) fn typed_angle_apply(
     e.set_session(true, true, true);
     pair(&ctx, &mut e, a, b);
     if turn_b {
-        click(&ctx, &mut e, "B: start→end");
+        click(&ctx, &mut e, "B: start>end");
     }
     enter_field(&ctx, &mut e, ANGLE_BOX, text, false);
     click(&ctx, &mut e, "Add directed angle");
@@ -510,7 +510,7 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     // The window: pair Lines 2 and 3, the second vector turned, 110 typed.
     let (mut e, ctx) = opened_form(&source_path, &source);
     pair(&ctx, &mut e, 2, 3);
-    click(&ctx, &mut e, "B: start→end");
+    click(&ctx, &mut e, "B: start>end");
     enter_field(&ctx, &mut e, ANGLE_BOX, "110", false);
     click(&ctx, &mut e, "Add directed angle");
     assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
@@ -848,7 +848,7 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
         &format!("Directed angle 110° · {stored_angle}"),
     );
     pair(&ctx, &mut e, 2, 3);
-    click(&ctx, &mut e, "B: start→end");
+    click(&ctx, &mut e, "B: start>end");
     enter_field(&ctx, &mut e, ANGLE_BOX, "130", false);
     click(&ctx, &mut e, "Add directed angle");
     assert_eq!(e.draft.as_ref().expect("draft").refusal, None);

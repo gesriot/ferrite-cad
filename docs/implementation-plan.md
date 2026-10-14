@@ -5199,8 +5199,8 @@ anchors and circle-centre snapping remain open independent work.
 
 **Status, author handoff.** The constraint form of a Line profile gains a directed
 angle without a new row (the form is held to a 768-point screen): on the pair row
-a button per side names the vector (`A: start→end`) and turns it round, on the
-relation row `A→B (°)` takes the signed angle and `Add directed angle` adds it as
+a button per side names the vector (`A: start>end`) and turns it round, on the
+relation row `A>B (°)` takes the signed angle and `Add directed angle` adds it as
 one draft step through `validate_edits`. The CLI request v1 gains
 `{"rule":"directed_angle","a":{"curve_id","from","to"},"b":{…},"angle_deg":30}`,
 strict like its neighbours (both vectors and their ends explicit, objects only,

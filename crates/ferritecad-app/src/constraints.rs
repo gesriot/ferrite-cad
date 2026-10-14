@@ -833,7 +833,7 @@ impl Editor {
                                     stored_endpoint(stored, curve, from.other())?,
                                 );
                                 Some(format!(
-                                    "{name} runs ({}, {}) → ({}, {}) mm (stored, Line {}). \
+                                    "{name} runs ({}, {}) > ({}, {}) mm (stored, Line {}). \
                                      Press to run it the other way.",
                                     a.0,
                                     a.1,
@@ -843,7 +843,7 @@ impl Editor {
                                 ))
                             });
                             let button = ui.button(format!(
-                                "{name}: {}→{}",
+                                "{name}: {}>{}",
                                 from.as_str(),
                                 from.other().as_str()
                             ));
@@ -889,7 +889,7 @@ impl Editor {
                         }
                         // §31F: the angle itself, beside the other answers about
                         // a pair. The stored value is radians; this box is degrees.
-                        ui.label("A→B (°):").on_hover_text(
+                        ui.label("A>B (°):").on_hover_text(
                             "Counter-clockwise from vector A to vector B, with Y up: 0 is the \
                              same direction and 180 the opposite. Only −180…180 is taken; \
                              nothing is wrapped into it.",
@@ -1018,7 +1018,7 @@ impl Editor {
                                                 .map_or(f64::NAN, DirectedAngle::degrees)
                                         ),
                                         Some(format!(
-                                            "A {} → B {}",
+                                            "A {} > B {}",
                                             vector_name(a),
                                             vector_name(b)
                                         )),
@@ -1219,7 +1219,7 @@ fn picked_line(id: Option<StableEntityId>) -> String {
 /// A stored directed segment, read out as the vector it is.
 fn vector_name(segment: ferritecad_document::SketchSegmentRef) -> String {
     format!(
-        "Line {} {}→{}",
+        "Line {} {}>{}",
         short(segment.from.curve),
         segment.from.at.as_str(),
         segment.to.at.as_str()
@@ -1252,7 +1252,7 @@ fn addition_name(add: &AddSketchConstraint) -> String {
             format!("{} · Lines {a} and {b}", relation.as_str())
         }
         AddLineConstraint::DirectedAngle { a, b, angle } => format!(
-            "Directed angle {}° · A: Line {} {}→{} · B: Line {} {}→{}",
+            "Directed angle {}° · A: Line {} {}>{} · B: Line {} {}>{}",
             angle.degrees(),
             a.curve(),
             a.from().as_str(),
