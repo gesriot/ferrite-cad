@@ -5089,8 +5089,7 @@ finite-segment crossing of the contour as drawn; the marker and the name of the 
 Typed X/Y are untouched, no constraint or ID is made, only the resulting coordinate
 edit is an Undo step. The **circle centre is not available**: Circle and Annulus are
 numeric forms, the canvas draws no circle, and no invisible candidate was added; it
-stays the next §31C addition. Quadrants, nearest, tangency, apparent crossings and all
-of §31D remain later. Contract, rules for degenerate geometry, executed gates,
+stays the next §31C addition. Quadrants, nearest, tangency, apparent crossings remain later. §31D-1 below adds fixed-origin gesture guides. Contract, rules for degenerate geometry, executed gates,
 mutations, resources and the independent window recipe:
 [sketch-object-snaps.md](sketch-object-snaps.md). Independent review fixed a
 query-window boundary omission with a failing-first regression. The macOS window
@@ -5116,7 +5115,7 @@ It is not a persistent dimensional constraint; adding one is a later explicit ac
   completed coordinate gesture is one history step. End/Escape clears gesture guides;
   cancellation follows the existing draft/history rules.
 
-**§31D-1 (author handoff, unreviewed; no window run).** The Line canvas of a New
+**§31D-1 (reviewed implementation, PR #107).** The Line canvas of a New
 drawing and of a saved Sketch has a **Guides: Off / Orthogonal / Polar 45°** row under
 the grid step and a keyboard-only **Length mm** box beside it (editor state, off and
 blank for a new editor, nothing persisted). With a guide choice on, a clicked new
@@ -5128,7 +5127,8 @@ snap (§31C) → guide → grid → free point; the grid step is **not** applied
 point. A positive Length makes the point from the shown anchor (never rounded to or replaced by the
 grid); an object point is taken only if it lies at that length within the document
 tolerance, otherwise the length is kept and the conflict is named; any other text is
-refused visibly, places nothing and is never read as zero. One drag or one added
+refused visibly; a gesture on an acquired guide places nothing (including near an
+object snap), and the field is never read as zero. Off a guide it is unused. One drag or one added
 point is one Undo step; Escape, lost focus and a vanished pointer restore the
 press-time strings. Nothing is a constraint, a Distance or a document field. Contract,
 constants, executed gates, mutations, resources and the independent window recipe:
@@ -5138,6 +5138,26 @@ release outside twice it, replace only when nearer by more than one point), the
 circle centre (no circle is drawn on this canvas), angles and every constraint
 adapter. The §31D bullets about hover anchors therefore remain open, and so do
 §31C's centre, §30, Milestone 5C, the product and the OOM investigation.
+
+Independent review fixed an object-snap bypass of a refused Length and labels that
+rounded small positive lengths to zero. Focused native and true-stub gates passed;
+the macOS window verified guided drag/Undo/Redo, refusals, Polar 45°, New point
+placement, Cancel, Apply, unsaved exports and Save As. The actual GUI file matched
+CLI SQL/UUID/refs and STL/FBX (14500 mm³); peak footprint 212.095 MiB, exit 0,
+pressure 1 and swap 0. Remote CI is separate from these local checks.
+
+### §31E — Diameter input through Radius (next)
+
+Add an explicit diameter entry to the existing constraint editor and an additive
+strict `diameter` request form to the CLI. Both must use one checked conversion
+`R = D/2` and the existing Radius constraint and shared operation. Preserve radius
+input, stored constraint kind, discovery/response shapes, UUID selection and the
+current transaction/Undo/Redo rules. This is a persistent constraint only after an
+explicit add/apply, unlike §31D's temporary Length. No new solver equation, shim kind,
+capability or document schema is needed. Reject invalid input and a converted radius
+that underflows to zero; use the same occupied slot as Radius. Cover Circle and both
+Annulus circles by their own UUIDs. Hover-anchor acquisition and circle-centre snaps
+remain open, not completed by this adapter.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 

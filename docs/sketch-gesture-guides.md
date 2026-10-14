@@ -183,7 +183,7 @@ completed with success; `combined runtime layout` 38483533596 had its linux job 
 and its macos and windows jobs still `in_progress`, so that run is not counted as evidence
 of anything. Nothing here is a result of a CI run of this diff.
 
-### Diffstat (modified, then untracked; the index is untouched)
+### Original author handoff diffstat (before review and publication)
 
 | File | State | Lines |
 | --- | --- | --- |
@@ -203,8 +203,8 @@ Totals are in the handoff report (`git diff --stat` plus `wc -l` of the untracke
 
 ## Not done, not claimed
 
-A window (author ran none), a viewer, the CUA, any CI of this diff, Windows or Linux
-evidence. **Hover acquisition of another anchor** with its hysteresis (acquire inside the
+The author ran no window or remote CI; independent evidence is recorded below.
+**Hover acquisition of another anchor** with its hysteresis (acquire inside the
 aperture, release outside twice it, replace only when nearer by more than one point) —
 this slice has the two anchors that need no hover, and does not implement half of that
 mechanism. The circle centre (no circle is drawn here), quadrants, nearest, tangency,
@@ -274,3 +274,46 @@ completed; the author's headless results do not establish those runs.
 `sketch/object_snap_tests.rs`, `sessions/tests/tabs/drafts.rs`,
 `.github/workflows/{ci,occt-pin,runtime-layout}.yml`, `tools/check-fbx-complex.sh`,
 `docs/implementation-plan.md`, this file. The full diffstat is in the handoff report.
+
+## Independent window verification (2026-10-13, macOS arm64)
+
+The fresh staged bundle used code/workflow commit `94d09f1`. One viewer (PID 52278)
+ran through `watch-viewer-memory.py` with a 1536 MiB / 1800 second limit. Observed:
+
+- Saved L profile: Orthogonal + Length 15 moved vertex 3 from (60,20) to (45,20).
+  One Undo restored (60,20), Redo returned (45,20).
+- With Object snap on and Length `abc`, dragging toward the incident edge's midpoint
+  left (45,20) unchanged; the field retained its text and the refusal was visible.
+- Polar 45° with the 5 mm grid produced (52.052631579,27.052631579), equal offsets
+  from (45,20) without grid rounding. Undo restored the intended final point; the
+  positive artifact was not repaired by typing its coordinates.
+- Length `0.0004` appeared with that value in the standing note and canvas caption.
+  Save edited copy → Cancel retained the full draft. Apply vertices accepted it.
+- The input copy was read-only: Save visibly refused and retained the accepted model.
+  Both exports were produced from the unsaved accepted model; Save As then wrote
+  `gui-saved.fcad` and cleared the dirty marker.
+- New Line drawing: the first (0,0) vertex was visibly ringed, hover showed a dashed
+  horizontal guide and `0° · 29.5 mm from vertex 1`; clicking added (29.5,0), and
+  one Undo removed it. This disposable New draft was cancelled before Quit.
+
+After closing the window, its actual output was compared with a separate bundled
+CLI edit of the original input. All SQL cells matched; against the input exactly
+Sketch payload and payload_hash changed. Document/curve UUIDs and all three stored
+refs survived; validate and cold rebuild passed. GUI STL/FBX bytes matched both
+cold exports and the CLI peer. An independent binary STL parser measured 20 triangles,
+1084 bytes, 60×40×10 mm bounds and 14500 mm³, with one opposite for every directed
+edge. The unchanged-input control measured 16000 mm³ and different bytes. Pinned
+ufbx 0.23.0 read the actual GUI FBX: 6 checks, 0 failures. Input hashes stayed intact.
+
+Watchdog sampled peak footprint **212.095 MiB**, pressure 1 throughout, swap 0;
+viewer exited 0 after 448 seconds, without a watchdog abort. No CUA app lookup was
+made after Quit. Before this successful run, a log-output naming collision failed
+before launch, and one pressure-2 preflight refused before launch; neither is GUI
+success. A first peer request used the wrong version-field spelling and was refused;
+only the corrected request is included in the positive comparison.
+
+Evidence: ignored `target/31d-review/gui-normal.jsonl`, `gui-comparison.json`,
+`verify_gui.py`; private input/output root is recorded in `gui-root.txt` there.
+Held-drag labels/Escape, window occlusion, running-job interaction and other display
+scales were not independently observed in the window; their headless gates remain
+separate evidence. No Windows/Linux window or OOM resolution is claimed.
