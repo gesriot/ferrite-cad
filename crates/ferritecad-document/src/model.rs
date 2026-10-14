@@ -103,6 +103,27 @@ pub const SKETCH_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.v1";
 /// still a v1 sketch that any build can rewrite.
 pub const SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.circle.v1";
 
+/// The capability a sketch depends on once a constraint is a directed angle
+/// between two vectors (§31F).
+///
+/// A directed angle has a sign and a direction, which none of the eight older
+/// families has: `Parallel` scores a cross product and so accepts both ways
+/// round. A build that predates it cannot honour `+30°` as anything but a
+/// relationship it does not know, and must not rewrite a sketch that holds one
+/// as though it were a `Parallel` or a `Perpendicular`. So the layout moves with
+/// the meaning, as it did for circles: a sketch holding such a constraint is
+/// stored at payload v4, which is not in `ObjectKind::readable_schema_versions`
+/// of any earlier build; that build keeps the object verbatim and opens the
+/// document read-only. This capability is what makes the reason legible.
+///
+/// v4 is cumulative: a reader that implements the angle vocabulary implements
+/// the circle one too, so a sketch that held both would need nothing more
+/// declared. No supported profile mixes Lines and circles, so none does.
+///
+/// Declared only by a sketch that actually holds one. A profile of Lines and
+/// their other relationships is still v2 and an unconstrained one still v1.
+pub const SKETCH_ANGLE_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.angle.v1";
+
 /// The capability a reference to a face carried through a boolean depends on.
 ///
 /// `CarriedCap` and `CarriedSide` are roles a build written before booleans
@@ -325,6 +346,11 @@ impl ObjectKind {
                 SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
                 SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY.to_owned(),
             ],
+            (Self::Sketch, 4) => vec![
+                CORE_CAPABILITY.to_owned(),
+                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
+                SKETCH_ANGLE_CONSTRAINTS_CAPABILITY.to_owned(),
+            ],
             (Self::Extrude, 2) => vec![
                 CORE_CAPABILITY.to_owned(),
                 FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
@@ -376,6 +402,7 @@ impl ObjectKind {
                 CORE_CAPABILITY,
                 SKETCH_CONSTRAINTS_CAPABILITY,
                 SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
+                SKETCH_ANGLE_CONSTRAINTS_CAPABILITY,
             ],
             Self::Extrude => &[
                 CORE_CAPABILITY,
@@ -411,10 +438,11 @@ impl ObjectKind {
             // still written back as themselves; see [`ImportedStep::scene`].
             Self::ImportedStep => 3,
             // v2 added the constraint list. v3 added the vocabulary that
-            // speaks about circles. v1 and v2 sketches are still read and
-            // still written as themselves, because what a sketch is stored at
-            // is decided by what it holds; see [`Sketch::schema_version`].
-            Self::Sketch => 3,
+            // speaks about circles. v4 added the directed angle between two
+            // vectors (§31F). v1-v3 sketches are still read and still written
+            // as themselves, because what a sketch is stored at is decided by
+            // what it holds; see [`Sketch::schema_version`].
+            Self::Sketch => 4,
             // v2 added the feature a feature consumes; v3 gave a Cut the
             // ThroughAll intent. v1 and v2 extrusions are still read and still
             // written as themselves, because what a feature is stored at is
@@ -439,7 +467,7 @@ impl ObjectKind {
     pub fn readable_schema_versions(self) -> &'static [u32] {
         match self {
             Self::ImportedStep => &[3, 2, 1],
-            Self::Sketch => &[3, 2, 1],
+            Self::Sketch => &[4, 3, 2, 1],
             Self::Extrude => &[3, 2, 1],
             Self::Revolve => &[4, 3, 2, 1],
             Self::Fillet => &[2, 1],
@@ -792,6 +820,18 @@ pub enum SketchConstraintRule {
     /// [`SketchPointSelector::Center`], so `Fixed` pins it with no second
     /// vocabulary.
     Radius { curve: StableEntityId, radius: f64 },
+    /// The vector `b.from -> b.to` is the vector `a.from -> a.to` turned
+    /// counter-clockwise by `angle` radians in the sketch's local XY (§31F).
+    ///
+    /// `angle` is canonical in `(-π, π]`; the opposite direction is `+π` only.
+    /// Each segment is a *directed* run: unlike `Parallel` and `Perpendicular`,
+    /// which ignore which way a segment is written, here `from` and `to` are
+    /// the vector, and exchanging them adds half a turn.
+    DirectedAngle {
+        a: SketchSegmentRef,
+        b: SketchSegmentRef,
+        angle: f64,
+    },
 }
 
 impl SketchConstraintRule {
@@ -809,9 +849,10 @@ impl SketchConstraintRule {
             | Self::Distance { a, b, .. }
             | Self::Horizontal { a, b }
             | Self::Vertical { a, b } => vec![a, b],
-            Self::EqualLength { a, b } | Self::Perpendicular { a, b } | Self::Parallel { a, b } => {
-                vec![a.from, a.to, b.from, b.to]
-            }
+            Self::EqualLength { a, b }
+            | Self::Perpendicular { a, b }
+            | Self::Parallel { a, b }
+            | Self::DirectedAngle { a, b, .. } => vec![a.from, a.to, b.from, b.to],
         }
     }
 
@@ -843,12 +884,19 @@ impl SketchConstraintRule {
                 .any(|point| point.at == SketchPointSelector::Center)
     }
 
+    /// Whether this rule needs the directed-angle vocabulary (§31F) to be
+    /// understood. The same single place as [`Self::needs_circle_vocabulary`].
+    pub fn needs_angle_vocabulary(&self) -> bool {
+        matches!(self, Self::DirectedAngle { .. })
+    }
+
     /// The segments this rule names, which is none for the point families.
     fn segments(&self) -> Vec<SketchSegmentRef> {
         match *self {
-            Self::EqualLength { a, b } | Self::Perpendicular { a, b } | Self::Parallel { a, b } => {
-                vec![a, b]
-            }
+            Self::EqualLength { a, b }
+            | Self::Perpendicular { a, b }
+            | Self::Parallel { a, b }
+            | Self::DirectedAngle { a, b, .. } => vec![a, b],
             _ => Vec::new(),
         }
     }
@@ -864,6 +912,16 @@ impl SketchConstraintRule {
             }
             Self::Radius { radius, .. } => {
                 validate_positive(radius, "constraint radius")?;
+            }
+            // Canonical or refused: a stored `3π/2` would be read as `-π/2` by
+            // arithmetic nobody chose, so the range is the persistence rule.
+            Self::DirectedAngle { angle, .. } => {
+                let angle = normalize_f64(angle)?;
+                if angle <= -std::f64::consts::PI || angle > std::f64::consts::PI {
+                    return Err(CadError::input(format!(
+                        "a directed angle is canonical in (-pi, pi] radians, found {angle}"
+                    )));
+                }
             }
             _ => {}
         }
@@ -932,6 +990,12 @@ impl Sketch {
     pub fn schema_version(&self) -> u32 {
         if self.constraints.is_empty() {
             1
+        } else if self
+            .constraints
+            .iter()
+            .any(|c| c.rule.needs_angle_vocabulary())
+        {
+            4
         } else if self
             .constraints
             .iter()

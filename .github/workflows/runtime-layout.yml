@@ -741,6 +741,44 @@ jobs:
           FERRITECAD="$recipe_cli" "$py" ferrite-28l-recipe.py | tee fillet-four-recipe-no-solver.log
           grep -q '^FCAD_28L_RECIPE_NO_SOLVER ' fillet-four-recipe-no-solver.log
 
+      - name: Refuse a directed angle with Open CASCADE and no solver
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '0'
+          CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          case '${{ matrix.name }}' in
+            windows) export PATH="$FCAD_OCCT_LIB_DIR:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR"; export DYLD_FALLBACK_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
+            linux) export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
+          esac
+          # §31F: no feature means no solver. A document that holds a directed angle is
+          # neither recomputed nor published as solved, and the unconstrained route works.
+          cargo build --release --no-default-features -p ferritecad-cli
+          gate=without_a_solver_an_angled_document_is_not_solved_and_the_unconstrained_route_works
+          cargo test --release --no-default-features -p ferritecad-cli --test directed_angle "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee angle-no-solver.log
+          if grep -q 'skipped:' angle-no-solver.log || ! grep -Fxq 'FCAD_31F_NOSOLVER_EXECUTED' angle-no-solver.log; then
+            echo "::error::mixed OCCT/no-solver directed angle gate did not execute"; exit 1
+          fi
+          py="$(command -v python3 || command -v python)"
+          recipe_cli="$PWD/target/release/ferritecad"
+          case '${{ matrix.name }}' in
+            windows) recipe_cli="$(cygpath -w "$recipe_cli.exe")" ;;
+          esac
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/directed-sketch-angle.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_31F_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-31f-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-31f-recipe.py | tee angle-recipe-no-solver.log
+          grep -q '^FCAD_31F_RECIPE_NO_SOLVER ' angle-recipe-no-solver.log
+
       - name: Chamfer a plate with Open CASCADE and no solver
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -2085,6 +2123,68 @@ jobs:
             fi
           done
           echo "FCAD_ANNULAR_CONSTRAINT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
+      - name: Turn one saved Line against another by a directed angle through CLI, worker and window state
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/directed-angle"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_DIRECTED_ANGLE_ARTIFACT_DIR="$artifacts"
+          # Peer process must be this build before the app worker gates.
+          cargo build --release --features planegcs -p ferritecad-cli
+          # §31F: each gate prints its marker after its last assertion; a skip, a
+          # missing marker or a test that did not run fails the step.
+          for check in \
+            "ferritecad-cli|--test directed_angle|native_directed_angle_signs_directions_and_equivalent_spellings_on_a_dart|FCAD_31F_CLI_DART_EXECUTED" \
+            "ferritecad-cli|--test directed_angle|native_directed_angle_across_the_half_turn_tilts_a_quadrilateral_either_way|FCAD_31F_CLI_HALF_TURN_EXECUTED" \
+            "ferritecad-cli|--test directed_angle|native_directed_angle_replace_remove_diagnose_and_publish_atomically|FCAD_31F_CLI_EDIT_EXECUTED" \
+            "ferritecad-cli|--test directed_angle|native_directed_angle_cache_keys_follow_the_solved_profile|FCAD_31F_CLI_CACHE_EXECUTED" \
+            "ferritecad-cli|--test directed_angle|the_pair_slot_and_the_lines_of_the_sketch_are_checked_before_the_solver|FCAD_31F_CLI_SLOT_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::angle::native_directed_angle_form_worker_and_cli_publish_the_same_geometry|FCAD_31F_NATIVE_EXECUTED turn=-70 constraints=5 dof=7" \
+            "ferritecad-app|--bin ferritecad-viewer|sessions::tests::native_directed_angle_of_a_dart_is_applied_like_the_command_line|FCAD_31F_SESSION_EXECUTED"
+          do
+            IFS='|' read -r package target gate marker <<< "$check"
+            read -r -a target <<< "$target"
+            cargo test --release --features planegcs -p "$package" "${target[@]}" "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee angle.log
+            if grep -q 'skipped:' angle.log \
+               || ! grep -q '^test result: ok\. 1 passed; 0 failed' angle.log \
+               || ! grep -Fxq "$marker" angle.log; then
+              echo "::error::directed angle gate $gate did not execute and pass"; exit 1
+            fi
+          done
+          # The writer's own guard (forged plans), the capability and the layout.
+          cargo test --release -p ferritecad-document --lib constraint_write_tests \
+            -- --nocapture --test-threads=1 2>&1 | tee angle-writer.log
+          grep -Fxq 'FCAD_31F_WRITER_GUARD_EXECUTED' angle-writer.log
+          # §31F: the public agent recipe, extracted from its Markdown and run
+          # against this build's CLI. A missing solver is a failure here.
+          py="$(command -v python3 || command -v python)"
+          recipe_cli="$PWD/target/release/ferritecad"
+          case '${{ matrix.name }}' in
+            windows) recipe_cli="$(cygpath -w "$recipe_cli.exe")" ;;
+          esac
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/directed-sketch-angle.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_31F_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-31f-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" FCAD_EXPECT_SOLVER=1 "$py" ferrite-31f-recipe.py | tee angle-recipe.log
+          grep -q '^FCAD_31F_RECIPE_OK ' angle-recipe.log
+          echo "FCAD_DIRECTED_ANGLE_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
       - name: Cut a circular tool into a saved body through CLI and worker
         env:

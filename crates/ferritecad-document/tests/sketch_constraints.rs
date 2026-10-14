@@ -12,9 +12,10 @@
 
 use ferritecad_document::{
     Access, CORE_CAPABILITY, DatumPlane, Dependency, DependencyRole, Document, Envelope,
-    ObjectKind, ObjectPayload, Point2, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
-    SKETCH_CONSTRAINTS_CAPABILITY, Sketch, SketchConstraint, SketchConstraintRule, SketchCurve,
-    SketchGeometry, SketchPointRef, SketchPointSelector, SketchSegmentRef,
+    ObjectKind, ObjectPayload, Point2, SKETCH_ANGLE_CONSTRAINTS_CAPABILITY,
+    SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY, Sketch, SketchConstraint,
+    SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
+    SketchSegmentRef,
 };
 use ferritecad_types::{ContentHash, ErrorKind, ObjectId, StableEntityId, Transform};
 use tempfile::TempDir;
@@ -1438,7 +1439,16 @@ fn the_kind_and_the_payload_agree_about_what_a_sketch_declares() {
         ],
         "the circle vocabulary announces itself as well as the constraint one"
     );
-    assert_eq!(ObjectKind::Sketch.readable_schema_versions(), &[3, 2, 1]);
+    assert_eq!(
+        ObjectKind::Sketch.required_capabilities(4),
+        vec![
+            CORE_CAPABILITY,
+            SKETCH_CONSTRAINTS_CAPABILITY,
+            SKETCH_ANGLE_CONSTRAINTS_CAPABILITY
+        ],
+        "the directed angle announces its own vocabulary (§31F)"
+    );
+    assert_eq!(ObjectKind::Sketch.readable_schema_versions(), &[4, 3, 2, 1]);
 
     let Corpus {
         curves,

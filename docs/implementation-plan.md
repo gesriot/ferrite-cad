@@ -5184,7 +5184,7 @@ exit 0, pressure 1, swap 0. Remote CI is separate from these local checks.
 Diameter constraint of its own (none is wanted), and every later adapter; so §31C,
 §31D, §30, Milestone 5C, the product and the OOM investigation stay open.
 
-### §31F — Directed angle between two saved Lines (next, not implemented)
+### §31F — Directed angle between two saved Lines (reviewed implementation, PR #109)
 
 Extend the existing constraint editor and shared UI/CLI constraint operation with
 the directed Sketch angle defined below. Scope the first route to two existing
@@ -5197,17 +5197,66 @@ Measure positive and negative solutions and reversed vectors after cold rebuild;
 the existing Parallel semantics and Revolve parameters remain unchanged. Hover
 anchors and circle-centre snapping remain open independent work.
 
+**Status, author handoff.** The constraint form of a Line profile gains a directed
+angle without a new row (the form is held to a 768-point screen): on the pair row
+a button per side names the vector (`A: start>end`) and turns it round, on the
+relation row `A>B (°)` takes the signed angle and `Add directed angle` adds it as
+one draft step through `validate_edits`. The CLI request v1 gains
+`{"rule":"directed_angle","a":{"curve_id","from","to"},"b":{…},"angle_deg":30}`,
+strict like its neighbours (both vectors and their ends explicit, objects only,
+`[-180, 180]` degrees, `-180` stored as `+180`, nothing wrapped). The document
+stores `SketchConstraintRule::DirectedAngle` in **radians** in payload v4 with the
+capability `sketch.constraints.angle.v1` (SQLite schema unchanged; main keeps the
+file and refuses it, measured); the solver gets `Constraint::DirectedAngle` and the
+shim a new named kind `FC_GCS_DIRECTED_ANGLE = 9` over PlaneGCS's own
+`addConstraintL2LAngle` (ABI layout unchanged, pin unchanged), judged by a signed,
+wrapped residual that also refuses a collapsed vector. The angle shares the pair
+slot with Parallel/Perpendicular (any equivalent spelling is a structural refusal);
+redundancy and conflict are the real solver's. Contract, executed recipe, gates,
+mutations, resources and the independent window recipe:
+[directed-sketch-angle.md](directed-sketch-angle.md). **Not done:**
+hover-anchor acquisition (§31D) and the circle centre snap (§31C), so
+§31C, §31D, §30, Milestone 5C, the product and the OOM investigation stay open.
+
+Independent review corrected lossy degree reporting: short decimal output is used
+only when converting it back reproduces the stored radians exactly; tiny nonzero
+angles must not appear as zero, and a noncanonical negative half-turn must not be
+invented. Nonzero degree input that underflows to zero radians is refused. The real
+macOS window also exposed missing arrow glyphs in the new direction controls;
+their labels now use the bundled font's supported `>` character.
+The window completed exact-UUID replacement, draft and document Undo/Redo, Save
+Cancel, Apply, export before Save, Save As and form retention across tabs. Its SQL
+and cold STL/FBX match independent CLI requests (only newly allocated constraint
+UUIDs are normalised); the measured reflex turn changes from -70° to -50°.
+Peak footprint 198.704 MiB, pressure 1, swap 0, normal exit. Remote validation is
+tracked separately in PR #109.
+
+### §31G — Collinear saved Lines (planned next constraint adapter)
+
+Add one explicit relation between two non-construction Lines of a supported saved
+XY profile. Collinearity requires the same supporting line, not merely parallel
+directions: disjoint segments and reversed endpoints are allowed, a zero-length
+vector is not. Keep stored coordinates and identities; solve the relation through
+the existing PlaneGCS adapter and shared constraint operation. Measure both the
+angular residual and the perpendicular offset after cold rebuild. The pair owns
+one relation slot with Parallel, Perpendicular and DirectedAngle; EqualLength stays
+independent. Replacing an existing relation requires removing its exact UUID in
+the same request. Do not add a second solver or infer Coincident endpoints.
+Carry the new vocabulary through payload/capability refusal, strict CLI discovery
+and requests, editor Apply/copy, Undo/Redo and atomic Save. Hover anchors and circle
+centre snapping remain separate open work; this slice does not close §31 or 5C.
+
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
 **Constraint adapters.** A diameter input uses the existing Radius with `R = D/2`,
-with existing value validation and no second solver equation (§31E, above). Collinearity, angle,
-tangency and symmetry require the full document → solver contract → C ABI/shim →
+with existing value validation and no second solver equation (§31E, above). Collinearity,
+tangency and symmetry (the angle: §31F) require the full document → solver contract → C ABI/shim →
 residual/diagnosis → capability → shared UI/CLI operation route. The present shim's
-last kind is `FC_GCS_CIRCLE_RADIUS = 8`; spare point/circle fields do not by themselves
-implement another kind. Preserve explicit refusal of unknown kinds and verify ABI
+last kinds are `FC_GCS_CIRCLE_RADIUS = 8` and, since §31F, `FC_GCS_DIRECTED_ANGLE = 9`;
+spare point/circle fields do not by themselves implement another kind. Preserve explicit refusal of unknown kinds and verify ABI
 layout/version compatibility when adding them.
 
-**Directed Sketch angle.** Name both vectors with explicit endpoint references.
+**Directed Sketch angle (implemented by §31F; these are its accepted semantics).** Name both vectors with explicit endpoint references.
 The value is counter-clockwise from the first to the second, canonically in
 `(-180°, 180°]` (with explicit conversion at the internal unit boundary). Zero means
 codirectional; ±180° means opposite and is stored only as +180°. Exchanging vectors

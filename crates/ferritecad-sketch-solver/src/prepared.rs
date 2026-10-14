@@ -163,6 +163,26 @@ impl Prepared {
             {
                 return Err(NotFinite::ConstraintParameter(id).into());
             }
+            // A directed angle is canonical in (-pi, pi]: refused outside, not
+            // wrapped. Its two vectors must also have a direction to measure.
+            if let Constraint::DirectedAngle { a, b, angle } = constraint {
+                if angle <= -std::f64::consts::PI || angle > std::f64::consts::PI {
+                    return Err(SolverError::AngleOutOfRange(id));
+                }
+                let length = |(from, to): (PointId, PointId)| {
+                    let slot = |point: PointId| {
+                        *index_of
+                            .get(&point)
+                            .expect("every point of this constraint was checked above")
+                            * 2
+                    };
+                    let (from, to) = (slot(from), slot(to));
+                    (state[to] - state[from]).hypot(state[to + 1] - state[from + 1])
+                };
+                if length(a) <= crate::MIN_ANGLE_VECTOR || length(b) <= crate::MIN_ANGLE_VECTOR {
+                    return Err(SolverError::DegenerateVector(id));
+                }
+            }
             caller_ids.push(id);
             constraints.push(constraint);
         }

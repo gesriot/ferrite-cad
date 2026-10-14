@@ -2,9 +2,9 @@
 //! Disposable Line constraint request over stored facts; no solver or file reads.
 use ferritecad_document::{
     AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
-    ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource, LineConstraintKind, LineEndpoint,
-    LineLengthMm, LineRelation, Sketch, SketchConstraintEdits, SketchConstraintRule,
-    SketchCoordinateMm, SketchGeometry, SketchProfileUse,
+    ConstraintSketchChoice, DirectedAngle, DirectedLine, DocumentVersion, ExtrudeEditSource,
+    LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation, Sketch, SketchConstraintEdits,
+    SketchConstraintRule, SketchCoordinateMm, SketchGeometry, SketchProfileUse,
 };
 use ferritecad_jobs::{EditSketchConstraintsRequest, EditedSketchConstraints};
 use ferritecad_types::{ObjectId, Result, StableEntityId};
@@ -98,6 +98,13 @@ struct Draft {
     // same stored catalogue; there is no second list to keep in step with it.
     pair_a: Option<StableEntityId>,
     pair_b: Option<StableEntityId>,
+    /// §31F: the end each picked Line's vector starts at (it runs to the other
+    /// end). Part of the unapplied input, like the picks: not request history.
+    vector_a_from: LineEndpoint,
+    vector_b_from: LineEndpoint,
+    /// §31F: the directed angle being typed, in degrees. A box of its own: it
+    /// is neither a Line length nor the Revolve angle.
+    angle_deg: String,
     edits: SketchConstraintEdits,
     history: History,
     refusal: Option<String>,
@@ -110,6 +117,14 @@ pub(crate) type DraftState = (
     Option<StableEntityId>,
     usize,
     usize,
+);
+
+/// §31F, tests: a draft's pair, vector directions and unapplied angle text.
+#[cfg(test)]
+pub(crate) type AngleState = (
+    (Option<StableEntityId>, Option<StableEntityId>),
+    (LineEndpoint, LineEndpoint),
+    String,
 );
 
 #[derive(Debug, Default)]
@@ -172,6 +187,18 @@ impl Editor {
             .as_ref()
             .map(|d| (d.selected, d.diameter_mm.clone()))
     }
+    /// §31F, tests: the pair, the end each vector starts at and the unapplied
+    /// angle text.
+    #[cfg(test)]
+    pub(crate) fn draft_angle(&self) -> Option<AngleState> {
+        self.draft.as_ref().map(|d| {
+            (
+                (d.pair_a, d.pair_b),
+                (d.vector_a_from, d.vector_b_from),
+                d.angle_deg.clone(),
+            )
+        })
+    }
     pub(crate) fn session(&self) -> (bool, bool, bool) {
         (self.can_begin, self.can_apply, self.unsaved)
     }
@@ -205,6 +232,9 @@ impl Editor {
             pin_y_mm: String::new(),
             pair_a: None,
             pair_b: None,
+            vector_a_from: LineEndpoint::Start,
+            vector_b_from: LineEndpoint::Start,
+            angle_deg: String::new(),
             edits: Default::default(),
             history: Default::default(),
             refusal: None,
@@ -788,6 +818,42 @@ impl Editor {
                             picked_line(draft.pair_a),
                             picked_line(draft.pair_b)
                         ));
+                        // §31F: which way each picked Line runs as a vector, for the
+                        // directed angle only. Pressing turns it round; the stored
+                        // coordinates are the tooltip. It sits on this row and the
+                        // angle on the next because the form is held to a 768-point
+                        // screen and has no line to spare.
+                        for (name, pick, from) in [
+                            ("A", draft.pair_a, &mut draft.vector_a_from),
+                            ("B", draft.pair_b, &mut draft.vector_b_from),
+                        ] {
+                            let runs = pick.and_then(|curve| {
+                                let (a, b) = (
+                                    stored_endpoint(stored, curve, *from)?,
+                                    stored_endpoint(stored, curve, from.other())?,
+                                );
+                                Some(format!(
+                                    "{name} runs ({}, {}) > ({}, {}) mm (stored, Line {}). \
+                                     Press to run it the other way.",
+                                    a.0,
+                                    a.1,
+                                    b.0,
+                                    b.1,
+                                    short(curve)
+                                ))
+                            });
+                            let button = ui.button(format!(
+                                "{name}: {}>{}",
+                                from.as_str(),
+                                from.other().as_str()
+                            ));
+                            let button = button.on_hover_text(runs.unwrap_or_else(|| {
+                                format!("Vector {name}: pick its Line first. Press to turn it round.")
+                            }));
+                            if button.clicked() {
+                                *from = from.other();
+                            }
+                        }
                     });
                     // One picked pair, three independent things it can be asked
                     // to keep: a length, and a relative orientation either way.
@@ -815,6 +881,71 @@ impl Editor {
                             }));
                             match draft.choice.validate_edits(&proposed) {
                                 Ok(()) => {
+                                    draft.history.change(&mut draft.edits, proposed);
+                                    draft.refusal = None;
+                                }
+                                Err(e) => draft.refusal = Some(e.to_string()),
+                            }
+                        }
+                        // §31F: the angle itself, beside the other answers about
+                        // a pair. The stored value is radians; this box is degrees.
+                        ui.label("A>B (°):").on_hover_text(
+                            "Counter-clockwise from vector A to vector B, with Y up: 0 is the \
+                             same direction and 180 the opposite. Only −180…180 is taken; \
+                             nothing is wrapped into it.",
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.angle_deg)
+                                .id_salt("directed-angle-deg")
+                                .hint_text("CCW +")
+                                .char_limit(32)
+                                .desired_width(60.)
+                                // A focused box takes text even when disabled;
+                                // a running job must freeze it.
+                                .interactive(!running),
+                        );
+                        let both = draft.pair_a.is_some() && draft.pair_b.is_some();
+                        if ui
+                            .add_enabled(both, egui::Button::new("Add directed angle"))
+                            .clicked()
+                        {
+                            let (a, b) = (
+                                draft.pair_a.expect("Line A"),
+                                draft.pair_b.expect("Line B"),
+                            );
+                            let angle = draft
+                                .angle_deg
+                                .trim()
+                                .parse::<f64>()
+                                .map_err(|_| {
+                                    ferritecad_types::CadError::input(
+                                        "enter the angle in degrees, from -180 to 180",
+                                    )
+                                })
+                                .and_then(DirectedAngle::from_degrees);
+                            let vectors = DirectedLine::new(
+                                a,
+                                draft.vector_a_from,
+                                draft.vector_a_from.other(),
+                            )
+                            .and_then(|a| {
+                                DirectedLine::new(
+                                    b,
+                                    draft.vector_b_from,
+                                    draft.vector_b_from.other(),
+                                )
+                                .map(|b| (a, b))
+                            });
+                            match angle.and_then(|angle| {
+                                let (a, b) = vectors?;
+                                let mut proposed = draft.edits.clone();
+                                proposed.add.push(AddSketchConstraint::Line(
+                                    AddLineConstraint::DirectedAngle { a, b, angle },
+                                ));
+                                draft.choice.validate_edits(&proposed)?;
+                                Ok(proposed)
+                            }) {
+                                Ok(proposed) => {
                                     draft.history.change(&mut draft.edits, proposed);
                                     draft.refusal = None;
                                 }
@@ -879,6 +1010,18 @@ impl Editor {
                                     SketchConstraintRule::Perpendicular { a, b } => (
                                         LineRelation::Perpendicular.as_str().to_owned(),
                                         Some(two_lines(a.from.curve, b.from.curve, "and")),
+                                    ),
+                                    SketchConstraintRule::DirectedAngle { a, b, angle } => (
+                                        format!(
+                                            "Directed angle {}°",
+                                            DirectedAngle::from_radians(angle)
+                                                .map_or(f64::NAN, DirectedAngle::degrees)
+                                        ),
+                                        Some(format!(
+                                            "A {} > B {}",
+                                            vector_name(a),
+                                            vector_name(b)
+                                        )),
                                     ),
                                     _ => ("Coincident closure".to_owned(), None),
                                 };
@@ -1073,6 +1216,15 @@ fn two_lines(a: StableEntityId, b: StableEntityId, joins: &str) -> String {
 fn picked_line(id: Option<StableEntityId>) -> String {
     id.map_or_else(|| "none".to_owned(), short)
 }
+/// A stored directed segment, read out as the vector it is.
+fn vector_name(segment: ferritecad_document::SketchSegmentRef) -> String {
+    format!(
+        "Line {} {}>{}",
+        short(segment.from.curve),
+        segment.from.at.as_str(),
+        segment.to.at.as_str()
+    )
+}
 fn kind_name(kind: LineConstraintKind) -> String {
     match kind {
         LineConstraintKind::Horizontal => "Horizontal".into(),
@@ -1099,6 +1251,16 @@ fn addition_name(add: &AddSketchConstraint) -> String {
         AddLineConstraint::Relation { a, b, relation } => {
             format!("{} · Lines {a} and {b}", relation.as_str())
         }
+        AddLineConstraint::DirectedAngle { a, b, angle } => format!(
+            "Directed angle {}° · A: Line {} {}>{} · B: Line {} {}>{}",
+            angle.degrees(),
+            a.curve(),
+            a.from().as_str(),
+            a.to().as_str(),
+            b.curve(),
+            b.from().as_str(),
+            b.to().as_str()
+        ),
     }
 }
 
@@ -1144,6 +1306,8 @@ pub(crate) mod tests {
     use super::*;
     use ferritecad_document::Document;
     use ferritecad_kernel::OperationContext;
+    /// §31F: a directed angle between two saved Lines.
+    pub(crate) mod angle;
     /// §31E: a diameter typed for a circle, which is the Radius `D/2`.
     pub(crate) mod diameter;
     /// §27G: the same editor on the profile of a Revolve with a bore.
@@ -1196,6 +1360,22 @@ pub(crate) mod tests {
                     LineRelation::Perpendicular => "perpendicular",
                 };
                 return format!(r#"{{"rule":"{rule}","a_curve_id":"{a}","b_curve_id":"{b}"}}"#);
+            }
+            AddLineConstraint::DirectedAngle { a, b, angle } => {
+                let side = |v: DirectedLine| {
+                    format!(
+                        r#"{{"curve_id":"{}","from":"{}","to":"{}"}}"#,
+                        v.curve(),
+                        v.from().as_str(),
+                        v.to().as_str()
+                    )
+                };
+                return format!(
+                    r#"{{"rule":"directed_angle","a":{},"b":{},"angle_deg":{}}}"#,
+                    side(a),
+                    side(b),
+                    angle.degrees()
+                );
             }
             AddLineConstraint::Line { curve, kind } => (curve, kind),
         };

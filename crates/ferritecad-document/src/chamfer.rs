@@ -168,6 +168,7 @@ fn rule_name(rule: &SketchConstraintRule) -> &'static str {
         SketchConstraintRule::EqualLength { .. } => "EqualLength",
         SketchConstraintRule::Perpendicular { .. } => "Perpendicular",
         SketchConstraintRule::Parallel { .. } => "Parallel",
+        SketchConstraintRule::DirectedAngle { .. } => "DirectedAngle",
         _ => "other",
     }
 }

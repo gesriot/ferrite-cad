@@ -214,6 +214,16 @@ impl Window {
             crate::constraints::tests::diameter::typed_diameter(&current, &reading, text, add);
     }
 
+    /// §31F: the shown tab's constraints form on its first two Lines, a directed
+    /// angle typed through the widgets (the second vector turned) and, if asked,
+    /// added.
+    fn angle_draft(&mut self, text: &str, add: bool) {
+        let current = self.sessions.export_path().expect("shown");
+        let reading = read_extrude_source(&current).expect("reading");
+        self.creates.sketch.constraints =
+            crate::constraints::tests::angle::typed_angle(&current, &reading, text, add);
+    }
+
     /// Shows `tab` and checks that every tab's unsaved state stayed as it was.
     fn round(&mut self, tab: TabId) {
         assert!(self.can_leave(), "an idle form holds no window");
@@ -410,6 +420,95 @@ fn constraint_drafts_with_one_set_of_ids_keep_picks_changes_and_history_per_tab(
         "nothing was written"
     );
     println!("\nFCAD_30P_CONSTRAINT_DRAFTS_EXECUTED");
+}
+
+/// §31F: two copies of one plate (one set of ids, the same controls) keep each
+/// their own pair, vector directions and angle text, refused text included,
+/// through every switch; adding in one tab changes that tab's draft only.
+#[test]
+fn a_typed_angle_its_pair_and_directions_follow_their_tab() {
+    let user = tempfile::tempdir().expect("user");
+    let a_file = user.path().join("plate.fcad");
+    plate(&a_file, 12.0);
+    let b_file = user.path().join("copy.fcad");
+    std::fs::copy(&a_file, &b_file).expect("copy");
+
+    let mut w = Window::new(Drawn::Mock, None);
+    w.open(&a_file);
+    let a = w.sessions.tab();
+    w.angle_draft("30", false);
+    let facts = |w: &Window| {
+        (
+            w.creates.sketch.constraints.draft_angle().expect("a form"),
+            w.creates.sketch.constraints.draft_state().expect("a form"),
+        )
+    };
+    let a_state = facts(&w);
+    assert_eq!(a_state.0.2, "30");
+    assert!(
+        a_state.0.0.0.is_some() && a_state.0.0.1.is_some(),
+        "the pair was picked"
+    );
+    assert_eq!(
+        a_state.0.1,
+        (
+            ferritecad_document::LineEndpoint::Start,
+            ferritecad_document::LineEndpoint::End
+        ),
+        "the second vector was turned"
+    );
+    w.open(&b_file);
+    let b = w.sessions.tab();
+    assert!(
+        !w.creates.sketch.constraints.active(),
+        "a new tab opens with no form"
+    );
+    assert!(w.tabs.has_draft(a));
+    // B holds text the box refuses: Add keeps it, with its pair and directions.
+    w.angle_draft("270", true);
+    let b_state = facts(&w);
+    assert_eq!(b_state.0.2, "270");
+    assert_eq!(b_state.1.3, 0, "a refused add made no step");
+    assert_ne!(a_state, b_state);
+
+    for _ in 0..20 {
+        w.round(a);
+        assert_eq!(facts(&w), a_state);
+        w.round(b);
+        assert_eq!(facts(&w), b_state);
+    }
+    // An accepted add in A is A's one step; B is where it was.
+    w.round(a);
+    crate::constraints::tests::session_apply::press(
+        &mut w.creates.sketch.constraints,
+        "Add directed angle",
+    );
+    let added = w.creates.sketch.constraints.draft_edits().expect("A");
+    assert_eq!(added.add.len(), 1);
+    let a_added = facts(&w);
+    assert_eq!((a_added.1.3, a_added.1.4), (1, 0));
+    assert_eq!(
+        a_added.0, a_state.0,
+        "the text, the pair and the directions are not consumed"
+    );
+    w.round(b);
+    assert_eq!(facts(&w), b_state);
+    assert!(
+        w.creates
+            .sketch
+            .constraints
+            .draft_edits()
+            .expect("B")
+            .add
+            .is_empty()
+    );
+    w.round(a);
+    assert_eq!(facts(&w), a_added);
+    assert!(
+        !w.sessions.dirty() && !w.hidden(b).dirty(),
+        "a draft is not a change"
+    );
+    println!("\nFCAD_31F_TABS_EXECUTED");
 }
 
 /// §31E: two copies of one cylinder (one set of ids, the same controls) keep each

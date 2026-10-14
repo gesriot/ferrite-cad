@@ -2,9 +2,9 @@
 //! Text/JSON prepare one typed request; jobs owns solver/copy/publication.
 use clap::Args;
 use ferritecad_document::{
-    AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm, Document,
-    DocumentVersion, LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation,
-    SketchConstraintEdits, SketchCoordinateMm,
+    AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm, DirectedAngle,
+    DirectedLine, Document, DocumentVersion, LineConstraintKind, LineEndpoint, LineLengthMm,
+    LineRelation, SketchConstraintEdits, SketchCoordinateMm,
 };
 use ferritecad_jobs::{
     EditSketchConstraintsRequest, EditedSketchConstraints, edit_sketch_constraints_copy,
@@ -24,7 +24,8 @@ pub struct EditConstraintsArgs {
     expect_version: ContentHash,
     /// Request v1: remove exact constraint UUIDs, then add Line H/V, length in mm,
     /// one Fixed Line endpoint at explicit X/Y mm, equal length, parallel or
-    /// perpendicular between two Lines, or — on a Sketch that is one analytic
+    /// perpendicular between two Lines, a directed angle in degrees between two
+    /// directed Lines (`directed_angle`), or — on a Sketch that is one analytic
     /// Circle, or two making an annulus — a radius in mm per Circle (or its
     /// diameter in mm, stored as the same radius D/2), a Fixed centre at
     /// explicit X/Y mm, and a concentricity naming both Circles.
@@ -64,6 +65,38 @@ impl At {
             Self::End => Some(LineEndpoint::End),
             Self::Center => None,
         }
+    }
+}
+/// One end of a Line, spelled `start` or `end` and nothing else.
+///
+/// Apart from [`At`] on purpose: a directed Line has no centre, and a request
+/// that could say `center` here would be one typo from a circle's point.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum End {
+    Start,
+    End,
+}
+impl End {
+    fn endpoint(&self) -> LineEndpoint {
+        match self {
+            Self::Start => LineEndpoint::Start,
+            Self::End => LineEndpoint::End,
+        }
+    }
+}
+/// A whole Line read as a vector (§31F). Every field is required: the
+/// direction is part of the request, never a default.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Vector {
+    curve_id: StableEntityId,
+    from: End,
+    to: End,
+}
+impl Vector {
+    fn checked(&self) -> Result<DirectedLine> {
+        DirectedLine::new(self.curve_id, self.from.endpoint(), self.to.endpoint())
     }
 }
 #[derive(Deserialize)]
@@ -129,6 +162,15 @@ enum Addition {
     Concentric {
         a_curve_id: StableEntityId,
         b_curve_id: StableEntityId,
+    },
+    /// The counter-clockwise turn in degrees from vector `a` to vector `b`,
+    /// two different whole Lines each read from one end to the other (§31F).
+    /// Both sides and both directions are named; neither can be left out, and
+    /// the angle is `[-180, 180]` degrees, never wrapped (`-180` is `180`).
+    DirectedAngle {
+        a: Vector,
+        b: Vector,
+        angle_deg: f64,
     },
 }
 impl Addition {
@@ -240,6 +282,13 @@ impl Addition {
                     relation: LineRelation::Perpendicular,
                 });
             }
+            Self::DirectedAngle { a, b, angle_deg } => {
+                return Ok(AddLineConstraint::DirectedAngle {
+                    a: a.checked()?,
+                    b: b.checked()?,
+                    angle: DirectedAngle::from_degrees(angle_deg)?,
+                });
+            }
             // These circle forms were answered before this, so reaching here
             // with one would be a bug rather than a request to interpret.
             Self::Radius { .. } | Self::Diameter { .. } | Self::Concentric { .. } => {
@@ -272,16 +321,27 @@ fn result(args: &EditConstraintsArgs) -> Result<EditedSketchConstraints> {
     // tagged addition from an array led by its rule (§27G). Neither is a
     // request anybody wrote; only the shape is read here, the request itself
     // is `input`.
+    //
+    // The same for the two vectors of a directed angle (§31F), which are named
+    // structs and so would otherwise be read from `["<uuid>","start","end"]`.
     let objects = match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(serde_json::Value::Object(map)) => map
             .get("add")
             .and_then(serde_json::Value::as_array)
-            .is_some_and(|all| all.iter().all(serde_json::Value::is_object)),
+            .is_some_and(|all| {
+                all.iter().all(|add| {
+                    add.is_object()
+                        && ["a", "b"]
+                            .iter()
+                            .all(|side| add.get(side).is_none_or(serde_json::Value::is_object))
+                })
+            }),
         _ => false,
     };
     if !objects {
         return Err(CadError::input(
-            "invalid constraint request JSON: the request and each addition must be objects",
+            "invalid constraint request JSON: the request, each addition and each vector must be \
+             objects",
         ));
     }
     if input.request_version != 1 {

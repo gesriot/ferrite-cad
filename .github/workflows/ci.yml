@@ -198,6 +198,32 @@ jobs:
             cargo test -p "$package" "${target[@]}" "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee diameter.log
             if grep -q 'skipped:' diameter.log || ! grep -q '^test result: ok\. 1 passed; 0 failed' diameter.log || ! grep -Fxq "$marker" diameter.log; then exit 1; fi
           done
+          # §31F: a directed angle between two saved Lines, with no kernel or solver:
+          # the unit boundary, the pair slot and layout v4, the strict request, the
+          # residual's sign, the writer's re-derivation, the translation and the widgets.
+          for check in \
+            "ferritecad-sketch-solver|--lib|residual::tests::the_residual_is_signed_wraps_across_the_boundary_and_refuses_a_vector_with_no_direction|FCAD_31F_RESIDUAL_EXECUTED" \
+            "ferritecad-sketch-solver|--test boundary|a_directed_angle_outside_the_canonical_range_is_refused_not_wrapped|FCAD_31F_SOLVER_RANGE_EXECUTED" \
+            "ferritecad-sketch-solver|--test boundary|a_directed_angle_against_a_vector_with_no_direction_is_refused_before_native|FCAD_31F_SOLVER_DEGENERATE_EXECUTED" \
+            "ferritecad-sketch-solver|--test boundary|every_point_of_a_directed_angle_is_checked_against_the_sketch|FCAD_31F_SOLVER_REFERENCES_EXECUTED" \
+            "ferritecad-document|--test directed_angle|degrees_are_the_input_radians_are_the_stored_value_and_the_range_is_one_full_circle|FCAD_31F_DOCUMENT_CONVERSION_EXECUTED" \
+            "ferritecad-document|--test directed_angle|a_directed_angle_is_stored_as_said_in_layout_v4_and_declares_its_own_capability|FCAD_31F_DOCUMENT_V4_EXECUTED" \
+            "ferritecad-document|--test directed_angle|every_way_of_saying_one_relation_occupies_the_slot_and_only_an_exact_replace_frees_it|FCAD_31F_DOCUMENT_SLOT_EXECUTED" \
+            "ferritecad-document|--test directed_angle|what_a_sketch_declares_is_decided_by_what_it_holds_and_the_old_families_do_not_move|FCAD_31F_DOCUMENT_LAYOUT_EXECUTED" \
+            "ferritecad-document|--lib|document::constraint_write_tests::a_forged_plan_may_not_stack_a_second_answer_on_an_angled_pair_or_rewrite_a_stored_angle|FCAD_31F_WRITER_GUARD_EXECUTED" \
+            "ferritecad-eval|--lib|solve::tests::a_directed_angle_keeps_both_directions_and_crosses_in_radians|FCAD_31F_TRANSLATION_EXECUTED" \
+            "ferritecad-cli|--test directed_angle|a_directed_angle_request_is_strict_and_refuses_before_anything_is_published|FCAD_31F_CLI_STRICT_EXECUTED" \
+            "ferritecad-cli|--test directed_angle|discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone|FCAD_31F_CLI_DISCOVERY_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::angle::a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_through_the_real_widgets|FCAD_31F_WIDGETS_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::angle::a_stored_angle_is_replaced_by_another_in_one_exact_remove_and_add|FCAD_31F_REPLACE_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|sessions::tests::tabs::drafts::a_typed_angle_its_pair_and_directions_follow_their_tab|FCAD_31F_TABS_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|tests::a_directed_angle_is_said_with_both_directions_and_its_value_in_degrees|FCAD_31F_SENTENCE_EXECUTED"
+          do
+            IFS='|' read -r package target gate marker <<< "$check"
+            read -r -a target <<< "$target"
+            cargo test -p "$package" "${target[@]}" "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee angle.log
+            if grep -q 'skipped:' angle.log || ! grep -q '^test result: ok\. 1 passed; 0 failed' angle.log || ! grep -Fxq "$marker" angle.log; then exit 1; fi
+          done
 
       - name: Discover Revolve profile constraints without native geometry
         shell: bash

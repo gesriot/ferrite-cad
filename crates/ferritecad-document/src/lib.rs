@@ -129,11 +129,11 @@ pub use model::{
     FEATURE_REVOLVE_PARTIAL_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY, Fillet, FilletEdge,
     GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
     ObjectKind, ObjectPayload, Parameter, Point2, Revolve, RevolveAngle, RevolveAxis,
-    RevolveExtent, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY,
-    STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch, SketchConstraint,
-    SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
-    SketchSegmentRef, SolidOperation, SweptEdge, TOPOLOGY_CARRIED_FACE_CAPABILITY,
-    TOPOLOGY_ORIGIN_FACE_CAPABILITY, TopologyRef,
+    RevolveExtent, SKETCH_ANGLE_CONSTRAINTS_CAPABILITY, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
+    SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
+    SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
+    SketchPointSelector, SketchSegmentRef, SolidOperation, SweptEdge,
+    TOPOLOGY_CARRIED_FACE_CAPABILITY, TOPOLOGY_ORIGIN_FACE_CAPABILITY, TopologyRef,
 };
 pub use schema::{
     CACHE_EXTENSION, DOCUMENT_EXTENSION, FORMAT_VERSION, MINIMUM_READER_VERSION,
@@ -144,9 +144,10 @@ pub use validate::{Diagnostic, Severity, ValidationReport};
 mod sketch_constraints;
 pub use sketch_constraints::{
     AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
-    ConstraintSketchChoice, LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation,
-    PreparedSketchConstraints, SketchConstraintEdits, SketchCoordinateMm, constraint_circle_roles,
-    constraint_sketch_choices, prepare_sketch_constraints,
+    ConstraintSketchChoice, DirectedAngle, DirectedLine, LineConstraintKind, LineEndpoint,
+    LineLengthMm, LineRelation, PreparedSketchConstraints, SketchConstraintEdits,
+    SketchCoordinateMm, constraint_circle_roles, constraint_sketch_choices,
+    prepare_sketch_constraints,
 };
 
 pub use height_edit::{

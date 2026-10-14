@@ -1934,6 +1934,37 @@ remove/add. Если решение меняет роли стенки и отв
 публикации. Radius и diameter одной окружности занимают один слот; замена —
 прежний атомарный remove exact UUID + add. [Контракт](circle-diameter-input.md).
 
+§31F добавляет в тот же request v1 строгую форму направленного угла между двумя
+Lines профиля:
+
+```json
+{"rule":"directed_angle",
+ "a":{"curve_id":"UUID_FROM_DISCOVERY","from":"start","to":"end"},
+ "b":{"curve_id":"UUID_FROM_DISCOVERY","from":"end","to":"start"},
+ "angle_deg":30}
+```
+
+Угол — против часовой стрелки от вектора `a` ко второму `b`, градусы в
+`[-180, 180]`; ровно `-180` хранится как `+180`, значение вне диапазона не
+оборачивается, а отвергается. Все поля обязательны; `a` и `b` — объекты ровно с
+`curve_id`, `from`, `to`, где `from` ≠ `to` ∈ `start`/`end`; Lines разные и
+принадлежат выбранному Sketch. Лишние, пропущенные и дублированные поля, массивы
+вместо объектов, строковые, `null`, булевы и нечисловые (`NaN`, `Infinity`, `1e999`)
+значения, `center` вместо конца и иное написание правила — `kind:"input"`, код 2,
+без публикации. В discovery, `added_constraints` и `constraint_conflict` новый вид —
+`kind:"directed_angle"` с `a`/`b` в прежней `Segment`-форме (`from`/`to` с
+`curve_id` и `at`) и `angle_deg` в градусах. Число хранится в радианах;
+округлённый до `1e-9°` ответ используется только если он даёт те же биты радиан,
+иначе выдаётся полное число. Ненулевой ввод, исчезающий при переводе в радианы,
+отказывается; прочие виды не менялись. Пара делит слот с `parallel` и
+`perpendicular`: эквивалентная запись, повтор или иной ответ о той же паре —
+структурный отказ; замена — remove exact UUID + add. Избыточность и конфликт
+устанавливает solver (`redundant_constraint_ids`, `constraint_conflict` с
+UUID). Sketch с таким ограничением — payload v4 и capability
+`sketch.constraints.angle.v1`: сборка без неё сохраняет файл и отказывает.
+Operation, schema и коды 0/2/7 прежние.
+[Контракт и исполняемый рецепт](directed-sketch-angle.md).
+
 §25F сохраняет operation/schema/request v1. В `add` команды
 `edit-sketch-constraints-copy` доступны `{curve_id,rule:"horizontal"}`,
 `{curve_id,rule:"vertical"}` и `{curve_id,rule:"distance",distance_mm:N}`.

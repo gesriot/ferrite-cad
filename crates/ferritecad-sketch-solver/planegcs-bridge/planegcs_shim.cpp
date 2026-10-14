@@ -80,6 +80,7 @@ bool has_valid_references(const FcGcsConstraint &constraint, size_t point_count,
     case FC_GCS_EQUAL_LENGTH:
     case FC_GCS_PERPENDICULAR:
     case FC_GCS_PARALLEL:
+    case FC_GCS_DIRECTED_ANGLE:
       points_used = 4;
       break;
     case FC_GCS_CIRCLE_RADIUS:
@@ -248,6 +249,35 @@ extern "C" FcGcsSession *fc_gcs_session_create(
           GCS::Line a = line_of(session->points, c.points[0], c.points[1]);
           GCS::Line b = line_of(session->points, c.points[2], c.points[3]);
           session->system.addConstraintParallel(a, b, tag);
+          break;
+        }
+        case FC_GCS_DIRECTED_ANGLE: {
+          // Canonical (-pi, pi]; an unused field must stay empty. A vector of
+          // zero length has no direction, and planegcs would divide by its
+          // squared length in the gradient.
+          constexpr double pi = 3.141592653589793238462643383279502884;
+          if (!std::isfinite(c.value) || c.value <= -pi || c.value > pi ||
+              c.value2 != 0.0 || c.points[0] == c.points[1] ||
+              c.points[2] == c.points[3]) {
+            return nullptr;
+          }
+          const auto length = [&](int32_t from, int32_t to) {
+            return std::hypot(
+                session->state[static_cast<size_t>(to) * 2] -
+                    session->state[static_cast<size_t>(from) * 2],
+                session->state[static_cast<size_t>(to) * 2 + 1] -
+                    session->state[static_cast<size_t>(from) * 2 + 1]);
+          };
+          if (!(length(c.points[0], c.points[1]) > 0.0) ||
+              !(length(c.points[2], c.points[3]) > 0.0)) {
+            return nullptr;
+          }
+          const size_t slot = session->values.size();
+          session->values.push_back(c.value);
+          session->system.addConstraintL2LAngle(
+              session->points[c.points[0]], session->points[c.points[1]],
+              session->points[c.points[2]], session->points[c.points[3]],
+              &session->values[slot], tag);
           break;
         }
         case FC_GCS_CIRCLE_RADIUS: {
