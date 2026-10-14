@@ -25,8 +25,9 @@ pub struct EditConstraintsArgs {
     /// Request v1: remove exact constraint UUIDs, then add Line H/V, length in mm,
     /// one Fixed Line endpoint at explicit X/Y mm, equal length, parallel or
     /// perpendicular between two Lines, or — on a Sketch that is one analytic
-    /// Circle, or two making an annulus — a radius in mm per Circle, a Fixed
-    /// centre at explicit X/Y mm, and a concentricity naming both Circles.
+    /// Circle, or two making an annulus — a radius in mm per Circle (or its
+    /// diameter in mm, stored as the same radius D/2), a Fixed centre at
+    /// explicit X/Y mm, and a concentricity naming both Circles.
     #[arg(long)]
     request: PathBuf,
     /// New FCAD destination; no overwrite and no --force.
@@ -109,6 +110,15 @@ enum Addition {
         curve_id: StableEntityId,
         radius_mm: f64,
     },
+    /// The same stored Radius, spelled by the diameter in mm: `R = D/2`.
+    ///
+    /// Its own strict form rather than a second field of `radius`: a request
+    /// that could carry both numbers would have to decide which one wins. The
+    /// document gets the one `Radius` and never learns which unit was typed.
+    Diameter {
+        curve_id: StableEntityId,
+        diameter_mm: f64,
+    },
     /// The two named analytic Circles of an annular profile keep one centre.
     ///
     /// Both named in full and neither leading, like the two Line-pair rules: a
@@ -123,8 +133,8 @@ enum Addition {
 }
 impl Addition {
     fn checked(self) -> Result<AddSketchConstraint> {
-        // The two circle forms are decided first, because neither is a Line
-        // addition and neither may be built through the Line vocabulary below.
+        // The circle forms are decided first, because none is a Line addition
+        // and none may be built through the Line vocabulary below.
         match self {
             Self::Radius {
                 curve_id,
@@ -133,6 +143,17 @@ impl Addition {
                 return Ok(AddSketchConstraint::Circle {
                     curve: curve_id,
                     kind: CircleConstraintKind::Radius(CircleRadiusMm::new(radius_mm)?),
+                });
+            }
+            Self::Diameter {
+                curve_id,
+                diameter_mm,
+            } => {
+                return Ok(AddSketchConstraint::Circle {
+                    curve: curve_id,
+                    kind: CircleConstraintKind::Radius(CircleRadiusMm::from_diameter_mm(
+                        diameter_mm,
+                    )?),
                 });
             }
             Self::Fixed {
@@ -219,11 +240,11 @@ impl Addition {
                     relation: LineRelation::Perpendicular,
                 });
             }
-            // Both circle forms were answered before this, so reaching here
+            // These circle forms were answered before this, so reaching here
             // with one would be a bug rather than a request to interpret.
-            Self::Radius { .. } | Self::Concentric { .. } => {
+            Self::Radius { .. } | Self::Diameter { .. } | Self::Concentric { .. } => {
                 return Err(CadError::input(
-                    "a radius and a shared centre belong to circles, not to a Line",
+                    "a radius, a diameter and a shared centre belong to circles, not to a Line",
                 ));
             }
         };

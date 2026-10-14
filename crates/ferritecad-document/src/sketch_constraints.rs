@@ -145,6 +145,28 @@ impl CircleRadiusMm {
         }
         Ok(Self(value.to_bits()))
     }
+    /// The radius of a circle whose diameter is typed: `R = D / 2`, the one
+    /// conversion both the editor and the command line use.
+    ///
+    /// There is no Diameter constraint; only the stored `Radius` exists. The
+    /// result is checked, not assumed: halving can lose precision when the
+    /// resulting radius is subnormal, even if `D` itself is normal. The smallest
+    /// positive `D` halves to zero. A `D` that is not exactly twice the radius it
+    /// yields is refused rather than stored as a different circle.
+    pub fn from_diameter_mm(diameter: f64) -> Result<Self> {
+        if !diameter.is_finite() || diameter <= 0. {
+            return Err(CadError::input(
+                "circle diameter must be finite and positive in mm",
+            ));
+        }
+        let radius = diameter / 2.;
+        if radius * 2. != diameter {
+            return Err(CadError::input(
+                "circle diameter is too small to halve into a positive radius in mm",
+            ));
+        }
+        Self::new(radius)
+    }
     pub fn get(self) -> f64 {
         f64::from_bits(self.0)
     }
@@ -1149,4 +1171,60 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedSketchConstraints
         ));
     }
     managed(written, family)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// §31E: the one conversion every adapter uses. The marker is printed after
+    /// the last assertion so a CI step can tell that the body ran.
+    #[test]
+    fn a_circle_diameter_halves_into_the_stored_radius_and_refuses_what_cannot_be() {
+        for (diameter, radius) in [
+            (13.5, 6.75),
+            (2., 1.),
+            (0.5, 0.25),
+            (4.25, 2.125),
+            (f64::MAX, f64::MAX / 2.),
+            (f64::MIN_POSITIVE, f64::MIN_POSITIVE / 2.),
+            (
+                f64::from_bits(f64::MIN_POSITIVE.to_bits() + 2),
+                f64::from_bits((f64::MIN_POSITIVE.to_bits() + 2) / 2),
+            ),
+            (f64::from_bits(2), f64::from_bits(1)),
+        ] {
+            let converted = CircleRadiusMm::from_diameter_mm(diameter).expect("a positive D");
+            assert_eq!(converted.get(), radius, "D {diameter:e}");
+            assert_eq!(
+                converted.get() * 2.,
+                diameter,
+                "R = D/2 exactly: {diameter:e}"
+            );
+            // The same stored value a typed radius gives, so the slot, the
+            // solver and the wire cannot tell which unit was typed.
+            assert_eq!(converted, CircleRadiusMm::new(radius).expect("R"));
+        }
+        for bad in [
+            0.,
+            -0.,
+            -13.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MIN,
+            // Halving rounds among the subnormals: the smallest positive value
+            // becomes zero, and an odd one comes back as a different diameter.
+            f64::from_bits(1),
+            f64::from_bits(3),
+            // Normal input can also round when its half is subnormal.
+            f64::from_bits(f64::MIN_POSITIVE.to_bits() + 1),
+        ] {
+            assert!(
+                CircleRadiusMm::from_diameter_mm(bad).is_err(),
+                "diameter {bad:e} was accepted"
+            );
+        }
+        println!("\nFCAD_31E_DIAMETER_CONVERSION_EXECUTED");
+    }
 }

@@ -170,6 +170,17 @@ if [ -n "${FCAD_SKETCH_GUIDE_FBX:-}" ]; then
     echo "FCAD_SKETCH_GUIDE_UFBX_EXECUTED"
 fi
 
+# §31E: the ring sized by two diameters through the form's worker, read by the same
+# pinned reader.
+if [ -n "${FCAD_DIAMETER_FBX:-}" ]; then
+    "$reader" --identity "$FCAD_DIAMETER_FBX" | tee "$work/diameter-reader.txt"
+    count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/diameter-reader.txt")"
+    [ -n "$count" ] && [ "$count" -ge 6 ] || {
+        echo "error: pinned reader did not verify the diameter-sized ring FBX" >&2; exit 1;
+    }
+    echo "FCAD_DIAMETER_UFBX_EXECUTED"
+fi
+
 # §25E reuses this same pinned reader for the actual H/V publications;
 # Later constraint slices add their actual process/worker publications to the
 # same reader build; §25I includes the slanted relative-orientation models.

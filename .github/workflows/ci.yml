@@ -182,6 +182,22 @@ jobs:
             cargo test -p ferritecad-document --test constraint_edit "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
             if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then exit 1; fi
           done
+          # §31E: a diameter is the stored Radius D/2 (the one conversion, the strict CLI
+          # form, the real widgets). Each gate prints its marker after its last assertion,
+          # so a skip, a missing marker or a test that did not run fails the step.
+          for check in \
+            "ferritecad-document|--lib|sketch_constraints::tests::a_circle_diameter_halves_into_the_stored_radius_and_refuses_what_cannot_be|FCAD_31E_DIAMETER_CONVERSION_EXECUTED" \
+            "ferritecad-cli|--test circle_constraints|circle_diameter_request_is_strict_and_converts_without_native|FCAD_31E_CLI_STRICT_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::diameter::a_circle_diameter_is_the_half_radius_in_one_step_through_the_real_widgets|FCAD_31E_WIDGETS_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::diameter::running_jobs_freeze_focused_constraint_numbers_until_editing_resumes|FCAD_31E_FROZEN_NUMBERS_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::diameter::a_stored_radius_is_replaced_by_a_diameter_in_one_exact_remove_and_add|FCAD_31E_REPLACE_EXECUTED" \
+            "ferritecad-app|--bin ferritecad-viewer|constraints::tests::diameter::ring_diameters_follow_the_picked_uuid_not_the_stored_order|FCAD_31E_RING_EXECUTED"
+          do
+            IFS='|' read -r package target gate marker <<< "$check"
+            read -r -a target <<< "$target"
+            cargo test -p "$package" "${target[@]}" "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee diameter.log
+            if grep -q 'skipped:' diameter.log || ! grep -q '^test result: ok\. 1 passed; 0 failed' diameter.log || ! grep -Fxq "$marker" diameter.log; then exit 1; fi
+          done
 
       - name: Discover Revolve profile constraints without native geometry
         shell: bash
