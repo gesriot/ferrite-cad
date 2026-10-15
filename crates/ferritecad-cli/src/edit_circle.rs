@@ -43,6 +43,28 @@ struct Input {
     radius_mm: f64,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::Input;
+
+    #[test]
+    fn request_numbers_round_trip_the_canvas_coordinates_without_losing_a_bit() {
+        let text = "11.017646992297319";
+        let expected: f64 = text.parse().expect("coordinate");
+        let request = format!(
+            r#"{{"request_version":1,"curve_id":"01890f3e-e712-7a00-8000-000000000001","center_mm":[{text},-7.9911765038513405],"radius_mm":9.427973129520453}}"#
+        );
+        let parsed: Input = serde_json::from_str(&request).expect("request");
+        assert_eq!(parsed.center_mm[0].to_bits(), expected.to_bits());
+        let encoded = serde_json::to_string(&parsed.center_mm).expect("encode");
+        let decoded: [f64; 2] = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(
+            decoded.map(f64::to_bits),
+            parsed.center_mm.map(f64::to_bits)
+        );
+    }
+}
+
 fn result(args: &EditCircleArgs) -> Result<EditedCircle> {
     if args.json {
         for path in [&args.source, &args.request, &args.output] {

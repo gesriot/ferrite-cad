@@ -686,6 +686,269 @@ fn annulus_gate(name: &str, root: &Path, source: &Path) {
     );
 }
 
+// ---- §31I: the canvas of the forms, through the same route -------------------
+
+/// The walls of a cold rebuild of `path`, each under its own saved reference: the
+/// curve UUID the reference was raised from and the surface the kernel reports.
+fn walls_by_reference(
+    path: &Path,
+) -> std::collections::BTreeMap<ferritecad_types::StableEntityId, ferritecad_kernel::FaceSurface> {
+    let document = Document::open_read_only(path).expect("reopen");
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let built = ferritecad_eval::rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("cold rebuild");
+    let mut walls = std::collections::BTreeMap::new();
+    let references = document.topology_refs().expect("refs");
+    assert!(!references.is_empty(), "the part carries saved names");
+    for reference in &references {
+        let handles = built.resolve(reference).expect("resolve");
+        assert_eq!(handles.len(), 1, "{:?}", reference.output_role);
+        if let ferritecad_document::SemanticRole::ExtrudeSide { profile_segment } =
+            reference.output_role
+        {
+            walls.insert(
+                profile_segment,
+                kernel.face_surface(handles[0]).expect("surface"),
+            );
+        }
+    }
+    built.release_all(&mut kernel);
+    document.close().expect("close");
+    walls
+}
+
+/// §31I: the form's canvas dragged by real events (`draft`), the window's own Apply on
+/// the real worker, an export before Save, Undo, Redo, Save and a cold reopen of
+/// `source`, each against the command line given the numbers the canvas wrote. The
+/// height, every identity and reference and the source file (until Save) are kept.
+fn canvas_gate(
+    name: &str,
+    root: &Path,
+    source: &Path,
+    draft: impl FnOnce(
+        &Path,
+        &ferritecad_document::ExtrudeEditSource,
+    ) -> (crate::sketch::Editor, Request),
+) -> (Request, Vec<u8>) {
+    let original = std::fs::read(source).expect("source");
+    let private = tempfile::tempdir().expect("private root");
+    let mut sessions = Sessions::default();
+    sessions.adopt(
+        DocumentSession::open_in(private.path(), source, HistoryLimits::default())
+            .expect("session"),
+    );
+    let alias = sessions.logical_path().expect("logical").to_path_buf();
+    let opened = sessions.export_path().expect("accepted");
+    let reading = ferritecad_jobs::read_extrude_source(&opened).expect("reading");
+    let (mut form, request) = draft(&opened, &reading);
+    assert_eq!(request.expected(), reading.version, "the form's version");
+
+    // The command line, given the same explicit numbers.
+    let peer = root.join(format!("{name}-peer.fcad"));
+    request.peer(source, root, &peer);
+    let (original_stl, original_fbx) = peer_bytes(source, root, &format!("{name}-original"));
+    let (g_stl, g_fbx) = peer_bytes(&peer, root, &format!("{name}-geometry"));
+    assert_ne!(g_stl, original_stl, "the gestures must change the part");
+
+    // Apply: one session step, the form over, the file untouched.
+    assert!(matches!(
+        apply_analytic(&mut sessions, &request),
+        Edited::Show(_)
+    ));
+    form.finish_session_change();
+    assert!(!form.active(), "the form outlived the picture it described");
+    assert_eq!(
+        std::fs::read(source).expect("source"),
+        original,
+        "Apply wrote the file"
+    );
+    let applied = sessions.export_path().expect("accepted");
+    assert_eq!(
+        cells(&applied),
+        cells(&peer),
+        "not the command line's model"
+    );
+    assert_identity_kept(source, &applied);
+
+    // Export before Save is the accepted model; Undo and Redo move it exactly.
+    let (stl, fbx) = export_bytes(&applied, &alias, root, &format!("{name}-unsaved"));
+    assert!(stl == g_stl && fbx == g_fbx, "unsaved export");
+    move_native(&mut sessions, true);
+    assert!(!sessions.dirty());
+    let (stl, fbx) = export_bytes(
+        &sessions.export_path().expect("accepted"),
+        &alias,
+        root,
+        &format!("{name}-undo"),
+    );
+    assert!(stl == original_stl && fbx == original_fbx, "Undo");
+    move_native(&mut sessions, false);
+    assert!(sessions.dirty() && !sessions.can_redo());
+    assert_eq!(
+        cells(&sessions.export_path().expect("accepted")),
+        cells(&peer)
+    );
+    assert_eq!(std::fs::read(source).expect("source"), original);
+
+    // Save is the command line's copy in every cell; a cold reopen resolves it.
+    let (tx, rx) = mpsc::channel();
+    let generation = sessions
+        .begin_save(SaveTarget::InPlace, None, |plan, _, cancel| {
+            spawn_save(plan, cancel.clone(), move |result| {
+                tx.send(result).expect("deliver")
+            })
+        })
+        .expect("started");
+    let report = sessions
+        .finish_save(generation, rx.recv().expect("answer"))
+        .expect("answered");
+    assert!(report.published && !sessions.dirty());
+    assert_eq!(
+        cells(source),
+        cells(&peer),
+        "Save is not the command line's copy"
+    );
+    let (stl, fbx) = peer_bytes(source, root, &format!("{name}-saved"));
+    assert!(stl == g_stl && fbx == g_fbx, "the saved file's exports");
+    if let Some(directory) = std::env::var_os("FCAD_ANALYTIC_ARTIFACTS") {
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).expect("artifact directory");
+        std::fs::write(directory.join(format!("{name}.stl")), &stl).expect("stl");
+        std::fs::write(directory.join(format!("{name}.fbx")), &fbx).expect("fbx");
+    }
+    (request, stl)
+}
+
+/// A height of the saved Extrude, read back.
+fn saved_height(path: &Path) -> f64 {
+    let reading = ferritecad_jobs::read_extrude_source(path).expect("reading");
+    reading
+        .circle_sketches
+        .iter()
+        .filter_map(|c| c.circle.as_ref().map(|c| c.height_mm))
+        .chain(
+            reading
+                .annulus_sketches
+                .iter()
+                .filter_map(|a| a.annulus.as_ref().map(|a| a.height_mm)),
+        )
+        .next()
+        .expect("one round profile")
+}
+
+#[test]
+fn native_a_circle_moved_and_resized_on_its_canvas_is_applied_and_saved_like_the_command_line() {
+    if !native() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("root");
+    let source = create(
+        root.path(),
+        "create-circle-extrude",
+        r#"{"schema_version":1,"center_mm":[12.5,-7.25],"radius_mm":10.5,"height_mm":15.25}"#,
+    );
+    let before = stored_curves(&source);
+    let (request, stl) = canvas_gate("circle-canvas", root.path(), &source, |path, reading| {
+        let sketch = reading.circle_sketches[0].sketch;
+        let (form, request) =
+            crate::sketch::analytic_tests::dragged_circle_apply(path, reading, sketch);
+        (form, Request::Circle(request))
+    });
+    let Request::Circle(request) = request else {
+        panic!("a circle request");
+    };
+    let (centre, radius) = (request.edit.center_mm, request.edit.radius_mm);
+    eprintln!("circle-canvas centre={centre:?} radius={radius} height=15.25");
+    // An offset, fractional centre and radius, as the pointer made them.
+    assert!(centre[0] != 12.5 && centre[1] != -7.25 && centre.iter().all(|c| c.fract() != 0.));
+    assert!(radius != 10.5 && radius.fract() != 0.);
+    let after = stored_curves(&source);
+    assert_eq!(
+        (after.len(), after[0].0),
+        (1, before[0].0),
+        "the curve UUID changed"
+    );
+    assert_eq!((after[0].1, after[0].2), (centre, radius));
+    assert_eq!(saved_height(&source), 15.25, "the height moved");
+    let walls = walls_by_reference(&source);
+    let ferritecad_kernel::FaceSurface::Cylinder { radius: wall } = walls[&before[0].0] else {
+        panic!("the wall is not a cylinder: {walls:?}");
+    };
+    assert!((wall - radius).abs() < 1e-9, "{wall} against {radius}");
+    assert_round(&stl, centre, radius, None, 15.25);
+    println!("\nFCAD_31I_NATIVE_CIRCLE_EXECUTED walls=1 sql=cli export=before_save undo=1 redo=1");
+}
+
+#[test]
+fn native_an_annulus_moved_and_resized_on_its_canvas_keeps_each_wall_under_its_reference() {
+    if !native() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("root");
+    let source = create(
+        root.path(),
+        "create-annular-extrude",
+        r#"{"schema_version":1,"center_mm":[12.5,-7.25],"outer_radius_mm":10.5,"inner_radius_mm":4.75,"height_mm":15.25}"#,
+    );
+    let before = stored_curves(&source);
+    let (request, stl) = canvas_gate("annulus-canvas", root.path(), &source, |path, reading| {
+        let sketch = reading.annulus_sketches[0].sketch;
+        let (form, request) =
+            crate::sketch::analytic_tests::dragged_annulus_apply(path, reading, sketch);
+        (form, Request::Annulus(request))
+    });
+    let Request::Annulus(request) = request else {
+        panic!("an annulus request");
+    };
+    let edit = request.edit;
+    eprintln!(
+        "annulus-canvas centre={:?} outer={} bore={} height=15.25",
+        edit.center_mm, edit.outer_radius_mm, edit.inner_radius_mm
+    );
+    assert!(edit.center_mm.iter().all(|c| c.fract() != 0.));
+    assert!(edit.outer_radius_mm != 10.5 && edit.inner_radius_mm != 4.75);
+    assert!(edit.outer_radius_mm.fract() != 0. && edit.inner_radius_mm.fract() != 0.);
+    assert!(edit.outer_radius_mm > edit.inner_radius_mm + 1.);
+    // Each UUID keeps its role and holds its own new radius about the new centre.
+    let after = stored_curves(&source);
+    let ids = |curves: &[(ferritecad_types::StableEntityId, [f64; 2], f64)]| {
+        curves.iter().map(|c| c.0).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(&after),
+        ids(&before),
+        "a UUID or the stored order changed"
+    );
+    let radius_of = |id| after.iter().find(|c| c.0 == id).expect("curve").2;
+    assert_eq!(radius_of(edit.outer_curve_id), edit.outer_radius_mm);
+    assert_eq!(radius_of(edit.inner_curve_id), edit.inner_radius_mm);
+    assert!(after.iter().all(|c| c.1 == edit.center_mm));
+    assert_eq!(saved_height(&source), 15.25, "the height moved");
+    // The surface under the outer wall's saved reference and under the bore's.
+    let walls = walls_by_reference(&source);
+    assert_eq!(walls.len(), 2, "{walls:?}");
+    for (id, want) in [
+        (edit.outer_curve_id, edit.outer_radius_mm),
+        (edit.inner_curve_id, edit.inner_radius_mm),
+    ] {
+        let ferritecad_kernel::FaceSurface::Cylinder { radius } = walls[&id] else {
+            panic!("the wall of {id} is not a cylinder: {walls:?}");
+        };
+        assert!(
+            (radius - want).abs() < 1e-9,
+            "{id}: {radius} against {want}"
+        );
+    }
+    assert_round(
+        &stl,
+        edit.center_mm,
+        edit.outer_radius_mm,
+        Some(edit.inner_radius_mm),
+        15.25,
+    );
+    println!("\nFCAD_31I_NATIVE_ANNULUS_EXECUTED walls=2 sql=cli export=before_save undo=1 redo=1");
+}
+
 /// Build without a kernel: the workers are refused whole, nothing becomes dirty,
 /// and no file is touched. (The geometry edits do not ask for the sketch solver.)
 #[test]

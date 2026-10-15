@@ -1062,6 +1062,16 @@ fn close_request_preserves_foreground_work_and_gesture_holds() {
     assert!(request(&mut w, &loads, &exports).is_none());
     kept(&w);
     w.input.handle(ViewportEvent::GestureCancelled, false);
+    // §31I: a handle held on a Circle's canvas holds Close as a vertex does.
+    assert!(crate::sketch::analytic_tests::begin_saved_circle(
+        &mut w.creates.sketch,
+        root.path()
+    ));
+    let (ctx, at) = crate::sketch::analytic_tests::hold_handle(&mut w.creates.sketch);
+    assert!(request(&mut w, &loads, &exports).is_none());
+    kept(&w);
+    crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
+    w.creates.sketch.dismiss();
     assert!(
         w.creates
             .sketch

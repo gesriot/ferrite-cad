@@ -858,6 +858,11 @@ fn idle_new_transition_checks_foreground_and_gestures_before_taking_any_form() {
     let (ctx, at) = crate::sketch::drag_tests::hold_vertex(&mut w.creates.sketch);
     assert!(!w.begin_quit(), "new-contour gesture lost its hold");
     crate::sketch::drag_tests::release_vertex(&ctx, &mut w.creates.sketch, at);
+    // §31I: a handle held on New's Circle canvas holds Quit too.
+    crate::sketch::analytic_tests::choose_profile(&mut w.creates.sketch, "Circle");
+    let (ctx, at) = crate::sketch::analytic_tests::hold_handle(&mut w.creates.sketch);
+    assert!(!w.begin_quit(), "a held Circle handle in New lost its hold");
+    crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
     println!("\nFCAD_30W_GUARDS_EXECUTED");
 }
 

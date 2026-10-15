@@ -1322,6 +1322,43 @@ jobs:
             grep -Fxq "$marker" sketch-guides.log
           done
 
+      - name: Keep the Circle and annulus canvas gestures in their forms
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+        run: |
+          set -euo pipefail
+          # §31I: the canvas of the Circle and Circle-with-hole forms (the pick rule,
+          # fields that cannot be drawn, the fit, and New and saved forms driven by
+          # real egui events) runs as one filtered group. Every expected name must
+          # have run and printed its marker after its last assertion; a skip, another
+          # count or a missing marker fails the step. The native route through the
+          # session, the CLI and pinned ufbx is gated by the native workflows.
+          cargo test -p ferritecad-app --bin ferritecad-viewer sketch::analytic -- --nocapture --test-threads=1 2>&1 | tee analytic-canvas.log
+          if grep -q 'skipped:' analytic-canvas.log; then exit 1; fi
+          grep -q '^test result: ok\. 14 passed; 0 failed' analytic-canvas.log
+          for check in \
+            "sketch::analytic::tests::fields_that_cannot_be_drawn_are_named_and_numbers_that_can_are_kept_as_they_are FCAD_31I_UNDRAWABLE_EXECUTED" \
+            "sketch::analytic::tests::crowded_handles_go_to_the_nearest_and_an_exact_tie_to_centre_outer_bore FCAD_31I_PICK_RULE_EXECUTED" \
+            "sketch::analytic::tests::a_fit_shows_the_larger_positive_radius_centred_with_the_line_canvas_margins FCAD_31I_FIT_EXECUTED" \
+            "sketch::analytic_tests::a_new_circle_moves_its_centre_and_radius_by_real_events_one_undo_step_each FCAD_31I_NEW_CIRCLE_EXECUTED" \
+            "sketch::analytic_tests::a_new_annulus_changes_each_radius_alone_and_every_profile_keeps_its_draft FCAD_31I_NEW_ANNULUS_EXECUTED" \
+            "sketch::analytic_tests::saved_forms_take_a_gesture_as_one_confirmed_step_and_apply_exactly_its_numbers FCAD_31I_SAVED_EXECUTED" \
+            "sketch::analytic_tests::typed_unconfirmed_text_comes_back_exactly_with_the_first_undo_after_a_drag FCAD_31I_UNCONFIRMED_EXECUTED" \
+            "sketch::analytic_tests::gestures_in_one_frame_keep_their_order_and_a_no_op_keeps_the_redo FCAD_31I_PACKED_EXECUTED" \
+            "sketch::analytic_tests::escape_lost_focus_and_a_vanished_pointer_restore_the_exact_strings_and_history FCAD_31I_CANCEL_EXECUTED" \
+            "sketch::analytic_tests::busy_queued_covered_and_outside_presses_start_nothing_and_held_fields_take_no_text FCAD_31I_BLOCKED_EXECUTED" \
+            "sketch::analytic_tests::crowded_handles_at_a_small_scale_follow_the_pick_rule_through_real_presses FCAD_31I_CROWDED_EXECUTED" \
+            "sketch::analytic_tests::one_and_two_pixels_per_point_give_the_same_strings_and_pick_radius FCAD_31I_SCALE_PIXELS_EXECUTED" \
+            "sketch::analytic_tests::a_refused_profile_stays_a_visible_draft_and_text_that_cannot_be_drawn_draws_nothing FCAD_31I_REFUSED_EXECUTED" \
+            "sketch::analytic_tests::the_view_fits_on_opening_and_on_fit_only_and_the_form_stays_within_768_points FCAD_31I_VIEW_AND_FORM_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            grep -Fq "test $gate ... " analytic-canvas.log
+            grep -Fxq "$marker" analytic-canvas.log
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |

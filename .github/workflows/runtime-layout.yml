@@ -1533,6 +1533,52 @@ jobs:
           echo "FCAD_CHAMFER_SESSION_FBX_DIR=$chamfer_artifacts" >> "$GITHUB_ENV"
 
 
+      - name: Apply Circle and annulus numbers made on the forms' canvas through the native window state
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # §31I: the §30D route with the numbers made by the forms' canvas (centre and
+          # radii dragged by real egui events): Apply on the real worker, export before
+          # Save, Undo, Redo, Save and a cold reopen against the peer CLI given those
+          # numbers, each wall under its saved reference. Each marker is printed after
+          # the last assertion, so a skip cannot print it. The saved exports join the
+          # §30D ones for the pinned reader (`FCAD_ANALYTIC_SESSION_FBX_DIR`).
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          analytic_dir="$RUNNER_TEMP/analytic-session"
+          mkdir -p "$analytic_dir"
+          analytic_artifacts="$analytic_dir"
+          if [ '${{ matrix.name }}' = windows ]; then analytic_artifacts="$(cygpath -w "$analytic_artifacts")"; fi
+          export FCAD_ANALYTIC_ARTIFACTS="$analytic_artifacts"
+          for check in \
+            "sessions::tests::analytic::native_a_circle_moved_and_resized_on_its_canvas_is_applied_and_saved_like_the_command_line FCAD_31I_NATIVE_CIRCLE_EXECUTED walls=1 sql=cli export=before_save undo=1 redo=1" \
+            "sessions::tests::analytic::native_an_annulus_moved_and_resized_on_its_canvas_keeps_each_wall_under_its_reference FCAD_31I_NATIVE_ANNULUS_EXECUTED walls=2 sql=cli export=before_save undo=1 redo=1"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-analytic-canvas.log
+            if grep -q 'skipped:' session-analytic-canvas.log || \
+               ! grep -q '^test result: ok\. 1 passed; 0 failed' session-analytic-canvas.log || \
+               ! grep -Fq "test $gate ... " session-analytic-canvas.log || \
+               ! grep -Fxq "$marker" session-analytic-canvas.log; then
+              echo "::error::${gate} did not execute and pass"
+              exit 1
+            fi
+          done
+          for name in circle-canvas annulus-canvas; do
+            test -s "$analytic_dir/$name.fbx"
+            test -s "$analytic_dir/$name.stl"
+          done
+
       - name: Confirm Open over New and reject its late creation result
         env:
           FERRITECAD_REQUIRE_OCCT: '1'

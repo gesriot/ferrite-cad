@@ -237,6 +237,12 @@ impl ViewportInput {
             .is_some_and(|point| !self.region.contains(point))
     }
 
+    /// Latest OS pointer position, in window pixels. The interface can route a
+    /// press against its painted areas before its next layout pass consumes it.
+    pub fn pointer_position(&self) -> Option<(f32, f32)> {
+        self.pointer
+    }
+
     /// Points the camera at a box.
     pub fn frame(&mut self, bounds: ([f32; 3], [f32; 3])) -> Result<()> {
         let mut framed = Ok(());

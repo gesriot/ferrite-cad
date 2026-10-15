@@ -247,6 +247,15 @@ fn open_over_an_unfinished_new_asks_first_and_discards_only_when_told() {
     assert!(w.creates.asking().is_none(), "no question during a gesture");
     crate::sketch::drag_tests::release_vertex(&ctx, &mut w.creates.sketch, at);
     assert!(can_open_here(&w, &restores));
+    // §31I: so does a handle held on New's annular canvas; then back to the polygon.
+    crate::sketch::analytic_tests::choose_profile(&mut w.creates.sketch, "Circle with hole");
+    let (ctx, at) = crate::sketch::analytic_tests::hold_handle(&mut w.creates.sketch);
+    assert!(!can_open_here(&w, &restores));
+    assert_eq!(w.choose_file(&restores, &b_file), None);
+    assert!(w.creates.asking().is_none(), "no question during a gesture");
+    crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
+    assert!(can_open_here(&w, &restores));
+    crate::sketch::analytic_tests::choose_profile(&mut w.creates.sketch, "Line polygon");
     let (_, undo_before, _) =
         crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("drawing");
     let scribble = crate::sketch::tests::scribble_drawing(&mut w.creates.sketch);
