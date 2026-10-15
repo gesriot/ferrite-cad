@@ -246,10 +246,10 @@ impl Folder {
         // The list is in place. A folder that cannot be synced only weakens what a
         // power cut might keep, which is not claimed; it is said, not hidden.
         if let Err(error) = sync_folder(&self.root) {
-            eprintln!(
+            crate::journal::report(format_args!(
                 "ferritecad: the list of open files was replaced, but its folder could not \
                  be synced: {error}"
-            );
+            ));
         }
         Ok(())
     }

@@ -36,6 +36,7 @@ mod dialogs;
 mod edits;
 mod exports;
 mod fillets;
+mod journal;
 mod last_tabs;
 #[cfg(target_os = "macos")]
 mod macos_quit;
@@ -99,6 +100,13 @@ fn main() -> Result<()> {
         Request::SolverInfo => std::process::exit(solver_info()),
         Request::Window(document) => document,
     };
+    // §31H: only the window keeps a launch journal, opened before the event loop
+    // is asked for so that a window that cannot be made is written too.
+    journal::launch(|| window(document))
+}
+
+/// The window: an event loop and the application on it, until it ends.
+fn window(document: Option<PathBuf>) -> Result<()> {
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|error| {
@@ -2031,7 +2039,9 @@ fn end_window_quit(
             ));
         }
         // Said, not hidden: the window is ending and has nowhere else to say it.
-        eprintln!("ferritecad: the list of open files was not kept: {error}");
+        journal::report(format_args!(
+            "ferritecad: the list of open files was not kept: {error}"
+        ));
     }
     tabs.decide_exit(sessions);
     QuitEnd::Exit
@@ -3281,7 +3291,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             Err(error) => {
-                eprintln!("ferritecad: {error}");
+                journal::report(format_args!("ferritecad: {error}"));
                 event_loop.exit();
             }
         }
@@ -3483,7 +3493,7 @@ impl ApplicationHandler<AppEvent> for App {
                     let outcome = self.show(&staged, *result, sessions::Bind::Staged);
                     let shown = outcome.is_ok();
                     if let Err(error) = &outcome {
-                        eprintln!("ferritecad: {error}");
+                        journal::report(format_args!("ferritecad: {error}"));
                     }
                     if self.sessions.finish_scene(generation, outcome) && shown {
                         // The forms described the picture that was replaced.
@@ -3523,7 +3533,7 @@ impl ApplicationHandler<AppEvent> for App {
                         self.loads.document_replaced();
                     }
                     if let Err(error) = &outcome {
-                        eprintln!("ferritecad: {error}");
+                        journal::report(format_args!("ferritecad: {error}"));
                     }
                     match self
                         .tabs
@@ -3586,7 +3596,7 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                     };
                     if let Err(error) = &outcome {
-                        eprintln!("ferritecad: {error}");
+                        journal::report(format_args!("ferritecad: {error}"));
                     }
                     self.recoveries
                         .finish(generation, outcome.map_err(|error| error.to_string()));
@@ -3616,7 +3626,7 @@ impl ApplicationHandler<AppEvent> for App {
                         self.loads.document_replaced();
                     }
                     if let Err(error) = &outcome {
-                        eprintln!("ferritecad: {error}");
+                        journal::report(format_args!("ferritecad: {error}"));
                     }
                     creates::finish_shown(
                         &mut self.creates,
@@ -3683,7 +3693,7 @@ impl ApplicationHandler<AppEvent> for App {
                     awaited.then(|| outcome.as_ref().map(|_| ()).map_err(ToString::to_string));
                 let effect = finish_answer(&mut self.loads, &mut self.input, generation, outcome);
                 if let Some(error) = effect.error {
-                    eprintln!("ferritecad: {error}");
+                    journal::report(format_args!("ferritecad: {error}"));
                 }
                 if self.restores.answered(generation, shown) {
                     self.continue_restore();
@@ -3748,7 +3758,7 @@ impl ApplicationHandler<AppEvent> for App {
                 // hands the reducer along with its place, so the two are
                 // never given different numbers by being given them twice.
                 if let Err(error) = live.surface.resize(&live.renderer, size.width, size.height) {
-                    eprintln!("ferritecad: {error}");
+                    journal::report(format_args!("ferritecad: {error}"));
                     event_loop.exit();
                     return;
                 }
@@ -4512,7 +4522,7 @@ impl ApplicationHandler<AppEvent> for App {
                         self.point_at(pointed_row, interface_has_pointer);
                     }
                     Err(error) => {
-                        eprintln!("ferritecad: {error}");
+                        journal::report(format_args!("ferritecad: {error}"));
                         event_loop.exit();
                     }
                 }
@@ -4551,7 +4561,7 @@ impl ApplicationHandler<AppEvent> for App {
                     response.consumed,
                     live.egui.egui_wants_pointer_input(),
                 ) {
-                    eprintln!("ferritecad: {error}");
+                    journal::report(format_args!("ferritecad: {error}"));
                 }
                 apply_viewport_input(
                     &mut self.input,
@@ -5470,7 +5480,7 @@ impl App {
                 }
             }
             Err(error) => {
-                eprintln!("ferritecad: {error}");
+                journal::report(format_args!("ferritecad: {error}"));
                 self.sessions.status = format!("The tab was not closed: {error}");
                 if let Some(id) = close_id {
                     self.return_close_form(id);
@@ -6012,7 +6022,7 @@ impl App {
             }),
         };
         if let Err(error) = &outcome {
-            eprintln!("ferritecad: {error}");
+            journal::report(format_args!("ferritecad: {error}"));
         }
         let shown = outcome.is_ok();
         if self.sessions.finish_scene(generation, outcome) && shown {
@@ -6794,7 +6804,7 @@ impl App {
             // A failed pick chooses nothing and changes nothing. The model is
             // still on screen and still correct; the click simply went
             // unanswered.
-            Err(error) => eprintln!("ferritecad: {error}"),
+            Err(error) => journal::report(format_args!("ferritecad: {error}")),
         }
     }
 
@@ -6812,7 +6822,7 @@ impl App {
         if let Err(error) =
             frame_selection(&live.scene, live.scene.prepared.snapshot(), &mut self.input)
         {
-            eprintln!("ferritecad: {error}");
+            journal::report(format_args!("ferritecad: {error}"));
         }
     }
 
@@ -6930,7 +6940,7 @@ impl App {
             live.scene.prepared.snapshot(),
             &mut self.input,
         ) {
-            eprintln!("ferritecad: {error}");
+            journal::report(format_args!("ferritecad: {error}"));
         }
     }
 
@@ -6967,7 +6977,7 @@ impl App {
                 match Self::hit_at(live, self.input.camera(), x, y) {
                     Ok(hit) => Some(hovered_at(hit)),
                     Err(error) => {
-                        eprintln!("ferritecad: {error}");
+                        journal::report(format_args!("ferritecad: {error}"));
                         return;
                     }
                 }

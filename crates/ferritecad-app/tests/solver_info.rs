@@ -18,6 +18,9 @@
 //!   the same shape of answer.
 //! - A stray argument beside it is refused, with the same `2` as any other
 //!   line this viewer cannot act on.
+//! - §31H: neither it nor any usage refusal keeps a launch journal. Only the
+//!   window does, so every run here names a journal folder of its own through
+//!   `FERRITECAD_LOG_DIR`, and only a window route may make it.
 
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
@@ -56,6 +59,14 @@ struct Answer {
     code: i32,
     stdout: String,
     stderr: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(dead_code, reason = "read only where a window route can run headless")
+    )]
+    pid: u32,
+    /// The launch journal folder the run was given; made only by a window route.
+    journal: PathBuf,
+    _home: tempfile::TempDir,
 }
 
 impl Answer {
@@ -76,6 +87,8 @@ impl Answer {
 /// runner — a path that reached winit cannot start at all, so the difference
 /// between answering before the window and answering after it becomes visible.
 fn run(arguments: &[&str]) -> Answer {
+    let home = tempfile::tempdir().expect("a folder for the journal");
+    let journal = home.path().join("journal");
     let mut child = Command::new(viewer())
         .args(arguments)
         .stdin(Stdio::null())
@@ -83,8 +96,10 @@ fn run(arguments: &[&str]) -> Answer {
         .stderr(Stdio::piped())
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
+        .env("FERRITECAD_LOG_DIR", &journal)
         .spawn()
         .expect("the viewer is built alongside this test");
+    let pid = child.id();
 
     let deadline = Instant::now() + DEADLINE;
     while child
@@ -124,6 +139,9 @@ fn run(arguments: &[&str]) -> Answer {
             .expect("the viewer exits rather than being signalled"),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        pid,
+        journal,
+        _home: home,
     }
 }
 
@@ -180,6 +198,11 @@ fn the_viewer_says_which_sketch_solver_it_has_and_opens_nothing() {
             answer.stdout, answer.stderr
         ),
     }
+
+    assert!(
+        !answer.journal.exists(),
+        "--solver-info made a launch journal folder"
+    );
 
     // Never a skip, and never the bench. The reference Levenberg-Marquardt
     // that the solver bench keeps is not a fallback for a missing planegcs: a
@@ -301,7 +324,109 @@ fn a_stray_argument_beside_the_diagnostic_is_refused() {
             "{line:?} was refused and answered anyway:\n{}",
             answer.said()
         );
+        assert!(
+            !answer.journal.exists(),
+            "{line:?} made a launch journal folder"
+        );
     }
+}
+
+/// §31H: the diagnostic and every usage refusal answer exactly as before the
+/// launch journal existed — the same streams, words and exit codes — and none of
+/// them makes a journal folder. The usage words are the frozen contract.
+#[test]
+fn the_diagnostic_and_usage_refusals_answer_as_before_and_keep_no_journal() {
+    let answer = run(&["--solver-info"]);
+    assert!(
+        matches!(answer.code, EXIT_AVAILABLE | EXIT_NO_SOLVER),
+        "{answer:?}"
+    );
+    assert_eq!(answer.stderr, "", "{answer:?}");
+    let lines: Vec<&str> = answer.stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{answer:?}");
+    let expected = if answer.code == EXIT_AVAILABLE {
+        "sketch solver: available"
+    } else {
+        "sketch solver: unavailable"
+    };
+    assert_eq!(lines[0], expected, "{answer:?}");
+    assert!(answer.stdout.ends_with('\n'), "{answer:?}");
+    assert!(
+        !answer.journal.exists(),
+        "--solver-info made a journal folder"
+    );
+
+    let usage = "invalid input: usage: ferritecad-viewer [file.fcad], or ferritecad-viewer \
+                 --solver-info";
+    for (line, stderr) in [
+        (
+            vec!["--solver-info", "part.fcad"],
+            format!("{usage}; --solver-info takes no arguments\n"),
+        ),
+        (
+            vec!["--solver-info", "--solver-info"],
+            format!("{usage}; --solver-info takes no arguments\n"),
+        ),
+        (vec!["--help"], format!("{usage}\n")),
+        (vec!["-x"], format!("{usage}\n")),
+        (
+            vec!["a.fcad", "b.fcad"],
+            format!("{usage}; one document at a time\n"),
+        ),
+    ] {
+        let answer = run(&line);
+        assert_eq!(answer.code, EXIT_USAGE, "{line:?}: {answer:?}");
+        assert_eq!(answer.stdout, "", "{line:?}: {answer:?}");
+        assert_eq!(answer.stderr, stderr, "{line:?}: {answer:?}");
+        assert!(!answer.journal.exists(), "{line:?} made a journal folder");
+    }
+    println!("\nFCAD_LAUNCH_JOURNAL_SOLVER_INFO_EXECUTED");
+}
+
+/// §31H: a window that cannot open is kept in the launch journal by the real
+/// process. Only where a window cannot open (no display, as above): the start
+/// with this process's facts, then the event loop's refusal with its reason,
+/// while stderr and the exit code stay what `main` returning an error gives.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_window_that_cannot_open_is_kept_in_the_launch_journal() {
+    let answer = run(&[]);
+    assert_eq!(answer.code, 1, "{answer:?}");
+    assert!(answer.stderr.starts_with("Error: "), "{answer:?}");
+    assert!(!answer.stderr.contains("launch journal"), "{answer:?}");
+    let mut names: Vec<String> = std::fs::read_dir(&answer.journal)
+        .expect("the window route made its journal folder")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("name")
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names.len(), 2, "{names:?}");
+    let stem = names[0].strip_suffix(".1.log").expect("segment 1");
+    assert_eq!(names[1], format!("{stem}.lock"));
+    let segment = std::fs::read_to_string(answer.journal.join(&names[0])).expect("segment");
+    let lines: Vec<&str> = segment.lines().collect();
+    assert_eq!(lines.len(), 2, "{segment}");
+    assert!(
+        lines[0].starts_with(&format!(
+            "FERRITECAD-LAUNCH-JOURNAL 1 segment=1 ferritecad-viewer {} os=linux arch={} \
+             pid={} instance=",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::ARCH,
+            answer.pid
+        )),
+        "{segment}"
+    );
+    assert!(
+        lines[1].contains(" exit the window failed: rendering failure: opening a window: ")
+            && lines[1].contains("DISPLAY"),
+        "{segment}"
+    );
+    println!("\nFCAD_LAUNCH_JOURNAL_WINDOW_FAILURE_EXECUTED");
 }
 
 /// A document argument still goes to the window, and not to the diagnostic.

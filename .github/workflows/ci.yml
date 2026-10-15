@@ -1330,6 +1330,42 @@ jobs:
           cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture 2>&1 | tee idle-redraw.log
           if grep -q 'skipped:' idle-redraw.log || ! grep -Fq "test $gate ... ok" idle-redraw.log; then exit 1; fi
 
+      - name: Keep the viewer launch journal bounded and per instance
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §31H: the journal's writer on temporary folders and the window route
+          # (start, a real error, a panic, its end) in child processes without a
+          # window, by exact name, each marker printed after its last assertion.
+          for check in \
+            "journal::tests::a_segment_takes_records_up_to_exactly_sixteen_mebibytes_and_the_next_opens_segment_two FCAD_LAUNCH_JOURNAL_EXACT_LIMIT_EXECUTED" \
+            "journal::tests::a_message_larger_than_a_segment_is_one_bounded_line_and_formatting_stops_at_the_limit FCAD_LAUNCH_JOURNAL_LARGE_RECORD_EXECUTED" \
+            "journal::tests::a_cut_never_splits_a_character_or_an_escape_and_keeps_as_much_as_fits FCAD_LAUNCH_JOURNAL_UNICODE_EXECUTED" \
+            "journal::tests::an_instance_keeps_its_first_and_current_segment_and_removes_only_its_own_full_ones FCAD_LAUNCH_JOURNAL_ROTATION_EXECUTED" \
+            "journal::tests::a_starting_instance_keeps_the_four_newest_finished_a_running_one_and_everything_foreign FCAD_LAUNCH_JOURNAL_RETENTION_EXECUTED" \
+            "journal::tests::folders_and_files_that_refuse_never_panic_and_stop_the_journal_once FCAD_LAUNCH_JOURNAL_FAILURES_EXECUTED" \
+            "journal::tests::threads_writing_at_once_leave_whole_records_in_bounded_segments FCAD_LAUNCH_JOURNAL_THREADS_EXECUTED" \
+            "journal::tests::a_panic_never_waits_for_a_busy_writer FCAD_LAUNCH_JOURNAL_BUSY_PANIC_EXECUTED" \
+            "journal::tests::instances_side_by_side_keep_their_own_files_and_never_wait FCAD_LAUNCH_JOURNAL_INSTANCES_EXECUTED" \
+            "sessions::tests::tabs::restore::the_window_route_journals_its_start_a_real_error_a_panic_and_its_end FCAD_LAUNCH_JOURNAL_ROUTE_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee launch-journal.log
+            if grep -q 'skipped:' launch-journal.log; then exit 1; fi
+            grep -Fq "test $gate ... " launch-journal.log
+            grep -q '^test result: ok\. 1 passed; 0 failed' launch-journal.log
+            grep -Fxq "$marker" launch-journal.log
+          done
+          # The real viewer: --solver-info and usage keep their exact answers and
+          # make no journal folder; on Linux a window that cannot open is kept.
+          cargo test -p ferritecad-app --test solver_info -- --nocapture --test-threads=1 2>&1 | tee launch-journal-process.log
+          grep -q '^test result: ok\. [0-9]* passed; 0 failed' launch-journal-process.log
+          grep -Fxq FCAD_LAUNCH_JOURNAL_SOLVER_INFO_EXECUTED launch-journal-process.log
+          if [ "$RUNNER_OS" = Linux ]; then
+            grep -Fxq FCAD_LAUNCH_JOURNAL_WINDOW_FAILURE_EXECUTED launch-journal-process.log
+          fi
+
       - name: Verify memory guard cleanup without a viewer
         if: runner.os == 'macOS'
         run: python3 tools/test-viewer-memory-guard.py
