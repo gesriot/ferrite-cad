@@ -1262,6 +1262,9 @@ jobs:
           # marker only after its last assertion; a skip, a missing marker or a test
           # that did not run fails the step. The native publication gate is run by the
           # native workflows below, where it cannot skip.
+          # §31D-2: the hover anchor of the explicit "From object" gesture (acquire at
+          # 12 points, hold to 24, replace only by more than one point, the real
+          # canvas, editor and tabs) is gated in the same loop by its own names.
           for check in \
             "sketch::guide::tests::axes_and_diagonals_are_in_the_xy_plane_with_y_up FCAD_31D_HEADINGS_EXECUTED" \
             "sketch::guide::tests::a_guide_is_held_within_the_aperture_across_it_and_not_beyond FCAD_31D_APERTURE_EXECUTED" \
@@ -1287,7 +1290,28 @@ jobs:
             "sketch::guide_tests::one_and_two_pixels_per_point_and_other_canvas_scales_hold_the_same_guide FCAD_31D_SCALE_PIXELS_EXECUTED" \
             "sketch::guide_tests::typed_text_stays_exact_and_restore_saved_vertices_keeps_the_editor_settings FCAD_31D_TEXT_AND_RESTORE_EXECUTED" \
             "sketch::guide_tests::a_guided_result_that_breaks_the_contour_stays_a_visible_draft_and_is_refused_as_before FCAD_31D_DEGENERATE_EXECUTED" \
-            "sessions::tests::tabs::drafts::guides_a_typed_length_and_the_guided_draft_follow_their_tab FCAD_31D_TABS_EXECUTED"
+            "sessions::tests::tabs::drafts::guides_a_typed_length_and_the_guided_draft_follow_their_tab FCAD_31D_TABS_EXECUTED" \
+            "sketch::anchor::tests::a_pointer_acquires_inside_twelve_points_and_holds_until_beyond_twenty_four FCAD_31H_APERTURE_EXECUTED" \
+            "sketch::anchor::tests::a_nearer_candidate_replaces_the_held_one_only_by_more_than_one_point FCAD_31H_REPLACE_EXECUTED" \
+            "sketch::anchor::tests::the_first_anchor_is_the_object_snap_choice_and_stays_stable_for_any_layout FCAD_31H_FIRST_EXECUTED" \
+            "sketch::anchor::tests::a_held_anchor_that_is_gone_hidden_or_unmeasurable_is_released FCAD_31H_RELEASE_EXECUTED" \
+            "sketch::anchor::tests::the_same_pointer_in_points_holds_the_same_anchor_at_any_scale FCAD_31H_SCALES_EXECUTED" \
+            "sketch::anchor::tests::words_name_the_real_anchor_and_the_vertex_the_gesture_changes FCAD_31H_WORDS_EXECUTED" \
+            "sketch::anchor_tests::the_mode_sits_in_the_guides_row_needs_guides_and_changes_only_editor_state FCAD_31H_ROW_EXECUTED" \
+            "sketch::anchor_tests::a_new_point_is_added_from_a_shown_endpoint_midpoint_or_crossing_reached_by_real_events FCAD_31H_NEW_EXECUTED" \
+            "sketch::anchor_tests::a_saved_vertex_moves_from_another_anchor_without_switching_the_selection FCAD_31H_SAVED_EXECUTED" \
+            "sketch::anchor_tests::a_held_anchor_is_released_at_twice_the_aperture_and_replaced_only_by_a_clearly_nearer_one FCAD_31H_HYSTERESIS_EXECUTED" \
+            "sketch::anchor_tests::a_long_gesture_keeps_the_pressed_anchor_even_past_other_points_and_twice_the_aperture FCAD_31H_LONG_EXECUTED" \
+            "sketch::anchor_tests::an_object_point_beats_a_guide_from_the_anchor_and_a_length_decides_what_it_keeps FCAD_31H_PRECEDENCE_EXECUTED" \
+            "sketch::anchor_tests::a_refused_length_moves_no_saved_vertex_even_beside_an_object_point FCAD_31H_SAVED_REFUSED_EXECUTED" \
+            "sketch::anchor_tests::escape_lost_focus_and_a_vanished_pointer_restore_the_strings_and_a_release_outside_ends_it FCAD_31H_CANCEL_EXECUTED" \
+            "sketch::anchor_tests::packed_events_keep_their_order_and_the_settings_belong_to_the_press FCAD_31H_PACKED_EXECUTED" \
+            "sketch::anchor_tests::off_busy_covered_and_unreadable_canvases_offer_no_anchor_and_typed_text_stays_exact FCAD_31H_BLOCKED_EXECUTED" \
+            "sketch::anchor_tests::a_result_that_breaks_the_contour_stays_a_draft_and_restore_keeps_the_mode FCAD_31H_DEGENERATE_EXECUTED" \
+            "sketch::anchor_tests::one_and_two_pixels_per_point_and_other_canvas_scales_hold_the_same_anchor FCAD_31H_SCALE_PIXELS_EXECUTED" \
+            "sketch::anchor_tests::the_form_keeps_apply_and_save_in_reach_with_the_mode_on_at_768_points FCAD_31H_FORM_EXECUTED" \
+            "sketch::anchor_tests::a_new_contour_closed_from_an_anchor_hands_the_create_job_exactly_the_polygon_it_shows FCAD_31H_CREATE_EXECUTED" \
+            "sessions::tests::tabs::drafts::the_anchor_mode_follows_its_tab_and_the_resting_anchor_follows_nobody FCAD_31H_TABS_EXECUTED"
           do
             gate="${check%% *}"
             marker="${check#* }"

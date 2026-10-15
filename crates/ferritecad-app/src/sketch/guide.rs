@@ -334,7 +334,7 @@ pub(super) fn strings(heading: usize, at: [f64; 2], anchor: &[String; 2]) -> [St
 }
 
 /// A distance as shown: at most three decimals, no trailing zeros.
-fn shown(value: f64) -> String {
+pub(super) fn shown(value: f64) -> String {
     let text = format!("{value:.3}");
     if value != 0.0 && text.parse::<f64>().ok() == Some(0.0) {
         return value.to_string();
@@ -346,8 +346,23 @@ fn shown(value: f64) -> String {
 /// vertex being dragged. Both numbers are the 1-based numbers the canvas draws.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Role {
-    Add { after: usize },
-    Drag { vertex: usize },
+    Add {
+        after: usize,
+    },
+    Drag {
+        vertex: usize,
+    },
+    /// §31D-2: a gesture that measures from a shown object point instead: it adds
+    /// vertex `vertices + 1`, or moves `vertex`, in a contour of `vertices` points.
+    AddFrom {
+        source: Candidate,
+        vertices: usize,
+    },
+    DragFrom {
+        source: Candidate,
+        vertices: usize,
+        vertex: usize,
+    },
 }
 
 /// The words beside the pointer for a guided outcome, in the frame only. A dragged
@@ -389,17 +404,49 @@ pub(super) fn label(outcome: &Outcome, role: Role) -> Option<String> {
                 distance(g),
             )
         }),
-        (Outcome::Refused { heading }, Role::Add { .. }) => Some(format!(
+        (Outcome::Guide(g), Role::AddFrom { source, vertices }) => Some(from_object(
+            g,
+            &distance(g),
+            &format!("{} · {}", source.kind.label(), source.source(vertices)),
+            &format!("adds vertex {}", vertices + 1),
+        )),
+        (
+            Outcome::Guide(g),
+            Role::DragFrom {
+                source,
+                vertices,
+                vertex,
+            },
+        ) => Some(from_object(
+            g,
+            &distance(g),
+            &format!("{} · {}", source.kind.label(), source.source(vertices)),
+            &format!("moves vertex {}", vertex + 1),
+        )),
+        (Outcome::Refused { heading }, Role::Add { .. } | Role::AddFrom { .. }) => Some(format!(
             "{}° · Length refused · no point added",
             degrees(*heading)
         )),
-        (Outcome::Refused { heading }, Role::Drag { vertex }) => Some(format!(
-            "{}° · Length refused · vertex {} not moved",
-            degrees(*heading),
-            vertex + 1
-        )),
+        (Outcome::Refused { heading }, Role::Drag { vertex } | Role::DragFrom { vertex, .. }) => {
+            Some(format!(
+                "{}° · Length refused · vertex {} not moved",
+                degrees(*heading),
+                vertex + 1
+            ))
+        }
         (Outcome::Open | Outcome::Object(_), _) => None,
     }
+}
+
+/// The words of a guided gesture from a shown object point: the length from the
+/// real anchor, named, and what the gesture does.
+fn from_object(g: &Guided, distance: &str, anchor: &str, effect: &str) -> String {
+    let length = if g.typed { "Length " } else { "" };
+    format!(
+        "{}° · {length}{distance} mm from {anchor} · {effect}{}",
+        HEADINGS[g.heading].degrees,
+        conflict(g),
+    )
 }
 
 fn conflict(g: &Guided) -> String {

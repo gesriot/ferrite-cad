@@ -58,6 +58,22 @@ pub(super) struct Candidate {
     order: (usize, usize),
 }
 
+impl Candidate {
+    /// What makes this snap, in the canvas's own 1-based numbers: a vertex, an edge
+    /// (`from→to` around a contour of `vertices` points) or the two edges that cross.
+    /// Words for the frame only; never stored or compared.
+    pub(super) fn source(&self, vertices: usize) -> String {
+        let edge = |i: usize| format!("{}→{}", i + 1, (i + 1) % vertices.max(1) + 1);
+        match self.kind {
+            SnapKind::Endpoint => format!("vertex {}", self.order.0 + 1),
+            SnapKind::Midpoint => format!("edge {}", edge(self.order.0)),
+            SnapKind::Intersection => {
+                format!("edges {} × {}", edge(self.order.0), edge(self.order.1))
+            }
+        }
+    }
+}
+
 /// An axis-aligned rectangle in document millimetres.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Window {
@@ -81,7 +97,7 @@ impl Window {
             [centre[0] + radius, centre[1] + radius],
         )
     }
-    fn contains(&self, p: [f64; 2]) -> bool {
+    pub(super) fn contains(&self, p: [f64; 2]) -> bool {
         (0..2).all(|i| p[i] >= self.lo[i] && p[i] <= self.hi[i])
     }
     fn overlaps(&self, a: [f64; 2], b: [f64; 2]) -> bool {
@@ -245,8 +261,14 @@ pub(super) fn collect(points: &[[f64; 2]], closed: bool, window: Option<Window>)
 /// from the draft while it moves.
 pub(super) fn frozen(points: &[[f64; 2]], closed: bool, moving: [f64; 2]) -> Vec<Candidate> {
     let mut all = collect(points, closed, None);
-    all.retain(|c| (c.at[0] - moving[0]).hypot(c.at[1] - moving[1]) > COINCIDENT_MM);
+    drop_at(&mut all, moving);
     all
+}
+
+/// Removes every candidate within [`COINCIDENT_MM`] of `place`: the one rule that
+/// keeps a moving vertex, and what stacks on it, out of a snap set.
+pub(super) fn drop_at(candidates: &mut Vec<Candidate>, place: [f64; 2]) {
+    candidates.retain(|c| (c.at[0] - place[0]).hypot(c.at[1] - place[1]) > COINCIDENT_MM);
 }
 
 /// The winner for one query, or none.

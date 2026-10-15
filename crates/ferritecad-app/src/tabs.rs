@@ -112,6 +112,9 @@ impl Forms<'_> {
     /// Takes the open forms of the tab `of` is the controller of, leaving none
     /// shown. `None` (and nothing taken) when no form about its document is open.
     fn park(&mut self, of: &Sessions) -> Option<Draft> {
+        // §31D-2: the anchor a resting pointer holds is not part of what a hidden tab
+        // keeps: it must not come alive when its form is shown again.
+        self.editor.forget_anchor();
         if !(self.edits.form_open() || self.editor.saved_object_open()) {
             return None;
         }
