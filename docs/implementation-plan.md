@@ -5147,7 +5147,7 @@ placement, Cancel, Apply, unsaved exports and Save As. The actual GUI file match
 CLI SQL/UUID/refs and STL/FBX (14500 mm³); peak footprint 212.095 MiB, exit 0,
 pressure 1 and swap 0. Remote CI is separate from these local checks.
 
-**§31D-2 (implemented, awaiting review).** The Line canvas of a New drawing and of a saved
+**§31D-2 (reviewed implementation, PR #111).** The Line canvas of a New drawing and of a saved
 Sketch has an explicit, editor-only **From object** checkbox at the end of the Guides row
 (off by default, only while Guides are on, nothing persisted). With it on, hovering a
 shown Endpoint, Midpoint or finite Intersection of the drawn Lines (§31C candidates and
@@ -5168,8 +5168,14 @@ reachability proof by real egui events, executed gates, mutations, resources and
 independent window recipe: [sketch-hover-guide-anchors.md](sketch-hover-guide-anchors.md).
 **Not done:** the circle centre (no circle is drawn on this canvas), quadrants, nearest,
 tangency, apparent crossings, keyboard cycling, a persistent dimension, every constraint
-adapter, a window or remote-CI run of this diff; so §31C, §30, Milestone 5C, the product
-and the OOM investigation stay open.
+adapter; so §31C, §30, Milestone 5C, the product and the OOM investigation stay open.
+Independent review fixed idle redraws reacquiring a cleared anchor and a missing
+font glyph in edge labels. The macOS window covered endpoint/midpoint anchors,
+Length refusal, draft and document Undo/Redo, Cancel, tab preservation, Apply,
+unsaved exports and Save, plus New from a finite intersection. Saved SQL/UUID/refs
+and STL/FBX matched CLI; independent STL volume was 17500 mm³, strict ufbx passed.
+Both viewers exited 0; peak footprints 192.111/186.298 MiB, pressure 1, swap 0.
+Remote code and documentation CI are recorded separately in the verification document.
 
 ### §31E — Diameter input through Radius (reviewed implementation, PR #108)
 

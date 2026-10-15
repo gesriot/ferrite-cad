@@ -199,10 +199,11 @@ on its last preview as the §31D-1 drag does; the standing words are painted on 
 the words `vertex N`, `edge a>b`, `edges a>b × c>d` use the canvas's 1-based numbers. The
 constants (12, 24, 1 points) are the §31C ones, named in `anchor.rs`.
 
-## Not done, not claimed
+## Author handoff: not done, not claimed
 
-A window (the author ran none), a viewer, the CUA, any GPU or remote CI run of this diff,
-Windows or Linux evidence, the circle centre (no circle is drawn here), quadrants, nearest,
+At handoff, a window (the author ran none), a viewer, the CUA, any GPU or remote CI run of this diff,
+Windows or Linux evidence were not available (independent review follows below).
+Still out of scope: the circle centre (no circle is drawn here), quadrants, nearest,
 tangency, apparent crossings, keyboard cycling of overlapping candidates, a Length typed
 *during* a held gesture, a persistent dimension, angles and any constraint adapter, a hover
 or pointer command in the CLI. §31C as a whole, §31D as a whole beyond this canvas, §30,
@@ -303,3 +304,83 @@ results will be recorded separately; these checks do not establish a window pass
 The window review also found that the bundled font renders the edge-direction arrow
 as a missing-glyph square. Edge labels now use ASCII `>`; their kind and ordering
 remain unchanged. The event assertions check the displayed labels.
+
+## Independent macOS window verification
+
+Two fresh arm64 bundles were staged from the reviewed source and run separately
+under `tools/watch-viewer-memory.py`, cap 1536 MiB. The first covered the saved
+Sketch workflow at `43e33fb`; the second checked the label repair and New at
+`4450f39`. Inputs and outputs are private copies in
+`/private/tmp/ferrite-31h-review/run`; no repository fixture was edited.
+
+Observed in the saved L sketch: Guides Off disables From object; Orthogonal makes
+it available; vertex 3 is selected before anchoring at vertex 5. The ring remains
+at 20 logical points and disappears beyond 24; Escape clears the provisional
+ring. Length 15 from endpoint (20,40) moves vertex 3 to (35,40). One draft Undo
+restores (60,20), Redo restores (35,40). `abc` remains visible and refuses placement;
+a midpoint anchor at (10,40) instead gives (25,40). Save edited copy → Cancel and
+switching to another tab and back preserve the draft, mode and Length. Apply,
+document Undo/Redo, unsaved STL/FBX export and Save all completed; the file remained
+byte-identical to the source until Save and the title became clean afterwards.
+
+The CLI edited the same source with the same six curve UUIDs and coordinates.
+All SQL cells matched the saved GUI file, including the stored IDs and references
+(no UUID normalisation); validate and cold rebuild passed. Both unsaved GUI exports
+matched the CLI byte-for-byte: STL 1084 bytes / 20 triangles, FBX 5092 bytes.
+An independent binary STL reader checked every directed edge and measured bounds
+(0,0,0)–(60,40,10), volume 17500 mm³. The original is 16000 mm³. Pinned ufbx 0.23.0
+strict reported 6 checks, 0 failures. Source SHA-256 remained
+`38e02d7327b650dd34944a8d30cca512901f07e172371b4a0fd62b45147210c6`.
+Comparison script: `target/31h-review/compare-window.py`; output: the run folder's
+`comparison.json`. The native Save panels retained the extension while the stem
+was replaced, so the test exports are named `gui-unsaved.stl.stl` and
+`gui-unsaved.fbx.fbx`; their contents, not their names, were compared.
+
+On the final bundle a four-point New zigzag offered the actual finite intersection
+with the readable label `Intersection · edges 1>2 × 3>4`. An eastward gesture added
+exactly one fifth vertex with the intersection's Y coordinate (22.17795238095238);
+one Undo removed it. The temporary New form was cancelled without publication.
+The CUA interface has no hover-only primitive: right-button clicks placed the pointer
+for the provisional-ring observations, without a primary gesture; frame-by-frame
+hover, focus loss, same-frame events, occlusion and exact thresholds remain covered
+by the real egui event tests. One early midpoint probe used coordinates from before
+a form-height change; it was undone and repeated against a fresh screenshot. It is
+not evidence for midpoint snapping.
+
+Both window processes exited normally: PID 48735, peak sampled footprint 192.111 MiB,
+exit 0; PID 56434, peak 186.298 MiB, exit 0. All samples had pressure 1 and swap 0.
+No app observation was requested after Quit. Separate logs:
+`target/31h-review/window.jsonl`, `window-final.jsonl`. One attempted widget run
+while the first viewer was alive was correctly refused by the watchdog (125);
+after Quit its unique-log repeat passed 20/20. This is not a test failure or a
+window pass. The OOM cause remains unknown. Windows/Linux window smoke, live
+Escape during a held CUA drag and a separate 1x display were not exercised here.
+
+After the label repair, the wider native `sketch::` regression suite passed
+141/141 with no skipped messages, under its own memory watchdog
+(`target/31h-review/sketch-regression.*`).
+
+## Remote verification of the reviewed code
+
+The exact base `853a6bf95a11430a6becfdbfcd12aaee3d015975` subsequently completed
+27/27 check runs successfully; this is separate from the new code.
+For code `4450f3992f1b4cb455f87833bf33e970419a3149`,
+[CI 38661495053](https://github.com/gesriot/ferrite-cad/actions/runs/38661495053)
+completed 7/7 successfully and
+[planegcs pin 38661491415](https://github.com/gesriot/ferrite-cad/actions/runs/38661491415)
+completed 4/4. The downloaded CI log was independently checked for all 21 new
+exact event/geometry/tab test names and execution markers on each OS (63 executions).
+The review regression is included in the blocked/idle-canvas gate. Native runtime
+results are recorded separately below.
+
+[Runtime layout 38661491440](https://github.com/gesriot/ferrite-cad/actions/runs/38661491440)
+completed 4/4 successfully (Linux, macOS, Windows and the cross-platform comparison).
+Thus the exact code head passed 15/15 checks. Full per-job logs downloaded directly
+from the GitHub API confirm the exact native anchor test and its
+`volume=3072.65625 triangles=12` marker on all three OS, with no skip in that gate.
+Each platform also executed `FCAD_SKETCH_ANCHOR_UFBX_EXECUTED`, preceded by
+`FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0`. The combined `gh run --log`
+view omitted some completed Linux/macOS steps; it was not used to infer missing
+execution. Audit scripts and results are under `target/31h-review/`.
+The later documentation commit changes only this evidence and the implementation
+plan; its checks are attached separately to PR #111.
