@@ -651,6 +651,10 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
     let (ctx, at) = crate::sketch::analytic_tests::hold_handle(&mut w.creates.sketch);
     assert!(!w.begin_quit(), "a held Circle handle lost its hold");
     crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
+    // §31J: a pan of its view holds Quit as well.
+    let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut w.creates.sketch);
+    assert!(!w.begin_quit(), "a held pan lost its hold");
+    crate::sketch::navigation_tests::release_pan(&ctx, &mut w.creates.sketch, at);
     println!("\nFCAD_30V_HOLDS_EXECUTED");
 }
 

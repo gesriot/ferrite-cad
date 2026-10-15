@@ -894,8 +894,9 @@ if [ -n "${FCAD_ANALYTIC_SESSION_FBX_DIR:-}" ]; then
     # §30D: the saved Circle and the two annular documents (boundary first, and
     # bore first) after Apply, Undo, Redo and Save inside one session, each read
     # the same two ways and joined against the STL of the same model. §31I adds
-    # the Circle and annulus whose numbers the forms' canvas made.
-    for name in circle-session annulus-session annulus-swapped-session circle-canvas annulus-canvas; do
+    # the Circle and annulus whose numbers the forms' canvas made, §31J the same
+    # dragged at a zoomed and panned scale.
+    for name in circle-session annulus-session annulus-swapped-session circle-canvas annulus-canvas circle-navigated annulus-navigated; do
         "$reader" --identity "$FCAD_ANALYTIC_SESSION_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
         if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
             echo "error: session Circle/annulus FBX was not independently read: $name" >&2

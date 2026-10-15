@@ -113,7 +113,9 @@ The first frame with a drawable profile fits it (the bounding box of the larger
 positive radius around the centre, the Line canvas's 30-point margins, centred);
 **Fit profile** fits again. Typing, a gesture or a new frame never re-centre. The
 canvas has a fixed size inside the floating form (it moves no workspace panel) and
-reacts only to presses inside its visible part.
+reacts only to presses inside its visible part. §31J adds zoom about the pointer and pan to
+this view and to the Line canvas's ([sketch-canvas-navigation.md](sketch-canvas-navigation.md));
+the rules above, the pick radius of nine logical points and the explicit Fit are unchanged.
 
 ## Not in this slice
 

@@ -769,6 +769,107 @@ fn the_canvas_view_its_dragged_numbers_and_their_history_follow_their_tab() {
     println!("\nFCAD_31I_TABS_EXECUTED");
 }
 
+/// §31J: the zoom and pan of each tab's canvas are that tab's own and survive every switch;
+/// Fit in one tab moves nothing in the other; a held pan holds the window and ends clean. A
+/// view is no change of the document. The picture of a ring in a tab needs OCCT.
+#[test]
+fn the_canvas_zoom_and_pan_follow_their_tab_and_a_held_pan_holds_the_window() {
+    use crate::sketch::{
+        analytic_tests::{canvas_facts, press_on_form, settle_form},
+        navigation_tests::{hold_pan, pan_form, release_pan, zoom_form},
+    };
+    if !ferritecad_occt::is_available() {
+        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        eprintln!("skipped: the picture of a ring in a tab needs OCCT");
+        return;
+    }
+    let user = tempfile::tempdir().expect("user");
+    let a_file = user.path().join("ring.fcad");
+    ferritecad_jobs::create_document_with_kernel(
+        CreateDocumentRequest::new(
+            &a_file,
+            NewDocument::AnnularExtrude(
+                ferritecad_document::AnnularExtrusion::new([12.5, -7.25], 10.5, 4.75, 15.25)
+                    .expect("a ring"),
+            ),
+            "keep",
+        ),
+        ferritecad_occt::OcctKernel::new,
+        &OperationContext::default(),
+    )
+    .expect("a ring");
+    let b_file = user.path().join("copy.fcad");
+    std::fs::copy(&a_file, &b_file).expect("copy");
+    let open_form = |w: &mut Window| {
+        let current = w.sessions.export_path().expect("shown");
+        let reading = read_extrude_source(&current).expect("reading");
+        let sketch = reading.annulus_sketches[0].sketch;
+        assert!(
+            w.creates
+                .sketch
+                .begin_annulus_edit(&current, &reading, sketch)
+        );
+    };
+
+    let mut w = Window::new(Drawn::Native, None);
+    w.open(&a_file);
+    let a = w.sessions.tab();
+    open_form(&mut w);
+    settle_form(&mut w.creates.sketch);
+    let fitted = canvas_facts(&w.creates.sketch);
+    zoom_form(&mut w.creates.sketch, 2.);
+    pan_form(&mut w.creates.sketch, egui::vec2(30., 14.));
+    let a_state = canvas_facts(&w.creates.sketch);
+    assert_eq!(
+        (&a_state.0, a_state.1),
+        (&fitted.0, fitted.1),
+        "navigation edited"
+    );
+    assert_ne!(a_state.2, fitted.2, "A's view did not move");
+    w.open(&b_file);
+    let b = w.sessions.tab();
+    assert!(!w.creates.sketch.active(), "a new tab opens with no form");
+    open_form(&mut w);
+    settle_form(&mut w.creates.sketch);
+    assert_eq!(
+        canvas_facts(&w.creates.sketch),
+        fitted,
+        "B opens on its own fit"
+    );
+    zoom_form(&mut w.creates.sketch, -3.);
+    pan_form(&mut w.creates.sketch, egui::vec2(-22., 9.));
+    let b_state = canvas_facts(&w.creates.sketch);
+    assert_ne!(b_state.2, a_state.2, "B's view is B's own");
+    assert_ne!(b_state.2, fitted.2);
+
+    for _ in 0..10 {
+        w.round(a);
+        assert_eq!(canvas_facts(&w.creates.sketch), a_state);
+        w.round(b);
+        assert_eq!(canvas_facts(&w.creates.sketch), b_state);
+    }
+    // Fit in B (shown after the loop) is B's own, and moves nothing in A.
+    press_on_form(&mut w.creates.sketch, "Fit profile");
+    assert_eq!(canvas_facts(&w.creates.sketch), fitted);
+    w.round(a);
+    assert_eq!(canvas_facts(&w.creates.sketch), a_state);
+    w.round(b);
+    assert_eq!(canvas_facts(&w.creates.sketch), fitted);
+
+    // A held pan holds the window as a held handle does, and a release ends it.
+    w.round(a);
+    assert!(w.can_leave());
+    let (ctx, at) = hold_pan(&mut w.creates.sketch);
+    assert!(!w.can_leave(), "a held pan holds the window");
+    release_pan(&ctx, &mut w.creates.sketch, at);
+    assert!(w.can_leave(), "a released pan does not");
+    assert!(
+        !w.sessions.dirty() && !w.hidden(b).dirty(),
+        "a view is not a change"
+    );
+    println!("\nFCAD_31J_TABS_EXECUTED");
+}
+
 /// Showing another tab waits for everything that is not an idle form; a switch
 /// that is refused, cancelled, stale or answered for another tab — and a late
 /// Apply answer addressed to another tab — leaves both tabs' drafts where they
@@ -860,6 +961,11 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
         "a held canvas handle holds it"
     );
     crate::sketch::analytic_tests::release_handle(&ctx, &mut circled.sketch, at);
+    assert!(leave(&circled, &w.edits, &w), "its idle form does not");
+    // §31J: so does a pan of its view, which edits nothing.
+    let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut circled.sketch);
+    assert!(!leave(&circled, &w.edits, &w), "a held pan holds it");
+    crate::sketch::navigation_tests::release_pan(&ctx, &mut circled.sketch, at);
     assert!(leave(&circled, &w.edits, &w), "its idle form does not");
     let running = w
         .sessions

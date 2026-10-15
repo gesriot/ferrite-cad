@@ -1546,7 +1546,9 @@ jobs:
           # Save, Undo, Redo, Save and a cold reopen against the peer CLI given those
           # numbers, each wall under its saved reference. Each marker is printed after
           # the last assertion, so a skip cannot print it. The saved exports join the
-          # §30D ones for the pinned reader (`FCAD_ANALYTIC_SESSION_FBX_DIR`).
+          # §30D ones for the pinned reader (`FCAD_ANALYTIC_SESSION_FBX_DIR`). §31J: the
+          # same two routes with the canvas zoomed and panned first, the drag made at the
+          # new scale.
           libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
           case '${{ matrix.name }}' in
             windows) export PATH="$libs:$PATH" ;;
@@ -1560,7 +1562,9 @@ jobs:
           export FCAD_ANALYTIC_ARTIFACTS="$analytic_artifacts"
           for check in \
             "sessions::tests::analytic::native_a_circle_moved_and_resized_on_its_canvas_is_applied_and_saved_like_the_command_line FCAD_31I_NATIVE_CIRCLE_EXECUTED walls=1 sql=cli export=before_save undo=1 redo=1" \
-            "sessions::tests::analytic::native_an_annulus_moved_and_resized_on_its_canvas_keeps_each_wall_under_its_reference FCAD_31I_NATIVE_ANNULUS_EXECUTED walls=2 sql=cli export=before_save undo=1 redo=1"
+            "sessions::tests::analytic::native_an_annulus_moved_and_resized_on_its_canvas_keeps_each_wall_under_its_reference FCAD_31I_NATIVE_ANNULUS_EXECUTED walls=2 sql=cli export=before_save undo=1 redo=1" \
+            "sessions::tests::analytic::native_a_circle_dragged_at_a_navigated_scale_is_applied_and_saved_like_the_command_line FCAD_31J_NATIVE_CIRCLE_EXECUTED walls=1 sql=cli export=before_save undo=1 redo=1 navigated=1" \
+            "sessions::tests::analytic::native_an_annulus_dragged_at_a_navigated_scale_keeps_each_wall_under_its_reference FCAD_31J_NATIVE_ANNULUS_EXECUTED walls=2 sql=cli export=before_save undo=1 redo=1 navigated=1"
           do
             gate="${check%% *}"
             marker="${check#* }"
@@ -1574,7 +1578,7 @@ jobs:
               exit 1
             fi
           done
-          for name in circle-canvas annulus-canvas; do
+          for name in circle-canvas annulus-canvas circle-navigated annulus-navigated; do
             test -s "$analytic_dir/$name.fbx"
             test -s "$analytic_dir/$name.stl"
           done
