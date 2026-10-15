@@ -1,12 +1,14 @@
 # §31K — Select constraint targets in the accepted Sketch drawing
 
-Status: implementation for independent review; the author ran no window, viewer, CUA or system
-dialog. Plan entry: [§31K](implementation-plan.md). Base: `edbf6641149b` (merge of PR #114, tree
-`b01c1638c4df`), branch `constraint-canvas-picking`, nothing staged or committed. Base CI: PR #114's head
+Status: reviewed implementation (PR #115); remote validation is recorded in the associated PR.
+The author ran no window, viewer, CUA or system dialog. Plan entry: [§31K](implementation-plan.md). Base: `edbf6641149b` (merge of PR #114, tree
+`b01c1638c4df`). At the author's handoff the branch was `constraint-canvas-picking`, with nothing
+staged or committed. Base CI: PR #114's head
 `913c852` passed 15/15 checks and 3/3 workflows; the post-merge runs of `edbf664` (`CI` 38764653461,
 `combined runtime layout` 38764653564, `planegcs pin`, `rust notices`, both SBOMs) were all `completed` /
 `success` when read, at the start and again before the handoff. That is the base, not this diff: the CI of
-this diff has not run.
+the unstaged diff had not run at that handoff. Independent review and remote results are below and in
+PR #115.
 
 ## Problem
 
@@ -220,10 +222,11 @@ than kept as "the drawing of an older version"; an annulus keeps the selectors o
 *not for this profile*; the status words are the ones in the table above.
 
 
-## Not done, not claimed
+## Not run by the author
 
-A window, the viewer, the CUA, Windows or Linux, the CI of this diff. No window pass is claimed: the
-reproducible scenario and inputs are in the reviewer recipe below. Also open: arcs, mixed profiles, the
+The author did not run a window, the viewer, CUA, Windows/Linux or remote CI of this diff. No author
+window pass is claimed; the reproducible scenario and inputs are in the reviewer recipe below, and
+the independent results follow in their own section. Also open: arcs, mixed profiles, the
 annulus on this canvas, new constraint families, dragging geometry, cycling through coincident joints,
 a pointer command in the CLI, the §31J native-window pan/pinch and held-input cancellation observations,
 §30, Milestone 5C, the product and the OOM investigation.
@@ -253,7 +256,54 @@ as its surface stops accepting input, and checks the release position's visibili
 Picking still changes neither request history nor typed fields.
 
 On the fixed code the independent native whole-viewer run passed 820 tests, with 4 existing ignored
-benchmarks and all 32 new gate markers. Its 23 conditional skip lines belong to earlier configuration
+child-process entry points and all 32 new gate markers. Its 23 conditional skip lines belong to earlier configuration
 cases, not these native gates. The watchdog recorded exit 0, peak 274.110 MiB, pressure 1 and swap 0.
-The true-stub repeat and native-window scenario are pending at publication; their results will be
-recorded in the associated pull request. The author's headless results above are not a window pass.
+The independent true-stub whole-viewer repeat passed 820 tests, with 4 existing ignored child-process entry points,
+all 30 kernel-free markers, and 219 explicitly counted skip lines. The fresh test binary and peer CLI
+have no OCCT or PlaneGCS imports; the CMake cache disables OpenCASCADE discovery. Stub peak was
+57.720 MiB, pressure 1, swap 0, exit 0. Independent fmt, full workspace clippy with all targets/features
+and `-D warnings`, actionlint, shellcheck, run-size, licence and ownership/boundary checks passed.
+
+A fresh relocatable, ad-hoc-signed bundle was staged from the reviewed release executables and used
+without DYLD overrides. The real 2x window showed the solved trapezoid rather than the stored small
+parallelogram. Picks on the stored positions selected nothing. Object, Endpoint and Pair A/B selected
+the expected UUIDs; End and vector directions agreed with the lists, including re-picking a reversed A.
+Typed `12.50` and `3` survived the picks. Perpendicular + replacement length 70 + Fixed End (80,45)
+remained pending on the unchanged canvas until Apply. The accepted model became a 70×30×10 rectangle.
+Export before Save, document Undo/Redo, Save As Cancel, Save and reopening the form were observed.
+Wheel zoom, picking after zoom and Fit worked. Two tabs kept separate target, selection and zoom.
+On the circle, ring and centre selected the same UUID with distinct labels; the stored centre did
+not select, Pair was disabled. Replacing Radius 10 and Fixed (0,0) with Radius 8.5 and Fixed
+(2.5,-1.25), Apply, unsaved export, Undo/Redo and Save completed. A 48-Line profile scrolled Segment 36
+into view when it was picked on the drawing.
+
+Both saved window models were compared with separate CLI requests, mapping only the newly allocated
+constraint UUIDs. The independent comparator strengthens the author's recipe: it compares the entire
+Sketch SQL row and CBOR payload, not just its inspect projection, and validates each actual payload
+hash before normalization. Every other SQL cell matches except `meta.modified_at`. Saved and
+before-Save STL/FBX are byte-identical to CLI exports. An independent STL reader found closed,
+consistently oriented meshes: rectangle 12 triangles / 21000 mm³; circle 364 triangles, centre
+(2.5,-1.25), radius 8.5, volume 3402.054943 mm³. Pinned ufbx 0.23.0 read each window FBX with
+6 checks / 0 failures. Substituting each pristine input for its window output failed comparison.
+
+The GUI experiment is **partial**, not a complete window-matrix or clean-exit pass. After the long-list
+check CUA repeatedly returned `noWindowsAvailable`; native pan/pinch, held-input cancellation and
+external covering cases were not completed in the window; the annulus fallback was recovered in the second run below. The owned PID
+23510 remained alive after the attempted Quit, so the reviewer stopped only that experiment through
+the watchdog. Guard exit 125 / child -15, reason `requested experiment stop`; peak 204.564 MiB,
+pressure 1, swap 0. No memory limit or pressure stop occurred. PID completion was checked without
+another app query or relaunch. These limitations do not turn the widget gates into window evidence.
+After resetting CUA, a second fresh owned viewer (PID 25753, same reviewed bundle) checked the annulus
+fallback: `Accepted drawing unavailable: not for this profile`, no canvas, selectable Boundary/Bore
+circles and functioning Circle A/B pair slots. Cancel closed the empty form; Quit exited normally.
+Its separate watchdog log recorded peak 199.298 MiB, pressure 1, swap 0, exit 0, not aborted. This does
+not reclassify the first aborted run or close the remaining gesture/covering observations.
+Review logs and comparator are in the ignored `target/constraint-canvas-review/`, private inputs and
+window artifacts in `/private/tmp/ferrite-31k-review/`. Remote CI is recorded separately in PR #115.
+
+Code commit `0529b587bcb748cdd7af650ca160a98e37bb48e2`: CI run `38816782864` completed
+7/7 jobs successfully; the actual Linux, macOS and Windows logs each contain the 30 exact focused
+tests, their 30 markers and `30 passed; 0 failed; 0 ignored`. PlaneGCS pin run `38816738328`
+completed its three platforms and comparison successfully. Combined native runtime run `38816738532`
+was still running when this documentation was committed; its final result is recorded in PR #115.
+This documentation commit changes no code or workflow and its own checks are counted separately.

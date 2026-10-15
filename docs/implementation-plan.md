@@ -5444,7 +5444,7 @@ pan/pinch and held-input cancellation remain unobserved because the available in
 not produce those gestures; widget/production-routing gates cover them. Exact evidence and remaining
 window cases are in the contract; no full window-matrix or OOM closure is claimed.
 
-### §31K — Select constraint targets in the accepted Sketch drawing (implementation for independent review)
+### §31K — Select constraint targets in the accepted Sketch drawing (reviewed implementation, PR #115)
 
 The **Sketch constraints** form gains a read-only canvas of the **accepted solved drawing** — the
 rebuild's own `SketchPresentation`, its curves under their `StableEntityId`s, not the stored
@@ -5477,13 +5477,40 @@ or pointer command in the CLI.
   grows by 112 to 470 of its 768 points).
 
 Contract, decisions, executed gates, mutations, defects found while building, resources and the
-independent window recipe: [constraint-canvas-picking.md](constraint-canvas-picking.md). **Remaining
-window checks:** everything in that recipe (clicks on stored positions, the four targets, pair
-arrowheads, pending-not-drawn, Apply/export/Undo/Redo/Save against the command line, zoom/pan/Fit, two
-tabs, the Circle's ring and centre) and, still, §31J's Shift/middle pan, pinch and held-input
-cancellation; Windows and Linux windows. Arcs, mixed profiles, the annulus on this canvas, new constraint
-families, dragging, cycling through a joint's coincident ends, a pointer command in the CLI, §30,
-Milestone 5C, the product and the OOM investigation stay open.
+independent window recipe: [constraint-canvas-picking.md](constraint-canvas-picking.md). Independent
+review fixed a held click surviving focus loss, cover/uncover or release just outside the canvas; one
+executed failing-first gate demonstrated it. Full native and true-stub repeats each passed 820 tests
+with 4 existing ignored cases; every new required marker was present. The real 2x window checked
+solved/stored separation, targets and vector preservation, typed strings, pending-not-drawn,
+Apply/export-before-Save/Undo/Redo/Save, zoom/Fit, separate tab state and long-list reveal. Both window
+models matched CLI SQL (complete payload, only new UUIDs normalized), STL and FBX; pinned ufbx passed.
+The window run ended as an explicitly aborted experiment after CUA lost input access, not a clean-exit
+pass: peak 204.564 MiB, pressure 1, swap 0, no resource limit crossed. **Remaining window checks:**
+pan/pinch, held-input cancellation and external covering; Windows and Linux windows. A second fresh
+viewer after a CUA reset verified the annulus fallback and both selectors/pair slots, then quit normally
+(exit 0, peak 199.298 MiB, pressure 1, swap 0).
+Arcs, mixed profiles, the annulus on this canvas, new constraint families, dragging, cycling through a
+joint's coincident ends, a pointer command in the CLI, §30, Milestone 5C, the product and OOM stay open.
+
+### §31L — Dimension labels and explicit replacement on the accepted Sketch canvas (planned)
+
+Make the existing persisted whole-Line Distance and single-Circle Radius visible and editable through
+their own constraint UUIDs on the accepted drawing. A dimension label states the accepted constraint's
+target value and unit; it is not a measurement of stored inputs or a preview of pending rules. Its
+selection highlights the corresponding accepted curve and synchronizes with the persisted-constraint
+list. A deliberate replacement prepares one existing remove/add draft operation and one Undo step;
+Apply remains the only model-changing action. Returning to the stored value preserves the original
+constraint UUID and removes only that replacement. Keep exact typed strings on invalid input,
+refusal and cancelled Save; preserve independent tab/form state and version/ownership guards.
+
+Reuse the existing request, shared job, CLI, dimension validation and accepted drawing/view boundary.
+Do not add a solver equation, document field, capability, dimension-position persistence, geometric
+dragging or pointer CLI. Scope this first annotation route to whole-Line length and one Circle's
+radius (diameter is a view/input conversion of that same Radius); the other constraint families keep
+their selectors. Annotation overlap must have deterministic hit/selection behavior and a list fallback.
+Keep the canvas, controls and explicit Apply/Cancel reachable on a 768-point screen. Native tests must
+compare genuine widget-selected replacements with CLI after Apply/export-before-Save/Undo/Redo/Save;
+window observations and any unavailable input gestures remain independently reported.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
