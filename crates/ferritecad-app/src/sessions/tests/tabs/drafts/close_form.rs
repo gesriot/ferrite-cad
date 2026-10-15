@@ -4,7 +4,7 @@ use super::*;
 use crate::tabs::{FormCloseId, Forms};
 
 impl Window {
-    fn ask_form_close(&mut self) -> FormCloseId {
+    pub(super) fn ask_form_close(&mut self) -> FormCloseId {
         assert!(self.can_leave());
         crate::ask_form_close(
             &mut self.tabs,
@@ -17,7 +17,7 @@ impl Window {
         )
         .expect("shown form")
     }
-    fn back_from_form_close(&mut self, id: FormCloseId) -> bool {
+    pub(super) fn back_from_form_close(&mut self, id: FormCloseId) -> bool {
         self.tabs.cancel_form_close(
             &mut self.sessions,
             id,
@@ -27,7 +27,7 @@ impl Window {
             },
         )
     }
-    fn confirm_form_close(&mut self, id: FormCloseId) {
+    pub(super) fn confirm_form_close(&mut self, id: FormCloseId) {
         assert!(self.tabs.confirm_form_close(&self.sessions, id));
     }
     fn decide_form_close(&mut self, id: FormCloseId) {

@@ -57,7 +57,12 @@ impl Window {
     }
 }
 
-fn replace_segment_length(ctx: &egui::Context, e: &mut Editor, segment: &str, length: &str) {
+pub(crate) fn replace_segment_length(
+    ctx: &egui::Context,
+    e: &mut Editor,
+    segment: &str,
+    length: &str,
+) {
     for _ in 0..3 {
         frame(ctx, e, vec![]);
     }
@@ -260,7 +265,15 @@ fn choice_frame(
             events,
             ..Default::default()
         },
-        |ui| e.choices(ui, false, Some(path), Some(source)),
+        |ui| {
+            e.choices(
+                ui,
+                false,
+                Some(path),
+                Some(source),
+                &crate::sketch::accepted::Accepted::default(),
+            )
+        },
     );
     out.textures_delta.clear();
     out

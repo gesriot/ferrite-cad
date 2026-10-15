@@ -9,6 +9,8 @@ use super::*;
 use crate::{Loads, exports::Exports};
 use ferritecad_ui::{PointerButton, ViewportEvent};
 
+/// §31K: the canvas drawing of the constraints form follows its tab.
+mod canvas_form;
 /// §30U: Close with an unfinished form.
 mod close_form;
 pub(in crate::sessions::tests::tabs) mod model_tree;

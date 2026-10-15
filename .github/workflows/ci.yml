@@ -1398,6 +1398,62 @@ jobs:
             grep -Fxq "$marker" sketch-navigation.log
           done
 
+      - name: Pick constraint targets only on the accepted solved Sketch drawing
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+        run: |
+          set -euo pipefail
+          # §31K: the constraints form's canvas of the accepted solved drawing: the pick
+          # arithmetic and the drawing's match with the stored curves (pure), the scene
+          # handing a form the real presentation of its own version only, the form driven by
+          # real egui events (targets, lists in step, typed inputs and request history
+          # untouched, zoom and pan, blocked cases, 768 points), and the drawing following
+          # its tab, run as one filtered group. Every expected name must have run and
+          # printed its marker after its last assertion; a skip, another count or a missing
+          # marker fails the step. The native route through the session, the CLI and the
+          # pinned reader is gated by the native workflows.
+          cargo test -p ferritecad-app --bin ferritecad-viewer -- sketch::accepted_tests accepted_scene_tests constraints::tests::canvas sessions::tests::tabs::drafts::canvas_form --nocapture --test-threads=1 2>&1 | tee constraint-canvas.log
+          if grep -q 'skipped:' constraint-canvas.log; then exit 1; fi
+          grep -q '^test result: ok\. 30 passed; 0 failed' constraint-canvas.log
+          for check in \
+            "sketch::accepted_tests::the_nearest_part_within_nine_logical_points_wins_and_the_boundary_is_exact FCAD_31K_PICK_NEAREST_EXECUTED" \
+            "sketch::accepted_tests::an_exact_tie_goes_to_the_stored_order_and_the_order_decides_not_the_ids FCAD_31K_PICK_TIE_EXECUTED" \
+            "sketch::accepted_tests::an_end_is_start_or_end_by_the_stored_line_and_never_by_the_side_of_the_screen FCAD_31K_PICK_ENDS_EXECUTED" \
+            "sketch::accepted_tests::a_circle_is_one_curve_whose_ring_and_centre_are_told_apart FCAD_31K_PICK_CIRCLE_EXECUTED" \
+            "sketch::accepted_tests::degenerate_and_non_numeric_shapes_are_never_picked FCAD_31K_PICK_DEGENERATE_EXECUTED" \
+            "sketch::accepted_tests::a_part_outside_the_visible_canvas_cannot_be_picked FCAD_31K_PICK_VISIBLE_EXECUTED" \
+            "sketch::accepted_tests::a_drawing_is_shown_only_for_the_curves_the_form_stores_in_the_order_it_stores_them FCAD_31K_DRAWING_MATCH_EXECUTED" \
+            "sketch::accepted_tests::only_a_line_polygon_or_one_circle_is_a_profile_the_canvas_covers FCAD_31K_DRAWING_PROFILE_EXECUTED" \
+            "sketch::accepted_tests::a_coordinate_that_cannot_be_drawn_keeps_the_whole_drawing_away FCAD_31K_DRAWING_NUMBERS_EXECUTED" \
+            "sketch::accepted_tests::fit_shows_every_live_curve_inside_the_canvas_with_finite_numbers FCAD_31K_FIT_EXECUTED" \
+            "accepted_scene_tests::the_accepted_scene_hands_a_form_the_real_presentation_of_its_own_version FCAD_31K_SCENE_HANDOFF_EXECUTED" \
+            "accepted_scene_tests::a_form_is_never_handed_the_drawing_of_another_version_or_document FCAD_31K_SCENE_FOREIGN_EXECUTED" \
+            "accepted_scene_tests::a_kept_picture_follows_its_version_and_a_failed_arrival_keeps_the_drawing_and_the_facts FCAD_31K_SCENE_KEPT_EXECUTED" \
+            "constraints::tests::canvas::a_click_fills_the_fields_the_lists_fill_for_each_explicit_target_and_only_them FCAD_31K_FORM_TARGETS_EXECUTED" \
+            "constraints::tests::canvas::the_lists_and_the_canvas_show_one_selection FCAD_31K_FORM_SYNC_EXECUTED" \
+            "constraints::tests::canvas::typed_inputs_history_and_requests_wait_for_an_explicit_action FCAD_31K_FORM_INPUTS_EXECUTED" \
+            "constraints::tests::canvas::a_reversed_line_is_picked_by_its_start_and_end_not_by_the_screen_side FCAD_31K_FORM_REVERSED_EXECUTED" \
+            "constraints::tests::canvas::zoom_pan_and_fit_move_only_the_view_and_a_pick_follows_the_view_at_one_and_two_pixels_per_point FCAD_31K_FORM_VIEW_EXECUTED" \
+            "constraints::tests::canvas::busy_queued_covered_outside_and_unfocused_canvases_change_nothing FCAD_31K_FORM_BLOCKED_EXECUTED" \
+            "constraints::tests::canvas::each_missing_drawing_is_stated_in_the_form_and_the_lists_still_pick FCAD_31K_FORM_UNAVAILABLE_EXECUTED" \
+            "constraints::tests::canvas::rules_still_pending_are_not_in_the_drawing_until_they_are_applied FCAD_31K_FORM_PENDING_EXECUTED" \
+            "constraints::tests::canvas::a_pan_holds_the_window_and_ends_with_the_canvas_that_stops_being_drawn FCAD_31K_FORM_PAN_HOLD_EXECUTED" \
+            "constraints::tests::canvas::the_canvas_never_reaches_the_3d_camera_and_a_viewport_drag_still_crosses_the_form FCAD_31K_FORM_ROUTING_EXECUTED" \
+            "constraints::tests::canvas::the_form_keeps_its_canvas_its_modes_and_its_actions_reachable_at_768_points FCAD_31K_FORM_768_EXECUTED" \
+            "constraints::tests::canvas::a_press_is_a_click_only_while_it_stays_put_and_nothing_takes_it_away FCAD_31K_FORM_PRESS_EXECUTED" \
+            "constraints::tests::canvas::a_circle_is_one_curve_picked_by_its_ring_or_its_centre_and_a_single_circle_has_no_pair FCAD_31K_FORM_CIRCLE_EXECUTED" \
+            "constraints::tests::canvas::a_pick_on_the_canvas_brings_its_row_of_a_long_list_into_view FCAD_31K_FORM_REVEAL_EXECUTED" \
+            "sessions::tests::tabs::drafts::canvas_form::the_drawing_the_target_and_the_picks_of_a_form_follow_its_tab FCAD_31K_TAB_EXECUTED" \
+            "sessions::tests::tabs::drafts::canvas_form::a_form_held_on_another_version_loses_its_drawing_and_keeps_its_picks FCAD_31K_TAB_STALE_EXECUTED" \
+            "sessions::tests::tabs::drafts::canvas_form::a_form_given_back_by_a_cancelled_close_or_an_aborted_quit_keeps_its_own_drawing FCAD_31K_TAB_GIVEN_BACK_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            grep -Fq "test $gate ... " constraint-canvas.log
+            grep -Fxq "$marker" constraint-canvas.log
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |

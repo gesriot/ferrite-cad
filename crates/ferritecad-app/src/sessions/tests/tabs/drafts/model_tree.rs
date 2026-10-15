@@ -34,6 +34,7 @@ fn open_action(w: &mut Window, asked: ModelAction) -> bool {
     open(
         asked,
         &reading,
+        &crate::sketch::accepted::Accepted::default(),
         &mut w.creates,
         &mut w.edits,
         &w.sessions,

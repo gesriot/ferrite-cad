@@ -195,6 +195,7 @@ pub(in crate::sessions::tests::tabs) fn frame(
         scene: Scene {
             document: None,
             edit_source: w.scene.edit_source.as_ref(),
+            sketches: &crate::sketch::accepted::Accepted::default(),
             definitions: &definitions,
             chosen_row: None,
             offers: &[],

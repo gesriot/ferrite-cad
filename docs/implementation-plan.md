@@ -5444,22 +5444,46 @@ pan/pinch and held-input cancellation remain unobserved because the available in
 not produce those gestures; widget/production-routing gates cover them. Exact evidence and remaining
 window cases are in the contract; no full window-matrix or OOM closure is claimed.
 
-### §31K — Select constraint targets in the accepted Sketch drawing (planned)
+### §31K — Select constraint targets in the accepted Sketch drawing (implementation for independent review)
 
-Show a read-only XY canvas in the existing constraints form, using the accepted rebuild's
-`SketchPresentation` and its stable curve identities, not a new solve or the stored coordinate
-approximation. Retain that presentation with the scene and edit catalogue through the same
-arrival/commit and tab ownership boundary. If the matching accepted presentation is unavailable,
-say so and keep the existing explicit selectors; never label stored geometry as solved.
+The **Sketch constraints** form gains a read-only canvas of the **accepted solved drawing** — the
+rebuild's own `SketchPresentation`, its curves under their `StableEntityId`s, not the stored
+approximation and not a preview of pending rules — beside the Lines list (and the Circle row). A click
+fills only the fields the lists already fill, by four **explicit targets** the person chooses:
+**Object** (a Line anywhere, or a Circle's ring or centre: the selection), **Endpoint** (a Line's stored
+Start/End, or a Circle's centre: the selection and the Pin end), **Pair A** and **Pair B** (the slots
+only; the selection and the directed angle's vector directions are untouched). Adding, replacing,
+removing, clearing, Apply and Save-a-copy remain the existing explicit actions, the same request and the
+same shared job; there is no new constraint, document field, schema, capability, solver change, dragging
+or pointer command in the CLI.
 
-Pick a Line, its named Start/End endpoint, or a Circle/centre for the current single target or
-explicit pair A/B slot. Update only the existing selection fields; creating or removing a
-constraint still requires its explicit existing action and the shared UI/CLI job. No inferred
-Coincident, new constraint family, document field, solver, pointer CLI or persisted view.
-Keep pending rules distinct from the accepted drawing. Reuse bounded zoom/pan/Fit and logical
-point pick tolerances, preserve draft/history/tab ownership, and reject stale actions. Verify
-solved-vs-stored geometry, exact UUID targets, request equivalence, publication and refusal
-preservation with compact native and true-stub gates. The reviewer owns the window smoke.
+- **One boundary.** `LoadedScene` carries `edit_source` and `sketch_presentations` out of one reading
+  and one rebuild; `PreparedLoad.sketches` stamps the presentations with `edit_source.version`;
+  `commit_scene` replaces `edit_source` and the drawings in one statement with the picture, and a kept
+  picture (§30N) moves the stamp with the facts in `retarget_scene`. `Editor::begin_with` hands a form a
+  drawing only when the stamp equals the facts' `DocumentVersion` and the curves are the form's stored
+  curves, in order and kind; the draft then owns the drawing with its picks, view and target (tab
+  park/restore, a given-back form), and a draft held on another version loses it. Otherwise the form
+  says *Accepted drawing unavailable: …* and keeps every selector; stored geometry is never drawn as
+  solved, and rules still pending are never solved for a preview.
+- **Picking.** The existing 9 **logical-point** radius; the nearest wins and an exact tie goes to the
+  curve stored first (then Start before End, circle before centre); Start/End are the stored Line's, not a
+  side of the screen; zero or non-finite shapes are never picked and mint no ID; the first stored Line
+  takes an Endpoint click at a joint. §31J's bounded zoom, pan and **Fit** are reused; the view, held pan,
+  target and circle part belong to the form and its tab and nothing is saved.
+- **Covered:** a Line polygon (including Revolve profiles and the Fillet, Cut and Chamfer bases) and one
+  analytic Circle; the form is laid out in the height the Lines list already had (measured on the 988 × 768
+  gate screen: no change for a full Lines list, +52 points for a four-Line plate, and a single-Circle form
+  grows by 112 to 470 of its 768 points).
+
+Contract, decisions, executed gates, mutations, defects found while building, resources and the
+independent window recipe: [constraint-canvas-picking.md](constraint-canvas-picking.md). **Remaining
+window checks:** everything in that recipe (clicks on stored positions, the four targets, pair
+arrowheads, pending-not-drawn, Apply/export/Undo/Redo/Save against the command line, zoom/pan/Fit, two
+tabs, the Circle's ring and centre) and, still, §31J's Shift/middle pan, pinch and held-input
+cancellation; Windows and Linux windows. Arcs, mixed profiles, the annulus on this canvas, new constraint
+families, dragging, cycling through a joint's coincident ends, a pointer command in the CLI, §30,
+Milestone 5C, the product and the OOM investigation stay open.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 

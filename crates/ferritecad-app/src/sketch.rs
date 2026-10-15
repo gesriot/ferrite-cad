@@ -13,6 +13,7 @@ use ferritecad_jobs::{
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
+pub(crate) mod accepted;
 mod analytic;
 mod anchor;
 mod guide;
@@ -492,6 +493,7 @@ impl Editor {
             || self.analytic_gesturing()
             || self.circle_canvas.panning()
             || self.annulus_canvas.panning()
+            || self.constraints.panning()
     }
     /// §31I: a handle of the circle or annular canvas is held. A pan (§31J) is not: it
     /// holds the window above but edits nothing, so no box or button of a form is
@@ -905,6 +907,7 @@ impl Editor {
         can_begin: bool,
         path: Option<&Path>,
         source: Option<&ExtrudeEditSource>,
+        accepted: &accepted::Accepted,
     ) {
         if self.active() {
             return;
@@ -912,7 +915,9 @@ impl Editor {
         egui::ScrollArea::vertical()
             .id_salt("saved-sketch-actions")
             .max_height(180.)
-            .show(ui, |ui| self.draw_choice_rows(ui, can_begin, path, source));
+            .show(ui, |ui| {
+                self.draw_choice_rows(ui, can_begin, path, source, accepted);
+            });
     }
     fn draw_choice_rows(
         &mut self,
@@ -920,9 +925,11 @@ impl Editor {
         can_begin: bool,
         path: Option<&Path>,
         source: Option<&ExtrudeEditSource>,
+        accepted: &accepted::Accepted,
     ) {
         if !self.active() {
-            self.constraints.choices(ui, can_begin, path, source);
+            self.constraints
+                .choices(ui, can_begin, path, source, accepted);
             self.cuts.choices(ui, can_begin, path, source);
             self.fillets.choices(ui, can_begin, path, source);
             self.chamfers.choices(ui, can_begin, path, source);
@@ -1242,6 +1249,7 @@ impl Editor {
         self.canvas.nav.forget_undrawn(frame);
         self.circle_canvas.forget_undrawn(frame);
         self.annulus_canvas.forget_undrawn(frame);
+        self.constraints.forget_undrawn(frame);
         // §30Q: offered beside the tab's own forms too; the window sets them aside
         // as the tab's draft before the drawing opens, so it never replaces them.
         if !self.drawing_new()
@@ -6803,7 +6811,13 @@ pub(crate) mod tests {
                         ..Default::default()
                     },
                 );
-                e.draw_choices(ui, true, Some(path), Some(source));
+                e.draw_choices(
+                    ui,
+                    true,
+                    Some(path),
+                    Some(source),
+                    &accepted::Accepted::default(),
+                );
                 e.draw(ui, true, false, "");
                 crate::edits::Edits::default().draw(ui, true, source.unavailable_reason());
             },
@@ -8463,6 +8477,9 @@ pub(crate) mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "sketch/accepted_tests.rs"]
+pub(crate) mod accepted_tests;
 #[cfg(test)]
 #[path = "sketch/analytic_tests.rs"]
 pub(crate) mod analytic_tests;

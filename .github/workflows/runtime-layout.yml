@@ -1583,6 +1583,54 @@ jobs:
             test -s "$analytic_dir/$name.stl"
           done
 
+      - name: Apply constraint rules chosen on the accepted drawing through the native window state
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # §31K: a constrained rectangle and a cylinder whose Sketches store a rough guess,
+          # their rules (Pair A and B, a Line, an End; the ring and the centre of the circle)
+          # chosen only by clicks on the canvas of the real accepted solved drawing. The
+          # request equals the lists' own, then Apply on the real worker, export before
+          # Save, Undo, Redo, Save and a cold reopen against the peer CLI, and the saved STL
+          # read here by a reader that is not its writer. The exports join the pinned reader
+          # (`FCAD_ANALYTIC_ARTIFACTS`, as above). Each marker is printed after the last
+          # assertion, so a skip cannot print it.
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          analytic_dir="$RUNNER_TEMP/analytic-session"
+          mkdir -p "$analytic_dir"
+          analytic_artifacts="$analytic_dir"
+          if [ '${{ matrix.name }}' = windows ]; then analytic_artifacts="$(cygpath -w "$analytic_artifacts")"; fi
+          export FCAD_ANALYTIC_ARTIFACTS="$analytic_artifacts"
+          for check in \
+            "sessions::tests::native_rules_chosen_on_the_canvas_of_a_constrained_rectangle_are_applied_like_the_command_line FCAD_31K_NATIVE_RECTANGLE_EXECUTED request=canvas_equals_lists stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read" \
+            "sessions::tests::native_a_radius_and_a_fixed_centre_chosen_on_the_canvas_of_a_solved_circle_are_applied_like_the_command_line FCAD_31K_NATIVE_CIRCLE_EXECUTED request=canvas_equals_lists stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-constraint-canvas.log
+            if grep -q 'skipped:' session-constraint-canvas.log || \
+               ! grep -q '^test result: ok\. 1 passed; 0 failed' session-constraint-canvas.log || \
+               ! grep -Fq "test $gate ... " session-constraint-canvas.log || \
+               ! grep -Fxq "$marker" session-constraint-canvas.log; then
+              echo "::error::${gate} did not execute and pass"
+              exit 1
+            fi
+          done
+          for name in constraint-canvas-rectangle constraint-canvas-circle; do
+            test -s "$analytic_dir/$name.fbx"
+            test -s "$analytic_dir/$name.stl"
+          done
+
       - name: Confirm Open over New and reject its late creation result
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
