@@ -415,24 +415,38 @@ fn retention_retries_a_segment_after_access_is_restored() {
         std::thread::sleep(Duration::from_millis(3));
         drop(Journal::open(dir.path()).expect("newer finished instance"));
     }
-    let permissions = std::fs::metadata(&segment).expect("segment").permissions();
     #[cfg(unix)]
-    {
+    let permissions = {
         use std::os::unix::fs::PermissionsExt as _;
+        let permissions = std::fs::metadata(&segment).expect("segment").permissions();
         std::fs::set_permissions(&segment, std::fs::Permissions::from_mode(0o000))
             .expect("refuse reading the header");
         assert!(File::open(&segment).is_err(), "run unprivileged");
-    }
+        permissions
+    };
     #[cfg(windows)]
-    {
-        let mut denied = permissions.clone();
-        denied.set_readonly(true);
-        std::fs::set_permissions(&segment, denied).expect("refuse removing the segment");
-    }
+    let deny_delete = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // Share reads and writes, but not deletion. Read-only attributes alone
+        // do not reliably prevent removal on current Windows filesystems.
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2) // FILE_SHARE_READ | FILE_SHARE_WRITE
+            .open(&segment)
+            .expect("hold the segment without FILE_SHARE_DELETE");
+        assert!(
+            std::fs::remove_file(&segment).is_err(),
+            "deletion must be refused"
+        );
+        file
+    };
     let started = Journal::open(dir.path()).expect("a sweep with an inaccessible segment");
     let lock_kept = lock.exists();
     let segment_kept = segment.exists();
+    #[cfg(unix)]
     std::fs::set_permissions(&segment, permissions).expect("restore access");
+    #[cfg(windows)]
+    drop(deny_delete);
     assert!(segment_kept, "an inaccessible segment was removed");
     assert!(
         lock_kept,
@@ -785,7 +799,11 @@ fn instances_side_by_side_keep_their_own_files_and_never_wait() {
     );
     let child_first = text(&folder.join(format!("{other}.1.log")));
     assert!(child_first.contains(" error child "));
-    for journal in [&first, &second, &last] {
+    for (journal, expected) in [
+        (&first, Some(format!("first {}", first.id))),
+        (&second, Some(format!("second {}", second.id))),
+        (&last, None),
+    ] {
         assert_eq!(
             files_of(&folder, &journal.stem),
             names(&journal.stem, &[".lock", ".1.log"])
@@ -797,9 +815,17 @@ fn instances_side_by_side_keep_their_own_files_and_never_wait() {
                 .expect("header")
                 .contains(&format!(" instance={} ", journal.id))
         );
-        assert!(!own.contains(" error child ") && !own.contains("fff"));
+        let records: Vec<_> = own.lines().skip(1).collect();
+        if let Some(expected) = expected {
+            assert_eq!(records.len(), 1, "{records:?}");
+            assert!(
+                is_record(records[0], "error")
+                    && records[0].ends_with(&format!(" error {expected}")),
+                "{records:?}"
+            );
+        } else {
+            assert!(records.is_empty(), "{records:?}");
+        }
     }
-    assert!(text(&first.segment(1)).ends_with(&format!(" error first {}\n", first.id)));
-    assert!(text(&second.segment(1)).ends_with(&format!(" error second {}\n", second.id)));
     println!("\nFCAD_LAUNCH_JOURNAL_INSTANCES_EXECUTED");
 }

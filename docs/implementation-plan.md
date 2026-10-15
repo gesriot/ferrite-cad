@@ -5310,7 +5310,7 @@ needed in this review.
 **Not done:** hover-anchor acquisition (§31D) and the circle centre snap (§31C), so
 §31C, §31D, §30, Milestone 5C, the product and the OOM investigation stay open.
 
-### §31H — Launch journal of ferritecad-viewer (review in progress)
+### §31H — Launch journal of ferritecad-viewer (reviewed implementation)
 
 The "Launch journal" slice below. Only the window route of `ferritecad-viewer` keeps a
 journal: `main` hands it to `journal::launch`, which opens the journal and the panic hook
@@ -5332,7 +5332,11 @@ hook, loader failures before `main`. Policy, inventory, executed gates, mutation
 independent window recipe: [viewer-launch-journal.md](viewer-launch-journal.md).
 Review corrected retention after an I/O refusal: a segment that cannot be read or
 removed keeps its lock file, so a later launch can retry cleanup once access returns.
-**Status:** local final-tree execution, window review and remote CI pending. §30, Milestone
+Native writer/process gates passed, and three fresh macOS window launches verified a
+missing-file diagnostic, normal model opening and the default log directory. All
+exited normally under the watchdog (peak 185.204 MiB, pressure 1, swap 0). Exact remote
+checks are tracked in PR #112; the initial Windows run exposed two test defects,
+corrected before the final matrix. §30, Milestone
 5C, the product and the OOM investigation stay open.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)

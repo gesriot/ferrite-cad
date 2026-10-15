@@ -1,6 +1,7 @@
 # §31H — Launch journal of ferritecad-viewer
 
-Implemented on branch `viewer-launch-journal`; independent review is in progress.
+Implemented on branch `viewer-launch-journal`; independent local review completed;
+remote checks are tracked in PR #112.
 The author ran no window, viewer, bundle, CUA or GPU. Base:
 `062e467c82a55619026cad4fb4ddc87ef9274e4d` (merge of
 PR #111, tree `b49fc746…`; HEAD = main = origin/main after a fresh fetch, clean tree;
@@ -279,15 +280,53 @@ deleted.
 The first review found that a failed segment read or deletion still removed its lock
 file. That made the leftover segment permanently unrecognisable to retention. Cleanup
 now keeps the lock on an I/O refusal, and the existing retention gate also checks a
-retry after access is restored: Unix denies reading the segment header; Windows makes
-the segment read-only so removal fails. Unrelated links and directories remain untouched.
+retry after access is restored: Unix denies reading the segment header; Windows holds
+a read handle without `FILE_SHARE_DELETE`, refusing removal. Unrelated links and
+directories remain untouched. The new regression failed executably against the old
+writer (`cleanup lost the lock needed to retry the segment`) and passed after the fix.
+
+The first Windows CI run caught two test defects, corrected in review: a read-only
+attribute did not prevent removal on that runner, and searching all file bytes for
+`fff` accidentally matched an instance UUID. The refusal now uses a real sharing
+restriction, and isolation checks the exact data records separately from the header.
 
 On the review tree, fmt, workspace clippy with all targets/features and `-D warnings`,
 licence headers (505 files), export boundary, actionlint and whitespace checks passed.
 The initial attempt to execute the retention regression was refused before starting a
-process: system memory pressure was 2. It is not a test pass. Final local execution,
-the window recipe and remote CI are pending; review evidence goes in the ignored
-`target/launch-journal-review/`, separate from the author's logs.
+process: system memory pressure was 2. After the Mac restarted (pressure 1, swap 0),
+the final native writer suite passed 9 tests (one ignored child harness, executed by its
+parent), the production route passed, and solver-info/usage passed 4 tests, all under
+the 1536 MiB watchdog. The Linux/macOS jobs of the first PR head executed all 12/11
+journal markers respectively, including Linux's actual event-loop refusal. The final
+PR head must pass its own matrix; earlier failures are not treated as passing CI.
+Review evidence is in the ignored `target/launch-journal-review/`, separate from the
+author's logs.
+
+The final true-stub viewer suite completed: **752 harness passes, 4 ignored**, plus
+4 solver-info process tests. There were **211 explicit conditional returns** for
+native/mixed/window-artifact gates; these are not geometry passes. The journal's
+writer/route gates executed without skips. Stub configuration explicitly disabled
+OpenCASCADE discovery in CMake, and the resulting test binary/peer CLI had no
+libTK/PlaneGCS imports. One attempted setup rediscovered Homebrew OCCT and was stopped;
+the first genuine-stub run lacked its peer CLI (749 passes, 3 missing-peer failures).
+After building that required peer, the whole suite above passed. These setup attempts
+are not reported as passing runs.
+
+**Independent macOS window review passed.** A freshly staged arm64 bundle was run
+three times under the watchdog, using temporary models outside the checkout:
+
+| Run | PID | Observed outcome | Peak footprint | Exit |
+| --- | ---: | --- | ---: | ---: |
+| Missing input | 3640 | Empty window and visible missing-file error; stderr error recorded once | 175.517 MiB | 0 |
+| Sample plate | 4536 | Plate opened, switched to isometric view, normal Quit | 183.845 MiB | 0 |
+| Default log directory | 4812 | Empty start, normal Quit; files in `~/Library/Logs/FerriteCAD` | 185.204 MiB | 0 |
+
+All three retained the correct PID/version/platform header and the exit record. Log
+error records matched their run's stderr exactly; the successful runs recorded no
+errors. Directories/files had modes 0700/0600, the first instance survived the next
+launch, and the sample model's SHA-256 stayed unchanged. Pressure stayed 1 and swap 0;
+no watchdog fired. Exits were checked by PID and guard output, without observing an
+exited app through CUA. No OOM diagnosis or loader-failure coverage is claimed.
 
 ## Independent macOS window recipe (the author does not run it)
 
