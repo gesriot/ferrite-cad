@@ -13,6 +13,7 @@ use ferritecad_jobs::{
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
+mod analytic;
 mod anchor;
 mod guide;
 mod object_snap;
@@ -186,6 +187,10 @@ pub(crate) struct Editor {
     annulus_undo: Vec<AnnulusState>,
     annulus_redo: Vec<AnnulusState>,
     annulus_applied: Option<AnnulusState>,
+    /// §31I: the canvases of the circle and the annular form (New and saved): the
+    /// view and the handle held. Part of the editor, so they go with its tab.
+    circle_canvas: analytic::Canvas,
+    annulus_canvas: analytic::Canvas,
     /// §27E: the saved partial Revolve whose angle is being edited, with the
     /// request it was read from, the angle as typed, and that draft's own
     /// bounded history under the same policy as the others.
@@ -218,6 +223,27 @@ fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
         stack.remove(0);
     }
     stack.push(value);
+}
+
+/// §31I: the history of the canvas gestures that ended in one frame, each given by
+/// the exact draft at its press and release. Text that was typed and not confirmed
+/// when a gesture started is first its own step, exactly as typed; the gesture becomes
+/// the confirmed draft. So one Undo gives back the strings of the press, a second
+/// the numbers confirmed before them, and no Confirm is needed after a gesture.
+fn record_gestures<T: Clone + PartialEq>(
+    undo: &mut Vec<T>,
+    redo: &mut Vec<T>,
+    applied: &mut Option<T>,
+    changes: impl IntoIterator<Item = (T, T)>,
+) {
+    for (before, after) in changes {
+        let confirmed = applied.replace(after).unwrap_or_else(|| before.clone());
+        if confirmed != before {
+            push_bounded(undo, confirmed);
+        }
+        push_bounded(undo, before);
+        redo.clear();
+    }
 }
 
 impl Editor {
@@ -455,9 +481,52 @@ impl Editor {
         self.draft.is_some() && self.editing.is_none()
     }
     /// §30P: a vertex is being dragged (or the press that may start a drag is
-    /// held) on the drawing: a gesture is not a draft and holds the window.
+    /// held) on the drawing: a gesture is not a draft and holds the window. §31I:
+    /// so does a handle held on the circle or annular canvas.
     pub(crate) fn gesturing(&self) -> bool {
-        self.canvas.gesture.is_some() || self.canvas.claimed_press
+        self.canvas.gesture.is_some() || self.canvas.claimed_press || self.analytic_gesturing()
+    }
+    /// §31I: a handle of the circle or annular canvas is held.
+    fn analytic_gesturing(&self) -> bool {
+        self.circle_canvas.gesturing() || self.annulus_canvas.gesturing()
+    }
+    /// §31I: the window for a new document shows its circle or annular form.
+    fn new_profile(&self) -> Option<Mode> {
+        (self.drawing_new() && self.mode != Mode::Polygon).then_some(self.mode)
+    }
+    /// §31I: the gestures that ended in this frame on the circle canvas, given by
+    /// their press/release strings over the draft `frame` had at the frame's start.
+    fn record_circle_gestures(&mut self, frame: &CircleState, finished: Vec<analytic::Finished>) {
+        let state = |s: analytic::Strings| CircleState {
+            center: s.centre,
+            radius: s.outer,
+            height: frame.height.clone(),
+        };
+        record_gestures(
+            &mut self.circle_undo,
+            &mut self.circle_redo,
+            &mut self.circle_applied,
+            finished
+                .into_iter()
+                .map(|g| (state(g.before), state(g.after))),
+        );
+    }
+    /// §31I: the same for the annular canvas.
+    fn record_annulus_gestures(&mut self, frame: &AnnulusState, finished: Vec<analytic::Finished>) {
+        let state = |s: analytic::Strings| AnnulusState {
+            center: s.centre,
+            outer_radius: s.outer,
+            inner_radius: s.bore.unwrap_or_else(|| frame.inner_radius.clone()),
+            height: frame.height.clone(),
+        };
+        record_gestures(
+            &mut self.annulus_undo,
+            &mut self.annulus_redo,
+            &mut self.annulus_applied,
+            finished
+                .into_iter()
+                .map(|g| (state(g.before), state(g.after))),
+        );
     }
     /// §31D-2: the anchor a hovering pointer holds belongs to one canvas, one drawing
     /// and one moment. The window forgets it when a tab's form is set aside and when
@@ -646,7 +715,12 @@ impl Editor {
             .annulus_applied
             .replace(self.annulus.clone())
             .ok_or_else(|| CadError::input("no applied annulus draft"))?;
-        if self.annulus != before {
+        // §31I: a gesture keeps the spelling of the fields it did not move, so the
+        // numbers decide whether this is a step, not their text.
+        let numbers = |a: &AnnulusState| {
+            [&a.center[0], &a.center[1], &a.outer_radius, &a.inner_radius].map(|s| number(s).ok())
+        };
+        if numbers(&self.annulus) != numbers(&before) {
             push_bounded(&mut self.annulus_undo, before);
             self.annulus_redo.clear();
         }
@@ -726,7 +800,11 @@ impl Editor {
             .circle_applied
             .replace(self.circle.clone())
             .ok_or_else(|| CadError::input("no applied Circle draft"))?;
-        if self.circle != before {
+        // §31I: a gesture keeps the spelling of the fields it did not move, so the
+        // numbers decide whether this is a step, not their text.
+        let numbers =
+            |c: &CircleState| [&c.center[0], &c.center[1], &c.radius].map(|s| number(s).ok());
+        if numbers(&self.circle) != numbers(&before) {
             push_bounded(&mut self.circle_undo, before);
             self.circle_redo.clear();
         }
@@ -947,6 +1025,10 @@ impl Editor {
         self.dismiss();
         self.draft = Some(State::default());
         self.next = ["0".into(), "0".into()];
+        // §31I: the opening numbers are the first confirmed state of the circle and
+        // annular drafts, as the stored numbers are for the saved forms.
+        self.circle_applied = Some(self.circle.clone());
+        self.annulus_applied = Some(self.annulus.clone());
     }
     /// What the circle form is asking for, or why it is not a circle yet.
     ///
@@ -1034,7 +1116,7 @@ impl Editor {
             }
             return;
         }
-        if self.editing_annulus.is_some() {
+        if self.editing_annulus.is_some() || self.new_profile() == Some(Mode::Annulus) {
             if let Some(previous) = self.annulus_undo.pop() {
                 push_bounded(
                     &mut self.annulus_redo,
@@ -1046,7 +1128,7 @@ impl Editor {
             }
             return;
         }
-        if self.editing_circle.is_some() {
+        if self.editing_circle.is_some() || self.new_profile() == Some(Mode::Circle) {
             if let Some(previous) = self.circle_undo.pop() {
                 push_bounded(
                     &mut self.circle_redo,
@@ -1077,7 +1159,7 @@ impl Editor {
             }
             return;
         }
-        if self.editing_annulus.is_some() {
+        if self.editing_annulus.is_some() || self.new_profile() == Some(Mode::Annulus) {
             if let Some(next) = self.annulus_redo.pop() {
                 push_bounded(
                     &mut self.annulus_undo,
@@ -1089,7 +1171,7 @@ impl Editor {
             }
             return;
         }
-        if self.editing_circle.is_some() {
+        if self.editing_circle.is_some() || self.new_profile() == Some(Mode::Circle) {
             if let Some(next) = self.circle_redo.pop() {
                 push_bounded(
                     &mut self.circle_undo,
@@ -1192,7 +1274,21 @@ impl Editor {
         )
         .resizable(false)
         .default_width(540.)
-        .show(ui.ctx(), |ui| self.draw_draft(ui, running, outcome));
+        .show(ui.ctx(), |ui| {
+            let analytic = self.editing_analytic() || self.new_profile().is_some();
+            self.draw_draft(ui, running, outcome);
+            // §31I: with a canvas these forms are taller than egui's default window,
+            // which sizes itself from the last frame. A line that appears (the
+            // session's outcome, a refusal) would be cut off and, with nothing else
+            // to draw, stay so: lay this frame out again at the new size instead.
+            let (content, clip) = (ui.min_rect(), ui.clip_rect());
+            if analytic
+                && content.bottom() > clip.bottom() + 0.5
+                && content.bottom() <= ui.ctx().content_rect().bottom()
+            {
+                ui.ctx().request_discard("a Circle or annulus form grew");
+            }
+        });
     }
 
     /// The circle half of the same window.
@@ -1203,6 +1299,22 @@ impl Editor {
     fn draw_circle(&mut self, ui: &mut egui::Ui) {
         ui.label("XY · mm · one analytic circle · Blind · NewBody");
         ui.label("The circle is stored as a centre and a radius, and stays one in the solid.");
+        // §31I: the canvas first, so the fields below show what it wrote this frame.
+        let frame = self.circle.clone();
+        let finished = self.circle_canvas.draw(
+            ui,
+            analytic::Fields {
+                centre: &mut self.circle.center,
+                outer: &mut self.circle.radius,
+                bore: None,
+            },
+            self.pending.is_some(),
+        );
+        self.record_circle_gestures(&frame, finished);
+        let gesture = self.circle_canvas.gesturing();
+        // A box that keeps the keyboard focus takes text even when disabled; while a
+        // handle is held or a job runs, none is interactive.
+        let editable = ui.is_enabled() && !gesture;
         let [x, y] = &mut self.circle.center;
         let fields: [(&str, &mut String); 4] = [
             ("Center X", x),
@@ -1218,7 +1330,8 @@ impl Editor {
                     ui.add(
                         egui::TextEdit::singleline(value)
                             .char_limit(64)
-                            .desired_width(120.),
+                            .desired_width(120.)
+                            .interactive(editable),
                     );
                     ui.label("mm");
                     ui.end_row();
@@ -1227,7 +1340,10 @@ impl Editor {
         match self.circle_content() {
             Ok(content) => {
                 if ui
-                    .add_enabled(self.can_create, egui::Button::new(CREATE_CIRCLE))
+                    .add_enabled(
+                        self.can_create && !gesture,
+                        egui::Button::new(CREATE_CIRCLE),
+                    )
                     .clicked()
                 {
                     self.pending = Some(content);
@@ -1248,6 +1364,20 @@ impl Editor {
         ui.label(
             "The hole is a loop of the same profile, so it is in the solid and in every export.",
         );
+        // §31I: the canvas first, so the fields below show what it wrote this frame.
+        let frame = self.annulus.clone();
+        let finished = self.annulus_canvas.draw(
+            ui,
+            analytic::Fields {
+                centre: &mut self.annulus.center,
+                outer: &mut self.annulus.outer_radius,
+                bore: Some(&mut self.annulus.inner_radius),
+            },
+            self.pending.is_some(),
+        );
+        self.record_annulus_gestures(&frame, finished);
+        let gesture = self.annulus_canvas.gesturing();
+        let editable = ui.is_enabled() && !gesture;
         let [x, y] = &mut self.annulus.center;
         let fields: [(&str, &mut String); 5] = [
             ("Center X", x),
@@ -1264,7 +1394,8 @@ impl Editor {
                     ui.add(
                         egui::TextEdit::singleline(value)
                             .char_limit(64)
-                            .desired_width(120.),
+                            .desired_width(120.)
+                            .interactive(editable),
                     );
                     ui.label("mm");
                     ui.end_row();
@@ -1273,7 +1404,10 @@ impl Editor {
         match self.annulus_content() {
             Ok(content) => {
                 if ui
-                    .add_enabled(self.can_create, egui::Button::new(CREATE_ANNULUS))
+                    .add_enabled(
+                        self.can_create && !gesture,
+                        egui::Button::new(CREATE_ANNULUS),
+                    )
                     .clicked()
                 {
                     self.pending = Some(content);
@@ -1310,6 +1444,21 @@ impl Editor {
                 saved.height_mm
             ));
         }
+        // §31I: the canvas over the same strings; a gesture is one draft step.
+        let frame = self.circle.clone();
+        let queued = self.pending_apply_circle.is_some() || self.pending_circle_edit.is_some();
+        let finished = self.circle_canvas.draw(
+            ui,
+            analytic::Fields {
+                centre: &mut self.circle.center,
+                outer: &mut self.circle.radius,
+                bore: None,
+            },
+            queued,
+        );
+        self.record_circle_gestures(&frame, finished);
+        let gesture = self.circle_canvas.gesturing();
+        let editable = ui.is_enabled() && !gesture;
         let height = self.circle.height.clone();
         let [x, y] = &mut self.circle.center;
         let fields: [(&str, &mut String); 3] = [
@@ -1325,7 +1474,8 @@ impl Editor {
                     ui.add(
                         egui::TextEdit::singleline(value)
                             .char_limit(64)
-                            .desired_width(120.),
+                            .desired_width(120.)
+                            .interactive(editable),
                     );
                     ui.label("mm");
                     ui.end_row();
@@ -1344,7 +1494,7 @@ impl Editor {
                     // changes only when you Save.
                     if ui
                         .add_enabled(
-                            self.can_apply_analytic && differs,
+                            self.can_apply_analytic && differs && !gesture,
                             egui::Button::new("Apply circle"),
                         )
                         .clicked()
@@ -1352,7 +1502,10 @@ impl Editor {
                         self.pending_apply_circle = Some(request.clone());
                     }
                     if ui
-                        .add_enabled(pending, egui::Button::new("Confirm draft numbers"))
+                        .add_enabled(
+                            pending && !gesture,
+                            egui::Button::new("Confirm draft numbers"),
+                        )
                         .clicked()
                     {
                         self.apply_circle().expect("validated circle draft");
@@ -1361,7 +1514,7 @@ impl Editor {
                 let applied = self.circle_applied.as_ref() == Some(&self.circle);
                 if ui
                     .add_enabled(
-                        applied && !self.unsaved,
+                        applied && !self.unsaved && !gesture,
                         egui::Button::new("Save edited circle copy…"),
                     )
                     .clicked()
@@ -1511,6 +1664,21 @@ impl Editor {
                 saved.height_mm
             ));
         }
+        // §31I: the canvas over the same strings; a gesture is one draft step.
+        let frame = self.annulus.clone();
+        let queued = self.pending_apply_annulus.is_some() || self.pending_annulus_edit.is_some();
+        let finished = self.annulus_canvas.draw(
+            ui,
+            analytic::Fields {
+                centre: &mut self.annulus.center,
+                outer: &mut self.annulus.outer_radius,
+                bore: Some(&mut self.annulus.inner_radius),
+            },
+            queued,
+        );
+        self.record_annulus_gestures(&frame, finished);
+        let gesture = self.annulus_canvas.gesturing();
+        let editable = ui.is_enabled() && !gesture;
         let height = self.annulus.height.clone();
         let [x, y] = &mut self.annulus.center;
         let fields: [(&str, &mut String); 4] = [
@@ -1527,7 +1695,8 @@ impl Editor {
                     ui.add(
                         egui::TextEdit::singleline(value)
                             .char_limit(64)
-                            .desired_width(120.),
+                            .desired_width(120.)
+                            .interactive(editable),
                     );
                     ui.label("mm");
                     ui.end_row();
@@ -1546,7 +1715,7 @@ impl Editor {
                     // changes only when you Save.
                     if ui
                         .add_enabled(
-                            self.can_apply_analytic && differs,
+                            self.can_apply_analytic && differs && !gesture,
                             egui::Button::new("Apply annulus"),
                         )
                         .clicked()
@@ -1554,7 +1723,10 @@ impl Editor {
                         self.pending_apply_annulus = Some(request.clone());
                     }
                     if ui
-                        .add_enabled(pending, egui::Button::new("Confirm draft numbers"))
+                        .add_enabled(
+                            pending && !gesture,
+                            egui::Button::new("Confirm draft numbers"),
+                        )
                         .clicked()
                     {
                         self.apply_annulus().expect("validated annulus draft");
@@ -1563,7 +1735,7 @@ impl Editor {
                 let applied = self.annulus_applied.as_ref() == Some(&self.annulus);
                 if ui
                     .add_enabled(
-                        applied && !self.unsaved,
+                        applied && !self.unsaved && !gesture,
                         egui::Button::new("Save edited annulus copy…"),
                     )
                     .clicked()
@@ -1628,7 +1800,7 @@ impl Editor {
             return;
         }
         if self.editing_annulus.is_some() {
-            ui.add_enabled_ui(!running, |ui| {
+            ui.add_enabled_ui(!running && !self.analytic_gesturing(), |ui| {
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
@@ -1669,7 +1841,7 @@ impl Editor {
             return;
         }
         if self.editing_circle.is_some() {
-            ui.add_enabled_ui(!running, |ui| {
+            ui.add_enabled_ui(!running && !self.analytic_gesturing(), |ui| {
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
@@ -1712,7 +1884,7 @@ impl Editor {
         // Editing a saved Sketch is not creating one, so it offers no choice
         // of profile: the document already decided what it holds.
         if self.editing.is_none() {
-            ui.add_enabled_ui(!running, |ui| {
+            ui.add_enabled_ui(!running && !self.analytic_gesturing(), |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Profile:");
                     ui.selectable_value(&mut self.mode, Mode::Polygon, "Line polygon");
@@ -1728,9 +1900,32 @@ impl Editor {
                     } else {
                         self.draw_circle(ui);
                     }
-                    if ui.button("Cancel draft").clicked() {
-                        self.dismiss();
-                    }
+                    // §31I: a gesture on the canvas is one step of this draft's own
+                    // bounded history, kept per profile while the others are shown.
+                    let (undo, redo) = if annular {
+                        (!self.annulus_undo.is_empty(), !self.annulus_redo.is_empty())
+                    } else {
+                        (!self.circle_undo.is_empty(), !self.circle_redo.is_empty())
+                    };
+                    ui.add_enabled_ui(!self.analytic_gesturing(), |ui| {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(undo, egui::Button::new("Undo draft"))
+                                .clicked()
+                            {
+                                self.undo();
+                            }
+                            if ui
+                                .add_enabled(redo, egui::Button::new("Redo draft"))
+                                .clicked()
+                            {
+                                self.redo();
+                            }
+                            if ui.button("Cancel draft").clicked() {
+                                self.dismiss();
+                            }
+                        });
+                    });
                 });
                 if running {
                     ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
@@ -2184,6 +2379,68 @@ pub(crate) fn finish_annulus_edit(
 /// Vertices beyond this are not drawn: the canvas shows no contour that has one.
 const DRAWABLE_MM: f64 = 1e6;
 
+/// How near a press must be to a vertex or a handle to take it, in egui logical
+/// points: independent of zoom and of the display's pixels per point (§25C).
+const PICK_POINTS: f32 = 9.0;
+
+/// The screen point of the document point `p` (mm) on a canvas `rect` whose
+/// lower-left corner shows `minimum` at `scale` logical points per mm; +Y is up.
+/// The one transform of the Line canvas and of the Circle and annulus canvas.
+fn canvas_point(rect: egui::Rect, minimum: [f64; 2], scale: f32, p: [f64; 2]) -> egui::Pos2 {
+    rect.left_bottom()
+        + egui::vec2(
+            ((p[0] - minimum[0]) * f64::from(scale)) as f32,
+            -((p[1] - minimum[1]) * f64::from(scale)) as f32,
+        )
+}
+
+/// The document point (mm) under the screen position `pos` of that canvas.
+fn canvas_mm(rect: egui::Rect, minimum: [f64; 2], scale: f32, pos: egui::Pos2) -> [f64; 2] {
+    let origin = rect.left_bottom();
+    [
+        minimum[0] + f64::from(pos.x - origin.x) / f64::from(scale),
+        minimum[1] + f64::from(origin.y - pos.y) / f64::from(scale),
+    ]
+}
+
+/// The view (lower-left corner in mm, logical points per mm) that shows the box
+/// `lo`..`hi` on a canvas of `size` with 30-point margins, from `lo`.
+fn fit_view(lo: [f64; 2], hi: [f64; 2], size: egui::Vec2) -> ([f64; 2], f32) {
+    let width = (hi[0] - lo[0]).max(1e-5);
+    let height = (hi[1] - lo[1]).max(1e-5);
+    let scale =
+        ((f64::from(size.x) - 60.0) / width).min((f64::from(size.y) - 60.0) / height) as f32;
+    (
+        [
+            lo[0] - 30.0 / f64::from(scale),
+            lo[1] - 30.0 / f64::from(scale),
+        ],
+        scale,
+    )
+}
+
+/// A canvas's background and millimetre grid; returns the grid step in mm. At most
+/// ~50 lines, even for very small or far-translated drawings.
+fn paint_grid(painter: &egui::Painter, rect: egui::Rect, minimum: [f64; 2], scale: f32) -> f64 {
+    painter.rect_filled(rect, 0., egui::Color32::from_gray(25));
+    let grid = 10_f64.powf((40.0 / f64::from(scale)).log10().floor());
+    for axis in 0..2 {
+        for i in 0..55 {
+            let value = (minimum[axis] / grid).ceil() * grid + f64::from(i) * grid;
+            let mut p = minimum;
+            p[axis] = value;
+            let start = canvas_point(rect, minimum, scale, p);
+            let end = if axis == 0 {
+                egui::pos2(start.x, rect.top())
+            } else {
+                egui::pos2(rect.right(), start.y)
+            };
+            painter.line_segment([start, end], (1., egui::Color32::from_gray(48)));
+        }
+    }
+    grid
+}
+
 /// Drawing coordinates are a view of numbers, never a source of modelling rules.
 #[derive(Debug)]
 struct Canvas {
@@ -2397,13 +2654,7 @@ impl Canvas {
                 hi[j] = hi[j].max(p[j]);
             }
         }
-        let width = (hi[0] - lo[0]).max(1e-5);
-        let height = (hi[1] - lo[1]).max(1e-5);
-        self.scale = (450.0 / width).min(190.0 / height) as f32;
-        self.minimum = [
-            lo[0] - 30.0 / f64::from(self.scale),
-            lo[1] - 30.0 / f64::from(self.scale),
-        ];
+        (self.minimum, self.scale) = fit_view(lo, hi, egui::vec2(510., 250.));
     }
     /// One vertex as a drawable point: finite numbers within [`DRAWABLE_MM`].
     fn vertex(p: &[String; 2]) -> Option<[f64; 2]> {
@@ -2415,11 +2666,7 @@ impl Canvas {
         draft.points.iter().map(Self::vertex).collect()
     }
     fn screen(&self, rect: egui::Rect, p: [f64; 2]) -> egui::Pos2 {
-        rect.left_bottom()
-            + egui::vec2(
-                ((p[0] - self.minimum[0]) * f64::from(self.scale)) as f32,
-                -((p[1] - self.minimum[1]) * f64::from(self.scale)) as f32,
-            )
+        canvas_point(rect, self.minimum, self.scale, p)
     }
     fn hit(
         &self,
@@ -2428,14 +2675,14 @@ impl Canvas {
         points: &[[f64; 2]],
         at: egui::Pos2,
     ) -> Option<usize> {
-        const RADIUS: f32 = 9.0; // egui screen points, independent of zoom/DPI
         points
             .iter()
             .enumerate()
             .filter_map(|(i, p)| {
                 let screen = self.screen(rect, *p);
                 let distance = screen.distance_sq(at);
-                (visible.contains(screen) && distance <= RADIUS * RADIUS).then_some((i, distance))
+                (visible.contains(screen) && distance <= PICK_POINTS * PICK_POINTS)
+                    .then_some((i, distance))
             })
             .min_by(|(i, a), (j, b)| a.total_cmp(b).then(i.cmp(j)))
             .map(|(i, _)| i)
@@ -2447,11 +2694,7 @@ impl Canvas {
     }
     /// The document point (mm) under a screen position of the canvas `rect`.
     fn document(&self, rect: egui::Rect, pos: egui::Pos2) -> [f64; 2] {
-        let origin = rect.left_bottom();
-        [
-            self.minimum[0] + f64::from(pos.x - origin.x) / f64::from(self.scale),
-            self.minimum[1] + f64::from(origin.y - pos.y) / f64::from(self.scale),
-        ]
+        canvas_mm(rect, self.minimum, self.scale, pos)
     }
     /// What is visible of the canvas `rect`, as a document rectangle: snap points
     /// outside it are not offered, as vertices outside it cannot be picked.
@@ -3133,23 +3376,7 @@ impl Canvas {
             self.claimed_press = false;
         }
         let screen = |p| self.screen(rect, p);
-        painter.rect_filled(rect, 0., egui::Color32::from_gray(25));
-        // At most ~50 lines, even for very small or far-translated drawings.
-        let grid = 10_f64.powf((40.0 / f64::from(self.scale)).log10().floor());
-        for axis in 0..2 {
-            for i in 0..55 {
-                let value = (self.minimum[axis] / grid).ceil() * grid + f64::from(i) * grid;
-                let mut p = self.minimum;
-                p[axis] = value;
-                let start = screen(p);
-                let end = if axis == 0 {
-                    egui::pos2(start.x, rect.top())
-                } else {
-                    egui::pos2(rect.right(), start.y)
-                };
-                painter.line_segment([start, end], (1., egui::Color32::from_gray(48)));
-            }
-        }
+        let grid = paint_grid(&painter, rect, self.minimum, self.scale);
         painter.text(
             rect.left_top() + egui::vec2(5., 5.),
             egui::Align2::LEFT_TOP,
@@ -8166,6 +8393,9 @@ pub(crate) mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "sketch/analytic_tests.rs"]
+pub(crate) mod analytic_tests;
 #[cfg(test)]
 #[path = "sketch/anchor_tests.rs"]
 pub(crate) mod anchor_tests;

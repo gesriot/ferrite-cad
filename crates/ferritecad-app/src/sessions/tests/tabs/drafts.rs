@@ -684,6 +684,91 @@ fn a_typed_diameter_and_the_picked_circle_follow_their_tab() {
     println!("\nFCAD_31E_TABS_EXECUTED");
 }
 
+/// §31I: two copies of one ring keep each their canvas view, the strings their canvas
+/// wrote and their draft history through every switch; a gesture, Fit or Undo in one
+/// tab changes nothing in the other. The picture of a ring in a tab needs OCCT.
+#[test]
+fn the_canvas_view_its_dragged_numbers_and_their_history_follow_their_tab() {
+    use crate::sketch::analytic_tests::{canvas_facts, drag_role, press_on_form, settle_form};
+    if !ferritecad_occt::is_available() {
+        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        eprintln!("skipped: the picture of a ring in a tab needs OCCT");
+        return;
+    }
+    let user = tempfile::tempdir().expect("user");
+    let a_file = user.path().join("ring.fcad");
+    ferritecad_jobs::create_document_with_kernel(
+        CreateDocumentRequest::new(
+            &a_file,
+            NewDocument::AnnularExtrude(
+                ferritecad_document::AnnularExtrusion::new([12.5, -7.25], 10.5, 4.75, 15.25)
+                    .expect("a ring"),
+            ),
+            "keep",
+        ),
+        ferritecad_occt::OcctKernel::new,
+        &OperationContext::default(),
+    )
+    .expect("a ring");
+    let b_file = user.path().join("copy.fcad");
+    std::fs::copy(&a_file, &b_file).expect("copy");
+    let open_form = |w: &mut Window| {
+        let current = w.sessions.export_path().expect("shown");
+        let reading = read_extrude_source(&current).expect("reading");
+        let sketch = reading.annulus_sketches[0].sketch;
+        assert!(
+            w.creates
+                .sketch
+                .begin_annulus_edit(&current, &reading, sketch)
+        );
+    };
+
+    let mut w = Window::new(Drawn::Native, None);
+    w.open(&a_file);
+    let a = w.sessions.tab();
+    open_form(&mut w);
+    settle_form(&mut w.creates.sketch);
+    let stored = canvas_facts(&w.creates.sketch);
+    assert!(stored.2.is_some(), "the canvas fitted when first shown");
+    drag_role(&mut w.creates.sketch, "outer", egui::vec2(12.5, -6.25));
+    let a_state = canvas_facts(&w.creates.sketch);
+    assert_eq!(a_state.1, (1, 0));
+    assert_eq!(a_state.2, stored.2, "a gesture moved the view");
+    w.open(&b_file);
+    let b = w.sessions.tab();
+    assert!(!w.creates.sketch.active(), "a new tab opens with no form");
+    assert!(w.tabs.has_draft(a));
+    open_form(&mut w);
+    drag_role(&mut w.creates.sketch, "bore", egui::vec2(-5.5, 8.25));
+    drag_role(&mut w.creates.sketch, "centre", egui::vec2(20., 10.));
+    press_on_form(&mut w.creates.sketch, "Fit profile");
+    let b_state = canvas_facts(&w.creates.sketch);
+    assert_eq!(b_state.1, (2, 0));
+    assert_ne!(b_state.2, a_state.2, "B's Fit is B's own view");
+    assert_ne!(b_state.0, a_state.0);
+
+    for _ in 0..10 {
+        w.round(a);
+        assert_eq!(canvas_facts(&w.creates.sketch), a_state);
+        w.round(b);
+        assert_eq!(canvas_facts(&w.creates.sketch), b_state);
+    }
+    // Undo in A is A's one step; B is where it was.
+    w.round(a);
+    press_on_form(&mut w.creates.sketch, "Undo draft");
+    let a_undone = canvas_facts(&w.creates.sketch);
+    assert_eq!((a_undone.0.clone(), a_undone.1), (stored.0, (0, 1)));
+    w.round(b);
+    assert_eq!(canvas_facts(&w.creates.sketch), b_state);
+    w.round(a);
+    assert_eq!(canvas_facts(&w.creates.sketch), a_undone);
+    assert!(
+        !w.sessions.dirty() && !w.hidden(b).dirty(),
+        "a draft is not a change"
+    );
+    println!("\nFCAD_31I_TABS_EXECUTED");
+}
+
 /// Showing another tab waits for everything that is not an idle form; a switch
 /// that is refused, cancelled, stale or answered for another tab — and a late
 /// Apply answer addressed to another tab — leaves both tabs' drafts where they
@@ -763,6 +848,19 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
     crate::sketch::drag_tests::release_vertex(&ctx, &mut held.sketch, at);
     assert!(!held.sketch.gesturing());
     assert!(leave(&held, &w.edits, &w), "its idle form does not");
+    // §31I: so does a handle held on a saved Circle's canvas.
+    let mut circled = crate::creates::Creates::default();
+    assert!(crate::sketch::analytic_tests::begin_saved_circle(
+        &mut circled.sketch,
+        user.path()
+    ));
+    let (ctx, at) = crate::sketch::analytic_tests::hold_handle(&mut circled.sketch);
+    assert!(
+        !leave(&circled, &w.edits, &w),
+        "a held canvas handle holds it"
+    );
+    crate::sketch::analytic_tests::release_handle(&ctx, &mut circled.sketch, at);
+    assert!(leave(&circled, &w.edits, &w), "its idle form does not");
     let running = w
         .sessions
         .begin_apply(|_, _, _| std::thread::spawn(|| {}))

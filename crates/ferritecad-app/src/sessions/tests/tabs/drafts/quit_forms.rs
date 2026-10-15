@@ -642,6 +642,15 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
     let (ctx, at) = crate::sketch::drag_tests::hold_vertex(&mut w.creates.sketch);
     assert!(!w.begin_quit());
     crate::sketch::drag_tests::release_vertex(&ctx, &mut w.creates.sketch, at);
+    // §31I: a handle held on a Circle's canvas holds Quit as a vertex does.
+    w.creates.sketch.dismiss();
+    assert!(crate::sketch::analytic_tests::begin_saved_circle(
+        &mut w.creates.sketch,
+        root.path()
+    ));
+    let (ctx, at) = crate::sketch::analytic_tests::hold_handle(&mut w.creates.sketch);
+    assert!(!w.begin_quit(), "a held Circle handle lost its hold");
+    crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
     println!("\nFCAD_30V_HOLDS_EXECUTED");
 }
 

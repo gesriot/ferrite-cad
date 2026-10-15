@@ -4553,22 +4553,18 @@ impl ApplicationHandler<AppEvent> for App {
                 // screen before it can say where to look, so it takes the
                 // route that can read the picture. Every other gesture is
                 // camera state alone and takes the route that cannot.
+                let pointer_claimed = window_pointer_claimed(&live.egui, &self.input, &other);
                 if let Err(error) = magnify_gesture(
                     &live.scene,
                     live.scene.prepared.snapshot(),
                     &mut self.input,
                     &other,
                     response.consumed,
-                    live.egui.egui_wants_pointer_input(),
+                    pointer_claimed,
                 ) {
                     journal::report(format_args!("ferritecad: {error}"));
                 }
-                apply_viewport_input(
-                    &mut self.input,
-                    &other,
-                    response.consumed,
-                    live.egui.egui_wants_pointer_input(),
-                );
+                apply_viewport_input(&mut self.input, &other, response.consumed, pointer_claimed);
             }
         }
 
@@ -7607,6 +7603,30 @@ fn magnify_gesture<P>(
 /// made over it is about the panel.
 fn pointer_gesture_claimed(consumed: bool, wants_pointer: bool) -> bool {
     consumed || wants_pointer
+}
+
+/// The current OS position, not egui's last processed pointer position, decides
+/// whether a press is over a floating form. Move and press may arrive before a
+/// redraw. A viewport drag already held keeps its ownership in the reducer.
+fn window_pointer_claimed(
+    egui: &egui::Context,
+    input: &ViewportInput,
+    event: &WindowEvent,
+) -> bool {
+    let position = match event {
+        WindowEvent::CursorMoved { position, .. } => Some((position.x as f32, position.y as f32)),
+        _ => input.pointer_position(),
+    };
+    egui.egui_is_using_pointer()
+        || position.map_or_else(
+            || egui.egui_wants_pointer_input(),
+            |point| {
+                !input.region().contains(point)
+                    || egui
+                        .layer_id_at(egui::pos2(point.0, point.1) / egui.pixels_per_point())
+                        .is_some_and(|layer| layer.order != egui::Order::Background)
+            },
+        )
 }
 
 fn button_of(button: MouseButton) -> Option<PointerButton> {

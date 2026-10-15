@@ -5096,7 +5096,9 @@ query-window boundary omission with a failing-first regression. The macOS window
 verified all three labels, saved drag/Undo/Redo, typed text, object-over-grid choice,
 Apply/Save and real STL/FBX exports against the CLI (14000 mm³; peak 204.892 MiB,
 exit 0). Remote CI is recorded separately. §30, Milestone 5C, the product and the OOM
-investigation remain open.
+investigation remain open. §31I (below) now draws Circle and annulus drafts on their
+own canvas, with snapping deliberately absent there; the centre is still no object-snap
+candidate on either canvas, so the §31C centre remains open.
 
 ### §31D — Gesture guides and temporary dimensional input (§31D-1 and §31D-2 implemented for the Line canvas)
 
@@ -5338,6 +5340,68 @@ exited normally under the watchdog (peak 185.204 MiB, pressure 1, swap 0). Exact
 checks are tracked in PR #112; the initial Windows run exposed two test defects,
 corrected before the final matrix. §30, Milestone
 5C, the product and the OOM investigation stay open.
+
+### §31I — A visible canvas for the Circle and Circle-with-hole forms (reviewed implementation)
+
+The existing numeric forms of an analytic Sketch — **New → Circle**, **New → Circle
+with hole**, **Edit saved Circle**, **Edit saved annulus** — show their draft on an XY
+canvas (mm, +Y up) above the number fields: one analytic circle, or the bounding circle
+and the bore (two colours, roles by field, never by stored order) with their common
+centre. Three handles can be dragged: the centre (moves by the pointer's movement, no
+jump, an unmoved axis keeps its text), the outer radius (east) and the bore radius
+(north), each a Euclidean distance from the centre frozen at the press, each writing
+only its own field. The canvas writes the same strings a person could type; publication
+is only the old explicit Create / Apply / Save as copy, and a pointer movement starts no
+job, rebuild or file write. No new CAD operation, profile, constraint, schema, job, CLI
+or snapping rule; the request and the document keep their analytic circles, UUIDs and
+references, and the height is not edited here.
+
+* **State.** The strings are the forms' own `CircleState`/`AnnulusState`; the view and
+  the held handle are `sketch::analytic::Canvas`, one per form, inside the `Editor`, so
+  they go with the tab, a New held for Quit and a given-back publication. `gesturing()`
+  includes a held handle, so tab switch, Open, New, Close and Quit refuse through their
+  existing owners.
+* **History.** One finished gesture is one step of the forms' existing bounded history
+  (New forms gain the same stacks and Undo/Redo draft buttons); a no-op is none and keeps
+  Redo; Escape, focus loss, `PointerGone`, a lost release or a form that becomes
+  unavailable restore the press-time strings and leave the history alone. A gesture is
+  the confirmed draft (no second Confirm). Typed text not yet confirmed when a drag starts
+  is first recorded as its own step exactly as typed, so the first Undo returns the
+  pre-drag strings with their spelling; Confirm keeps its meaning (an equivalent
+  spelling is still no step).
+* **Pick rule.** 9 logical points (the Line canvas's vertex radius), visible part only,
+  least screen distance; an exact tie goes to centre, then outer, then bore. A radius that
+  is not positive has no circle and no handle.
+* **Input.** Text that cannot be drawn (empty, `-`, not finite, beyond 1e6 mm) draws no
+  profile, names the field and the reason on the canvas and starts no gesture; drawable
+  but refused numbers (radius ≤ 0, bore ≥ outer, thin wall) are drawn as they are and
+  refused by the existing validation; nothing is clamped or swapped. First open and **Fit
+  profile** fit the profile; typing and gestures never re-centre.
+
+Contract, decisions, executed gates, mutations, resources and the independent window
+recipe: [analytic-sketch-canvas.md](analytic-sketch-canvas.md). Independent review corrected
+same-frame gesture history, routed presses over floating forms using the latest OS
+position and enabled exact f64 JSON request round-trips in the CLI. The macOS window
+checked New/saved Circle and annulus, refusal/recovery, draft and document history,
+two-tab form/view ownership, Apply/export before Save and Save Cancel/Save. Actual
+saved models and exports match the CLI; all three guarded viewers exited normally
+(maximum 242.298 MiB, pressure 1, swap 0). Remote checks are recorded with the PR. **Not done:** the §31C
+circle-centre object snap (the centre is now drawn but is no snap candidate), any
+snapping or guides on this canvas, quadrants, mixed Line/Circle profiles, arcs and
+constraints; §30, Milestone 5C, the product and the OOM investigation stay open.
+
+### §31J — Navigate the 2D Sketch canvases (planned)
+
+Add cursor-centred zoom and explicit pan to the existing Line, Circle and annular
+canvases, using their shared document/screen transforms. View navigation changes no
+coordinate string, request, constraint, document history or file. Keep the view with
+its editor/profile/tab; Fit remains explicit. Route navigation only to the visible
+uncovered canvas, preserving floating-form versus 3D viewport ownership. Freeze the
+view for an edit gesture and do not let wheel/pinch/pan change it until that gesture
+ends. Picking and snap/guide apertures stay in logical points at every scale. Bound
+view arithmetic to finite positive scales, and exercise 1x/2x, crowded geometry,
+outside/covered/busy input, cancellation and unchanged Undo/Redo. No new CAD operation,
+mixed profile, snap family, schema, solver or CLI pointer API is included.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
