@@ -268,14 +268,14 @@ fn a_new_point_is_added_from_a_shown_endpoint_midpoint_or_crossing_reached_by_re
     let crossing = at(&ctx, &mut e, [10., 10.]);
     let out = hover(&ctx, &mut e, crossing + egui::vec2(3., 1.));
     assert!(provisional(&out).is_some_and(|p| near(p, crossing)));
-    assert!(label_at(&out, "From Intersection · edges 1→2 × 3→4 at (10, 10) mm").is_some());
+    assert!(label_at(&out, "From Intersection · edges 1>2 × 3>4 at (10, 10) mm").is_some());
     press(&ctx, &mut e, crossing + egui::vec2(3., 1.));
     let east = at(&ctx, &mut e, [25., 10.25]);
     let out = move_to(&ctx, &mut e, east);
     assert!(
         label_at(
             &out,
-            "0° · 15 mm from Intersection · edges 1→2 × 3→4 · adds vertex 5"
+            "0° · 15 mm from Intersection · edges 1>2 × 3>4 · adds vertex 5"
         )
         .is_some()
     );
@@ -287,14 +287,14 @@ fn a_new_point_is_added_from_a_shown_endpoint_midpoint_or_crossing_reached_by_re
     let middle = at(&ctx, &mut e, [30., 15.]);
     let out = hover(&ctx, &mut e, middle);
     assert!(provisional(&out).is_some_and(|p| near(p, middle)));
-    assert!(label_at(&out, "From Midpoint · edge 2→3 at (30, 15) mm").is_some());
+    assert!(label_at(&out, "From Midpoint · edge 2>3 at (30, 15) mm").is_some());
     press(&ctx, &mut e, middle);
     let west = at(&ctx, &mut e, [20., 15.25]);
     let out = move_to(&ctx, &mut e, west);
     assert!(
         label_at(
             &out,
-            "180° · 10 mm from Midpoint · edge 2→3 · adds vertex 5"
+            "180° · 10 mm from Midpoint · edge 2>3 · adds vertex 5"
         )
         .is_some()
     );
@@ -316,10 +316,10 @@ fn a_new_point_is_added_from_a_shown_endpoint_midpoint_or_crossing_reached_by_re
     let out = hover(&ctx, &mut e, spot);
     assert_eq!(
         anchor_of(&e).as_deref(),
-        Some("edge 4→5"),
+        Some("edge 4>5"),
         "a middle, not an intersection"
     );
-    assert!(label_at(&out, "From Midpoint · edge 4→5 at (12, -1) mm").is_some());
+    assert!(label_at(&out, "From Midpoint · edge 4>5 at (12, -1) mm").is_some());
 
     // Far from every object point there is no anchor, and a click is the old click.
     let (ctx, mut e) = anchored(&OPEN_L, "Orthogonal");
@@ -420,7 +420,7 @@ fn a_saved_vertex_moves_from_another_anchor_without_switching_the_selection() {
     let middle = at(&ctx, &mut e, [40., 20.]);
     let out = hover(&ctx, &mut e, middle);
     assert!(provisional(&out).is_some_and(|p| near(p, middle)));
-    assert_eq!(anchor_of(&e).as_deref(), Some("edge 3→4"));
+    assert_eq!(anchor_of(&e).as_deref(), Some("edge 3>4"));
     // A press on it that does not move changes no string, no step and no selection.
     let unchanged = e.draft.clone();
     press(&ctx, &mut e, middle);

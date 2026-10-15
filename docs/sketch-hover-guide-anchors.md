@@ -53,7 +53,7 @@ production `Editor::draw` (no helper is called in place of the interface):
   `(0.5, 22.5)` mm → vertex 4 `["0","22.5"]` previewed, label `90° · 22.5 mm from
   Endpoint · vertex 1 · adds vertex 4` and the confirmed ring on vertex 1 (not on the last
   vertex `(40,30)`); release → history `(1,0)`; Undo/Redo restore and return it. The same
-  with a finite crossing (`Intersection · edges 1→2 × 3→4`) and a midpoint
+  with a finite crossing (`Intersection · edges 1>2 × 3>4`) and a midpoint
   (`Midpoint · edge 2→3`).
 * Saved L, mode on, vertex 3 selected by an ordinary press: hover vertex 5 → ring; press;
   move east with Length 15 → vertex 3 becomes `("35","40")`, vertex 5 untouched, selection
@@ -196,7 +196,7 @@ vertex of a saved Sketch starts a gesture from it instead of selecting it (limit
 the moved vertex goes where the pointer would put a new point (no grab offset); an object
 target never snaps to the gesture's own anchor; releasing outside the canvas ends the gesture
 on its last preview as the §31D-1 drag does; the standing words are painted on the canvas;
-the words `vertex N`, `edge a→b`, `edges a→b × c→d` use the canvas's 1-based numbers. The
+the words `vertex N`, `edge a>b`, `edges a>b × c>d` use the canvas's 1-based numbers. The
 constants (12, 24, 1 points) are the §31C ones, named in `anchor.rs`.
 
 ## Not done, not claimed
@@ -235,7 +235,7 @@ through `tools/watch-viewer-memory.py --limit-mib 1536 --seconds <limit>`, press
 3. **Hover.** Move to vertex 5 `(20, 40)`: a blue ring and `From Endpoint · vertex 5 at (20,
    40) mm` beside the pointer. Walk 20 points away: the ring stays (held up to 24). Go
    beyond 24: it goes. Hover the middle of the edge to vertex 6 `(10, 40)` (`Midpoint · edge
-   5→6`), then approach vertex 5 again: the ring changes only when the other point is clearly
+   5>6`), then approach vertex 5 again: the ring changes only when the other point is clearly
    nearer (more than one point). Nothing changes in the rows; **Undo draft** stays disabled;
    hovering the selected vertex 3 itself shows no ring.
 4. **Start and finish.** Press on the ring at vertex 5 (the ring turns green, radius 8, the
@@ -264,7 +264,7 @@ through `tools/watch-viewer-memory.py --limit-mib 1536 --seconds <limit>`, press
 7. New drawing (a separate, disposable window, cancelled before Quit): click four points of
    a zigzag whose first and last edges cross, roughly `(0,0)`, `(30,30)`, `(30,0)`, `(0,15)`
    (the crossing is near `(10, 10)`); choose Orthogonal and tick **From object**. Hover the
-   crossing (`Intersection · edges 1→2 × 3→4` with its actual numbers), press, drag east: a
+   crossing (`Intersection · edges 1>2 × 3>4` with its actual numbers), press, drag east: a
    point is added; one Undo removes it. A click away from every ring is the old click; after
    **Close contour** the canvas says `this drawing is closed`.
 8. Two tabs with two L copies: the mode and its Length follow their tab; hovering an anchor
@@ -299,3 +299,7 @@ Apply/Undo/Redo/unsaved-export/Save gate passed with its required marker. Worksp
 clippy (all targets/features, warnings denied) and formatting passed. Each test run
 used a separate watchdog log under `target/31h-review/`, cap 1536 MiB. Window and remote
 results will be recorded separately; these checks do not establish a window pass.
+
+The window review also found that the bundled font renders the edge-direction arrow
+as a missing-glyph square. Edge labels now use ASCII `>`; their kind and ordering
+remain unchanged. The event assertions check the displayed labels.

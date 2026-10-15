@@ -381,7 +381,7 @@ mod tests {
         let end = named(&all, SnapKind::Endpoint, [60.0, 0.0]);
         assert_eq!(describe(&end, 3), "Endpoint · vertex 2 at (60, 0) mm");
         let middle = named(&all, SnapKind::Midpoint, [30.0, 10.0]);
-        assert_eq!(describe(&middle, 3), "Midpoint · edge 3→1 at (30, 10) mm");
+        assert_eq!(describe(&middle, 3), "Midpoint · edge 3>1 at (30, 10) mm");
         for (situation, fragments) in [
             (
                 Situation::NeedsGuides,
@@ -407,7 +407,7 @@ mod tests {
             (
                 Situation::Held(middle, Moves::Adds(3)),
                 &[
-                    "from Midpoint · edge 3→1",
+                    "from Midpoint · edge 3>1",
                     "fixed until release",
                     "it adds vertex 4",
                 ],

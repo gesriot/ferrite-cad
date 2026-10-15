@@ -60,10 +60,10 @@ pub(super) struct Candidate {
 
 impl Candidate {
     /// What makes this snap, in the canvas's own 1-based numbers: a vertex, an edge
-    /// (`from→to` around a contour of `vertices` points) or the two edges that cross.
+    /// (`from>to` around a contour of `vertices` points) or the two edges that cross.
     /// Words for the frame only; never stored or compared.
     pub(super) fn source(&self, vertices: usize) -> String {
-        let edge = |i: usize| format!("{}→{}", i + 1, (i + 1) % vertices.max(1) + 1);
+        let edge = |i: usize| format!("{}>{}", i + 1, (i + 1) % vertices.max(1) + 1);
         match self.kind {
             SnapKind::Endpoint => format!("vertex {}", self.order.0 + 1),
             SnapKind::Midpoint => format!("edge {}", edge(self.order.0)),
@@ -188,7 +188,7 @@ fn crossing(a0: [f64; 2], a1: [f64; 2], b0: [f64; 2], b1: [f64; 2]) -> Option<[f
 
 /// Every candidate of the contour as drawn: one Endpoint per vertex, one
 /// Midpoint per edge, one Intersection per pair of non-adjacent edges that cross.
-/// The edges are `points[i] → points[i + 1]`, and `points[last] → points[0]` once
+/// The edges are `points[i] > points[i + 1]`, and `points[last] > points[0]` once
 /// the contour is closed with more than two vertices (with two, that edge is the
 /// first one drawn twice).
 ///
