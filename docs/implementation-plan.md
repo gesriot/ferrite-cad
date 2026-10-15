@@ -5310,6 +5310,31 @@ needed in this review.
 **Not done:** hover-anchor acquisition (§31D) and the circle centre snap (§31C), so
 §31C, §31D, §30, Milestone 5C, the product and the OOM investigation stay open.
 
+### §31H — Launch journal of ferritecad-viewer (review in progress)
+
+The "Launch journal" slice below. Only the window route of `ferritecad-viewer` keeps a
+journal: `main` hands it to `journal::launch`, which opens the journal and the panic hook
+before the event loop is asked for and writes how the route ended. The CLI,
+`--solver-info` and usage refusals write nothing and answer byte for byte as before
+(measured against frozen builds of the base). Files live in a per-user folder
+(`~/Library/Logs/FerriteCAD`, `%LOCALAPPDATA%\FerriteCAD\Logs`,
+`$XDG_STATE_HOME/ferritecad/logs`; `FERRITECAD_LOG_DIR` overrides), one instance per
+process named by a UUIDv7 with a lock file held for its life and segments of at most
+16 MiB (records of at most 16 KiB, cut on a character boundary). An instance keeps its
+first and current segment; a starting window removes the files of all but the four
+newest finished instances, never a running one's (its lock is only tried) and never a
+foreign name or a link target; the bound is per instance, not global. Records: the start
+(version, OS, architecture, PID), the application's existing stderr diagnostics through
+one route that prints them exactly as before, panics (bounded try, previous hook kept)
+and the end. A folder or write that fails is said once on stderr and the window goes on.
+Not captured and not claimed: a system kill/OOM, native crashes, aborts outside the Rust
+hook, loader failures before `main`. Policy, inventory, executed gates, mutations and the
+independent window recipe: [viewer-launch-journal.md](viewer-launch-journal.md).
+Review corrected retention after an I/O refusal: a segment that cannot be read or
+removed keeps its lock file, so a later launch can retry cleanup once access returns.
+**Status:** local final-tree execution, window review and remote CI pending. §30, Milestone
+5C, the product and the OOM investigation stay open.
+
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
 **Constraint adapters.** A diameter input uses the existing Radius with `R = D/2`,
@@ -5340,7 +5365,7 @@ dependency invalidation, cycles, unknown names, division by zero, non-finite res
 and bounded parsing/evaluation before broadening the language. A second transaction
 mechanism or a name-only cache is not the planned solution.
 
-**Launch journal.** A separate small slice for Finder launches: bounded local log
+**Launch journal (taken by §31H above).** A separate small slice for Finder launches: bounded local log
 files (16 MiB each), rotation/retention and an independent file for each concurrent
 instance. A second instance neither rotates the first instance's active file nor
 waits for its lock. No automatic upload of logs or model contents. Test simultaneous

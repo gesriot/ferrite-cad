@@ -1272,3 +1272,200 @@ fn native_reopen_saved_tabs_then_apply_save_and_compare_with_the_command_line() 
     );
     println!("FCAD_30R_SESSION_FILES_COMPARE_OK negative_controls=8 all_SQL_cells=true");
 }
+
+/// §31H: how the parent below tells its child how the window route ends.
+const JOURNAL_MODE: &str = "FCAD_LAUNCH_JOURNAL_ROUTE_MODE";
+const JOURNAL_STATE: &str = "FCAD_LAUNCH_JOURNAL_ROUTE_STATE";
+
+/// §31H: the window route of `main` (`journal::launch`) in a process of its own and
+/// without a window. Inside it the real second failure to keep the list of open
+/// files is said, as the window says it at the end of a Quit; then the route ends
+/// as the parent asked: normally, with an error, or with a panic.
+#[test]
+#[ignore = "a child process of the_window_route_journals_its_start_a_real_error_a_panic_and_its_end"]
+fn launch_journal_child() {
+    let mode = std::env::var(JOURNAL_MODE).expect("the parent names the mode");
+    let state = PathBuf::from(std::env::var_os(JOURNAL_STATE).expect("the parent names a folder"));
+    let outcome = crate::journal::launch(|| {
+        let blocked = state.join("blocked");
+        std::fs::write(&blocked, b"a file").expect("file");
+        let mut restores = Restores::new(Folder::at(&blocked));
+        let mut w = Window::new(Drawn::Mock, None);
+        w.create(NewDocument::Empty).expect("Untitled");
+        for ends in [false, true] {
+            assert!(w.begin_quit());
+            assert_eq!(
+                w.sessions.replacing(Some(UnsavedChoice::Discard)),
+                Replace::Discarded
+            );
+            w.decide_quit();
+            let end = w.end_quit(&mut restores);
+            assert_eq!(end == QuitEnd::Exit, ends, "{end:?}");
+        }
+        w.sessions.stop_all();
+        w.tabs.stop_all();
+        match mode.as_str() {
+            "ok" | "unwritable" => Ok(()),
+            "error" => Err(CadError::rendering_because(
+                "FCAD_LAUNCH_JOURNAL the window could not be made",
+                "no display in this child",
+            )),
+            "panic" => panic!("FCAD_LAUNCH_JOURNAL a panic in the window"),
+            other => panic!("unknown mode {other}"),
+        }
+    });
+    if mode == "error" {
+        let error = outcome.expect_err("the window's error comes back");
+        assert_eq!(
+            error.to_string(),
+            "rendering failure: FCAD_LAUNCH_JOURNAL the window could not be made"
+        );
+    } else {
+        outcome.expect("the window ended");
+    }
+    println!("\nFCAD-LAUNCH-JOURNAL-ROUTE-CHILD {mode}");
+}
+
+/// §31H: the window route keeps its journal in the folder `FERRITECAD_LOG_DIR`
+/// names: the start (version, OS, architecture, the child's PID), the real error
+/// with its stderr line unchanged, and either how the route ended or the panic,
+/// written before the previous hook printed it and unwinding went on. A folder
+/// that cannot be used is said once and the route runs without a journal.
+#[test]
+fn the_window_route_journals_its_start_a_real_error_a_panic_and_its_end() {
+    let child = "sessions::tests::tabs::restore::launch_journal_child";
+    for mode in ["ok", "error", "panic", "unwritable"] {
+        let state = tempfile::tempdir().expect("state");
+        let logs = state.path().join("logs");
+        let unusable = state.path().join("a file, not a folder");
+        std::fs::write(&unusable, b"kept").expect("file");
+        let mut process = std::process::Command::new(std::env::current_exe().expect("binary"))
+            .args([
+                child,
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(JOURNAL_MODE, mode)
+            .env(JOURNAL_STATE, state.path())
+            .env(
+                crate::journal::DIR_ENV,
+                if mode == "unwritable" {
+                    &unusable
+                } else {
+                    &logs
+                },
+            )
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("a child");
+        let pid = process.id();
+        let deadline = Instant::now() + Duration::from_secs(300);
+        while process.try_wait().expect("wait").is_none() {
+            if Instant::now() >= deadline {
+                let _ = process.kill();
+                let _ = process.wait();
+                panic!("the {mode} child did not end");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = process.wait_with_output().expect("output");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let said = format!("{mode}\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        // The real error reaches stderr exactly as it always did.
+        assert!(
+            stderr.contains("ferritecad: the list of open files was not kept: "),
+            "{said}"
+        );
+        if mode == "panic" {
+            // The previous hook printed the panic, and the harness caught the
+            // unwinding: the test failed rather than the process aborting.
+            assert_eq!(output.status.code(), Some(101), "{said}");
+            assert!(stderr.contains("panicked at"), "{said}");
+            assert!(
+                stderr.contains("FCAD_LAUNCH_JOURNAL a panic in the window"),
+                "{said}"
+            );
+            assert!(
+                stdout.contains(&format!("test {child} ... FAILED")),
+                "{said}"
+            );
+        } else {
+            assert!(output.status.success(), "{said}");
+            assert!(stdout.contains("test result: ok. 1 passed"), "{said}");
+            assert!(
+                stdout.contains(&format!("FCAD-LAUNCH-JOURNAL-ROUTE-CHILD {mode}")),
+                "{said}"
+            );
+        }
+        if mode == "unwritable" {
+            assert_eq!(
+                stderr.matches("ferritecad: no launch journal: ").count(),
+                1,
+                "{said}"
+            );
+            assert_eq!(std::fs::read(&unusable).expect("file"), b"kept");
+            assert!(!logs.exists());
+            continue;
+        }
+        assert!(!stderr.contains("launch journal"), "{said}");
+
+        let mut names: Vec<String> = std::fs::read_dir(&logs)
+            .expect("the journal folder was made")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .into_string()
+                    .expect("name")
+            })
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 2, "{names:?}");
+        let stem = names[0].strip_suffix(".1.log").expect("segment 1");
+        assert_eq!(names[1], format!("{stem}.lock"));
+        assert!(stem.contains(&format!("-{pid}-")), "{stem}");
+        let segment = std::fs::read_to_string(logs.join(&names[0])).expect("segment");
+        let lines: Vec<&str> = segment.lines().collect();
+        assert_eq!(lines.len(), 3, "{segment}");
+        assert!(
+            lines[0].starts_with(&format!(
+                "FERRITECAD-LAUNCH-JOURNAL 1 segment=1 ferritecad-viewer {} os={} arch={} pid={pid} \
+                 instance=",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )),
+            "{segment}"
+        );
+        assert!(
+            lines[1].contains(" error ferritecad: the list of open files was not kept: "),
+            "{segment}"
+        );
+        let end = lines[2];
+        match mode {
+            "ok" => assert!(end.ends_with(" exit the event loop ended"), "{segment}"),
+            "error" => assert!(
+                end.ends_with(
+                    " exit the window failed: rendering failure: FCAD_LAUNCH_JOURNAL the \
+                     window could not be made: no display in this child"
+                ),
+                "{segment}"
+            ),
+            _ => assert!(
+                end.contains(" panic at ")
+                    && end.contains("restore.rs:")
+                    && end.ends_with(": FCAD_LAUNCH_JOURNAL a panic in the window"),
+                "{segment}"
+            ),
+        }
+        // The child's lock went with the child: its instance is finished now.
+        let lock = std::fs::File::open(logs.join(&names[1])).expect("lock");
+        lock.try_lock().expect("let go when the child ended");
+    }
+    println!("\nFCAD_LAUNCH_JOURNAL_ROUTE_EXECUTED");
+}
