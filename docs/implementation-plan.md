@@ -5390,18 +5390,76 @@ circle-centre object snap (the centre is now drawn but is no snap candidate), an
 snapping or guides on this canvas, quadrants, mixed Line/Circle profiles, arcs and
 constraints; §30, Milestone 5C, the product and the OOM investigation stay open.
 
-### §31J — Navigate the 2D Sketch canvases (planned)
+### §31J — Zoom and pan on the Sketch canvases (reviewed implementation; window pan/pinch pending)
 
-Add cursor-centred zoom and explicit pan to the existing Line, Circle and annular
-canvases, using their shared document/screen transforms. View navigation changes no
-coordinate string, request, constraint, document history or file. Keep the view with
-its editor/profile/tab; Fit remains explicit. Route navigation only to the visible
-uncovered canvas, preserving floating-form versus 3D viewport ownership. Freeze the
-view for an edit gesture and do not let wheel/pinch/pan change it until that gesture
-ends. Picking and snap/guide apertures stay in logical points at every scale. Bound
-view arithmetic to finite positive scales, and exercise 1x/2x, crowded geometry,
-outside/covered/busy input, cancellation and unchanged Undo/Redo. No new CAD operation,
-mixed profile, snap family, schema, solver or CLI pointer API is included.
+The three existing 2D canvases — the Line polygon canvas (New and every saved Sketch
+base: Extrude, Revolve, and the Fillet, Cut and Chamfer histories), the Circle canvas and the
+Circle-with-hole canvas — move their view and nothing else. **Wheel, trackpad scroll and
+pinch zoom about the cursor** (the document point under it stays under it), **a held middle
+button, or Shift with the primary button, pans**; the primary button alone still adds a point,
+moves a vertex or moves a handle. **Fit drawing / Fit profile** (and the Line's **Reset view**)
+stay the explicit way back and are never applied by themselves. The gestures are named on the
+canvas itself, which costs the form no height.
+
+- **Transform and bounds.** The view is the existing lower-left corner in mm and logical
+  points per mm (`canvas_point` / `canvas_mm`); egui already hands over logical points, so
+  1x and 2x differ only by the OS pixel they came from. Scale stays within [1e-5, 1e8] points
+  per mm (below every Fit of the largest drawable extent, above every Fit of a degenerate
+  one, and 10⁻⁸ mm per point is still far above f64 spacing at 10⁶ mm); the corner within
+  ±10⁹ mm; one event at most 8x; a non-finite delta, factor or position changes nothing, and
+  at a limit the view is bit-identical. Pan keeps the grabbed document point under the pointer.
+- **Owner.** `sketch::navigation` holds the arithmetic and the small per-canvas state (a held
+  pan, the last pointer); the Line `Canvas`, `circle_canvas` and `annulus_canvas` each keep
+  their own, so each view goes with its `Editor`, tab, held New and profile. Nothing is saved.
+- **Against editing.** Presses, moves, releases and clicks of a frame are read against the
+  view the person saw; a navigation event is decided where it stands (a held vertex or handle
+  ignores it) and takes effect at the end of the frame unless a gesture is held by then. A
+  held gesture freezes its view, its snap candidates, guide anchor, grid and Length as before.
+  A pan is a held gesture of the window (tab switch, Open, New, Close and Quit refuse), but
+  disables no box or button: Undo/Redo and the availability of publication are what they were.
+  Escape restores the view of the press; focus loss, `PointerGone`, a release anywhere, a busy
+  form and a canvas that stops being drawn end the pan.
+- **Where it acts.** Only the visible, uncovered part of the canvas of a form that is enabled,
+  focused and has no request waiting. A floating form already claims wheel, pinch and presses
+  from the 3D camera (`window_pointer_claimed`), and a 3D drag begun in the viewport still
+  crosses a form; a gate drives the window's own routing for it at 1x and 2x.
+- **Unchanged.** Pick radius (9 points), snap and guide apertures (points), object snap →
+  guide → grid → free, hover-anchor hysteresis, exact typed text, history, requests, documents,
+  constraints, CLI, solver and schema. No new CAD operation, snap family or mixed profile.
+
+Contract, decisions, executed gates, mutations, resources and the independent window recipe:
+[sketch-canvas-navigation.md](sketch-canvas-navigation.md). **Remaining window checks:**
+Shift/middle pan, pinch, held-input cancellation, Revolve/Fillet-history routes and Windows/Linux
+windows. The §31C circle-centre object snap (still no candidate on either canvas), snapping or
+guides on the analytic canvas, quadrants, mixed Line/Circle profiles, arcs, constraints made from
+the canvas, keyboard or double-click zoom, §30, Milestone 5C, the product and the OOM investigation
+stay open.
+
+Independent review corrected dropped Start/End wheel deltas, a zoom anchor displaced by the
+corner bound, and reserved pan presses falling through to Line edits while unavailable. Native
+788/0/4 and all 16 exact navigation gates pass. A real 2x window checked saved Line/Circle/annulus
+zoom and drags, New-profile/tab view ownership, Fit, refusal/Undo recovery, Apply/export-before-Save/
+Save and SQL/STL/FBX equality with CLI; viewer peak 208.939 MiB, exit 0, swap 0. Native-window
+pan/pinch and held-input cancellation remain unobserved because the available input driver could
+not produce those gestures; widget/production-routing gates cover them. Exact evidence and remaining
+window cases are in the contract; no full window-matrix or OOM closure is claimed.
+
+### §31K — Select constraint targets in the accepted Sketch drawing (planned)
+
+Show a read-only XY canvas in the existing constraints form, using the accepted rebuild's
+`SketchPresentation` and its stable curve identities, not a new solve or the stored coordinate
+approximation. Retain that presentation with the scene and edit catalogue through the same
+arrival/commit and tab ownership boundary. If the matching accepted presentation is unavailable,
+say so and keep the existing explicit selectors; never label stored geometry as solved.
+
+Pick a Line, its named Start/End endpoint, or a Circle/centre for the current single target or
+explicit pair A/B slot. Update only the existing selection fields; creating or removing a
+constraint still requires its explicit existing action and the shared UI/CLI job. No inferred
+Coincident, new constraint family, document field, solver, pointer CLI or persisted view.
+Keep pending rules distinct from the accepted drawing. Reuse bounded zoom/pan/Fit and logical
+point pick tolerances, preserve draft/history/tab ownership, and reject stale actions. Verify
+solved-vs-stored geometry, exact UUID targets, request equivalence, publication and refusal
+preservation with compact native and true-stub gates. The reviewer owns the window smoke.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 

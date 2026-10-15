@@ -1071,6 +1071,11 @@ fn close_request_preserves_foreground_work_and_gesture_holds() {
     assert!(request(&mut w, &loads, &exports).is_none());
     kept(&w);
     crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
+    // §31J: and a pan of its view.
+    let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut w.creates.sketch);
+    assert!(request(&mut w, &loads, &exports).is_none());
+    kept(&w);
+    crate::sketch::navigation_tests::release_pan(&ctx, &mut w.creates.sketch, at);
     w.creates.sketch.dismiss();
     assert!(
         w.creates

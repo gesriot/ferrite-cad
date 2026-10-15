@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 mod analytic;
 mod anchor;
 mod guide;
+mod navigation;
 mod object_snap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -482,11 +483,19 @@ impl Editor {
     }
     /// §30P: a vertex is being dragged (or the press that may start a drag is
     /// held) on the drawing: a gesture is not a draft and holds the window. §31I:
-    /// so does a handle held on the circle or annular canvas.
+    /// so does a handle held on the circle or annular canvas, and §31J a pan of the
+    /// view of any of the three canvases.
     pub(crate) fn gesturing(&self) -> bool {
-        self.canvas.gesture.is_some() || self.canvas.claimed_press || self.analytic_gesturing()
+        self.canvas.gesture.is_some()
+            || self.canvas.claimed_press
+            || self.canvas.nav.panning()
+            || self.analytic_gesturing()
+            || self.circle_canvas.panning()
+            || self.annulus_canvas.panning()
     }
-    /// §31I: a handle of the circle or annular canvas is held.
+    /// §31I: a handle of the circle or annular canvas is held. A pan (§31J) is not: it
+    /// holds the window above but edits nothing, so no box or button of a form is
+    /// disabled for it.
     fn analytic_gesturing(&self) -> bool {
         self.circle_canvas.gesturing() || self.annulus_canvas.gesturing()
     }
@@ -1227,6 +1236,12 @@ impl Editor {
         running: bool,
         outcome: &str,
     ) {
+        // §31J: a pan whose canvas is no longer drawn (another profile was chosen while
+        // the middle button was held) would hold the window for good.
+        let frame = ui.ctx().cumulative_frame_nr();
+        self.canvas.nav.forget_undrawn(frame);
+        self.circle_canvas.forget_undrawn(frame);
+        self.annulus_canvas.forget_undrawn(frame);
         // §30Q: offered beside the tab's own forms too; the window sets them aside
         // as the tab's draft before the drawing opens, so it never replaces them.
         if !self.drawing_new()
@@ -2121,8 +2136,10 @@ impl Editor {
         let Some(before) = self.draft.clone() else {
             return;
         };
+        let queued =
+            self.pending.is_some() || self.pending_apply.is_some() || self.pending_edit.is_some();
         let draft = self.draft.as_mut().expect("present");
-        let canvas_edit = self.canvas.draw(ui, draft, self.editing.is_some());
+        let canvas_edit = self.canvas.draw(ui, draft, self.editing.is_some(), queued);
         // A pointer gesture owns its checkpoint. Ordinary numeric/button edits
         // keep their existing per-change history and cannot modify a live drag.
         ui.add_enabled_ui(matches!(canvas_edit, CanvasEdit::Ordinary), |ui| {
@@ -2470,6 +2487,11 @@ struct Canvas {
     /// The anchor the hovering pointer holds over the shown contour: frame state
     /// that no history, selection or document ever sees. A press confirms it.
     provisional: Option<object_snap::Candidate>,
+    /// §31J: zoom and pan of this canvas's own view (`minimum`, `scale`).
+    nav: navigation::Navigation,
+    /// §31J: a primary press made a pan (Shift) and has not been released: the click
+    /// egui will make of it places and selects nothing.
+    pan_click: bool,
 }
 
 /// A change of the snap row, replayed at the event that made it (see `draw`).
@@ -2591,6 +2613,8 @@ impl Default for Canvas {
             held_guide: None,
             anchors: false,
             provisional: None,
+            nav: navigation::Navigation::default(),
+            pan_click: false,
         }
     }
 }
@@ -3021,11 +3045,17 @@ impl Canvas {
             }
         }
     }
-    fn draw(&mut self, ui: &mut egui::Ui, draft: &mut State, saved: bool) -> CanvasEdit {
+    fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        draft: &mut State,
+        saved: bool,
+        queued: bool,
+    ) -> CanvasEdit {
         let points = Self::points(draft);
         let events = ui.input(|i| i.events.clone());
         let mut snap_changes = Vec::new();
-        ui.add_enabled_ui(self.gesture.is_none(), |ui| {
+        ui.add_enabled_ui(self.gesture.is_none() && !self.nav.panning(), |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Fit drawing").clicked()
                     && let Some(p) = &points
@@ -3138,12 +3168,45 @@ impl Canvas {
         let mut checkpoints = Vec::new();
         let visible_rect = rect.intersect(ui.clip_rect());
         let visible = self.visible_window(rect, visible_rect);
+        // §31J: navigation reads the same events in order, against a working copy of the
+        // view. Presses, moves, releases and clicks of the frame are read against the view
+        // the person saw; the copy replaces it at the end of the frame, unless a vertex is
+        // held then.
+        let open = ui.is_enabled() && !queued;
+        self.nav.begin(ui, open);
+        let mut view = navigation::View {
+            minimum: self.minimum,
+            scale: self.scale,
+        };
+        let mut pan_click = self.pan_click;
         // Aggregate pointer state loses ordering when one frame contains the
         // release of an old gesture and the press (or whole gesture) of another.
         // Own gestures at their actual press and process every event in order.
         for (index, event) in events.iter().enumerate() {
             for &(_, change) in snap_changes.iter().filter(|(at, _)| *at == index) {
                 self.apply_snap_change(change);
+            }
+            if self.nav.event(
+                &navigation::Surface {
+                    ui,
+                    rect,
+                    visible: visible_rect,
+                    open,
+                    frozen: self.gesture.is_some(),
+                },
+                event,
+                &mut view,
+            ) {
+                if let egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    ..
+                } = *event
+                {
+                    self.pan_click = pressed;
+                    pan_click = true;
+                }
+                continue;
             }
             match *event {
                 egui::Event::PointerButton {
@@ -3284,6 +3347,7 @@ impl Canvas {
         if !ui.input(|i| i.focused) || !pointer.primary_down() {
             self.cancel(draft);
         }
+        self.nav.finish(ui);
         if !checkpoints.is_empty() {
             change = CanvasEdit::Finished(checkpoints);
         }
@@ -3337,6 +3401,7 @@ impl Canvas {
             (None, None)
         };
         if matches!(change, CanvasEdit::Ordinary)
+            && !pan_click
             && response.clicked_by(egui::PointerButton::Primary)
         {
             if let Some(vertex) = hover {
@@ -3374,6 +3439,10 @@ impl Canvas {
         }
         if !pointer.primary_down() {
             self.claimed_press = false;
+            self.pan_click = false;
+        }
+        if self.gesture.is_none() {
+            (self.minimum, self.scale) = (view.minimum, view.scale);
         }
         let screen = |p| self.screen(rect, p);
         let grid = paint_grid(&painter, rect, self.minimum, self.scale);
@@ -3520,6 +3589,7 @@ impl Canvas {
                 }),
             );
         }
+        navigation::paint_hint(&painter, rect, self.nav.hint(open, self.gesture.is_some()));
         ui.label(
             self.selected
                 .and_then(|i| draft.points.get(i).map(|p| (i, p)))
@@ -8405,6 +8475,9 @@ pub(crate) mod drag_tests;
 #[cfg(test)]
 #[path = "sketch/guide_tests.rs"]
 pub(crate) mod guide_tests;
+#[cfg(test)]
+#[path = "sketch/navigation_tests.rs"]
+pub(crate) mod navigation_tests;
 #[cfg(test)]
 #[path = "sketch/object_snap_tests.rs"]
 pub(crate) mod object_snap_tests;

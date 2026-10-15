@@ -111,7 +111,7 @@ pub(crate) fn depth(e: &Editor) -> (usize, usize) {
 }
 
 /// The painted canvas: its background, the one rectangle of exactly its size.
-fn canvas_rect(out: &egui::FullOutput) -> egui::Rect {
+pub(super) fn canvas_rect(out: &egui::FullOutput) -> egui::Rect {
     out.shapes
         .iter()
         .find_map(|c| match &c.shape {

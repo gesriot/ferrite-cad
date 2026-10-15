@@ -8,8 +8,9 @@
 //! the document keep their analytic circles.
 
 use super::{
-    DRAWABLE_MM, PICK_POINTS, canvas_point, fit_view, number, paint_grid, paint_pointer_label,
-    pointer_over,
+    DRAWABLE_MM, PICK_POINTS, fit_view,
+    navigation::{self, Navigation, Surface, View},
+    number, paint_grid, paint_pointer_label, pointer_over,
 };
 
 /// The canvas's size in logical points. Fixed, so it never widens the form.
@@ -152,13 +153,6 @@ impl Profile {
     }
 }
 
-/// Lower-left corner (mm) and logical points per mm.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct View {
-    pub(super) minimum: [f64; 2],
-    pub(super) scale: f32,
-}
-
 impl View {
     /// The Line canvas's fit (its scale and 30-point margins), centred on the profile.
     fn fit(profile: &Profile) -> Self {
@@ -173,9 +167,6 @@ impl View {
             ],
             scale,
         }
-    }
-    pub(super) fn screen(&self, rect: egui::Rect, p: [f64; 2]) -> egui::Pos2 {
-        canvas_point(rect, self.minimum, self.scale, p)
     }
 }
 
@@ -220,12 +211,23 @@ pub(super) struct Canvas {
     /// None until the first frame that can draw the profile fits it.
     pub(super) view: Option<View>,
     gesture: Option<Gesture>,
+    /// §31J: zoom and pan of this canvas's own view.
+    nav: Navigation,
 }
 
 impl Canvas {
     /// A press holds a handle.
     pub(super) fn gesturing(&self) -> bool {
         self.gesture.is_some()
+    }
+    /// §31J: a pan of the view is held. It edits nothing, so it does not disable the
+    /// form's boxes and buttons as a held handle does; the window is held with it.
+    pub(super) fn panning(&self) -> bool {
+        self.nav.panning()
+    }
+    /// §31J: see `Navigation::forget_undrawn`.
+    pub(super) fn forget_undrawn(&mut self, frame: u64) {
+        self.nav.forget_undrawn(frame);
     }
     /// The handle held, for tests and the words.
     pub(super) fn held(&self) -> Option<Handle> {
@@ -303,7 +305,7 @@ impl Canvas {
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    self.gesture.is_none() && read.is_ok(),
+                    self.gesture.is_none() && !self.nav.panning() && read.is_ok(),
                     egui::Button::new("Fit profile"),
                 )
                 .clicked()
@@ -321,8 +323,29 @@ impl Canvas {
         if !ui.is_enabled() {
             self.cancel(&mut fields);
         }
+        // §31J: navigation reads the same events in order, against a working copy of the
+        // view. Presses, moves and releases of the frame are read against the view the
+        // person saw; the copy replaces it at the end of the frame, unless a handle is held.
+        let open = ui.is_enabled() && !queued;
+        self.nav.begin(ui, open);
+        let mut working = self.view;
         let mut finished = Vec::new();
         for event in &events {
+            if let Some(view) = working.as_mut()
+                && self.nav.event(
+                    &Surface {
+                        ui,
+                        rect,
+                        visible,
+                        open,
+                        frozen: self.gesture.is_some(),
+                    },
+                    event,
+                    view,
+                )
+            {
+                continue;
+            }
             match *event {
                 egui::Event::PointerButton {
                     pos,
@@ -382,7 +405,12 @@ impl Canvas {
         if !ui.input(|i| i.focused) || !ui.input(|i| i.pointer.primary_down()) {
             self.cancel(&mut fields);
         }
+        self.nav.finish(ui);
+        if self.gesture.is_none() {
+            self.view = working;
+        }
         self.paint(&painter, rect, visible, &fields, response.hover_pos());
+        navigation::paint_hint(&painter, rect, self.nav.hint(open, self.gesture.is_some()));
         finished
     }
 
@@ -551,7 +579,7 @@ fn paint_words(painter: &egui::Painter, rect: egui::Rect, words: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::canvas_point, *};
 
     fn read(centre: [&str; 2], outer: &str, bore: Option<&str>) -> Result<Profile, String> {
         let mut centre = centre.map(str::to_owned);

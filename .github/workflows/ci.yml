@@ -1359,6 +1359,45 @@ jobs:
             grep -Fxq "$marker" analytic-canvas.log
           done
 
+      - name: Keep zoom and pan in the Sketch canvases' own views
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+        run: |
+          set -euo pipefail
+          # §31J: zoom about the pointer and pan of the Line, Circle and Circle-with-hole
+          # canvases (the view arithmetic and its limits, then New and saved forms driven by
+          # real egui events at 1x and 2x) run as one filtered group. Every expected name
+          # must have run and printed its marker after its last assertion; a skip, another
+          # count or a missing marker fails the step. The native route through the session,
+          # the CLI and pinned ufbx is gated by the native workflows.
+          cargo test -p ferritecad-app --bin ferritecad-viewer sketch::navigation -- --nocapture --test-threads=1 2>&1 | tee sketch-navigation.log
+          if grep -q 'skipped:' sketch-navigation.log; then exit 1; fi
+          grep -q '^test result: ok\. 16 passed; 0 failed' sketch-navigation.log
+          for check in \
+            "sketch::navigation::tests::zoom_keeps_the_document_point_under_the_cursor_at_every_scale_and_display FCAD_31J_ZOOM_ANCHOR_EXECUTED" \
+            "sketch::navigation::tests::the_scale_stops_at_its_limits_without_moving_the_point_under_the_cursor FCAD_31J_ZOOM_LIMITS_EXECUTED" \
+            "sketch::navigation::tests::nothing_that_is_not_a_finite_number_reaches_the_view FCAD_31J_NONFINITE_EXECUTED" \
+            "sketch::navigation::tests::a_pan_holds_the_grabbed_point_under_the_pointer_and_the_corner_stays_finite FCAD_31J_PAN_EXECUTED" \
+            "sketch::navigation_tests::wheel_and_pinch_zoom_about_the_cursor_on_every_canvas_and_edit_nothing FCAD_31J_ZOOM_WIDGETS_EXECUTED" \
+            "sketch::navigation_tests::a_pan_follows_the_pointer_holds_the_window_and_edits_nothing FCAD_31J_PAN_WIDGETS_EXECUTED" \
+            "sketch::navigation_tests::a_pan_that_does_not_move_is_no_click_and_places_or_selects_nothing_on_the_line_canvas FCAD_31J_PAN_CLICK_EXECUTED" \
+            "sketch::navigation_tests::a_held_edit_gesture_freezes_the_view_and_what_the_press_froze FCAD_31J_FROZEN_EXECUTED" \
+            "sketch::navigation_tests::navigation_reaches_only_the_visible_uncovered_canvas_of_a_form_that_is_free FCAD_31J_REFUSED_EXECUTED" \
+            "sketch::navigation_tests::a_pan_ends_without_a_trace_by_release_outside_escape_focus_pointer_gone_or_a_busy_form FCAD_31J_PAN_ENDS_EXECUTED" \
+            "sketch::navigation_tests::events_of_one_frame_keep_their_order_and_gestures_read_the_view_the_person_saw FCAD_31J_ORDER_EXECUTED" \
+            "sketch::navigation_tests::zooming_in_makes_close_vertices_short_midpoints_and_a_tiny_bore_pickable_in_logical_points FCAD_31J_SMALL_GEOMETRY_EXECUTED" \
+            "sketch::navigation_tests::fit_is_the_only_way_back_and_typing_dragging_and_invalid_text_never_refit FCAD_31J_FIT_EXPLICIT_EXECUTED" \
+            "sketch::navigation_tests::the_hint_names_the_gestures_and_says_when_the_view_is_locked FCAD_31J_HINT_EXECUTED" \
+            "sketch::navigation_tests::each_profile_keeps_its_own_view_and_cancelling_the_draft_forgets_all_of_them FCAD_31J_PROFILES_EXECUTED" \
+            "sketch::navigation_tests::navigation_over_a_canvas_never_reaches_the_3d_camera_and_a_viewport_drag_still_crosses_the_form FCAD_31J_ROUTING_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            grep -Fq "test $gate ... " sketch-navigation.log
+            grep -Fxq "$marker" sketch-navigation.log
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |
