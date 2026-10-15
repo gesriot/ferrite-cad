@@ -605,7 +605,15 @@ fn choice_frame(
             events,
             ..Default::default()
         },
-        |ui| e.draw_choices(ui, false, Some(path), Some(source)),
+        |ui| {
+            e.draw_choices(
+                ui,
+                false,
+                Some(path),
+                Some(source),
+                &super::super::accepted::Accepted::default(),
+            )
+        },
     );
     out.textures_delta.clear();
     out

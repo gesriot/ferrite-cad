@@ -1717,6 +1717,9 @@ struct PreparedLoad<P> {
     /// so that no frame can show what one document's solve found out beside
     /// another document's model.
     sketch_solves: Vec<SketchSolveFacts>,
+    /// §31K: the drawings the same rebuild made of the sketches, stamped with the version of
+    /// the reading `edit_source` is of. Committed with it, in the same statement.
+    sketches: sketch::accepted::Accepted,
 }
 
 /// Prepares both halves of a loaded picture without changing the current one.
@@ -1778,6 +1781,13 @@ fn prepare_arrival<P>(
     // anything: these are the coordinates the rebuild built its profiles from.
     let drawings = ferritecad_scene::sketch_drawings(&loaded.sketch_presentations)?;
     let prepared = prepare(Arc::new(snapshot), &drawings)?;
+    // The same drawings, kept for the constraints form as the rebuild saw them (§31K): the
+    // version stamp is the one of the reading the edit facts come from, so the two are
+    // offered together or not at all.
+    let sketches = sketch::accepted::Accepted::new(
+        loaded.edit_source.as_ref().map(|source| source.version),
+        loaded.sketch_presentations,
+    );
     Ok(PreparedLoad {
         edit_source: loaded.edit_source,
         document: document.to_path_buf(),
@@ -1792,6 +1802,7 @@ fn prepare_arrival<P>(
         // picture found out, and the only other way to have it would be to
         // solve every sketch of the document a second time.
         sketch_solves: loaded.sketch_solves,
+        sketches,
     })
 }
 
@@ -2215,6 +2226,11 @@ struct LiveScene<P> {
     /// names no pick, no mesh and no definition, so nothing resolves through
     /// it and nothing about the picture depends on it.
     sketch_solves: Vec<SketchSolveFacts>,
+    /// §31K: the accepted solved drawings of the document's sketches (CPU side; `prepared`
+    /// holds their GPU buffers), stamped with the version `edit_source` is of. Replaced with
+    /// `edit_source` by [`commit_scene`] and followed along with it by [`retarget_scene`], so a
+    /// form opened from the one is handed the other of the same version or nothing.
+    sketches: sketch::accepted::Accepted,
 }
 
 impl<P> LiveScene<P> {
@@ -2250,6 +2266,7 @@ impl<P> LiveScene<P> {
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
             sketch_solves,
+            sketches: sketch::accepted::Accepted::default(),
         }
     }
 
@@ -2330,6 +2347,7 @@ fn commit_scene<P>(
         next.sketch_solves,
     );
     scene.edit_source = next.edit_source;
+    scene.sketches = next.sketches;
     *camera = next.framed;
     Ok(())
 }
@@ -2344,6 +2362,7 @@ fn retarget_scene<P>(
     edit_source: ferritecad_document::ExtrudeEditSource,
 ) {
     scene.document = Some(document);
+    scene.sketches.follow(edit_source.version);
     scene.edit_source = Some(edit_source);
 }
 
@@ -4307,6 +4326,7 @@ impl ApplicationHandler<AppEvent> for App {
                             model_tree::open(
                                 asked,
                                 source,
+                                &live.scene.sketches,
                                 &mut self.creates,
                                 &mut self.edits,
                                 &self.sessions,
@@ -7322,6 +7342,7 @@ impl Live {
             scene: workspace::Scene {
                 document: scene.document.as_deref(),
                 edit_source: scene.edit_source.as_ref(),
+                sketches: &scene.sketches,
                 definitions: &definitions,
                 chosen_row,
                 offers: &offers,
@@ -8527,6 +8548,7 @@ mod tests {
             selection: Selection::Definition(chosen),
             hovered: Hovered::Definition(chosen),
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let before = (
             scene.selection.clone(),
@@ -9099,6 +9121,7 @@ mod tests {
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         assert_eq!(
             old.selection,
@@ -9146,6 +9169,7 @@ mod tests {
             // "nothing changed" is a statement with content.
             hovered: Hovered::Definition(chosen),
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -9191,6 +9215,7 @@ mod tests {
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -9213,6 +9238,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::default(),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -9247,6 +9273,7 @@ mod tests {
             ),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
 
         // Two lookups and no search: this snapshot names the definition, this
@@ -9276,6 +9303,7 @@ mod tests {
             selection: scene.selection,
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         assert_eq!(short.chosen(&picture), None);
     }
@@ -9301,6 +9329,7 @@ mod tests {
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
 
         // Pointing at the definition that is already chosen: a question about
@@ -9420,6 +9449,7 @@ mod tests {
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         assert!(hover(
             &mut scene.hovered,
@@ -9643,6 +9673,7 @@ mod tests {
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let before = scene.selection.clone();
         assert!(hover(
@@ -11625,6 +11656,7 @@ mod tests {
             selection: chosen.clone(),
             hovered: Hovered::Vertex(vertex),
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -11661,6 +11693,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::default(),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -11705,6 +11738,7 @@ mod tests {
             selection: chosen.clone(),
             hovered: Hovered::Vertex(vertex),
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let mut input = ViewportInput::new();
         input.resize(480, 480);
@@ -12004,6 +12038,7 @@ mod tests {
             selection: chosen.clone(),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -12039,6 +12074,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::default(),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -12182,6 +12218,7 @@ mod tests {
             selection: Selection::Nothing,
             hovered: asked,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -12218,6 +12255,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::default(),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -12864,6 +12902,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::new(&next),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -13567,6 +13606,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::new(&next),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -13967,6 +14007,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::new(&next),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -14265,6 +14306,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::new(&next),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -14656,6 +14698,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::new(&next),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -16514,6 +16557,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::default(),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -16616,6 +16660,7 @@ mod tests {
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
 
         // The face a pixel of this picture would report.
@@ -16671,6 +16716,7 @@ mod tests {
             selection: Selection::Definition(chosen),
             hovered: Hovered::Definition(chosen),
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -16700,6 +16746,7 @@ mod tests {
                 vertices: VertexNames::default(),
                 visibility: Visibility::default(),
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             }),
         )
         .expect("a load that arrived commits");
@@ -16743,6 +16790,7 @@ mod tests {
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
 
         // Choosing from a list: the row becomes an identity by asking the
@@ -16829,6 +16877,7 @@ mod tests {
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
 
         let identities = identities_of(&scene.catalogue);
@@ -16855,6 +16904,7 @@ mod tests {
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let identities = identities_of(&twins.catalogue);
         assert_eq!(twins.rows(&identities).len(), 2);
@@ -16983,6 +17033,7 @@ mod tests {
             selection: Selection::Definition(picture.pick_of(1).expect("the picture has that row")),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
 
         let identities = identities_of(&scene.catalogue);
@@ -17040,6 +17091,7 @@ mod tests {
             ),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -17103,6 +17155,7 @@ mod tests {
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let identities = identities_of(&scene.catalogue);
         let (rows, marked) = scene.view(&identities, &picture);
@@ -17158,6 +17211,7 @@ mod tests {
             ),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
 
         let mut showing_choice = ViewportInput::new();
@@ -17225,6 +17279,7 @@ mod tests {
             ),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         assert_eq!(selection_bounds(&scene, &picture), picture.bounds());
 
@@ -17280,6 +17335,7 @@ mod tests {
             selection: Selection::Definition(picture.pick_of(0).expect("the picture has that row")),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -17311,6 +17367,7 @@ mod tests {
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         for _ in 0..3 {
             assert!(!frame_selection(&empty, &picture, &mut camera).expect("no failure"));
@@ -17358,6 +17415,7 @@ mod tests {
             ),
             hovered: Hovered::Nothing,
             sketch_solves: Vec::new(),
+            sketches: Default::default(),
         };
         assert!(scene.chosen(&picture).is_some());
 
@@ -17420,6 +17478,7 @@ mod tests {
                 selection: Selection::Definition(draw.pick),
                 hovered: Hovered::Nothing,
                 sketch_solves: Vec::new(),
+                sketches: Default::default(),
             };
             assert_eq!(scene.chosen(&picture), Some((0, &entry)));
         }
@@ -22189,3 +22248,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod accepted_scene_tests;

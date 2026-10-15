@@ -5,7 +5,8 @@ use ferritecad_document::ExtrudeEditSource;
 use ferritecad_ui::{ModelAction, ModelEdit, ModelKey};
 
 use crate::{
-    Loads, creates::Creates, edits::Edits, exports::Exports, sessions::Sessions, tabs::Tabs,
+    Loads, creates::Creates, edits::Edits, exports::Exports, sessions::Sessions,
+    sketch::accepted::Accepted, tabs::Tabs,
 };
 
 #[allow(
@@ -113,6 +114,7 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
 pub(crate) fn open(
     asked: ModelAction,
     source: &ExtrudeEditSource,
+    accepted: &Accepted,
     creates: &mut Creates,
     edits: &mut Edits,
     sessions: &Sessions,
@@ -141,7 +143,10 @@ pub(crate) fn open(
         ModelEdit::Vertices => creates.sketch.begin_edit(path, source, id),
         ModelEdit::Circle => creates.sketch.begin_circle_edit(path, source, id),
         ModelEdit::Annulus => creates.sketch.begin_annulus_edit(path, source, id),
-        ModelEdit::Constraints => creates.sketch.constraints.begin(path, source, id),
+        ModelEdit::Constraints => creates
+            .sketch
+            .constraints
+            .begin_with(path, source, accepted, id),
         ModelEdit::Cut => creates.sketch.cuts.begin_edit(path, source, id),
         ModelEdit::Fillet => creates.sketch.fillets.begin_radius(path, source, id),
         ModelEdit::Chamfer => creates.sketch.chamfers.begin_distance(path, source, id),

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Disposable Line constraint request over stored facts; no solver or file reads.
+use crate::sketch::accepted::{
+    Accepted, Canvas, Drawing, Hit, Marks, Part, Picked, Target, Unavailable,
+};
 use ferritecad_document::{
     AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
     ConstraintSketchChoice, DirectedAngle, DirectedLine, DocumentVersion, ExtrudeEditSource,
@@ -74,11 +77,19 @@ impl History {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Draft {
     source: PathBuf,
     version: DocumentVersion,
     choice: ConstraintSketchChoice,
+    /// §31K: the accepted solved drawing of this Sketch, or why there is none. Taken from the
+    /// accepted scene in the statement that takes `version` and `choice` from its facts, and
+    /// carried by the draft from then on (a hidden tab, a returned form): it is never looked
+    /// up again, so it cannot be another document's.
+    drawing: Drawing,
+    /// §31K: view, target and held pan of the canvas. Part of the form, like the picks: not
+    /// request history, not saved.
+    canvas: Canvas,
     selected: Option<StableEntityId>,
     // Unapplied input, like selection, is not part of request Undo/Redo.
     length_mm: String,
@@ -180,6 +191,55 @@ impl Editor {
             )
         })
     }
+    /// §31K, tests: the drawing the draft carries and the canvas that shows it.
+    #[cfg(test)]
+    pub(crate) fn draft_canvas(&self) -> Option<(&Drawing, &Canvas)> {
+        self.draft.as_ref().map(|d| (&d.drawing, &d.canvas))
+    }
+    #[cfg(test)]
+    pub(crate) fn draft_canvas_mut(&mut self) -> Option<&mut Canvas> {
+        self.draft.as_mut().map(|d| &mut d.canvas)
+    }
+    /// §31K, tests: hand the form a drawing built from the app's own curve type. The
+    /// accepted scene's route is `begin_with`; this is for drawings no rebuild made.
+    #[cfg(test)]
+    pub(crate) fn show_drawing(&mut self, drawing: Drawing) {
+        if let Some(draft) = &mut self.draft {
+            draft.drawing = drawing;
+            draft.canvas = Canvas::default();
+        }
+    }
+    /// §31K, tests: everything a click on the canvas must leave alone.
+    #[cfg(test)]
+    pub(crate) fn draft_inputs(&self) -> Option<Vec<String>> {
+        self.draft.as_ref().map(|d| {
+            vec![
+                d.length_mm.clone(),
+                d.radius_mm.clone(),
+                d.diameter_mm.clone(),
+                d.pin_x_mm.clone(),
+                d.pin_y_mm.clone(),
+                d.angle_deg.clone(),
+                format!("{:?}", d.vector_a_from),
+                format!("{:?}", d.vector_b_from),
+                format!("{:?}", d.edits),
+                format!("{:?}", d.history),
+                format!("{:?}", d.refusal),
+            ]
+        })
+    }
+    /// §31K, tests: a pick made as the Segment list makes it.
+    #[cfg(test)]
+    pub(crate) fn pick_for_tests(&mut self, curve: StableEntityId) {
+        if let Some(draft) = &mut self.draft {
+            draft.selected = Some(curve);
+        }
+    }
+    /// §31K, tests: the end the Pin buttons name.
+    #[cfg(test)]
+    pub(crate) fn draft_pin(&self) -> Option<LineEndpoint> {
+        self.draft.as_ref().map(|d| d.endpoint)
+    }
     /// §31E, tests: the picked circle and the unapplied Diameter text.
     #[cfg(test)]
     pub(crate) fn draft_diameter(&self) -> Option<(Option<StableEntityId>, String)> {
@@ -202,13 +262,44 @@ impl Editor {
     pub(crate) fn session(&self) -> (bool, bool, bool) {
         (self.can_begin, self.can_apply, self.unsaved)
     }
+    /// §31K: a pan of the canvas's view is held; the window is held with it.
+    pub(crate) fn panning(&self) -> bool {
+        self.draft.as_ref().is_some_and(|d| d.canvas.panning())
+    }
+    /// §31K: see `Navigation::forget_undrawn`.
+    pub(crate) fn forget_undrawn(&mut self, frame: u64) {
+        if let Some(draft) = &mut self.draft {
+            draft.canvas.forget_undrawn(frame);
+        }
+    }
+    /// §31K: the form is held on another version than the accepted one (a tab came back
+    /// made on a version that is no longer current): its drawing is no longer the accepted
+    /// one, and the lists work as ever.
+    pub(crate) fn retire_drawing(&mut self) {
+        if let Some(draft) = &mut self.draft {
+            draft.drawing = Drawing::Unavailable(Unavailable::OtherVersion);
+        }
+    }
     /// What the window tells the editor each frame.
     pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
         self.can_begin = can_begin;
         self.can_apply = can_apply;
         self.unsaved = unsaved;
     }
+    /// Opens the form with no accepted drawing: its words say so and the lists work as ever.
+    #[cfg(test)]
     pub(crate) fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, id: ObjectId) -> bool {
+        self.begin_with(path, source, &Accepted::default(), id)
+    }
+    /// §31K: opens the form on the facts of `source` and the drawing `accepted` holds for
+    /// the same version. The window calls this with both parts of one accepted scene.
+    pub(crate) fn begin_with(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        accepted: &Accepted,
+        id: ObjectId,
+    ) -> bool {
         if self.active() || source.refusal.is_some() {
             return false;
         }
@@ -219,10 +310,13 @@ impl Editor {
         else {
             return false;
         };
+        let drawing = accepted.drawing(source, choice);
         self.draft = Some(Draft {
             source: path.to_path_buf(),
             version: source.version,
             choice: choice.clone(),
+            drawing,
+            canvas: Canvas::default(),
             selected: None,
             length_mm: String::new(),
             radius_mm: String::new(),
@@ -247,6 +341,7 @@ impl Editor {
         can_begin: bool,
         path: Option<&Path>,
         source: Option<&ExtrudeEditSource>,
+        accepted: &Accepted,
     ) {
         if self.active() {
             return;
@@ -263,7 +358,7 @@ impl Editor {
                     )),
                 );
                 if response.clicked() {
-                    self.begin(path, source, choice.sketch);
+                    self.begin_with(path, source, accepted, choice.sketch);
                 }
                 if let Some(reason) = refusal {
                     response.on_hover_text(reason);
@@ -273,6 +368,8 @@ impl Editor {
     }
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, running: bool) {
         let (apply, unsaved) = (self.can_apply && !running, self.unsaved);
+        // A request of this form waits to be taken: nothing on the canvas may begin.
+        let queued = self.pending.is_some() || self.pending_apply.is_some();
         let Some(draft) = &mut self.draft else {
             return;
         };
@@ -291,7 +388,29 @@ impl Editor {
                     draft.choice.sketch,
                     crate::sessions::shown_as(&draft.source)
                 ));
-                ui.label("Coordinates below are stored inputs, not the solved drawing.");
+                // §31K: the two things a person must not confuse. The lists give stored
+                // inputs; the canvas, when there is one, gives the accepted solved drawing;
+                // rules still pending are in neither until Apply.
+                // The row is no taller than the one label it replaces: the form has no
+                // height to spare (see the 768-point gates).
+                ui.scope(|ui| {
+                    ui.spacing_mut().interact_size.y = 0.0;
+                    ui.horizontal(|ui| {
+                        ui.label("Coordinates below are stored inputs, not the solved drawing.");
+                        match &draft.drawing {
+                            Drawing::Solved(_) => ui
+                                .small("Canvas: solved drawing; pending rules not drawn.")
+                                .on_hover_text(
+                                    "The canvas draws the model as the last accepted rebuild \
+                                     solved it. Rules under Pending additions are solved only \
+                                     by Apply constraints, and are not drawn before.",
+                                ),
+                            Drawing::Unavailable(why) => ui
+                                .small(format!("Accepted drawing unavailable: {}.", why.short()))
+                                .on_hover_text(why.why()),
+                        };
+                    });
+                });
                 // §27G: a turned profile says which Revolve owns it and what
                 // that Revolve keeps; it never shows a height it does not have.
                 if let Some(owner) = draft.choice.profile_use.and_then(revolve_owner) {
@@ -406,28 +525,6 @@ impl Editor {
                             "Missing Coincident joints are added with constraints; closure remains after removal.",
                         );
                     }
-                    egui::ScrollArea::vertical()
-                        .id_salt("constraint-lines")
-                        .max_height(150.)
-                        .show(ui, |ui| {
-                            for (i, c) in stored.curves.iter().enumerate() {
-                                if let SketchGeometry::Line { start, end } = c.geometry {
-                                    ui.selectable_value(
-                                        &mut draft.selected,
-                                        Some(c.id),
-                                        format!(
-                                            "Segment {} · {} · ({}, {}) → ({}, {}) mm",
-                                            i + 1,
-                                            short(c.id),
-                                            start.x,
-                                            start.y,
-                                            end.x,
-                                            end.y
-                                        ),
-                                    );
-                                }
-                            }
-                        });
                     // One analytic circle, offered as itself. No entry above
                     // describes it — it has no start and no end — so it gets
                     // its own row naming its UUID and the two numbers the
@@ -446,15 +543,50 @@ impl Editor {
                     // of the document rather than worked out here: the roles
                     // every request and every refusal is about have one source.
                     let roles = ferritecad_document::constraint_circle_roles(stored);
-                    for (id, center, radius) in &circles {
-                        ui.selectable_value(
-                            &mut draft.selected,
-                            Some(*id),
-                            format!(
-                                "{} · {} · centre ({}, {}) mm · radius {} mm",
-                                role_name(roles, *id), short(*id), center.x, center.y, radius
-                            ),
-                        );
+                    // §31K: the canvas of the accepted drawing stands beside the lists
+                    // that pick the same things, in the height the Lines list already
+                    // had. A click fills the fields the lists fill, before the lists are
+                    // drawn, so the two cannot disagree for a frame.
+                    match &draft.drawing {
+                        Drawing::Solved(curves) => {
+                            ui.horizontal_top(|ui| {
+                                let picks = ui
+                                    .vertical(|ui| {
+                                        let marks = Marks {
+                                            selected: draft.selected,
+                                            pin: draft.endpoint,
+                                            pair: [draft.pair_a, draft.pair_b],
+                                            from: [draft.vector_a_from, draft.vector_b_from],
+                                        };
+                                        draft.canvas.show(ui, curves, &marks, queued, circles.len() != 1)
+                                    })
+                                    .inner;
+                                let before = Some(draft.selected);
+                                for picked in picks {
+                                    fill_from_canvas(
+                                        picked,
+                                        stored,
+                                        &mut draft.selected,
+                                        &mut draft.endpoint,
+                                        [&mut draft.pair_a, &mut draft.pair_b],
+                                        &mut draft.canvas,
+                                    );
+                                }
+                                ui.vertical(|ui| {
+                                    lines_and_circles(
+                                        ui,
+                                        stored,
+                                        &circles,
+                                        roles,
+                                        &mut draft.selected,
+                                        before,
+                                    );
+                                });
+                            });
+                        }
+                        Drawing::Unavailable(_) => {
+                            lines_and_circles(ui, stored, &circles, roles, &mut draft.selected, None);
+                        }
                     }
                     // Concentricity needs two circles to relate, so it is
                     // offered only where there are two. Both are picked
@@ -1141,6 +1273,112 @@ impl Editor {
     }
 }
 
+/// The Lines list and the Circle rows, which pick the same things the canvas does. With a
+/// canvas beside them the rows wrap inside the column, and the row the selection is on is
+/// brought into view when the canvas just moved the selection from `before`.
+fn lines_and_circles(
+    ui: &mut egui::Ui,
+    stored: &Sketch,
+    circles: &[(StableEntityId, ferritecad_document::Point2, f64)],
+    roles: Option<(StableEntityId, StableEntityId)>,
+    selected: &mut Option<StableEntityId>,
+    before: Option<Option<StableEntityId>>,
+) {
+    let reveal = before.is_some_and(|before| before != *selected);
+    let mut row = |ui: &mut egui::Ui, id: StableEntityId, words: String| {
+        let response = ui.selectable_value(selected, Some(id), words);
+        if reveal && *selected == Some(id) {
+            response.scroll_to_me_animation(
+                Some(egui::Align::Center),
+                egui::style::ScrollAnimation::none(),
+            );
+        }
+    };
+    egui::ScrollArea::vertical()
+        .id_salt("constraint-lines")
+        .max_height(150.)
+        .show(ui, |ui| {
+            for (i, c) in stored.curves.iter().enumerate() {
+                if let SketchGeometry::Line { start, end } = c.geometry {
+                    row(
+                        ui,
+                        c.id,
+                        format!(
+                            "Segment {} · {} · ({}, {}) → ({}, {}) mm",
+                            i + 1,
+                            short(c.id),
+                            start.x,
+                            start.y,
+                            end.x,
+                            end.y
+                        ),
+                    );
+                }
+            }
+        });
+    for (id, center, radius) in circles {
+        row(
+            ui,
+            *id,
+            format!(
+                "{} · {} · centre ({}, {}) mm · radius {} mm",
+                role_name(roles, *id),
+                short(*id),
+                center.x,
+                center.y,
+                radius
+            ),
+        );
+    }
+}
+
+/// A click on the canvas, as the fields it fills: the same ones the lists and the Pin and
+/// Pair buttons fill, nothing else. A pick the stored catalogue does not know (another
+/// kind, another Sketch's curve) fills nothing.
+fn fill_from_canvas(
+    picked: Picked,
+    stored: &Sketch,
+    selected: &mut Option<StableEntityId>,
+    pin: &mut LineEndpoint,
+    pair: [&mut Option<StableEntityId>; 2],
+    canvas: &mut Canvas,
+) {
+    let Hit { curve, part } = picked.hit;
+    let Some(kind) = stored
+        .curves
+        .iter()
+        .find(|c| c.id == curve)
+        .map(|c| &c.geometry)
+    else {
+        return;
+    };
+    let fits = matches!(
+        (kind, part),
+        (
+            SketchGeometry::Line { .. },
+            Part::Line | Part::Start | Part::End
+        ) | (SketchGeometry::Circle { .. }, Part::Ring | Part::Centre)
+    );
+    if !fits {
+        return;
+    }
+    let [pair_a, pair_b] = pair;
+    match picked.target {
+        Target::Object => *selected = Some(curve),
+        Target::Endpoint => {
+            *selected = Some(curve);
+            match part {
+                Part::Start => *pin = LineEndpoint::Start,
+                Part::End => *pin = LineEndpoint::End,
+                _ => {}
+            }
+        }
+        Target::PairA => *pair_a = Some(curve),
+        Target::PairB => *pair_b = Some(curve),
+    }
+    canvas.took(picked);
+}
+
 fn stored_line_length(
     sketch: &Sketch,
     curve: StableEntityId,
@@ -1221,7 +1459,7 @@ fn coordinate(text: &str) -> Result<SketchCoordinateMm> {
         .and_then(SketchCoordinateMm::new)
 }
 
-fn short(id: StableEntityId) -> String {
+pub(crate) fn short(id: StableEntityId) -> String {
     id.to_string()[24..].to_owned()
 }
 fn one_line(curve: StableEntityId) -> String {
@@ -1325,6 +1563,8 @@ pub(crate) mod tests {
     use ferritecad_kernel::OperationContext;
     /// §31F: a directed angle between two saved Lines.
     pub(crate) mod angle;
+    /// §31K: the canvas of the accepted solved drawing.
+    pub(crate) mod canvas;
     /// §31G: two saved Lines on one infinite line.
     pub(crate) mod collinear;
     /// §31E: a diameter typed for a circle, which is the Radius `D/2`.

@@ -36,7 +36,7 @@ use ferritecad_ui::{
 };
 use ferritecad_viewport::PixelRect;
 
-use crate::{Sections, in_tab_scope, model_tree};
+use crate::{Sections, in_tab_scope, model_tree, sketch::accepted::Accepted};
 
 /// The most room the action buttons and the tabs may take at the top, each, in
 /// points: two rows. The buttons wrap into them at ordinary widths so that all
@@ -84,6 +84,8 @@ pub(crate) fn central_of(ctx: &egui::Context) -> Option<egui::Rect> {
 pub(crate) struct Scene<'a> {
     pub(crate) document: Option<&'a Path>,
     pub(crate) edit_source: Option<&'a ExtrudeEditSource>,
+    /// §31K: the drawings of the same accepted scene, as the same reading saw them.
+    pub(crate) sketches: &'a Accepted,
     pub(crate) definitions: &'a [Selected<'a>],
     pub(crate) chosen_row: Option<usize>,
     pub(crate) offers: &'a [RowVisibility],
@@ -380,9 +382,13 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
             );
         }
         in_tab_scope(ui, "tab-forms", forms_scope, |ui| {
-            sections
-                .sketch
-                .draw_choices(ui, sections.can_edit, scene.document, scene.edit_source);
+            sections.sketch.draw_choices(
+                ui,
+                sections.can_edit,
+                scene.document,
+                scene.edit_source,
+                scene.sketches,
+            );
             sections.sketch.draw(
                 ui,
                 sections.can_new,
@@ -483,6 +489,7 @@ pub(crate) fn quiet_layout(
         scene: Scene {
             document: None,
             edit_source: None,
+            sketches: &Accepted::default(),
             definitions: &[],
             chosen_row: None,
             offers: &[],

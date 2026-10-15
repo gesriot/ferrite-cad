@@ -745,6 +745,15 @@ jobs:
           grep -Fxq 'FCAD_31J_TABS_EXECUTED' app-tests.log
           grep -Fxq 'FCAD_31J_NATIVE_CIRCLE_EXECUTED walls=1 sql=cli export=before_save undo=1 redo=1 navigated=1' app-tests.log
           grep -Fxq 'FCAD_31J_NATIVE_ANNULUS_EXECUTED walls=2 sql=cli export=before_save undo=1 redo=1 navigated=1' app-tests.log
+          # §31K: the constraints form's drawing, target and picks follow their tab (and a form
+          # held on another version loses the drawing); rules chosen on the canvas of the
+          # accepted solved drawing applied, exported before Save, undone, redone and saved
+          # like the command line. Printed after the last assertion of each gate.
+          grep -Fxq 'FCAD_31K_TAB_EXECUTED' app-tests.log
+          grep -Fxq 'FCAD_31K_TAB_STALE_EXECUTED' app-tests.log
+          grep -Fxq 'FCAD_31K_TAB_GIVEN_BACK_EXECUTED' app-tests.log
+          grep -Fxq 'FCAD_31K_NATIVE_RECTANGLE_EXECUTED request=canvas_equals_lists stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read' app-tests.log
+          grep -Fxq 'FCAD_31K_NATIVE_CIRCLE_EXECUTED request=canvas_equals_lists stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read' app-tests.log
 
           # And the shared job itself, which is what both of them call.
           cargo test -p ferritecad-jobs --lib -- --nocapture

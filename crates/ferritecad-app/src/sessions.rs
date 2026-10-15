@@ -3524,6 +3524,30 @@ mod tests {
             ferritecad_jobs::EditSketchConstraintsRequest,
         ),
     ) {
+        native_constraint_gate_with(root, source, height, None, draft);
+    }
+
+    /// A name under which a saved model's exports go to the pinned reader, and a reader of
+    /// the saved STL of the caller's own.
+    type SavedReader<'a> = (&'a str, &'a dyn Fn(&Path, &[u8]));
+
+    /// The same, with a name under which the saved model's exports go to the pinned reader
+    /// (`FCAD_ANALYTIC_ARTIFACTS`, as the Circle and annulus gates') and a reader of the saved
+    /// STL of the caller's own.
+    fn native_constraint_gate_with(
+        root: &Path,
+        source: &Path,
+        height: f64,
+        readers: Option<SavedReader<'_>>,
+        draft: impl FnOnce(
+            &Path,
+            &ferritecad_document::ExtrudeEditSource,
+            ObjectId,
+        ) -> (
+            crate::constraints::Editor,
+            ferritecad_jobs::EditSketchConstraintsRequest,
+        ),
+    ) {
         let original = std::fs::read(source).expect("source");
         let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
         let feature = opened.features[0].feature;
@@ -3661,6 +3685,16 @@ mod tests {
             );
         }
         let (stl, fbx) = peer_bytes(source, root, "c-saved");
+        if let Some((name, check)) = readers {
+            check(source, &stl);
+            if let Some(dir) = std::env::var_os("FCAD_ANALYTIC_ARTIFACTS") {
+                let dir = PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).expect("artifact directory");
+                std::fs::write(dir.join(format!("{name}.stl")), &stl).expect("STL for the readers");
+                std::fs::write(dir.join(format!("{name}.fbx")), &fbx)
+                    .expect("FBX for the pinned reader");
+            }
+        }
         assert_eq!((stl, fbx), (c_stl, c_fbx));
 
         // A refused edit past the form changes nothing, and does not cut off the
@@ -3942,6 +3976,84 @@ mod tests {
                 ("-3.5", "4.25"),
             )
         });
+    }
+
+    /// §31K: a constrained rectangle whose Sketch stores a rough guess, its rules chosen on
+    /// the canvas of the accepted solved drawing (Pair A and B, the Line, the End), Applied
+    /// into an unsaved session after a height step, exported before Save, undone, redone
+    /// and saved, each against the command line given the same UUIDs; the saved model is
+    /// read back by the drawing of its own rebuild and by an STL reader that is not the writer.
+    #[test]
+    fn native_rules_chosen_on_the_canvas_of_a_constrained_rectangle_are_applied_like_the_command_line()
+     {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("rectangle.fcad");
+        crate::constraints::tests::canvas::write_guessed_rectangle(&path);
+        native_constraint_gate_with(
+            root.path(),
+            &path,
+            9.5,
+            Some(("constraint-canvas-rectangle", &|saved, stl| {
+                crate::constraints::tests::canvas::saved_rectangle_is_what_the_rules_ask(
+                    saved, stl, 9.5,
+                )
+            })),
+            |path, source, sketch| {
+                crate::constraints::tests::canvas::native_rectangle(path, source, sketch)
+            },
+        );
+        println!(
+            "\nFCAD_31K_NATIVE_RECTANGLE_EXECUTED request=canvas_equals_lists stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read"
+        );
+    }
+
+    /// §31K: a cylinder whose Sketch stores the circle (4.5, 0) r 1.2 and keeps a Radius and
+    /// a Fixed centre that solve it at (0, 0) r 10; the ring and the centre picked on the
+    /// canvas of that solved circle replace both rules, through the same session route.
+    #[test]
+    fn native_a_radius_and_a_fixed_centre_chosen_on_the_canvas_of_a_solved_circle_are_applied_like_the_command_line()
+     {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("cylinder.fcad");
+        crate::constraints::tests::canvas::write_guessed_circle(&path);
+        native_constraint_gate_with(
+            root.path(),
+            &path,
+            9.5,
+            Some(("constraint-canvas-circle", &|saved, stl| {
+                crate::constraints::tests::canvas::saved_circle_is_what_the_rules_ask(
+                    saved, stl, 9.5,
+                )
+            })),
+            |path, source, sketch| {
+                crate::constraints::tests::canvas::native_circle(path, source, sketch)
+            },
+        );
+        println!(
+            "\nFCAD_31K_NATIVE_CIRCLE_EXECUTED request=canvas_equals_lists stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read"
+        );
     }
 
     /// What the solver or the Chamfer refuses is refused whole: the session keeps

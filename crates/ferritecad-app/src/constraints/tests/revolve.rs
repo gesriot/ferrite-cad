@@ -10,7 +10,7 @@ use ferritecad_document::{
 use ferritecad_types::Transform;
 
 /// A stepped sector with a bore and fractional coordinates.
-const SECTOR_P: [[f64; 2]; 5] = [
+pub(crate) const SECTOR_P: [[f64; 2]; 5] = [
     [2.75, -3.25],
     [7.5, -3.25],
     [7.5, 2.125],
@@ -27,7 +27,7 @@ const SECTOR_TALL: [[f64; 2]; 5] = [
 ];
 
 /// A solid stepped shaft; Line 6 (index 5) is on the axis.
-const SHAFT_T: [[f64; 2]; 6] = [
+pub(crate) const SHAFT_T: [[f64; 2]; 6] = [
     [0., -2.25],
     [8., -2.25],
     [8., 3.5],

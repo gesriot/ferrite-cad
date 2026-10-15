@@ -20,7 +20,7 @@ use ferritecad_types::Transform;
 /// so the form can be driven in a build that has none. The circles are stored in
 /// the order of `radii` and share the centre (12, -7); their UUIDs come back in
 /// that order.
-fn write_round_profile(path: &Path, radii: &[f64]) -> Vec<StableEntityId> {
+pub(crate) fn write_round_profile(path: &Path, radii: &[f64]) -> Vec<StableEntityId> {
     let mut d = Document::create(path).expect("document");
     let [plane, sketch, extrude, body] = std::array::from_fn(|_| ObjectId::new());
     let ids: Vec<_> = radii.iter().map(|_| StableEntityId::new()).collect();
@@ -123,7 +123,7 @@ fn write_round_profile(path: &Path, radii: &[f64]) -> Vec<StableEntityId> {
     ids
 }
 
-fn round_fixture(
+pub(crate) fn round_fixture(
     radii: &[f64],
 ) -> (
     tempfile::TempDir,
@@ -546,7 +546,7 @@ fn ring_diameters_follow_the_picked_uuid_not_the_stored_order() {
 
 /// The signed volume, bounds and edge pairing of a binary STL, read here and not
 /// by the code that wrote it.
-fn read_stl(bytes: &[u8]) -> (Vec<[[f64; 3]; 3]>, f64) {
+pub(crate) fn read_stl(bytes: &[u8]) -> (Vec<[[f64; 3]; 3]>, f64) {
     let count = u32::from_le_bytes(bytes[80..84].try_into().expect("count")) as usize;
     assert_eq!(bytes.len(), 84 + 50 * count);
     let mut faces = Vec::new();

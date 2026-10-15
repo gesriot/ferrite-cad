@@ -132,7 +132,7 @@ impl Forms<'_> {
     fn restore(&mut self, draft: Draft, to: &mut Sessions) {
         let Draft {
             height,
-            editor,
+            mut editor,
             base,
         } = draft;
         if !to
@@ -140,6 +140,9 @@ impl Forms<'_> {
             .is_some_and(|current| Arc::ptr_eq(&current, &base))
         {
             to.hold_stale_draft();
+            // §31K: the drawing it carries is of the version it was made on, which is no
+            // longer the accepted one; the form says so and its lists work as they did.
+            editor.constraints.retire_drawing();
         }
         self.edits.restore_form(height);
         *self.editor = *editor;
