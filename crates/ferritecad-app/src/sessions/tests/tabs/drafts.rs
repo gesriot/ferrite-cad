@@ -1253,6 +1253,70 @@ fn guides_a_typed_length_and_the_guided_draft_follow_their_tab() {
     println!("\nFCAD_31D_TABS_EXECUTED");
 }
 
+/// §31D-2: the From object mode is the tab's editor setting, like Guides and the grid
+/// step: hidden with it, shown with it. The anchor a resting pointer holds is nobody's
+/// setting: it is forgotten whenever the form is hidden, so it cannot come alive over
+/// another tab.
+#[test]
+fn the_anchor_mode_follows_its_tab_and_the_resting_anchor_follows_nobody() {
+    use crate::sketch::anchor_tests::{anchor_state, rest_on_an_anchor};
+    let (root, path, _) = crate::fillets::tests::plate();
+    let a_file = root.path().join("a.fcad");
+    let b_file = root.path().join("b.fcad");
+    std::fs::copy(&path, &a_file).expect("a");
+    std::fs::copy(&path, &b_file).expect("b");
+    let mut w = Window::new(Drawn::Mock, None);
+    let draft = |w: &mut Window, to: &str| {
+        let current = w.sessions.export_path().expect("shown");
+        let reading = read_extrude_source(&current).expect("reading");
+        let sketch = reading.sketches[0].sketch;
+        let (editor, _asked) =
+            crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", to);
+        w.creates.sketch = editor;
+    };
+    w.open(&a_file);
+    let a = w.sessions.tab();
+    draft(&mut w, "41.25");
+    assert_eq!(anchor_state(&w.creates.sketch), (false, false));
+    assert!(
+        rest_on_an_anchor(&mut w.creates.sketch),
+        "an anchor is shown in A"
+    );
+    assert_eq!(anchor_state(&w.creates.sketch), (true, true));
+    let a_draft = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A");
+    w.open(&b_file);
+    let b = w.sessions.tab();
+    draft(&mut w, "44.5");
+    assert_eq!(
+        anchor_state(&w.creates.sketch),
+        (false, false),
+        "B's editor has its own mode and no anchor"
+    );
+    assert!(
+        rest_on_an_anchor(&mut w.creates.sketch),
+        "an anchor is shown in B"
+    );
+    w.round(a);
+    assert_eq!(
+        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        Some(a_draft),
+        "A's draft is as it was"
+    );
+    assert_eq!(
+        anchor_state(&w.creates.sketch),
+        (true, false),
+        "A keeps its mode, not the anchor its pointer held before it was hidden"
+    );
+    w.round(b);
+    assert_eq!(
+        anchor_state(&w.creates.sketch),
+        (true, false),
+        "B kept the mode it switched on, and no anchor either"
+    );
+
+    println!("\nFCAD_31H_TABS_EXECUTED");
+}
+
 /// Without a kernel, showing a tab is refused at its picture: both tabs' drafts
 /// stay exactly where they were (executes only in a build with no kernel).
 #[test]

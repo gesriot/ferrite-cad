@@ -5098,7 +5098,7 @@ Apply/Save and real STL/FBX exports against the CLI (14000 mm³; peak 204.892 Mi
 exit 0). Remote CI is recorded separately. §30, Milestone 5C, the product and the OOM
 investigation remain open.
 
-### §31D — Gesture guides and temporary dimensional input (§31D-1 implemented; hover anchors deferred)
+### §31D — Gesture guides and temporary dimensional input (§31D-1 and §31D-2 implemented for the Line canvas)
 
 After basic object snaps: orthogonal and polar guides from an explicit visible
 anchor, with a length entry that writes the same coordinate strings as dragging.
@@ -5136,8 +5136,9 @@ constants, executed gates, mutations, resources and the independent window recip
 anchor by hovering with the hysteresis specified above (acquire inside the aperture,
 release outside twice it, replace only when nearer by more than one point), the
 circle centre (no circle is drawn on this canvas), angles and every constraint
-adapter. The §31D bullets about hover anchors therefore remain open, and so do
-§31C's centre, §30, Milestone 5C, the product and the OOM investigation.
+adapter. The §31D bullets about hover anchors were therefore still open at that slice
+(closed for this canvas by §31D-2 below), and so were §31C's centre, §30, Milestone 5C,
+the product and the OOM investigation.
 
 Independent review fixed an object-snap bypass of a refused Length and labels that
 rounded small positive lengths to zero. Focused native and true-stub gates passed;
@@ -5145,6 +5146,36 @@ the macOS window verified guided drag/Undo/Redo, refusals, Polar 45°, New point
 placement, Cancel, Apply, unsaved exports and Save As. The actual GUI file matched
 CLI SQL/UUID/refs and STL/FBX (14500 mm³); peak footprint 212.095 MiB, exit 0,
 pressure 1 and swap 0. Remote CI is separate from these local checks.
+
+**§31D-2 (reviewed implementation, PR #111).** The Line canvas of a New drawing and of a saved
+Sketch has an explicit, editor-only **From object** checkbox at the end of the Guides row
+(off by default, only while Guides are on, nothing persisted). With it on, hovering a
+shown Endpoint, Midpoint or finite Intersection of the drawn Lines (§31C candidates and
+ranking) shows a **provisional** anchor: acquired within 12 logical points, held out to 24,
+replaced only by a candidate nearer by more than one point (exactly one keeps the held
+one). A press on the shown ring **confirms** it — anchor, mode, Length text, grid step,
+candidates and scale are frozen for the gesture — and the §31D-1 guides, the typed Length
+and the object → guide → grid → free precedence are then measured from that anchor: a New
+drawing gains one vertex on release, a saved Sketch moves its *already selected* vertex
+(the anchor is never selected, never geometry, never a constraint; the moved vertex and
+what sits on its press-time position are not offered; incident midpoints stay where the
+press found them). Hover, anchor changes and the standing words take no history; one
+finished gesture is one Undo step; Escape, lost focus and a vanished pointer restore the
+press-time strings; the anchor is cleared when the pointer leaves, a tab's form is set
+aside, the document changes or Guides go off. Without the mode every click and drag is the
+old one; with it a press is taken only on a shown ring. Contract, interaction table, the
+reachability proof by real egui events, executed gates, mutations, resources and the
+independent window recipe: [sketch-hover-guide-anchors.md](sketch-hover-guide-anchors.md).
+**Not done:** the circle centre (no circle is drawn on this canvas), quadrants, nearest,
+tangency, apparent crossings, keyboard cycling, a persistent dimension, every constraint
+adapter; so §31C, §30, Milestone 5C, the product and the OOM investigation stay open.
+Independent review fixed idle redraws reacquiring a cleared anchor and a missing
+font glyph in edge labels. The macOS window covered endpoint/midpoint anchors,
+Length refusal, draft and document Undo/Redo, Cancel, tab preservation, Apply,
+unsaved exports and Save, plus New from a finite intersection. Saved SQL/UUID/refs
+and STL/FBX matched CLI; independent STL volume was 17500 mm³, strict ufbx passed.
+Both viewers exited 0; peak footprints 192.111/186.298 MiB, pressure 1, swap 0.
+Remote code and documentation CI are recorded separately in the verification document.
 
 ### §31E — Diameter input through Radius (reviewed implementation, PR #108)
 

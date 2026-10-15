@@ -726,6 +726,9 @@ jobs:
           # §31D-1: the same for the guided length drag: its marker, printed after the
           # last assertion, is the only proof that the gate did not return at once.
           grep -Fxq 'FCAD_31D_NATIVE_EXECUTED sql_cells=2 volume=14500 triangles=20' app-tests.log
+          # §31D-2: a saved vertex moved with the mouse from another shown anchor, applied,
+          # undone, exported and saved like the command line; printed after its last assertion.
+          grep -Fxq 'FCAD_31H_NATIVE_EXECUTED volume=3072.65625 triangles=12' app-tests.log
           # §31E: a typed Diameter and the picked circle follow their tab. It needs the
           # kernel and not the solver; the marker is printed after its last assertion.
           grep -Fxq 'FCAD_31E_TABS_EXECUTED' app-tests.log

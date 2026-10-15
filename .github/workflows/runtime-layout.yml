@@ -1829,6 +1829,24 @@ jobs:
             exit 1
           fi
           echo "FCAD_SKETCH_GUIDE_FBX=$artifacts/guide.fbx" >> "$GITHUB_ENV"
+          # §31D-2: a saved vertex moved with the mouse from another shown anchor, applied
+          # through the session, undone, redone, exported before Save and saved, each
+          # against the peer CLI given the same coordinates. Exactly one test ran.
+          anchors="$RUNNER_TEMP/sketch-anchor"
+          mkdir -p "$anchors"
+          if [ '${{ matrix.name }}' = windows ]; then anchors="$(cygpath -w "$anchors")"; fi
+          export FCAD_SKETCH_ANCHOR_ARTIFACT_DIR="$anchors"
+          cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer \
+            sessions::tests::native_a_vertex_moved_from_another_anchor_is_applied_undone_exported_and_saved_like_the_command_line \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee sketch-anchor.log
+          if grep -q 'skipped:' sketch-anchor.log || \
+             ! grep -q '^test result: ok\. 1 passed; 0 failed' sketch-anchor.log || \
+             ! grep -q '^test sessions::tests::native_a_vertex_moved_from_another_anchor_is_applied_undone_exported_and_saved_like_the_command_line \.\.\. ' sketch-anchor.log || \
+             ! grep -Fxq 'FCAD_31H_NATIVE_EXECUTED volume=3072.65625 triangles=12' sketch-anchor.log; then
+            echo "::error::native hover-anchor gate did not execute and pass"
+            exit 1
+          fi
+          echo "FCAD_SKETCH_ANCHOR_FBX=$anchors/anchor.fbx" >> "$GITHUB_ENV"
 
       - name: Persist and solve Line H/V through the native CLI and worker
         env:
@@ -3493,6 +3511,7 @@ jobs:
           grep -q '^FCAD_SKETCH_DRAG_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SKETCH_SNAP_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SKETCH_GUIDE_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_SKETCH_ANCHOR_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_DIAMETER_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SKETCH_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CIRCLE_UFBX_EXECUTED$' fbx-json-tests.log

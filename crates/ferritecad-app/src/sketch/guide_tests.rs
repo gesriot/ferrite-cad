@@ -15,7 +15,7 @@ use super::{
 };
 
 /// Every painted text equal to `text`, in paint order.
-fn texts(out: &egui::FullOutput, text: &str) -> Vec<egui::Pos2> {
+pub(super) fn texts(out: &egui::FullOutput, text: &str) -> Vec<egui::Pos2> {
     out.shapes
         .iter()
         .filter_map(|c| match &c.shape {
@@ -27,7 +27,7 @@ fn texts(out: &egui::FullOutput, text: &str) -> Vec<egui::Pos2> {
         .collect()
 }
 /// A choice in the Guides row (its "Off" is not the grid step's).
-fn guides(ctx: &egui::Context, e: &mut Editor, label: &str) {
+pub(super) fn guides(ctx: &egui::Context, e: &mut Editor, label: &str) {
     let out = frame(ctx, e, vec![]);
     let row = text_at(&out, "Guides:").y;
     let spot = texts(&out, label)
@@ -51,7 +51,7 @@ fn length_box(out: &egui::FullOutput) -> egui::Pos2 {
     egui::pos2(name.right() + 8. + 35., name.center().y)
 }
 /// Replaces the Length box's text through the real widget: click, select all, type.
-fn type_length(ctx: &egui::Context, e: &mut Editor, value: &str) {
+pub(super) fn type_length(ctx: &egui::Context, e: &mut Editor, value: &str) {
     let out = frame(ctx, e, vec![]);
     click(ctx, e, length_box(&out));
     let mut events = vec![
@@ -69,7 +69,11 @@ fn type_length(ctx: &egui::Context, e: &mut Editor, value: &str) {
     }
     frame(ctx, e, events);
 }
-fn circle(out: &egui::FullOutput, colour: egui::Color32, radius: f32) -> Option<egui::Pos2> {
+pub(super) fn circle(
+    out: &egui::FullOutput,
+    colour: egui::Color32,
+    radius: f32,
+) -> Option<egui::Pos2> {
     out.shapes.iter().find_map(|c| match &c.shape {
         egui::Shape::Circle(s) if s.stroke.color == colour && (s.radius - radius).abs() < 0.01 => {
             Some(s.center)
@@ -78,21 +82,21 @@ fn circle(out: &egui::FullOutput, colour: egui::Color32, radius: f32) -> Option<
     })
 }
 /// The anchor ring and the target circle of a guide, apart from each other.
-fn ring(out: &egui::FullOutput) -> Option<egui::Pos2> {
+pub(super) fn ring(out: &egui::FullOutput) -> Option<egui::Pos2> {
     circle(out, GUIDE_COLOUR, 8.)
 }
-fn target(out: &egui::FullOutput) -> Option<egui::Pos2> {
+pub(super) fn target(out: &egui::FullOutput) -> Option<egui::Pos2> {
     circle(out, GUIDE_COLOUR, 4.)
 }
 /// How many dashes of the guide ray are painted in `colour`.
-fn ray(out: &egui::FullOutput, colour: egui::Color32) -> usize {
+pub(super) fn ray(out: &egui::FullOutput, colour: egui::Color32) -> usize {
     out.shapes
         .iter()
         .filter(|c| matches!(&c.shape, egui::Shape::LineSegment { stroke, .. } if stroke.color == colour && stroke.width == 1.))
         .count()
 }
 /// Nothing of any guide is painted: no ring, ray, target or words.
-fn no_guide_shown(out: &egui::FullOutput) -> bool {
+pub(super) fn no_guide_shown(out: &egui::FullOutput) -> bool {
     ring(out).is_none()
         && target(out).is_none()
         && ray(out, GUIDE_COLOUR) == 0
@@ -106,10 +110,10 @@ fn click_mm(ctx: &egui::Context, e: &mut Editor, mm: [f64; 2]) {
     let spot = at(ctx, e, mm);
     click(ctx, e, spot);
 }
-fn near(a: egui::Pos2, b: egui::Pos2) -> bool {
+pub(super) fn near(a: egui::Pos2, b: egui::Pos2) -> bool {
     a.distance(b) < 0.01
 }
-fn gesture_is_over(e: &Editor) -> bool {
+pub(super) fn gesture_is_over(e: &Editor) -> bool {
     e.canvas.gesture.is_none() && !e.canvas.claimed_press
 }
 /// An open drawing with Guides chosen, the way a user does.
@@ -118,7 +122,7 @@ fn guided(points: &[[&str; 2]], closed: bool, mode: &str) -> (egui::Context, Edi
     guides(&ctx, &mut e, mode);
     (ctx, e)
 }
-fn history(e: &Editor) -> (usize, usize) {
+pub(super) fn history(e: &Editor) -> (usize, usize) {
     (e.undo.len(), e.redo.len())
 }
 

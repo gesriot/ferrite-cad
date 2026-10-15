@@ -170,6 +170,17 @@ if [ -n "${FCAD_SKETCH_GUIDE_FBX:-}" ]; then
     echo "FCAD_SKETCH_GUIDE_UFBX_EXECUTED"
 fi
 
+# §31D-2: a vertex moved from another shown anchor through the session, read by the same
+# pinned reader.
+if [ -n "${FCAD_SKETCH_ANCHOR_FBX:-}" ]; then
+    "$reader" --identity "$FCAD_SKETCH_ANCHOR_FBX" | tee "$work/sketch-anchor-reader.txt"
+    count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/sketch-anchor-reader.txt")"
+    [ -n "$count" ] && [ "$count" -ge 6 ] || {
+        echo "error: pinned reader did not verify the anchored-vertex Sketch FBX" >&2; exit 1;
+    }
+    echo "FCAD_SKETCH_ANCHOR_UFBX_EXECUTED"
+fi
+
 # §31E: the ring sized by two diameters through the form's worker, read by the same
 # pinned reader.
 if [ -n "${FCAD_DIAMETER_FBX:-}" ]; then

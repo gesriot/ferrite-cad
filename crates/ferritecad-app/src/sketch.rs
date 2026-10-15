@@ -13,6 +13,7 @@ use ferritecad_jobs::{
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
+mod anchor;
 mod guide;
 mod object_snap;
 
@@ -429,6 +430,9 @@ impl Editor {
     /// request made from them could only name the old version. A drawing in
     /// progress for a new document is not about the open one and stays.
     pub(crate) fn finish_session_change(&mut self) {
+        // A drawing for a new document stays, but not an anchor held over the picture
+        // that was replaced.
+        self.forget_anchor();
         if self.saved_object_open() {
             self.dismiss();
         }
@@ -454,6 +458,13 @@ impl Editor {
     /// held) on the drawing: a gesture is not a draft and holds the window.
     pub(crate) fn gesturing(&self) -> bool {
         self.canvas.gesture.is_some() || self.canvas.claimed_press
+    }
+    /// §31D-2: the anchor a hovering pointer holds belongs to one canvas, one drawing
+    /// and one moment. The window forgets it when a tab's form is set aside and when
+    /// the document changes under the form, so it cannot come alive over another
+    /// picture. The mode itself is the editor's setting and stays with it.
+    pub(crate) fn forget_anchor(&mut self) {
+        self.canvas.provisional = None;
     }
     pub(crate) fn take_circle_edit_request(&mut self) -> Option<EditCircleRequest> {
         self.pending_circle_edit.take()
@@ -1916,7 +1927,7 @@ impl Editor {
             return;
         };
         let draft = self.draft.as_mut().expect("present");
-        let canvas_edit = self.canvas.draw(ui, draft);
+        let canvas_edit = self.canvas.draw(ui, draft, self.editing.is_some());
         // A pointer gesture owns its checkpoint. Ordinary numeric/button edits
         // keep their existing per-change history and cannot modify a live drag.
         ui.add_enabled_ui(matches!(canvas_edit, CanvasEdit::Ordinary), |ui| {
@@ -2195,6 +2206,13 @@ struct Canvas {
     /// The guide the hovering pointer last held over the open drawing and the anchor
     /// it belongs to, so a click keeps the choice the hover showed. Frame state.
     held_guide: Option<([f64; 2], usize)>,
+    /// §31D-2: "From object": a gesture starts from a shown object point instead of
+    /// the last vertex or the pressed one. Editor state beside the guides: off for a
+    /// new editor, never persisted, and used only while Guides are on.
+    anchors: bool,
+    /// The anchor the hovering pointer holds over the shown contour: frame state
+    /// that no history, selection or document ever sees. A press confirms it.
+    provisional: Option<object_snap::Candidate>,
 }
 
 /// A change of the snap row, replayed at the event that made it (see `draw`).
@@ -2203,6 +2221,7 @@ enum SnapChange {
     Grid(Snap),
     Objects(bool),
     Guides(guide::Mode),
+    Anchors(bool),
 }
 
 /// Editor-only step. Not model data, not a preference, not persisted.
@@ -2236,6 +2255,23 @@ struct VertexDrag {
     guide: Option<(guide::Settings, Option<usize>)>,
     /// The guide outcome of the last preview (a guide or a refusal) and the pointer.
     guided: Option<(guide::Outcome, egui::Pos2)>,
+    /// §31D-2: set when the press confirmed an object anchor; the gesture then
+    /// measures from it and the fields above that describe a pressed vertex's own
+    /// start (`start`, `objects` for its own position, `guide`) are not used.
+    anchored: Option<Anchored>,
+}
+
+/// §31D-2: what a gesture from a confirmed anchor froze at its press.
+#[derive(Debug)]
+struct Anchored {
+    anchor: object_snap::Candidate,
+    /// The document point under the pointer at the press.
+    press_mm: [f64; 2],
+    settings: guide::Settings,
+    /// The guide held so far.
+    held: Option<usize>,
+    /// The gesture adds one vertex (a New drawing) instead of moving `vertex`.
+    adds: bool,
 }
 
 /// Preview frames do not enter history. Each changed release supplies one
@@ -2296,6 +2332,8 @@ impl Default for Canvas {
             guides: guide::Mode::Off,
             length: String::new(),
             held_guide: None,
+            anchors: false,
+            provisional: None,
         }
     }
 }
@@ -2333,7 +2371,18 @@ impl Canvas {
         match change {
             SnapChange::Grid(step) => self.snap = step,
             SnapChange::Objects(on) => self.object_snap = on,
-            SnapChange::Guides(mode) => self.guides = mode,
+            SnapChange::Guides(mode) => {
+                self.guides = mode;
+                if mode == guide::Mode::Off {
+                    self.provisional = None;
+                }
+            }
+            SnapChange::Anchors(on) => {
+                self.anchors = on;
+                if !on {
+                    self.provisional = None;
+                }
+            }
         }
     }
     fn fit(&mut self, points: &[[f64; 2]]) {
@@ -2487,8 +2536,174 @@ impl Canvas {
         let (outcome, held) = guide::resolve(settings, &reach, object);
         (outcome, held.map(|heading| (anchor, heading)))
     }
+    /// §31D-2: what a gesture from an anchor would change right now: the vertex a
+    /// click adds to an open New drawing with room, or the selected vertex of a saved
+    /// Sketch. None while the mode is off, Guides are off, a drawing is closed or
+    /// full, or no vertex is selected.
+    fn anchor_moves(&self, draft: &State, saved: bool) -> Option<anchor::Moves> {
+        if !self.anchors || self.guides == guide::Mode::Off {
+            return None;
+        }
+        if saved {
+            self.selected
+                .filter(|&vertex| vertex < draft.points.len())
+                .map(anchor::Moves::Vertex)
+        } else {
+            (!draft.closed && draft.points.len() < PolygonExtrusion::MAX_POINTS)
+                .then_some(anchor::Moves::Adds(draft.points.len()))
+        }
+    }
+    /// §31D-2: the provisional anchor once the pointer is at `at` of the canvas
+    /// `rect`; none when the pointer is not over it, nothing can be anchored, or no
+    /// shown object point is near. The set is the drawn contour's, cut to the window
+    /// the release distance reaches; in a saved Sketch the moved vertex and what sits
+    /// on it are not offered. The held anchor is kept by `anchor::track`.
+    fn track_anchor(
+        &mut self,
+        rect: egui::Rect,
+        visible: egui::Rect,
+        draft: &State,
+        saved: bool,
+        at: Option<egui::Pos2>,
+    ) {
+        self.provisional = at.and_then(|at| {
+            let moves = self.anchor_moves(draft, saved)?;
+            let points = Self::points(draft)?;
+            let cursor = self.document(rect, at);
+            let points_per_mm = f64::from(self.scale);
+            let near = object_snap::Window::around(cursor, anchor::RELEASE_POINTS / points_per_mm);
+            let mut candidates = object_snap::collect(&points, draft.closed, Some(near));
+            if let anchor::Moves::Vertex(vertex) = moves {
+                object_snap::drop_at(&mut candidates, points[vertex]);
+            }
+            anchor::track(
+                self.provisional,
+                &candidates,
+                &object_snap::Query {
+                    cursor,
+                    points_per_mm,
+                    visible: self.visible_window(rect, visible),
+                },
+            )
+        });
+    }
+    /// §31D-2: the standing line's situation and the point count the anchor's words
+    /// are numbered in, while the mode is on.
+    fn anchor_situation(&self, draft: &State, saved: bool) -> Option<(anchor::Situation, usize)> {
+        use anchor::Situation;
+        if !self.anchors {
+            return None;
+        }
+        if self.guides == guide::Mode::Off {
+            return Some((Situation::NeedsGuides, draft.points.len()));
+        }
+        if let Some(drag) = &self.gesture
+            && let Some(anchored) = &drag.anchored
+        {
+            let moves = if anchored.adds {
+                anchor::Moves::Adds(drag.vertex)
+            } else {
+                anchor::Moves::Vertex(drag.vertex)
+            };
+            return Some((
+                Situation::Held(anchored.anchor, moves),
+                drag.before.points.len(),
+            ));
+        }
+        let situation = match (self.anchor_moves(draft, saved), self.provisional) {
+            (Some(moves), Some(anchor)) => Situation::Provisional(anchor, moves),
+            (Some(moves), None) => Situation::Looking(moves),
+            (None, _) if saved => Situation::SelectFirst,
+            (None, _) if draft.closed => Situation::Closed,
+            (None, _) => Situation::Full,
+        };
+        Some((situation, draft.points.len()))
+    }
+    /// §31D-2: a gesture from a confirmed anchor. The point is where the pointer is in
+    /// the document (the press point and its movement), not the moved vertex's grab
+    /// offset; object → guide → grid → free, the guide measured from the anchor, whose
+    /// own position is no object target. The draft is rebuilt from the press-time
+    /// strings at every preview, so a pointer back at the press leaves nothing behind.
+    fn preview_anchored(
+        drag: &mut VertexDrag,
+        draft: &mut State,
+        at: egui::Pos2,
+        visible: object_snap::Window,
+    ) {
+        let Some(anchored) = &mut drag.anchored else {
+            return;
+        };
+        drag.hit = None;
+        drag.guided = None;
+        let delta = [
+            f64::from(at.x) - f64::from(drag.press.x),
+            f64::from(drag.press.y) - f64::from(at.y),
+        ];
+        let cursor = [
+            anchored.press_mm[0] + delta[0] / drag.scale,
+            anchored.press_mm[1] + delta[1] / drag.scale,
+        ];
+        // A press that has not moved has no direction and keeps its strings.
+        let placed = if delta == [0.0, 0.0] {
+            None
+        } else {
+            let object = drag.objects.as_deref().and_then(|objects| {
+                object_snap::pick(
+                    objects,
+                    &object_snap::Query {
+                        cursor,
+                        points_per_mm: drag.scale,
+                        visible,
+                    },
+                )
+            });
+            let from = anchored.anchor.at;
+            let reach = guide::Reach {
+                anchor: from,
+                offset: [cursor[0] - from[0], cursor[1] - from[1]],
+                points_per_mm: drag.scale,
+                held: anchored.held,
+            };
+            let (outcome, next) = guide::resolve(anchored.settings, &reach, object);
+            anchored.held = next;
+            match outcome {
+                guide::Outcome::Object(hit) => {
+                    drag.hit = Some((hit, at));
+                    Some(hit.at.map(object_snap::coordinate))
+                }
+                guide::Outcome::Guide(ref guided) => {
+                    let text = guide::strings(
+                        guided.heading,
+                        guided.at,
+                        &from.map(object_snap::coordinate),
+                    );
+                    drag.guided = Some((outcome, at));
+                    Some(text)
+                }
+                guide::Outcome::Refused { .. } => {
+                    drag.guided = Some((outcome, at));
+                    None
+                }
+                guide::Outcome::Open => Some(match (anchored.adds, drag.snap) {
+                    (true, Snap::Off) => [format!("{:.3}", cursor[0]), format!("{:.3}", cursor[1])],
+                    _ => [drag.snap.apply(cursor[0]), drag.snap.apply(cursor[1])],
+                }),
+            }
+        };
+        if anchored.adds {
+            draft.points.truncate(drag.before.points.len());
+            draft.points.extend(placed);
+        } else {
+            draft.points[drag.vertex] =
+                placed.unwrap_or_else(|| drag.before.points[drag.vertex].clone());
+        }
+    }
     fn preview(&mut self, draft: &mut State, at: egui::Pos2, visible: object_snap::Window) {
         if let Some(drag) = &mut self.gesture {
+            if drag.anchored.is_some() {
+                Self::preview_anchored(drag, draft, at, visible);
+                return;
+            }
             // Preserve the grab offset and original strings on untouched axes.
             let delta = [
                 f64::from(at.x) - f64::from(drag.press.x),
@@ -2563,7 +2778,7 @@ impl Canvas {
             }
         }
     }
-    fn draw(&mut self, ui: &mut egui::Ui, draft: &mut State) -> CanvasEdit {
+    fn draw(&mut self, ui: &mut egui::Ui, draft: &mut State, saved: bool) -> CanvasEdit {
         let points = Self::points(draft);
         let events = ui.input(|i| i.events.clone());
         let mut snap_changes = Vec::new();
@@ -2636,6 +2851,26 @@ impl Canvas {
                     "Distance from the ringed anchor along a shown guide. Temporary: it places \
                      coordinates only and is not a constraint.",
                 );
+                ui.separator();
+                // §31D-2: the same deferral. Unavailable while Guides are off.
+                let mut from_object = self.anchors;
+                let response = ui
+                    .add_enabled(
+                        self.guides != guide::Mode::Off,
+                        egui::Checkbox::new(&mut from_object, "From object"),
+                    )
+                    .on_hover_text(
+                        "Start a guided gesture from a shown endpoint, midpoint or crossing: \
+                         hover it, press, drag, release. Editor-only; nothing is saved.",
+                    )
+                    .on_disabled_hover_text("Choose Orthogonal or Polar 45° first.");
+                if response.clicked() {
+                    snap_changes.push((
+                        release_index(&events, &response),
+                        SnapChange::Anchors(from_object),
+                    ));
+                    ui.ctx().request_repaint();
+                }
             });
             let (note, refused) = guide::note(
                 self.guides,
@@ -2675,40 +2910,95 @@ impl Canvas {
                     ..
                 } => {
                     self.cancel(draft);
-                    if ui.is_enabled()
-                        && rect.intersect(ui.clip_rect()).contains(pos)
-                        && ui.ctx().layer_id_at(pos) == Some(ui.layer_id())
+                    if pointer_over(ui, visible_rect, pos)
                         && let Some(points) = Self::points(draft)
-                        && let Some(vertex) = self.hit(rect, visible_rect, &points, pos)
                     {
-                        self.selected = Some(vertex);
-                        self.claimed_press = true;
-                        change = CanvasEdit::Gesture;
-                        self.gesture = Some(VertexDrag {
-                            vertex,
-                            press: pos,
-                            scale: f64::from(self.scale),
-                            start: points[vertex],
-                            before: draft.clone(),
-                            snap: self.snap,
-                            objects: self.object_snap.then(|| {
-                                object_snap::frozen(&points, draft.closed, points[vertex])
-                            }),
-                            hit: None,
-                            guide: (self.guides != guide::Mode::Off).then(|| {
-                                (
-                                    guide::Settings {
+                        // §31D-2: the anchor the pointer holds at the press, in event
+                        // order, is confirmed by this press and not selected or dragged.
+                        // A press can confirm a ring shown by a preceding move,
+                        // including a move earlier in this frame. It cannot acquire
+                        // an unseen anchor after a tab/focus reset.
+                        if self.provisional.is_some() {
+                            self.track_anchor(rect, visible_rect, draft, saved, Some(pos));
+                        }
+                        if let Some(moves) = self.anchor_moves(draft, saved)
+                            && let Some(anchor) = self.provisional.take()
+                        {
+                            self.claimed_press = true;
+                            change = CanvasEdit::Gesture;
+                            let adds = matches!(moves, anchor::Moves::Adds(_));
+                            let (vertex, mut objects) = match moves {
+                                anchor::Moves::Adds(vertex) => {
+                                    (vertex, object_snap::collect(&points, draft.closed, None))
+                                }
+                                anchor::Moves::Vertex(vertex) => (
+                                    vertex,
+                                    object_snap::frozen(&points, draft.closed, points[vertex]),
+                                ),
+                            };
+                            // The anchor is where the guide starts, never a target.
+                            object_snap::drop_at(&mut objects, anchor.at);
+                            self.gesture = Some(VertexDrag {
+                                vertex,
+                                press: pos,
+                                scale: f64::from(self.scale),
+                                start: anchor.at,
+                                before: draft.clone(),
+                                snap: self.snap,
+                                objects: self.object_snap.then_some(objects),
+                                hit: None,
+                                guide: None,
+                                guided: None,
+                                anchored: Some(Anchored {
+                                    anchor,
+                                    press_mm: self.document(rect, pos),
+                                    settings: guide::Settings {
                                         mode: self.guides,
                                         length: guide::Length::parse(&self.length),
                                     },
-                                    None,
-                                )
-                            }),
-                            guided: None,
-                        });
+                                    held: None,
+                                    adds,
+                                }),
+                            });
+                        } else if let Some(vertex) = self.hit(rect, visible_rect, &points, pos) {
+                            self.selected = Some(vertex);
+                            self.claimed_press = true;
+                            change = CanvasEdit::Gesture;
+                            self.gesture = Some(VertexDrag {
+                                vertex,
+                                press: pos,
+                                scale: f64::from(self.scale),
+                                start: points[vertex],
+                                before: draft.clone(),
+                                snap: self.snap,
+                                objects: self.object_snap.then(|| {
+                                    object_snap::frozen(&points, draft.closed, points[vertex])
+                                }),
+                                hit: None,
+                                guide: (self.guides != guide::Mode::Off).then(|| {
+                                    (
+                                        guide::Settings {
+                                            mode: self.guides,
+                                            length: guide::Length::parse(&self.length),
+                                        },
+                                        None,
+                                    )
+                                }),
+                                guided: None,
+                                anchored: None,
+                            });
+                        }
                     }
                 }
-                egui::Event::PointerMoved(pos) => self.preview(draft, pos, visible),
+                egui::Event::PointerMoved(pos) => {
+                    self.preview(draft, pos, visible);
+                    // §31D-2: the pointer in event order, so a press in the same frame
+                    // finds the anchor it moved onto.
+                    if self.gesture.is_none() {
+                        let over = pointer_over(ui, visible_rect, pos).then_some(pos);
+                        self.track_anchor(rect, visible_rect, draft, saved, over);
+                    }
+                }
                 egui::Event::PointerButton {
                     pos,
                     button: egui::PointerButton::Primary,
@@ -2725,17 +3015,20 @@ impl Canvas {
                         checkpoints.push(drag.before);
                     }
                     self.claimed_press = false;
+                    self.provisional = None;
                 }
                 egui::Event::Key {
                     key: egui::Key::Escape,
                     pressed: true,
                     ..
-                } if self.gesture.is_some() => {
+                } if self.gesture.is_some() || self.provisional.is_some() => {
                     ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
                     self.cancel(draft);
+                    self.provisional = None;
                 }
                 egui::Event::WindowFocused(false) | egui::Event::PointerGone => {
                     self.cancel(draft);
+                    self.provisional = None;
                 }
                 _ => {}
             }
@@ -2751,6 +3044,22 @@ impl Canvas {
         if !checkpoints.is_empty() {
             change = CanvasEdit::Finished(checkpoints);
         }
+        // §31D-2: the anchor under a pointer that rests over the canvas; none during
+        // a gesture (its anchor is the gesture's own) or when the pointer is away.
+        let resting = if self.gesture.is_some() {
+            None
+        } else {
+            response.hover_pos()
+        };
+        // An idle redraw only validates a held ring. Acquisition and replacement
+        // belong to PointerMoved, so a cleared anchor cannot reappear on another
+        // tab or after Escape/focus loss without a fresh pointer movement.
+        if let Some(held) = self.provisional {
+            self.track_anchor(rect, visible_rect, draft, saved, resting);
+            if self.provisional != Some(held) {
+                self.provisional = None;
+            }
+        }
         let points = Self::points(draft);
         let hover = response.hover_pos().and_then(|pos| {
             points
@@ -2763,6 +3072,11 @@ impl Canvas {
         let (marker, guided) = if let Some(drag) = &self.gesture {
             self.held_guide = None;
             (drag.hit, drag.guided.clone())
+        } else if self.provisional.is_some() {
+            // §31D-2: a press here starts from the shown anchor; it adds no point, so
+            // neither the click's marker nor its guide is previewed.
+            self.held_guide = None;
+            (None, None)
         } else if hover.is_none()
             && !draft.closed
             && draft.points.len() < PolygonExtrusion::MAX_POINTS
@@ -2919,18 +3233,51 @@ impl Canvas {
         if let Some((hit, pointer)) = marker {
             paint_object_snap(&painter, rect, screen(hit.at), hit.kind, pointer);
         }
+        if let Some((situation, vertices)) = self.anchor_situation(draft, saved) {
+            paint_standing(&painter, rect, &anchor::status(situation, vertices));
+        }
+        if let Some(anchor) = self.provisional {
+            paint_provisional(
+                &painter,
+                rect,
+                screen(anchor.at),
+                &format!("From {}", anchor::describe(&anchor, draft.points.len())),
+                response.hover_pos(),
+            );
+        }
         // §31D-1: the anchor is drawn apart from the target point, and so are the
         // guide held and its words; all of it for the frame only.
         let (anchor, role) = if let Some(drag) = &self.gesture {
-            (
-                drag.guide.is_some().then_some(drag.start),
-                guide::Role::Drag {
-                    vertex: drag.vertex,
-                },
-            )
+            match &drag.anchored {
+                Some(anchored) => {
+                    let (source, vertices) = (anchored.anchor, drag.before.points.len());
+                    (
+                        Some(anchored.anchor.at),
+                        if anchored.adds {
+                            guide::Role::AddFrom { source, vertices }
+                        } else {
+                            guide::Role::DragFrom {
+                                source,
+                                vertices,
+                                vertex: drag.vertex,
+                            }
+                        },
+                    )
+                }
+                None => (
+                    drag.guide.is_some().then_some(drag.start),
+                    guide::Role::Drag {
+                        vertex: drag.vertex,
+                    },
+                ),
+            }
         } else {
             (
-                self.add_anchor(rect, visible_rect, draft),
+                // A shown provisional anchor is the one ring: a press starts from it.
+                self.provisional
+                    .is_none()
+                    .then(|| self.add_anchor(rect, visible_rect, draft))
+                    .flatten(),
                 guide::Role::Add {
                     after: draft.points.len().saturating_sub(1),
                 },
@@ -3016,6 +3363,50 @@ fn paint_pointer_label(
         egui::Color32::from_black_alpha(200),
     );
     painter.galley(corner, galley, colour);
+}
+
+/// Whether a press or a move at `pos` is on this canvas, as an input the form takes:
+/// the form is enabled, the point is visible on the canvas and no other window covers it.
+fn pointer_over(ui: &egui::Ui, visible: egui::Rect, pos: egui::Pos2) -> bool {
+    ui.is_enabled()
+        && ui.input(|i| i.focused)
+        && visible.contains(pos)
+        && ui.ctx().layer_id_at(pos) == Some(ui.layer_id())
+}
+
+/// The standing words of the explicit mode, under the canvas's caption, on a dark
+/// plate: the form's height is the same with or without them.
+fn paint_standing(painter: &egui::Painter, rect: egui::Rect, words: &str) {
+    let galley = painter.layout_no_wrap(
+        words.into(),
+        egui::FontId::proportional(11.),
+        egui::Color32::from_gray(225),
+    );
+    let corner = rect.left_top() + egui::vec2(5., 22.);
+    painter.rect_filled(
+        egui::Rect::from_min_size(corner, galley.size()).expand(2.),
+        2.,
+        egui::Color32::from_black_alpha(200),
+    );
+    painter.galley(corner, galley, egui::Color32::from_gray(225));
+}
+
+/// The colour of the provisional anchor's ring, which tests also look for.
+const ANCHOR_COLOUR: egui::Color32 = egui::Color32::from_rgb(110, 170, 255);
+
+/// A provisional anchor: a ring larger than the confirmed one and of its own colour,
+/// and its words beside the pointer, for the frame only.
+fn paint_provisional(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    at: egui::Pos2,
+    words: &str,
+    pointer: Option<egui::Pos2>,
+) {
+    painter.circle_stroke(at, 11., egui::Stroke::new(2., ANCHOR_COLOUR));
+    if let Some(pointer) = pointer {
+        paint_pointer_label(painter, rect, pointer, words, ANCHOR_COLOUR);
+    }
 }
 
 /// The colours of the guide anchor, ray, target and words, which tests also look for.
@@ -7775,6 +8166,9 @@ pub(crate) mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "sketch/anchor_tests.rs"]
+pub(crate) mod anchor_tests;
 #[cfg(test)]
 #[path = "sketch/drag_tests.rs"]
 pub(crate) mod drag_tests;

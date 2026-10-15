@@ -2841,6 +2841,35 @@ mod tests {
     /// on `source`, each against the command line doing the same to the same
     /// document; then a new branch after Undo.
     fn native_vertex_gate(root: &Path, source: &Path, from: &str, to: &str, height: f64) {
+        vertex_gate(root, source, height, None, |path, reading, sketch| {
+            let (form, request) =
+                crate::sketch::tests::typed_apply(path, reading, sketch, from, to);
+            assert!(
+                request
+                    .vertices
+                    .iter()
+                    .any(|v| v.start_mm.iter().any(|n| n.to_string() == to)),
+                "the typed number did not reach the request"
+            );
+            (form, request)
+        });
+    }
+
+    /// The same gate for any way of making the request: `make` is given the accepted
+    /// version's file, its reading and the Sketch, and returns the form that applied
+    /// and what it asked for. `artifacts` names a directory (an environment variable)
+    /// and a file stem that keep the unsaved export for the independent readers.
+    fn vertex_gate(
+        root: &Path,
+        source: &Path,
+        height: f64,
+        artifacts: Option<(&str, &str)>,
+        make: impl FnOnce(
+            &Path,
+            &ferritecad_document::ExtrudeEditSource,
+            ObjectId,
+        ) -> (crate::sketch::Editor, ferritecad_jobs::EditSketchRequest),
+    ) {
         let original = std::fs::read(source).expect("source");
         let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
         let feature = opened.features[0].feature;
@@ -2862,15 +2891,7 @@ mod tests {
         apply_native(&mut sessions, feature, height);
         let after_height = sessions.export_path().expect("accepted");
         let reading = ferritecad_jobs::read_extrude_source(&after_height).expect("reading");
-        let (mut form, request) =
-            crate::sketch::tests::typed_apply(&after_height, &reading, sketch, from, to);
-        assert!(
-            request
-                .vertices
-                .iter()
-                .any(|v| v.start_mm.iter().any(|n| n.to_string() == to)),
-            "the typed number did not reach the request"
-        );
+        let (mut form, request) = make(&after_height, &reading, sketch);
         apply_sketch_native(&mut sessions, request.clone());
         form.finish_session_change();
         assert!(!form.active(), "the form outlived the picture it described");
@@ -2906,6 +2927,14 @@ mod tests {
         let working = sessions.export_path().expect("accepted");
         let (stl, fbx) = export_bytes(&working, &alias, root, "v-unsaved");
         assert_eq!((stl, fbx), (v_stl.clone(), v_fbx.clone()), "unsaved export");
+        if let Some((variable, stem)) = artifacts
+            && let Some(dir) = std::env::var_os(variable)
+        {
+            let dir = PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).expect("artifact directory");
+            std::fs::write(dir.join(format!("{stem}.stl")), &v_stl).expect("artifact");
+            std::fs::write(dir.join(format!("{stem}.fbx")), &v_fbx).expect("artifact");
+        }
 
         // Undo is the height step, Undo again the file; Redo comes back.
         move_native(&mut sessions, true);
@@ -2991,6 +3020,43 @@ mod tests {
         }
         let (root, path, _) = crate::fillets::tests::plate();
         native_vertex_gate(root.path(), &path, "33", "41.25", 9.5);
+    }
+
+    /// §31D-2: the plate's vertex 2 moved with the mouse from another point as the anchor,
+    /// at a typed Length, then Apply, Undo, Redo, an unsaved export, Save and a cold
+    /// reopen, each against the command line given the coordinates the mouse made. The
+    /// marker is printed after the last assertion, so a skip cannot print it.
+    #[test]
+    fn native_a_vertex_moved_from_another_anchor_is_applied_undone_exported_and_saved_like_the_command_line()
+     {
+        if !native() {
+            return;
+        }
+        let (root, path, _) = crate::fillets::tests::plate();
+        vertex_gate(
+            root.path(),
+            &path,
+            9.5,
+            Some(("FCAD_SKETCH_ANCHOR_ARTIFACT_DIR", "anchor")),
+            |after, reading, sketch| {
+                let (form, request) =
+                    crate::sketch::anchor_tests::anchored_apply(after, reading, sketch, "5");
+                assert_eq!(
+                    request.vertices[0].start_mm,
+                    [33., 15.5],
+                    "the anchor's vertex"
+                );
+                assert_eq!(
+                    request.vertices[1].start_mm,
+                    [33., 10.5],
+                    "5 mm south of it"
+                );
+                assert_eq!(request.vertices[2].start_mm, [-4.5, 3.25]);
+                assert_eq!(request.vertices[3].start_mm, [-4.5, 15.5]);
+                (form, request)
+            },
+        );
+        println!("\nFCAD_31H_NATIVE_EXECUTED volume=3072.65625 triangles=12");
     }
 
     #[test]
