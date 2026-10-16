@@ -5492,7 +5492,7 @@ viewer after a CUA reset verified the annulus fallback and both selectors/pair s
 Arcs, mixed profiles, the annulus on this canvas, new constraint families, dragging, cycling through a
 joint's coincident ends, a pointer command in the CLI, §30, Milestone 5C, the product and OOM stay open.
 
-### §31L — Dimension labels and explicit replacement on the accepted Sketch canvas (implementation awaiting review)
+### §31L — Dimension labels and explicit replacement on the accepted Sketch canvas (reviewed implementation, PR #116)
 
 The accepted solved drawing of the **Sketch constraints** form carries a compact **label for each saved
 whole-Line length and for a single Circle's radius**: the target the saved rule holds, under the full UUID of
@@ -5513,7 +5513,7 @@ capability, FFI, solver equation, jobs operation, CLI request, stored position o
 families keep their selectors.
 
 Contract, decisions, executed gates, mutations, resources, N/A and the independent window recipe:
-[sketch-dimension-labels.md](sketch-dimension-labels.md). Executed locally (no CI of the unstaged diff, no window): 22 kernel-free gates (5 pure, 14 form on
+[sketch-dimension-labels.md](sketch-dimension-labels.md). Author evidence before publication (no CI of the unstaged diff, no window): 22 kernel-free gates (5 pure, 14 form on
 real egui events at 1x and 2x, 3 tab) and 2 native session gates (a saved Line length and a saved Circle radius
 chosen by their labels over a stored-guess-versus-solved Sketch, replaced, applied, exported before Save, undone,
 redone, saved and reopened cold against the peer CLI, SQL and payload equal after the one mapping of the fresh
@@ -5522,6 +5522,31 @@ on OCCT + PlaneGCS; 18 compiling mutants, among them a foreign UUID and a broken
 executed assertions. The 768-point screen is unchanged for the full forms (767.5). **Open:** the window cases
 that no headless pass closes (§31J/§31K pan, pinch, held input, external covering; Windows and Linux windows),
 arcs, mixed profiles, the annulus, DirectedAngle and the other relations as labels, dragging, and OOM.
+
+Independent review fixed a hover caption that covered the canvas footer, reproduced by an executed
+1x/2x widget assertion before the fix. Final native and true-stub viewer suites each passed 844/0/4;
+22 exact kernel-free gates and both native gates ran through the actual workflow bodies. Native
+windows confirmed Line 60→70 and Diameter17→Radius8.5, Apply/export-before-Save/Undo/Redo/Save,
+SQL/full-payload/UUID and byte-identical STL/FBX parity with the shared CLI; both negative controls
+held. The corrected window also confirmed zoom/Fit, overlap/list fallback and reveal of Segment41.
+The two own viewers quit with exit0, peaks 209.876/198.282 MiB, pressure1, swap0. Required PR checks
+remain a separate exact-head merge condition. Detailed evidence and outstanding window gestures
+are in the contract above; no OOM resolution is claimed.
+
+### §31M — Directed-angle dimension selection and replacement (planned)
+
+Extend the accepted Sketch annotations to the existing saved DirectedAngle family. Identify a
+selected dimension by its constraint UUID and preserve both stored directed endpoint references;
+a pair dimension must not masquerade as a dimension of one curve. Show the accepted signed target
+in degrees and highlight the corresponding solved vectors. Keep explicit Dimension picking,
+deterministic overlap/list fallback, version ownership, logical-point navigation and bounded
+layout. Replace through the existing remove/add draft and shared operation, with one history
+step, in-place repeated replacement and exact return-to-saved semantics; retain all unrelated
+pending changes and do not prewrite coordinates. Existing Length/Radius behavior must survive.
+No new constraint family, solver/shim/schema/capability, CLI command or persisted label position.
+Prove sign/direction/identity, invalid and stale refusal, independent tabs and real widget →
+Apply/export-before-Save/Undo/Redo/Save parity with CLI, complete SQL/payload/hash checks and
+independent geometry reading. Remaining native gestures stay explicitly separate from headless tests.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 

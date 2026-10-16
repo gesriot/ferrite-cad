@@ -338,6 +338,28 @@ fn a_label_states_the_saved_target_and_selects_exactly_its_rule_only_under_the_d
         // The same selection is the Lines list's, and the one the form's own length box acts
         // on: Replace length is enabled for this Line.
         assert!(painted(&out, "Replace dimension"));
+        // A long hover caption near the bottom must leave the accepted-status and
+        // navigation footer readable, including on a Retina display.
+        let out = rig.frame(vec![moved(at60)]);
+        let caption = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().contains(" · saved Line length 60 mm") => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()).expand(2.))
+                }
+                _ => None,
+            })
+            .expect("dimension hover caption");
+        let canvas = rig.rect();
+        let content = egui::Rect::from_min_max(
+            canvas.min + egui::vec2(3., 20.),
+            canvas.max - egui::vec2(3., 24.),
+        );
+        assert!(
+            content.contains_rect(caption),
+            "{pixels_per_point}x: hover caption {caption:?} covers the canvas captions {content:?}"
+        );
         // A label of the other rule picks the other Line.
         let mut again = Rig::lengths(pixels_per_point);
         again.target(Target::Dimension);

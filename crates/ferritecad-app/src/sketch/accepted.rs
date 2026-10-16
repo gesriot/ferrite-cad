@@ -12,7 +12,7 @@ use super::{
     DRAWABLE_MM, PICK_POINTS,
     dimension::{self, Placed, Shown},
     navigation::{self, MAX_SCALE, MIN_SCALE, Navigation, Surface, View},
-    paint_grid, paint_pointer_label, pointer_over,
+    paint_grid, pointer_over,
 };
 use ferritecad_document::{
     ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource, LineEndpoint, Sketch,
@@ -867,7 +867,7 @@ impl Canvas {
                 }
                 part => format!("{name} · {}", part.word()),
             };
-            paint_pointer_label(painter, rect, pointer, &words, HOVER_COLOUR);
+            paint_hover(painter, rect, pointer, &words);
         }
         standing(
             painter,
@@ -1139,6 +1139,31 @@ fn pair_words(curves: &[Curve], marks: &Marks) -> String {
         },
     };
     format!("{} · {}", slot("A", 0), slot("B", 1))
+}
+
+/// Leave the canvas header and both footer captions visible, including when a
+/// dimension's full description needs more than one line.
+fn paint_hover(painter: &egui::Painter, canvas: egui::Rect, pointer: egui::Pos2, words: &str) {
+    let band = egui::Rect::from_min_max(
+        canvas.min + egui::vec2(3., 20.),
+        canvas.max - egui::vec2(3., 24.),
+    );
+    let inner = band.shrink(2.);
+    let galley = painter.layout(
+        words.into(),
+        egui::FontId::proportional(12.),
+        HOVER_COLOUR,
+        inner.width(),
+    );
+    let max = (inner.max - galley.size()).max(inner.min);
+    let corner = (pointer + egui::vec2(14., 14.)).clamp(inner.min, max);
+    let painter = painter.with_clip_rect(painter.clip_rect().intersect(band));
+    painter.rect_filled(
+        egui::Rect::from_min_size(corner, galley.size()).expand(2.),
+        2.,
+        egui::Color32::from_black_alpha(200),
+    );
+    painter.galley(corner, galley, HOVER_COLOUR);
 }
 
 fn standing(painter: &egui::Painter, corner: egui::Pos2, words: &str) {

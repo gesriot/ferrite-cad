@@ -1,6 +1,6 @@
 # §31L — Dimension labels and explicit replacement on the accepted Sketch canvas
 
-Status: implementation awaiting independent review. Plan entry: [§31L](implementation-plan.md). Base:
+Status: reviewed implementation; publication and cross-platform checks are tracked by [PR #116](https://github.com/gesriot/ferrite-cad/pull/116). Plan entry: [§31L](implementation-plan.md). Base:
 `3c853e6c38d08514bbbd0e39e511b4f49c389faf` (merge of PR #115, `main` = `origin/main`, tree
 `790c50f1209139af4fd5ec52340d63dd812f67a6`). Branch: `sketch-dimension-labels`. At the author's handoff
 nothing is staged or committed, and the author ran no window, viewer, CUA or system dialog.
@@ -53,7 +53,7 @@ carry their own, and nothing is looked up again from the file, the solver or the
 
 | Where | It is | Said as |
 | --- | --- | --- |
-| a label | the **target** the saved rule holds (neither the length of the stored starting coordinates nor a measured size of the drawing) | `60 mm`, `R 10 mm` (the first nine characters of the exact number, else four decimals and `…`, else an exponent) |
+| a label | the **target** the saved rule holds (neither the length of the stored starting coordinates nor a measured size of the drawing) | `60 mm`, `R 10 mm` (the exact spelling if at most nine characters, otherwise a four-decimal approximation with `…` or an exponent) |
 | the lists (Segment, Circle) | the **stored starting coordinates** | unchanged: *Coordinates below are stored inputs, not the solved drawing.* |
 | a label with a replacement prepared | the target, then what is prepared in its place; the drawing and the accepted size are unchanged until Apply | `60 → 70 mm` in amber; `60 mm → removed` if the rule is only ticked *Remove* |
 
@@ -201,7 +201,7 @@ modified or untracked `.rs`/`.yml`/`.sh`/`.py`); it was identical after the muta
   worst case has no spare height. The cost: for a very long list the editor is brought into view by scrolling,
   one frame after the selection moves, and a layout change can leave it a point or two clipped until the list
   is scrolled.
-* **Labels are shortened, not rounded**: nine characters of the exact number, else four decimals and `…`;
+* **Labels use a compact display**: an exact spelling of up to nine characters, otherwise a rounded four-decimal approximation with `…` or an exponent;
   the row and the editor sentence give every digit.
 * **A label is absent, not clamped, when its anchor is off the canvas** (zoomed far in); Fit returns it.
 * **The typed text is kept across selections** (like the other boxes); the line next to the box always names
@@ -231,3 +231,78 @@ removed one gone, the right number of new ones), every SQL cell, the complete Sk
 STL/FBX, and an independent STL reader (closed oriented mesh, real extents or radius); `--negative` swaps the
 pristine input for the saved file and must print `NEGATIVE CONTROL HELD`. The author exercised it only on
 command-line stand-ins (not window outputs), for both kinds.
+
+
+## Independent review (2026-10-15, macOS arm64)
+
+The exact base's 27 check-runs were re-read and all had completed successfully. The uncommitted
+implementation was reviewed, then published for cross-platform checks in PR #116. Base evidence,
+author runs, independent local runs and PR checks refer to their respective revisions; none substitutes
+for another. The final PR head must pass its required checks before merge.
+
+### Found and fixed
+
+In a real window a long dimension hover caption near the bottom of the canvas covered both
+`Accepted · solved` and the navigation hint. The existing exact label/widget gate was extended at
+1x and 2x to require the caption's complete box inside the content band. Before the fix it compiled
+and failed one executed assertion (`hover-failing-first`, exit 101): the caption extended to 268.5
+points while the content ended at 248. The accepted canvas now wraps hover text to its content width
+and clamps/clips it between the header and footer. The form, picking, solver and publication route
+are unchanged. The extended gate passed as part of both final complete viewer suites, and the
+corrected fresh native window confirmed that both footer captions remain readable.
+
+### Independent checks of the reviewed code
+
+* Native complete viewer suite: **844 passed, 0 failed, 4 ignored** after the fix, watchdog exit 0,
+  peak **264.329 MiB**. The 23 explicit conditional skip messages belong to other build/GUI-artifact
+  configurations; the two new native gates really executed and printed their final markers.
+* True-stub complete viewer suite: **844 passed, 0 failed, 4 ignored**, watchdog exit 0, peak
+  **165.173 MiB**. Its 221 explicit conditional skip messages include the two native routes and
+  are not native geometry evidence. The four ignored tests in either build are existing subprocess
+  entry points, not four passed tests. Fresh stub test/peer CLI imports contain no libTK or PlaneGCS;
+  its CMake cache disables OpenCASCADE discovery.
+* The actual new CI body passed with **22 exact kernel-free cases and markers**, and the actual
+  runtime body passed with both exact native cases and markers. Only the test launch was adapted
+  to the built executable under the local watchdog; guard failure was not ignored. The existing
+  pinned reader hook read the two new FBX files (6 strict identity checks each, zero failures) and
+  joined their triangles with the corresponding STL (12 and 364 triangles).
+* fmt, workspace clippy all targets/features with `-D warnings`, boundary/ownership/licence checks,
+  actionlint, shellcheck, Actions run-size and `git diff --check` passed. No native library rebuild,
+  additional target, dependency, schema or solver change was needed. Mixed remains N/A for the
+  reasons above.
+
+Logs: ignored `target/dimension-labels-review/`. Input generation was repeated after reboot into
+`/private/tmp/ferrite-31l-review/inputs`; window writes used its separate `work` directory. Two
+review-script setup errors (assuming flat inspect rule fields; an empty Bash array under `set -u`)
+were corrected before running the comparisons; neither was counted as a product pass.
+
+### Observed in native windows
+
+The first fresh staged bundle, PID 21297, showed saved targets 60/30 over the solved rectangle while
+its list retained the smaller stored guesses. Object did not intercept a label; Dimension selected
+its exact rule and revealed the matching row/editor. Replacements 70, then 55 updated one pending
+entry; draft Undo/Redo and return to 60 worked. Invalid `abc` stayed visible without a request.
+The final 70 replacement was applied, STL/FBX exported **before Save**, document Undo/Redo performed,
+Save As cancelled and the accepted model saved. The single Circle's label stated R10 although its
+stored guess was r1.2; Diameter17 prepared Radius8.5 without changing the drawing first. Save
+constraints copy Cancel and a tab round-trip retained the same selection/text/request. Apply,
+unsaved exports, document Undo/Redo and Save then completed for that Circle too.
+
+Both saved files were compared with the existing CLI given those exact remove/add requests:
+all SQL cells and the entire CBOR Sketch row matched after mapping only new constraint UUIDs and
+excluding `meta.modified_at`; actual payload hashes were validated first. Before-Save exports,
+saved exports and CLI exports were byte-identical. Independent STL reading measured a closed
+70×30×10 prism, 12 triangles, volume 21000 mm³, and a closed r8.5 cylinder, 364 triangles, mesh volume
+3402.054960 mm³ (not an analytic-volume claim). Pinned ufbx reported 6 checks/0 failures for each real
+window FBX. Substituting each pristine input was rejected by the negative control.
+
+The final corrected bundle, PID 34429, separately confirmed readable hover/footer text, zoom and Fit,
+stored-order overlap selection (60 mm first) and list selection of the covered 61 mm rule. On the
+48-Line input a click on the 5 mm label selected Segment41 and revealed both its segment row and its
+persisted dimension editor without manual scrolling. Neither process exceeded the cap: peaks
+**209.876 MiB** and **198.282 MiB**, pressure1 throughout, swap0; both quit normally with exit0. After
+Quit completion was checked by PID/watchdog only, without querying or relaunching the app.
+
+Native pan/pinch, cancellation of a held press, external-window covering and Windows/Linux windows
+were **not observed** here; their widget checks are separate evidence. These remaining window cases,
+other dimension families, arcs/mixed profiles, §30/5C and the OOM investigation stay open.
