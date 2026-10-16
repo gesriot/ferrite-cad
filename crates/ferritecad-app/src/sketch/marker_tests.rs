@@ -356,7 +356,10 @@ fn a_marker_says_its_kind_in_ascii_and_a_prepared_removal_beside_it() {
     // Every kind has a name for the list and the hover and a short ASCII word for the canvas, and
     // the canvas font has a glyph for each of them (a missing one is a box in a window).
     let ctx = egui::Context::default();
-    let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+    // This font-only check has no renderer. Explicitly discard its texture upload; dropping an
+    // unapplied TexturesDelta is an error in egui's debug build, used by the ordinary CI suite.
+    output.textures_delta.clear();
     let kinds = [
         (Kind::Horizontal, "Horizontal", "H"),
         (Kind::Vertical, "Vertical", "V"),

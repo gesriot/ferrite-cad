@@ -265,7 +265,12 @@ were unchanged. Logs, private comparator outputs and build records are in ignore
 The viewer quit normally, exit 0, peak footprint **200.079 MiB**, pressure 1 throughout and swap 0.
 Native/stub test peaks were 269.548/156.438 MiB, also normal exits with pressure 1 and swap 0. No
 post-Quit app/AX query was made; the CUA handle was dropped and termination checked through the
-watchdog/PID only. The first comparator shell wrapper failed before launching its guard because
+watchdog/PID only. The first Linux PR CI debug suite found an additional test-harness defect: the new font-only
+check dropped an unapplied egui `TexturesDelta`. Release builds disable that egui assertion. The
+check now explicitly clears its unused texture upload, as a headless consumer must; glyph assertions
+are unchanged. A fresh debug build executed all 22 new kernel-free cases successfully under the
+watchdog (no skips), followed by fmt and app clippy. The original failed/cancelled CI runs are not
+counted as passes; the corrected head requires its own full CI. The first comparator shell wrapper failed before launching its guard because
 macOS Bash treats an empty array under `set -u` as unbound; the corrected Python argv driver ran all
 four comparisons successfully. The failed wrapper is not counted as a comparison pass.
 
