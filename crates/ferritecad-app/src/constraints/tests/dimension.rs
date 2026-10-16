@@ -59,14 +59,14 @@ impl Rig {
 }
 
 /// The document of `Rig::lengths`: forms opened on it share its Sketch, its curves and its rules.
-fn lengths_document() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+pub(super) fn lengths_document() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let (root, path, _) = fixture();
     let source = persist_rectangle_lengths(&path);
     (root, path, source)
 }
 
 /// A cylinder that stores a circle of `stored` mm and persists a Radius of `rule` mm.
-fn persisted_circle(
+pub(super) fn persisted_circle(
     stored: f64,
     rule: f64,
 ) -> (
@@ -93,7 +93,7 @@ fn persisted_circle(
     (root, path, source, id)
 }
 
-fn length_add(curve: StableEntityId, mm: f64) -> AddSketchConstraint {
+pub(super) fn length_add(curve: StableEntityId, mm: f64) -> AddSketchConstraint {
     AddSketchConstraint::Line(AddLineConstraint::Line {
         curve,
         kind: LineConstraintKind::Distance(LineLengthMm::new(mm).expect("a length")),
@@ -109,7 +109,7 @@ fn radius_add(curve: StableEntityId, mm: f64) -> AddSketchConstraint {
 
 /// The UUID of the stored length or radius of `mm`: read here from the stored rules, not
 /// through the form's own reading.
-fn rule_of(stored: &Sketch, mm: f64) -> StableEntityId {
+pub(super) fn rule_of(stored: &Sketch, mm: f64) -> StableEntityId {
     stored
         .constraints
         .iter()
@@ -125,14 +125,14 @@ fn rule_of(stored: &Sketch, mm: f64) -> StableEntityId {
 
 /// A label as painted: its words, the box it stands in and the border of that box.
 #[derive(Debug, Clone)]
-struct Label {
-    text: String,
-    rect: egui::Rect,
-    stroke: egui::Stroke,
+pub(super) struct Label {
+    pub(super) text: String,
+    pub(super) rect: egui::Rect,
+    pub(super) stroke: egui::Stroke,
 }
 
 /// The labels of a frame: a box on a dark plate whose words stand one `PAD` inside it.
-fn labels(out: &egui::FullOutput) -> Vec<Label> {
+pub(super) fn labels(out: &egui::FullOutput) -> Vec<Label> {
     let boxes: Vec<_> = out
         .shapes
         .iter()
@@ -159,7 +159,7 @@ fn labels(out: &egui::FullOutput) -> Vec<Label> {
         .collect()
 }
 
-fn label(out: &egui::FullOutput, text: &str) -> Label {
+pub(super) fn label(out: &egui::FullOutput, text: &str) -> Label {
     let found: Vec<_> = labels(out).into_iter().filter(|l| l.text == text).collect();
     assert_eq!(
         found.len(),
@@ -170,12 +170,12 @@ fn label(out: &egui::FullOutput, text: &str) -> Label {
     found[0].clone()
 }
 
-fn has_label(out: &egui::FullOutput, text: &str) -> bool {
+pub(super) fn has_label(out: &egui::FullOutput, text: &str) -> bool {
     labels(out).iter().any(|l| l.text == text)
 }
 
 /// Whether a painted colour is `colour` at the strength the window paints it with.
-fn is_colour(shown: egui::Color32, colour: egui::Color32) -> bool {
+pub(super) fn is_colour(shown: egui::Color32, colour: egui::Color32) -> bool {
     let want = colour.gamma_multiply(f32::from(shown.a()) / 255.);
     [
         (shown.r(), want.r()),
@@ -195,41 +195,41 @@ fn ink(out: &egui::FullOutput, words: &str) -> Option<egui::Color32> {
 }
 
 /// Press the button or toggle whose words are exactly `words`.
-fn press_exact(rig: &mut Rig, words: &str) {
+pub(super) fn press_exact(rig: &mut Rig, words: &str) {
     let at = text_center(&rig.frame(vec![]), words);
     click_at(&rig.ctx, &mut rig.e, at, false);
 }
 
 impl Rig {
-    fn edits(&self) -> SketchConstraintEdits {
+    pub(super) fn edits(&self) -> SketchConstraintEdits {
         self.e.draft_edits().expect("a draft")
     }
     /// The words the form typed into the dimension field holds.
-    fn typed(&self) -> String {
+    pub(super) fn typed(&self) -> String {
         self.e.draft.as_ref().expect("draft").dimension_mm.clone()
     }
-    fn refusal(&self) -> Option<String> {
+    pub(super) fn refusal(&self) -> Option<String> {
         self.e.draft.as_ref().expect("draft").refusal.clone()
     }
-    fn type_length(&mut self, text: &str) {
+    pub(super) fn type_length(&mut self, text: &str) {
         enter_field(&self.ctx, &mut self.e, "New length", text, false);
     }
     /// The centre of the painted label `text`, to aim a click at.
-    fn at_label(&mut self, text: &str) -> egui::Pos2 {
+    pub(super) fn at_label(&mut self, text: &str) -> egui::Pos2 {
         label(&self.frame(vec![]), text).rect.center()
     }
-    fn history(&self) -> (usize, usize) {
+    pub(super) fn history(&self) -> (usize, usize) {
         self.kept().1
     }
     /// Frames in which the form lets a selection settle: the editor of a dimension that was
     /// just selected is brought into view in the frame after the one that selected it.
-    fn settle(&mut self) {
+    pub(super) fn settle(&mut self) {
         for _ in 0..4 {
             self.frame(vec![]);
         }
     }
     /// Press the persisted row that starts with `prefix`, scrolling the bounded list to it.
-    fn press_row(&mut self, prefix: &str) {
+    pub(super) fn press_row(&mut self, prefix: &str) {
         self.settle();
         scroll_to_row(&self.ctx, &mut self.e, prefix);
         self.press(prefix);
@@ -237,7 +237,7 @@ impl Rig {
 }
 
 /// The curves a frame draws as Lines, in the colour of the selection.
-fn selected_strokes(out: &egui::FullOutput) -> Vec<[egui::Pos2; 2]> {
+pub(super) fn selected_strokes(out: &egui::FullOutput) -> Vec<[egui::Pos2; 2]> {
     Rig::strokes(out, SELECTED_COLOUR)
 }
 
@@ -911,7 +911,7 @@ fn a_circle_radius_is_replaced_as_the_radius_whether_the_number_is_a_radius_or_a
 // ---- view, hit area, blocked input ----------------------------------------------------
 
 /// The band of the canvas that a label stands in: the edge words keep their places.
-fn band(canvas: egui::Rect) -> egui::Rect {
+pub(super) fn band(canvas: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(
         canvas.min + egui::vec2(3., 20.),
         canvas.max - egui::vec2(3., 24.),
@@ -1471,7 +1471,7 @@ fn without_a_drawing_the_saved_rows_still_select_and_replace_and_other_profiles_
     println!("\nFCAD_31L_FORM_UNAVAILABLE_EXECUTED");
 }
 
-fn dimension_stored(source: &ExtrudeEditSource) -> Sketch {
+pub(super) fn dimension_stored(source: &ExtrudeEditSource) -> Sketch {
     source.constraint_sketches[0]
         .stored
         .clone()

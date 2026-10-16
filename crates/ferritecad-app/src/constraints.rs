@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 //! Disposable Line constraint request over stored facts; no solver or file reads.
 use crate::sketch::accepted::{
-    Accepted, Canvas, Drawing, Hit, Marks, Part, Picked, Target, Unavailable,
+    Accepted, Canvas, Click, Drawing, Hit, Labelled, Marks, Part, Picked, Target, Unavailable,
 };
-use crate::sketch::dimension::{self, Dimension, Kind, Pending, Shown};
+use crate::sketch::dimension::{
+    self, Dimension, Kind, Pending, Shown, ShownTurn, Turn, TurnPending,
+};
 use ferritecad_document::{
     AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
     ConstraintSketchChoice, DirectedAngle, DirectedLine, DocumentVersion, ExtrudeEditSource,
@@ -125,6 +127,15 @@ struct Draft {
     /// a Circle's is typed in. Unapplied input like the boxes above: not request history.
     dimension_mm: String,
     dimension_unit: Unit,
+    /// §31M: the saved DirectedAngles of `choice`, read once with it like `dimensions`. A pair
+    /// dimension is its own list: it is never put in a curve's.
+    turns: Vec<Turn>,
+    /// §31M: the UUID of the selected saved angle, a rule of `turns`. At most one of this and
+    /// `selected` is set: an angle belongs to two Lines, and neither is "the" selection.
+    turn: Option<StableEntityId>,
+    /// §31M: the angle typed to replace the selected angle, in degrees exactly as typed. A box of
+    /// its own beside `dimension_mm`, so no one text is carried from millimetres into degrees.
+    dimension_deg: String,
     /// §31L: the selection just moved onto a dimension; its editor is brought into view in the
     /// next frame. Not a choice of the person's.
     reveal_dimension: bool,
@@ -243,6 +254,7 @@ impl Editor {
                 d.angle_deg.clone(),
                 d.dimension_mm.clone(),
                 format!("{:?}", d.dimension_unit),
+                d.dimension_deg.clone(),
                 format!("{:?}", d.vector_a_from),
                 format!("{:?}", d.vector_b_from),
                 format!("{:?}", d.edits),
@@ -308,6 +320,68 @@ impl Editor {
         self.draft
             .as_ref()
             .map(|d| (d.dimensions.clone(), d.dimension_mm.clone()))
+    }
+    /// §31M, tests: the form's synthetic Sketch as if it held these DirectedAngles (the rule UUID is
+    /// minted here), for the gates whose build cannot solve a persisted rule and so cannot rebuild a
+    /// document that has one. **Synthetic**: the catalogue of the form is amended, not the document,
+    /// and no drawing is rebuilt. Returns the UUIDs of the rules, in the order given.
+    #[cfg(test)]
+    pub(crate) fn persist_angles_for_tests(
+        &mut self,
+        angles: &[(DirectedLine, DirectedLine, DirectedAngle)],
+    ) -> Vec<StableEntityId> {
+        use ferritecad_document::{
+            SketchConstraint, SketchPointRef, SketchPointSelector, SketchSegmentRef,
+        };
+        let Some(draft) = &mut self.draft else {
+            return Vec::new();
+        };
+        let Some(stored) = &mut draft.choice.stored else {
+            return Vec::new();
+        };
+        let segment = |v: DirectedLine| {
+            SketchSegmentRef::new(
+                SketchPointRef::new(v.curve(), v.from().selector()),
+                SketchPointRef::new(v.curve(), v.to().selector()),
+            )
+        };
+        let mut rules = Vec::new();
+        for (a, b, angle) in angles {
+            let rule = SketchConstraint {
+                id: StableEntityId::new(),
+                rule: SketchConstraintRule::DirectedAngle {
+                    a: segment(*a),
+                    b: segment(*b),
+                    angle: angle.radians(),
+                },
+            };
+            rules.push(rule.id);
+            stored.constraints.push(rule);
+        }
+        // The validator wants every closure link of a Line set that keeps such a rule.
+        let curves: Vec<_> = stored.curves.iter().map(|c| c.id).collect();
+        for (i, curve) in curves.iter().enumerate() {
+            stored.constraints.push(SketchConstraint {
+                id: StableEntityId::new(),
+                rule: SketchConstraintRule::Coincident {
+                    a: SketchPointRef::new(*curve, SketchPointSelector::End),
+                    b: SketchPointRef::new(
+                        curves[(i + 1) % curves.len()],
+                        SketchPointSelector::Start,
+                    ),
+                },
+            });
+        }
+        draft.turns = dimension::saved_turns(stored);
+        rules
+    }
+    /// §31M, tests: the saved angles the form holds, the selected one's rule and the words typed to
+    /// replace one.
+    #[cfg(test)]
+    pub(crate) fn draft_turns(&self) -> Option<(Vec<Turn>, Option<StableEntityId>, String)> {
+        self.draft
+            .as_ref()
+            .map(|d| (d.turns.clone(), d.turn, d.dimension_deg.clone()))
     }
     /// §31K, tests: the end the Pin buttons name.
     #[cfg(test)]
@@ -410,6 +484,13 @@ impl Editor {
                 .unwrap_or_default(),
             dimension_mm: String::new(),
             dimension_unit: Unit::default(),
+            turns: choice
+                .stored
+                .as_ref()
+                .map(dimension::saved_turns)
+                .unwrap_or_default(),
+            turn: None,
+            dimension_deg: String::new(),
             reveal_dimension: false,
             edits: Default::default(),
             history: Default::default(),
@@ -635,9 +716,19 @@ impl Editor {
                             pending: dimension::pending(&draft.edits, d),
                         })
                         .collect();
+                    // §31M: the same for the saved angles, each with the word of the request.
+                    let shown_turns: Vec<_> = draft
+                        .turns
+                        .iter()
+                        .map(|t| ShownTurn {
+                            turn: *t,
+                            pending: dimension::pending_turn(&draft.edits, t),
+                        })
+                        .collect();
                     // When this frame moved the selection (the canvas, a list or a row), the
                     // persisted row of its dimension is brought into view, as the Segment row is.
                     let selection_before = draft.selected;
+                    let turn_before = draft.turn;
                     // §31K: the canvas of the accepted drawing stands beside the lists
                     // that pick the same things, in the height the Lines list already
                     // had. A click fills the fields the lists fill, before the lists are
@@ -652,6 +743,10 @@ impl Editor {
                                             pin: draft.endpoint,
                                             pair: [draft.pair_a, draft.pair_b],
                                             from: [draft.vector_a_from, draft.vector_b_from],
+                                            turn: draft
+                                                .turn
+                                                .and_then(|id| draft.turns.iter().find(|t| t.id == id))
+                                                .copied(),
                                         };
                                         draft.canvas.show(
                                             ui,
@@ -659,21 +754,36 @@ impl Editor {
                                             &marks,
                                             queued,
                                             circles.len() != 1,
-                                            &shown,
+                                            Labelled {
+                                                sizes: &shown,
+                                                turns: &shown_turns,
+                                            },
                                         )
                                     })
                                     .inner;
                                 let before = Some(draft.selected);
-                                for picked in picks {
-                                    fill_from_canvas(
-                                        picked,
-                                        stored,
-                                        &draft.dimensions,
-                                        &mut draft.selected,
-                                        &mut draft.endpoint,
-                                        [&mut draft.pair_a, &mut draft.pair_b],
-                                        &mut draft.canvas,
-                                    );
+                                for click in picks {
+                                    match click {
+                                        Click::Curve(picked) => {
+                                            fill_from_canvas(
+                                                picked,
+                                                stored,
+                                                &draft.dimensions,
+                                                &mut draft.selected,
+                                                &mut draft.endpoint,
+                                                [&mut draft.pair_a, &mut draft.pair_b],
+                                                &mut draft.canvas,
+                                            );
+                                        }
+                                        // §31M: only a rule this form's own reading holds is selected;
+                                        // the angle belongs to two Lines, so no curve is.
+                                        Click::Angle(rule) => {
+                                            if draft.turns.iter().any(|t| t.id == rule) {
+                                                draft.turn = Some(rule);
+                                                draft.selected = None;
+                                            }
+                                        }
+                                    }
                                 }
                                 ui.vertical(|ui| {
                                     lines_and_circles(
@@ -690,6 +800,11 @@ impl Editor {
                         Drawing::Unavailable(_) => {
                             lines_and_circles(ui, stored, &circles, roles, &mut draft.selected, None);
                         }
+                    }
+                    // §31M: a Line chosen on the canvas or in a list is the selection; the angle is
+                    // then not (an angle chosen by a label or a row set `selected` to none itself).
+                    if draft.selected.is_some() {
+                        draft.turn = None;
                     }
                     // Concentricity needs two circles to relate, so it is
                     // offered only where there are two. Both are picked
@@ -1268,7 +1383,7 @@ impl Editor {
                                         format!(
                                             "Directed angle {}°",
                                             DirectedAngle::from_radians(angle)
-                                                .map_or(f64::NAN, DirectedAngle::degrees)
+                                                .map_or(f64::NAN, dimension::editable_degrees)
                                         ),
                                         Some(format!(
                                             "A {} > B {}",
@@ -1283,10 +1398,25 @@ impl Editor {
                                 // a click on its label on the canvas makes it.
                                 let dimension =
                                     draft.dimensions.iter().find(|d| d.id == c.id).copied();
+                                // §31M: the rule of a saved angle is selected by its UUID.
+                                let turn = draft.turns.iter().find(|t| t.id == c.id).copied();
                                 ui.horizontal_wrapped(|ui| {
                                     let words = format!("{label} · {}", c.id);
-                                    match dimension {
-                                        Some(d) => {
+                                    match (dimension, turn) {
+                                        (None, Some(t)) => {
+                                            let row = ui
+                                                .selectable_label(draft.turn == Some(t.id), words)
+                                                .on_hover_text(
+                                                    "Select this angle: both its Lines, with the \
+                                                     way each vector runs, are marked on the \
+                                                     drawing. The pair slots are not changed.",
+                                                );
+                                            if row.clicked() {
+                                                draft.turn = Some(t.id);
+                                                draft.selected = None;
+                                            }
+                                        }
+                                        (Some(d), _) => {
                                             let row = ui
                                                 .selectable_label(
                                                     draft.selected == Some(d.curve),
@@ -1298,9 +1428,10 @@ impl Editor {
                                                 );
                                             if row.clicked() {
                                                 draft.selected = Some(d.curve);
+                                                draft.turn = None;
                                             }
                                         }
-                                        None => {
+                                        (None, None) => {
                                             ui.label(words);
                                         }
                                     }
@@ -1397,6 +1528,70 @@ impl Editor {
                                         );
                                     }
                                     if selection_before != draft.selected {
+                                        draft.reveal_dimension = true;
+                                        ui.ctx().request_repaint();
+                                    }
+                                }
+                                // §31M: a saved angle is replaced in the same place and by the same
+                                // action; its number is degrees, in a box of its own, and the two
+                                // vectors of the rule are kept exactly.
+                                if let Some(t) = turn
+                                    && draft.turn == Some(t.id)
+                                {
+                                    let busy = running || queued;
+                                    let editor = ui.horizontal_wrapped(|ui| {
+                                        ui.label("New angle");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut draft.dimension_deg)
+                                                .id_salt("dimension-deg")
+                                                .hint_text("CCW +")
+                                                .char_limit(32)
+                                                .desired_width(90.)
+                                                // A focused box takes text even when disabled;
+                                                // a job or a waiting request must freeze it.
+                                                .interactive(!busy),
+                                        )
+                                        .on_hover_text(
+                                            "Counter-clockwise from vector A to vector B, with Y \
+                                             up: 0 is the same direction and 180 the opposite. \
+                                             Only -180…180 is taken (-180 is stored as 180); \
+                                             nothing is wrapped into it.",
+                                        );
+                                        ui.label("°");
+                                        if ui
+                                            .add_enabled(
+                                                !busy,
+                                                egui::Button::new("Replace dimension"),
+                                            )
+                                            .clicked()
+                                        {
+                                            match prepared_turn(
+                                                &draft.choice,
+                                                &draft.edits,
+                                                &t,
+                                                &draft.dimension_deg,
+                                            ) {
+                                                Ok(proposed) => {
+                                                    draft
+                                                        .history
+                                                        .change(&mut draft.edits, proposed);
+                                                    draft.refusal = None;
+                                                }
+                                                Err(refusal) => draft.refusal = Some(refusal),
+                                            }
+                                        }
+                                        ui.small(turn_words(
+                                            &t,
+                                            dimension::pending_turn(&draft.edits, &t),
+                                        ));
+                                    });
+                                    if reveal {
+                                        editor.response.scroll_to_me_animation(
+                                            None,
+                                            egui::style::ScrollAnimation::none(),
+                                        );
+                                    }
+                                    if turn_before != draft.turn {
                                         draft.reveal_dimension = true;
                                         ui.ctx().request_repaint();
                                     }
@@ -1780,6 +1975,66 @@ fn dimension_words(d: &Dimension, unit: Unit, text: &str, pending: Option<Pendin
     format!("{}{state}", converted.unwrap_or_default())
 }
 
+/// What the draft becomes when the angle typed in degrees replaces the saved angle `t`, or why it
+/// cannot (§31M). The text is parsed by `DirectedAngle::from_degrees`, the one road from degrees
+/// to the stored radians, and judged by the document's own validator; the number is the saved one
+/// by the exact equality of the validated `DirectedAngle`, never by a tolerance. The replacement
+/// keeps both exact directed vectors of the saved rule.
+fn prepared_turn(
+    choice: &ConstraintSketchChoice,
+    edits: &SketchConstraintEdits,
+    t: &Turn,
+    text: &str,
+) -> std::result::Result<SketchConstraintEdits, String> {
+    let angle = text
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| {
+            ferritecad_types::CadError::input("enter the angle in degrees, from -180 to 180")
+        })
+        .and_then(DirectedAngle::from_degrees)
+        .map_err(|e| e.to_string())?;
+    let proposed = replace_stored(
+        edits,
+        t.id,
+        angle == t.angle,
+        |add| t.is_replaced_by(add),
+        t.replaced_by(angle),
+    );
+    // An empty request is the return to the saved angle, which has nothing to validate.
+    if proposed != *edits && !(proposed.remove.is_empty() && proposed.add.is_empty()) {
+        choice
+            .validate_edits(&proposed)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(proposed)
+}
+
+/// The line after the field that replaces the angle `t`: what the pending request does to it, and
+/// when the saved number written in degrees would not read back as exactly itself, the way back.
+/// The drawing never moves before Apply.
+fn turn_words(t: &Turn, pending: Option<TurnPending>) -> String {
+    let state = match pending {
+        None => "No change pending.".to_owned(),
+        Some(TurnPending::Replaced(next)) => format!(
+            "Pending: {}° in place of {}°; the drawing keeps the accepted angle until Apply \
+             constraints.",
+            dimension::editable_degrees(next),
+            dimension::editable_degrees(t.angle)
+        ),
+        Some(TurnPending::Removed) => "Pending: this dimension is removed.".to_owned(),
+    };
+    if t.typeable() {
+        state
+    } else {
+        format!(
+            "{state} Typing the saved {}° gives a neighbouring angle, not this one; Undo or \
+             Clear pending changes returns to it.",
+            dimension::editable_degrees(t.angle)
+        )
+    }
+}
+
 /// The pin's stored endpoint, so the choice needs no solved drawing.
 fn stored_endpoint(sketch: &Sketch, curve: StableEntityId, at: LineEndpoint) -> Option<(f64, f64)> {
     sketch.curves.iter().find(|c| c.id == curve).and_then(|c| {
@@ -1852,7 +2107,7 @@ fn addition_name(add: &AddSketchConstraint) -> String {
         }
         AddLineConstraint::DirectedAngle { a, b, angle } => format!(
             "Directed angle {}° · A: Line {} {}>{} · B: Line {} {}>{}",
-            angle.degrees(),
+            dimension::editable_degrees(angle),
             a.curve(),
             a.from().as_str(),
             a.to().as_str(),
@@ -1919,6 +2174,8 @@ pub(crate) mod tests {
     pub(crate) mod revolve;
     /// §30C: the same editor applying into the open document.
     pub(crate) mod session_apply;
+    /// §31M: the label of a saved directed angle on the accepted drawing and its replacement.
+    pub(crate) mod turn_label;
     /// The single-Line halves of a pending request, in the request's own words.
     fn kind_of(add: &AddSketchConstraint) -> LineConstraintKind {
         match *add {

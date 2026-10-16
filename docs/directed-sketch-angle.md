@@ -161,6 +161,10 @@ changes`, `Save constraints copy…`, `Apply constraints` в Revolve- и chamfer
 упали; укороченный список Lines сломал клики по шестому сегменту профиля Revolve.
 Остались две существующие строки, ширина прежняя, высота не выросла.
 
+Сохранённый угол видим и выбираем как размер на accepted canvas (подпись `A>B -70°`, выбор по UUID
+правила, замена теми же двумя векторами одной операцией remove/add) — см. §31M,
+[sketch-angle-dimension.md](sketch-angle-dimension.md); семантика этого документа не менялась.
+
 ## Выполняемый рецепт
 
 Нужны OCCT + PlaneGCS и `FERRITECAD` — путь к `ferritecad`. На macOS native library

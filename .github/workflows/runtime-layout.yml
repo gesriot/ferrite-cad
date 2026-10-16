@@ -1681,6 +1681,59 @@ jobs:
             test -s "$analytic_dir/$name.stl"
           done
 
+      - name: Replace a saved directed angle chosen by its label through the native window state
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # §31M: a quadrilateral whose Sketch stores a rough guess and keeps rules that solve
+          # it into another shape: an anchor, three lengths and two saved directed angles,
+          # the second with its first vector reversed. The label of the saved -100° angle
+          # (Dimension target) is chosen on the canvas of the real accepted solved drawing,
+          # both Lines are marked with the way each vector runs, and the angle is replaced by
+          # -130° keeping both exact vectors. The request equals the form's own road (Remove,
+          # pair, directions, degrees), then Apply on the real worker, export before Save,
+          # Undo, Redo, Save and a cold reopen against the peer CLI, the sign of the turn
+          # between the very vectors the rule names read by atan2 in the cold rebuild, the
+          # saved STL read here by a reader that is not its writer and the form of the cold
+          # reopen holding the new label under the right UUID. The exports join the pinned
+          # reader (`FCAD_ANALYTIC_ARTIFACTS`, as above). The reader of the saved result also
+          # fails when given the pristine source (`negative=held`). The marker is printed after
+          # the last assertion, so a skip cannot print it.
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          analytic_dir="$RUNNER_TEMP/analytic-session"
+          mkdir -p "$analytic_dir"
+          analytic_artifacts="$analytic_dir"
+          if [ '${{ matrix.name }}' = windows ]; then analytic_artifacts="$(cygpath -w "$analytic_artifacts")"; fi
+          export FCAD_ANALYTIC_ARTIFACTS="$analytic_artifacts"
+          for check in \
+            "sessions::tests::native_a_saved_angle_chosen_by_its_label_and_replaced_is_applied_like_the_command_line FCAD_31M_NATIVE_ANGLE_EXECUTED request=label_equals_form_road stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read turn=atan2 negative=held"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-angle-dimension.log
+            if grep -q 'skipped:' session-angle-dimension.log || \
+               ! grep -q '^test result: ok\. 1 passed; 0 failed' session-angle-dimension.log || \
+               ! grep -Fq "test $gate ... " session-angle-dimension.log || \
+               ! grep -Fxq "$marker" session-angle-dimension.log; then
+              echo "::error::${gate} did not execute and pass"
+              exit 1
+            fi
+          done
+          for name in angle-dimension-quad; do
+            test -s "$analytic_dir/$name.fbx"
+            test -s "$analytic_dir/$name.stl"
+          done
+
       - name: Confirm Open over New and reject its late creation result
         env:
           FERRITECAD_REQUIRE_OCCT: '1'

@@ -9,7 +9,7 @@ use crate::sketch::accepted::{Curve, Drawing, Target};
 
 /// The constraints form on the shown tab, opened as the window opens it: from the facts and
 /// the drawing of the scene it is showing.
-fn open_constraints(w: &mut Window) -> Vec<Curve> {
+pub(super) fn open_constraints(w: &mut Window) -> Vec<Curve> {
     let current = w.sessions.export_path().expect("shown");
     let facts = w
         .scene
@@ -36,7 +36,11 @@ fn open_constraints(w: &mut Window) -> Vec<Curve> {
     }
 }
 
-fn frame(w: &mut Window, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+pub(super) fn frame(
+    w: &mut Window,
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
     let mut out = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -52,7 +56,7 @@ fn frame(w: &mut Window, ctx: &egui::Context, events: Vec<egui::Event>) -> egui:
     out
 }
 
-fn centre(out: &egui::FullOutput, words: &str) -> egui::Pos2 {
+pub(super) fn centre(out: &egui::FullOutput, words: &str) -> egui::Pos2 {
     out.shapes
         .iter()
         .find_map(|s| match &s.shape {
@@ -64,13 +68,13 @@ fn centre(out: &egui::FullOutput, words: &str) -> egui::Pos2 {
         .unwrap_or_else(|| panic!("not painted: {words}"))
 }
 
-fn painted(out: &egui::FullOutput, words: &str) -> bool {
+pub(super) fn painted(out: &egui::FullOutput, words: &str) -> bool {
     out.shapes
         .iter()
         .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == words))
 }
 
-fn click_at(w: &mut Window, ctx: &egui::Context, at: egui::Pos2) {
+pub(super) fn click_at(w: &mut Window, ctx: &egui::Context, at: egui::Pos2) {
     frame(w, ctx, vec![egui::Event::PointerMoved(at)]);
     for pressed in [true, false] {
         frame(
@@ -86,19 +90,19 @@ fn click_at(w: &mut Window, ctx: &egui::Context, at: egui::Pos2) {
     }
 }
 
-fn press(w: &mut Window, ctx: &egui::Context, words: &str) {
+pub(super) fn press(w: &mut Window, ctx: &egui::Context, words: &str) {
     let at = centre(&frame(w, ctx, vec![]), words);
     click_at(w, ctx, at);
 }
 
-fn settle(w: &mut Window, ctx: &egui::Context) {
+pub(super) fn settle(w: &mut Window, ctx: &egui::Context) {
     for _ in 0..4 {
         frame(w, ctx, vec![]);
     }
 }
 
 /// Text typed into the box that stands to the right of the painted `before`.
-fn type_after(w: &mut Window, ctx: &egui::Context, before: &str, text: &str) {
+pub(super) fn type_after(w: &mut Window, ctx: &egui::Context, before: &str, text: &str) {
     let out = frame(w, ctx, vec![]);
     let at = out
         .shapes
