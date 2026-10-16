@@ -1556,6 +1556,62 @@ jobs:
             grep -Fxq "$marker" angle-dimensions.log
           done
 
+      - name: Mark the saved non-dimensional constraints of the accepted solved Sketch drawing and remove them explicitly
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+        run: |
+          set -euo pipefail
+          # §31N: a saved Horizontal, Vertical, Fixed, EqualLength, Parallel, Perpendicular or
+          # Collinear rule (and a single Circle's Fixed centre) as a marker of the accepted drawing,
+          # selected by the UUID of its rule beside the curve and the angle selection under the
+          # explicit Rule target: which rules are markers, with their references as stored (a reversed
+          # segment stays reversed), what a marker says in ASCII and where it stands (pure); the form
+          # driven by real egui events (the Rule target, only markers reached, the stored references
+          # marked, one selection shared with the lists, the rows and the other labels, Remove
+          # constraint as one step through the form's own validated remove and history, once, Undo,
+          # Redo and Clear returning the request, the validator's refusal, a cancelled Save, zoom and
+          # pan, blocked and covered input, overlaps decided by the saved order and by the target,
+          # 768 points, no drawing, two forms over one document, the target row, a single Circle) and
+          # the rules following their tab (copies with the same UUIDs included). This set is its own
+          # step, apart from the §31K/§31L/§31M ones whose filters are substrings and whose counts
+          # are exact. Every expected name must have run and printed its marker after its last
+          # assertion; a skip, another count or a missing marker fails the step. The native route
+          # through the session, the CLI, the solver's degrees of freedom and the pinned reader is
+          # gated by the native workflows.
+          cargo test -p ferritecad-app --bin ferritecad-viewer -- sketch::marker_tests constraints::tests::marker sessions::tests::tabs::drafts::marker_form --nocapture --test-threads=1 2>&1 | tee rule-markers.log
+          if grep -q 'skipped:' rule-markers.log; then exit 1; fi
+          grep -q '^test result: ok\. 22 passed; 0 failed' rule-markers.log
+          for check in \
+            "sketch::marker_tests::saved_markers_are_the_seven_families_with_their_exact_references_in_rule_order FCAD_31N_SAVED_EXECUTED" \
+            "sketch::marker_tests::a_marker_says_its_kind_in_ascii_and_a_prepared_removal_beside_it FCAD_31N_TEXT_EXECUTED" \
+            "sketch::marker_tests::a_marker_stands_where_its_references_are_and_is_absent_when_they_cannot_be_drawn FCAD_31N_PLACE_EXECUTED" \
+            "sketch::marker_tests::markers_overlap_in_saved_order_and_a_marker_is_exactly_its_box FCAD_31N_HIT_EXECUTED" \
+            "sketch::marker_tests::a_marker_carries_its_references_whole_and_reaches_nothing_when_nothing_stands FCAD_31N_REFS_EXECUTED" \
+            "constraints::tests::marker::a_marker_states_its_kind_and_selects_exactly_its_rule_only_under_the_rule_target FCAD_31N_FORM_MARKERS_EXECUTED" \
+            "constraints::tests::marker::the_selected_rule_marks_exactly_the_references_it_stores_and_a_reversed_segment_stays_as_stored FCAD_31N_FORM_REFS_EXECUTED" \
+            "constraints::tests::marker::the_markers_the_lines_list_the_persisted_rows_and_the_other_labels_show_one_selection_and_the_pair_slots_never_move FCAD_31N_FORM_SYNC_EXECUTED" \
+            "constraints::tests::marker::remove_constraint_prepares_one_step_once_and_undo_redo_and_clear_return_exactly_the_request FCAD_31N_FORM_REMOVE_EXECUTED" \
+            "constraints::tests::marker::a_removal_the_validator_refuses_keeps_the_text_the_selection_and_the_history_exactly FCAD_31N_FORM_REFUSED_EXECUTED" \
+            "constraints::tests::marker::a_cancelled_save_or_a_stale_reply_keeps_the_selected_rule_and_the_prepared_removal FCAD_31N_FORM_CANCELLED_EXECUTED" \
+            "constraints::tests::marker::markers_follow_zoom_pan_and_fit_and_are_hit_exactly_where_they_are_drawn FCAD_31N_FORM_VIEW_EXECUTED" \
+            "constraints::tests::marker::a_marker_press_dies_with_its_surface_and_busy_queued_covered_or_unfocused_forms_take_nothing FCAD_31N_FORM_BLOCKED_EXECUTED" \
+            "constraints::tests::marker::overlapping_markers_are_reached_in_saved_order_the_target_decides_what_is_on_top_and_the_list_reaches_the_one_underneath FCAD_31N_FORM_OVERLAP_EXECUTED" \
+            "constraints::tests::marker::the_markers_the_editor_and_the_actions_stay_reachable_at_768_points_in_the_worst_forms FCAD_31N_FORM_768_EXECUTED" \
+            "constraints::tests::marker::without_a_drawing_the_rule_rows_still_select_and_remove_and_closure_and_other_profiles_have_no_marker FCAD_31N_FORM_UNAVAILABLE_EXECUTED" \
+            "constraints::tests::marker::two_forms_over_one_document_keep_their_own_rule_selection_and_pending_removals FCAD_31N_FORM_FORMS_EXECUTED" \
+            "constraints::tests::marker::the_target_row_keeps_five_targets_and_fit_beside_rule_in_one_row_and_dimension_keeps_its_meaning FCAD_31N_FORM_TARGETS_EXECUTED" \
+            "constraints::tests::marker::a_single_circles_fixed_centre_is_a_marker_beside_its_radius_label_and_marks_the_centre FCAD_31N_FORM_CIRCLE_EXECUTED" \
+            "sessions::tests::tabs::drafts::marker_form::the_rules_the_selection_and_the_prepared_removal_of_a_form_follow_its_tab FCAD_31N_TAB_EXECUTED" \
+            "sessions::tests::tabs::drafts::marker_form::a_rule_form_held_on_another_version_loses_its_markers_and_keeps_its_rows_selection_and_removal FCAD_31N_TAB_STALE_EXECUTED" \
+            "sessions::tests::tabs::drafts::marker_form::a_rule_form_given_back_by_a_cancelled_close_or_an_aborted_quit_keeps_all_of_it FCAD_31N_TAB_GIVEN_BACK_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            grep -Fq "test $gate ... " rule-markers.log
+            grep -Fxq "$marker" rule-markers.log
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |

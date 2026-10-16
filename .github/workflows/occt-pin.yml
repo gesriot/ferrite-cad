@@ -771,6 +771,16 @@ jobs:
           grep -Fxq 'FCAD_31M_TAB_STALE_EXECUTED' app-tests.log
           grep -Fxq 'FCAD_31M_TAB_GIVEN_BACK_EXECUTED' app-tests.log
           grep -Fxq 'FCAD_31M_NATIVE_ANGLE_EXECUTED request=label_equals_form_road stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read turn=atan2 negative=held' app-tests.log
+          # §31N: the saved rules of a form follow its tab (copies with the same UUIDs included; a form
+          # held on another version loses its markers and keeps its rows, selection and removal); a
+          # saved EqualLength and a cylinder's Fixed centre chosen by their markers and removed,
+          # applied, exported before Save, undone, redone and saved like the command line, the freed
+          # degrees of freedom read from the solver. Printed after the last assertion of each gate.
+          grep -Fxq 'FCAD_31N_TAB_EXECUTED' app-tests.log
+          grep -Fxq 'FCAD_31N_TAB_STALE_EXECUTED' app-tests.log
+          grep -Fxq 'FCAD_31N_TAB_GIVEN_BACK_EXECUTED' app-tests.log
+          grep -Fxq 'FCAD_31N_NATIVE_RULE_EXECUTED request=marker_equals_form_road stored_vs_solved=1 shared_place=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read dof=solver negative=held' app-tests.log
+          grep -Fxq 'FCAD_31N_NATIVE_CENTRE_EXECUTED request=marker_equals_form_road stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read dof=solver negative=held' app-tests.log
 
           # And the shared job itself, which is what both of them call.
           cargo test -p ferritecad-jobs --lib -- --nocapture

@@ -15,6 +15,8 @@ mod canvas_form;
 mod close_form;
 /// §31L: the saved dimensions of a constraints form follow its tab.
 mod dimension_form;
+/// §31N: the saved rule markers of a constraints form follow its tab.
+mod marker_form;
 pub(in crate::sessions::tests::tabs) mod model_tree;
 /// §30Q: Open, New and Recover beside these forms, through the same owners.
 mod open_new_recover;

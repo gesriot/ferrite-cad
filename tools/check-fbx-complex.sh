@@ -898,8 +898,10 @@ if [ -n "${FCAD_ANALYTIC_SESSION_FBX_DIR:-}" ]; then
     # dragged at a zoomed and panned scale, §31K a rectangle and a cylinder whose
     # constraint rules were chosen on the canvas of the accepted solved drawing, §31L the
     # same two after a saved dimension was chosen by its label and replaced, §31M a
-    # quadrilateral after a saved directed angle was chosen by its label and replaced.
-    for name in circle-session annulus-session annulus-swapped-session circle-canvas annulus-canvas circle-navigated annulus-navigated constraint-canvas-rectangle constraint-canvas-circle dimension-labels-rectangle dimension-labels-circle angle-dimension-quad; do
+    # quadrilateral after a saved directed angle was chosen by its label and replaced, §31N a
+    # rectangle and a cylinder after a saved EqualLength and a Fixed centre were chosen by their
+    # markers and removed.
+    for name in circle-session annulus-session annulus-swapped-session circle-canvas annulus-canvas circle-navigated annulus-navigated constraint-canvas-rectangle constraint-canvas-circle dimension-labels-rectangle dimension-labels-circle angle-dimension-quad constraint-markers-rectangle constraint-markers-circle; do
         "$reader" --identity "$FCAD_ANALYTIC_SESSION_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
         if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
             echo "error: session Circle/annulus FBX was not independently read: $name" >&2

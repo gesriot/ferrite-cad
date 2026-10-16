@@ -1734,6 +1734,61 @@ jobs:
             test -s "$analytic_dir/$name.stl"
           done
 
+      - name: Remove saved rules chosen by their markers through the native window state
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # §31N: a rectangle whose Sketch stores a rough guess and keeps rules that solve it into
+          # another shape: a pin, a horizontal and a vertical, two lengths, and an EqualLength and a
+          # Parallel of Lines 1 and 3 that stand on one place. The marker of the EqualLength is chosen
+          # on the canvas of the real accepted solved drawing under the Rule target (the Parallel
+          # beneath it by its row), both Lines are marked, and its removal is prepared by the one
+          # explicit action; the request equals the form's own road (the Remove tick of the row), then
+          # Apply on the real worker, export before Save, Undo, Redo, Save and a cold reopen against the
+          # peer CLI given the same UUID, the freed degree of freedom reported by the solver on a cold
+          # rebuild, Line 3 now 65 mm where the free corner was stored, the saved STL read here by a
+          # reader that is not its writer and the form of the cold reopen holding no EqualLength and
+          # the Parallel under its old UUID. The second gate does the same to a cylinder's Fixed centre,
+          # which frees the centre to where the Sketch stored it. The exports join the pinned reader
+          # (`FCAD_ANALYTIC_ARTIFACTS`, as above). The reader of each saved result also fails when given
+          # the pristine source (`negative=held`). The marker is printed after the last assertion, so a
+          # skip cannot print it.
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          analytic_dir="$RUNNER_TEMP/analytic-session"
+          mkdir -p "$analytic_dir"
+          analytic_artifacts="$analytic_dir"
+          if [ '${{ matrix.name }}' = windows ]; then analytic_artifacts="$(cygpath -w "$analytic_artifacts")"; fi
+          export FCAD_ANALYTIC_ARTIFACTS="$analytic_artifacts"
+          for check in \
+            "sessions::tests::native_a_saved_equal_length_chosen_by_its_marker_and_removed_is_applied_like_the_command_line FCAD_31N_NATIVE_RULE_EXECUTED request=marker_equals_form_road stored_vs_solved=1 shared_place=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read dof=solver negative=held" \
+            "sessions::tests::native_a_saved_fixed_centre_chosen_by_its_marker_and_removed_is_applied_like_the_command_line FCAD_31N_NATIVE_CENTRE_EXECUTED request=marker_equals_form_road stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read dof=solver negative=held"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-constraint-markers.log
+            if grep -q 'skipped:' session-constraint-markers.log || \
+               ! grep -q '^test result: ok\. 1 passed; 0 failed' session-constraint-markers.log || \
+               ! grep -Fq "test $gate ... " session-constraint-markers.log || \
+               ! grep -Fxq "$marker" session-constraint-markers.log; then
+              echo "::error::${gate} did not execute and pass"
+              exit 1
+            fi
+          done
+          for name in constraint-markers-rectangle constraint-markers-circle; do
+            test -s "$analytic_dir/$name.fbx"
+            test -s "$analytic_dir/$name.stl"
+          done
+
       - name: Confirm Open over New and reject its late creation result
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
