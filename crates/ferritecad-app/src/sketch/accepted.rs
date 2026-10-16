@@ -11,12 +11,13 @@
 use super::{
     DRAWABLE_MM, PICK_POINTS,
     dimension::{self, Placed, PlacedTurn, Reached, Shown, ShownTurn, Turn},
+    marker::{self, Mark, Placed as PlacedMark, Shown as ShownMark},
     navigation::{self, MAX_SCALE, MIN_SCALE, Navigation, Surface, View},
     paint_grid, pointer_over,
 };
 use ferritecad_document::{
     ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource, LineEndpoint, Sketch,
-    SketchGeometry,
+    SketchGeometry, SketchPointSelector,
 };
 use ferritecad_scene::SketchPresentation;
 use ferritecad_types::StableEntityId;
@@ -40,6 +41,11 @@ pub(crate) const HOVER_COLOUR: egui::Color32 = egui::Color32::LIGHT_YELLOW;
 /// replacement prepared.
 pub(crate) const LABEL_COLOUR: egui::Color32 = egui::Color32::from_rgb(130, 220, 230);
 pub(crate) const PENDING_COLOUR: egui::Color32 = egui::Color32::from_rgb(255, 205, 80);
+/// §31N: a rule marker's words and the tint of its box: a look of its own, apart from the numeric
+/// labels' black boxes.
+pub(crate) const MARKER_COLOUR: egui::Color32 = egui::Color32::from_rgb(210, 180, 255);
+pub(crate) const MARKER_FILL: egui::Color32 =
+    egui::Color32::from_rgba_premultiplied(34, 24, 58, 225);
 const LABEL_FONT: f32 = 11.;
 
 /// The scene's drawings, with the version of the reading they came from.
@@ -268,15 +274,19 @@ pub(crate) enum Target {
     /// §31L: the label of a saved Line length or Circle radius: the selection becomes the Line
     /// or Circle that rule dimensions. Only this target reaches a label.
     Dimension,
+    /// §31N: the marker of a saved Horizontal, Vertical, Fixed, equal-length, Parallel, Perpendicular
+    /// or Collinear rule: the selection becomes that rule. Only this target reaches a marker.
+    Rule,
 }
 
 impl Target {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Object,
         Self::Endpoint,
         Self::PairA,
         Self::PairB,
         Self::Dimension,
+        Self::Rule,
     ];
     fn label(self) -> &'static str {
         match self {
@@ -285,6 +295,7 @@ impl Target {
             Self::PairA => "Pair A",
             Self::PairB => "Pair B",
             Self::Dimension => "Dimension",
+            Self::Rule => "Rule",
         }
     }
     fn words(self) -> &'static str {
@@ -303,6 +314,12 @@ impl Target {
                  vector runs. The number is the rule's target, not a length or an angle measured \
                  on the drawing or on the stored coordinates. A click changes no number; Replace \
                  dimension prepares a change."
+            }
+            Self::Rule => {
+                "A click on a rule marker selects that saved Horizontal, Vertical, Fixed, equal-length, \
+                 Parallel, Perpendicular or Collinear constraint: the Lines or the point it names are \
+                 marked as the rule stores them. A click changes nothing; Remove constraint prepares \
+                 its removal."
             }
         }
     }
@@ -358,6 +375,8 @@ pub(crate) struct Marks {
     pub(crate) from: [LineEndpoint; 2],
     /// §31M: the selected saved angle, by its rule: both its Lines and the way each vector runs.
     pub(crate) turn: Option<Turn>,
+    /// §31N: the selected saved rule with a marker: the references it names, as it stores them.
+    pub(crate) rule: Option<Mark>,
 }
 
 /// The saved dimensions the canvas labels, each with the pending request's word on it: the lengths
@@ -366,6 +385,8 @@ pub(crate) struct Marks {
 pub(crate) struct Labelled<'a> {
     pub(crate) sizes: &'a [Shown],
     pub(crate) turns: &'a [ShownTurn],
+    /// §31N: the saved rules with a marker, each with whether its removal is prepared.
+    pub(crate) rules: &'a [ShownMark],
 }
 
 /// What a click that ended on the canvas took: a part of a curve (or the label of a Line's length or
@@ -375,6 +396,9 @@ pub(crate) struct Labelled<'a> {
 pub(crate) enum Click {
     Curve(Picked),
     Angle(StableEntityId),
+    /// §31N: the marker of a saved rule, told by the UUID of that rule and by nothing else: it names
+    /// Lines or a point, never a curve of its own.
+    Rule(StableEntityId),
 }
 
 /// The nearest part of the drawing to `at`, within the pick radius of the visible canvas.
@@ -619,12 +643,16 @@ impl Canvas {
         let Labelled {
             sizes: shown,
             turns,
+            rules,
         } = labelled;
         let open = ui.is_enabled() && !queued;
         if !pairs && matches!(self.target, Target::PairA | Target::PairB) {
             self.target = Target::Object;
         }
         if shown.is_empty() && turns.is_empty() && self.target == Target::Dimension {
+            self.target = Target::Object;
+        }
+        if rules.is_empty() && self.target == Target::Rule {
             self.target = Target::Object;
         }
         if self.view.is_none() {
@@ -639,7 +667,7 @@ impl Canvas {
         }
         // The labels as the person saw them when the frame began: an event is read against
         // the view of its start, like the curves a click picks.
-        let seen = self.labels(ui, curves, shown, turns, rect);
+        let seen = self.labels(ui, curves, shown, turns, rules, rect);
         self.nav.begin(ui, open);
         // Losing the press's surface cancels the click, even if it becomes
         // available again before release. Never resume a press taken by a cover.
@@ -704,6 +732,8 @@ impl Canvas {
                                     Reached::Turn(t) => Some(Click::Angle(t.shown.turn.id)),
                                 }
                             }
+                            Target::Rule => marker::reach(&seen.2, visible, press)
+                                .map(|p| Click::Rule(p.shown.mark.id)),
                             target => {
                                 pick(curves, target, &view, rect, visible, press).map(|hit| {
                                     Click::Curve(Picked {
@@ -741,7 +771,7 @@ impl Canvas {
         if self.press.is_none() {
             self.view = working;
         }
-        let labels = self.labels(ui, curves, shown, turns, rect);
+        let labels = self.labels(ui, curves, shown, turns, rules, rect);
         let over = response.hover_pos().filter(|at| {
             open && self.press.is_none() && !self.nav.panning() && pointer_over(ui, visible, *at)
         });
@@ -752,6 +782,8 @@ impl Canvas {
                     Reached::Size(p) => Some((label_hit(p), at)),
                     Reached::Turn(_) => None,
                 },
+                // A marker is no part of a curve: the Rule target reaches markers only.
+                Target::Rule => None,
                 target => pick(curves, target, &view, rect, visible, at).map(|hit| (hit, at)),
             }
         });
@@ -764,6 +796,12 @@ impl Canvas {
                 Reached::Size(_) => None,
             }
         });
+        let hovered_rule = over.and_then(|at| {
+            if self.target != Target::Rule {
+                return None;
+            }
+            marker::reach(&labels.2, visible, at).map(|p| (p.shown.mark.id, at))
+        });
         self.paint(
             &painter,
             rect,
@@ -772,26 +810,36 @@ impl Canvas {
             &Frame {
                 hovered,
                 hovered_turn,
+                hovered_rule,
                 labels: &labels.0,
                 turn_labels: &labels.1,
+                marker_labels: &labels.2,
                 shown,
                 turns,
+                rules,
                 open,
             },
         );
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.;
-            ui.spacing_mut().button_padding = egui::vec2(4., 1.);
+            // §31N: six targets and Fit in less width than the five targets and Fit took. A wider
+            // row narrows the Lines list beside the canvas, whose long rows then wrap and take
+            // height from the forms that have none to spare. The words are the canvas's own size.
+            ui.spacing_mut().item_spacing.x = 2.;
+            ui.spacing_mut().button_padding = egui::vec2(3., 1.);
             for target in Target::ALL {
                 let usable = match target {
                     Target::PairA | Target::PairB => pairs,
                     Target::Dimension => !(shown.is_empty() && turns.is_empty()),
+                    Target::Rule => !rules.is_empty(),
                     Target::Object | Target::Endpoint => true,
                 };
                 let button = ui
                     .add_enabled(
                         open && usable,
-                        egui::Button::selectable(self.target == target, target.label()),
+                        egui::Button::selectable(
+                            self.target == target,
+                            egui::RichText::new(target.label()).size(LABEL_FONT),
+                        ),
                     )
                     .on_hover_text(target.words());
                 if button.clicked() {
@@ -801,7 +849,7 @@ impl Canvas {
             let fit = ui
                 .add_enabled(
                     open && self.press.is_none() && !self.nav.panning(),
-                    egui::Button::new("Fit"),
+                    egui::Button::new(egui::RichText::new("Fit").size(LABEL_FONT)),
                 )
                 .on_hover_text("Show the whole drawing again.");
             if fit.clicked()
@@ -813,18 +861,19 @@ impl Canvas {
         clicks
     }
 
-    /// The labels of `shown` and of `turns` that stand on the canvas in the view now, each in its
-    /// own saved order: the labels of curves, then those of pairs.
+    /// The labels of `shown` and of `turns` and the markers of `rules` that stand on the canvas in the
+    /// view now, each in its own saved order: the labels of curves, those of pairs, the markers.
     fn labels(
         &self,
         ui: &egui::Ui,
         curves: &[Curve],
         shown: &[Shown],
         turns: &[ShownTurn],
+        rules: &[ShownMark],
         rect: egui::Rect,
-    ) -> (Vec<Placed>, Vec<PlacedTurn>) {
+    ) -> (Vec<Placed>, Vec<PlacedTurn>, Vec<PlacedMark>) {
         let Some(view) = self.view else {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new());
         };
         let measure = |words: &str| {
             ui.painter()
@@ -838,6 +887,7 @@ impl Canvas {
         (
             dimension::placed(shown, curves, &view, rect, &measure),
             dimension::placed_turns(turns, curves, &view, rect, &measure),
+            marker::placed(rules, curves, &view, rect, &measure),
         )
     }
 
@@ -852,10 +902,13 @@ impl Canvas {
         let Frame {
             hovered,
             hovered_turn,
+            hovered_rule,
             labels,
             turn_labels,
+            marker_labels,
             shown,
             turns,
+            rules,
             open,
         } = *frame;
         let Some(view) = self.view else {
@@ -873,7 +926,8 @@ impl Canvas {
             let is = |id: Option<StableEntityId>| id == Some(curve.id);
             let stroke = |colour, width| egui::Stroke::new(width, colour);
             let mut strokes = vec![stroke(DRAWING_COLOUR, 1.5)];
-            if is(marks.selected) || on_turn(marks.turn, curve.id) {
+            if is(marks.selected) || on_turn(marks.turn, curve.id) || on_rule(marks.rule, curve.id)
+            {
                 strokes.push(stroke(SELECTED_COLOUR, 3.5));
             }
             if is(marks.pair[0]) {
@@ -887,7 +941,15 @@ impl Canvas {
                     .iter()
                     .any(|s| s.turn.id == rule && on_turn(Some(s.turn), curve.id))
             });
-            if hovered.is_some_and(|(hit, _)| hit.curve == curve.id) || hovered_pair {
+            let hovered_marker = hovered_rule.is_some_and(|(rule, _)| {
+                rules
+                    .iter()
+                    .any(|s| s.mark.id == rule && s.mark.names(curve.id))
+            });
+            if hovered.is_some_and(|(hit, _)| hit.curve == curve.id)
+                || hovered_pair
+                || hovered_marker
+            {
                 strokes.push(stroke(HOVER_COLOUR, 2.));
             }
             // The latest stroke is the one on top: selection, then A, then B, then hover.
@@ -906,14 +968,29 @@ impl Canvas {
                 }
             }
             self.paint_marks(painter, &view, rect, curve, marks);
+            self.paint_rule_marks(painter, &view, rect, curve, marks);
         }
         // The first label stored is the one on top, as it is the one a pointer reaches: the
-        // labels of curves above those of pairs, each in its saved order.
+        // labels of curves above those of pairs, each in its saved order. The family the target
+        // reaches is painted last: what is picked is what is visible. §31N: the markers are under the
+        // numeric labels, except under the Rule target, where they are above.
+        let markers_on_top = self.target == Target::Rule;
+        if !markers_on_top {
+            self.paint_markers(painter, marker_labels, marks, hovered_rule, open);
+        }
         for placed in turn_labels.iter().rev() {
             self.paint_turn_label(painter, placed, marks, hovered_turn, open);
         }
         for placed in labels.iter().rev() {
             self.paint_label(painter, placed, marks, hovered, open);
+        }
+        if markers_on_top {
+            self.paint_markers(painter, marker_labels, marks, hovered_rule, open);
+        }
+        if let Some((rule, pointer)) = hovered_rule
+            && let Some(s) = rules.iter().find(|s| s.mark.id == rule)
+        {
+            paint_hover(painter, rect, pointer, &rule_caption(curves, &s.mark));
         }
         if let Some((rule, pointer)) = hovered_turn
             && let Some(s) = turns.iter().find(|s| s.turn.id == rule)
@@ -982,6 +1059,77 @@ impl Canvas {
         let live = open && self.target == Target::Dimension;
         let look = label_look(chosen, hot, shown.pending.is_some(), live);
         paint_label_box(painter, rect, &shown.text(), look);
+    }
+
+    /// §31N: the markers, the first stored on top.
+    fn paint_markers(
+        &self,
+        painter: &egui::Painter,
+        placed: &[PlacedMark],
+        marks: &Marks,
+        hovered: Option<(StableEntityId, egui::Pos2)>,
+        open: bool,
+    ) {
+        for placed in placed.iter().rev() {
+            let PlacedMark { shown, rect } = *placed;
+            let chosen = marks.rule.is_some_and(|m| m.id == shown.mark.id);
+            let hot = hovered.is_some_and(|(rule, _)| rule == shown.mark.id);
+            let live = open && self.target == Target::Rule;
+            let (border, words) = marker_look(chosen, hot, shown.removed, live);
+            painter.rect(rect, 1., MARKER_FILL, border, egui::StrokeKind::Inside);
+            painter.text(
+                rect.min + dimension::PAD,
+                egui::Align2::LEFT_TOP,
+                shown.text(),
+                egui::FontId::proportional(LABEL_FONT),
+                words,
+            );
+        }
+    }
+
+    /// §31N: the references of the selected saved rule that are on this curve, as the rule stores
+    /// them: a Fixed rule's point (its Start, End or Center) ringed and told, otherwise the first
+    /// point of each reference a dot and the second a ring, so a reversed segment shows as stored.
+    fn paint_rule_marks(
+        &self,
+        painter: &egui::Painter,
+        view: &View,
+        rect: egui::Rect,
+        curve: &Curve,
+        marks: &Marks,
+    ) {
+        let Some(mark) = marks.rule else {
+            return;
+        };
+        let fixed = matches!(mark.refs, marker::Refs::Point(_));
+        for (i, point) in mark.refs.points().into_iter().enumerate() {
+            if point.curve != curve.id {
+                continue;
+            }
+            let Some(p) = point_on(&curve.shape, point.at) else {
+                continue;
+            };
+            let p = view.screen(rect, p);
+            if fixed {
+                painter.circle_filled(p, 5., SELECTED_COLOUR);
+                painter.circle_stroke(p, PICK_POINTS, egui::Stroke::new(1.5, SELECTED_COLOUR));
+                painter.text(
+                    p + egui::vec2(8., 8.),
+                    egui::Align2::LEFT_TOP,
+                    match point.at {
+                        SketchPointSelector::Start => "Start",
+                        SketchPointSelector::End => "End",
+                        _ => "centre",
+                    },
+                    egui::FontId::proportional(11.),
+                    SELECTED_COLOUR,
+                );
+            } else if i % 2 == 0 {
+                painter.circle_filled(p, 3., SELECTED_COLOUR);
+            } else {
+                painter.circle_stroke(p, 4., egui::Stroke::new(1.5, SELECTED_COLOUR));
+            }
+        }
     }
 
     /// The marks drawn on one curve: its ends in Endpoint mode, the pin end of the selected
@@ -1136,15 +1284,19 @@ impl Canvas {
             Target::PairA | Target::PairB => pair_words(curves, marks),
             Target::Object | Target::Endpoint => self.selection_words(curves, marks),
             Target::Dimension => dimension_words(curves, marks, shown, turns),
+            Target::Rule => rule_words(marks),
         }
     }
 
     /// The form's selection, with the part of it that was picked.
     fn selection_words(&self, curves: &[Curve], marks: &Marks) -> String {
         let Some(id) = marks.selected else {
-            return match marks.turn {
-                Some(turn) => format!("Selected: angle {}", crate::constraints::short(turn.id)),
-                None => "Selected: none".to_owned(),
+            return match (marks.turn, marks.rule) {
+                (Some(turn), _) => {
+                    format!("Selected: angle {}", crate::constraints::short(turn.id))
+                }
+                (None, Some(_)) => rule_words(marks),
+                (None, None) => "Selected: none".to_owned(),
             };
         };
         let name = curve_name(curves, id);
@@ -1204,7 +1356,11 @@ fn dimension_words(
         );
     }
     let Some(id) = marks.selected else {
-        return "Selected: none · pick a dimension label".to_owned();
+        return if marks.rule.is_some() {
+            rule_words(marks)
+        } else {
+            "Selected: none · pick a dimension label".to_owned()
+        };
     };
     match shown.iter().find(|s| s.dimension.curve == id) {
         Some(s) => format!(
@@ -1223,10 +1379,14 @@ struct Frame<'a> {
     hovered: Option<(Hit, egui::Pos2)>,
     /// §31M: the angle label under the pointer (Dimension target), by its rule.
     hovered_turn: Option<(StableEntityId, egui::Pos2)>,
+    /// §31N: the marker under the pointer (Rule target), by its rule.
+    hovered_rule: Option<(StableEntityId, egui::Pos2)>,
     labels: &'a [Placed],
     turn_labels: &'a [PlacedTurn],
+    marker_labels: &'a [PlacedMark],
     shown: &'a [Shown],
     turns: &'a [ShownTurn],
+    rules: &'a [ShownMark],
     open: bool,
 }
 
@@ -1236,6 +1396,72 @@ fn label_hit(placed: &Placed) -> Hit {
         curve: placed.shown.dimension.curve,
         part: Part::Label(placed.shown.dimension.id),
     }
+}
+
+/// Whether the saved rule `rule` names `curve`: a Line or the Circle it marks.
+fn on_rule(rule: Option<Mark>, curve: StableEntityId) -> bool {
+    rule.is_some_and(|m| m.names(curve))
+}
+
+/// Where a stored point selector is on a drawn curve.
+fn point_on(shape: &Shape, at: SketchPointSelector) -> Option<[f64; 2]> {
+    match (*shape, at) {
+        (Shape::Line { start, .. }, SketchPointSelector::Start) => Some(start),
+        (Shape::Line { end, .. }, SketchPointSelector::End) => Some(end),
+        (Shape::Circle { center, .. }, SketchPointSelector::Center) => Some(center),
+        _ => None,
+    }
+}
+
+/// The top edge's words for a selected saved rule (the rule, not a curve).
+fn rule_words(marks: &Marks) -> String {
+    match marks.rule {
+        Some(m) => format!(
+            "Selected rule {} · {}",
+            crate::constraints::short(m.id),
+            m.kind.name()
+        ),
+        None => "Selected: none · pick a rule marker".to_owned(),
+    }
+}
+
+/// The hover caption of a marker: the kind, the rule and what it names as it stores it.
+fn rule_caption(curves: &[Curve], mark: &Mark) -> String {
+    format!(
+        "{} · saved rule {} · {}",
+        mark.kind.name(),
+        crate::constraints::short(mark.id),
+        mark.refs_words(&|id| curve_name(curves, id))
+    )
+}
+
+/// How a marker looks now: its border and the colour of its words. As for the numeric labels, the
+/// selected rule's marker stays blue under the pointer; a prepared removal is amber.
+fn marker_look(
+    chosen: bool,
+    hot: bool,
+    removed: bool,
+    live: bool,
+) -> (egui::Stroke, egui::Color32) {
+    let border = if chosen {
+        egui::Stroke::new(2., SELECTED_COLOUR)
+    } else if hot {
+        egui::Stroke::new(2., HOVER_COLOUR)
+    } else if removed {
+        egui::Stroke::new(1.5, PENDING_COLOUR)
+    } else if live {
+        egui::Stroke::new(1., egui::Color32::from_gray(150))
+    } else {
+        egui::Stroke::new(1., egui::Color32::from_gray(80))
+    };
+    let words = if removed {
+        PENDING_COLOUR
+    } else if live || chosen {
+        MARKER_COLOUR
+    } else {
+        egui::Color32::from_rgb(150, 130, 185)
+    };
+    (border, words)
 }
 
 /// Whether `curve` is one of the two Lines of the saved angle `turn`.

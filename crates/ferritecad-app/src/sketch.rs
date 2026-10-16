@@ -18,6 +18,7 @@ mod analytic;
 mod anchor;
 pub(crate) mod dimension;
 mod guide;
+pub(crate) mod marker;
 mod navigation;
 mod object_snap;
 
@@ -8496,6 +8497,9 @@ pub(crate) mod drag_tests;
 #[cfg(test)]
 #[path = "sketch/guide_tests.rs"]
 pub(crate) mod guide_tests;
+#[cfg(test)]
+#[path = "sketch/marker_tests.rs"]
+pub(crate) mod marker_tests;
 #[cfg(test)]
 #[path = "sketch/navigation_tests.rs"]
 pub(crate) mod navigation_tests;

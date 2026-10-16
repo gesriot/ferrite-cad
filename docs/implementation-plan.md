@@ -5578,19 +5578,63 @@ normal exits, pressure1, swap0. Remote checks belong to the published PR's own c
 the remaining native-window pan/pinch/held-input/covering and other explicitly unobserved window cases
 listed in the contract; arcs, mixed profiles, the annulus, the other relations as labels, dragging, §30, Milestone 5C and OOM.
 
-### §31N — Select saved non-dimensional constraints on the accepted Sketch drawing (planned)
+### §31N — Saved non-dimensional constraints as selectable markers on the accepted Sketch drawing (reviewed implementation)
 
-Extend the accepted constraint drawing to the existing saved Horizontal, Vertical, Fixed,
-EqualLength, Parallel, Perpendicular and Collinear rules (including a single Circle's Fixed
-centre where supported). A marker identifies its constraint UUID and highlights exactly the
-stored references; a pair is not represented as one curve. Keep explicit picking, deterministic
-saved-order overlap and list fallback, clipped logical-point placement, existing dimension
-replacement and the 768-point form budget. Selecting a marker only selects/reveals its saved row;
-an explicit removal uses the same validated draft/history and shared UI/CLI operation. Closure
-and unsupported profiles retain their existing policy. Do not add another solver equation,
-capability, schema, CLI command or persisted marker position. Prove ownership/refusal/history,
-real widget-to-session removal parity with CLI and independent saved geometry. Native-window
-pan/pinch/held-input and other outstanding cases remain separate from headless evidence.
+The accepted solved drawing of the **Sketch constraints** form carries a compact **marker for each saved
+Horizontal, Vertical, Fixed (a Line's Start or End), EqualLength, Parallel, Perpendicular and Collinear rule, and
+for a single Circle its Fixed centre** (ASCII words: `H`, `V`, `Fix`, `Eq`, `Par`, `Perp`, `Col`), standing by the
+solved curves and never by the stored coordinates; a prepared removal is told beside it (`H -> removed`, amber) and
+nothing moves until Apply. A marker **is its saved rule**: the rule's UUID, its own kind and the references exactly as
+the rule stores them (a pair is never one curve, a reversed segment is never rewritten); a click returns only the
+UUID and the form selects it only if its own reading holds the rule. A sixth explicit target, **Rule**, selects a
+marker by its drawn box; **Dimension** keeps its §31L–§31M meaning (numeric labels only) and under every other target
+a marker is a picture. The form gains **one more selection field**: at most one of the curve, the angle and the rule
+is selected, and selecting a rule never touches the Pair A/B slots, the directed-angle directions, the Pin end, any
+typed text or the pending request. A selected rule marks the references it names on the solved geometry (the curves
+in the selection blue, a Fixed rule's Start/End/Center ringed, both Lines of a pair with a dot at the first and a ring
+at the second stored point) and its row of **Persisted constraints**; overlaps follow the saved order, never a UUID or
+hash, and the rows reach every rule. The explicit **Remove constraint** action prepares the removal through the form's
+existing validated remove and history: one `History::change` once (a repeat is the same request and wipes no Redo),
+other pending changes, texts and slots kept, Undo/Redo/Clear returning exactly the request, the document's own
+validator (relation occupancy, protected Coincident closure) judging the whole request; Apply and Save keep their
+request, job and CLI. No new constraint, document field, schema, capability, FFI, solver equation, jobs operation, CLI
+request, stored marker position or placement engine; an annulus, a mixed profile and a form with no drawing keep their
+refusals and lists.
+
+Contract, the two decisions, executed gates, mutations, resources, N/A and the independent window recipe:
+[sketch-constraint-markers.md](sketch-constraint-markers.md). Author evidence before publication (no CI of the
+unstaged diff, no window): 22 kernel-free gates (5 pure, 14 form on real egui events at 1x and 2x, 3 tab) and 2 native
+session gates (a rectangle whose guess differs from its solved shape: the EqualLength marker chosen under Rule where it
+shares a place with a Parallel, removed, applied, exported before Save, undone, redone, saved and reopened cold against
+the peer CLI given the same UUID, the solver's own degrees of freedom 0→1 and the freed corner at exactly (-5, 30) read
+by an STL reader that is not the writer and by the pinned ufbx; a cylinder's Fixed centre likewise, centre (4.5, 0) and
+2 degrees of freedom) with the negative control of each; a sixth button that first took 17 points from two Revolve
+forms was found by diffing the forms' measurements against a frozen baseline executable and compacted until every old
+measurement was identical. Nothing here is a window observation. **Open:** this slice's own window pass, the §31J–§31M
+unobserved window cases, arcs, mixed profiles, the annulus, tangency/symmetry, dragging, §30, Milestone 5C, the
+product and OOM.
+
+Independent macOS review: final native/stub viewer suites each passed 890/0/4, required new
+native markers executed, and actual guarded window removals of EqualLength and Fixed centre agreed
+with CLI across SQL/CBOR/hash/UUID and byte-identical unsaved STL/FBX. Both pristine-substitution
+controls held; 14 analytic plus 2 actual window FBX/STL pairs passed pinned ufbx and independent joins.
+Window selection/history/Save Cancel/Apply/export/document Undo/Redo/Save, zoom/Fit and overlap/list
+fallback were observed; normal exit, peak 200.079 MiB, pressure1, swap0. The explicitly unobserved
+window cases remain open as listed in the contract; remote checks refer to the published exact head.
+
+### §31O — Accepted constraint drawing and dimensions for the supported annular Sketch (planned)
+
+Extend the existing accepted constraints canvas from a Line polygon/one Circle to the already
+supported two-Circle annular Sketch. Use the accepted solved presentation and exact saved curve/rule
+UUIDs, not stored guesses or boundary/bore row positions. Both Circle radii/diameters use the existing
+explicit replacement and history; Fixed centres and the existing centre-to-centre Coincident rule
+have accurate point/pair markers, without inventing Line segments. Centre coincidence is distinct
+from protected polygon closure. Select and reveal the actual saved rule; any removal or invalid
+radius goes through the same validator/job and preserves the draft on refusal. Keep explicit targets,
+stored-order overlap/list fallback, view/tab ownership and the 768-point budget. No new constraint,
+solver, ABI, capability, schema or CLI command. Mixed profiles/arcs remain outside the scope. Prove
+real widget-to-session requests, native unsaved export/Undo/Redo/Save parity with CLI and independent
+annular geometry/identity; window evidence remains the reviewer's separate responsibility.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 

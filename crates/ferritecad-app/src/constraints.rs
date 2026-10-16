@@ -6,6 +6,7 @@ use crate::sketch::accepted::{
 use crate::sketch::dimension::{
     self, Dimension, Kind, Pending, Shown, ShownTurn, Turn, TurnPending,
 };
+use crate::sketch::marker::{self, Mark, Shown as ShownMark};
 use ferritecad_document::{
     AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
     ConstraintSketchChoice, DirectedAngle, DirectedLine, DocumentVersion, ExtrudeEditSource,
@@ -136,8 +137,15 @@ struct Draft {
     /// §31M: the angle typed to replace the selected angle, in degrees exactly as typed. A box of
     /// its own beside `dimension_mm`, so no one text is carried from millimetres into degrees.
     dimension_deg: String,
-    /// §31L: the selection just moved onto a dimension; its editor is brought into view in the
-    /// next frame. Not a choice of the person's.
+    /// §31N: the saved Horizontal, Vertical, Fixed, equal-length, Parallel, Perpendicular and
+    /// Collinear rules of `choice`, read once with it like `dimensions` and `turns`. A marker is its
+    /// rule: nothing here is a curve and nothing is computed from coordinates.
+    marks: Vec<Mark>,
+    /// §31N: the UUID of the selected saved rule, one of `marks`. At most one of this, `turn` and
+    /// `selected` is set: a rule names Lines or a point, and none of them is "the" selection.
+    mark: Option<StableEntityId>,
+    /// §31L: the selection just moved onto a dimension or a rule; its editor is brought into view
+    /// in the next frame. Not a choice of the person's.
     reveal_dimension: bool,
     edits: SketchConstraintEdits,
     history: History,
@@ -383,6 +391,43 @@ impl Editor {
             .as_ref()
             .map(|d| (d.turns.clone(), d.turn, d.dimension_deg.clone()))
     }
+    /// §31N, tests: the form's synthetic Sketch as if it held these rules (with the UUIDs they
+    /// carry) and the closure links a persisted Line set holds, for the gates whose build cannot
+    /// solve a persisted rule and so cannot rebuild a document that has one. **Synthetic**: the
+    /// catalogue of the form is amended, not the document, and no drawing is rebuilt.
+    #[cfg(test)]
+    pub(crate) fn persist_rules_for_tests(
+        &mut self,
+        rules: &[ferritecad_document::SketchConstraint],
+    ) {
+        use ferritecad_document::{SketchConstraint, SketchPointRef, SketchPointSelector};
+        let Some(draft) = &mut self.draft else {
+            return;
+        };
+        let Some(stored) = &mut draft.choice.stored else {
+            return;
+        };
+        stored.constraints.extend_from_slice(rules);
+        let curves: Vec<_> = stored.curves.iter().map(|c| c.id).collect();
+        for (i, curve) in curves.iter().enumerate() {
+            stored.constraints.push(SketchConstraint {
+                id: StableEntityId::new(),
+                rule: SketchConstraintRule::Coincident {
+                    a: SketchPointRef::new(*curve, SketchPointSelector::End),
+                    b: SketchPointRef::new(
+                        curves[(i + 1) % curves.len()],
+                        SketchPointSelector::Start,
+                    ),
+                },
+            });
+        }
+        draft.marks = marker::saved(stored);
+    }
+    /// §31N, tests: the saved rules with a marker the form holds, and the selected one's UUID.
+    #[cfg(test)]
+    pub(crate) fn draft_marks(&self) -> Option<(Vec<Mark>, Option<StableEntityId>)> {
+        self.draft.as_ref().map(|d| (d.marks.clone(), d.mark))
+    }
     /// §31K, tests: the end the Pin buttons name.
     #[cfg(test)]
     pub(crate) fn draft_pin(&self) -> Option<LineEndpoint> {
@@ -491,6 +536,12 @@ impl Editor {
                 .unwrap_or_default(),
             turn: None,
             dimension_deg: String::new(),
+            marks: choice
+                .stored
+                .as_ref()
+                .map(marker::saved)
+                .unwrap_or_default(),
+            mark: None,
             reveal_dimension: false,
             edits: Default::default(),
             history: Default::default(),
@@ -725,10 +776,18 @@ impl Editor {
                             pending: dimension::pending_turn(&draft.edits, t),
                         })
                         .collect();
+                    // §31N: the same for the saved rules with a marker, each with whether its removal
+                    // is prepared.
+                    let shown_marks: Vec<_> = draft
+                        .marks
+                        .iter()
+                        .map(|m| ShownMark::of(&draft.edits, m))
+                        .collect();
                     // When this frame moved the selection (the canvas, a list or a row), the
                     // persisted row of its dimension is brought into view, as the Segment row is.
                     let selection_before = draft.selected;
                     let turn_before = draft.turn;
+                    let mark_before = draft.mark;
                     // §31K: the canvas of the accepted drawing stands beside the lists
                     // that pick the same things, in the height the Lines list already
                     // had. A click fills the fields the lists fill, before the lists are
@@ -747,6 +806,10 @@ impl Editor {
                                                 .turn
                                                 .and_then(|id| draft.turns.iter().find(|t| t.id == id))
                                                 .copied(),
+                                            rule: draft
+                                                .mark
+                                                .and_then(|id| draft.marks.iter().find(|m| m.id == id))
+                                                .copied(),
                                         };
                                         draft.canvas.show(
                                             ui,
@@ -757,6 +820,7 @@ impl Editor {
                                             Labelled {
                                                 sizes: &shown,
                                                 turns: &shown_turns,
+                                                rules: &shown_marks,
                                             },
                                         )
                                     })
@@ -781,6 +845,17 @@ impl Editor {
                                             if draft.turns.iter().any(|t| t.id == rule) {
                                                 draft.turn = Some(rule);
                                                 draft.selected = None;
+                                                draft.mark = None;
+                                            }
+                                        }
+                                        // §31N: likewise a saved rule with a marker: only one this
+                                        // form's own reading holds, and neither a Line nor an angle
+                                        // stays selected beside it.
+                                        Click::Rule(rule) => {
+                                            if draft.marks.iter().any(|m| m.id == rule) {
+                                                draft.mark = Some(rule);
+                                                draft.selected = None;
+                                                draft.turn = None;
                                             }
                                         }
                                     }
@@ -805,6 +880,7 @@ impl Editor {
                     // then not (an angle chosen by a label or a row set `selected` to none itself).
                     if draft.selected.is_some() {
                         draft.turn = None;
+                        draft.mark = None;
                     }
                     // Concentricity needs two circles to relate, so it is
                     // offered only where there are two. Both are picked
@@ -1400,10 +1476,13 @@ impl Editor {
                                     draft.dimensions.iter().find(|d| d.id == c.id).copied();
                                 // §31M: the rule of a saved angle is selected by its UUID.
                                 let turn = draft.turns.iter().find(|t| t.id == c.id).copied();
+                                // §31N: the rule of a saved Horizontal, Vertical, Fixed, equal-length,
+                                // Parallel, Perpendicular or Collinear is selected by its UUID.
+                                let mark = draft.marks.iter().find(|m| m.id == c.id).copied();
                                 ui.horizontal_wrapped(|ui| {
                                     let words = format!("{label} · {}", c.id);
-                                    match (dimension, turn) {
-                                        (None, Some(t)) => {
+                                    match (dimension, turn, mark) {
+                                        (None, Some(t), _) => {
                                             let row = ui
                                                 .selectable_label(draft.turn == Some(t.id), words)
                                                 .on_hover_text(
@@ -1414,9 +1493,10 @@ impl Editor {
                                             if row.clicked() {
                                                 draft.turn = Some(t.id);
                                                 draft.selected = None;
+                                                draft.mark = None;
                                             }
                                         }
-                                        (Some(d), _) => {
+                                        (Some(d), _, _) => {
                                             let row = ui
                                                 .selectable_label(
                                                     draft.selected == Some(d.curve),
@@ -1429,9 +1509,24 @@ impl Editor {
                                             if row.clicked() {
                                                 draft.selected = Some(d.curve);
                                                 draft.turn = None;
+                                                draft.mark = None;
                                             }
                                         }
-                                        (None, None) => {
+                                        (None, None, Some(m)) => {
+                                            let row = ui
+                                                .selectable_label(draft.mark == Some(m.id), words)
+                                                .on_hover_text(
+                                                    "Select this constraint: the Lines or the point \
+                                                     it names are marked on the drawing as the rule \
+                                                     stores them. The pair slots are not changed.",
+                                                );
+                                            if row.clicked() {
+                                                draft.mark = Some(m.id);
+                                                draft.selected = None;
+                                                draft.turn = None;
+                                            }
+                                        }
+                                        (None, None, None) => {
                                             ui.label(words);
                                         }
                                     }
@@ -1592,6 +1687,48 @@ impl Editor {
                                         );
                                     }
                                     if turn_before != draft.turn {
+                                        draft.reveal_dimension = true;
+                                        ui.ctx().request_repaint();
+                                    }
+                                }
+                                // §31N: a saved rule with a marker is removed in the same place and by
+                                // one explicit action: the form's own validated remove, one step of
+                                // its history. Nothing is replaced and nothing is added.
+                                if let Some(m) = mark
+                                    && draft.mark == Some(m.id)
+                                {
+                                    let busy = running || queued;
+                                    let editor = ui.horizontal_wrapped(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                !busy,
+                                                egui::Button::new("Remove constraint"),
+                                            )
+                                            .clicked()
+                                        {
+                                            match prepared_removal(
+                                                &draft.choice,
+                                                &draft.edits,
+                                                m.id,
+                                            ) {
+                                                Ok(proposed) => {
+                                                    draft
+                                                        .history
+                                                        .change(&mut draft.edits, proposed);
+                                                    draft.refusal = None;
+                                                }
+                                                Err(refusal) => draft.refusal = Some(refusal),
+                                            }
+                                        }
+                                        ui.small(mark_words(draft.edits.remove.contains(&m.id)));
+                                    });
+                                    if reveal {
+                                        editor.response.scroll_to_me_animation(
+                                            None,
+                                            egui::style::ScrollAnimation::none(),
+                                        );
+                                    }
+                                    if mark_before != draft.mark {
                                         draft.reveal_dimension = true;
                                         ui.ctx().request_repaint();
                                     }
@@ -1792,8 +1929,9 @@ fn fill_from_canvas(
         }
         Target::PairA => *pair_a = Some(curve),
         Target::PairB => *pair_b = Some(curve),
-        // Handled above: a label is the only thing this target reaches.
-        Target::Dimension => return,
+        // Handled above: a label is the only thing this target reaches. A rule marker is no part
+        // of a curve and comes as `Click::Rule`.
+        Target::Dimension | Target::Rule => return,
     }
     canvas.took(picked);
 }
@@ -1973,6 +2111,34 @@ fn dimension_words(d: &Dimension, unit: Unit, text: &str, pending: Option<Pendin
         Some(Pending::Removed) => "Pending: this dimension is removed.".to_owned(),
     };
     format!("{}{state}", converted.unwrap_or_default())
+}
+
+/// What the draft becomes when the removal of the saved rule `rule` is prepared, or why it cannot:
+/// the rule's UUID joins the request's removals (once: a repeat is the same request, no step), and the
+/// document's own validator judges the whole request. No second list of what may be removed.
+fn prepared_removal(
+    choice: &ConstraintSketchChoice,
+    edits: &SketchConstraintEdits,
+    rule: StableEntityId,
+) -> std::result::Result<SketchConstraintEdits, String> {
+    let mut proposed = edits.clone();
+    if !proposed.remove.contains(&rule) {
+        proposed.remove.push(rule);
+        choice
+            .validate_edits(&proposed)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(proposed)
+}
+
+/// The line after the action that removes the selected rule: what the pending request does to it. The
+/// drawing never moves before Apply.
+fn mark_words(removed: bool) -> &'static str {
+    if removed {
+        "Pending: this constraint is removed; the drawing keeps it until Apply constraints."
+    } else {
+        "No change pending."
+    }
 }
 
 /// What the draft becomes when the angle typed in degrees replaces the saved angle `t`, or why it
@@ -2170,6 +2336,8 @@ pub(crate) mod tests {
     pub(crate) mod diameter;
     /// §31L: dimension labels on the accepted drawing and the replacement of a saved dimension.
     pub(crate) mod dimension;
+    /// §31N: the markers of the other saved rules on the accepted drawing and their removal.
+    pub(crate) mod marker;
     /// §27G: the same editor on the profile of a Revolve with a bore.
     pub(crate) mod revolve;
     /// §30C: the same editor applying into the open document.

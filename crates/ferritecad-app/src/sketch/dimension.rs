@@ -62,7 +62,7 @@ impl Dimension {
 }
 
 /// The Line a pair of points spans when they are its Start and End, in either order.
-fn whole_line(a: SketchPointRef, b: SketchPointRef) -> Option<StableEntityId> {
+pub(super) fn whole_line(a: SketchPointRef, b: SketchPointRef) -> Option<StableEntityId> {
     let (x, y) = (LineEndpoint::of(a.at)?, LineEndpoint::of(b.at)?);
     (a.curve == b.curve && x != y).then_some(a.curve)
 }
@@ -385,7 +385,7 @@ fn compact_degrees(angle: DirectedAngle) -> String {
 }
 
 /// The region of the canvas a label may stand in.
-fn band(canvas: egui::Rect) -> egui::Rect {
+pub(super) fn band(canvas: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(
         canvas.min + egui::vec2(SIDE, TOP),
         canvas.max - egui::vec2(SIDE, BOTTOM),
@@ -394,7 +394,7 @@ fn band(canvas: egui::Rect) -> egui::Rect {
 
 /// `rect` moved the least that puts it inside `band`; along an axis where it is larger than
 /// the band it is aligned to the band's start.
-fn within(rect: egui::Rect, band: egui::Rect) -> egui::Rect {
+pub(super) fn within(rect: egui::Rect, band: egui::Rect) -> egui::Rect {
     let shift = |lo: f32, hi: f32, from: f32, to: f32| {
         if hi - lo >= to - from || lo < from {
             from - lo
@@ -408,6 +408,23 @@ fn within(rect: egui::Rect, band: egui::Rect) -> egui::Rect {
         shift(rect.min.x, rect.max.x, band.min.x, band.max.x),
         shift(rect.min.y, rect.max.y, band.min.y, band.max.y),
     ))
+}
+
+/// The unit normal of a Line running `along` on the screen that a length label stands on: of the two
+/// normals the one pointing up the screen, else to the right; straight up for a Line too short to
+/// have a direction. A §31N marker stands on the other side.
+pub(super) fn upper_side(along: egui::Vec2) -> egui::Vec2 {
+    let length = along.length();
+    if length > 1e-3 {
+        let n = egui::vec2(-along.y, along.x) / length;
+        if n.y < -1e-4 || (n.y.abs() <= 1e-4 && n.x > 0.) {
+            n
+        } else {
+            -n
+        }
+    } else {
+        egui::vec2(0., -1.)
+    }
 }
 
 /// Where the box of a label of `size` stands for a curve of the drawing, or None when the
@@ -430,19 +447,8 @@ pub(super) fn place(
     let (anchor, away) = match *shape {
         Shape::Line { start, end } => {
             let (a, b) = (view.screen(canvas, start), view.screen(canvas, end));
-            let (along, length) = (b - a, (b - a).length());
-            let up = if length > 1e-3 {
-                // The two normals; the one pointing up the screen, else to the right.
-                let n = egui::vec2(-along.y, along.x) / length;
-                if n.y < -1e-4 || (n.y.abs() <= 1e-4 && n.x > 0.) {
-                    n
-                } else {
-                    -n
-                }
-            } else {
-                egui::vec2(0., -1.)
-            };
-            (a + along * 0.5, up)
+            let along = b - a;
+            (a + along * 0.5, upper_side(along))
         }
         Shape::Circle { center, radius } => {
             let c = view.screen(canvas, center);

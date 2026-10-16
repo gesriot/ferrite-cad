@@ -4212,6 +4212,129 @@ mod tests {
         );
     }
 
+    /// §31N: a rectangle whose Sketch stores a rough guess and keeps rules that solve it into another
+    /// shape (a pin, a horizontal, a vertical, two lengths, and an EqualLength and a Parallel of Lines 1
+    /// and 3 that stand on one place). The marker of the EqualLength, chosen on the canvas of the accepted
+    /// solved drawing under the Rule target, is removed by the one explicit action; the request is
+    /// applied into an unsaved session after a height step, exported before Save, undone, redone and
+    /// saved, each against the command line given the same request, and the saved model is read back
+    /// by the solver's own degrees of freedom, by the form of its cold rebuild and by an STL reader
+    /// that is not the writer.
+    #[test]
+    fn native_a_saved_equal_length_chosen_by_its_marker_and_removed_is_applied_like_the_command_line()
+     {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("rectangle.fcad");
+        crate::constraints::tests::marker::write_marked_rectangle(&path);
+        let pristine = root.path().join("pristine.fcad");
+        std::fs::copy(&path, &pristine).expect("a copy of the source");
+        let seen = std::cell::Cell::new(None);
+        native_constraint_gate_with(
+            root.path(),
+            &path,
+            9.5,
+            Some(("constraint-markers-rectangle", &|saved, stl| {
+                crate::constraints::tests::marker::saved_unequal_rectangle(
+                    saved,
+                    stl,
+                    9.5,
+                    seen.get().expect("the form ran first"),
+                )
+            })),
+            |path, source, sketch| {
+                crate::constraints::tests::marker::native_marked_rectangle(
+                    path, source, sketch, &seen,
+                )
+            },
+        );
+        // The reader of the saved result is not a rubber stamp: given the pristine source and its own
+        // export in place of the result, it must fail (Line 3 is still 60 mm and nothing is free).
+        let (source_stl, _) = peer_bytes(&pristine, root.path(), "markers-pristine");
+        let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::constraints::tests::marker::saved_unequal_rectangle(
+                &pristine,
+                &source_stl,
+                9.5,
+                seen.get().expect("the form ran first"),
+            );
+        }));
+        assert!(
+            verdict.is_err(),
+            "the source was accepted in place of the result"
+        );
+        println!(
+            "\nFCAD_31N_NATIVE_RULE_EXECUTED request=marker_equals_form_road stored_vs_solved=1 shared_place=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read dof=solver negative=held"
+        );
+    }
+
+    /// §31N: a cylinder whose Sketch stores the circle (4.5, 0) r 1.2 and keeps a Radius and a Fixed
+    /// centre that solve it at (0, 0) r 10. The marker of the Fixed centre, chosen under the Rule target,
+    /// is removed through the same session route; the centre is then where the Sketch stored it.
+    #[test]
+    fn native_a_saved_fixed_centre_chosen_by_its_marker_and_removed_is_applied_like_the_command_line()
+     {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("cylinder.fcad");
+        crate::constraints::tests::canvas::write_guessed_circle(&path);
+        let pristine = root.path().join("pristine.fcad");
+        std::fs::copy(&path, &pristine).expect("a copy of the source");
+        let seen = std::cell::Cell::new(None);
+        native_constraint_gate_with(
+            root.path(),
+            &path,
+            9.5,
+            Some(("constraint-markers-circle", &|saved, stl| {
+                crate::constraints::tests::marker::saved_unpinned_circle(
+                    saved,
+                    stl,
+                    9.5,
+                    seen.get().expect("the form ran first"),
+                )
+            })),
+            |path, source, sketch| {
+                crate::constraints::tests::marker::native_marked_circle(path, source, sketch, &seen)
+            },
+        );
+        let (source_stl, _) = peer_bytes(&pristine, root.path(), "centre-pristine");
+        let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::constraints::tests::marker::saved_unpinned_circle(
+                &pristine,
+                &source_stl,
+                9.5,
+                seen.get().expect("the form ran first"),
+            );
+        }));
+        assert!(
+            verdict.is_err(),
+            "the source was accepted in place of the result"
+        );
+        println!(
+            "\nFCAD_31N_NATIVE_CENTRE_EXECUTED request=marker_equals_form_road stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read dof=solver negative=held"
+        );
+    }
+
     /// What the solver or the Chamfer refuses is refused whole: the session keeps
     /// its version, history and checkpoint, no file is left, and the form keeps its
     /// draft because nothing accepted a new version.

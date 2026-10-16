@@ -174,6 +174,7 @@ impl Rig {
             Target::PairA => "Pair A",
             Target::PairB => "Pair B",
             Target::Dimension => "Dimension",
+            Target::Rule => "Rule",
         });
         assert_eq!(self.canvas().target(), target);
     }
