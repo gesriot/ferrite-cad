@@ -10,8 +10,9 @@
 
 use super::{
     DRAWABLE_MM, PICK_POINTS,
+    dimension::{self, Placed, Shown},
     navigation::{self, MAX_SCALE, MIN_SCALE, Navigation, Surface, View},
-    paint_grid, paint_pointer_label, pointer_over,
+    paint_grid, pointer_over,
 };
 use ferritecad_document::{
     ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource, LineEndpoint, Sketch,
@@ -35,6 +36,11 @@ pub(crate) const SELECTED_COLOUR: egui::Color32 = egui::Color32::from_rgb(90, 17
 pub(crate) const SIDE_A_COLOUR: egui::Color32 = egui::Color32::from_rgb(255, 165, 60);
 pub(crate) const SIDE_B_COLOUR: egui::Color32 = egui::Color32::from_rgb(64, 224, 160);
 pub(crate) const HOVER_COLOUR: egui::Color32 = egui::Color32::LIGHT_YELLOW;
+/// §31L: a dimension label's text, and the border and text of a label whose saved rule has a
+/// replacement prepared.
+pub(crate) const LABEL_COLOUR: egui::Color32 = egui::Color32::from_rgb(130, 220, 230);
+pub(crate) const PENDING_COLOUR: egui::Color32 = egui::Color32::from_rgb(255, 205, 80);
+const LABEL_FONT: f32 = 11.;
 
 /// The scene's drawings, with the version of the reading they came from.
 ///
@@ -115,7 +121,7 @@ impl Shape {
     /// A Line with two distinct finite ends, or a Circle with a positive finite radius and
     /// a finite centre: something a pointer can be near. Anything else is drawn as nothing
     /// and never picked.
-    fn live(&self) -> bool {
+    pub(super) fn live(&self) -> bool {
         match *self {
             Self::Line { start, end } => {
                 start != end && start.iter().chain(&end).all(|v| v.is_finite())
@@ -259,16 +265,26 @@ pub(crate) enum Target {
     PairA,
     /// A Line or Circle for pair slot B.
     PairB,
+    /// §31L: the label of a saved Line length or Circle radius: the selection becomes the Line
+    /// or Circle that rule dimensions. Only this target reaches a label.
+    Dimension,
 }
 
 impl Target {
-    const ALL: [Self; 4] = [Self::Object, Self::Endpoint, Self::PairA, Self::PairB];
+    const ALL: [Self; 5] = [
+        Self::Object,
+        Self::Endpoint,
+        Self::PairA,
+        Self::PairB,
+        Self::Dimension,
+    ];
     fn label(self) -> &'static str {
         match self {
             Self::Object => "Object",
             Self::Endpoint => "Endpoint",
             Self::PairA => "Pair A",
             Self::PairB => "Pair B",
+            Self::Dimension => "Dimension",
         }
     }
     fn words(self) -> &'static str {
@@ -281,6 +297,12 @@ impl Target {
             }
             Self::PairA => "A click puts the nearest Line or Circle in pair slot A.",
             Self::PairB => "A click puts the nearest Line or Circle in pair slot B.",
+            Self::Dimension => {
+                "A click on a dimension label selects the Line or Circle that saved length or \
+                 radius belongs to. The number is the rule's target, not a length measured on \
+                 the drawing or on the stored coordinates. A click changes no number; Replace \
+                 dimension prepares a change."
+            }
         }
     }
 }
@@ -293,6 +315,8 @@ pub(crate) enum Part {
     End,
     Ring,
     Centre,
+    /// §31L: the label of the saved rule with this UUID, which dimensions `Hit::curve`.
+    Label(StableEntityId),
 }
 
 impl Part {
@@ -303,6 +327,7 @@ impl Part {
             Self::End => "End",
             Self::Ring => "circle",
             Self::Centre => "centre",
+            Self::Label(_) => "dimension",
         }
     }
 }
@@ -559,7 +584,8 @@ impl Canvas {
     /// Draws the canvas, the target buttons and Fit, and takes the frame's pointer events in
     /// order. Returns the clicks that ended on the canvas in this frame; the form applies
     /// them. `queued`: a request of the form waits to be taken. `pairs`: the form has pair
-    /// slots to fill.
+    /// slots to fill. `shown`: the saved dimensions, with the pending request's word on each;
+    /// their labels stand on the canvas and only the Dimension target reaches them.
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -567,9 +593,13 @@ impl Canvas {
         marks: &Marks,
         queued: bool,
         pairs: bool,
+        shown: &[Shown],
     ) -> Vec<Picked> {
         let open = ui.is_enabled() && !queued;
         if !pairs && matches!(self.target, Target::PairA | Target::PairB) {
+            self.target = Target::Object;
+        }
+        if shown.is_empty() && self.target == Target::Dimension {
             self.target = Target::Object;
         }
         if self.view.is_none() {
@@ -582,6 +612,9 @@ impl Canvas {
         {
             self.drawn_at = Some(rect);
         }
+        // The labels as the person saw them when the frame began: an event is read against
+        // the view of its start, like the curves a click picks.
+        let seen = self.labels(ui, curves, shown, rect);
         self.nav.begin(ui, open);
         // Losing the press's surface cancels the click, even if it becomes
         // available again before release. Never resume a press taken by a cover.
@@ -636,8 +669,12 @@ impl Canvas {
                         && open
                         && pointer_over(ui, visible, pos)
                         && press.distance(pos) <= CLICK_POINTS
-                        && let Some(view) = self.view
-                        && let Some(hit) = pick(curves, self.target, &view, rect, visible, press)
+                        && let Some(hit) = self.view.and_then(|view| match self.target {
+                            Target::Dimension => {
+                                dimension::pick(&seen, visible, press).map(label_hit)
+                            }
+                            target => pick(curves, target, &view, rect, visible, press),
+                        })
                     {
                         clicks.push(Picked {
                             target: self.target,
@@ -669,6 +706,7 @@ impl Canvas {
         if self.press.is_none() {
             self.view = working;
         }
+        let labels = self.labels(ui, curves, shown, rect);
         let hovered = response
             .hover_pos()
             .filter(|at| {
@@ -678,14 +716,34 @@ impl Canvas {
             })
             .and_then(|at| {
                 let view = self.view?;
-                pick(curves, self.target, &view, rect, visible, at).map(|hit| (hit, at))
+                match self.target {
+                    Target::Dimension => {
+                        dimension::pick(&labels, visible, at).map(|p| (label_hit(p), at))
+                    }
+                    target => pick(curves, target, &view, rect, visible, at).map(|hit| (hit, at)),
+                }
             });
-        self.paint(&painter, rect, curves, marks, hovered, open);
+        self.paint(
+            &painter,
+            rect,
+            curves,
+            marks,
+            &Frame {
+                hovered,
+                labels: &labels,
+                shown,
+                open,
+            },
+        );
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.;
             ui.spacing_mut().button_padding = egui::vec2(4., 1.);
             for target in Target::ALL {
-                let usable = pairs || !matches!(target, Target::PairA | Target::PairB);
+                let usable = match target {
+                    Target::PairA | Target::PairB => pairs,
+                    Target::Dimension => !shown.is_empty(),
+                    Target::Object | Target::Endpoint => true,
+                };
                 let button = ui
                     .add_enabled(
                         open && usable,
@@ -711,15 +769,43 @@ impl Canvas {
         clicks
     }
 
+    /// The labels of `shown` that stand on the canvas in the view now, in the order of `shown`.
+    fn labels(
+        &self,
+        ui: &egui::Ui,
+        curves: &[Curve],
+        shown: &[Shown],
+        rect: egui::Rect,
+    ) -> Vec<Placed> {
+        let Some(view) = self.view else {
+            return Vec::new();
+        };
+        let measure = |words: &str| {
+            ui.painter()
+                .layout_no_wrap(
+                    words.to_owned(),
+                    egui::FontId::proportional(LABEL_FONT),
+                    LABEL_COLOUR,
+                )
+                .size()
+        };
+        dimension::placed(shown, curves, &view, rect, &measure)
+    }
+
     fn paint(
         &self,
         painter: &egui::Painter,
         rect: egui::Rect,
         curves: &[Curve],
         marks: &Marks,
-        hovered: Option<(Hit, egui::Pos2)>,
-        open: bool,
+        frame: &Frame,
     ) {
+        let Frame {
+            hovered,
+            labels,
+            shown,
+            open,
+        } = *frame;
         let Some(view) = self.view else {
             painter.rect_filled(rect, 0., egui::Color32::from_gray(25));
             standing(
@@ -764,21 +850,86 @@ impl Canvas {
             }
             self.paint_marks(painter, &view, rect, curve, marks);
         }
+        // The first label stored is the one on top, as it is the one a pointer reaches.
+        for placed in labels.iter().rev() {
+            self.paint_label(painter, placed, marks, hovered, open);
+        }
         if let Some((hit, pointer)) = hovered {
             let name = curve_name(curves, hit.curve);
             let words = match hit.part {
                 Part::Line => name,
+                Part::Label(id) => {
+                    let what = shown
+                        .iter()
+                        .find(|s| s.dimension.id == id)
+                        .map_or_else(String::new, |s| s.dimension.name());
+                    format!("{name} · saved {what}")
+                }
                 part => format!("{name} · {}", part.word()),
             };
-            paint_pointer_label(painter, rect, pointer, &words, HOVER_COLOUR);
+            paint_hover(painter, rect, pointer, &words);
         }
         standing(
             painter,
             rect.left_top() + egui::vec2(5., 4.),
-            &self.top_words(curves, marks),
+            &self.top_words(curves, marks, shown),
         );
         standing_at_bottom(painter, rect, "Accepted · solved");
         navigation::paint_hint(painter, rect, self.hint(open));
+    }
+
+    /// One dimension label: its target, and after an arrow what is prepared in its place. Its
+    /// border says what it is now: the selected curve's, hovered under the Dimension target, a
+    /// replacement prepared, or just a label.
+    fn paint_label(
+        &self,
+        painter: &egui::Painter,
+        placed: &Placed,
+        marks: &Marks,
+        hovered: Option<(Hit, egui::Pos2)>,
+        open: bool,
+    ) {
+        let Placed { shown, rect } = *placed;
+        let chosen = marks.selected == Some(shown.dimension.curve);
+        let hot = matches!(
+            hovered,
+            Some((Hit { part: Part::Label(id), .. }, _)) if id == shown.dimension.id
+        );
+        let live = open && self.target == Target::Dimension;
+        // The selected curve's label stays blue under the pointer: hovering never hides what
+        // is selected.
+        let (border, width) = if chosen {
+            (SELECTED_COLOUR, 2.)
+        } else if hot {
+            (HOVER_COLOUR, 2.)
+        } else if shown.pending.is_some() {
+            (PENDING_COLOUR, 1.5)
+        } else if live {
+            (egui::Color32::from_gray(150), 1.)
+        } else {
+            (egui::Color32::from_gray(80), 1.)
+        };
+        painter.rect(
+            rect,
+            3.,
+            egui::Color32::from_black_alpha(215),
+            egui::Stroke::new(width, border),
+            egui::StrokeKind::Inside,
+        );
+        let text = if shown.pending.is_some() {
+            PENDING_COLOUR
+        } else if live || chosen {
+            LABEL_COLOUR
+        } else {
+            egui::Color32::from_gray(190)
+        };
+        painter.text(
+            rect.min + dimension::PAD,
+            egui::Align2::LEFT_TOP,
+            shown.text(),
+            egui::FontId::proportional(LABEL_FONT),
+            text,
+        );
     }
 
     /// The marks drawn on one curve: its ends in Endpoint mode, the pin end of the selected
@@ -889,10 +1040,11 @@ impl Canvas {
 
     /// The line on the top edge: the pair slots while a pair slot is the target, else the
     /// form's selection.
-    fn top_words(&self, curves: &[Curve], marks: &Marks) -> String {
+    fn top_words(&self, curves: &[Curve], marks: &Marks, shown: &[Shown]) -> String {
         match self.target {
             Target::PairA | Target::PairB => pair_words(curves, marks),
             Target::Object | Target::Endpoint => self.selection_words(curves, marks),
+            Target::Dimension => dimension_words(curves, marks, shown),
         }
     }
 
@@ -938,6 +1090,40 @@ fn curve_name(curves: &[Curve], id: StableEntityId) -> String {
     format!("{kind} {}", crate::constraints::short(id))
 }
 
+/// The saved dimension of the form's selection, by the UUID of its rule: "Selected dimension
+/// 3f2c1a8b0e11 · 60 → 70 mm", or why there is none.
+fn dimension_words(curves: &[Curve], marks: &Marks, shown: &[Shown]) -> String {
+    let Some(id) = marks.selected else {
+        return "Selected: none · pick a dimension label".to_owned();
+    };
+    match shown.iter().find(|s| s.dimension.curve == id) {
+        Some(s) => format!(
+            "Selected dimension {} · {}",
+            crate::constraints::short(s.dimension.id),
+            s.text()
+        ),
+        None => format!("Selected: {} · no saved dimension", curve_name(curves, id)),
+    }
+}
+
+/// What a frame paints besides the drawing: the hovered part, the labels on the canvas, the
+/// dimensions they come from, and whether the form takes input.
+#[derive(Clone, Copy)]
+struct Frame<'a> {
+    hovered: Option<(Hit, egui::Pos2)>,
+    labels: &'a [Placed],
+    shown: &'a [Shown],
+    open: bool,
+}
+
+/// The click a label takes: the curve its rule dimensions, and the rule by its UUID.
+fn label_hit(placed: &Placed) -> Hit {
+    Hit {
+        curve: placed.shown.dimension.curve,
+        part: Part::Label(placed.shown.dimension.id),
+    }
+}
+
 /// "A: Line … Start>End · B: none": the pair slots, with the direction each vector runs.
 fn pair_words(curves: &[Curve], marks: &Marks) -> String {
     let slot = |letter: &str, i: usize| match marks.pair[i] {
@@ -953,6 +1139,31 @@ fn pair_words(curves: &[Curve], marks: &Marks) -> String {
         },
     };
     format!("{} · {}", slot("A", 0), slot("B", 1))
+}
+
+/// Leave the canvas header and both footer captions visible, including when a
+/// dimension's full description needs more than one line.
+fn paint_hover(painter: &egui::Painter, canvas: egui::Rect, pointer: egui::Pos2, words: &str) {
+    let band = egui::Rect::from_min_max(
+        canvas.min + egui::vec2(3., 20.),
+        canvas.max - egui::vec2(3., 24.),
+    );
+    let inner = band.shrink(2.);
+    let galley = painter.layout(
+        words.into(),
+        egui::FontId::proportional(12.),
+        HOVER_COLOUR,
+        inner.width(),
+    );
+    let max = (inner.max - galley.size()).max(inner.min);
+    let corner = (pointer + egui::vec2(14., 14.)).clamp(inner.min, max);
+    let painter = painter.with_clip_rect(painter.clip_rect().intersect(band));
+    painter.rect_filled(
+        egui::Rect::from_min_size(corner, galley.size()).expand(2.),
+        2.,
+        egui::Color32::from_black_alpha(200),
+    );
+    painter.galley(corner, galley, HOVER_COLOUR);
 }
 
 fn standing(painter: &egui::Painter, corner: egui::Pos2, words: &str) {

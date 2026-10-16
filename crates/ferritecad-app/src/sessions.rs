@@ -4056,6 +4056,97 @@ mod tests {
         );
     }
 
+    /// §31L: a rectangle whose Sketch stores a rough guess and keeps rules that solve it into
+    /// 60 × 30 mm. The label of the saved 60 mm length, chosen on the canvas of the accepted
+    /// solved drawing under the Dimension target, replaces that rule by 70 mm; the request is
+    /// applied into an unsaved session after a height step, exported before Save, undone, redone
+    /// and saved, each against the command line given the same request, and the saved model is
+    /// read back by the form of its cold rebuild and by an STL reader that is not the writer.
+    #[test]
+    fn native_a_saved_length_chosen_by_its_label_and_replaced_is_applied_like_the_command_line() {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("rectangle.fcad");
+        crate::constraints::tests::dimension::write_dimensioned_rectangle(&path);
+        let seen = std::cell::Cell::new(None);
+        native_constraint_gate_with(
+            root.path(),
+            &path,
+            9.5,
+            Some(("dimension-labels-rectangle", &|saved, stl| {
+                crate::constraints::tests::dimension::saved_dimensioned_rectangle(
+                    saved,
+                    stl,
+                    9.5,
+                    seen.get().expect("the form ran first"),
+                )
+            })),
+            |path, source, sketch| {
+                crate::constraints::tests::dimension::native_dimension_rectangle(
+                    path, source, sketch, &seen,
+                )
+            },
+        );
+        println!(
+            "\nFCAD_31L_NATIVE_RECTANGLE_EXECUTED request=label_equals_list stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read"
+        );
+    }
+
+    /// §31L: a cylinder whose Sketch stores the circle (4.5, 0) r 1.2 and keeps a Radius and a
+    /// Fixed centre that solve it at (0, 0) r 10; the label of the Radius, chosen under the
+    /// Dimension target, replaces it by a diameter of 17 mm (the Radius 8.5), through the same
+    /// session route.
+    #[test]
+    fn native_a_saved_radius_chosen_by_its_label_and_replaced_by_a_diameter_is_applied_like_the_command_line()
+     {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("cylinder.fcad");
+        crate::constraints::tests::canvas::write_guessed_circle(&path);
+        let seen = std::cell::Cell::new(None);
+        native_constraint_gate_with(
+            root.path(),
+            &path,
+            9.5,
+            Some(("dimension-labels-circle", &|saved, stl| {
+                crate::constraints::tests::dimension::saved_dimensioned_circle(
+                    saved,
+                    stl,
+                    9.5,
+                    seen.get().expect("the form ran first"),
+                )
+            })),
+            |path, source, sketch| {
+                crate::constraints::tests::dimension::native_dimension_circle(
+                    path, source, sketch, &seen,
+                )
+            },
+        );
+        println!(
+            "\nFCAD_31L_NATIVE_CIRCLE_EXECUTED request=label_equals_list stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read"
+        );
+    }
+
     /// What the solver or the Chamfer refuses is refused whole: the session keeps
     /// its version, history and checkpoint, no file is left, and the form keeps its
     /// draft because nothing accepted a new version.

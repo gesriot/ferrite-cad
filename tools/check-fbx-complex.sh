@@ -896,8 +896,9 @@ if [ -n "${FCAD_ANALYTIC_SESSION_FBX_DIR:-}" ]; then
     # the same two ways and joined against the STL of the same model. §31I adds
     # the Circle and annulus whose numbers the forms' canvas made, §31J the same
     # dragged at a zoomed and panned scale, §31K a rectangle and a cylinder whose
-    # constraint rules were chosen on the canvas of the accepted solved drawing.
-    for name in circle-session annulus-session annulus-swapped-session circle-canvas annulus-canvas circle-navigated annulus-navigated constraint-canvas-rectangle constraint-canvas-circle; do
+    # constraint rules were chosen on the canvas of the accepted solved drawing, §31L the
+    # same two after a saved dimension was chosen by its label and replaced.
+    for name in circle-session annulus-session annulus-swapped-session circle-canvas annulus-canvas circle-navigated annulus-navigated constraint-canvas-rectangle constraint-canvas-circle dimension-labels-rectangle dimension-labels-circle; do
         "$reader" --identity "$FCAD_ANALYTIC_SESSION_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
         if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
             echo "error: session Circle/annulus FBX was not independently read: $name" >&2

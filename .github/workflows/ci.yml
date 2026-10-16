@@ -1454,6 +1454,56 @@ jobs:
             grep -Fxq "$marker" constraint-canvas.log
           done
 
+      - name: Label the saved dimensions of the accepted solved Sketch drawing and replace them explicitly
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+        run: |
+          set -euo pipefail
+          # §31L: the saved whole-Line lengths and the single Circle's radius as labels of the
+          # accepted drawing: which rules they are, where they stand and what a pointer
+          # reaches (pure), the form driven by real egui events (the Dimension target,
+          # the one selection shared with the lists and the persisted rows, Replace
+          # dimension as one step updated in place and taken back by the saved number, a
+          # Circle's radius or diameter, the view, blocked input, 768 points, no drawing,
+          # other forms, overlaps) and the dimensions following their tab, run as one
+          # filtered group. Every expected name must have run and printed its marker after
+          # its last assertion; a skip, another count or a missing marker fails the step. The
+          # native route through the session, the CLI and the pinned reader is gated by the
+          # native workflows.
+          cargo test -p ferritecad-app --bin ferritecad-viewer -- sketch::dimension_tests constraints::tests::dimension sessions::tests::tabs::drafts::dimension_form --nocapture --test-threads=1 2>&1 | tee dimension-labels.log
+          if grep -q 'skipped:' dimension-labels.log; then exit 1; fi
+          grep -q '^test result: ok\. 22 passed; 0 failed' dimension-labels.log
+          for check in \
+            "sketch::dimension_tests::saved_dimensions_are_the_whole_line_lengths_and_the_one_circle_radius_in_curve_order FCAD_31L_SAVED_EXECUTED" \
+            "sketch::dimension_tests::a_label_states_the_target_and_beside_it_only_what_is_prepared_in_its_place FCAD_31L_TEXT_EXECUTED" \
+            "sketch::dimension_tests::a_label_stands_beside_its_curve_whichever_way_it_is_stored_and_inside_the_canvas FCAD_31L_PLACE_EXECUTED" \
+            "sketch::dimension_tests::a_label_is_none_when_its_curve_cannot_be_drawn_or_its_anchor_is_off_the_canvas FCAD_31L_BOUNDS_EXECUTED" \
+            "sketch::dimension_tests::labels_that_overlap_are_reached_in_stored_order_and_a_label_is_exactly_its_box FCAD_31L_HIT_EXECUTED" \
+            "constraints::tests::dimension::a_label_states_the_saved_target_and_selects_exactly_its_rule_only_under_the_dimension_target FCAD_31L_FORM_LABELS_EXECUTED" \
+            "constraints::tests::dimension::the_labels_the_lines_list_and_the_persisted_rows_show_one_selection FCAD_31L_FORM_SYNC_EXECUTED" \
+            "constraints::tests::dimension::replace_dimension_prepares_one_step_updates_it_in_place_and_the_saved_number_takes_it_back FCAD_31L_FORM_REPLACE_EXECUTED" \
+            "constraints::tests::dimension::replace_dimension_is_the_replace_length_of_the_list_and_never_a_tolerance FCAD_31L_FORM_SEMANTICS_EXECUTED" \
+            "constraints::tests::dimension::a_refused_replacement_keeps_the_typed_text_the_selection_and_the_history_exactly FCAD_31L_FORM_REFUSED_EXECUTED" \
+            "constraints::tests::dimension::a_dimension_chosen_on_the_canvas_brings_its_row_and_editor_into_view_in_a_long_list FCAD_31L_FORM_REVEAL_EXECUTED" \
+            "constraints::tests::dimension::a_cancelled_save_or_a_stale_reply_keeps_the_text_the_selection_and_the_prepared_replacement FCAD_31L_FORM_CANCELLED_EXECUTED" \
+            "constraints::tests::dimension::a_circle_radius_is_replaced_as_the_radius_whether_the_number_is_a_radius_or_a_diameter FCAD_31L_FORM_CIRCLE_EXECUTED" \
+            "constraints::tests::dimension::labels_follow_zoom_pan_and_fit_and_are_hit_exactly_where_they_are_drawn FCAD_31L_FORM_VIEW_EXECUTED" \
+            "constraints::tests::dimension::a_label_press_dies_with_its_surface_and_busy_queued_covered_or_unfocused_forms_take_nothing FCAD_31L_FORM_BLOCKED_EXECUTED" \
+            "constraints::tests::dimension::the_labels_the_editor_and_the_actions_stay_reachable_at_768_points_in_the_worst_forms FCAD_31L_FORM_768_EXECUTED" \
+            "constraints::tests::dimension::without_a_drawing_the_saved_rows_still_select_and_replace_and_other_profiles_have_no_dimension FCAD_31L_FORM_UNAVAILABLE_EXECUTED" \
+            "constraints::tests::dimension::two_forms_over_one_document_keep_their_own_selection_text_and_pending_replacement FCAD_31L_FORM_FORMS_EXECUTED" \
+            "constraints::tests::dimension::overlapping_labels_are_reached_in_stored_order_and_the_list_reaches_the_one_underneath FCAD_31L_FORM_OVERLAP_EXECUTED" \
+            "sessions::tests::tabs::drafts::dimension_form::the_dimensions_the_text_and_the_prepared_replacement_of_a_form_follow_its_tab FCAD_31L_TAB_EXECUTED" \
+            "sessions::tests::tabs::drafts::dimension_form::a_dimension_form_held_on_another_version_loses_its_labels_and_keeps_its_rows_and_text FCAD_31L_TAB_STALE_EXECUTED" \
+            "sessions::tests::tabs::drafts::dimension_form::a_dimension_form_given_back_by_a_cancelled_close_or_an_aborted_quit_keeps_all_of_it FCAD_31L_TAB_GIVEN_BACK_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            grep -Fq "test $gate ... " dimension-labels.log
+            grep -Fxq "$marker" dimension-labels.log
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |
