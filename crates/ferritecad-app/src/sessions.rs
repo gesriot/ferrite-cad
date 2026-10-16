@@ -4147,6 +4147,71 @@ mod tests {
         );
     }
 
+    /// §31M: a quadrilateral whose Sketch stores a rough guess and keeps rules that solve it into
+    /// another shape (an anchor, three lengths and two saved directed angles, the second with its
+    /// first vector reversed). The label of the saved -100° angle, chosen on the canvas of the
+    /// accepted solved drawing under the Dimension target, replaces that rule by -130°, keeping both
+    /// exact vectors; the request is applied into an unsaved session after a height step, exported
+    /// before Save, undone, redone and saved, each against the command line given the same request,
+    /// and the saved model is read back by the form of its cold rebuild, by the sign of the turn
+    /// between the very vectors the rule names, and by an STL reader that is not the writer.
+    #[test]
+    fn native_a_saved_angle_chosen_by_its_label_and_replaced_is_applied_like_the_command_line() {
+        if !native() {
+            return;
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: constraints need PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("quad.fcad");
+        crate::constraints::tests::turn_label::write_angled_quad(&path);
+        let pristine = root.path().join("pristine.fcad");
+        std::fs::copy(&path, &pristine).expect("a copy of the source");
+        let seen = std::cell::Cell::new(None);
+        native_constraint_gate_with(
+            root.path(),
+            &path,
+            9.5,
+            Some(("angle-dimension-quad", &|saved, stl| {
+                crate::constraints::tests::turn_label::saved_angled_quad(
+                    saved,
+                    stl,
+                    9.5,
+                    seen.get().expect("the form ran first"),
+                )
+            })),
+            |path, source, sketch| {
+                crate::constraints::tests::turn_label::native_angle_quad(
+                    path, source, sketch, &seen,
+                )
+            },
+        );
+        // The reader of the saved result is not a rubber stamp: given the pristine source and its
+        // own export in place of the result, it must fail (the angle is still -100°).
+        let (source_stl, _) = peer_bytes(&pristine, root.path(), "angle-pristine");
+        let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::constraints::tests::turn_label::saved_angled_quad(
+                &pristine,
+                &source_stl,
+                9.5,
+                seen.get().expect("the form ran first"),
+            );
+        }));
+        assert!(
+            verdict.is_err(),
+            "the source was accepted in place of the result"
+        );
+        println!(
+            "\nFCAD_31M_NATIVE_ANGLE_EXECUTED request=label_equals_form_road stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read turn=atan2 negative=held"
+        );
+    }
+
     /// What the solver or the Chamfer refuses is refused whole: the session keeps
     /// its version, history and checkpoint, no file is left, and the form keeps its
     /// draft because nothing accepted a new version.

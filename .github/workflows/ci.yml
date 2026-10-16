@@ -1504,6 +1504,58 @@ jobs:
             grep -Fxq "$marker" dimension-labels.log
           done
 
+      - name: Label the saved directed angles of the accepted solved Sketch drawing and replace them explicitly
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+        run: |
+          set -euo pipefail
+          # §31M: a saved DirectedAngle between two Lines as a label of the accepted drawing,
+          # selected by the UUID of its rule beside the curve selection: which rules they are
+          # and what a label says (the sign, the order A>B, the unit, never another number),
+          # where a pair's label stands and what a pointer reaches among all the labels (pure),
+          # the form driven by real egui events (the Dimension target, both Lines and the way
+          # each vector runs marked, the one selection shared with the lists and the persisted
+          # rows, Replace dimension as one step keeping both exact vectors, updated in place and
+          # taken back by the exactly saved angle, refusals, blocked input, 768 points, no
+          # drawing, other forms, overlaps, and the number as displayed) and the angles
+          # following their tab. This set is its own step, apart from the §31L one whose filter
+          # is a substring and whose count is exact. Every expected name must have run and
+          # printed its marker after its last assertion; a skip, another count or a missing
+          # marker fails the step. The native route through the session, the CLI and the pinned
+          # reader is gated by the native workflows.
+          cargo test -p ferritecad-app --bin ferritecad-viewer -- sketch::turn_label_tests constraints::tests::turn_label sessions::tests::tabs::drafts::turn_form --nocapture --test-threads=1 2>&1 | tee angle-dimensions.log
+          if grep -q 'skipped:' angle-dimensions.log; then exit 1; fi
+          grep -q '^test result: ok\. 21 passed; 0 failed' angle-dimensions.log
+          for check in \
+            "sketch::turn_label_tests::saved_angles_are_the_directed_angle_rules_between_two_lines_with_their_exact_vectors_in_rule_order FCAD_31M_SAVED_EXECUTED" \
+            "sketch::turn_label_tests::a_label_states_the_signed_target_the_order_and_the_unit_and_never_reads_as_another_value FCAD_31M_TEXT_EXECUTED" \
+            "sketch::turn_label_tests::the_label_of_a_pair_stands_midway_between_its_lines_and_is_finite_for_every_relative_position FCAD_31M_PLACE_EXECUTED" \
+            "sketch::turn_label_tests::labels_of_curves_and_pairs_overlap_in_saved_order_and_a_label_is_exactly_its_box FCAD_31M_HIT_EXECUTED" \
+            "sketch::turn_label_tests::an_angle_typed_back_from_its_display_is_the_saved_angle_for_the_probes_and_the_gap_is_told FCAD_31M_ROUNDTRIP_EXECUTED" \
+            "constraints::tests::turn_label::a_label_states_the_saved_signed_target_and_selects_exactly_its_rule_with_both_vectors_only_under_the_dimension_target FCAD_31M_FORM_LABELS_EXECUTED" \
+            "constraints::tests::turn_label::the_labels_the_lines_list_and_the_persisted_rows_show_one_selection_and_the_pair_slots_never_move FCAD_31M_FORM_SYNC_EXECUTED" \
+            "constraints::tests::turn_label::replace_dimension_for_a_saved_angle_prepares_one_step_keeps_both_vectors_updates_in_place_and_the_saved_angle_takes_it_back FCAD_31M_FORM_REPLACE_EXECUTED" \
+            "constraints::tests::turn_label::replace_dimension_is_the_remove_and_add_of_the_form_and_never_a_tolerance FCAD_31M_FORM_SEMANTICS_EXECUTED" \
+            "constraints::tests::turn_label::a_refused_angle_keeps_the_typed_text_the_selection_and_the_history_exactly FCAD_31M_FORM_REFUSED_EXECUTED" \
+            "constraints::tests::turn_label::a_cancelled_save_or_a_stale_reply_keeps_the_text_the_selection_and_the_prepared_angle FCAD_31M_FORM_CANCELLED_EXECUTED" \
+            "constraints::tests::turn_label::labels_follow_zoom_pan_and_fit_and_are_hit_exactly_where_they_are_drawn FCAD_31M_FORM_VIEW_EXECUTED" \
+            "constraints::tests::turn_label::an_angle_label_press_dies_with_its_surface_and_busy_queued_covered_or_unfocused_forms_take_nothing FCAD_31M_FORM_BLOCKED_EXECUTED" \
+            "constraints::tests::turn_label::overlapping_labels_are_reached_in_saved_order_and_the_list_reaches_the_one_underneath FCAD_31M_FORM_OVERLAP_EXECUTED" \
+            "constraints::tests::turn_label::the_angle_labels_the_editor_and_the_actions_stay_reachable_at_768_points_in_the_worst_forms FCAD_31M_FORM_768_EXECUTED" \
+            "constraints::tests::turn_label::without_a_drawing_the_angle_rows_still_select_and_replace_and_other_profiles_have_no_angle FCAD_31M_FORM_UNAVAILABLE_EXECUTED" \
+            "constraints::tests::turn_label::two_forms_over_one_document_keep_their_own_angle_selection_text_and_pending_replacement FCAD_31M_FORM_FORMS_EXECUTED" \
+            "constraints::tests::turn_label::an_angle_typed_as_it_is_displayed_is_the_saved_angle_exactly_and_the_one_that_is_not_says_so FCAD_31M_FORM_NUMBER_EXECUTED" \
+            "sessions::tests::tabs::drafts::turn_form::the_angles_the_selection_the_text_and_the_prepared_replacement_of_a_form_follow_its_tab FCAD_31M_TAB_EXECUTED" \
+            "sessions::tests::tabs::drafts::turn_form::an_angle_form_held_on_another_version_loses_its_labels_and_keeps_its_rows_selection_and_text FCAD_31M_TAB_STALE_EXECUTED" \
+            "sessions::tests::tabs::drafts::turn_form::an_angle_form_given_back_by_a_cancelled_close_or_an_aborted_quit_keeps_all_of_it FCAD_31M_TAB_GIVEN_BACK_EXECUTED"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            grep -Fq "test $gate ... " angle-dimensions.log
+            grep -Fxq "$marker" angle-dimensions.log
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |

@@ -8502,3 +8502,6 @@ pub(crate) mod navigation_tests;
 #[cfg(test)]
 #[path = "sketch/object_snap_tests.rs"]
 pub(crate) mod object_snap_tests;
+#[cfg(test)]
+#[path = "sketch/turn_label_tests.rs"]
+pub(crate) mod turn_label_tests;

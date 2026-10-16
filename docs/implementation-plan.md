@@ -5533,20 +5533,64 @@ The two own viewers quit with exit0, peaks 209.876/198.282 MiB, pressure1, swap0
 remain a separate exact-head merge condition. Detailed evidence and outstanding window gestures
 are in the contract above; no OOM resolution is claimed.
 
-### §31M — Directed-angle dimension selection and replacement (planned)
+### §31M — A saved directed angle as a selectable, replaceable dimension on the accepted Sketch canvas (reviewed implementation)
 
-Extend the accepted Sketch annotations to the existing saved DirectedAngle family. Identify a
-selected dimension by its constraint UUID and preserve both stored directed endpoint references;
-a pair dimension must not masquerade as a dimension of one curve. Show the accepted signed target
-in degrees and highlight the corresponding solved vectors. Keep explicit Dimension picking,
-deterministic overlap/list fallback, version ownership, logical-point navigation and bounded
-layout. Replace through the existing remove/add draft and shared operation, with one history
-step, in-place repeated replacement and exact return-to-saved semantics; retain all unrelated
-pending changes and do not prewrite coordinates. Existing Length/Radius behavior must survive.
-No new constraint family, solver/shim/schema/capability, CLI command or persisted label position.
-Prove sign/direction/identity, invalid and stale refusal, independent tabs and real widget →
-Apply/export-before-Save/Undo/Redo/Save parity with CLI, complete SQL/payload/hash checks and
-independent geometry reading. Remaining native gestures stay explicitly separate from headless tests.
+The accepted solved drawing of the **Sketch constraints** form carries a **label for each saved DirectedAngle
+between two Lines** beside the §31L lengths and radius: `A>B -70°` — the order of the two vectors, the signed
+target the saved rule holds and the unit, never an angle measured on the stored guess or on the picture. A pair
+dimension must not masquerade as a dimension of one curve, so it is told by **the full UUID of its rule** and has
+its own typed model (`Turn`: the rule, the two exact `DirectedLine`s, the validated `DirectedAngle`); Length and
+Radius keep theirs. Selecting it (its label under the explicit **Dimension** target, or its row of the persisted
+list) sets one more field of the form and **clears the curve selection** — at most one of the two is set, so no
+curve and no end is invented for it — marks both solved Lines with the way each vector runs, and never reassigns
+the **Pair A/B slots** or their directions (they are the unapplied input for a new rule). The label of a pair
+stands at the middle of the middles of its two solved Lines: finite for 0°/180°, parallel and nearly parallel
+Lines, with no arc, no intersection and no sector that could show a smaller unsigned angle. Overlaps follow a
+saved order (the labels of curves, then those of pairs in rule order), never a UUID, and every dimension stays
+reachable from the persisted list. **Replace dimension** prepares the existing atomic remove/add keeping the saved
+rule's two exact vectors: one `History::change`, updated in place by a later angle, taken back by the **exactly
+saved `DirectedAngle`** (no tolerance; the saved rule keeps its UUID and every other pending change stays).
+Degrees↔radians still cross the existing `DirectedAngle` converter. The UI alone searches a bounded
+neighbourhood of the displayed degrees when needed, accepting only an exact round trip to the saved
+radians; the 18 measured gaps among 1 596 near-zero/half-turn probes are corrected without changing
+CLI/JSON output or the numeric contract. A stored radian value with no exact degree spelling still
+gets an explicit warning and can be restored through Undo/Clear pending changes. A UI
+adapter over §31F: no new constraint, document field, schema, capability, FFI, solver equation, jobs operation,
+CLI request, stored label position or placement engine; the other families keep their selectors.
+
+Contract, the two decisions, executed gates, mutations, resources, N/A and the independent window recipe:
+[sketch-angle-dimension.md](sketch-angle-dimension.md). Author evidence before publication (no CI of the unstaged
+diff, no window): 21 kernel-free gates (5 pure, 13 form on real egui events at 1x and 2x, 3 tab) and 1 native
+session gate (a quadrilateral whose stored guess turns ±77.1° and whose saved +100° / −100° angles, the second with
+its first vector reversed, solve it differently; the −100° label chosen under Dimension and replaced by −130°, equal
+to the form's own Remove/pair/direction/degrees road, applied, exported before Save, undone, redone, saved and
+rebuilt cold against the peer CLI — every SQL cell and the CBOR payload after the one UUID mapping — with the sign
+read back by `atan2` between the very vectors the rule names, an STL read by a reader that is not the writer, the
+pinned ufbx, and the pristine source failing the reader); whole viewer suites 866/0/4 on a true stub and on OCCT +
+PlaneGCS; 16 compiling mutants (26 gate runs), among them a lost sign, a reversed vector, a foreign UUID and a
+non-atomic replace/revert, all caught by executed assertions — one mutant first survived and exposed dead code that
+was removed. Independent local review corrected exact editable degree spellings and the new
+pending annotation's missing glyph; final native/stub viewer suites each pass 866/0/4. The guarded
+native window flow covers angle selection, draft history/refusal/Save Cancel, Apply, unsaved export,
+document Undo/Redo and Save, zoom/Fit, overlap/list fallback and the long-list editor; actual SQL/CBOR/
+hash/STL/FBX output agrees with CLI, and pristine substitution fails. Window peaks 214.954/193.142 MiB,
+normal exits, pressure1, swap0. Remote checks belong to the published PR's own commits. **Open:**
+the remaining native-window pan/pinch/held-input/covering and other explicitly unobserved window cases
+listed in the contract; arcs, mixed profiles, the annulus, the other relations as labels, dragging, §30, Milestone 5C and OOM.
+
+### §31N — Select saved non-dimensional constraints on the accepted Sketch drawing (planned)
+
+Extend the accepted constraint drawing to the existing saved Horizontal, Vertical, Fixed,
+EqualLength, Parallel, Perpendicular and Collinear rules (including a single Circle's Fixed
+centre where supported). A marker identifies its constraint UUID and highlights exactly the
+stored references; a pair is not represented as one curve. Keep explicit picking, deterministic
+saved-order overlap and list fallback, clipped logical-point placement, existing dimension
+replacement and the 768-point form budget. Selecting a marker only selects/reveals its saved row;
+an explicit removal uses the same validated draft/history and shared UI/CLI operation. Closure
+and unsupported profiles retain their existing policy. Do not add another solver equation,
+capability, schema, CLI command or persisted marker position. Prove ownership/refusal/history,
+real widget-to-session removal parity with CLI and independent saved geometry. Native-window
+pan/pinch/held-input and other outstanding cases remain separate from headless evidence.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
