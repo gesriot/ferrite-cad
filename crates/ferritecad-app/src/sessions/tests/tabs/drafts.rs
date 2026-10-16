@@ -13,6 +13,8 @@ use ferritecad_ui::{PointerButton, ViewportEvent};
 mod canvas_form;
 /// §30U: Close with an unfinished form.
 mod close_form;
+/// §31L: the saved dimensions of a constraints form follow its tab.
+mod dimension_form;
 pub(in crate::sessions::tests::tabs) mod model_tree;
 /// §30Q: Open, New and Recover beside these forms, through the same owners.
 mod open_new_recover;

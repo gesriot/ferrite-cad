@@ -14,12 +14,12 @@ use crate::sketch::accepted::{
 };
 
 /// The form on a four-Line plate with a synthetic solved drawing, in one egui context.
-struct Rig {
-    _root: Option<tempfile::TempDir>,
-    stored: Sketch,
-    ids: Vec<StableEntityId>,
-    e: Editor,
-    ctx: egui::Context,
+pub(super) struct Rig {
+    pub(super) _root: Option<tempfile::TempDir>,
+    pub(super) stored: Sketch,
+    pub(super) ids: Vec<StableEntityId>,
+    pub(super) e: Editor,
+    pub(super) ctx: egui::Context,
 }
 
 /// The stored Sketch drawn twice as large about its centre, one curve for one curve.
@@ -59,7 +59,7 @@ pub(crate) fn enlarged(stored: &Sketch) -> Drawing {
 }
 
 impl Rig {
-    fn new(pixels_per_point: f32) -> Self {
+    pub(super) fn new(pixels_per_point: f32) -> Self {
         let (root, path, source) = fixture();
         let choice = &source.constraint_sketches[0];
         let stored = choice.stored.clone().expect("stored");
@@ -82,12 +82,12 @@ impl Rig {
         rig
     }
 
-    fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+    pub(super) fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
         frame_running(&self.ctx, &mut self.e, events, false)
     }
 
     /// A frame as the window runs it, with a job's state, the focus and a cover given.
-    fn frame_as(
+    pub(super) fn frame_as(
         &mut self,
         events: Vec<egui::Event>,
         running: bool,
@@ -121,63 +121,64 @@ impl Rig {
         output
     }
 
-    fn solved(&self) -> Vec<Curve> {
+    pub(super) fn solved(&self) -> Vec<Curve> {
         match self.e.draft_canvas().expect("a draft").0 {
             Drawing::Solved(curves) => curves.clone(),
             other => panic!("no solved drawing: {other:?}"),
         }
     }
 
-    fn canvas(&self) -> &crate::sketch::accepted::Canvas {
+    pub(super) fn canvas(&self) -> &crate::sketch::accepted::Canvas {
         self.e.draft_canvas().expect("a draft").1
     }
 
-    fn rect(&self) -> egui::Rect {
+    pub(super) fn rect(&self) -> egui::Rect {
         self.canvas().rect().expect("the canvas was drawn")
     }
 
     /// The screen point of a document point in the view now.
-    fn screen(&self, p: [f64; 2]) -> egui::Pos2 {
+    pub(super) fn screen(&self, p: [f64; 2]) -> egui::Pos2 {
         self.canvas().screen(p).expect("a view")
     }
 
     /// Where the solved Line `i` starts, ends, and its middle.
-    fn ends(&self, i: usize) -> [egui::Pos2; 2] {
+    pub(super) fn ends(&self, i: usize) -> [egui::Pos2; 2] {
         match self.solved()[i].shape {
             Shape::Line { start, end } => [self.screen(start), self.screen(end)],
             _ => panic!("a Line"),
         }
     }
-    fn mid(&self, i: usize) -> egui::Pos2 {
+    pub(super) fn mid(&self, i: usize) -> egui::Pos2 {
         let [a, b] = self.ends(i);
         a + (b - a) * 0.5
     }
 
     /// The same Line's middle where the Sketch STORES it, in the view now.
-    fn stored_mid(&self, i: usize) -> egui::Pos2 {
+    pub(super) fn stored_mid(&self, i: usize) -> egui::Pos2 {
         let SketchGeometry::Line { start, end } = self.stored.curves[i].geometry else {
             panic!("a Line")
         };
         self.screen([(start.x + end.x) / 2., (start.y + end.y) / 2.])
     }
 
-    fn click(&mut self, at: egui::Pos2) {
+    pub(super) fn click(&mut self, at: egui::Pos2) {
         click_at(&self.ctx, &mut self.e, at, false);
     }
-    fn press(&mut self, label: &str) {
+    pub(super) fn press(&mut self, label: &str) {
         click(&self.ctx, &mut self.e, label);
     }
-    fn target(&mut self, target: Target) {
+    pub(super) fn target(&mut self, target: Target) {
         self.press(match target {
             Target::Object => "Object",
             Target::Endpoint => "Endpoint",
             Target::PairA => "Pair A",
             Target::PairB => "Pair B",
+            Target::Dimension => "Dimension",
         });
         assert_eq!(self.canvas().target(), target);
     }
 
-    fn picks(
+    pub(super) fn picks(
         &self,
     ) -> (
         Option<StableEntityId>,
@@ -189,7 +190,7 @@ impl Rig {
     }
 
     /// Everything a click on the canvas must leave alone.
-    fn kept(&self) -> (Vec<String>, (usize, usize), bool) {
+    pub(super) fn kept(&self) -> (Vec<String>, (usize, usize), bool) {
         let (_, _, _, undo, redo) = self.e.draft_state().expect("a draft");
         (
             self.e.draft_inputs().expect("a draft"),
@@ -201,7 +202,7 @@ impl Rig {
     /// Stroke segments of one colour in a frame, as the screen ends they join. A window
     /// that is still fading in paints every colour at a fraction of its strength, so the
     /// colour is compared at the strength the stroke has.
-    fn strokes(out: &egui::FullOutput, colour: egui::Color32) -> Vec<[egui::Pos2; 2]> {
+    pub(super) fn strokes(out: &egui::FullOutput, colour: egui::Color32) -> Vec<[egui::Pos2; 2]> {
         let is = |shown: egui::Color32| {
             let want = colour.gamma_multiply(f32::from(shown.a()) / 255.);
             [
@@ -222,7 +223,7 @@ impl Rig {
     }
 }
 
-fn near(a: egui::Pos2, b: egui::Pos2) -> bool {
+pub(super) fn near(a: egui::Pos2, b: egui::Pos2) -> bool {
     a.distance(b) < 0.01
 }
 
@@ -532,11 +533,16 @@ fn a_reversed_line_is_picked_by_its_start_and_end_not_by_the_screen_side() {
     println!("\nFCAD_31K_FORM_REVERSED_EXECUTED");
 }
 
-fn moved(to: egui::Pos2) -> egui::Event {
+pub(super) fn moved(to: egui::Pos2) -> egui::Event {
     egui::Event::PointerMoved(to)
 }
 
-fn button(pos: egui::Pos2, button: egui::PointerButton, pressed: bool, shift: bool) -> egui::Event {
+pub(super) fn button(
+    pos: egui::Pos2,
+    button: egui::PointerButton,
+    pressed: bool,
+    shift: bool,
+) -> egui::Event {
     egui::Event::PointerButton {
         pos,
         button,
@@ -549,19 +555,19 @@ fn button(pos: egui::Pos2, button: egui::PointerButton, pressed: bool, shift: bo
     }
 }
 
-fn primary(pos: egui::Pos2, pressed: bool) -> egui::Event {
+pub(super) fn primary(pos: egui::Pos2, pressed: bool) -> egui::Event {
     button(pos, egui::PointerButton::Primary, pressed, false)
 }
 
-fn shift_primary(pos: egui::Pos2, pressed: bool) -> egui::Event {
+pub(super) fn shift_primary(pos: egui::Pos2, pressed: bool) -> egui::Event {
     button(pos, egui::PointerButton::Primary, pressed, true)
 }
 
-fn middle(pos: egui::Pos2, pressed: bool) -> egui::Event {
+pub(super) fn middle(pos: egui::Pos2, pressed: bool) -> egui::Event {
     button(pos, egui::PointerButton::Middle, pressed, false)
 }
 
-fn wheel(points: f32) -> egui::Event {
+pub(super) fn wheel(points: f32) -> egui::Event {
     egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
         delta: egui::vec2(0., points),
@@ -571,7 +577,7 @@ fn wheel(points: f32) -> egui::Event {
 }
 
 /// Everything the view and the form could change under a gesture that must change nothing.
-type Facts = (
+pub(super) type Facts = (
     Option<(egui::Vec2, f32)>,
     (
         Option<StableEntityId>,
@@ -583,7 +589,7 @@ type Facts = (
 );
 
 impl Rig {
-    fn facts(&self) -> Facts {
+    pub(super) fn facts(&self) -> Facts {
         (
             self.canvas().view(),
             self.picks(),
@@ -592,7 +598,7 @@ impl Rig {
         )
     }
     /// The middle of Line `i` as a document point (mm), from the drawing.
-    fn mid_mm(&self, i: usize) -> [f64; 2] {
+    pub(super) fn mid_mm(&self, i: usize) -> [f64; 2] {
         match self.solved()[i].shape {
             Shape::Line { start, end } => [(start[0] + end[0]) / 2., (start[1] + end[1]) / 2.],
             _ => panic!("a Line"),
@@ -1089,7 +1095,7 @@ fn the_canvas_never_reaches_the_3d_camera_and_a_viewport_drag_still_crosses_the_
 }
 
 /// A single stored Circle drawn at another place and size: the synthetic solved drawing.
-fn moved_circle(stored: &Sketch) -> Drawing {
+pub(super) fn moved_circle(stored: &Sketch) -> Drawing {
     let c = &stored.curves[0];
     let SketchGeometry::Circle { center, radius } = c.geometry else {
         panic!("a Circle")
@@ -1111,7 +1117,10 @@ fn moved_circle(stored: &Sketch) -> Drawing {
 
 /// A closed polygon of `n` Lines on a circle of 40 mm, written with a Sketch and an
 /// Extrude by the document's own sample, so the form is the production one.
-fn polygon_fixture(n: usize, constrained: bool) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+pub(super) fn polygon_fixture(
+    n: usize,
+    constrained: bool,
+) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let (root, path, _) = fixture();
     let mut document = Document::open(&path).expect("source");
     let mut object = document
@@ -1186,7 +1195,7 @@ fn polygon_fixture(n: usize, constrained: bool) -> (tempfile::TempDir, PathBuf, 
 }
 
 /// Whether the painted text `label` is whole inside the screen and its clip.
-fn whole(out: &egui::FullOutput, label: &str, screen: egui::Rect) -> bool {
+pub(super) fn whole(out: &egui::FullOutput, label: &str, screen: egui::Rect) -> bool {
     out.shapes.iter().any(|s| {
         matches!(&s.shape, egui::Shape::Text(t)
             if t.galley.text() == label
@@ -1404,7 +1413,7 @@ use crate::{EdgeNames, FaceNames, LiveScene, VertexNames, Visibility};
 
 /// The scene of `path` read as the window reads a document (Open CASCADE and the solver),
 /// and the live scene that arrival commits.
-fn accepted_scene(path: &Path) -> (ferritecad_scene::LoadedScene, LiveScene<()>) {
+pub(super) fn accepted_scene(path: &Path) -> (ferritecad_scene::LoadedScene, LiveScene<()>) {
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("the kernel");
     let loaded = ferritecad_scene::snapshot_of(
         path,
@@ -1432,7 +1441,7 @@ fn accepted_scene(path: &Path) -> (ferritecad_scene::LoadedScene, LiveScene<()>)
 }
 
 /// The curves of the sketch `sketch` in the real presentation of `loaded`, as numbers.
-fn presented(
+pub(super) fn presented(
     loaded: &ferritecad_scene::LoadedScene,
     sketch: ObjectId,
 ) -> Vec<(StableEntityId, SketchGeometry)> {
@@ -1449,7 +1458,7 @@ fn presented(
 
 impl Rig {
     /// The form on a real accepted scene of `path`, as the window opens it.
-    fn native(
+    pub(super) fn native(
         path: &Path,
         source: &ExtrudeEditSource,
         sketch: ObjectId,
@@ -1481,7 +1490,7 @@ impl Rig {
 }
 
 /// The request the lists and buttons alone make, for the form opened with no drawing.
-fn by_lists(
+pub(super) fn by_lists(
     path: &Path,
     source: &ExtrudeEditSource,
     sketch: ObjectId,
@@ -1560,7 +1569,7 @@ pub(crate) fn write_guessed_rectangle(path: &Path) {
     document.close().expect("close");
 }
 
-fn line_numbers(g: &SketchGeometry) -> ([f64; 2], [f64; 2]) {
+pub(super) fn line_numbers(g: &SketchGeometry) -> ([f64; 2], [f64; 2]) {
     match g {
         SketchGeometry::Line { start, end } => ([start.x, start.y], [end.x, end.y]),
         _ => panic!("a Line"),
@@ -1715,7 +1724,7 @@ pub(crate) fn native_rectangle(
 }
 
 impl Rig {
-    fn canvas_mut(&mut self) -> &mut crate::sketch::accepted::Canvas {
+    pub(super) fn canvas_mut(&mut self) -> &mut crate::sketch::accepted::Canvas {
         self.e.draft_canvas_mut().expect("a draft")
     }
 }
@@ -1870,7 +1879,7 @@ pub(crate) fn native_circle(
 }
 
 impl Rig {
-    fn press_remove(&mut self, row: &str) {
+    pub(super) fn press_remove(&mut self, row: &str) {
         click_remove_on_row(&self.ctx, &mut self.e, row);
     }
 }
@@ -1964,11 +1973,11 @@ pub(crate) fn saved_circle_is_what_the_rules_ask(saved: &Path, stl: &[u8], heigh
     }
 }
 
-fn read_stl_of(bytes: &[u8]) -> (Vec<[[f64; 3]; 3]>, f64) {
+pub(super) fn read_stl_of(bytes: &[u8]) -> (Vec<[[f64; 3]; 3]>, f64) {
     super::diameter::read_stl(bytes)
 }
 
-fn escape() -> egui::Event {
+pub(super) fn escape() -> egui::Event {
     egui::Event::Key {
         key: egui::Key::Escape,
         physical_key: None,

@@ -3,6 +3,7 @@
 use crate::sketch::accepted::{
     Accepted, Canvas, Drawing, Hit, Marks, Part, Picked, Target, Unavailable,
 };
+use crate::sketch::dimension::{self, Dimension, Kind, Pending, Shown};
 use ferritecad_document::{
     AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
     ConstraintSketchChoice, DirectedAngle, DirectedLine, DocumentVersion, ExtrudeEditSource,
@@ -116,10 +117,30 @@ struct Draft {
     /// §31F: the directed angle being typed, in degrees. A box of its own: it
     /// is neither a Line length nor the Revolve angle.
     angle_deg: String,
+    /// §31L: the saved whole-Line lengths and the single Circle's radius of `choice`, read once
+    /// with it. The labels, the rows of the persisted list and Replace dimension all read this
+    /// one reading, so none can name a rule another version of the Sketch held.
+    dimensions: Vec<Dimension>,
+    /// §31L: the number typed to replace the selected dimension, exactly as typed, and the unit
+    /// a Circle's is typed in. Unapplied input like the boxes above: not request history.
+    dimension_mm: String,
+    dimension_unit: Unit,
+    /// §31L: the selection just moved onto a dimension; its editor is brought into view in the
+    /// next frame. Not a choice of the person's.
+    reveal_dimension: bool,
     edits: SketchConstraintEdits,
     history: History,
     refusal: Option<String>,
 }
+/// §31L: what the number typed for a saved Circle radius means. Either way the Radius that is
+/// stored is the radius: a diameter is `D / 2` and nothing else is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Unit {
+    #[default]
+    Radius,
+    Diameter,
+}
+
 /// §30P, tests: a draft's picks (Line, pair A, pair B) and request history depths.
 #[cfg(test)]
 pub(crate) type DraftState = (
@@ -220,6 +241,8 @@ impl Editor {
                 d.pin_x_mm.clone(),
                 d.pin_y_mm.clone(),
                 d.angle_deg.clone(),
+                d.dimension_mm.clone(),
+                format!("{:?}", d.dimension_unit),
                 format!("{:?}", d.vector_a_from),
                 format!("{:?}", d.vector_b_from),
                 format!("{:?}", d.edits),
@@ -234,6 +257,57 @@ impl Editor {
         if let Some(draft) = &mut self.draft {
             draft.selected = Some(curve);
         }
+    }
+    /// §31L, tests: the form's Sketch as if it held a Distance on each of these Lines and the
+    /// closure links a persisted Line set holds, for the gates whose build cannot solve a
+    /// persisted rule and so cannot rebuild a document that has one. **Synthetic**: the
+    /// catalogue of the form is amended, not the document, and no drawing is rebuilt. Returns
+    /// the UUIDs of the Distance rules, in the order given.
+    #[cfg(test)]
+    pub(crate) fn persist_lengths_for_tests(
+        &mut self,
+        lengths: &[(StableEntityId, f64)],
+    ) -> Vec<StableEntityId> {
+        use ferritecad_document::{SketchConstraint, SketchPointRef, SketchPointSelector};
+        let Some(draft) = &mut self.draft else {
+            return Vec::new();
+        };
+        let Some(stored) = &mut draft.choice.stored else {
+            return Vec::new();
+        };
+        let at = SketchPointRef::new;
+        let curves: Vec<_> = stored.curves.iter().map(|c| c.id).collect();
+        let mut rules = Vec::new();
+        for (curve, mm) in lengths {
+            let rule = SketchConstraint {
+                id: StableEntityId::new(),
+                rule: SketchConstraintRule::Distance {
+                    a: at(*curve, SketchPointSelector::Start),
+                    b: at(*curve, SketchPointSelector::End),
+                    distance: *mm,
+                },
+            };
+            rules.push(rule.id);
+            stored.constraints.push(rule);
+        }
+        for (i, curve) in curves.iter().enumerate() {
+            stored.constraints.push(SketchConstraint {
+                id: StableEntityId::new(),
+                rule: SketchConstraintRule::Coincident {
+                    a: at(*curve, SketchPointSelector::End),
+                    b: at(curves[(i + 1) % curves.len()], SketchPointSelector::Start),
+                },
+            });
+        }
+        draft.dimensions = dimension::saved(stored);
+        rules
+    }
+    /// §31L, tests: the dimensions the form holds and the words typed to replace one.
+    #[cfg(test)]
+    pub(crate) fn draft_dimensions(&self) -> Option<(Vec<Dimension>, String)> {
+        self.draft
+            .as_ref()
+            .map(|d| (d.dimensions.clone(), d.dimension_mm.clone()))
     }
     /// §31K, tests: the end the Pin buttons name.
     #[cfg(test)]
@@ -329,6 +403,14 @@ impl Editor {
             vector_a_from: LineEndpoint::Start,
             vector_b_from: LineEndpoint::Start,
             angle_deg: String::new(),
+            dimensions: choice
+                .stored
+                .as_ref()
+                .map(dimension::saved)
+                .unwrap_or_default(),
+            dimension_mm: String::new(),
+            dimension_unit: Unit::default(),
+            reveal_dimension: false,
             edits: Default::default(),
             history: Default::default(),
             refusal: None,
@@ -543,6 +625,19 @@ impl Editor {
                     // of the document rather than worked out here: the roles
                     // every request and every refusal is about have one source.
                     let roles = ferritecad_document::constraint_circle_roles(stored);
+                    // §31L: the saved dimensions with the pending request's word on each. The
+                    // labels on the canvas and the rows below read the same list.
+                    let shown: Vec<_> = draft
+                        .dimensions
+                        .iter()
+                        .map(|d| Shown {
+                            dimension: *d,
+                            pending: dimension::pending(&draft.edits, d),
+                        })
+                        .collect();
+                    // When this frame moved the selection (the canvas, a list or a row), the
+                    // persisted row of its dimension is brought into view, as the Segment row is.
+                    let selection_before = draft.selected;
                     // §31K: the canvas of the accepted drawing stands beside the lists
                     // that pick the same things, in the height the Lines list already
                     // had. A click fills the fields the lists fill, before the lists are
@@ -558,7 +653,14 @@ impl Editor {
                                             pair: [draft.pair_a, draft.pair_b],
                                             from: [draft.vector_a_from, draft.vector_b_from],
                                         };
-                                        draft.canvas.show(ui, curves, &marks, queued, circles.len() != 1)
+                                        draft.canvas.show(
+                                            ui,
+                                            curves,
+                                            &marks,
+                                            queued,
+                                            circles.len() != 1,
+                                            &shown,
+                                        )
                                     })
                                     .inner;
                                 let before = Some(draft.selected);
@@ -566,6 +668,7 @@ impl Editor {
                                     fill_from_canvas(
                                         picked,
                                         stored,
+                                        &draft.dimensions,
                                         &mut draft.selected,
                                         &mut draft.endpoint,
                                         [&mut draft.pair_a, &mut draft.pair_b],
@@ -1100,6 +1203,7 @@ impl Editor {
                     });
                     }
                     ui.label("Persisted constraints:");
+                    let reveal = std::mem::take(&mut draft.reveal_dimension);
                     egui::ScrollArea::vertical()
                         .id_salt("stored-constraints")
                         .max_height(150.)
@@ -1174,8 +1278,32 @@ impl Editor {
                                     ),
                                     _ => ("Coincident closure".to_owned(), None),
                                 };
+                                // §31L: the rule of a saved dimension is also a way to select
+                                // it: its Line or Circle becomes the form's one selection, as
+                                // a click on its label on the canvas makes it.
+                                let dimension =
+                                    draft.dimensions.iter().find(|d| d.id == c.id).copied();
                                 ui.horizontal_wrapped(|ui| {
-                                    ui.label(format!("{label} · {}", c.id));
+                                    let words = format!("{label} · {}", c.id);
+                                    match dimension {
+                                        Some(d) => {
+                                            let row = ui
+                                                .selectable_label(
+                                                    draft.selected == Some(d.curve),
+                                                    words,
+                                                )
+                                                .on_hover_text(
+                                                    "Select this dimension: the Line or Circle \
+                                                     it belongs to becomes the selection.",
+                                                );
+                                            if row.clicked() {
+                                                draft.selected = Some(d.curve);
+                                            }
+                                        }
+                                        None => {
+                                            ui.label(words);
+                                        }
+                                    }
                                     if let Some(lines) = lines {
                                         ui.label(lines);
                                         let mut remove = draft.edits.remove.contains(&c.id);
@@ -1191,6 +1319,88 @@ impl Editor {
                                         }
                                     }
                                 });
+                                // The selected dimension is replaced in place, under its own
+                                // row: which rule (its UUID is the row above), the number
+                                // typed, and the one explicit action that prepares the change.
+                                if let Some(d) = dimension
+                                    && draft.selected == Some(d.curve)
+                                {
+                                    let busy = running || queued;
+                                    let editor = ui.horizontal_wrapped(|ui| {
+                                        match d.kind {
+                                            Kind::Length => {
+                                                ui.label("New length");
+                                            }
+                                            Kind::Radius => {
+                                                ui.add_enabled_ui(!busy, |ui| {
+                                                    for (unit, name) in [
+                                                        (Unit::Radius, "Radius"),
+                                                        (Unit::Diameter, "Diameter"),
+                                                    ] {
+                                                        ui.selectable_value(
+                                                            &mut draft.dimension_unit,
+                                                            unit,
+                                                            name,
+                                                        );
+                                                    }
+                                                });
+                                            }
+                                        }
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut draft.dimension_mm)
+                                                .id_salt("dimension-mm")
+                                                .char_limit(32)
+                                                .desired_width(90.)
+                                                // A focused box takes text even when
+                                                // disabled; a job or a waiting request
+                                                // must freeze it.
+                                                .interactive(!busy),
+                                        );
+                                        ui.label("mm");
+                                        if ui
+                                            .add_enabled(
+                                                !busy,
+                                                egui::Button::new("Replace dimension"),
+                                            )
+                                            .clicked()
+                                        {
+                                            match prepared(
+                                                &draft.choice,
+                                                &draft.edits,
+                                                &d,
+                                                &draft.dimension_mm,
+                                                draft.dimension_unit,
+                                            ) {
+                                                Ok(proposed) => {
+                                                    draft
+                                                        .history
+                                                        .change(&mut draft.edits, proposed);
+                                                    draft.refusal = None;
+                                                }
+                                                Err(refusal) => draft.refusal = Some(refusal),
+                                            }
+                                        }
+                                        ui.small(dimension_words(
+                                            &d,
+                                            draft.dimension_unit,
+                                            &draft.dimension_mm,
+                                            dimension::pending(&draft.edits, &d),
+                                        ));
+                                    });
+                                    // The editor comes into view, and with it the row above it,
+                                    // one frame after the selection moved onto it: the list
+                                    // cannot scroll past a row it has not yet measured.
+                                    if reveal {
+                                        editor.response.scroll_to_me_animation(
+                                            None,
+                                            egui::style::ScrollAnimation::none(),
+                                        );
+                                    }
+                                    if selection_before != draft.selected {
+                                        draft.reveal_dimension = true;
+                                        ui.ctx().request_repaint();
+                                    }
+                                }
                             }
                             if stored.constraints.is_empty() {
                                 ui.label(if circles.is_empty() {
@@ -1338,12 +1548,24 @@ fn lines_and_circles(
 fn fill_from_canvas(
     picked: Picked,
     stored: &Sketch,
+    dimensions: &[Dimension],
     selected: &mut Option<StableEntityId>,
     pin: &mut LineEndpoint,
     pair: [&mut Option<StableEntityId>; 2],
     canvas: &mut Canvas,
 ) {
     let Hit { curve, part } = picked.hit;
+    // §31L: a label is the saved rule with its UUID; it selects the curve that rule
+    // dimensions, and only when this form's own reading holds that rule on that curve.
+    if let Part::Label(rule) = part {
+        if picked.target == Target::Dimension
+            && dimensions.iter().any(|d| d.id == rule && d.curve == curve)
+        {
+            *selected = Some(curve);
+            canvas.took(picked);
+        }
+        return;
+    }
     let Some(kind) = stored
         .curves
         .iter()
@@ -1375,6 +1597,8 @@ fn fill_from_canvas(
         }
         Target::PairA => *pair_a = Some(curve),
         Target::PairB => *pair_b = Some(curve),
+        // Handled above: a label is the only thing this target reaches.
+        Target::Dimension => return,
     }
     canvas.took(picked);
 }
@@ -1412,28 +1636,148 @@ fn replace_stored_length(
     previous: LineLengthMm,
     length: LineLengthMm,
 ) -> SketchConstraintEdits {
+    replace_stored(
+        edits,
+        stored,
+        length == previous,
+        |add| line_distance_on(add, curve),
+        AddSketchConstraint::Line(AddLineConstraint::Line {
+            curve,
+            kind: LineConstraintKind::Distance(length),
+        }),
+    )
+}
+
+/// Replaces the saved dimension `stored` by `addition`: its removal and the one addition that
+/// takes its place (found by `takes_place`), updated where it stands when it is already there.
+/// When `unchanged` (the number is the saved one) only this replacement is taken back: the
+/// saved rule keeps its UUID and every other pending change stays.
+fn replace_stored(
+    edits: &SketchConstraintEdits,
+    stored: StableEntityId,
+    unchanged: bool,
+    takes_place: impl Fn(&AddSketchConstraint) -> bool,
+    addition: AddSketchConstraint,
+) -> SketchConstraintEdits {
     let mut proposed = edits.clone();
-    if length == previous {
+    if unchanged {
         proposed.remove.retain(|id| *id != stored);
-        proposed.add.retain(|add| !line_distance_on(add, curve));
+        proposed.add.retain(|add| !takes_place(add));
         return proposed;
     }
     if !proposed.remove.contains(&stored) {
         proposed.remove.push(stored);
     }
-    let addition = AddSketchConstraint::Line(AddLineConstraint::Line {
-        curve,
-        kind: LineConstraintKind::Distance(length),
-    });
-    match proposed
-        .add
-        .iter()
-        .position(|add| line_distance_on(add, curve))
-    {
+    match proposed.add.iter().position(&takes_place) {
         Some(i) => proposed.add[i] = addition,
         None => proposed.add.push(addition),
     }
     proposed
+}
+
+fn radius_on(add: &AddSketchConstraint, curve: StableEntityId) -> bool {
+    matches!(
+        *add,
+        AddSketchConstraint::Circle {
+            curve: on,
+            kind: CircleConstraintKind::Radius(_)
+        } if on == curve
+    )
+}
+
+/// The same replacement for a Circle's saved Radius.
+fn replace_stored_radius(
+    edits: &SketchConstraintEdits,
+    curve: StableEntityId,
+    stored: StableEntityId,
+    previous: CircleRadiusMm,
+    radius: CircleRadiusMm,
+) -> SketchConstraintEdits {
+    replace_stored(
+        edits,
+        stored,
+        radius == previous,
+        |add| radius_on(add, curve),
+        AddSketchConstraint::Circle {
+            curve,
+            kind: CircleConstraintKind::Radius(radius),
+        },
+    )
+}
+
+/// What the draft becomes when the number typed replaces the saved dimension `d`, or why it
+/// cannot. The number is parsed here and judged by the document's own types and validator:
+/// whether it is the saved number is the exact equality of those types, never a tolerance.
+fn prepared(
+    choice: &ConstraintSketchChoice,
+    edits: &SketchConstraintEdits,
+    d: &Dimension,
+    text: &str,
+    unit: Unit,
+) -> std::result::Result<SketchConstraintEdits, String> {
+    let proposed = match d.kind {
+        Kind::Length => {
+            let length = text
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| {
+                    ferritecad_types::CadError::input("enter a finite positive Line length in mm")
+                })
+                .and_then(LineLengthMm::new)
+                .map_err(|e| e.to_string())?;
+            let saved = LineLengthMm::new(d.target_mm).map_err(|e| e.to_string())?;
+            replace_stored_length(edits, d.curve, d.id, saved, length)
+        }
+        Kind::Radius => {
+            let radius = match unit {
+                Unit::Radius => text
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(|v| CircleRadiusMm::new(v).ok())
+                    .ok_or_else(|| "Enter a positive radius in mm.".to_owned())?,
+                Unit::Diameter => text
+                    .trim()
+                    .parse::<f64>()
+                    .map_err(|_| "Enter a positive diameter in mm.".to_owned())
+                    .and_then(|v| CircleRadiusMm::from_diameter_mm(v).map_err(|e| e.to_string()))?,
+            };
+            let saved = CircleRadiusMm::new(d.target_mm).map_err(|e| e.to_string())?;
+            replace_stored_radius(edits, d.curve, d.id, saved, radius)
+        }
+    };
+    // An empty request is the return to the saved numbers, which has nothing to validate.
+    if proposed != *edits && !(proposed.remove.is_empty() && proposed.add.is_empty()) {
+        choice
+            .validate_edits(&proposed)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(proposed)
+}
+
+/// The line after the field that replaces `d`: what the typed number means for a Circle, and
+/// what the pending request does to this dimension. The drawing never moves before Apply.
+fn dimension_words(d: &Dimension, unit: Unit, text: &str, pending: Option<Pending>) -> String {
+    let typed = text.trim().parse::<f64>().ok();
+    let converted = match (d.kind, unit, typed) {
+        (Kind::Radius, Unit::Diameter, Some(v)) => CircleRadiusMm::from_diameter_mm(v)
+            .ok()
+            .map(|r| format!("= Radius {} mm. ", r.get())),
+        (Kind::Radius, Unit::Radius, Some(v)) => CircleRadiusMm::new(v)
+            .ok()
+            .map(|r| format!("= Diameter {} mm. ", r.get() * 2.)),
+        _ => None,
+    };
+    let state = match pending {
+        None => "No change pending.".to_owned(),
+        Some(Pending::Replaced(mm)) => format!(
+            "Pending: {mm} mm in place of {} mm; the drawing keeps the accepted size until \
+             Apply constraints.",
+            d.target_mm
+        ),
+        Some(Pending::Removed) => "Pending: this dimension is removed.".to_owned(),
+    };
+    format!("{}{state}", converted.unwrap_or_default())
 }
 
 /// The pin's stored endpoint, so the choice needs no solved drawing.
@@ -1569,6 +1913,8 @@ pub(crate) mod tests {
     pub(crate) mod collinear;
     /// §31E: a diameter typed for a circle, which is the Radius `D/2`.
     pub(crate) mod diameter;
+    /// §31L: dimension labels on the accepted drawing and the replacement of a saved dimension.
+    pub(crate) mod dimension;
     /// §27G: the same editor on the profile of a Revolve with a bore.
     pub(crate) mod revolve;
     /// §30C: the same editor applying into the open document.

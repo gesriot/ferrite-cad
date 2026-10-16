@@ -1631,6 +1631,56 @@ jobs:
             test -s "$analytic_dir/$name.stl"
           done
 
+      - name: Replace saved dimensions chosen by their labels through the native window state
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # §31L: a rectangle and a cylinder whose Sketches store a rough guess and keep
+          # rules that solve it. The label of a saved Line length (Dimension target) and
+          # the label of the Circle's Radius (a diameter typed) are chosen on the canvas of
+          # the real accepted solved drawing and replaced explicitly. The request equals
+          # the lists' own, then Apply on the real worker, export before Save, Undo, Redo,
+          # Save and a cold reopen against the peer CLI, the saved STL read here by a
+          # reader that is not its writer and the form of the cold reopen holding the new
+          # labels under the right UUIDs. The exports join the pinned reader
+          # (`FCAD_ANALYTIC_ARTIFACTS`, as above). Each marker is printed after the last
+          # assertion, so a skip cannot print it.
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          analytic_dir="$RUNNER_TEMP/analytic-session"
+          mkdir -p "$analytic_dir"
+          analytic_artifacts="$analytic_dir"
+          if [ '${{ matrix.name }}' = windows ]; then analytic_artifacts="$(cygpath -w "$analytic_artifacts")"; fi
+          export FCAD_ANALYTIC_ARTIFACTS="$analytic_artifacts"
+          for check in \
+            "sessions::tests::native_a_saved_length_chosen_by_its_label_and_replaced_is_applied_like_the_command_line FCAD_31L_NATIVE_RECTANGLE_EXECUTED request=label_equals_list stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read" \
+            "sessions::tests::native_a_saved_radius_chosen_by_its_label_and_replaced_by_a_diameter_is_applied_like_the_command_line FCAD_31L_NATIVE_CIRCLE_EXECUTED request=label_equals_list stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read"
+          do
+            gate="${check%% *}"
+            marker="${check#* }"
+            cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee session-dimension-labels.log
+            if grep -q 'skipped:' session-dimension-labels.log || \
+               ! grep -q '^test result: ok\. 1 passed; 0 failed' session-dimension-labels.log || \
+               ! grep -Fq "test $gate ... " session-dimension-labels.log || \
+               ! grep -Fxq "$marker" session-dimension-labels.log; then
+              echo "::error::${gate} did not execute and pass"
+              exit 1
+            fi
+          done
+          for name in dimension-labels-rectangle dimension-labels-circle; do
+            test -s "$analytic_dir/$name.fbx"
+            test -s "$analytic_dir/$name.stl"
+          done
+
       - name: Confirm Open over New and reject its late creation result
         env:
           FERRITECAD_REQUIRE_OCCT: '1'

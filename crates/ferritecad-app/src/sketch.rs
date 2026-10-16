@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 pub(crate) mod accepted;
 mod analytic;
 mod anchor;
+pub(crate) mod dimension;
 mod guide;
 mod navigation;
 mod object_snap;
@@ -8486,6 +8487,9 @@ pub(crate) mod analytic_tests;
 #[cfg(test)]
 #[path = "sketch/anchor_tests.rs"]
 pub(crate) mod anchor_tests;
+#[cfg(test)]
+#[path = "sketch/dimension_tests.rs"]
+pub(crate) mod dimension_tests;
 #[cfg(test)]
 #[path = "sketch/drag_tests.rs"]
 pub(crate) mod drag_tests;

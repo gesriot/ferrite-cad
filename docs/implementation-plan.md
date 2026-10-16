@@ -5492,25 +5492,36 @@ viewer after a CUA reset verified the annulus fallback and both selectors/pair s
 Arcs, mixed profiles, the annulus on this canvas, new constraint families, dragging, cycling through a
 joint's coincident ends, a pointer command in the CLI, §30, Milestone 5C, the product and OOM stay open.
 
-### §31L — Dimension labels and explicit replacement on the accepted Sketch canvas (planned)
+### §31L — Dimension labels and explicit replacement on the accepted Sketch canvas (implementation awaiting review)
 
-Make the existing persisted whole-Line Distance and single-Circle Radius visible and editable through
-their own constraint UUIDs on the accepted drawing. A dimension label states the accepted constraint's
-target value and unit; it is not a measurement of stored inputs or a preview of pending rules. Its
-selection highlights the corresponding accepted curve and synchronizes with the persisted-constraint
-list. A deliberate replacement prepares one existing remove/add draft operation and one Undo step;
-Apply remains the only model-changing action. Returning to the stored value preserves the original
-constraint UUID and removes only that replacement. Keep exact typed strings on invalid input,
-refusal and cancelled Save; preserve independent tab/form state and version/ownership guards.
+The accepted solved drawing of the **Sketch constraints** form carries a compact **label for each saved
+whole-Line length and for a single Circle's radius**: the target the saved rule holds, under the full UUID of
+that rule, standing beside the solved curve (not the stored starting coordinates and not a measurement), with
+the pending request's word beside it (`60 → 70 mm`; the drawing and the accepted size do not change until
+Apply). A fifth explicit canvas target, **Dimension**, selects a label by its drawn box (never the nine-point
+curve radius; overlaps go to the curve stored first, never by UUID or hash; the persisted rows reach every
+dimension); under Object, Endpoint and Pair A/B a label is a picture. Selecting sets the form's **one**
+selection (the dimension is that of the selected curve, so the label, the Lines list and the now selectable
+dimension rows of the persisted list cannot disagree) and publishes nothing. The explicit **Replace
+dimension** action, in a one-line editor under the selected dimension's row, prepares one atomic remove/add in
+the draft: one `History::change`, updated in place by a later number, taken back (the saved rule keeps its
+UUID, every other pending change stays) by the exactly equal saved number. A Circle's number is typed as a
+**Radius** or a **Diameter** (`R = D/2` by `CircleRadiusMm`, no second source, no tolerance). Invalid text, a
+refused draft, a cancelled Save, a running job and a waiting request keep the exact text, selection and
+history. Only the existing Apply / Save constraints copy change the model. No document field, schema,
+capability, FFI, solver equation, jobs operation, CLI request, stored position or placement engine; the other
+families keep their selectors.
 
-Reuse the existing request, shared job, CLI, dimension validation and accepted drawing/view boundary.
-Do not add a solver equation, document field, capability, dimension-position persistence, geometric
-dragging or pointer CLI. Scope this first annotation route to whole-Line length and one Circle's
-radius (diameter is a view/input conversion of that same Radius); the other constraint families keep
-their selectors. Annotation overlap must have deterministic hit/selection behavior and a list fallback.
-Keep the canvas, controls and explicit Apply/Cancel reachable on a 768-point screen. Native tests must
-compare genuine widget-selected replacements with CLI after Apply/export-before-Save/Undo/Redo/Save;
-window observations and any unavailable input gestures remain independently reported.
+Contract, decisions, executed gates, mutations, resources, N/A and the independent window recipe:
+[sketch-dimension-labels.md](sketch-dimension-labels.md). Executed locally (no CI of the unstaged diff, no window): 22 kernel-free gates (5 pure, 14 form on
+real egui events at 1x and 2x, 3 tab) and 2 native session gates (a saved Line length and a saved Circle radius
+chosen by their labels over a stored-guess-versus-solved Sketch, replaced, applied, exported before Save, undone,
+redone, saved and reopened cold against the peer CLI, SQL and payload equal after the one mapping of the fresh
+UUID, STL read by an independent reader, FBX by the pinned ufbx); whole viewer suites 844/0/4 on a true stub and
+on OCCT + PlaneGCS; 18 compiling mutants, among them a foreign UUID and a broken replace/revert, all caught by
+executed assertions. The 768-point screen is unchanged for the full forms (767.5). **Open:** the window cases
+that no headless pass closes (§31J/§31K pan, pinch, held input, external covering; Windows and Linux windows),
+arcs, mixed profiles, the annulus, DirectedAngle and the other relations as labels, dragging, and OOM.
 
 ### Following slices — constraints, expressions and launch diagnostics (planned)
 
