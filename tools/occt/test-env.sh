@@ -15,6 +15,7 @@ case "$(uname -s)" in
 esac
 
 # Every artifact producer has a directory independent of test function or target names.
+# Keep no-solver output separate from files required by the combined reader.
 artifact_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ferritecad-test-artifacts-${FERRITECAD_REQUIRE_PLANEGCS:-0}"
 mkdir -p "$artifact_root"
 while read -r producer consumer file; do

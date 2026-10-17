@@ -453,7 +453,7 @@ jobs:
           # binary is linked by a different cargo invocation and finds the
           # library through the loader's search path, which the step above set
           # and which the case below checks.
-          own="$(grep -E '[/\\](product|boundary)-[0-9a-f]+(\.exe)?$' binaries.txt | head -1)"
+          own="$(head -1 linked-product-binaries.txt)"
           own="$(printf '%s' "$own" | tr -d '\r')"
           if [ -z "$own" ]; then
             echo "::error::no product-solver test binary to inspect"
