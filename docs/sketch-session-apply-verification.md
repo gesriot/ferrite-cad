@@ -80,7 +80,7 @@ the pinned one), root user, one cargo job at a time, debug profile.
   changed).
 * Not run here: Windows, macOS, `--release`, the pinned PlaneGCS, any window.
 
-## macOS fixture and window scenario (for Codex on the Mac)
+## macOS fixture and window scenario
 
 Nothing here was run in a window; the container has none, and headless widget tests
 are not a window check. The generator and the comparator use only the CLI. They were

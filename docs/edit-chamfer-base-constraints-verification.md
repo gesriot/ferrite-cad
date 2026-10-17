@@ -210,7 +210,7 @@ new `inspect` agree on every old key and type; the only changed values are the
 `constraint_edit` availability (false → true) and refusal prose, and the added keys
 are `profile_constrained` and `constraint_edit.chamfer_base`.
 
-## macOS fixture and window scenario (for Codex on the Mac)
+## macOS fixture and window scenario
 
 Nothing here was run in this container, which has no window system. The generator
 and comparator use only the CLI. They were exercised with CLI calls standing in for

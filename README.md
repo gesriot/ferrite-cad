@@ -7,6 +7,11 @@ account, no proprietary container you cannot read back.
 through Open CASCADE, STEP import, and a viewer window that opens a `.fcad`
 file, draws what it describes – solids and the sketches they were raised from –
 and lets a definition be selected and inspected.
+
+FerriteCAD is moving from narrow feature slices to a generic modelling core
+([ADR 0006](docs/decisions/0006-generic-modelling-core.md)); the limitations
+described below are temporary.
+
 Create your own XY Line polygon with **Create sketch + Extrude…**, or run
 `ferritecad create-sketch-extrude request.json -o new.fcad --json`.
 Both clients save a real Sketch/Extrude/Body and cold-check it before publication.

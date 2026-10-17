@@ -258,8 +258,8 @@ was superseded by the later documentation push; the final head's ordinary
 CI and that runtime must pass before merge. This record is documentation only.
 
 Small local evidence (logs, models, screenshots, memory record) is retained
-outside the checkout in `ferrite-pr75-review` under the user's Codex
-visualization artifacts. No foreign worktree, installation or process was
+outside the checkout in `ferrite-pr75-review` under the user's
+local visualization artifacts. No foreign worktree, installation or process was
 changed.
 
 ## Limits

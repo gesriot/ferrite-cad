@@ -721,7 +721,7 @@ CLI создаёт документ с эскизом и Extrude, валидир
    **Две мутации не запускались, и почему – сказано прямо.** Первая: вернуть ранний `continue` перед `session.cap_vertices`, то есть регрессию порядка владения из 19M-2a1. На всех доступных фикстурах kernel-neutral результат от этого не меняется – линза и так не получает имени, – поэтому мутация наблюдаемо эквивалентна и засчитывать её нельзя; правило в коде остаётся, и нарушать его в продакшене запрещено по другой причине, названной в 19M-2a1. Вторая: снять проверку вида и владеющей формы у крышечной вершины в `record_extrude`. Там она затенена `ExtrudeResult::validate`, который отвергает то же самое раньше; наблюдаемой она становится в `record_restored`, где валидировать нечего, и обе мутации именно там применены и пойманы. Ворота `a_cap_vertex_of_the_wrong_kind_or_another_shape_is_refused_when_recorded` поэтому утверждают только «один из двух слоёв отказал», и это записано в самих воротах.
    **Границы.** Ни `VertexNames` сцены, ни привязки к `VertexPickId`, ни `Selection::Vertex`, ни `Marked::Vertex`; ни inspector, hover, GPU, WGSL и renderer; ни видимости, кадрирования, привязок и размеров; ни выбора вхождений; ни новой STEP identity. Ни schema, ни payload version не поднимались, потому что нового несовместимого факта нет. README не менялся: пользовательского поведения срез не добавляет. `bridge.cpp`, header и FFI изменились, поэтому pin обязателен.
 
-   **Измерение крышечных вершин extrusion сохранено как исполняемый шаг, а не как таблица в отчёте.** Прошлый отчёт ссылался на файл в сессионном scratchpad по пути `/private/tmp/claude-501/.../scratchpad/m2a/measure.cpp`; файл существовал и воспроизводится, но лежит вне репозитория, вне `.claude` и `.codex`, и исчезает вместе с сессией – независимая проверка его не нашла, и это справедливо. Измерение перенесено в `tools/occt-smoke` шагом 9 `cap_vertices`: этот инструмент собирается и запускается workflow пина на Linux, macOS и Windows против пиннутой сборки, поэтому утверждение теперь проверяется, а не цитируется.
+   **Измерение крышечных вершин extrusion сохранено как исполняемый шаг, а не как таблица в отчёте.** Прошлый отчёт ссылался на файл в сессионном scratchpad по пути `<временный каталог>/m2a/measure.cpp`; файл существовал и воспроизводится, но лежит вне репозитория и исчезает вместе с сессией – независимая проверка его не нашла, и это справедливо. Измерение перенесено в `tools/occt-smoke` шагом 9 `cap_vertices`: этот инструмент собирается и запускается workflow пина на Linux, macOS и Windows против пиннутой сборки, поэтому утверждение теперь проверяется, а не цитируется.
    **Исправленная формулировка cardinality.** Измерение разрешает ассоциацию только в такой редакции: для каждого **позиционного** угла профиля и каждой стороны крышки `FirstShape(corner)` или `LastShape(corner)` даёт ровно одну подходящую `TopoDS_VERTEX`. Отсюда следует, что `(side, ProfileJoint)` определяет одну вершину **только если этот ProfileJoint встречается в профиле ровно один раз**. В петле из двух сегментов та же неупорядоченная пара встречается в двух углах, поэтому на любой стороне `(side, ProfileJoint)` соответствует двум вершинам и не называет ни одной. Прошлая формулировка «каждая пара (side, joint) уникальна» была без этой оговорки неверной: `distinct=4` у линзы – это различность **позиционная**, а не по joint.
    **Что именно проверяет шаг 9.** Для четырёх разверток (пластина вслепую, в обратную сторону, симметрично, треугольник) по каждому позиционному углу и каждой стороне: ответ не null и это `TopoDS_VERTEX`; он принадлежит готовому solid по `IsSame`; он лежит на той крышке, для которой заявлен; он является концом ребра, свёрнутого из того же угла; и никакие два `(угол, сторона)` не попадают в одну вершину. Тридцать ассоциаций, все чисто. Шаг несущий: подмена `FirstShape` и `LastShape` роняет его с сообщением «the named vertex is not on that cap», а возврат снова делает зелёным – проверено.
    **Пробелы измерения закрыты.** Шаг 9 расширен до семи разверток и 46 позиционных пар `(угол, сторона)`: пластина вслепую, обратно и симметрично, треугольник, профиль из трёх сегментов с дугой вслепую и симметрично, и двухсегментная линза. Добавлены две проверки, которых в сохранённом шаге не было. Первая: каждая названная крышечная вершина достигается ассоциацией вершин тесселяции из 19M-1a, и сверка идёт по тождеству handle, а не по координатам. Вторая: пластина пересобирается с каждого возможного стартового сегмента, и вершины сравниваются по смыслу, заданному парой исходных сегментов, а не по позиции в петле; все четыре угла остаются на месте. Линза даёт четыре различные позиционные вершины при одной неупорядоченной паре, и шаг утверждает это явно.
@@ -1975,7 +1975,7 @@ OOM и причина view-bridge не объявляются исправлен
 
 **Отдельное продолжение — STEP из UI.** Нынешний Open читает `.fcad`. Добавление Open/Import для STEP должно использовать общий с CLI импорт и создание нативного документа, с теми же диагностикой, отменой и правилами сохранения. Не маскировать его расширением фильтра существующего диалога; не смешивать с §23A.
 
-**Gate §23 целиком:** пользователь запускает подготовленное приложение двойным щелчком, выбирает `.fcad` через Open и видит модель, не задавая путь или переменные окружения в терминале. Холодная проверка проводится вне дерева сборки. Новые ветки — без префикса `codex/`; Grok оставляет незакоммиченный diff, не делает commit/push/PR и не добавляет себя в git metadata или credits.
+**Gate §23 целиком:** пользователь запускает подготовленное приложение двойным щелчком, выбирает `.fcad` через Open и видит модель, не задавая путь или переменные окружения в терминале. Холодная проверка проводится вне дерева сборки. Исполнитель оставляет незакоммиченный diff, не делает commit/push/PR и не добавляет себя в git metadata или credits.
 
 ## 14.24. CLI для автоматизации и агентов
 
@@ -2232,7 +2232,7 @@ baseline; публичный рецепт выполнен до cold rebuild и 
 проверки отделены от явно пропущенной геометрии. По новому указанию пользователя
 при ревью не запускались окно, ручные GUI-клики и GPU-проверки.
 
-**§24F — сделано, независимое ревью Codex пройдено: Body discovery и STL JSON.**
+**§24F — сделано, независимое ревью пройдено: Body discovery и STL JSON.**
 Обязательный `inspect --json` → `result.bodies` содержит Body UUIDv7 и точное
 name/string/null в общем objects порядке. Metadata/content version/features/bodies
 принадлежат одному закреплённому read-only снимку. Общий typed helper
@@ -2264,7 +2264,7 @@ Stub-процессы проверены отдельно: восемь явны
 геометрией; discovery и structured unsupported действительно исполнены.
 Дефектов, требующих изменения production-кода, ревью не выявило.
 
-**§24G — сделано: JSON FBX; независимое ревью Codex пройдено.**
+**§24G — сделано: JSON FBX; независимое ревью пройдено.**
 Opt-in `export-fbx --json [--force]` использует один `export_fbx_result` и прежний
 `export_document_as_fbx`. Explicit CLI DTO строится только из опубликованного
 FbxExport/FbxWriteReport: destination, bytes, models, geometries, materials,
@@ -3031,7 +3031,7 @@ Miss/Hit с изменённым внутренним радиусом, замк
 `--features`. Отказ воспроизведён настоящим Cargo; явный sentinel и исполнение
 всех шести пакетных gates подтвердили исправление. Повторены native/stub,
 UI/CLI headless, writer/identity/atomicity, рецепт и три strict ufbx чтения.
-[Отдельный протокол ревью](edit-annular-copy-verification.md#независимое-ревью-codex--2026-09-16).
+[Отдельный протокол ревью](edit-annular-copy-verification.md#независимое-ревью--2026-09-16).
 
 
 **§25N — реализована параметрическая окружность: сохранённый радиус и
@@ -3116,7 +3116,7 @@ literal radius в срез не входят.
 Remove и replacement доступны); скрыты неприменимые Line-действия у Circle.
 Добавлены исполняемые UI/CLI worker parity и отдельная OCCT/no-solver сборка
 в прежнем runtime workflow: 79 exact executions и 36 ufbx чтений на ОС.
-[Протокол ревью](circle-radius-constraints-verification.md#независимое-ревью-codex--2026-09-16).
+[Протокол ревью](circle-radius-constraints-verification.md#независимое-ревью--2026-09-16).
 GUI разрешён пользователем, но пока не исполнен из-за заблокированного Mac.
 
 
@@ -3197,7 +3197,7 @@ allowlist. Независимый STL проверяет замкнутость,
 добавление → Undo/Redo → Save Cancel → publish/Open, затем отказ при снятии
 одной Concentric и успешное снятие её с Fixed. GUI/CLI STL и FBX побайтово равны,
 peak footprint 188.08 MiB, swap без роста, exit 0.
-[Подробный протокол](annular-circle-constraints-verification.md#независимое-ревью-codex--2026-09-16).
+[Подробный протокол](annular-circle-constraints-verification.md#независимое-ревью--2026-09-16).
 
 
 **§26A — реализован первый настоящий Cut в существующем Body.**
@@ -3296,7 +3296,7 @@ edit-extrude и потеря draft при отказе Open. Mixed gate отде
 native-сборки. Реальный macOS GUI smoke выполнен: неверный ввод → Apply →
 Undo/Redo → Save Cancel → hole publish/Open → повторный Open исходника →
 pocket publish/Open. GUI/CLI STL и FBX побайтово равны; peak 196.42 MiB,
-swap без роста, exit 0. [Протокол независимого ревью](circular-cut-copy-verification.md#независимое-ревью-codex--2026-09-17).
+swap без роста, exit 0. [Протокол независимого ревью](circular-cut-copy-verification.md#независимое-ревью--2026-09-17).
 
 **§26B — реализована правка параметров сохранённого circular Cut.**
 Из сохранённой плиты с одним Cut пользователь выбирает существующую Cut-фичу,
@@ -5672,3 +5672,22 @@ instance. A second instance neither rotates the first instance's active file nor
 waits for its lock. No automatic upload of logs or model contents. Test simultaneous
 instances and unwritable destinations. This does not diagnose the earlier OOM or
 capture a loader failure before `main`; neither is declared resolved.
+
+## §32 — Generic modelling core
+
+[ADR 0006](decisions/0006-generic-modelling-core.md) задаёт направление и порядок
+задач ниже. Запланированный §31O отменён.
+
+- 03 Per-feature rebuild status; documents that no longer build open for repair; refusals list every failing feature
+- 04 Benchmark corpus; one rebuild per Apply instead of three
+- 05 Every model number an Expression in mm/rad; drop compatibility machinery
+- 06 One transaction API for UI and CLI instead of per-feature copy jobs and their analytic pre-checks
+- 07 Topological naming: ADR 0007 and a prototype of generated names
+- 08 Naming integration; remove SemanticRole/SweptEdge/CarriedName roles
+- 09 Generic Extrude/Revolve: new body, boss, cut, all end conditions, regions, axes
+- 10 Generic Fillet/Chamfer on any edge set of any body
+- 11 Datum planes and sketches on faces
+- 12 Live evaluated model and incremental rebuild in the session
+- 13 UI command framework, feature tree (edit, delete, suppress, rollback), 3D selection
+- 14 Sketcher in the 3D viewport
+- 15 Expressions and a parameter table

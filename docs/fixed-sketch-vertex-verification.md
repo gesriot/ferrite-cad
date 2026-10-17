@@ -6,8 +6,7 @@ HEAD/main/origin/main совпадали, дерево было чистым. В
 `fixed-sketch-vertex`. CI точного merge SHA перепроверен: **6/6 workflows
 success** (CI, runtime layout, planegcs pin, product sbom, rust sbom,
 rust notices). Это CI базы; CI нового незакоммиченного diff не запускался и
-базе не приписывается. Чужой detached worktree
-`/Users/drt/.codex/worktrees/a200/ferrite-cad`, fixtures и чужие изменения
+базе не приписывается. Отдельный чужой detached worktree, fixtures и чужие изменения
 не затрагивались; ничего не staged, не commit, не push.
 
 ## Предметный результат
@@ -238,7 +237,7 @@ native pins/FFI, dependencies и Cargo.lock не менялись. Чужие п
 | `docs/fixed-sketch-vertex-verification.md` | 187 | 0 | new |
 | `docs/fixed-sketch-vertex.md` | 201 | 0 | new |
 
-## Независимое ревью Codex
+## Независимое ревью
 
 Состояния unstaged и diffstat выше относятся к исходной передаче. При ревью
 production-дефектов не обнаружено. Усилены существующие native gates:

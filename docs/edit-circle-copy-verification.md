@@ -7,8 +7,7 @@
 **27/27 check runs success**, 6/6 workflows (CI, combined runtime layout,
 planegcs pin, product sbom, rust sbom, rust notices). Это **CI базы**; CI
 собственного незакоммиченного diff не запускался и базе не приписывается.
-Ветка `edit-circle-copy` (без префикса `codex/`). Чужой detached worktree
-`/Users/drt/.codex/worktrees/a200/ferrite-cad` не трогался; reset/clean/stash/
+Ветка `edit-circle-copy`. Отдельный чужой detached worktree не трогался; reset/clean/stash/
 rebase/amend не выполнялись. Эти сведения о незакоммиченном состоянии относятся
 к передаче реализации; публикация и CI после ревью фиксируются отдельно в PR.
 

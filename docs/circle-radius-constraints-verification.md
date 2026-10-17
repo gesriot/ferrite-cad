@@ -20,11 +20,9 @@ planegcs (FreeCAD 1.0.1, архив sha256 `f62bc07c…` по `tools/planegcs/pi
 Переиспользованы существующие targets `/private/tmp/ferrite-24b-native-target` и
 `/private/tmp/ferrite-25j-stub-target`; новых не заводилось. Диск перед
 тяжёлыми прогонами 12–15 ГиБ свободно, после всех прогонов 11 ГиБ; swap
-2733/4096 МиБ. Чужие процессы и кэши не трогались, чужой worktree
-`/Users/drt/.codex/worktrees/a200/ferrite-cad` не открывался.
+2733/4096 МиБ. Чужие процессы и кэши не трогались, отдельный чужой worktree не открывался.
 
-Логи и артефакты этого среза — в `$S =
-/private/tmp/claude-501/-Users-drt-Desktop-github-ferrite-cad/e2435d19-1587-43ca-87aa-568b8a140bbc/scratchpad`:
+Логи и артефакты этого среза — в `$S = <временный каталог>`:
 `$S/ci/*.log` (исполненные упакованные CI-команды), `$S/recipe.py` (рецепт,
 извлечённый из Markdown), `$S/cc-fbx/circle-constraint-cli.fbx` (артефакт,
 прочитанный pinned ufbx), `$S/pristine/SHA256` (контрольные суммы двух файлов,
@@ -311,7 +309,7 @@ centre through CLI and worker`: три CLI-гейта по точным имен
   job, один test thread; память и диск проверялись перед прогонами, диск
   остаётся узким местом (11 ГиБ свободно).
 
-## Независимое ревью Codex — 2026-09-16
+## Независимое ревью — 2026-09-16
 
 База повторно проверена по точному SHA `d61afac985e5e729ed715b5f35757b0b6782a995`:
 27/27 check runs и 6/6 workflows success. Это проверка базы; CI публикации

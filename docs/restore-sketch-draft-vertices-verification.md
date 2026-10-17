@@ -33,7 +33,7 @@ parsing. Один Undo возвращает весь прежний draft. Featu
 
 ## Локальные проверки
 
-Логи: `/private/tmp/ferrite-grok47-trial-1/`. Сборки последовательные,
+Логи: `<temporary trial directory 1>/`. Сборки последовательные,
 `CARGO_BUILD_JOBS=1`, `CMAKE_BUILD_PARALLEL_LEVEL=1`. Native target
 `/private/tmp/ferrite-24b-native-target`, release. OCCT/PlaneGCS/Boost заново
 не собирались. `FCAD_ALLOW_LOADER_FAILURE_PROBES` не включался. Это headless
@@ -127,7 +127,7 @@ Watchdog: sampled peak **207.251 MiB**, pressure 1, swap 0, штатный exit 
 viewer не делались. Этот smoke не устанавливает причину прежнего OOM.
 
 Логи, fixture, SQL/export comparison и memory samples:
-`/private/tmp/ferrite-grok47-review-1/`. Независимо выполненные команды:
+`<temporary review directory 1>/`. Независимо выполненные команды:
 
 ```sh
 source /private/tmp/ferrite-26g/env.sh

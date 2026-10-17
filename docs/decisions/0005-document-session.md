@@ -545,3 +545,7 @@ Body history is derived from tip/predecessor dependencies; shared profiles are
 references. Navigation selection is separate from topology pick. An explicit
 version-addressed action calls the existing typed begin-edit route, under one
 shared availability predicate. No form cancellation, hidden Apply or new reducer.
+
+The rule “One Apply is one reused copy operation” and cold rebuilds on every Apply
+are superseded by [ADR 0006](0006-generic-modelling-core.md) (tasks 04, 06, 12);
+the Save, dirty and history rules remain in force.

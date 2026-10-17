@@ -1,6 +1,6 @@
 # §24J — read-only validate: проверка и передача
 
-2026-09-09, Codex. Изменения **незакоммичены и не staged**. Commit/push/PR/merge
+2026-09-09. Изменения **незакоммичены и не staged**. Commit/push/PR/merge
 не выполнялись; следующий шаг — независимое ревью. Работа полностью без окон:
 viewer/GUI/Unity/GPU/render tests, browser/CUA/osascript и диалоги не запускались.
 

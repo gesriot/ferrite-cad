@@ -195,7 +195,7 @@ untracked: `/private/tmp/ferrite-25a/diffstat.txt`. Новые runtime dependenc
 FFI, schema, UI STEP import, constraint editor, in-place Save, persistent undo,
 holes/booleans/другая геометрия и следующий срез не добавлялись.
 
-Следующий шаг — независимое ревью Codex. CI нового diff последует только после
+Следующий шаг — независимое ревью. CI нового diff последует только после
 ревью и публикации; интерактивная macOS проверка остаётся открытой из-за состояния
 экрана и не объявлена пройденной.
 

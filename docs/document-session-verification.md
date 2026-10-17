@@ -130,7 +130,7 @@ failed on a missing fixture would not count; both failed at an executed assertio
   CASCADE-without-PlaneGCS build. Both leave the document clean and the draft in
   place.
 
-## macOS fixture and window scenario (for Codex on the Mac)
+## macOS fixture and window scenario
 
 Nothing in this section was run in a window; the container has none. The generator
 and the comparator use only the CLI. They were exercised with a script standing in
@@ -601,6 +601,5 @@ The historical OOM cause remains unknown. No Windows/Linux window smoke or
 crash recovery is claimed.
 
 Review logs, scripts, model artifacts and memory summaries are retained under
-`/private/tmp/ferrite-pr81-review/` and in the local review evidence directory
-`~/.codex/visualizations/2026/09/05/01a0722f-a4b4-7532-b72b-07ef6b78698d/ferrite-pr81-review/`.
+`/private/tmp/ferrite-pr81-review/` and in the local review evidence directory.
 The measured binaries predate this documentation-only update.

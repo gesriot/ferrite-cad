@@ -20,11 +20,10 @@ planegcs (FreeCAD 1.0.1) из уже собранных закреплённых
 `/private/tmp/ferrite-24b-native-target` и `/private/tmp/ferrite-25j-stub-target`;
 новых не заводилось. Диск перед прогонами 9.5 ГиБ свободно, после всех прогонов
 8.7 ГиБ; swap 2709/4096 МиБ (в начале среза 2725 МиБ, роста нет). Чужие процессы
-и кэши не трогались, чужой worktree `/Users/drt/.codex/worktrees/a200/ferrite-cad`
+и кэши не трогались, отдельный чужой worktree
 не открывался.
 
-Логи и артефакты этого среза — в `$S =
-/private/tmp/claude-501/-Users-drt-Desktop-github-ferrite-cad/f12cd650-51d7-4a48-b0a6-dde509d95c27/scratchpad`:
+Логи и артефакты этого среза — в `$S = <временный каталог>`:
 `$S/ci/*.log` (исполненные упакованные CI-команды), `$S/recipe.py` (рецепт,
 извлечённый из Markdown по маркеру), `$S/read_production` (собственный pinned
 ufbx reader), `$S/runner/annular-constraints/annular-constraint-cli.fbx`
@@ -326,7 +325,7 @@ release-CLI и настоящим собственным pinned reader: create �
 * Оригинальный OOM исправленным не объявляется.
 
 
-## Независимое ревью Codex — 2026-09-16
+## Независимое ревью — 2026-09-16
 
 Найден и воспроизведён дефект нового mixed-gate: полный native suite с
 `FERRITECAD_REQUIRE_PLANEGCS=1` исполнял тест OCCT/no-solver и падал на
