@@ -1392,7 +1392,6 @@ fn native_open_new_recover_beside_forms_then_apply_save_and_compare_with_the_com
     let a_fbx = std::fs::read(root.join("a-unsaved.fbx")).expect("a");
     let (n_stl, n_fbx) = peer_bytes(&root.join("n.fcad"), work.path(), "n");
     let (c_stl, c_fbx) = peer_bytes(&root.join("c.fcad"), work.path(), "c");
-    let _volume = |stl: &[u8]| super::super::super::checkpoints::stl_facts(stl).2;
     if let Ok(dir) = std::env::var("FCAD_OPEN_NEW_RECOVER_ARTIFACTS") {
         let dir = PathBuf::from(dir);
         for (name, stl, fbx) in [
@@ -1404,6 +1403,10 @@ fn native_open_new_recover_beside_forms_then_apply_save_and_compare_with_the_com
             std::fs::write(dir.join(format!("{name}.fbx")), fbx).expect("artifact");
         }
     }
+    // Also validate the framing of each saved STL.
+    let _ = super::super::super::checkpoints::stl_facts(&a_stl);
+    let _ = super::super::super::checkpoints::stl_facts(&n_stl);
+    let _ = super::super::super::checkpoints::stl_facts(&c_stl);
     println!("FCAD_30Q_SESSION_FILES_COMPARE_OK negative_controls=8 all_SQL_cells=true");
 }
 

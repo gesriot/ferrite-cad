@@ -1253,7 +1253,6 @@ fn native_reopen_saved_tabs_then_apply_save_and_compare_with_the_command_line() 
     let b_stl = std::fs::read(root.join("b-unsaved.stl")).expect("b");
     let b_fbx = std::fs::read(root.join("b-unsaved.fbx")).expect("b");
     let (a_stl, a_fbx) = peer_bytes(&root.join("a.fcad"), work.path(), "a");
-    let _volume = |stl: &[u8]| super::super::checkpoints::stl_facts(stl).2;
     if let Ok(dir) = std::env::var("FCAD_RESTORE_SAVED_TABS_ARTIFACTS") {
         let dir = PathBuf::from(dir);
         for (name, stl, fbx) in [("reopen-b", &b_stl, &b_fbx), ("reopen-a", &a_stl, &a_fbx)] {
@@ -1261,6 +1260,9 @@ fn native_reopen_saved_tabs_then_apply_save_and_compare_with_the_command_line() 
             std::fs::write(dir.join(format!("{name}.fbx")), fbx).expect("artifact");
         }
     }
+    // Also validate the framing of each saved STL.
+    let _ = super::super::checkpoints::stl_facts(&a_stl);
+    let _ = super::super::checkpoints::stl_facts(&b_stl);
     println!("FCAD_30R_SESSION_FILES_COMPARE_OK negative_controls=8 all_SQL_cells=true");
 }
 
