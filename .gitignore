@@ -27,7 +27,4 @@
 # CMake build trees (tools/occt-smoke and others)
 /build/
 
-# Per-machine tool settings; shared settings belong in .claude/settings.json
-.claude/settings.local.json
-
 .DS_Store

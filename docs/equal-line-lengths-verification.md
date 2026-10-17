@@ -2,12 +2,11 @@
 
 2026-09-14. База `e4c240e029e4c9fe3c9fea4c88368da25bdfca36`, PR #35 MERGED
 (2026-09-14T18:57:38Z, ветка `fixed-sketch-vertex`). После `git fetch --all`
-HEAD/main/origin/main совпадали, дерево было чистым. Ветка `equal-line-lengths`
-(без префикса `codex/`). CI точного merge SHA перепроверен: **6/6 workflows
+HEAD/main/origin/main совпадали, дерево было чистым. Ветка `equal-line-lengths`.
+CI точного merge SHA перепроверен: **6/6 workflows
 success** (CI, runtime layout, planegcs pin, product sbom, rust sbom,
 rust notices) и 27/27 check runs. Это **CI базы**; CI нового незакоммиченного
-diff не запускался и базе не приписывается. Чужой detached worktree
-`/Users/drt/.codex/worktrees/a200/ferrite-cad`, fixtures и чужие изменения
+diff не запускался и базе не приписывается. Отдельный чужой detached worktree, fixtures и чужие изменения
 не затрагивались; ничего не staged, не commit, не push.
 
 ## Предметный результат
@@ -276,7 +275,7 @@ Parallel, Perpendicular, live solver drag, in-place Save, persistent undo, но�
 
 ## Независимое ревью §25H
 
-Повторная проверка Codex в `/private/tmp/ferrite-pr36-review/` не выявила
+Повторная проверка в `/private/tmp/ferrite-pr36-review/` не выявила
 дефекта production-маршрута. Дополнены два существующих теста: после замены
 ведущего Distance сравниваются все retained constraints целиком (UUID, rule,
 порядок), а reversed SegmentRef сохраняется также при успешном добавлении и

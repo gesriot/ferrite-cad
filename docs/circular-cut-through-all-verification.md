@@ -14,7 +14,7 @@ review below records the subsequent real window checks.
 | Fact | Value |
 | --- | --- |
 | Base | `main` = `6aef5017cc0ef8d6c0a4cc8ae9c7de765209c021` (merge of PR #50), tree `3f84f22a49b6c0068925d99b66cf7221e365cb5e` |
-| Branch | `claude/blissful-wright-8rfyr2` (assigned push branch of the cloud session; the preferred name `circular-cut-through-all` was not available to push) |
+| Branch | a separately assigned branch (the preferred name `circular-cut-through-all` was not available to push) |
 | Pull request | gesriot/ferrite-cad#51 (ready for independent review at cloud handoff) |
 | Commits | `88f9490` implementation, `d10ad56` strict extent parsing, `7050b4b` JSON v1 types kept + `_v2` blocks, `409a31f` CI gate name, then the verification commit that adds this file |
 | Author/committer | `gesriot <gessman1618@gmail.com>` on every commit; no AI co-author or generated-by trailers |
@@ -356,7 +356,7 @@ The new review commit and merge checks are audited separately when published.
 
 Logs, parsed summaries, copied GUI models, parity scripts and the final recipe
 are under `/private/tmp/ferrite-26h-review/`, with a durable review copy under
-`~/.codex/visualizations/2026/09/05/01a0722f-a4b4-7532-b72b-07ef6b78698d/ferrite-26h-review/`.
+the local evidence directory.
 `gui-final/parity-final.json` records the exact export hashes and memory result.
 No Windows/Linux windowed smoke, new heavy STEP campaign or OCCT rebuild was
 performed in this macOS review.

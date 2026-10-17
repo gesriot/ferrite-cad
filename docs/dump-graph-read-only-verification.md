@@ -46,12 +46,12 @@ cargo build -p ferritecad-cli --release
 `Finished release` за 19.54s. Бинарь
 `/private/tmp/ferrite-24b-native-target/release/ferritecad`, SHA-256
 `2c5a385ac0c015fa14f78669d4bbb0a2cc84344b6b8d809878599de26a682f10`
-(копия: `/private/tmp/ferrite-grok47-trial-2/ferritecad-before`).
+(копия: `<temporary trial directory 2>/ferritecad-before`).
 Сборка перекомпилировала Rust-крейты CLI; OCCT, PlaneGCS и Boost заново не собирались.
 
 Один `create --sample` дал документ schema v3, 86016 байт, SHA-256
 `8acbb8f754f58de6cb41385209f44349910e52bc3579bd7b36a6fd1380f1f11f`
-(`/private/tmp/ferrite-grok47-trial-2/plate-pristine.fcad`). На копиях этих байт
+(`<temporary trial directory 2>/plate-pristine.fcad`). На копиях этих байт
 default, `--format text` и `--format dot` дали exit 0, пустой stderr и те же
 bytes/mtime/`user_version` 3. Default stdout совпал с text (364 байта). DOT —
 661 байт. UUID в этом файле дальше не менялись.
@@ -71,7 +71,7 @@ dump-graph format=None exit=Some(0) stdout_len=364 storage_changed=true user_ver
 ```
 
 `test result: FAILED. 0 passed; 1 failed`. Exit cargo 101.
-Лог: `/private/tmp/ferrite-grok47-trial-2/failing-first.log`.
+Лог: `<temporary trial directory 2>/failing-first.log`.
 
 ## После правки
 
@@ -135,7 +135,7 @@ targets/features и `-D warnings` прошли. Использован преж�
 default/text — 364 байта, DOT — 661 байт; stdout/stderr/exit совпали побайтово,
 bytes/mtime документа не изменились. Отдельные настоящие v2-копии с новым CLI
 дали text/DOT exit 2, пустой stdout и `needs migration`; bytes/mtime сохранены.
-Логи и сравнение: `/private/tmp/ferrite-grok47-review-2/`.
+Логи и сравнение: `<temporary review directory 2>/`.
 
 ```sh
 source /private/tmp/ferrite-26g/env.sh

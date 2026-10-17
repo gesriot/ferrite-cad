@@ -3,12 +3,11 @@
 2026-09-15. База `99fdbadb41a348d125684059a7943e390720c8b5`, PR #37 MERGED
 (2026-09-15T04:48:53Z, ветка `line-pair-orientation`). После
 `git fetch --all --prune` HEAD/main/origin/main совпадали, дерево было чистым.
-Ветка `circle-sketch-extrude` (без префикса `codex/`). CI точного merge SHA
+Ветка `circle-sketch-extrude`. CI точного merge SHA
 перепроверен с полной пагинацией: **27/27 check runs success**, 6/6 workflows
 (CI, combined runtime layout, planegcs pin, product sbom, rust sbom,
 rust notices). Это **CI базы**; CI нового незакоммиченного diff не запускался и
-базе не приписывается. Чужой detached worktree
-`/Users/drt/.codex/worktrees/a200/ferrite-cad`, fixtures и чужие изменения не
+базе не приписывается. Отдельный чужой detached worktree, fixtures и чужие изменения не
 затрагивались; ничего не staged, не commit, не push.
 
 Этот абзац фиксирует передачу автора до ревью. Дополнения независимого ревью

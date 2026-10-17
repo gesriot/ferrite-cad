@@ -149,3 +149,5 @@ At 16 only editing is offered; longer general documents receive an explicit
 editor refusal. Through-to-pocket at i names its floor once at every producer
 from i through tip. Origin identity, historical scopes, archive v3 and cache
 keys retain their meanings. [Policy recorded before code](../circular-cut-history.md).
+
+§26C–§26E bounded catalogue: superseded by [ADR 0006](0006-generic-modelling-core.md).

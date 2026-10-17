@@ -145,7 +145,7 @@ changes. The scenario above tested the functional code at `921c707`; it does not
 claim that the later wording was already visible. Logs, watchdog and artifacts:
 `/private/tmp/ferrite-pr83-review/` (temporary local evidence, not repository files).
 
-## macOS fixture and window scenario (for Codex on the Mac)
+## macOS fixture and window scenario
 
 Nothing here was run in a window; the container has none, and headless widget tests are
 not a window check. The generator and the comparator use only the CLI. They were

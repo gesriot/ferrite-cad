@@ -247,8 +247,8 @@ configured 168/64 runtime totals must not be confused with executed diff CI.
 The 13 operation-owned CI `tee` logs have been moved from the repository root
 to `/private/tmp/ferrite-26g/step-logs/`; no unrelated file was removed. Compact
 logs, proof JSON, scripts, patch, new source files and GUI fixtures are also
-preserved outside temporary storage at
-`/Users/drt/.codex/visualizations/2026/09/19/01a0b877-07d6-7701-a649-b82de0e4a3ee/ferrite-26g-evidence/`.
+preserved outside temporary storage in
+the local evidence directory.
 
 ## Unstaged review inventory
 

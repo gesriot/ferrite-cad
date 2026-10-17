@@ -24,10 +24,10 @@ bridge не пересобирались** — их входы этот срез
 
 Переиспользованы прежние target: `/private/tmp/ferrite-24b-native-target`
 (native и mixed) и `/private/tmp/ferrite-25j-stub-target` (stub). Третий большой
-target не заводился; чужой worktree `/Users/drt/.codex/worktrees/a200/ferrite-cad`
+target не заводился; отдельный чужой worktree
 не открывался и не изменялся; чужие каталоги и кэши не чистились. Логи и
 артефакты этого среза — в
-`/private/tmp/claude-501/-Users-drt-Desktop-github-ferrite-cad/a3bf5114-6b1f-429b-8a66-55a657d51289/scratchpad`.
+`<временный каталог>`.
 
 ## Что именно меняется
 
@@ -339,7 +339,7 @@ target не заводился, чужие каталоги и кэши не ч�
   нативным интерфейсом macOS: доступны Bash, файловые инструменты и браузерный
   Chrome-скилл. Браузерный инструмент нативным UI-доступом не является и так не
   называется. Bundle не собирался, viewer и watchdog не запускались. Headless
-  widgets/worker проверкой окна не считаются. Рецепт для Codex — ниже.
+  widgets/worker проверкой окна не считаются. Рецепт — ниже.
 * Второй Cut, face attachment, произвольные плоскости, Add/Intersect, Fillet,
   ThroughAll, constrained-инструмент, live preview, правка Cut в середине более
   длинной истории и in-place Save в срез не входят и отказываются.
@@ -350,7 +350,7 @@ target не заводился, чужие каталоги и кэши не ч�
   точном публикуемом SHA.
 * CI нового diff не запускался; CI базы учитывается отдельно.
 
-## Рецепт GUI smoke для Codex
+## Рецепт GUI smoke
 
 Собрать свежие release CLI/viewer, поставить их штатными
 `tools/runtime-closure.sh` и `tools/stage-runtime-layout.sh`, проверить bundle

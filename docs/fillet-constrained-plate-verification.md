@@ -53,7 +53,7 @@ this follow-up records evidence and changes no product code.
 
 Local logs, fixture/comparator, GUI exports, screenshot and watchdog samples
 are in `/private/tmp/ferrite-pr70-review/`; a retained evidence copy is in
-`~/.codex/visualizations/2026/09/05/01a0722f-a4b4-7532-b72b-07ef6b78698d/ferrite-pr70-review/`.
+the local evidence directory.
 The cloud-only limitations below describe the implementation session, not
 this later macOS window check. Linux/Windows window testing was not performed.
 

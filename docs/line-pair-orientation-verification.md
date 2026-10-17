@@ -3,11 +3,10 @@
 2026-09-14. База `00398078a5357078fe6d5e05c21a5e70b9812214`, PR #36 MERGED
 (2026-09-15T02:46:45Z, ветка `equal-line-lengths`). После `git fetch --all
 --prune` HEAD/main/origin/main совпадали, дерево было чистым. Ветка
-`line-pair-orientation` (без префикса `codex/`). CI точного merge SHA
+`line-pair-orientation`. CI точного merge SHA
 перепроверен: **6/6 workflows success** (CI, combined runtime layout,
 planegcs pin, product sbom, rust sbom, rust notices). Это **CI базы**; CI нового
-незакоммиченного diff не запускался и базе не приписывается. Чужой detached
-worktree `/Users/drt/.codex/worktrees/a200/ferrite-cad`, fixtures и чужие
+незакоммиченного diff не запускался и базе не приписывается. Отдельный чужой detached worktree, fixtures и чужие
 изменения не затрагивались. При передаче реализации ничего не было staged,
 commit или push; независимое ревью описано ниже.
 

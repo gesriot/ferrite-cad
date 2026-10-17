@@ -73,7 +73,7 @@ cargo build -p ferritecad-cli --release --offline
 ```
 
 `Finished release` за 13.35s. Перекомпилирован только `ferritecad-cli`.
-Бинарь скопирован в `/private/tmp/ferrite-grok47-trial-3/ferritecad-before`,
+Бинарь скопирован в `<temporary trial directory 3>/ferritecad-before`,
 SHA-256 `c909c7d278eb3c998619d33b59ac9615a5e40b3161a7059075281dd38a482ef3`.
 
 Лёгкий граф на копии `create --sample`: шесть RFC UUIDv7, узел без зависимостей,
@@ -128,7 +128,7 @@ cargo test -p ferritecad-cli --release --offline --test dump_graph -- \
 До этого `.entry(dep.dependent)` был временно заменён на `.entry(dep.dependency)`.
 Тот же тест порядка скомпилировался и упал на байтах stdout: строки `needs`
 оказались у объекта-зависимости. `0 passed; 1 failed`, exit cargo 101.
-Лог: `/private/tmp/ferrite-grok47-trial-3/mutation-fail.log`.
+Лог: `<temporary trial directory 3>/mutation-fail.log`.
 `render.rs` возвращён копией сохранённых байт, не через git restore/reset.
 `cmp` совпал, SHA-256 `da729f2600e4a11ce48fb91c5cd9ff9656eed817002c42c4b394af8820a2242d`.
 
@@ -174,7 +174,7 @@ RFC UUIDv7. Release CLI, stdout в `/dev/null`, exit 0, 1 прогрев + 5 з�
 58.83, 57.84, 58.28; 4000 — 73.52, 73.80, 73.96, 73.71, 72.34; 10000 — 103.24,
 104.04, 103.63, 105.26, 103.91.
 
-Ориентир Codex (55.5 / 61.3 / 87.8 / 173.8 ms) снят другим прогоном и сюда не
+Ориентир (55.5 / 61.3 / 87.8 / 173.8 ms) снят другим прогоном и сюда не
 подставлен. JSON: `timing-before.json`, `timing-after-final.json` в каталоге
 логов.
 
@@ -184,7 +184,7 @@ RFC UUIDv7. Release CLI, stdout в `/dev/null`, exit 0, 1 прогрев + 5 з�
 Свободных страниц к концу было мало, purgeable оставались. Диск: около 141 GiB
 свободно и до, и после (`/private/tmp` на том же томе Data). Свои `cargo` /
 `rustc` к концу не остались. Чужие процессы не останавливались. Чужой target и
-кэши не чистились. Логи и фикстуры: `/private/tmp/ferrite-grok47-trial-3/`.
+кэши не чистились. Логи и фикстуры: `<temporary trial directory 3>/`.
 
 ## Ограничения
 
@@ -228,5 +228,5 @@ stdout в `/dev/null`, медиана всего процесса) дал:
 
 Это отдельный прогон, не замена исходным измерениям выше. На малых документах
 разница несущественна; CI не содержит timing assertion. Артефакты ревью:
-`/private/tmp/ferrite-grok47-review-3/`. Удалённый CI опубликованного commit
+`<temporary review directory 3>/`. Удалённый CI опубликованного commit
 учитывается отдельно; локальные результаты не объявляются проверкой трёх ОС.

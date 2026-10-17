@@ -52,6 +52,6 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 # Errors from external input must never be handled with unwrap/expect.
-# `expect` remains allowed for internal invariants; see CLAUDE.md 5.2.
+# `expect` remains allowed for internal invariants; see CONTRIBUTING.md, Code.
 unwrap_used = "deny"
 panic = "warn"

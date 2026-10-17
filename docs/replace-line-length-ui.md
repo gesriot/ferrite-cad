@@ -2,7 +2,7 @@
 
 2026-09-14. База `86994d48bbbec4be2ce3d1c48cf8fac96e81b935` = PR #33 MERGED =
 HEAD = main = origin/main. После fetch дерево было чистым. Ветка
-`replace-line-length-ui` (без префикса `codex/`). GitHub metadata точной базы:
+`replace-line-length-ui`. GitHub metadata точной базы:
 **27/27 checks, 0 skipped, 6/6 workflow success** —
 [runtime](https://github.com/gesriot/ferrite-cad/actions/runs/34809550174),
 [CI](https://github.com/gesriot/ferrite-cad/actions/runs/34809550170).
@@ -147,6 +147,6 @@ CMakeCache из неверного пути завершилось ошибко�
 последовательно с CARGO_BUILD_JOBS=1; тесты с --test-threads=1. Причина прежнего
 OOM остаётся неизвестной. Логи ревью: `/private/tmp/ferrite-pr34-review/`.
 
-Состояние unstaged/uncommitted и отсутствие CI выше описывают передачу Grok.
+Состояние unstaged/uncommitted и отсутствие CI выше описывают передачу на ревью.
 Следующий этап ревью — commit/публикация, CI точного head, merge и CI merge;
 их результаты фиксируются отдельно в PR, без приписывания CI базы новому diff.

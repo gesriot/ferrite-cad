@@ -196,7 +196,7 @@ the pinned one. No window ran here, and the headless app tests are not a window
 check. The memory exhaustion seen in earlier macOS runs is still unexplained.
 Milestone 5C is not complete.
 
-## macOS fixture and window scenario (for Codex on the Mac)
+## macOS fixture and window scenario
 
 Nothing here was run in this container, which has no window system. The
 generator and comparator use only the CLI. They were exercised with CLI calls

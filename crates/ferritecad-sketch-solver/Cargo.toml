@@ -16,7 +16,7 @@ authors.workspace = true
 [dependencies]
 # The public boundary reports which point, which constraint and which of them
 # was not finite. A stringly-typed error would erase exactly the identifiers a
-# caller needs to act on, so the error is a typed enum, per CLAUDE.md 5.2.
+# caller needs to act on, so the error is a typed enum, per CONTRIBUTING.md, Code.
 thiserror = "2"
 
 # planegcs is LGPL-2.0-or-later and off by default. Turning it on needs a
