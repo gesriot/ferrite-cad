@@ -4453,9 +4453,7 @@ mod constraints {
         if !super::native() {
             return;
         }
-        // N/A where a solver is linked. The mixed CI step runs this by exact
-        // name and fails on any `skipped:`, so a solver that crept into that
-        // build is caught there rather than asserted here.
+        // The complete OCCT-without-solver suite exercises this refusal.
         if ferritecad_eval::solver_available() {
             return;
         }
@@ -5205,8 +5203,7 @@ mod constraints {
             if !super::super::native() {
                 return;
             }
-            // N/A where a solver is linked; the mixed CI step runs this by
-            // exact name and fails on `skipped:`.
+            // The complete OCCT-without-solver suite exercises this refusal.
             if ferritecad_eval::solver_available() {
                 return;
             }

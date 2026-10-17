@@ -15,7 +15,7 @@ case "$(uname -s)" in
 esac
 
 # Every producer has a directory even if its test names change.
-artifact_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ferritecad-test-artifacts"
+artifact_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ferritecad-test-artifacts-${FERRITECAD_REQUIRE_PLANEGCS:-0}"
 mkdir -p "$artifact_root"
 while read -r producer consumer file; do
   directory="$artifact_root/$producer"

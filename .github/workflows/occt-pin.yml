@@ -101,7 +101,7 @@ on:
         required: false
         type: string
       expected_sha256:
-        description: 'Optional: SHA-256 the source archive must match. Leave empty to discover it.'
+        description: 'SHA-256 override (empty uses the committed checksum for the pinned tag).'
         required: false
         type: string
       keep_build_cache:

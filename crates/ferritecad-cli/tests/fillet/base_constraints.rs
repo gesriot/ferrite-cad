@@ -930,8 +930,8 @@ fn chamfer_constraint_discovery_and_protocol_without_native() {
 
 /// OCCT without PlaneGCS: the unconstrained chamfered plate still builds, free
 /// and closure-only routes work, and a constraint copy is refused, typed,
-/// publishing nothing. N/A where a solver is linked: the no-solver CI step runs
-/// this by exact name and fails on any `skipped:`.
+/// publishing nothing. The complete OCCT-without-solver suite exercises this
+/// refusal; it is inapplicable where a solver is linked.
 #[test]
 fn occt_without_solver_refuses_a_constrained_chamfered_plate() {
     if !native() {
