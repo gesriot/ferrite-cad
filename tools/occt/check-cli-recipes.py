@@ -100,7 +100,8 @@ def main():
     parser.add_argument("mode", choices=("stub", "no-solver", "solver"))
     parser.add_argument("binary", type=Path)
     args = parser.parse_args()
-    environment = dict(os.environ, FERRITECAD=str(args.binary.resolve()),
+    binary = args.binary.with_suffix(".exe") if os.name == "nt" else args.binary
+    environment = dict(os.environ, FERRITECAD=str(binary.resolve()),
                        FCAD_EXPECT_SOLVER=str(int(args.mode == "solver")))
     with tempfile.TemporaryDirectory(prefix="ferritecad-recipes-") as directory:
         for index, (document, marker, expectations) in enumerate(RECIPES):

@@ -809,7 +809,6 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
 #[test]
 fn stub_distance_apply_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     let (_root, source, reading) = fixture();
@@ -827,10 +826,9 @@ fn stub_distance_apply_refuses_without_publication() {
 }
 #[test]
 fn mixed_distance_apply_uses_occt_without_solver() {
-    if !ferritecad_fixtures::native_dependencies(&[
-        (ferritecad_occt::is_available(), "OCCT"),
-        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
-    ]) {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     gate("chamfer-mixed");

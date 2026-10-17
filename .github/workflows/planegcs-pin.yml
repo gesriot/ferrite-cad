@@ -523,25 +523,8 @@ jobs:
           CARGO_TERM_COLOR: never
         run: |
           set -euo pipefail
-          # The evaluator is what turns a stored constraint into a solved
-          # coordinate, and since 21B-2a it is also what says how the sketch
-          # was solved. Neither claim is exercised by the crate's own gates
-          # above: those state sketches directly, and these start from bytes on
-          # disk. Only the two test binaries that need a library, so a run here
-          # cannot pass by exercising something else.
-          cargo test --release -p ferritecad-eval --features planegcs \
-            --test solved_sketch --test solve_report --test solve_conflict \
-            -- --nocapture --test-threads=1 2>&1 | tee eval.txt
-
-          # And the boundary that carries those facts out of a rebuild into a
-          # loaded picture, from a real file through the real solver. Since
-          # 21C-1a the same boundary carries the drawings themselves, and
-          # whether they hold the solved coordinates or the stored ones is a
-          # question only a linked library can answer.
-          cargo test --release -p ferritecad-scene --features planegcs \
-            --test solve_facts --test sketch_geometry --test sketch_drawing \
-            -- --nocapture --test-threads=1 2>&1 | tee scene.txt
-
+          cargo test --release -p ferritecad-eval -p ferritecad-scene --features planegcs \
+            -- --nocapture --test-threads=1
 
       - name: Build the real application against planegcs
         env:
@@ -681,6 +664,7 @@ jobs:
           CARGO_TERM_COLOR: never
         run: |
           set -euo pipefail
+          cargo build --release -p ferritecad-cli --features planegcs
           cargo test --release -p ferritecad-app --features planegcs -- --include-ignored --nocapture --test-threads=1
 
       - name: Ask the real application which sketch solver it has

@@ -1373,7 +1373,6 @@ pub(crate) mod tests {
     #[test]
     fn stub_creation_is_refused_at_the_picture() {
         if ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let sessions = tempfile::tempdir().expect("sessions");

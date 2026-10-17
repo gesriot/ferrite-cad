@@ -1594,17 +1594,10 @@ pub(crate) mod tests {
     /// refused by the worker, keeping the draft and publishing nothing.
     #[test]
     fn native_dimensioned_fillet_worker_and_cli_publish_the_same_part() {
-        let occt = ferritecad_occt::is_available();
-        if !occt || !ferritecad_eval::solver_available() {
-            if !occt {
-                assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            } else {
-                assert_ne!(
-                    std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                    Ok("1")
-                );
-            }
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_eval::solver_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let (root, path, source) = dimensioned();

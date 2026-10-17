@@ -695,11 +695,11 @@ jobs:
           # workflow-wide vcvars export already supplies dumpbin to later
           # steps; the override above additionally guarantees that rustc sees
           # MSVC's link.exe ahead of Git Bash's unrelated utility.
-          binary="$(cargo test -p ferritecad-occt --test occt_kernel --no-run --message-format=json 2>/dev/null \
-            | jq -r 'select(.reason == "compiler-artifact")
-                     | select(.target.name == "occt_kernel")
-                     | .executable // empty' \
-            | head -1)"
+          binary="$(cargo test -p ferritecad-occt --all-targets --no-run --message-format=json 2>/dev/null \
+            | jq -sr '[.[] | select(.reason == "compiler-artifact")
+                      | select(.profile.test == true)
+                      | select(.target.kind | index("test"))
+                      | .executable // empty] | first')"
           if [ -z "$binary" ]; then
             echo "::error::no ferritecad-occt test executable was produced"
             exit 1
@@ -741,10 +741,10 @@ jobs:
           FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
           set -euo pipefail
-          source tools/native-test-env.sh
+          source tools/occt/test-env.sh
           cargo build --workspace --all-targets
           cargo test --workspace -- --include-ignored --show-output --test-threads=1 2>&1 | tee "native-tests-$FERRITECAD_REQUIRE_PLANEGCS.log"
-          python3 tools/check-cli-recipes.py no-solver target/debug/ferritecad
+          python3 tools/occt/check-cli-recipes.py no-solver target/debug/ferritecad
 
       - name: Run the whole workspace with OCCT and PlaneGCS
         env:
@@ -755,10 +755,10 @@ jobs:
           FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
           set -euo pipefail
-          source tools/native-test-env.sh
+          source tools/occt/test-env.sh
           cargo build --workspace --all-targets --all-features
           cargo test --workspace --all-features -- --include-ignored --show-output --test-threads=1 2>&1 | tee "native-tests-$FERRITECAD_REQUIRE_PLANEGCS.log"
-          python3 tools/check-cli-recipes.py solver target/debug/ferritecad
+          python3 tools/occt/check-cli-recipes.py solver target/debug/ferritecad
 
       - name: Generate the STEP corpus and compare two runs
         env:

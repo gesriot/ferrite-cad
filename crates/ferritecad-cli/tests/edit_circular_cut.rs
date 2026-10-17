@@ -1607,7 +1607,7 @@ fn native_unknown_tables_survive_and_a_stored_trigger_stops_the_edit() {
 #[test]
 fn occt_without_solver_edits_an_unconstrained_cut() {
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     assert!(

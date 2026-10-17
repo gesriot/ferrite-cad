@@ -732,7 +732,6 @@ fn native_constraints_close_add_but_constraints_and_distance_after_add_still_app
 #[test]
 fn stub_add_chamfer_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     let (_root, source, reading) = plate();
@@ -752,10 +751,9 @@ fn stub_add_chamfer_refuses_without_publication() {
 /// OCCT without PlaneGCS: the free plate takes the whole native gate.
 #[test]
 fn mixed_add_chamfer_uses_occt_without_solver() {
-    if !ferritecad_fixtures::native_dependencies(&[
-        (ferritecad_occt::is_available(), "OCCT"),
-        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
-    ]) {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     gate("add-chamfer-mixed");
@@ -1099,7 +1097,7 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
 #[test]
 fn native_compare_real_add_chamfer_gui_artifacts_with_negative_controls() {
     let Some(root) = std::env::var_os("FCAD_30K_GUI_DIR") else {
-        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
+        eprintln!("skipped: requires real GUI artifacts");
         return;
     };
     assert!(native());

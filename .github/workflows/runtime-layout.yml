@@ -430,10 +430,10 @@ jobs:
           FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
           set -euo pipefail
-          source tools/native-test-env.sh
+          source tools/occt/test-env.sh
           cargo build --workspace --all-targets
           cargo test --workspace -- --include-ignored --show-output --test-threads=1 2>&1 | tee "native-tests-$FERRITECAD_REQUIRE_PLANEGCS.log"
-          python3 tools/check-cli-recipes.py no-solver target/debug/ferritecad
+          python3 tools/occt/check-cli-recipes.py no-solver target/debug/ferritecad
 
       - name: Run the whole workspace with OCCT and PlaneGCS
         env:
@@ -444,10 +444,10 @@ jobs:
           FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
           set -euo pipefail
-          source tools/native-test-env.sh
+          source tools/occt/test-env.sh
           cargo build --workspace --all-targets --all-features
           cargo test --workspace --all-features -- --include-ignored --show-output --test-threads=1 2>&1 | tee "native-tests-$FERRITECAD_REQUIRE_PLANEGCS.log"
-          python3 tools/check-cli-recipes.py solver target/debug/ferritecad
+          python3 tools/occt/check-cli-recipes.py solver target/debug/ferritecad
 
       - name: Build the real application and the command line tool against both
         id: build
@@ -556,7 +556,7 @@ jobs:
           FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
           set -euo pipefail
-          source tools/native-test-env.sh
+          source tools/occt/test-env.sh
           source tools/check-fbx-complex.sh --artifacts
 
       - name: Require the application to import both runtime component families

@@ -1215,7 +1215,7 @@ fn native_cut_refusals_are_atomic() {
 #[test]
 fn occt_without_solver_cuts_an_unconstrained_part() {
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     assert!(

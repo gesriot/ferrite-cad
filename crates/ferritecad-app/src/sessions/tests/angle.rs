@@ -273,10 +273,12 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     if !native() {
         return;
     }
-    if !ferritecad_fixtures::native_dependencies(&[
-        (constrained, "PLANEGCS"),
-        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
-    ]) {
+    if constrained
+        && !ferritecad_fixtures::native_dependencies(&[(
+            ferritecad_sketch_solver::is_available(),
+            "PLANEGCS",
+        )])
+    {
         return;
     }
     let root = tempfile::tempdir().expect("root");
@@ -533,7 +535,6 @@ fn native_constraints_then_angle_preserve_stored_approximation_and_cli_cells() {
 #[test]
 fn stub_angle_apply_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     let root = tempfile::tempdir().expect("root");
@@ -561,10 +562,9 @@ fn stub_angle_apply_refuses_without_publication() {
 }
 #[test]
 fn mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained() {
-    if !ferritecad_fixtures::native_dependencies(&[
-        (ferritecad_occt::is_available(), "OCCT"),
-        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
-    ]) {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     gate(false, false, "mixed-radial");
@@ -626,7 +626,7 @@ fn mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained() {
 #[test]
 fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
     let Some(directory) = std::env::var_os("FCAD_30E_GUI_DIR") else {
-        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
+        eprintln!("skipped: set FCAD_30E_GUI_DIR after the real window scenario");
         return;
     };
     assert!(native(), "GUI comparison requires OCCT");

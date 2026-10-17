@@ -760,7 +760,6 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
 #[test]
 fn stub_radius_apply_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     let (_root, source, reading) = fixture(1);
@@ -784,10 +783,9 @@ fn stub_radius_apply_refuses_without_publication() {
 }
 #[test]
 fn mixed_radius_apply_uses_occt_without_solver() {
-    if !ferritecad_fixtures::native_dependencies(&[
-        (ferritecad_occt::is_available(), "OCCT"),
-        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
-    ]) {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     gate(4, "fillet-mixed");

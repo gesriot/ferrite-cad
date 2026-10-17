@@ -760,7 +760,6 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
 #[test]
 fn stub_cut_apply_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let (_root, source, reading) = fixture(3);
@@ -778,10 +777,9 @@ fn stub_cut_apply_refuses_without_publication() {
 }
 #[test]
 fn mixed_cut_apply_uses_occt_without_solver() {
-    if !ferritecad_fixtures::native_dependencies(&[
-        (ferritecad_occt::is_available(), "OCCT"),
-        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
-    ]) {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     gate(3, true, "mixed-cut");
@@ -790,7 +788,7 @@ fn mixed_cut_apply_uses_occt_without_solver() {
 #[test]
 fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
     let Some(root) = std::env::var_os("FCAD_30F_GUI_DIR") else {
-        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
+        eprintln!("skipped: requires real GUI artifacts");
         return;
     };
     assert!(native());

@@ -168,7 +168,7 @@ jobs:
 
       - name: Check the documented CLI recipes without native geometry
         shell: bash
-        run: python3 tools/check-cli-recipes.py stub target/debug/ferritecad
+        run: python3 tools/occt/check-cli-recipes.py stub target/debug/ferritecad
 
       - name: Verify memory guard cleanup without a viewer
         if: runner.os == 'macOS'
