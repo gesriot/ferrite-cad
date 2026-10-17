@@ -14,7 +14,7 @@ case "$(uname -s)" in
   *) export LD_LIBRARY_PATH="$libs" ;;
 esac
 
-# Every producer has a directory even if its test names change.
+# Every artifact producer has a directory independent of test function or target names.
 artifact_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ferritecad-test-artifacts-${FERRITECAD_REQUIRE_PLANEGCS:-0}"
 mkdir -p "$artifact_root"
 while read -r producer consumer file; do

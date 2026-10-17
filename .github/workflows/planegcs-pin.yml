@@ -326,21 +326,18 @@ jobs:
             fi
             # Every executable the run will launch, taken from cargo rather than
             # from a list of names somebody has to remember to extend.
-            jq -r 'select(.reason == "compiler-artifact")
-                   | select(.target.test == true)
-                   | .executable // empty' "build-${package}.json" >> binaries.txt
+            jq -r --arg package "$package" 'select(.reason == "compiler-artifact")
+                   | select(.package_id | contains($package))
+                   | select(.profile.test == true)
+                   | .executable // empty' "build-${package}.json" \
+              | tr -d '\r' > "binaries-${package}.txt"
+            cat "binaries-${package}.txt" >> binaries.txt
           done
           LC_ALL=C sort -u -o binaries.txt binaries.txt
-          if [ ! -s binaries.txt ]; then
-            echo "::error::the build produced no test executable"
+          if [ ! -s binaries.txt ] || [ ! -s binaries-ferritecad-sketch-solver.txt ]; then
+            echo "::error::the solver and lab did not produce test executables"
             exit 1
           fi
-          # The product crate's own gates must be among them. A run that built
-          # only the bench would prove nothing about the path an application
-          # takes, and would look exactly like this one.
-          grep -Eq '[/\\](product|boundary)-[0-9a-f]+(\.exe)?$' binaries.txt \
-            || { echo "::error::the product solver's own gates were not built"; \
-                 cat binaries.txt; exit 1; }
           cat binaries.txt
 
       - name: Require the shim to have been compiled against the delivered headers
@@ -398,6 +395,7 @@ jobs:
           fi
 
           found=0
+          : > linked-product-binaries.txt
           while IFS= read -r binary; do
             # A carriage return survives every echo unchanged and every open
             # not at all, which is how a path can be printed correctly and
@@ -434,9 +432,12 @@ jobs:
             # than copied in: a statically linked planegcs would name nothing.
             if grep -iq 'planegcs\.\(so\|dylib\|dll\)' deps.txt; then
               found=$((found + 1))
+              if grep -Fxq "$binary" binaries-ferritecad-sketch-solver.txt; then
+                echo "$binary" >> linked-product-binaries.txt
+              fi
             fi
           done < binaries.txt
-          if [ "$found" -eq 0 ]; then
+          if [ "$found" -eq 0 ] || [ ! -s linked-product-binaries.txt ]; then
             echo "::error::no test executable names planegcs at run time, so nothing here \
             is a statement about planegcs"
             exit 1
@@ -950,7 +951,7 @@ jobs:
 
           # Run time first, on the binary that has already passed: the process
           # must not start without the file it named in its import table.
-          binary="$(grep -E '[/\\](product|boundary)-[0-9a-f]+(\.exe)?$' binaries.txt | head -1)"
+          binary="$(head -1 linked-product-binaries.txt)"
           if [ '${{ matrix.name }}' = windows ]; then
             # cargo reports a Windows path; this shell needs its own spelling.
             binary="$(cygpath -u "$binary")"
