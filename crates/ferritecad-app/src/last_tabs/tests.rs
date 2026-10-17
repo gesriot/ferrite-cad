@@ -603,7 +603,7 @@ fn two_processes_publish_whole_lists_and_one_of_them_stays() {
             // is a refusal said as such, never a mixed list.
             Err(error) => {
                 assert!(
-                    cfg!(windows) && error.kind() == "_io",
+                    cfg!(windows) && error.kind() == "io",
                     "a reading during publication was refused: {error}"
                 );
                 _io += 1;

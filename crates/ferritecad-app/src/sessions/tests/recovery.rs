@@ -581,7 +581,10 @@ fn recovery_artifacts(name: &str, stl: &[u8], fbx: &[u8]) {
 
 #[test]
 fn native_a_killed_window_recovers_named_untitled_and_edited_models_as_accepted() {
-    if !native() {
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+    ]) {
         return;
     }
     for (mode, name, exported) in [
