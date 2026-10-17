@@ -317,7 +317,6 @@ fn open_over_an_unfinished_new_asks_first_and_discards_only_when_told() {
     assert_eq!(contents(&[&a_file, &b_file, &broken]), originals);
     loads.stop_all();
     w.creates.stop_all();
-    println!("\nFCAD_30T_OPEN_OVER_NEW_EXECUTED");
 }
 
 fn a_is_as_left_after_return(w: &Window, a: TabId, feature: ObjectId) {
@@ -397,7 +396,6 @@ fn a_saved_object_form_survives_a_discarded_drawing_exactly() {
     assert_eq!((redone.1, redone.2), (polygon.1 + 1, polygon.2 - 1));
     loads.stop_all();
     w.creates.stop_all();
-    println!("\nFCAD_30T_SAVED_FORM_SURVIVES_EXECUTED");
 }
 
 /// New is making its document when a file is chosen. In every timing — the worker
@@ -516,7 +514,6 @@ fn a_creation_under_way_is_abandoned_and_its_late_answer_changes_nothing() {
         w.creates.stop_all();
         assert_eq!(w.creates.accounted(), 0);
     }
-    println!("\nFCAD_30T_OPEN_OVER_RUNNING_NEW_EXECUTED");
 }
 
 /// A creation that finishes before the person answers is a document of its own:
@@ -626,7 +623,6 @@ fn a_creation_that_becomes_a_tab_first_is_never_discarded() {
     assert!(w.creates.asking().is_none());
     loads.stop_all();
     w.creates.stop_all();
-    println!("\nFCAD_30T_OPEN_AFTER_NEW_BECAME_A_TAB_EXECUTED");
 }
 
 /// The window's room is checked before anything is asked and before anything is
@@ -692,7 +688,6 @@ fn a_full_window_is_checked_before_anything_is_asked_or_discarded() {
     w.switch(last);
     assert_eq!(w.edits.typed(), Some((Some(feature), " 33.0 ")));
     loads.stop_all();
-    println!("\nFCAD_30T_OPEN_OVER_NEW_FULL_WINDOW_EXECUTED");
 }
 
 /// Open gets one narrow exception, for New itself. Everything else that holds the
@@ -820,7 +815,6 @@ fn open_alone_leaves_an_unfinished_new_and_every_other_hold_stays() {
     assert!(w.deliver_load(&mut loads, reading, w.read(&c_file), Ok(())));
     loads.stop_all();
     w.creates.stop_all();
-    println!("\nFCAD_30T_OPEN_NARROW_EXCEPTION_EXECUTED");
 }
 
 /// The window cannot be asked for a creation that is still running, so the race is
@@ -894,7 +888,6 @@ fn stub_open_over_a_running_new_is_refused_at_the_picture_and_new_stays_gone() {
     assert!(!w.creates.making_new() && w.typed_new().is_none());
     loads.stop_all();
     w.creates.stop_all();
-    println!("\nFCAD_30T_STUB_OPEN_OVER_NEW_EXECUTED");
 }
 
 /// Open CASCADE without the solver: the production creation and the production
@@ -903,7 +896,9 @@ fn stub_open_over_a_running_new_is_refused_at_the_picture_and_new_stays_gone() {
 /// returning.
 #[test]
 fn mixed_open_over_a_running_new_with_occt_and_no_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     let user = tempfile::tempdir().expect("user");
@@ -942,7 +937,6 @@ fn mixed_open_over_a_running_new_with_occt_and_no_solver() {
     assert_eq!(height_in(&w.sessions), 18.0);
     loads.stop_all();
     w.creates.stop_all();
-    println!("\nFCAD_30T_MIXED_OPEN_OVER_NEW_EXECUTED");
 }
 
 // --- native: the recipe on the owners, and its comparator -------------------------
@@ -1194,10 +1188,9 @@ fn native_confirmed_open_over_a_running_new_then_late_create_and_back_to_a_match
     make_inputs(root);
     open_over_new_recipe_on_owners(root);
     compare_open_over_new_with_controls(root);
-    let volume = super::super::super::checkpoints::stl_facts(
+    let _volume = super::super::super::checkpoints::stl_facts(
         &std::fs::read(root.join("a-unsaved.stl")).expect("a"),
     )
     .2;
-    println!("\nFCAD_30T_NATIVE_OPEN_OVER_NEW_EXECUTED volume_a={volume:.3}");
     println!("FCAD_30T_SESSION_FILES_COMPARE_OK negative_controls=7 all_SQL_cells=true");
 }

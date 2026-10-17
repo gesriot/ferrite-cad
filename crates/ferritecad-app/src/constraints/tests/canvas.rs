@@ -338,7 +338,6 @@ fn a_click_fills_the_fields_the_lists_fill_for_each_explicit_target_and_only_the
         by_index(&rig),
         (Some(3), [Some(0), Some(2)], LineEndpoint::End)
     );
-    println!("\nFCAD_31K_FORM_TARGETS_EXECUTED");
 }
 
 #[test]
@@ -415,7 +414,6 @@ fn the_lists_and_the_canvas_show_one_selection() {
         (LineEndpoint::End, LineEndpoint::Start),
         "picking again does not turn a vector round"
     );
-    println!("\nFCAD_31K_FORM_SYNC_EXECUTED");
 }
 
 #[test]
@@ -470,7 +468,6 @@ fn typed_inputs_history_and_requests_wait_for_an_explicit_action() {
     assert_eq!(rig.e.draft_edits().expect("edits").add.len(), 2);
     assert_eq!(rig.kept().1, (2, 0));
     assert_eq!(rig.picks().1, [Some(ids[0]), Some(ids[3])]);
-    println!("\nFCAD_31K_FORM_INPUTS_EXECUTED");
 }
 
 #[test]
@@ -531,7 +528,6 @@ fn a_reversed_line_is_picked_by_its_start_and_end_not_by_the_screen_side() {
     rig.press("Segment 3");
     rig.press("Pin End");
     assert_eq!(rig.picks().2, LineEndpoint::End);
-    println!("\nFCAD_31K_FORM_REVERSED_EXECUTED");
 }
 
 pub(super) fn moved(to: egui::Pos2) -> egui::Event {
@@ -710,7 +706,6 @@ fn zoom_pan_and_fit_move_only_the_view_and_a_pick_follows_the_view_at_one_and_tw
         at_both[0], at_both[1],
         "1x and 2x differ in a view or a pick"
     );
-    println!("\nFCAD_31K_FORM_VIEW_EXECUTED");
 }
 
 #[test]
@@ -843,7 +838,6 @@ fn busy_queued_covered_outside_and_unfocused_canvases_change_nothing() {
         Some(ids[1]),
         "the canvas works when nothing blocks it"
     );
-    println!("\nFCAD_31K_FORM_BLOCKED_EXECUTED");
 }
 
 #[test]
@@ -902,7 +896,6 @@ fn each_missing_drawing_is_stated_in_the_form_and_the_lists_still_pick() {
         e.draft_canvas().expect("a draft").0,
         &Drawing::Unavailable(Unavailable::NotHanded)
     );
-    println!("\nFCAD_31K_FORM_UNAVAILABLE_EXECUTED");
 }
 
 #[test]
@@ -934,7 +927,6 @@ fn rules_still_pending_are_not_in_the_drawing_until_they_are_applied() {
     );
     assert!(painted(&out, "Pending additions:"));
     assert!(rig.e.take_apply_request().is_none() && rig.e.take_request().is_none());
-    println!("\nFCAD_31K_FORM_PENDING_EXECUTED");
 }
 
 #[test]
@@ -1005,7 +997,6 @@ fn a_pan_holds_the_window_and_ends_with_the_canvas_that_stops_being_drawn() {
         !sketch.gesturing(),
         "a pan on a canvas that is gone holds the window"
     );
-    println!("\nFCAD_31K_FORM_PAN_HOLD_EXECUTED");
 }
 
 #[test]
@@ -1092,7 +1083,6 @@ fn the_canvas_never_reaches_the_3d_camera_and_a_viewport_drag_still_crosses_the_
         );
         assert_ne!(*input.camera(), zoomed, "the form swallowed a viewport pan");
     }
-    println!("\nFCAD_31K_FORM_ROUTING_EXECUTED");
 }
 
 /// A single stored Circle drawn at another place and size: the synthetic solved drawing.
@@ -1404,7 +1394,6 @@ fn the_form_keeps_its_canvas_its_modes_and_its_actions_reachable_at_768_points()
     for line in &report {
         eprintln!("FORM_BUDGET {line}");
     }
-    println!("\nFCAD_31K_FORM_768_EXECUTED");
 }
 
 // ---- native: the real scene of a real rebuild and solve ------------------------------
@@ -2048,7 +2037,6 @@ fn a_press_is_a_click_only_while_it_stays_put_and_nothing_takes_it_away() {
     // The control: the same press and release without any of that is a click.
     rig.click(rig.mid(0));
     assert_eq!(rig.picks().0, Some(ids[0]));
-    println!("\nFCAD_31K_FORM_PRESS_EXECUTED");
 }
 
 impl Rig {
@@ -2153,7 +2141,6 @@ fn a_circle_is_one_curve_picked_by_its_ring_or_its_centre_and_a_single_circle_ha
         panic!("a Circle")
     };
     assert_ne!([stored.x, stored.y], center);
-    println!("\nFCAD_31K_FORM_CIRCLE_EXECUTED");
 }
 
 #[test]
@@ -2216,5 +2203,4 @@ fn a_pick_on_the_canvas_brings_its_row_of_a_long_list_into_view() {
     }
     let again = frame(&ctx, &mut e, vec![]);
     assert!(shown(&again, "Segment 41 ·"));
-    println!("\nFCAD_31K_FORM_REVEAL_EXECUTED");
 }

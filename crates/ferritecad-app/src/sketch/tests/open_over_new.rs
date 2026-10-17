@@ -226,5 +226,4 @@ fn the_question_beside_new_keeps_its_text_and_focus_and_both_buttons_answer() {
     );
     type_text(&ctx, &mut creates, None, "typed into nothing");
     assert!(creates.form().is_none() && !creates.making_new());
-    println!("\nFCAD_30T_QUESTION_WIDGETS_EXECUTED");
 }

@@ -367,7 +367,7 @@ fn euler_xyz(degrees: [f64; 3]) -> [[f64; 3]; 3] {
 #[test]
 fn the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_what_is_missing() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

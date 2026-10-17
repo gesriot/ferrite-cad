@@ -367,7 +367,6 @@ fn a_label_states_the_saved_target_and_selects_exactly_its_rule_only_under_the_d
         again.click(at);
         assert_eq!(again.picks().0, Some(ids_of(&again)[1]));
     }
-    println!("\nFCAD_31L_FORM_LABELS_EXECUTED");
 }
 
 fn ids_of(rig: &Rig) -> Vec<StableEntityId> {
@@ -435,7 +434,6 @@ fn the_labels_the_lines_list_and_the_persisted_rows_show_one_selection() {
         SELECTED_COLOUR
     ));
     assert_eq!(rig.kept(), before);
-    println!("\nFCAD_31L_FORM_SYNC_EXECUTED");
 }
 
 // ---- the replacement ------------------------------------------------------------------
@@ -562,7 +560,6 @@ fn replace_dimension_prepares_one_step_updates_it_in_place_and_the_saved_number_
         // A request is never made by any of this.
         assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
     }
-    println!("\nFCAD_31L_FORM_REPLACE_EXECUTED");
 }
 
 #[test]
@@ -628,7 +625,6 @@ fn replace_dimension_is_the_replace_length_of_the_list_and_never_a_tolerance() {
         by_label.press("Replace dimension");
         assert_eq!(by_label.edits().remove, vec![d60]);
     }
-    println!("\nFCAD_31L_FORM_SEMANTICS_EXECUTED");
 }
 
 #[test]
@@ -656,7 +652,6 @@ fn a_dimension_chosen_on_the_canvas_brings_its_row_and_editor_into_view_in_a_lon
     rig.type_length("43");
     rig.press("Replace dimension");
     assert_eq!(rig.edits().remove, vec![rule]);
-    println!("\nFCAD_31L_FORM_REVEAL_EXECUTED");
 }
 
 #[test]
@@ -716,7 +711,6 @@ fn a_cancelled_save_or_a_stale_reply_keeps_the_text_the_selection_and_the_prepar
     rig.type_length("80");
     rig.press("Replace dimension");
     assert_eq!(rig.edits().add, vec![length_add(ids[0], 80.)]);
-    println!("\nFCAD_31L_FORM_CANCELLED_EXECUTED");
 }
 
 #[test]
@@ -771,7 +765,6 @@ fn a_refused_replacement_keeps_the_typed_text_the_selection_and_the_history_exac
     assert_eq!(rig.typed(), "55");
     // The Revolve-style guard is the same one: nothing is ever requested by a refusal.
     assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
-    println!("\nFCAD_31L_FORM_REFUSED_EXECUTED");
 }
 
 impl Rig {
@@ -905,7 +898,6 @@ fn a_circle_radius_is_replaced_as_the_radius_whether_the_number_is_a_radius_or_a
         by_hand.press("Add diameter");
         assert_eq!(by_hand.edits(), radius);
     }
-    println!("\nFCAD_31L_FORM_CIRCLE_EXECUTED");
 }
 
 // ---- view, hit area, blocked input ----------------------------------------------------
@@ -1038,7 +1030,6 @@ fn labels_follow_zoom_pan_and_fit_and_are_hit_exactly_where_they_are_drawn() {
         assert_eq!(rig.picks().0, Some(ids[0]));
         assert!(rig.e.take_request().is_none());
     }
-    println!("\nFCAD_31L_FORM_VIEW_EXECUTED");
 }
 
 #[test]
@@ -1217,7 +1208,6 @@ fn a_label_press_dies_with_its_surface_and_busy_queued_covered_or_unfocused_form
     rig.type_length("33");
     rig.press("Replace dimension");
     assert_eq!(rig.edits().remove, vec![d60, d30]);
-    println!("\nFCAD_31L_FORM_BLOCKED_EXECUTED");
 }
 
 // ---- the 768-point screen -------------------------------------------------------------
@@ -1375,7 +1365,6 @@ fn the_labels_the_editor_and_the_actions_stay_reachable_at_768_points_in_the_wor
     for line in &report {
         eprintln!("FORM_BUDGET_31L {line}");
     }
-    println!("\nFCAD_31L_FORM_768_EXECUTED");
 }
 
 impl Rig {
@@ -1468,7 +1457,6 @@ fn without_a_drawing_the_saved_rows_still_select_and_replace_and_other_profiles_
     rig.press(&format!("Boundary circle · {}", short(ids[0])));
     rig.settle();
     assert!(!painted(&rig.frame(vec![]), "Replace dimension"));
-    println!("\nFCAD_31L_FORM_UNAVAILABLE_EXECUTED");
 }
 
 pub(super) fn dimension_stored(source: &ExtrudeEditSource) -> Sketch {
@@ -1512,7 +1500,6 @@ fn two_forms_over_one_document_keep_their_own_selection_text_and_pending_replace
     assert_eq!(a.edits().remove, vec![d60], "the other form is untouched");
     assert!(has_label(&a.frame(vec![]), "30 mm"));
     assert!(has_label(&b.frame(vec![]), "30 → 33 mm") && has_label(&b.frame(vec![]), "60 mm"));
-    println!("\nFCAD_31L_FORM_FORMS_EXECUTED");
 }
 
 #[test]
@@ -1576,7 +1563,6 @@ fn overlapping_labels_are_reached_in_stored_order_and_the_list_reaches_the_one_u
     let out = rig.frame(vec![]);
     let order: Vec<_> = labels(&out).into_iter().map(|l| l.text).collect();
     assert_eq!(order, ["30 → 33 mm", "60 mm"]);
-    println!("\nFCAD_31L_FORM_OVERLAP_EXECUTED");
 }
 
 // ---- native: the real scene of a real rebuild and solve -------------------------------

@@ -1240,8 +1240,7 @@ pub(crate) mod tests {
     #[test]
     fn native_fillet_widgets_worker_and_cli_publish_the_same_part() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the fillet worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, source) = plate();
@@ -1595,17 +1594,10 @@ pub(crate) mod tests {
     /// refused by the worker, keeping the draft and publishing nothing.
     #[test]
     fn native_dimensioned_fillet_worker_and_cli_publish_the_same_part() {
-        let occt = ferritecad_occt::is_available();
-        if !occt || !ferritecad_eval::solver_available() {
-            if !occt {
-                assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            } else {
-                assert_ne!(
-                    std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                    Ok("1")
-                );
-            }
-            eprintln!("skipped: rounding a dimensioned plate needs OCCT and PlaneGCS");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_eval::solver_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let (root, path, source) = dimensioned();
@@ -1938,8 +1930,7 @@ pub(crate) mod tests {
     #[test]
     fn native_fillet_radius_widgets_worker_and_cli_publish_the_same_part() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the Fillet radius worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, source) = rounded(2.375);
@@ -2134,8 +2125,7 @@ pub(crate) mod tests {
     #[test]
     fn native_second_fillet_worker_and_cli_publish_the_same_part() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the fillet worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, source) = rounded(2.375);
@@ -2405,8 +2395,7 @@ pub(crate) mod tests {
     #[test]
     fn native_sequential_radius_worker_and_cli_publish_the_same_part() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the Fillet radius worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, source) = rounded_twice(2.375, 3.0625);
@@ -2788,8 +2777,7 @@ pub(crate) mod tests {
     #[test]
     fn native_third_and_fourth_fillet_worker_and_cli_publish_the_same_part() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the fillet worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         for (done, corner, label, radius_text, names) in [

@@ -71,7 +71,7 @@ fn has_kernel(document: &Path) -> bool {
     }
     let complaint = String::from_utf8_lossy(&output.stderr);
     if complaint.contains("no Open CASCADE") {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return false;
     }
     panic!("rebuild failed for another reason: {complaint}");

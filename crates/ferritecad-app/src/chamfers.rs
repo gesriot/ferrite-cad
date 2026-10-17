@@ -1363,8 +1363,7 @@ pub(crate) mod tests {
     #[test]
     fn native_chamfer_widgets_worker_and_cli_publish_the_same_part() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the chamfer worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, source) = crate::fillets::tests::plate();

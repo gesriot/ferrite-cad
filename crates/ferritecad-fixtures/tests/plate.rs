@@ -13,10 +13,7 @@
 
 use ferritecad_document::{CacheStore, SemanticRole};
 use ferritecad_eval::{CacheOutcome, rebuild_cached, rebuild_cold};
-use ferritecad_fixtures::{
-    drop_segment, open_plate, plate_manifest, plate_manifest_path, render_manifest, set_height,
-    write_plate,
-};
+use ferritecad_fixtures::{drop_segment, open_plate, plate_manifest, render_manifest, set_height};
 use ferritecad_kernel::{GeometryKernel, OperationContext, mock::MockKernel};
 use ferritecad_types::ErrorKind;
 
@@ -191,37 +188,6 @@ fn dropping_a_segment_loses_that_name_and_no_other() {
         "a lost name must not borrow a neighbour's face"
     );
 
-    built.release_all(&mut kernel);
-}
-
-/// Rewrites the manifest from the document that is already committed.
-///
-/// Not part of the gate, and deliberately does *not* touch the `.fcad`: that
-/// file is a document an earlier build wrote, and rewriting it would trade the
-/// only property that makes it a regression fixture for a fresh set of
-/// identifiers. It is written once, by [`write_plate`], if it is ever lost.
-///
-/// Review the diff before committing it. That review is the only thing between
-/// an intended change in meaning and an accidental one.
-#[test]
-#[ignore = "rewrites the committed manifest; run it on purpose"]
-fn regenerate_the_committed_manifest() {
-    let source = ferritecad_fixtures::plate_source();
-    if !source.exists() {
-        write_plate(&source).expect("writes a plate where none was");
-    }
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let document = open_plate(dir.path()).expect("the fixture opens");
-    let mut kernel = MockKernel::new();
-    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect("the fixture rebuilds");
-
-    std::fs::write(
-        plate_manifest_path(),
-        render_manifest(&document, &built, &mut kernel).expect("renders"),
-    )
-    .expect("writes the manifest");
     built.release_all(&mut kernel);
 }
 

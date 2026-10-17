@@ -464,7 +464,6 @@ fn quit_keeps_the_saved_files_only_when_the_window_really_ends() {
         after,
         "reopening wrote no list"
     );
-    println!("\nFCAD_30R_QUIT_PUBLICATION_EXECUTED");
 }
 
 /// A window that ends with no saved file publishes an empty list, which clears the
@@ -543,7 +542,6 @@ fn an_empty_end_clears_the_offer_and_a_list_that_cannot_be_kept_stops_quit_once(
     assert_eq!(height_of(&a_file), 12.0);
     w.sessions.stop_all();
     w.tabs.stop_all();
-    println!("\nFCAD_30R_EMPTY_AND_FAILED_LIST_EXECUTED");
 }
 
 /// Reopen beside an open tab and its unfinished form: the files in the list's
@@ -690,7 +688,6 @@ fn reopen_restores_saved_files_beside_open_tabs_in_order_and_shows_the_last_show
     restores.later();
     assert!(restores.rows().is_empty() && restores.report().is_empty() && !restores.can_begin());
     assert_eq!(bytes(&folder.descriptor()), kept);
-    println!("\nFCAD_30R_REOPEN_EXECUTED");
 }
 
 /// Cancel stops the queue without taking back the tabs already opened; the late
@@ -832,7 +829,6 @@ fn cancel_late_answers_and_a_full_window_never_revive_or_mix_a_reopen() {
     );
     assert_eq!(restores.outcomes()[1], Some(Outcome::AlreadyOpen));
     assert!(restores.report()[0].starts_with("1 of 2 saved files are open"));
-    println!("\nFCAD_30R_CANCEL_LATE_FULL_EXECUTED");
 }
 
 /// Without a kernel, the production reading refuses each file at its picture: the
@@ -889,14 +885,15 @@ fn stub_reopen_is_refused_at_the_picture_and_keeps_the_open_tab() {
     );
     assert_eq!(outcomes[1], Some(Outcome::AlreadyOpen));
     assert!(restores.report()[1].starts_with("a.fcad — not opened: "));
-    println!("\nFCAD_30R_STUB_REOPEN_EXECUTED");
 }
 
 /// Open CASCADE without the sketch solver: two files kept at Quit are reopened by
 /// the production reading and the shown one's height is applied.
 #[test]
 fn mixed_reopen_with_occt_and_no_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     let user = tempfile::tempdir().expect("user");
@@ -920,7 +917,6 @@ fn mixed_reopen_with_occt_and_no_solver() {
     assert_eq!(logical(&w, w.sessions.tab()), b_file);
     w.apply(19.0);
     assert_eq!(height_in(&w.sessions), 19.0);
-    println!("\nFCAD_30R_MIXED_REOPEN_EXECUTED");
 }
 
 /// A pointer gesture holds Reopen like any document change.
@@ -1257,7 +1253,6 @@ fn native_reopen_saved_tabs_then_apply_save_and_compare_with_the_command_line() 
     let b_stl = std::fs::read(root.join("b-unsaved.stl")).expect("b");
     let b_fbx = std::fs::read(root.join("b-unsaved.fbx")).expect("b");
     let (a_stl, a_fbx) = peer_bytes(&root.join("a.fcad"), work.path(), "a");
-    let volume = |stl: &[u8]| super::super::checkpoints::stl_facts(stl).2;
     if let Ok(dir) = std::env::var("FCAD_RESTORE_SAVED_TABS_ARTIFACTS") {
         let dir = PathBuf::from(dir);
         for (name, stl, fbx) in [("reopen-b", &b_stl, &b_fbx), ("reopen-a", &a_stl, &a_fbx)] {
@@ -1265,11 +1260,9 @@ fn native_reopen_saved_tabs_then_apply_save_and_compare_with_the_command_line() 
             std::fs::write(dir.join(format!("{name}.fbx")), fbx).expect("artifact");
         }
     }
-    println!(
-        "\nFCAD_30R_NATIVE_REOPEN_EXECUTED volume_a={:.3} volume_b={:.3}",
-        volume(&a_stl),
-        volume(&b_stl)
-    );
+    // Also validate the framing of each saved STL.
+    let _ = super::super::checkpoints::stl_facts(&a_stl);
+    let _ = super::super::checkpoints::stl_facts(&b_stl);
     println!("FCAD_30R_SESSION_FILES_COMPARE_OK negative_controls=8 all_SQL_cells=true");
 }
 
@@ -1284,6 +1277,9 @@ const JOURNAL_STATE: &str = "FCAD_LAUNCH_JOURNAL_ROUTE_STATE";
 #[test]
 #[ignore = "a child process of the_window_route_journals_its_start_a_real_error_a_panic_and_its_end"]
 fn launch_journal_child() {
+    if std::env::var_os(JOURNAL_MODE).is_none() {
+        return;
+    }
     let mode = std::env::var(JOURNAL_MODE).expect("the parent names the mode");
     let state = PathBuf::from(std::env::var_os(JOURNAL_STATE).expect("the parent names a folder"));
     let outcome = crate::journal::launch(|| {
@@ -1467,5 +1463,4 @@ fn the_window_route_journals_its_start_a_real_error_a_panic_and_its_end() {
         let lock = std::fs::File::open(logs.join(&names[1])).expect("lock");
         lock.try_lock().expect("let go when the child ended");
     }
-    println!("\nFCAD_LAUNCH_JOURNAL_ROUTE_EXECUTED");
 }

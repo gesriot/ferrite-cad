@@ -170,7 +170,6 @@ fn same_document_tabs_keep_literal_forms_and_history_until_their_own_close_succe
         a_form,
         "draft Redo was lost"
     );
-    println!("\nFCAD_30U_TAB_FORMS_EXECUTED");
 }
 
 #[test]
@@ -307,7 +306,6 @@ fn cancelled_close_and_refused_saves_return_the_original_form_and_accepted_model
     assert_eq!(w.tabs.count(), 1);
     w.round(b);
     assert_eq!(w.edits.typed(), Some((Some(f), " b ")));
-    println!("\nFCAD_30U_CANCEL_SAVE_EXECUTED");
 }
 
 #[test]
@@ -373,13 +371,11 @@ fn close_decisions_are_once_only_and_address_the_tab_attempt_and_snapshot() {
         !w.sessions.takes_form_apply(),
         "restored original form must be held on newer base"
     );
-    println!("\nFCAD_30U_ADDRESS_EXECUTED");
 }
 
 #[test]
 fn every_existing_form_family_uses_the_same_move_and_keeps_its_entire_state() {
     form_families(false);
-    println!("\nFCAD_30U_FORM_FAMILIES_EXECUTED families=12");
 }
 
 pub(super) fn form_families(quit: bool) {
@@ -721,7 +717,6 @@ fn real_close_buttons_name_unapplied_values_and_parked_fields_cannot_take_typing
     assert!(w.tabs.form_close_question(&w.sessions).is_none());
     assert!(w.back_from_form_close(id));
     assert_eq!(w.edits.typed(), Some((Some(feature), original.as_str())));
-    println!("\nFCAD_30U_WIDGETS_EXECUTED");
 }
 
 #[test]
@@ -751,12 +746,13 @@ fn stub_hidden_close_refusal_keeps_both_forms_and_no_native_work_is_claimed() {
     w.drawn = Drawn::Mock;
     w.round(tab);
     assert_eq!(w.edits.typed(), Some((Some(f), " a x ")));
-    println!("\nFCAD_30U_STUB_EXECUTED");
 }
 
 #[test]
 fn mixed_close_with_occt_and_no_solver_keeps_the_form_on_cancel() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     let root = tempfile::tempdir().expect("root");
@@ -777,7 +773,6 @@ fn mixed_close_with_occt_and_no_solver_keeps_the_form_on_cancel() {
     assert!(w.back_from_form_close(id));
     assert_eq!(w.edits.typed(), Some((Some(f), " 26x ")));
     assert_eq!(height_in(&w.sessions), 18.);
-    println!("\nFCAD_30U_MIXED_EXECUTED");
 }
 
 fn close_recipe(root: &Path) {
@@ -942,7 +937,6 @@ fn native_close_cancel_apply_export_save_and_close_matches_cli_and_keeps_b() {
             .expect("artifact");
         }
     }
-    println!("\nFCAD_30U_NATIVE_EXECUTED volume_a=83200.000 all_SQL_cells=true");
 }
 
 #[test]
@@ -1090,5 +1084,4 @@ fn close_request_preserves_foreground_work_and_gesture_holds() {
         request(&mut w, &loads, &exports).is_some(),
         "idle forms should be offered Close"
     );
-    println!("\nFCAD_30U_HOLDS_EXECUTED");
 }

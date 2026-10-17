@@ -69,7 +69,7 @@ fn face_reference(feature: ObjectId, role: SemanticRole, selection: SelectionRul
 #[test]
 fn open_cascade_geometry_and_its_names_survive_a_file() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

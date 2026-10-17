@@ -916,7 +916,6 @@ fn late_cancelled_or_foreign_answers_change_no_tab_and_release_no_slot() {
     w.show_staged(b_address, path);
     assert_eq!(height_of(&w.sessions.export_path().expect("b")), 17.0);
     assert_eq!(height_of(&w.hidden(a).export_path().expect("a")), 13.0);
-    println!("\nFCAD_30O_LATE_ANSWERS_EXECUTED");
 }
 
 /// Each tab owns its private files and its crash copy: work in one never ends
@@ -1115,7 +1114,6 @@ fn stub_switching_is_refused_at_the_picture_and_keeps_the_shown_tab() {
         w.sessions.status
     );
     assert!(w.tabs.hidden_sessions(first).is_some());
-    println!("\nFCAD_30O_STUB_TABS_EXECUTED");
 }
 
 // --- native: Open CASCADE and PlaneGCS, against the shipped command line ---------
@@ -1350,7 +1348,7 @@ fn native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_com
     assert!((height_a - 26.0).abs() < 1e-4, "{height_a}");
     assert!((volume_a - 80.0 * 40.0 * 26.0).abs() < 1e-2, "{volume_a}");
     super::analytic::assert_round(&b_stl, [-3.5, 4.25], 8.0, None, 15.25);
-    let (_, height_b, volume_b) = super::checkpoints::stl_facts(&b_stl);
+    let (_, _height_b, _volume_b) = super::checkpoints::stl_facts(&b_stl);
     if let Ok(dir) = std::env::var("FCAD_TABS_SESSION_ARTIFACTS") {
         let dir = PathBuf::from(dir);
         for (name, stl, fbx) in [("tabs-a", &a_stl, &a_fbx), ("tabs-b", &b_stl, &b_fbx)] {
@@ -1358,17 +1356,15 @@ fn native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_com
             std::fs::write(dir.join(format!("{name}.fbx")), fbx).expect("artifact");
         }
     }
-    println!(
-        "\nFCAD_30O_NATIVE_TABS_EXECUTED volume_a={volume_a:.3} height_b={height_b:.3} \
-         volume_b={volume_b:.3}"
-    );
 }
 
 /// Open CASCADE without the solver: two unconstrained plates in two tabs are
 /// edited and switched between with the window's own workers.
 #[test]
 fn mixed_tabs_switch_and_apply_with_occt_and_no_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     let user = tempfile::tempdir().expect("user");
@@ -1388,7 +1384,6 @@ fn mixed_tabs_switch_and_apply_with_occt_and_no_solver() {
     assert!(!w.scene.catalogue.is_empty(), "A is drawn by Open CASCADE");
     w.switch(b);
     assert_eq!(height_of(&w.sessions.export_path().expect("b")), 19.0);
-    println!("\nFCAD_30O_MIXED_TABS_EXECUTED");
 }
 
 // --- the real window's artifacts --------------------------------------------------

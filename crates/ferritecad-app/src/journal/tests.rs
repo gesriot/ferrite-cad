@@ -125,7 +125,6 @@ fn a_segment_takes_records_up_to_exactly_sixteen_mebibytes_and_the_next_opens_se
     journal.append(&line_of(RECORD_LIMIT, 'e'));
     assert_eq!(journal.len, len + RECORD_LIMIT as u64);
     assert_eq!(size(&journal.segment(2)), journal.len);
-    println!("\nFCAD_LAUNCH_JOURNAL_EXACT_LIMIT_EXECUTED");
 }
 
 #[test]
@@ -170,7 +169,6 @@ fn a_message_larger_than_a_segment_is_one_bounded_line_and_formatting_stops_at_t
     // A message that fits is whole; control characters are escaped, a tab is not.
     let fits = record("error", format_args!("a\tb\u{1b}c\r\nd"));
     assert!(fits.ends_with(" error a\tb\\u{1b}c\\r\\nd\n"), "{fits}");
-    println!("\nFCAD_LAUNCH_JOURNAL_LARGE_RECORD_EXECUTED");
 }
 
 #[test]
@@ -216,7 +214,6 @@ fn a_cut_never_splits_a_character_or_an_escape_and_keeps_as_much_as_fits() {
         content.len() + escape.len() > CONTENT_LIMIT - prefix,
         "as many as fit"
     );
-    println!("\nFCAD_LAUNCH_JOURNAL_UNICODE_EXECUTED");
 }
 
 #[test]
@@ -275,7 +272,6 @@ fn an_instance_keeps_its_first_and_current_segment_and_removes_only_its_own_full
         std::fs::read(&foreign).expect("foreign"),
         b"somebody's notes"
     );
-    println!("\nFCAD_LAUNCH_JOURNAL_ROTATION_EXECUTED");
 }
 
 #[test]
@@ -400,7 +396,6 @@ fn a_starting_instance_keeps_the_four_newest_finished_a_running_one_and_everythi
     let own = text(&running.segment(1));
     assert!(own.contains(" error still running\n") && own.ends_with(" error after the sweep\n"));
     retention_retries_a_segment_after_access_is_restored();
-    println!("\nFCAD_LAUNCH_JOURNAL_RETENTION_EXECUTED");
 }
 
 /// An inaccessible segment must keep its instance's lock file. Otherwise a later
@@ -543,7 +538,6 @@ fn folders_and_files_that_refuse_never_panic_and_stop_the_journal_once() {
         journal.append(&line_of(RECORD_LIMIT, 'h'));
     }
     assert!(size(&journal.segment(1)) <= SEGMENT_LIMIT);
-    println!("\nFCAD_LAUNCH_JOURNAL_FAILURES_EXECUTED");
 }
 
 #[test]
@@ -605,7 +599,6 @@ fn threads_writing_at_once_leave_whole_records_in_bounded_segments() {
         }
     }
     assert_eq!(seen.len(), THREADS * EACH, "every record once");
-    println!("\nFCAD_LAUNCH_JOURNAL_THREADS_EXECUTED");
 }
 
 #[test]
@@ -630,7 +623,6 @@ fn a_panic_never_waits_for_a_busy_writer() {
         &record("panic", format_args!("when free"))
     ));
     assert!(text(&path).ends_with(" panic when free\n"));
-    println!("\nFCAD_LAUNCH_JOURNAL_BUSY_PANIC_EXECUTED");
 }
 
 /// Reads `child`'s stdout on a thread and hands over each line.
@@ -670,6 +662,9 @@ fn wait_for(
 #[test]
 #[ignore = "a child process of instances_side_by_side_keep_their_own_files_and_never_wait"]
 fn instance_child() {
+    if std::env::var_os(CHILD_FOLDER).is_none() {
+        return;
+    }
     let folder =
         PathBuf::from(std::env::var_os(CHILD_FOLDER).expect("the parent names the folder"));
     let go = PathBuf::from(std::env::var_os(CHILD_GO).expect("the parent names the signal"));
@@ -827,5 +822,4 @@ fn instances_side_by_side_keep_their_own_files_and_never_wait() {
             assert!(records.is_empty(), "{records:?}");
         }
     }
-    println!("\nFCAD_LAUNCH_JOURNAL_INSTANCES_EXECUTED");
 }

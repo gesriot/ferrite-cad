@@ -22,8 +22,7 @@ use ferritecad_types::{ProfileJoint, Result, StableEntityId};
 macro_rules! kernel_or_skip {
     () => {{
         if !is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         OcctKernel::new().expect("a build with Open CASCADE opens a session")

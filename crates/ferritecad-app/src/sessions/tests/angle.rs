@@ -273,12 +273,12 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     if !native() {
         return;
     }
-    if constrained && !ferritecad_sketch_solver::is_available() {
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: constrained angle needs PlaneGCS");
+    if constrained
+        && !ferritecad_fixtures::native_dependencies(&[(
+            ferritecad_sketch_solver::is_available(),
+            "PLANEGCS",
+        )])
+    {
         return;
     }
     let root = tempfile::tempdir().expect("root");
@@ -535,7 +535,6 @@ fn native_constraints_then_angle_preserve_stored_approximation_and_cli_cells() {
 #[test]
 fn stub_angle_apply_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        eprintln!("skipped: requires a stub build");
         return;
     }
     let root = tempfile::tempdir().expect("root");
@@ -563,8 +562,9 @@ fn stub_angle_apply_refuses_without_publication() {
 }
 #[test]
 fn mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
-        eprintln!("skipped: requires OCCT without solver");
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     gate(false, false, "mixed-radial");

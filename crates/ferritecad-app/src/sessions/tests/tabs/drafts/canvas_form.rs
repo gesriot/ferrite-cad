@@ -150,7 +150,6 @@ fn the_drawing_the_target_and_the_picks_of_a_form_follow_its_tab() {
     );
     assert!(w.can_leave(), "a released pan does not");
     assert!(!w.sessions.dirty(), "a view is not a change");
-    println!("\nFCAD_31K_TAB_EXECUTED");
 }
 
 #[test]
@@ -211,7 +210,6 @@ fn a_form_held_on_another_version_loses_its_drawing_and_keeps_its_picks() {
     w.sessions.release_stale_draft();
     let again = open_constraints(&mut w);
     assert_eq!(again.len(), 4);
-    println!("\nFCAD_31K_TAB_STALE_EXECUTED");
 }
 
 #[test]
@@ -262,5 +260,4 @@ fn a_form_given_back_by_a_cancelled_close_or_an_aborted_quit_keeps_its_own_drawi
     w.stop_quit();
     assert_eq!(kept(&w), before, "an aborted Quit");
     assert!(!w.sessions.stale_draft());
-    println!("\nFCAD_31K_TAB_GIVEN_BACK_EXECUTED");
 }

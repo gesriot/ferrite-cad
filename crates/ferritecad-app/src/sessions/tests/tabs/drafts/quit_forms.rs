@@ -216,7 +216,6 @@ fn late_cancel_returns_all_forms_and_published_save_then_final_quit_cleans_up() 
     w.tabs.stop_all();
     assert!(!private.exists());
     assert_eq!(store.list().expect("recovery").recoverable().count(), 0);
-    println!("\nFCAD_30V_LATE_CANCEL_EXECUTED all_forms=true saved_a=18");
 }
 
 #[test]
@@ -334,7 +333,6 @@ fn deferred_discard_and_refused_saves_keep_forms_and_models() {
     assert_eq!(height_of(&file), 18.);
     assert_eq!(w.edits.typed(), Some((Some(u), " 99x ")));
     assert!(!w.sessions.dirty());
-    println!("\nFCAD_30V_SAVE_REFUSALS_EXECUTED");
 }
 
 #[test]
@@ -418,7 +416,6 @@ fn form_and_model_answers_address_attempt_tab_and_snapshot_once() {
         "double model answer"
     );
     w.stop_quit();
-    println!("\nFCAD_30V_ADDRESS_EXECUTED");
 }
 
 #[test]
@@ -481,7 +478,6 @@ fn switch_and_first_last_tabs_refusal_return_previously_confirmed_forms() {
     );
     assert!(w.begin_quit());
     assert_eq!(w.complete_quit(&mut restores), crate::QuitEnd::Exit);
-    println!("\nFCAD_30V_SWITCH_LASTTABS_EXECUTED");
 }
 
 #[test]
@@ -542,7 +538,6 @@ fn real_quit_widgets_name_loss_back_and_repeat_preserve_literal_form() {
     form_frame(&mut w, &ctx, vec![egui::Event::Text("999".into())]);
     w.stop_quit();
     assert_eq!(w.edits.typed(), Some((Some(f), " 2..6 ")));
-    println!("\nFCAD_30V_WIDGETS_EXECUTED");
 }
 
 #[test]
@@ -655,7 +650,6 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
     let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut w.creates.sketch);
     assert!(!w.begin_quit(), "a held pan lost its hold");
     crate::sketch::navigation_tests::release_pan(&ctx, &mut w.creates.sketch, at);
-    println!("\nFCAD_30V_HOLDS_EXECUTED");
 }
 
 #[test]
@@ -692,7 +686,6 @@ fn stub_quit_switch_refusal_keeps_both_original_forms() {
     w.drawn = Drawn::Mock;
     w.round(b);
     assert_eq!(w.edits.typed(), Some((Some(bf), " b ")));
-    println!("\nFCAD_30V_STUB_EXECUTED");
 }
 
 #[test]
@@ -786,12 +779,13 @@ fn native_cancelled_quit_returns_form_for_apply_export_save_and_final_quit() {
             .expect("artifact");
         }
     }
-    println!("\nFCAD_30V_NATIVE_EXECUTED volume_a=83200.000 all_SQL_cells=true");
 }
 
 #[test]
 fn mixed_quit_with_occt_without_solver_returns_form_on_cancel() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     let root = tempfile::tempdir().expect("root");
@@ -813,7 +807,6 @@ fn mixed_quit_with_occt_without_solver_returns_form_on_cancel() {
     w.stop_quit();
     assert_eq!(w.edits.typed(), Some((Some(f), " 26x ")));
     assert_eq!(height_in(&w.sessions), 18.);
-    println!("\nFCAD_30V_MIXED_EXECUTED");
 }
 
 #[test]
@@ -844,5 +837,4 @@ fn native_compare_real_quit_draft_gui_outputs() {
 #[test]
 fn every_saved_form_family_returns_whole_after_confirmed_quit_is_aborted() {
     close_form::form_families(true);
-    println!("\nFCAD_30V_FORM_FAMILIES_EXECUTED families=12");
 }

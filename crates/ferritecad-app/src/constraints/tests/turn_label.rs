@@ -536,7 +536,6 @@ fn a_label_states_the_saved_signed_target_and_selects_exactly_its_rule_with_both
         assert_eq!(rig.turn(), Some(rules[2]));
         assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
     }
-    println!("\nFCAD_31M_FORM_LABELS_EXECUTED");
 }
 
 #[test]
@@ -608,7 +607,6 @@ fn the_labels_the_lines_list_and_the_persisted_rows_show_one_selection_and_the_p
     rig.press("Segment 2");
     assert_eq!((rig.turn(), rig.picks().0), (None, Some(ids[1])));
     assert_eq!(rig.slots().0, (Some(ids[3]), Some(ids[1])));
-    println!("\nFCAD_31M_FORM_SYNC_EXECUTED");
 }
 
 // ---- the replacement ------------------------------------------------------------------
@@ -764,7 +762,6 @@ fn replace_dimension_for_a_saved_angle_prepares_one_step_keeps_both_vectors_upda
         // A request is never made by any of this.
         assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
     }
-    println!("\nFCAD_31M_FORM_REPLACE_EXECUTED");
 }
 
 #[test]
@@ -837,7 +834,6 @@ fn replace_dimension_is_the_remove_and_add_of_the_form_and_never_a_tolerance() {
         by_label.press("Replace dimension");
         assert_eq!(by_label.edits().remove, vec![rules[1]]);
     }
-    println!("\nFCAD_31M_FORM_SEMANTICS_EXECUTED");
 }
 
 // ---- refusals and what survives them ---------------------------------------------------
@@ -918,7 +914,6 @@ fn a_refused_angle_keeps_the_typed_text_the_selection_and_the_history_exactly() 
     assert_eq!(now, held, "a refused draft was changed");
     assert_eq!((rig.degrees_typed().as_str(), rig.edits()), ("55", edits));
     assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
-    println!("\nFCAD_31M_FORM_REFUSED_EXECUTED");
 }
 
 #[test]
@@ -974,7 +969,6 @@ fn a_cancelled_save_or_a_stale_reply_keeps_the_text_the_selection_and_the_prepar
     rig.type_angle("80");
     rig.press("Replace dimension");
     assert_eq!(rig.edits().add, vec![angle_add(a0, b0, 80.)]);
-    println!("\nFCAD_31M_FORM_CANCELLED_EXECUTED");
 }
 
 // ---- view, hit area, blocked input ----------------------------------------------------
@@ -1111,7 +1105,6 @@ fn labels_follow_zoom_pan_and_fit_and_are_hit_exactly_where_they_are_drawn() {
         assert_eq!(label(&rig.frame(vec![]), "A>B 180°").rect, first.rect);
         assert!(rig.e.take_request().is_none());
     }
-    println!("\nFCAD_31M_FORM_VIEW_EXECUTED");
 }
 
 #[test]
@@ -1288,7 +1281,6 @@ fn an_angle_label_press_dies_with_its_surface_and_busy_queued_covered_or_unfocus
     rig.press("Replace dimension");
     assert_eq!(rig.edits().remove, vec![rules[0], rules[1]]);
     let _ = ids;
-    println!("\nFCAD_31M_FORM_BLOCKED_EXECUTED");
 }
 
 /// Press the button whose words are exactly `words` (the target buttons, not the rows).
@@ -1393,7 +1385,6 @@ fn overlapping_labels_are_reached_in_saved_order_and_the_list_reaches_the_one_un
             .any(|s| near(s[0], rig.ends(2)[0]) && near(s[1], rig.ends(2)[1])),
         "only the top label's Lines"
     );
-    println!("\nFCAD_31M_FORM_OVERLAP_EXECUTED");
 }
 
 /// The 64-gon of the §31K gate with two saved angles between neighbouring Lines.
@@ -1563,7 +1554,6 @@ fn the_angle_labels_the_editor_and_the_actions_stay_reachable_at_768_points_in_t
     for line in &report {
         eprintln!("FORM_BUDGET_31M {line}");
     }
-    println!("\nFCAD_31M_FORM_768_EXECUTED");
 }
 
 #[test]
@@ -1618,7 +1608,6 @@ fn without_a_drawing_the_angle_rows_still_select_and_replace_and_other_profiles_
     let (_round, round_path, round, _, _) = persisted_circle_for_angles();
     let rig = Rig::over(None, &round_path, &round, 1., moved_circle_for_angles);
     assert!(rig.e.draft_turns().expect("draft").0.is_empty());
-    println!("\nFCAD_31M_FORM_UNAVAILABLE_EXECUTED");
 }
 
 #[test]
@@ -1648,7 +1637,6 @@ fn two_forms_over_one_document_keep_their_own_angle_selection_text_and_pending_r
     // A is what it was; its text box holds A's text and B's holds B's.
     assert_eq!((a.turn(), a.degrees_typed(), a.edits()), in_a);
     assert_eq!(b.degrees_typed(), "0");
-    println!("\nFCAD_31M_FORM_FORMS_EXECUTED");
 }
 
 /// The cylinder of §31L with a Radius, only to show that a Circle has no angle.
@@ -1792,7 +1780,6 @@ fn an_angle_typed_as_it_is_displayed_is_the_saved_angle_exactly_and_the_one_that
     rig.type_angle(&shown.to_string());
     rig.press("Replace dimension");
     assert_eq!(rig.edits(), SketchConstraintEdits::default());
-    println!("\nFCAD_31M_FORM_NUMBER_EXECUTED");
 }
 
 fn angles_typeable(rig: &Rig, i: usize) -> bool {

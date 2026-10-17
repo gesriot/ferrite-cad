@@ -985,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual ExtrudeEditSource::read timing; not a CI assertion"]
+    #[ignore = "catalog timing; included by native CI"]
     fn measure_extrude_catalog_read() {
         const REPEATS: usize = 21;
         println!(

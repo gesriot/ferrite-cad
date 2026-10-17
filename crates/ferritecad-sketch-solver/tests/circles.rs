@@ -36,11 +36,7 @@ fn native() -> bool {
     if solver::is_available() {
         true
     } else {
-        assert!(
-            !solver::is_required(),
-            "FERRITECAD_REQUIRE_PLANEGCS=1 and no library: this gate may not skip"
-        );
-        eprintln!("skipped: this build has no planegcs");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         false
     }
 }

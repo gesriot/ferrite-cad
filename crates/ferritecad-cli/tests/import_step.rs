@@ -104,7 +104,7 @@ fn has_kernel(directory: &Path) -> bool {
     }
     let complaint = String::from_utf8_lossy(&result.stderr);
     if complaint.contains("no Open CASCADE") {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return false;
     }
     panic!("importing failed for another reason: {complaint}");

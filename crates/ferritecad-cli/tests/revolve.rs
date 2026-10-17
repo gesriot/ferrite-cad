@@ -109,8 +109,8 @@ fn native() -> bool {
     if ferritecad_occt::is_available() {
         return true;
     }
-    assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-    eprintln!("skipped: this build has no Open CASCADE");
+
+    ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
     false
 }
 

@@ -187,7 +187,7 @@ fn identities_from_another_process(document: &Path) -> Vec<String> {
 #[test]
 fn every_placement_of_the_reopened_complex_assembly_has_its_own_durable_identity() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

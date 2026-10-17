@@ -571,7 +571,6 @@ mod tests {
                 "the diagonal belongs to Polar 45° only"
             );
         }
-        println!("\nFCAD_31D_HEADINGS_EXECUTED");
     }
 
     #[test]
@@ -592,7 +591,6 @@ mod tests {
                 );
             }
         }
-        println!("\nFCAD_31D_APERTURE_EXECUTED");
     }
 
     #[test]
@@ -603,7 +601,6 @@ mod tests {
         // The same far pointer, 9 points across, is not forced onto any angle.
         let off = at(0.0, 100_000.0, 9.0, 4.0);
         assert_eq!(acquire(Mode::Polar, off, 4.0, None), None);
-        println!("\nFCAD_31D_FAR_ANCHOR_EXECUTED");
     }
 
     #[test]
@@ -636,7 +633,6 @@ mod tests {
             (Outcome::Open, None),
             "no direction, no length"
         );
-        println!("\nFCAD_31D_ZERO_EXECUTED");
     }
 
     /// The pointer `radius` points from the anchor at `degrees`, as an offset in mm.
@@ -712,7 +708,6 @@ mod tests {
             acquire(Mode::Orthogonal, ring(0.0, 60.0, 4.0), 4.0, Some(6)),
             Some(0)
         );
-        println!("\nFCAD_31D_HYSTERESIS_EXECUTED");
     }
 
     #[test]
@@ -745,7 +740,6 @@ mod tests {
         // The answer does not depend on how often it is asked.
         let first = acquire(Mode::Polar, offset, points_per_mm, None);
         assert!((0..5).all(|_| acquire(Mode::Polar, offset, points_per_mm, None) == first));
-        println!("\nFCAD_31D_TIES_EXECUTED");
     }
 
     #[test]
@@ -765,7 +759,6 @@ mod tests {
                 );
             }
         }
-        println!("\nFCAD_31D_SCALES_EXECUTED");
     }
 
     #[test]
@@ -795,7 +788,6 @@ mod tests {
         // Without a guide in reach, the object is the answer, as in 31C.
         let (outcome, held) = resolve(free, &reach([10.0, 5.0], 4.0, None), Some(hit));
         assert_eq!((outcome, held), (Outcome::Object(hit), None));
-        println!("\nFCAD_31D_GEOMETRY_PRECEDENCE_EXECUTED");
     }
 
     #[test]
@@ -858,7 +850,6 @@ mod tests {
         let hair = candidate([22.5 + 2.0 * OBJECT_MATCH_MM, 30.0]);
         let (outcome, _) = resolve(typed("2.5"), &reach(offset, 4.0, None), Some(hair));
         assert!(matches!(outcome, Outcome::Guide(_)), "{outcome:?}");
-        println!("\nFCAD_31D_GEOMETRY_LENGTH_EXECUTED");
     }
 
     #[test]
@@ -903,7 +894,6 @@ mod tests {
         let huge = settings(Mode::Polar, Length::parse("1e9"));
         let (outcome, _) = resolve(huge, &reach([10.0, 0.0], 4.0, None), None);
         assert_eq!(outcome, Outcome::Refused { heading: 0 });
-        println!("\nFCAD_31D_GEOMETRY_REFUSED_EXECUTED");
     }
 
     #[test]
@@ -952,6 +942,5 @@ mod tests {
             let (words, _) = note(Mode::Orthogonal, Length::Millimetres(length), "");
             assert!(words.contains(&format!("Length {length} mm")), "{words}");
         }
-        println!("\nFCAD_31D_LABELS_EXECUTED");
     }
 }

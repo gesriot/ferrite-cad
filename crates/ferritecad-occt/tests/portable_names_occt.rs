@@ -79,7 +79,7 @@ fn side_reference(feature: ObjectId, segment: StableEntityId) -> TopologyRef {
 #[test]
 fn open_cascade_names_survive_the_session_that_made_them() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -161,7 +161,7 @@ fn open_cascade_names_survive_the_session_that_made_them() {
 #[test]
 fn a_restored_open_cascade_shape_refuses_a_name_it_never_had() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -205,7 +205,7 @@ fn a_restored_open_cascade_shape_refuses_a_name_it_never_had() {
 #[test]
 fn a_bad_open_cascade_slot_leaves_no_decoded_shape() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -242,7 +242,7 @@ fn a_bad_open_cascade_slot_leaves_no_decoded_shape() {
 #[test]
 fn trailing_bytes_in_a_named_open_cascade_archive_are_refused() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -285,7 +285,7 @@ fn trailing_bytes_in_a_named_open_cascade_archive_are_refused() {
 #[test]
 fn an_open_cascade_archive_is_not_readable_as_a_bare_shape() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

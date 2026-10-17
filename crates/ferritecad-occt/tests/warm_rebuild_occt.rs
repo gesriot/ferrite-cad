@@ -118,7 +118,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
 #[test]
 fn open_cascade_geometry_comes_back_without_being_recomputed() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

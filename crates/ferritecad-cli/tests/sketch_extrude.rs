@@ -108,8 +108,7 @@ fn sketch_request_refusals_and_usage_preserve_files() {
 #[test]
 fn native_sketch_extrude_process_cold_geometry_and_delivery() {
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: no OCCT for polygon geometry");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let d = tempfile::tempdir().expect("dir");

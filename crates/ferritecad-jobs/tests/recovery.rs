@@ -394,7 +394,6 @@ fn a_killed_window_with_two_tabs_leaves_both_dirty_documents_recoverable() {
     names.sort_unstable();
     assert_eq!(names, ["Untitled", "plate.fcad"]);
     assert_ne!(found[0].record, found[1].record);
-    println!("\nFCAD_30O_TWO_TAB_CRASH_EXECUTED");
 }
 
 #[test]
@@ -998,7 +997,6 @@ fn a_folder_without_write_permission_fails_the_copy_and_loses_nothing() {
     drop(record);
     let found = recoverable(&store);
     assert_eq!(found[0].content, first.content);
-    println!("\nFCAD_30M_PERMISSION_GATE_EXECUTED");
 }
 
 #[test]

@@ -384,7 +384,6 @@ fn a_directed_angle_outside_the_canonical_range_is_refused_not_wrapped() {
             Err(error) => assert!(error.is_unavailable(), "{fine} rad: {error}"),
         }
     }
-    println!("\nFCAD_31F_SOLVER_RANGE_EXECUTED");
 }
 
 #[test]
@@ -403,7 +402,6 @@ fn a_directed_angle_against_a_vector_with_no_direction_is_refused_before_native(
     // Two points that sit on each other.
     degenerate(angled(0.5, (PointId(1), PointId(5)), up));
     degenerate(angled(0.5, line, (PointId(5), PointId(1))));
-    println!("\nFCAD_31F_SOLVER_DEGENERATE_EXECUTED");
 }
 
 #[test]
@@ -424,7 +422,6 @@ fn every_point_of_a_directed_angle_is_checked_against_the_sketch() {
             "reference {slot}"
         );
     }
-    println!("\nFCAD_31F_SOLVER_REFERENCES_EXECUTED");
 }
 
 /// The five points of [`angled`] with a collinearity in place of the angle.
@@ -456,7 +453,6 @@ fn a_collinear_against_a_segment_with_no_direction_is_refused_before_native() {
     // Two points that sit on each other.
     degenerate(collinear((PointId(1), PointId(5)), up));
     degenerate(collinear(line, (PointId(5), PointId(1))));
-    println!("\nFCAD_31G_SOLVER_DEGENERATE_EXECUTED");
 }
 
 #[test]
@@ -477,5 +473,4 @@ fn every_point_of_a_collinear_is_checked_against_the_sketch() {
             "reference {slot}"
         );
     }
-    println!("\nFCAD_31G_SOLVER_REFERENCES_EXECUTED");
 }

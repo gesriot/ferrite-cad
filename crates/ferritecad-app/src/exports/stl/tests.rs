@@ -16,8 +16,7 @@ use std::time::Duration;
 
 fn native() -> bool {
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: this build has no Open CASCADE (STL export gate)");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return false;
     }
     if ferritecad_sketch_solver::is_required() {

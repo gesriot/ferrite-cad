@@ -758,6 +758,7 @@ version = "0.0.1"
 dependencies = [
  "ferritecad-document",
  "ferritecad-exchange",
+ "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-sketch-solver",
  "ferritecad-topology",
@@ -806,6 +807,7 @@ dependencies = [
  "ferritecad-eval",
  "ferritecad-exchange",
  "ferritecad-export",
+ "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-scene",
  "ferritecad-types",
@@ -860,6 +862,7 @@ dependencies = [
 name = "ferritecad-sketch-solver"
 version = "0.0.1"
 dependencies = [
+ "ferritecad-fixtures",
  "thiserror 2.0.19",
 ]
 
@@ -867,6 +870,7 @@ dependencies = [
 name = "ferritecad-solver-lab"
 version = "0.0.1"
 dependencies = [
+ "ferritecad-fixtures",
  "ferritecad-sketch-solver",
 ]
 
@@ -912,6 +916,7 @@ name = "ferritecad-viewport-gpu"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
+ "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-types",
  "ferritecad-viewport",

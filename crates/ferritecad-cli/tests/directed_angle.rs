@@ -66,27 +66,10 @@ fn entries(p: &Path) -> Vec<std::ffi::OsString> {
 /// Whether this build has what the gate needs, each missing piece excused only
 /// where that piece is not required.
 fn have(kernel: bool, solver: bool) -> bool {
-    for (needed, present, required, what) in [
-        (
-            kernel,
-            ferritecad_occt::is_available(),
-            "FERRITECAD_REQUIRE_OCCT",
-            "OCCT",
-        ),
-        (
-            solver,
-            ferritecad_eval::solver_available(),
-            "FERRITECAD_REQUIRE_PLANEGCS",
-            "planegcs",
-        ),
-    ] {
-        if needed && !present {
-            assert_ne!(std::env::var(required).as_deref(), Ok("1"));
-            eprintln!("skipped: the directed angle gate needs {what}");
-            return false;
-        }
-    }
-    true
+    ferritecad_fixtures::native_dependencies(&[
+        (!kernel || ferritecad_occt::is_available(), "OCCT"),
+        (!solver || ferritecad_eval::solver_available(), "PLANEGCS"),
+    ])
 }
 
 /// A saved XY Line profile written by the shipped creation command.
@@ -606,7 +589,6 @@ fn a_directed_angle_request_is_strict_and_refuses_before_anything_is_published()
     }
     assert!(!s.root.path().join("never.fcad").exists());
     assert_eq!(std::fs::read(&s.path).expect("source"), before);
-    println!("\nFCAD_31F_CLI_STRICT_EXECUTED");
 }
 
 /// Discovery: a stored angle is reported with its directions and its degrees,
@@ -764,7 +746,6 @@ fn discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone() 
             "inspect reported {reported} for {degrees}"
         );
     }
-    println!("\nFCAD_31F_CLI_DISCOVERY_EXECUTED");
 }
 
 /// The refusals that happen before the solver is asked: the pair slot (every
@@ -894,7 +875,6 @@ fn the_pair_slot_and_the_lines_of_the_sketch_are_checked_before_the_solver() {
         constraint_ids(&catalog).len() + 1,
         "one more constraint, and the angle is still there"
     );
-    println!("\nFCAD_31F_CLI_SLOT_EXECUTED");
 }
 
 /// OCCT without a solver: a document that holds an angle is neither recomputed
@@ -902,8 +882,9 @@ fn the_pair_slot_and_the_lines_of_the_sketch_are_checked_before_the_solver() {
 /// coordinates and its exports) works exactly as before.
 #[test]
 fn without_a_solver_an_angled_document_is_not_solved_and_the_unconstrained_route_works() {
-    if !ferritecad_occt::is_available() || ferritecad_eval::solver_available() {
-        eprintln!("skipped: this gate is the OCCT-without-solver shape");
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_eval::solver_available()
+    {
         return;
     }
     use ferritecad_document::{
@@ -990,7 +971,6 @@ fn without_a_solver_an_angled_document_is_not_solved_and_the_unconstrained_route
         )],
     );
     assert_eq!(error["kind"], "unsupported", "{error}");
-    println!("\nFCAD_31F_NOSOLVER_EXECUTED");
 }
 
 /// What a published copy must still be, whatever angle it carries: the source's
@@ -1143,7 +1123,6 @@ fn native_directed_angle_signs_directions_and_equivalent_spellings_on_a_dart() {
     // The source did not move.
     assert_eq!(std::fs::read(&s.path).expect("source"), bytes);
     assert_eq!(flat_modified(&s.path), mtime);
-    println!("\nFCAD_31F_CLI_DART_EXECUTED");
 }
 
 /// Across the half turn: the opposite of a Line is `+180` only, and `+170` and
@@ -1225,7 +1204,6 @@ fn native_directed_angle_across_the_half_turn_tilts_a_quadrilateral_either_way()
         tilt["+180"].abs() < 1e-6 && tilt["-180 is +180"].abs() < 1e-6,
         "{tilt:?}"
     );
-    println!("\nFCAD_31F_CLI_HALF_TURN_EXECUTED");
 }
 
 /// Replacement and removal by exact UUID, the solver's own redundancy and
@@ -1451,7 +1429,6 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
             .any(|n| n.to_string_lossy().starts_with(".ferritecad-")),
         "a temporary file was left behind"
     );
-    println!("\nFCAD_31F_CLI_EDIT_EXECUTED");
 }
 
 /// A warm rebuild never serves one angle's solid for another's: the cache key
@@ -1517,5 +1494,4 @@ fn native_directed_angle_cache_keys_follow_the_solved_profile() {
             "{again} vs {independent}"
         );
     }
-    println!("\nFCAD_31F_CLI_CACHE_EXECUTED");
 }

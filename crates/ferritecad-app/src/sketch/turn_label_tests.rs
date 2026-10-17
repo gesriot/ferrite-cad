@@ -245,7 +245,6 @@ fn saved_angles_are_the_directed_angle_rules_between_two_lines_with_their_exact_
     round.constraints = Vec::new();
     assert!(saved_turns(&round).is_empty(), "a Circle");
     assert!(saved_turns(&sketch(Vec::new(), Vec::new())).is_empty());
-    println!("\nFCAD_31M_SAVED_EXECUTED");
 }
 
 #[test]
@@ -387,7 +386,6 @@ fn a_label_states_the_signed_target_the_order_and_the_unit_and_never_reads_as_an
         None
     );
     assert!(seventy.is_replaced_by(&seventy.replaced_by(degrees(5.))));
-    println!("\nFCAD_31M_TEXT_EXECUTED");
 }
 
 type Segment = [[f64; 2]; 2];
@@ -520,7 +518,6 @@ fn the_label_of_a_pair_stands_midway_between_its_lines_and_is_finite_for_every_r
             .iter()
             .all(|p| p.rect.size() == measure("A>B 90°") + PAD * 2.)
     );
-    println!("\nFCAD_31M_PLACE_EXECUTED");
 }
 
 #[test]
@@ -594,7 +591,6 @@ fn labels_of_curves_and_pairs_overlap_in_saved_order_and_a_label_is_exactly_its_
         "outside the visible canvas"
     );
     assert!(reach(&[], &[], visible, r.center()).is_none());
-    println!("\nFCAD_31M_HIT_EXECUTED");
 }
 
 #[test]
@@ -678,5 +674,4 @@ fn an_angle_typed_back_from_its_display_is_the_saved_angle_for_the_probes_and_th
     let mut unreachable = turn(a, b, 10.);
     unreachable.angle = DirectedAngle::from_radians(0.174_532_925_199_432_98).expect("canonical");
     assert!(!unreachable.typeable());
-    println!("\nFCAD_31M_ROUNDTRIP_EXECUTED");
 }

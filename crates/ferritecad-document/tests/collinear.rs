@@ -194,7 +194,6 @@ fn a_collinear_is_stored_in_layout_v5_as_its_own_kind_and_declares_its_own_capab
         assert_eq!(&d.object(object.id).expect("read").expect("kept"), object);
     }
     assert!(d.validate().expect("validate").is_ok());
-    println!("\nFCAD_31G_DOCUMENT_V5_EXECUTED");
 }
 
 #[test]
@@ -293,7 +292,6 @@ fn a_collinear_shares_the_relation_slot_in_either_order_and_only_an_exact_replac
         "EqualLength + closure only"
     );
     assert!(d.validate().expect("validate").is_ok());
-    println!("\nFCAD_31G_DOCUMENT_SLOT_EXECUTED");
 }
 
 #[test]
@@ -391,7 +389,6 @@ fn what_a_sketch_declares_is_decided_by_what_it_holds_and_collinear_is_never_an_
         });
         assert!(ObjectPayload::Sketch(zero).to_storage_bytes().is_err());
     }
-    println!("\nFCAD_31G_DOCUMENT_LAYOUT_EXECUTED");
 }
 
 #[test]
@@ -425,5 +422,4 @@ fn a_profile_with_a_construction_line_takes_no_collinear_on_any_pair() {
         assert!(error.to_string().contains("construction"), "{error}");
     }
     assert_eq!(stored(&d, id), before);
-    println!("\nFCAD_31G_DOCUMENT_CONSTRUCTION_EXECUTED");
 }

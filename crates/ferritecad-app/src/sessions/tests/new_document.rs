@@ -444,8 +444,9 @@ fn native_every_new_document_variant_is_untitled_until_its_first_save_like_the_c
 /// OCCT without the solver: none of the seven needs it (no profile is constrained).
 #[test]
 fn mixed_new_documents_need_no_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
-        eprintln!("skipped: requires OCCT/no solver");
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     matrix();
@@ -457,7 +458,6 @@ fn mixed_new_documents_need_no_solver() {
 #[test]
 fn stub_new_document_is_refused_at_the_picture_and_keeps_the_open_one() {
     if ferritecad_occt::is_available() {
-        eprintln!("skipped: requires stub");
         return;
     }
     let f = fixture();

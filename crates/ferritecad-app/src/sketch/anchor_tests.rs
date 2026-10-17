@@ -142,7 +142,6 @@ fn the_mode_sits_in_the_guides_row_needs_guides_and_changes_only_editor_state() 
     from_object(&ctx, &mut e);
     assert!(!e.canvas.anchors && e.canvas.provisional.is_none());
     assert_eq!((e.draft.clone(), history(&e)), (before.0, before.1));
-    println!("\nFCAD_31H_ROW_EXECUTED");
 }
 
 #[test]
@@ -329,7 +328,6 @@ fn a_new_point_is_added_from_a_shown_endpoint_midpoint_or_crossing_reached_by_re
     click(&ctx, &mut e, free);
     assert_eq!(strings(&e, 3), pair("90.000", "40.000"));
     assert_eq!(history(&e), (1, 0));
-    println!("\nFCAD_31H_NEW_EXECUTED");
 }
 
 #[test]
@@ -456,7 +454,6 @@ fn a_saved_vertex_moves_from_another_anchor_without_switching_the_selection() {
     assert_eq!(e.canvas.selected, Some(2));
     let out = hover(&ctx, &mut e, v2);
     assert!(provisional(&out).is_none() && e.canvas.provisional.is_none());
-    println!("\nFCAD_31H_SAVED_EXECUTED");
 }
 
 #[test]
@@ -504,7 +501,6 @@ fn a_held_anchor_is_released_at_twice_the_aperture_and_replaced_only_by_a_clearl
     assert!(e.canvas.provisional.is_none());
     // The hover never wrote a string, a selection or a step.
     assert_eq!((history(&e), e.canvas.selected), ((0, 0), None));
-    println!("\nFCAD_31H_HYSTERESIS_EXECUTED");
 }
 
 #[test]
@@ -534,7 +530,6 @@ fn a_long_gesture_keeps_the_pressed_anchor_even_past_other_points_and_twice_the_
     assert_eq!(history(&e), (1, 0));
     // Released, it is gone: the next hover is a fresh acquisition.
     assert!(e.canvas.gesture.is_none() && !e.canvas.claimed_press);
-    println!("\nFCAD_31H_LONG_EXECUTED");
 }
 
 /// Hovers `from` (mm), presses it, moves to `to` (mm) and returns that move's frame; the
@@ -654,7 +649,6 @@ fn an_object_point_beats_a_guide_from_the_anchor_and_a_length_decides_what_it_ke
         "0° · Length 0.0004 mm from Endpoint · vertex 1 · adds vertex 4"
     ));
     assert_eq!(strings(&e, 3), pair("30.0004", "20"));
-    println!("\nFCAD_31H_PRECEDENCE_EXECUTED");
 }
 
 #[test]
@@ -681,7 +675,6 @@ fn a_refused_length_moves_no_saved_vertex_even_beside_an_object_point() {
     gesture(&ctx, &mut e, [20., 40.], [10., 40.25]);
     assert_eq!(strings(&e, 2), pair("10", "40"));
     assert_eq!(history(&e), (1, 0));
-    println!("\nFCAD_31H_SAVED_REFUSED_EXECUTED");
 }
 
 #[test]
@@ -771,7 +764,6 @@ fn escape_lost_focus_and_a_vanished_pointer_restore_the_strings_and_a_release_ou
         button(&ctx, &mut e, released, false);
         assert_eq!((e.draft.clone(), history(&e)), (rest.clone(), (0, 0)));
     }
-    println!("\nFCAD_31H_CANCEL_EXECUTED");
 }
 
 #[test]
@@ -861,7 +853,6 @@ fn packed_events_keep_their_order_and_the_settings_belong_to_the_press() {
     let release = at(&ctx, &mut e, [0.25, 40.]);
     button(&ctx, &mut e, release, false);
     assert_eq!(history(&e), (1, 0));
-    println!("\nFCAD_31H_PACKED_EXECUTED");
 }
 
 #[test]
@@ -1039,7 +1030,6 @@ fn off_busy_covered_and_unreadable_canvases_offer_no_anchor_and_typed_text_stays
         "focus loss reacquired the anchor in the same frame"
     );
     assert!(provisional(&frame(&ctx, &mut e, vec![])).is_none());
-    println!("\nFCAD_31H_BLOCKED_EXECUTED");
 }
 
 #[test]
@@ -1077,7 +1067,6 @@ fn a_result_that_breaks_the_contour_stays_a_draft_and_restore_keeps_the_mode() {
         (true, guide::Mode::Orthogonal, "25"),
         "restoring touches the vertices only"
     );
-    println!("\nFCAD_31H_DEGENERATE_EXECUTED");
 }
 
 #[test]
@@ -1155,7 +1144,6 @@ fn one_and_two_pixels_per_point_and_other_canvas_scales_hold_the_same_anchor() {
         frame(&ctx, &mut e, vec![egui::Event::PointerGone]);
     }
     assert!(scales[0] > 3. * scales[1], "the scales differ: {scales:?}");
-    println!("\nFCAD_31H_SCALE_PIXELS_EXECUTED");
 }
 
 #[test]
@@ -1204,7 +1192,6 @@ fn the_form_keeps_apply_and_save_in_reach_with_the_mode_on_at_768_points() {
         on.1.max.y, guided.1.max.y,
         "off {off:?}, guided {guided:?}, on {on:?}"
     );
-    println!("\nFCAD_31H_FORM_EXECUTED");
 }
 
 #[test]
@@ -1224,7 +1211,6 @@ fn a_new_contour_closed_from_an_anchor_hands_the_create_job_exactly_the_polygon_
     let literal = PolygonExtrusion::new(vec![[0., 0.], [40., 0.], [40., 30.], [0., 30.]], 10.)
         .expect("a rectangle");
     assert_eq!(made, literal, "the numbers, not the pixels");
-    println!("\nFCAD_31H_CREATE_EXECUTED");
 }
 
 /// §31D-2, for the tests of the owners around the editor: whether the mode is on and

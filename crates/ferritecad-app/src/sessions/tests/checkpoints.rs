@@ -377,13 +377,14 @@ fn stub_checkpoints_work_and_restore_is_refused_at_the_picture() {
     )
     .expect("extraction needs no kernel");
     assert_eq!(height_of(&out), 12.0);
-    println!("\nFCAD_30N_STUB_CHECKPOINTS_EXECUTED");
 }
 
 /// Open CASCADE without the solver: an unconstrained plate is restored and drawn.
 #[test]
 fn mixed_checkpoint_restore_draws_with_occt_and_no_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     let f = fixture();
@@ -393,7 +394,6 @@ fn mixed_checkpoint_restore_draws_with_occt_and_no_solver() {
     restore_native(&mut s, a.id);
     assert_eq!(height_of(&s.export_path().expect("current")), 12.0);
     assert_eq!(s.export_source().expect("current").drawn_model(), a.model);
-    println!("\nFCAD_30N_MIXED_CHECKPOINTS_EXECUTED");
 }
 
 /// The window's Restore: the worker, then the picture of the restored model,
@@ -685,9 +685,6 @@ fn native_checkpoints_restore_undo_redo_save_reopen_and_extract_like_the_command
             std::fs::write(dir.join(format!("{name}.fbx")), fbx).expect("artifact");
         }
     }
-    println!(
-        "\nFCAD_30N_NATIVE_CHECKPOINTS_EXECUTED volume_a={volume_a:.3} volume_b={volume_b:.3}"
-    );
 }
 
 /// A checkpoint of an imported STEP part holds the bytes the document stores;
@@ -755,7 +752,6 @@ fn native_an_imported_step_checkpoint_needs_no_step_file() {
     )
     .expect("drawn from the stored bytes alone");
     assert!(!scene.catalogue.is_empty());
-    println!("\nFCAD_30N_NATIVE_STEP_CHECKPOINT_EXECUTED");
 }
 
 /// What the macOS recipe leaves behind; made by the real window only.
