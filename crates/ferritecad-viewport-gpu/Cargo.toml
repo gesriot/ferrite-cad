@@ -22,6 +22,7 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
+ferritecad-fixtures.workspace = true
 ferritecad-kernel.workspace = true
 
 [lints]

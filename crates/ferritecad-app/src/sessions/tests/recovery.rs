@@ -360,12 +360,13 @@ fn stub_recovery_is_refused_at_the_picture_and_keeps_the_record_and_the_open_doc
         "plate.fcad — FerriteCAD",
         "the open document stays"
     );
-    println!("\nFCAD_30M_STUB_RECOVERY_EXECUTED");
 }
 
 #[test]
 fn mixed_recovery_draws_without_a_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     let f = fixture();
@@ -377,7 +378,6 @@ fn mixed_recovery_draws_without_a_solver() {
             .expect("recovered with OCCT and no solver");
     assert!(!scene.catalogue.is_empty());
     assert_eq!(session.current().version(), before.current().version());
-    println!("\nFCAD_30M_MIXED_RECOVERY_EXECUTED");
 }
 
 // ---- the native crash matrix -------------------------------------------------
@@ -663,7 +663,6 @@ fn native_a_killed_window_recovers_named_untitled_and_edited_models_as_accepted(
         s.stop_all();
         assert_eq!(records(root.path()), 0, "{mode}");
     }
-    println!("\nFCAD_30M_NATIVE_CRASH_MATRIX_EXECUTED variants=3");
 }
 
 // ---- the real window: comparator, controls and its self-check -----------------

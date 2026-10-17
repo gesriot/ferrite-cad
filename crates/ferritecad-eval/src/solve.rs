@@ -1320,7 +1320,6 @@ mod tests {
             );
             assert!(SketchConflict::of(&refusal).is_none());
         }
-        println!("\nFCAD_31F_TRANSLATION_EXECUTED");
     }
 
     /// §31G: a collinearity crosses as the two segments it names, in the order
@@ -1366,7 +1365,6 @@ mod tests {
                 "a collinearity was stated as a Parallel, which drops its offset"
             );
         }
-        println!("\nFCAD_31G_TRANSLATION_EXECUTED");
     }
 
     #[test]

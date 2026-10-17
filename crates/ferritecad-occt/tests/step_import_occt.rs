@@ -47,7 +47,7 @@ fn release(kernel: &mut OcctKernel, import: &Import) {
 macro_rules! kernel_or_skip {
     () => {
         if !is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         } else {
             OcctKernel::new().expect("opens")
@@ -454,7 +454,7 @@ fn nothing_that_is_not_a_step_file_becomes_a_scene() {
 #[test]
 fn simultaneous_imports_do_not_cross_sessions_or_abort_the_process() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

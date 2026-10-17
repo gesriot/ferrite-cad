@@ -26,11 +26,7 @@ fn native() -> bool {
     if solver::is_available() {
         true
     } else {
-        assert!(
-            !solver::is_required(),
-            "FERRITECAD_REQUIRE_PLANEGCS=1 and no library: this gate may not skip"
-        );
-        eprintln!("skipped: this build has no planegcs");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         false
     }
 }
@@ -137,7 +133,6 @@ fn a_positive_and_a_negative_angle_are_different_solutions() {
         assert_eq!(point(&solution, P1), (10.0, 0.0));
         assert!(length(&solution, B) > 1.0, "the free vector collapsed");
     }
-    println!("\nFCAD_31F_SOLVER_SIGN_EXECUTED");
 }
 
 #[test]
@@ -204,7 +199,6 @@ fn the_turn_across_plus_and_minus_one_hundred_eighty_is_the_short_way() {
             "start {start}°: mirrored answer {got}°"
         );
     }
-    println!("\nFCAD_31F_SOLVER_WRAP_EXECUTED");
 }
 
 #[test]
@@ -239,7 +233,6 @@ fn a_swapped_or_turned_vector_is_the_same_relation_with_the_documented_angle() {
         measured(&reversed, A, B).abs() > 179.999,
         "180° turned once is 0°"
     );
-    println!("\nFCAD_31F_SOLVER_EQUIVALENT_FORMS_EXECUTED");
 }
 
 #[test]
@@ -366,7 +359,6 @@ fn a_fourth_right_angle_of_a_closed_contour_is_redundant_and_a_wrong_one_conflic
         }
         other => panic!("a contradictory contour must conflict, got {other:?}"),
     }
-    println!("\nFCAD_31F_SOLVER_DIAGNOSIS_EXECUTED");
 }
 
 #[test]

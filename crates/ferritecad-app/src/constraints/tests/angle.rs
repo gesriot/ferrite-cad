@@ -351,7 +351,6 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     }
     click(&ctx, &mut e, "Cancel constraints draft");
     assert!(!e.active());
-    println!("\nFCAD_31F_WIDGETS_EXECUTED");
 }
 
 /// A stored angle is listed with its directions, comes off by its exact UUID,
@@ -444,7 +443,6 @@ fn a_stored_angle_is_replaced_by_another_in_one_exact_remove_and_add() {
             .as_deref()
             .is_some_and(|r| r.contains("directed angle"))
     );
-    println!("\nFCAD_31F_REPLACE_EXECUTED");
 }
 
 /// A directed angle between Lines `a` and `b` (1-based, as the list numbers
@@ -480,23 +478,11 @@ pub(crate) fn typed_angle_apply(
 fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     use crate::creates::tests::ferritecad;
     // Each missing piece is excused only where that piece is not required.
-    for (present, required, what) in [
-        (
-            ferritecad_occt::is_available(),
-            "FERRITECAD_REQUIRE_OCCT",
-            "OCCT",
-        ),
-        (
-            ferritecad_sketch_solver::is_available(),
-            "FERRITECAD_REQUIRE_PLANEGCS",
-            "planegcs",
-        ),
-    ] {
-        if !present {
-            assert_ne!(std::env::var(required).as_deref(), Ok("1"));
-            eprintln!("skipped: the directed angle gate needs {what}");
-            return;
-        }
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+    ]) {
+        return;
     }
     // The dart carries data this editor knows nothing about (an attached source
     // claim, an unknown table and capability rows): it has to come through.
@@ -952,5 +938,4 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
         crate::fillets::tests::tables(&ui3)["objects"].1.len(),
         crate::fillets::tests::tables(&cli3)["objects"].1.len()
     );
-    println!("\nFCAD_31F_NATIVE_EXECUTED turn=-70 constraints=5 dof=7");
 }

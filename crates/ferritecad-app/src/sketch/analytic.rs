@@ -660,7 +660,6 @@ mod tests {
         assert_eq!(zero.handles().len(), 1);
         // The edge of the drawable range is drawable.
         assert!(read(["-1000000", "1000000"], "1000000", None).is_ok());
-        println!("\nFCAD_31I_UNDRAWABLE_EXECUTED");
     }
 
     #[test]
@@ -710,7 +709,6 @@ mod tests {
         );
         let none = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(250., 230.));
         assert_eq!(pick(&view, rect, none, &profile, centre), None);
-        println!("\nFCAD_31I_PICK_RULE_EXECUTED");
     }
 
     #[test]
@@ -734,6 +732,5 @@ mod tests {
                 canvas_point(rect, view.minimum, view.scale, profile.centre)
             );
         }
-        println!("\nFCAD_31I_FIT_EXECUTED");
     }
 }

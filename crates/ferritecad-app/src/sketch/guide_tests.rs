@@ -181,7 +181,6 @@ fn the_guides_row_follows_the_snap_row_and_changes_only_editor_state() {
     assert!(!painted_containing(&out, "length: 12.5"));
     assert_eq!(e.draft, before);
     assert_eq!(history(&e), (0, 0));
-    println!("\nFCAD_31D_ROW_EXECUTED");
 }
 
 #[test]
@@ -251,7 +250,6 @@ fn a_new_point_follows_a_shown_guide_from_the_last_vertex_with_the_anchor_drawn_
     assert!(ring(&out).is_some(), "the anchor stays, the guide does not");
     click(&ctx, &mut e, free);
     assert_eq!(strings(&e, 4), pair("20.000", "15.000"));
-    println!("\nFCAD_31D_NEW_POINTS_EXECUTED");
 }
 
 #[test]
@@ -315,7 +313,6 @@ fn polar_diagonals_and_the_first_point_and_what_the_canvas_does_not_show() {
     assert!(painted_containing(&out, "axis (Y) at X = 0"));
     click(&ctx, &mut e, pointer);
     assert_eq!(strings(&e, 2), pair("12", "10.5"));
-    println!("\nFCAD_31D_POLAR_AND_ANCHORS_EXECUTED");
 }
 
 #[test]
@@ -387,7 +384,6 @@ fn a_typed_length_places_the_exact_point_and_one_that_cannot_be_used_places_noth
         pair("20.000", "40"),
         "free distance, the anchor's text"
     );
-    println!("\nFCAD_31D_LENGTH_EXECUTED");
 }
 
 #[test]
@@ -459,7 +455,6 @@ fn an_object_point_beats_a_guide_and_only_a_matching_length_keeps_it() {
     switch(&ctx, &mut e);
     click(&ctx, &mut e, pointer);
     assert_eq!(strings(&e, 3), pair("30", "13"));
-    println!("\nFCAD_31D_PRECEDENCE_EXECUTED");
 }
 
 #[test]
@@ -476,7 +471,6 @@ fn the_grid_step_is_not_applied_to_a_guided_point_but_still_rules_a_free_one() {
     // Off every guide: the grid rounds as before.
     click_mm(&ctx, &mut e, [60.3125, 23.0625]);
     assert_eq!(strings(&e, 3), pair("60", "25"));
-    println!("\nFCAD_31D_GRID_EXECUTED");
 }
 
 #[test]
@@ -566,7 +560,6 @@ fn a_saved_vertex_drag_measures_from_where_it_was_pressed_and_keeps_that_anchor(
     button(&ctx, &mut e, at_vertex, false);
     assert_eq!(e.draft, before);
     assert_eq!(history(&e), (0, 0));
-    println!("\nFCAD_31D_SAVED_DRAG_EXECUTED");
 }
 
 #[test]
@@ -630,7 +623,6 @@ fn a_new_contour_drag_is_a_guided_one_step_and_escape_focus_and_pointer_loss_res
         x > 118.75 && strings(&e, 2)[1] == "20",
         "east of the canvas, on the guide: {x}"
     );
-    println!("\nFCAD_31D_CANCEL_EXECUTED");
 }
 
 #[test]
@@ -720,7 +712,6 @@ fn packed_events_keep_their_order_and_the_settings_belong_to_the_press() {
     );
     button(&ctx, &mut e, to, false);
     assert_eq!(e.undo.len(), 1);
-    println!("\nFCAD_31D_PACKED_EXECUTED");
 }
 
 #[test]
@@ -852,7 +843,6 @@ fn off_busy_and_covered_canvases_offer_no_guide() {
         }]);
     }
     assert_eq!(e.draft, before, "no point through the window");
-    println!("\nFCAD_31D_BLOCKED_EXECUTED");
 }
 
 #[test]
@@ -921,7 +911,6 @@ fn one_and_two_pixels_per_point_and_other_canvas_scales_hold_the_same_guide() {
         }
     }
     assert!(scales[0] > 3. * scales[1], "the scales differ: {scales:?}");
-    println!("\nFCAD_31D_SCALE_PIXELS_EXECUTED");
 }
 
 #[test]
@@ -962,7 +951,6 @@ fn typed_text_stays_exact_and_restore_saved_vertices_keeps_the_editor_settings()
         (guide::Mode::Orthogonal, "15"),
         "restoring touches the vertices only"
     );
-    println!("\nFCAD_31D_TEXT_AND_RESTORE_EXECUTED");
 }
 
 #[test]
@@ -1007,7 +995,6 @@ fn a_guided_result_that_breaks_the_contour_stays_a_visible_draft_and_is_refused_
         painted_containing(&frame(&ctx, &mut e, vec![]), &refusal),
         "{refusal}"
     );
-    println!("\nFCAD_31D_DEGENERATE_EXECUTED");
 }
 
 /// The editor's Guides choice and Length text (for the tests of the owners around
@@ -1049,8 +1036,7 @@ fn native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
     use ferritecad_kernel::OperationContext;
     use rusqlite::types::Value;
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: no OCCT for the guide native gate");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let root = tempfile::tempdir().expect("directory");
@@ -1245,5 +1231,4 @@ fn native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
             .expect("mtime"),
         modified
     );
-    println!("\nFCAD_31D_NATIVE_EXECUTED sql_cells=2 volume=14500 triangles=20");
 }

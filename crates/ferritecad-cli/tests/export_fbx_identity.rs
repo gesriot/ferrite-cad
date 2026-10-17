@@ -245,7 +245,7 @@ fn write_payload(path: &Path, recorded: &[Recorded]) {
 #[test]
 fn every_placement_of_the_exported_complex_assembly_carries_the_identity_its_document_recorded() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

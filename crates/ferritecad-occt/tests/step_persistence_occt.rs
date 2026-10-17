@@ -96,7 +96,7 @@ fn release(kernel: &mut OcctKernel, import: &Import) {
 macro_rules! kernel_or_skip {
     () => {
         if !is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         } else {
             OcctKernel::new().expect("opens")
@@ -113,7 +113,7 @@ fn workspace() -> (TempDir, PathBuf) {
 #[test]
 fn every_sound_file_reopens_in_a_session_that_never_read_it() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -242,7 +242,7 @@ fn every_sound_file_reopens_in_a_session_that_never_read_it() {
 #[test]
 fn the_complex_ap203_scene_reopens_after_its_external_source_is_removed() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -368,7 +368,7 @@ fn the_complex_ap203_scene_reopens_after_its_external_source_is_removed() {
 #[test]
 fn names_units_colours_and_the_tree_are_what_survives() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -700,7 +700,7 @@ fn a_stored_scene_that_does_not_describe_the_file_is_refused() {
 #[test]
 fn a_durable_reference_survives_a_new_session_and_never_crosses_sources() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

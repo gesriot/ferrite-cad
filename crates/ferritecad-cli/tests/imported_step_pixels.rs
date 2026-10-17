@@ -55,7 +55,7 @@ fn renderer_or_skip() -> Option<Renderer> {
                     "FERRITECAD_REQUIRE_GPU=1 was set, so the pixel gate may not skip: {reason}"
                 ),
                 MissingAdapter::Skip => {
-                    eprintln!("skipped: {reason}");
+                    ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                     None
                 }
             }
@@ -144,7 +144,7 @@ fn drawn_pixels(frame: &ferritecad_viewport_gpu::Frame) -> usize {
 #[test]
 fn a_nested_assembly_goes_from_step_to_pixels() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -243,7 +243,7 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
 #[test]
 fn one_part_and_four_of_a_kind_measure_what_the_files_say() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let directory = tempfile::tempdir().expect("a temporary directory is available");

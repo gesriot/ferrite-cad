@@ -89,7 +89,6 @@ fn the_nearest_part_within_nine_logical_points_wins_and_the_boundary_is_exact() 
     );
     // Far from everything: nothing, and nothing is made up.
     assert_eq!(pick_at(&curves, Target::Object, at([35., 25.])), None);
-    println!("\nFCAD_31K_PICK_NEAREST_EXECUTED");
 }
 
 #[test]
@@ -118,7 +117,6 @@ fn an_exact_tie_goes_to_the_stored_order_and_the_order_decides_not_the_ids() {
         None,
         "a zero Line has no ends"
     );
-    println!("\nFCAD_31K_PICK_TIE_EXECUTED");
 }
 
 #[test]
@@ -136,7 +134,6 @@ fn an_end_is_start_or_end_by_the_stored_line_and_never_by_the_side_of_the_screen
     let middle = at([35., 25.]);
     assert_eq!(pick_at(&curves, Target::Endpoint, middle), None);
     assert!(pick_at(&curves, Target::Object, middle).is_some());
-    println!("\nFCAD_31K_PICK_ENDS_EXECUTED");
 }
 
 #[test]
@@ -166,7 +163,6 @@ fn a_circle_is_one_curve_whose_ring_and_centre_are_told_apart() {
         pick_at(&small, Target::Object, tie).map(|h| h.part),
         Some(Part::Ring)
     );
-    println!("\nFCAD_31K_PICK_CIRCLE_EXECUTED");
 }
 
 #[test]
@@ -191,7 +187,6 @@ fn degenerate_and_non_numeric_shapes_are_never_picked() {
             assert_eq!(pick_at(&curves, target, p), None, "{target:?} {p:?}");
         }
     }
-    println!("\nFCAD_31K_PICK_DEGENERATE_EXECUTED");
 }
 
 #[test]
@@ -211,7 +206,6 @@ fn a_part_outside_the_visible_canvas_cannot_be_picked() {
         got(Target::Object, egui::pos2(visible.right() + 3., end.y)),
         None
     );
-    println!("\nFCAD_31K_PICK_VISIBLE_EXECUTED");
 }
 
 fn stored(curves: Vec<(StableEntityId, SketchGeometry)>) -> Sketch {
@@ -308,7 +302,6 @@ fn a_drawing_is_shown_only_for_the_curves_the_form_stores_in_the_order_it_stores
     let mut kind = square(&ids);
     kind[3] = a_circle(ids[3], (0., 0.), 3.);
     assert_eq!(differs(kind), wrong);
-    println!("\nFCAD_31K_DRAWING_MATCH_EXECUTED");
 }
 
 #[test]
@@ -348,7 +341,6 @@ fn only_a_line_polygon_or_one_circle_is_a_profile_the_canvas_covers() {
     assert_eq!(Drawing::of(&stored(mixed.clone()), mixed), profile);
     let nothing: Vec<(StableEntityId, SketchGeometry)> = Vec::new();
     assert_eq!(Drawing::of(&stored(nothing.clone()), nothing), profile);
-    println!("\nFCAD_31K_DRAWING_PROFILE_EXECUTED");
 }
 
 #[test]
@@ -386,7 +378,6 @@ fn a_coordinate_that_cannot_be_drawn_keeps_the_whole_drawing_away() {
         Drawing::of(&stored(edge.clone()), edge),
         Drawing::Solved(_)
     ));
-    println!("\nFCAD_31K_DRAWING_NUMBERS_EXECUTED");
 }
 
 #[test]
@@ -429,5 +420,4 @@ fn fit_shows_every_live_curve_inside_the_canvas_with_finite_numbers() {
     // Nothing live, nothing to fit.
     assert!(fitted(&[]).is_none());
     assert!(fitted(&[line([1., 1.], [1., 1.]), circle([0., 0.], 0.)]).is_none());
-    println!("\nFCAD_31K_FIT_EXECUTED");
 }

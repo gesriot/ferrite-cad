@@ -949,7 +949,6 @@ fn native_a_circle_moved_and_resized_on_its_canvas_is_applied_and_saved_like_the
         (form, Request::Circle(request))
     });
     assert_circle_canvas_result("circle-canvas", &source, &before, request, &stl);
-    println!("\nFCAD_31I_NATIVE_CIRCLE_EXECUTED walls=1 sql=cli export=before_save undo=1 redo=1");
 }
 
 #[test]
@@ -971,7 +970,6 @@ fn native_an_annulus_moved_and_resized_on_its_canvas_keeps_each_wall_under_its_r
         (form, Request::Annulus(request))
     });
     assert_annulus_canvas_result("annulus-canvas", &source, &before, request, &stl);
-    println!("\nFCAD_31I_NATIVE_ANNULUS_EXECUTED walls=2 sql=cli export=before_save undo=1 redo=1");
 }
 
 /// §31J: what navigating the canvas alone leaves alone, checked once the view has moved
@@ -1056,9 +1054,6 @@ fn native_a_circle_dragged_at_a_navigated_scale_is_applied_and_saved_like_the_co
         (form, Request::Circle(request))
     });
     assert_circle_canvas_result("circle-navigated", &source, &before, request, &stl);
-    println!(
-        "\nFCAD_31J_NATIVE_CIRCLE_EXECUTED walls=1 sql=cli export=before_save undo=1 redo=1 navigated=1"
-    );
 }
 
 #[test]
@@ -1091,9 +1086,6 @@ fn native_an_annulus_dragged_at_a_navigated_scale_keeps_each_wall_under_its_refe
         },
     );
     assert_annulus_canvas_result("annulus-navigated", &source, &before, request, &stl);
-    println!(
-        "\nFCAD_31J_NATIVE_ANNULUS_EXECUTED walls=2 sql=cli export=before_save undo=1 redo=1 navigated=1"
-    );
 }
 
 /// Build without a kernel: the workers are refused whole, nothing becomes dirty,
@@ -1140,11 +1132,7 @@ fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circl
         return;
     }
     if !ferritecad_sketch_solver::is_available() {
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: constraints need PlaneGCS");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     let root = tempfile::tempdir().expect("root");

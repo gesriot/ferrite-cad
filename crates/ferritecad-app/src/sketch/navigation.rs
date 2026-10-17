@@ -424,7 +424,6 @@ mod tests {
         let back = zoomed(there, rect(), at, -0.5).expect("zoomed");
         assert!(near(start.minimum, back.minimum, 1e-9));
         assert!((back.scale - start.scale).abs() <= 1e-5 * start.scale);
-        println!("\nFCAD_31J_ZOOM_ANCHOR_EXECUTED");
     }
 
     #[test]
@@ -469,7 +468,6 @@ mod tests {
         );
         let small = zoomed(view([0.0, 0.0], 4.0), rect(), at, -1e9).expect("zoomed");
         assert!((f64::from(small.scale) * MAX_STEP / 4.0 - 1.0).abs() < 1e-4);
-        println!("\nFCAD_31J_ZOOM_LIMITS_EXECUTED");
     }
 
     #[test]
@@ -538,7 +536,6 @@ mod tests {
         assert_eq!(pinch_ln(1.0), Some(0.0));
         assert!(pinch_ln(2.0).is_some_and(|ln| (ln - std::f64::consts::LN_2).abs() < 1e-6));
         assert!(pinch_ln(0.5).is_some_and(|ln| ln < 0.0));
-        println!("\nFCAD_31J_NONFINITE_EXECUTED");
     }
 
     #[test]
@@ -583,6 +580,5 @@ mod tests {
             placed(r, 4.0, grab, egui::pos2(f32::NAN, 0.0)).map(|v| v.minimum),
             None
         );
-        println!("\nFCAD_31J_PAN_EXECUTED");
     }
 }

@@ -33,11 +33,7 @@ fn native() -> bool {
     if solver::is_available() {
         true
     } else {
-        assert!(
-            !solver::is_required(),
-            "FERRITECAD_REQUIRE_PLANEGCS=1 and no library: this gate may not skip"
-        );
-        eprintln!("skipped: this build has no planegcs");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         false
     }
 }
@@ -166,7 +162,6 @@ fn disjoint_parallel_segments_on_different_lines_are_brought_onto_one_and_parall
             "Parallel moved {p:?} onto the line"
         );
     }
-    println!("\nFCAD_31G_SOLVER_OFFSET_EXECUTED");
 }
 
 #[test]
@@ -202,7 +197,6 @@ fn an_inclined_pair_holds_the_same_line_whichever_way_each_segment_is_written() 
         }
         assert!(length(&solution, B) > 3.0, "{name}: b collapsed");
     }
-    println!("\nFCAD_31G_SOLVER_SPELLINGS_EXECUTED");
 }
 
 #[test]
@@ -237,7 +231,6 @@ fn a_collinear_removes_two_degrees_of_freedom_from_a_separate_pair() {
     ))
     .expect("diagnosable");
     assert_eq!(diagnosis.degrees_of_freedom(), 2, "{diagnosis:?}");
-    println!("\nFCAD_31G_SOLVER_DOF_EXECUTED");
 }
 
 /// P0→P1 then P2→P3 with P1 and P2 told to coincide, `b` leaving at a slope.
@@ -293,7 +286,6 @@ fn a_closed_pair_keeps_the_direction_part_of_a_collinear_and_it_is_not_called_re
         );
         assert!(length(&solution, A) > 3.0 && length(&solution, B) > 3.0);
     }
-    println!("\nFCAD_31G_SOLVER_PARTIAL_EXECUTED");
 }
 
 #[test]
@@ -375,7 +367,6 @@ fn a_repeated_collinear_is_redundant_by_its_own_id_only_when_every_equation_is()
     assert_eq!(diagnosis.degrees_of_freedom(), 8, "{diagnosis:?}");
     assert_eq!(diagnosis.redundant().len(), 1, "{diagnosis:?}");
     assert!((1..=3).contains(&diagnosis.redundant()[0].0));
-    println!("\nFCAD_31G_SOLVER_REDUNDANT_EXECUTED");
 }
 
 #[test]
@@ -472,7 +463,6 @@ fn a_segment_the_solver_collapses_is_never_a_satisfied_collinear() {
         ),
         "collinear and perpendicular were both called satisfied"
     );
-    println!("\nFCAD_31G_SOLVER_COLLAPSE_EXECUTED");
 }
 
 #[test]
@@ -503,5 +493,4 @@ fn a_drag_keeps_the_segments_collinear_while_one_end_follows_the_pointer() {
             "the end did not follow {target:?}: ({x}, {y})"
         );
     }
-    println!("\nFCAD_31G_SOLVER_DRAG_EXECUTED");
 }

@@ -919,8 +919,7 @@ pub(crate) mod tests {
     #[test]
     fn the_form_names_the_plane_and_refuses_a_tool_the_document_would() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the accepted scene this form reads");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (_root, path, source) = plate();
@@ -1027,8 +1026,7 @@ pub(crate) mod tests {
 
     fn worker_and_cli(second: bool) {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the cut worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, source) = if second { pocket(4.) } else { plate() };
@@ -1240,8 +1238,7 @@ pub(crate) mod tests {
     #[test]
     fn the_edit_form_shows_the_saved_cut_and_refuses_what_the_document_would() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the saved cut this form reads");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (_root, path, source) = pocket(4.);
@@ -1371,8 +1368,7 @@ pub(crate) mod tests {
     #[test]
     fn a_hole_may_be_shortened_into_a_pocket_and_the_form_says_so() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the saved cut this form reads");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (_root, path, source) = pocket(10.);
@@ -1475,8 +1471,7 @@ pub(crate) mod tests {
 
     fn edit_worker_and_cli(index: Option<usize>, count: usize) {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the cut edit worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, mut path, mut source) = pocket(4.1234567890123);
@@ -1826,8 +1821,7 @@ pub(crate) mod tests {
     #[test]
     fn native_through_all_widgets_worker_and_cli_keep_intent_draft_and_names() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the ThroughAll cut worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, source) = mixed();
@@ -2075,8 +2069,7 @@ pub(crate) mod tests {
     #[test]
     fn native_through_all_add_widgets_worker_and_cli_publish_one_part() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the ThroughAll add worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, source) = plate();
@@ -2177,8 +2170,7 @@ pub(crate) mod tests {
     #[test]
     fn native_polygon_widgets_worker_and_cli_publish_one_part() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the polygon cut worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, source) = part(vec![

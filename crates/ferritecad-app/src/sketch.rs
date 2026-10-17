@@ -3847,7 +3847,6 @@ pub(crate) mod tests {
             "A's focus edited B's floating form"
         );
         assert_eq!(a.circle.center, typed_a);
-        println!("\nFCAD_30P_FLOATING_FORM_FOCUS_EXECUTED");
     }
 
     /// The request the saved Sketch form makes when `from` is replaced by `to` in
@@ -4793,8 +4792,7 @@ pub(crate) mod tests {
     #[test]
     fn native_annulus_draft_and_cli_publish_equivalent_models() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for annulus UI worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         use crate::creates::{
@@ -4984,8 +4982,7 @@ pub(crate) mod tests {
     #[test]
     fn native_revolve_draft_worker_and_cli_publish_equivalent_models() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the Revolve UI worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         use crate::creates::{
@@ -5173,8 +5170,7 @@ pub(crate) mod tests {
     #[test]
     fn native_partial_revolve_draft_worker_and_cli_publish_equivalent_models() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the partial Revolve UI worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         use crate::creates::{
@@ -5294,8 +5290,7 @@ pub(crate) mod tests {
     #[test]
     fn circle_edit_widgets_change_only_the_two_numbers_and_keep_the_draft() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the accepted scene this form reads");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let root = tempfile::tempdir().expect("directory");
@@ -5447,8 +5442,7 @@ pub(crate) mod tests {
         use ferritecad_document::Document;
         use ferritecad_kernel::OperationContext;
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the Revolve profile edit worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let root = tempfile::tempdir().expect("directory");
@@ -5791,8 +5785,7 @@ pub(crate) mod tests {
         use ferritecad_document::{Document, ObjectPayload, RevolveExtent};
         use ferritecad_kernel::OperationContext;
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the Revolve angle edit worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let root = tempfile::tempdir().expect("directory");
@@ -6044,8 +6037,7 @@ pub(crate) mod tests {
         use crate::creates::tests::{ferritecad, read_semantics};
         use ferritecad_document::Document;
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the saved Circle worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let root = tempfile::tempdir().expect("directory");
@@ -6265,8 +6257,7 @@ pub(crate) mod tests {
     #[test]
     fn annulus_edit_widgets_change_only_the_three_numbers_and_keep_the_draft() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the accepted scene this form reads");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let root = tempfile::tempdir().expect("directory");
@@ -6464,8 +6455,7 @@ pub(crate) mod tests {
         use crate::creates::tests::{ferritecad, read_semantics};
         use ferritecad_document::Document;
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the saved annulus worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let root = tempfile::tempdir().expect("directory");
@@ -6657,8 +6647,7 @@ pub(crate) mod tests {
     #[test]
     fn native_circle_draft_and_cli_publish_equivalent_models() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for circle UI worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         use crate::creates::{
@@ -6736,8 +6725,7 @@ pub(crate) mod tests {
     #[test]
     fn native_sketch_draft_and_cli_publish_equivalent_models() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for sketch UI worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         use crate::creates::{
@@ -6928,8 +6916,7 @@ pub(crate) mod tests {
         use ferritecad_document::Document;
         use ferritecad_kernel::OperationContext;
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for saved Sketch worker");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let root = tempfile::tempdir().expect("directory");
@@ -7326,8 +7313,7 @@ pub(crate) mod tests {
     fn native_two_fillet_base_sketch_worker_and_cli_publish_the_same_part() {
         use crate::creates::tests::ferritecad;
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the Sketch worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, reading) = crate::fillets::tests::rounded_twice(2.375, 3.0625);
@@ -7493,8 +7479,7 @@ pub(crate) mod tests {
     fn native_fillet_base_sketch_widgets_worker_and_cli_publish_the_same_part() {
         use crate::creates::tests::ferritecad;
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the Sketch worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, reading) = crate::fillets::tests::rounded(2.375);
@@ -7714,8 +7699,7 @@ pub(crate) mod tests {
     fn native_chamfer_base_sketch_widgets_worker_and_cli_publish_the_same_part() {
         use crate::creates::tests::ferritecad;
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: the Sketch worker needs OCCT");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (root, path, reading) = crate::chamfers::tests::chamfered(2.375);

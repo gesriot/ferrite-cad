@@ -938,7 +938,6 @@ fn occt_without_solver_refuses_a_constrained_chamfered_plate() {
         return;
     }
     if ferritecad_eval::solver_available() {
-        eprintln!("skipped: the mixed gate needs a build without PlaneGCS");
         return;
     }
     let corner = [X0 + W, Y0];

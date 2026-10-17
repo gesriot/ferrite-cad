@@ -22,7 +22,7 @@ use ferritecad_types::{ErrorKind, Point3, Result, StableEntityId, Vec3};
 macro_rules! kernel_or_skip {
     () => {{
         if !is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         OcctKernel::new().expect("a build with Open CASCADE opens a session")

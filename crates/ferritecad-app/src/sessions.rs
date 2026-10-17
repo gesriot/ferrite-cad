@@ -2443,12 +2443,8 @@ mod tests {
         if ferritecad_occt::is_available() {
             return true;
         }
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(),
-            Ok("1"),
-            "this build is required to have Open CASCADE"
-        );
-        eprintln!("skipped: the session gates need Open CASCADE");
+
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         false
     }
 
@@ -3056,7 +3052,6 @@ mod tests {
                 (form, request)
             },
         );
-        println!("\nFCAD_31H_NATIVE_EXECUTED volume=3072.65625 triangles=12");
     }
 
     #[test]
@@ -3254,11 +3249,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let (root, constrained, sketch) = constrained_chamfer_plate();
@@ -3725,11 +3716,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let (root, constrained, _) = constrained_chamfer_plate();
@@ -3778,11 +3765,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -3850,7 +3833,6 @@ mod tests {
             // Lines 2 and 3, the second vector turned: 110 is -70 from Line 2.
             crate::constraints::tests::angle::typed_angle_apply(path, source, (2, 3), true, "110")
         });
-        println!("\nFCAD_31F_SESSION_EXECUTED");
     }
 
     /// §31G: a collinearity of a U's two rims typed into the form, Applied into
@@ -3863,11 +3845,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -3936,7 +3914,6 @@ mod tests {
             // The rims are Lines 1 and 5.
             crate::constraints::tests::collinear::collinear_apply(path, source, (1, 5))
         });
-        println!("\nFCAD_31G_SESSION_EXECUTED");
     }
 
     #[test]
@@ -3945,11 +3922,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -3990,11 +3963,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -4013,9 +3982,6 @@ mod tests {
                 crate::constraints::tests::canvas::native_rectangle(path, source, sketch)
             },
         );
-        println!(
-            "\nFCAD_31K_NATIVE_RECTANGLE_EXECUTED request=canvas_equals_lists stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read"
-        );
     }
 
     /// §31K: a cylinder whose Sketch stores the circle (4.5, 0) r 1.2 and keeps a Radius and
@@ -4028,11 +3994,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -4051,9 +4013,6 @@ mod tests {
                 crate::constraints::tests::canvas::native_circle(path, source, sketch)
             },
         );
-        println!(
-            "\nFCAD_31K_NATIVE_CIRCLE_EXECUTED request=canvas_equals_lists stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read"
-        );
     }
 
     /// §31L: a rectangle whose Sketch stores a rough guess and keeps rules that solve it into
@@ -4068,11 +4027,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -4097,9 +4052,6 @@ mod tests {
                 )
             },
         );
-        println!(
-            "\nFCAD_31L_NATIVE_RECTANGLE_EXECUTED request=label_equals_list stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read"
-        );
     }
 
     /// §31L: a cylinder whose Sketch stores the circle (4.5, 0) r 1.2 and keeps a Radius and a
@@ -4113,11 +4065,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -4142,9 +4090,6 @@ mod tests {
                 )
             },
         );
-        println!(
-            "\nFCAD_31L_NATIVE_CIRCLE_EXECUTED request=label_equals_list stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read"
-        );
     }
 
     /// §31M: a quadrilateral whose Sketch stores a rough guess and keeps rules that solve it into
@@ -4161,11 +4106,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -4207,9 +4148,6 @@ mod tests {
             verdict.is_err(),
             "the source was accepted in place of the result"
         );
-        println!(
-            "\nFCAD_31M_NATIVE_ANGLE_EXECUTED request=label_equals_form_road stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read turn=atan2 negative=held"
-        );
     }
 
     /// §31N: a rectangle whose Sketch stores a rough guess and keeps rules that solve it into another
@@ -4227,11 +4165,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -4273,9 +4207,6 @@ mod tests {
             verdict.is_err(),
             "the source was accepted in place of the result"
         );
-        println!(
-            "\nFCAD_31N_NATIVE_RULE_EXECUTED request=marker_equals_form_road stored_vs_solved=1 shared_place=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read dof=solver negative=held"
-        );
     }
 
     /// §31N: a cylinder whose Sketch stores the circle (4.5, 0) r 1.2 and keeps a Radius and a Fixed
@@ -4288,11 +4219,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -4330,9 +4257,6 @@ mod tests {
             verdict.is_err(),
             "the source was accepted in place of the result"
         );
-        println!(
-            "\nFCAD_31N_NATIVE_CENTRE_EXECUTED request=marker_equals_form_road stored_vs_solved=1 sql=cli export=before_save undo=1 redo=1 saved_stl=read cold_form=read dof=solver negative=held"
-        );
     }
 
     /// What the solver or the Chamfer refuses is refused whole: the session keeps
@@ -4344,11 +4268,7 @@ mod tests {
             return;
         }
         if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: constraints need PlaneGCS");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let (root, constrained, sketch) = constrained_chamfer_plate();
@@ -4442,7 +4362,9 @@ mod tests {
     /// the document stays clean; nothing is accepted, nothing is left behind.
     #[test]
     fn without_the_solver_a_constraints_apply_is_refused_and_nothing_changes() {
-        if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+        if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+            || ferritecad_sketch_solver::is_available()
+        {
             return;
         }
         let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
@@ -4526,7 +4448,9 @@ mod tests {
     /// preparation, which asks no solver.)
     #[test]
     fn without_the_solver_an_apply_to_a_constrained_plate_is_refused_and_nothing_changes() {
-        if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+        if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+            || ferritecad_sketch_solver::is_available()
+        {
             return;
         }
         let (root, path, source) = crate::chamfers::tests::chamfered(2.375);

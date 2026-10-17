@@ -197,7 +197,6 @@ mod tests {
         ] {
             assert_eq!(error(a, b, 0.0), f64::INFINITY, "{a:?} {b:?}");
         }
-        println!("\nFCAD_31F_RESIDUAL_EXECUTED");
     }
 
     #[test]
@@ -257,6 +256,5 @@ mod tests {
                 "{bad}"
             );
         }
-        println!("\nFCAD_31G_RESIDUAL_EXECUTED");
     }
 }

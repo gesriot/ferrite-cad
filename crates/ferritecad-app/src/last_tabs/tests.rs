@@ -120,7 +120,6 @@ fn a_published_list_reads_back_exactly_and_reading_writes_nothing() {
         partials(folder.root()).is_empty(),
         "no temporary file is left"
     );
-    println!("\nFCAD_30R_DESCRIPTOR_ROUND_TRIP_EXECUTED");
 }
 
 /// A list that is damaged, cut short, of an unknown version, too large, a link or
@@ -323,10 +322,6 @@ fn damaged_foreign_or_unknown_lists_are_refused_and_left_as_they_are() {
             println!("FCAD_30R_UNREADABLE_LIST_N/A permissions are not enforced for this process");
         }
     }
-    println!(
-        "\nFCAD_30R_DESCRIPTOR_REFUSALS_EXECUTED\ncases={}",
-        cases.len()
-    );
 }
 
 /// A publication that fails — a list the format cannot hold, a folder that is a
@@ -456,7 +451,6 @@ fn a_failed_publication_keeps_the_previous_list_whole_and_touches_nothing_else()
     assert_eq!(folder.read().expect("read"), Some(next));
     assert_eq!(others(), untouched);
     assert_eq!(partials(folder.root()).len(), 1, "only the other process's");
-    println!("\nFCAD_30R_FAILED_PUBLICATION_EXECUTED");
 }
 
 /// Paths keep their native units exactly: Unicode, spaces, a newline in a name,
@@ -504,12 +498,11 @@ fn paths_keep_their_native_units_exactly() {
     }
     let native = read.paths.last().expect("native");
     match std::fs::write(home.path().join(native.file_name().expect("name")), b"y") {
-        Ok(()) => println!("FCAD_30R_NATIVE_NAME_ON_DISK_EXECUTED"),
+        Ok(()) => {}
         // APFS and others refuse names that are not UTF-8: the round trip above
         // still held; the name on disk is N/A here, not a pass.
         Err(error) => println!("FCAD_30R_NATIVE_NAME_ON_DISK_N/A {error}"),
     }
-    println!("\nFCAD_30R_NATIVE_PATHS_EXECUTED\npaths={}", paths.len());
 }
 
 // --- two processes ----------------------------------------------------------------
@@ -539,6 +532,9 @@ fn child_list(which: &str) -> LastTabs {
 #[test]
 #[ignore = "a child process of two_processes_publish_whole_lists_and_one_of_them_stays"]
 fn publisher_child() {
+    if std::env::var_os(CHILD_ROOT).is_none() {
+        return;
+    }
     let root = std::env::var_os(CHILD_ROOT).expect("the parent names the folder");
     let which = std::env::var(CHILD_SET).expect("the parent names the list");
     let folder = Folder::at(Path::new(&root)).expect("folder");
@@ -588,12 +584,12 @@ fn two_processes_publish_whole_lists_and_one_of_them_stays() {
                 .expect("a child")
         })
         .collect();
-    let (mut reads, mut seen, mut io) = (0, [0, 0], 0);
+    let (mut _reads, mut seen, mut _io) = (0, [0, 0], 0);
     while children
         .iter_mut()
         .any(|child| child.try_wait().expect("wait").is_none())
     {
-        reads += 1;
+        _reads += 1;
         match folder.read() {
             Ok(None) => {}
             Ok(Some(read)) => {
@@ -607,10 +603,10 @@ fn two_processes_publish_whole_lists_and_one_of_them_stays() {
             // is a refusal said as such, never a mixed list.
             Err(error) => {
                 assert!(
-                    cfg!(windows) && error.kind() == "io",
+                    cfg!(windows) && error.kind() == "_io",
                     "a reading during publication was refused: {error}"
                 );
-                io += 1;
+                _io += 1;
             }
         }
     }
@@ -639,11 +635,5 @@ fn two_processes_publish_whole_lists_and_one_of_them_stays() {
     assert!(
         seen[0] + seen[1] > 0,
         "the readings overlapped the publications"
-    );
-    println!(
-        "\nFCAD_30R_TWO_PROCESSES_EXECUTED\nreads={reads} eight={} three={} io_refusals={io} {}",
-        seen[0],
-        seen[1],
-        said.join(" ")
     );
 }

@@ -320,7 +320,7 @@ fn release(kernel: &mut OcctKernel, import: &Import) {
 #[test]
 fn every_step_placement_is_unity_trs_representable() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

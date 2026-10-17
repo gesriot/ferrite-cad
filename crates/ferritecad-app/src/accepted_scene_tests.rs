@@ -142,7 +142,6 @@ fn the_accepted_scene_hands_a_form_the_real_presentation_of_its_own_version() {
         bare.draft_canvas().expect("draft").0,
         &Drawing::Unavailable(Unavailable::NotHanded)
     );
-    println!("\nFCAD_31K_SCENE_HANDOFF_EXECUTED");
 }
 
 #[test]
@@ -194,7 +193,6 @@ fn a_form_is_never_handed_the_drawing_of_another_version_or_document() {
         Accepted::default().drawing(&source_b, &source_b.constraint_sketches[0]),
         Drawing::Unavailable(Unavailable::NotHanded)
     );
-    println!("\nFCAD_31K_SCENE_FOREIGN_EXECUTED");
 }
 
 #[test]
@@ -261,5 +259,4 @@ fn a_kept_picture_follows_its_version_and_a_failed_arrival_keeps_the_drawing_and
         before
     );
     assert_eq!(scene.edit_source, facts_before);
-    println!("\nFCAD_31K_SCENE_KEPT_EXECUTED");
 }

@@ -21,6 +21,7 @@ ferritecad-topology.workspace = true
 ferritecad-types.workspace = true
 
 [dev-dependencies]
+ferritecad-fixtures.workspace = true
 # Only to store an import the rebuild must leave alone.
 ferritecad-exchange.workspace = true
 tempfile = "3"

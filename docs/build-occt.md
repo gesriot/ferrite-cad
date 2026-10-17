@@ -77,7 +77,9 @@ platforms.
 ### Producing the record
 
 Run the **OCCT pin** workflow from the Actions tab with the candidate tag, e.g.
-`V8_0_1`. It resolves that tag once, downloads the source snapshot by the
+`V8.0.1`. Automatic push and pull-request runs read `tools/occt/pin.env`;
+a manual dispatch can override the tag and checksum. It resolves the tag once,
+downloads the source snapshot by the
 resulting immutable commit, builds OCCT on Linux, Windows and macOS, runs
 [`tools/occt-smoke`](../tools/occt-smoke) against each build, and prints a
 filled-in version of the table above in the run summary.
@@ -685,3 +687,14 @@ The OCCT notice, the full LGPL-2.1 text and instructions for replacing the
 library must ship in every package. This is a release gate
 (implementation-plan.md, 11), and it is part of the project's chosen
 shared-library compliance path.
+
+## CI suites
+
+`ci.yml` runs `cargo test --workspace` in the stub build on all three platforms.
+`runtime-layout.yml` reuses its pinned native builds for two complete workspace
+runs: OCCT without the solver, then `--all-features` with OCCT and PlaneGCS.
+`occt-pin.yml` runs those same suites automatically. Native runs include ignored
+process entry points and the catalog timing test with `--include-ignored`.
+Missing required OCCT, PlaneGCS or GPU dependencies fail in the shared test helper;
+there are no gates on individual test names, execution markers or pass counts.
+The independent FBX reader, documented CLI recipes and packaging checks still run.

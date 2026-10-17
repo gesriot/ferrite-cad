@@ -1037,11 +1037,7 @@ fn native_constrained_base_refuses_add_even_after_an_unsaved_constraint_apply() 
         return;
     }
     if !ferritecad_sketch_solver::is_available() {
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: constraints need PlaneGCS");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     let (_root, source, opened) = fixture(0);
@@ -1106,7 +1102,7 @@ fn native_constrained_base_refuses_add_even_after_an_unsaved_constraint_apply() 
 #[test]
 fn stub_add_cut_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        eprintln!("skipped: requires no OCCT");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let (_root, source, reading) = fixture(3);
@@ -1130,8 +1126,10 @@ fn stub_add_cut_refuses_without_publication() {
 
 #[test]
 fn mixed_add_cut_uses_occt_without_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
-        eprintln!("skipped: requires OCCT without solver");
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+    ]) {
         return;
     }
     gate("mixed-add-cut");
@@ -1140,7 +1138,7 @@ fn mixed_add_cut_uses_occt_without_solver() {
 #[test]
 fn native_compare_real_add_cut_gui_artifacts_with_negative_controls() {
     let Some(root) = std::env::var_os("FCAD_30I_GUI_DIR") else {
-        eprintln!("skipped: requires real GUI artifacts");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     };
     assert!(native());

@@ -46,7 +46,7 @@ fn plate() -> Result<ExtrudeRequest> {
 #[test]
 fn the_eight_corners_of_a_plate_are_each_drawn_wherever_they_appear() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -132,7 +132,7 @@ fn position_at(mesh: &ferritecad_kernel::Mesh, index: u32) -> [f32; 3] {
 #[test]
 fn the_two_ends_of_an_edge_are_never_swapped() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -194,7 +194,7 @@ fn the_two_ends_of_an_edge_are_never_swapped() {
 #[test]
 fn a_curved_shape_names_its_corners_without_inventing_any() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -261,7 +261,7 @@ fn a_curved_shape_names_its_corners_without_inventing_any() {
 #[test]
 fn two_identical_shapes_do_not_share_corner_identities() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -305,7 +305,7 @@ fn two_identical_shapes_do_not_share_corner_identities() {
 #[test]
 fn an_assembly_read_from_a_file_names_the_corners_of_every_part() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -387,7 +387,7 @@ fn cap_vertices(result: &ferritecad_kernel::ExtrudeResult) -> (usize, usize) {
 #[test]
 fn the_eight_corners_of_a_plate_are_named_by_the_joint_and_the_cap() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -445,7 +445,7 @@ fn loop_of(points: &[(f64, f64)], height: f64) -> Result<ExtrudeRequest> {
 #[test]
 fn a_named_cap_vertex_is_on_its_cap_and_ends_its_joints_sweep_edge() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -572,7 +572,7 @@ fn a_named_cap_vertex_is_on_its_cap_and_ends_its_joints_sweep_edge() {
 #[test]
 fn every_way_of_sweeping_a_profile_keeps_the_side_meanings() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -616,7 +616,7 @@ fn every_way_of_sweeping_a_profile_keeps_the_side_meanings() {
 #[test]
 fn a_triangle_names_six_and_an_arc_profile_names_all_its_unique_joints() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -683,7 +683,7 @@ fn a_triangle_names_six_and_an_arc_profile_names_all_its_unique_joints() {
 #[test]
 fn a_pair_that_meets_at_two_corners_names_neither_cap_vertex() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -741,7 +741,7 @@ fn a_pair_that_meets_at_two_corners_names_neither_cap_vertex() {
 #[test]
 fn reordering_the_profile_keeps_each_joint_owning_its_cap_vertices() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

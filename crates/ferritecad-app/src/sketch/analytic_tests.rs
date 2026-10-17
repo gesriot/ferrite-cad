@@ -350,7 +350,6 @@ fn a_new_circle_moves_its_centre_and_radius_by_real_events_one_undo_step_each() 
         )
         .expect("valid")
     );
-    println!("\nFCAD_31I_NEW_CIRCLE_EXECUTED");
 }
 
 #[test]
@@ -431,7 +430,6 @@ fn a_new_annulus_changes_each_radius_alone_and_every_profile_keeps_its_draft() {
     );
     press_button(&ctx, &mut e, "Cancel draft");
     assert!(!e.active() && e.annulus_canvas.view.is_none() && e.circle_canvas.view.is_none());
-    println!("\nFCAD_31I_NEW_ANNULUS_EXECUTED");
 }
 
 #[test]
@@ -523,7 +521,6 @@ fn saved_forms_take_a_gesture_as_one_confirmed_step_and_apply_exactly_its_number
         )
     );
     assert_eq!(depth(&e), (2, 0));
-    println!("\nFCAD_31I_SAVED_EXECUTED");
 }
 
 #[test]
@@ -581,7 +578,6 @@ fn typed_unconfirmed_text_comes_back_exactly_with_the_first_undo_after_a_drag() 
     assert_eq!(shown(&e), strings(["0", "0"], "10", Some("4.0")));
     press_button(&ctx, &mut e, "Undo draft");
     assert_eq!(shown(&e), strings(["0", "0"], "10", Some("4")));
-    println!("\nFCAD_31I_UNCONFIRMED_EXECUTED");
 }
 
 #[test]
@@ -692,7 +688,6 @@ fn gestures_in_one_frame_keep_their_order_and_a_no_op_keeps_the_redo() {
         press_button(&ctx, &mut e, "Undo draft");
         assert_eq!(shown(&e), original);
     }
-    println!("\nFCAD_31I_PACKED_EXECUTED");
 }
 
 #[test]
@@ -746,7 +741,6 @@ fn escape_lost_focus_and_a_vanished_pointer_restore_the_exact_strings_and_histor
     release(&ctx, &mut e, egui::pos2(990., 890.));
     assert!(!e.gesturing());
     assert_eq!(depth(&e), (2, 0), "the typed text, then the gesture");
-    println!("\nFCAD_31I_CANCEL_EXECUTED");
 }
 
 #[test]
@@ -946,7 +940,6 @@ fn busy_queued_covered_and_outside_presses_start_nothing_and_held_fields_take_no
             "the form swallowed a viewport drag"
         );
     }
-    println!("\nFCAD_31I_BLOCKED_EXECUTED");
 }
 
 #[test]
@@ -1022,7 +1015,6 @@ fn crowded_handles_at_a_small_scale_follow_the_pick_rule_through_real_presses() 
         (&moved_tiny.outer, &moved_tiny.bore),
         (&tiny.outer, &tiny.bore)
     );
-    println!("\nFCAD_31I_CROWDED_EXECUTED");
 }
 
 #[test]
@@ -1051,7 +1043,6 @@ fn one_and_two_pixels_per_point_give_the_same_strings_and_pick_radius() {
     assert_eq!(one.1, two.1);
     assert!((one.2 - two.2).length() < 1e-3);
     assert_eq!(one.3, two.3, "the view depends on pixels");
-    println!("\nFCAD_31I_SCALE_PIXELS_EXECUTED");
 }
 
 #[test]
@@ -1127,7 +1118,6 @@ fn a_refused_profile_stays_a_visible_draft_and_text_that_cannot_be_drawn_draws_n
     assert_eq!(shown(&e), strings(["12.5", "-7.25"], "10.5", Some("4.75")));
     press_button(&ctx, &mut e, "Redo draft");
     assert_eq!(shown(&e), s);
-    println!("\nFCAD_31I_REFUSED_EXECUTED");
 }
 
 #[test]
@@ -1185,7 +1175,6 @@ fn the_view_fits_on_opening_and_on_fit_only_and_the_form_stays_within_768_points
         assert!(screen.contains(at), "{label} at {at:?}");
     }
     eprintln!("the form ends at {} of 768 points", used.max.y);
-    println!("\nFCAD_31I_VIEW_AND_FORM_EXECUTED");
 }
 
 /// §31I: the centre handle of the circle or annular canvas the form shows, pressed,

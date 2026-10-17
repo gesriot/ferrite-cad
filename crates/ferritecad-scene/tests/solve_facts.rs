@@ -38,12 +38,8 @@ fn ready() -> bool {
     if solver::is_available() {
         return true;
     }
-    assert!(
-        !solver::is_required(),
-        "FERRITECAD_REQUIRE_PLANEGCS=1 was set, so no gate may skip: a scene that cannot be \
-         loaded from a constrained document has not been shown to carry anything"
-    );
-    eprintln!("skipped: this build has no sketch solver");
+
+    ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
     false
 }
 

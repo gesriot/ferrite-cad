@@ -444,8 +444,10 @@ fn native_every_new_document_variant_is_untitled_until_its_first_save_like_the_c
 /// OCCT without the solver: none of the seven needs it (no profile is constrained).
 #[test]
 fn mixed_new_documents_need_no_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
-        eprintln!("skipped: requires OCCT/no solver");
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+    ]) {
         return;
     }
     matrix();
@@ -457,7 +459,7 @@ fn mixed_new_documents_need_no_solver() {
 #[test]
 fn stub_new_document_is_refused_at_the_picture_and_keeps_the_open_one() {
     if ferritecad_occt::is_available() {
-        eprintln!("skipped: requires stub");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     let f = fixture();
@@ -924,7 +926,7 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
 #[test]
 fn native_compare_real_new_document_gui_artifacts_with_negative_controls() {
     let Some(root) = std::env::var_os("FCAD_30L_GUI_DIR") else {
-        eprintln!("skipped: requires real GUI artifacts");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     };
     assert!(native());

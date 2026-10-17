@@ -463,7 +463,6 @@ fn open_over_unfinished_forms_keeps_them_with_their_tab_through_every_answer() {
     assert_eq!(height_in(w.hidden(b)), 16.0);
     assert_eq!(contents(&inputs), originals, "only Save writes a file");
     loads.stop_all();
-    println!("\nFCAD_30Q_OPEN_OVER_FORMS_EXECUTED");
 }
 
 /// New beside unfinished forms: A's constraints draft (with its request history)
@@ -741,7 +740,6 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
     assert_eq!(w.edits.typed(), Some((Some(feature), "x7")));
     assert!(!w.tabs.has_aside());
     assert_eq!(contents(&[&a_file]), originals, "only Save writes a file");
-    println!("\nFCAD_30Q_NEW_OVER_FORMS_EXECUTED");
 }
 
 /// Recover beside an unfinished form: a full window refuses before the record is
@@ -899,7 +897,6 @@ fn recover_over_an_unfinished_form_keeps_the_record_on_every_refusal() {
         "A's record stays A's, D stays whole"
     );
     assert_eq!(contents(&[&a_file, &c_file]), originals);
-    println!("\nFCAD_30Q_RECOVER_OVER_FORMS_EXECUTED");
 }
 
 fn kept_after(w: &Window, a: TabId, draft: &(Vec<[String; 2]>, usize, usize)) {
@@ -991,14 +988,15 @@ fn stub_open_new_and_recover_beside_a_form_are_refused_at_the_picture_and_keep_i
     kept(&w);
     assert_eq!(recoverable(&store), [c], "the record is whole");
     loads.stop_all();
-    println!("\nFCAD_30Q_STUB_OVER_FORMS_EXECUTED");
 }
 
 /// Open CASCADE without the solver: Open, New and Recover drawn by the production
 /// workers beside each tab's height form; each form applied after returning.
 #[test]
 fn mixed_open_new_and_recover_beside_forms_with_occt_and_no_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     use ferritecad_ui::NewChoice;
@@ -1046,7 +1044,6 @@ fn mixed_open_new_and_recover_beside_forms_with_occt_and_no_solver() {
     assert_eq!(height_in(&w.sessions), 19.0);
     assert_eq!(height_in(w.hidden(a)), 18.0);
     loads.stop_all();
-    println!("\nFCAD_30Q_MIXED_OVER_FORMS_EXECUTED");
 }
 
 // --- native: the window recipe on the owners, and its comparator -----------------
@@ -1395,7 +1392,7 @@ fn native_open_new_recover_beside_forms_then_apply_save_and_compare_with_the_com
     let a_fbx = std::fs::read(root.join("a-unsaved.fbx")).expect("a");
     let (n_stl, n_fbx) = peer_bytes(&root.join("n.fcad"), work.path(), "n");
     let (c_stl, c_fbx) = peer_bytes(&root.join("c.fcad"), work.path(), "c");
-    let volume = |stl: &[u8]| super::super::super::checkpoints::stl_facts(stl).2;
+    let _volume = |stl: &[u8]| super::super::super::checkpoints::stl_facts(stl).2;
     if let Ok(dir) = std::env::var("FCAD_OPEN_NEW_RECOVER_ARTIFACTS") {
         let dir = PathBuf::from(dir);
         for (name, stl, fbx) in [
@@ -1407,12 +1404,6 @@ fn native_open_new_recover_beside_forms_then_apply_save_and_compare_with_the_com
             std::fs::write(dir.join(format!("{name}.fbx")), fbx).expect("artifact");
         }
     }
-    println!(
-        "\nFCAD_30Q_NATIVE_OVER_FORMS_EXECUTED volume_a={:.3} volume_n={:.3} volume_c={:.3}",
-        volume(&a_stl),
-        volume(&n_stl),
-        volume(&c_stl)
-    );
     println!("FCAD_30Q_SESSION_FILES_COMPARE_OK negative_controls=8 all_SQL_cells=true");
 }
 
@@ -1557,5 +1548,4 @@ fn recover_waiting_for_a_reader_obeys_cancel_late_answers_and_quit_beside_forms_
     drop(reader);
     assert_eq!(recoverable(&store), [d], "the copy is whole");
     assert_eq!(contents(&[&a_file, &b_file, &c_file]), originals);
-    println!("\nFCAD_30S_RECOVER_BESIDE_READER_EXECUTED");
 }

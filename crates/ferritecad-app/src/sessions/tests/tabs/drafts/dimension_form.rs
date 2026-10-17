@@ -254,7 +254,6 @@ fn the_dimensions_the_text_and_the_prepared_replacement_of_a_form_follow_its_tab
     assert!(painted(&out, "60 → 70 mm") && painted(&out, "30 mm"));
     assert!(!painted(&out, "30 → 33 mm"));
     assert!(!w.sessions.dirty(), "a prepared replacement is no change");
-    println!("\nFCAD_31L_TAB_EXECUTED");
 }
 
 #[test]
@@ -322,7 +321,6 @@ fn a_dimension_form_held_on_another_version_loses_its_labels_and_keeps_its_rows_
         .draft_edits()
         .expect("the held form's request");
     assert_eq!(prepared.remove, vec![rules[1]]);
-    println!("\nFCAD_31L_TAB_STALE_EXECUTED");
 }
 
 #[test]
@@ -373,5 +371,4 @@ fn a_dimension_form_given_back_by_a_cancelled_close_or_an_aborted_quit_keeps_all
     }
     assert!(painted(&frame(&mut w, &ctx, vec![]), "60 → 70 mm"));
     assert!(!w.sessions.stale_draft() && !w.sessions.dirty());
-    println!("\nFCAD_31L_TAB_GIVEN_BACK_EXECUTED");
 }

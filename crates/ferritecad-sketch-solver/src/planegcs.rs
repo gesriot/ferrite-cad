@@ -1095,7 +1095,6 @@ mod tests {
                 "kind {kind}"
             );
         }
-        println!("\nFCAD_31G_SHIM_EXECUTED");
     }
 
     #[cfg(planegcs_linked)]

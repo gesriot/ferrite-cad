@@ -28,3 +28,6 @@ planegcs = []
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+ferritecad-fixtures.workspace = true

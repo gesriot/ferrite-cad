@@ -130,8 +130,7 @@ fn artefact(name: &str, path: &Path) {
 #[test]
 fn native_json_fbx_complete_publication() {
     if !is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let root = tempfile::tempdir().expect("root");

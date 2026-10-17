@@ -2041,7 +2041,7 @@ mod tests {
     #[test]
     fn the_complex_assembly_exports_from_the_window_and_says_what_is_missing() {
         if !ferritecad_occt::is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let directory = tempfile::tempdir().expect("a temporary directory");

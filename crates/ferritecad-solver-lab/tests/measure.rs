@@ -52,12 +52,8 @@ fn planegcs_ready() -> bool {
     if ferritecad_solver_lab::planegcs::is_available() {
         return true;
     }
-    assert!(
-        !ferritecad_solver_lab::planegcs::is_required(),
-        "FERRITECAD_REQUIRE_PLANEGCS=1 was set, so no gate may skip: this build linked no \
-         planegcs, and a comparison with one candidate is not a comparison"
-    );
-    eprintln!("skipped: this build did not link planegcs");
+
+    ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
     false
 }
 

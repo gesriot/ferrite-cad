@@ -567,7 +567,6 @@ fn a_marker_states_its_kind_and_selects_exactly_its_rule_only_under_the_rule_tar
             "{box_of:?} on {canvas:?}"
         );
     }
-    println!("\nFCAD_31N_FORM_MARKERS_EXECUTED");
 }
 
 #[test]
@@ -677,7 +676,6 @@ fn the_selected_rule_marks_exactly_the_references_it_stores_and_a_reversed_segme
         Refs::Pair(a, b) if a.from == p(ids[0], Start) && b.from == p(ids[2], End) && b.to == p(ids[2], Start)));
     assert!(matches!(at(Kind::Parallel),
         Refs::Pair(a, b) if a.from == p(ids[1], End) && a.to == p(ids[1], Start) && b.from == p(ids[2], Start)));
-    println!("\nFCAD_31N_FORM_REFS_EXECUTED");
 }
 
 // ---- one selection --------------------------------------------------------------------
@@ -788,7 +786,6 @@ fn the_markers_the_lines_list_the_persisted_rows_and_the_other_labels_show_one_s
     rig.press("Segment 3");
     rig.press("Add Horizontal");
     assert_eq!(rig.edits().add.len(), 1);
-    println!("\nFCAD_31N_FORM_SYNC_EXECUTED");
 }
 
 // ---- the removal ----------------------------------------------------------------------
@@ -943,7 +940,6 @@ fn remove_constraint_prepares_one_step_once_and_undo_redo_and_clear_return_exact
         );
         let _ = (ids, len30);
     }
-    println!("\nFCAD_31N_FORM_REMOVE_EXECUTED");
 }
 
 /// The UUID of the stored length of `mm` (the same helper the other gates use).
@@ -1022,7 +1018,6 @@ fn a_removal_the_validator_refuses_keeps_the_text_the_selection_and_the_history_
     assert!(rig.edits().remove.contains(&rules.horizontal));
     assert_eq!(rig.history().0, steps.0 + 1);
     let _ = ids;
-    println!("\nFCAD_31N_FORM_REFUSED_EXECUTED");
 }
 
 #[test]
@@ -1076,7 +1071,6 @@ fn a_cancelled_save_or_a_stale_reply_keeps_the_selected_rule_and_the_prepared_re
         rig.edits().remove,
         vec![rules.perpendicular, rules.vertical]
     );
-    println!("\nFCAD_31N_FORM_CANCELLED_EXECUTED");
 }
 
 // ---- view, hit area, blocked input ----------------------------------------------------
@@ -1206,7 +1200,6 @@ fn markers_follow_zoom_pan_and_fit_and_are_hit_exactly_where_they_are_drawn() {
         assert_eq!(marker(&rig.frame(vec![]), "Eq").rect, first.rect);
         assert!(rig.e.take_request().is_none());
     }
-    println!("\nFCAD_31N_FORM_VIEW_EXECUTED");
 }
 
 #[test]
@@ -1411,7 +1404,6 @@ fn a_marker_press_dies_with_its_surface_and_busy_queued_covered_or_unfocused_for
     rig.settle();
     rig.press("Remove constraint");
     assert_eq!(rig.edits().remove, vec![rules.parallel, rules.vertical]);
-    println!("\nFCAD_31N_FORM_BLOCKED_EXECUTED");
 }
 
 // ---- overlaps, paint order, the 768-point screen, no drawing, other forms ------------
@@ -1569,7 +1561,6 @@ fn overlapping_markers_are_reached_in_saved_order_the_target_decides_what_is_on_
         (None, Some(ids[0])),
         "Dimension reaches the label where they meet"
     );
-    println!("\nFCAD_31N_FORM_OVERLAP_EXECUTED");
 }
 
 /// The 64-gon of the §31K gate with a Horizontal of the last Line, a stored length and every
@@ -1743,7 +1734,6 @@ fn the_markers_the_editor_and_the_actions_stay_reachable_at_768_points_in_the_wo
     for line in &report {
         eprintln!("FORM_BUDGET_31N {line}");
     }
-    println!("\nFCAD_31N_FORM_768_EXECUTED");
 }
 
 #[test]
@@ -1846,7 +1836,6 @@ fn without_a_drawing_the_rule_rows_still_select_and_remove_and_closure_and_other
     });
     assert!(rig.e.draft_marks().expect("draft").0.is_empty());
     assert!(markers(&rig.frame(vec![])).is_empty());
-    println!("\nFCAD_31N_FORM_UNAVAILABLE_EXECUTED");
 }
 
 #[test]
@@ -1879,7 +1868,6 @@ fn two_forms_over_one_document_keep_their_own_rule_selection_and_pending_removal
     assert_eq!((a.mark(), a.edits()), in_a);
     assert!(has_marker(&b.frame(vec![]), "H -> removed") && has_marker(&b.frame(vec![]), "Par"));
     assert!(has_marker(&a.frame(vec![]), "Par -> removed") && has_marker(&a.frame(vec![]), "H"));
-    println!("\nFCAD_31N_FORM_FORMS_EXECUTED");
 }
 
 #[test]
@@ -2025,7 +2013,6 @@ fn the_target_row_keeps_five_targets_and_fit_beside_rule_in_one_row_and_dimensio
     let at = rig.at_marker("V");
     rig.click(at);
     assert_eq!((rig.picks().0, rig.mark()), (None, Some(rules.vertical)));
-    println!("\nFCAD_31N_FORM_TARGETS_EXECUTED");
 }
 
 // ---- a single Circle -------------------------------------------------------------------
@@ -2147,7 +2134,6 @@ fn a_single_circles_fixed_centre_is_a_marker_beside_its_radius_label_and_marks_t
         let _ = radius;
         assert!(has_marker(&rig.frame(vec![]), "Fix -> removed"));
     }
-    println!("\nFCAD_31N_FORM_CIRCLE_EXECUTED");
 }
 
 // ---- native: the real accepted drawing, the real worker -------------------------------

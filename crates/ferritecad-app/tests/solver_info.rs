@@ -380,7 +380,6 @@ fn the_diagnostic_and_usage_refusals_answer_as_before_and_keep_no_journal() {
         assert_eq!(answer.stderr, stderr, "{line:?}: {answer:?}");
         assert!(!answer.journal.exists(), "{line:?} made a journal folder");
     }
-    println!("\nFCAD_LAUNCH_JOURNAL_SOLVER_INFO_EXECUTED");
 }
 
 /// §31H: a window that cannot open is kept in the launch journal by the real
@@ -426,7 +425,6 @@ fn a_window_that_cannot_open_is_kept_in_the_launch_journal() {
             && lines[1].contains("DISPLAY"),
         "{segment}"
     );
-    println!("\nFCAD_LAUNCH_JOURNAL_WINDOW_FAILURE_EXECUTED");
 }
 
 /// A document argument still goes to the window, and not to the diagnostic.

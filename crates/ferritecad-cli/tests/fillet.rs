@@ -77,8 +77,7 @@ fn native() -> bool {
     if ferritecad_occt::is_available() {
         true
     } else {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         false
     }
 }
@@ -3979,11 +3978,8 @@ mod constraints {
         if ferritecad_eval::solver_available() {
             return true;
         }
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: constrained geometry requires PlaneGCS");
+
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         false
     }
 
@@ -4461,7 +4457,6 @@ mod constraints {
         // name and fails on any `skipped:`, so a solver that crept into that
         // build is caught there rather than asserted here.
         if ferritecad_eval::solver_available() {
-            eprintln!("skipped: the mixed gate needs a build without PlaneGCS");
             return;
         }
         let f = filleted_by_cli(CCW, [X0 + W, Y0], 2.375, "rounded");
@@ -5213,7 +5208,6 @@ mod constraints {
             // N/A where a solver is linked; the mixed CI step runs this by
             // exact name and fails on `skipped:`.
             if ferritecad_eval::solver_available() {
-                eprintln!("skipped: the mixed gate needs a build without PlaneGCS");
                 return;
             }
             let f = filleted_by_cli(CCW, [X0 + W, Y0], 2.375, "rounded");

@@ -71,7 +71,7 @@ fn has_kernel(document: &Path, out: &Path) -> bool {
     }
     let complaint = String::from_utf8_lossy(&output.stderr);
     if complaint.contains("built without Open CASCADE") || complaint.contains("no Open CASCADE") {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return false;
     }
     panic!(
@@ -335,7 +335,7 @@ fn a_nested_assembly_keeps_its_hierarchy_and_shares_one_geometry() {
     ]);
     let complaint = String::from_utf8_lossy(&imported.stderr);
     if complaint.contains("built without Open CASCADE") || complaint.contains("no Open CASCADE") {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     assert!(

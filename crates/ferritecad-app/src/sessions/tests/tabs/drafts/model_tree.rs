@@ -191,7 +191,6 @@ fn history_uses_dependencies_exact_uuids_and_honest_shared_references() {
             .all(|r| r.depth == 0 && r.note.contains("History unavailable"))
     );
     assert!(unavailable.rows.iter().any(|r| r.id.0 == unknown_id));
-    println!("\nFCAD_31A_PROJECTION_EXECUTED cuts=16");
 }
 
 #[test]
@@ -334,7 +333,6 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
         None,
         "vanished object must not choose its neighbour"
     );
-    println!("\nFCAD_31A_OWNERS_EXECUTED");
 }
 
 #[test]
@@ -378,7 +376,6 @@ fn navigation_open_uses_one_foreground_gesture_and_new_refusal() {
     w.answer_new(ferritecad_ui::NewChoice::Cancel);
     assert!(open_action(&mut w, asked));
     assert_eq!(w.edits.typed(), Some((Some(feature), "12")));
-    println!("\nFCAD_31A_GUARDS_EXECUTED");
 }
 
 fn widget_frame(
@@ -481,7 +478,6 @@ fn real_widgets_select_uuid_then_send_the_supported_action_and_bound_the_list() 
         click_widget(&mut w, &ctx, text_rect(&out, "Edit Cut…").center()).is_none(),
         "open form disables action"
     );
-    println!("\nFCAD_31A_WIDGETS_EXECUTED");
 }
 
 #[test]
@@ -670,7 +666,6 @@ fn native_early_cut_navigation_apply_history_save_matches_existing_cli() {
     assert_eq!(count(&w), 4);
     w.checkpoint(CheckpointAction::Restore(checkpoint));
     assert_eq!(count(&w), 3);
-    println!("early_uuid={early} volume={volume:.6}\nFCAD_31A_NATIVE_EXECUTED all_SQL_cells=true");
 }
 
 #[test]
@@ -720,7 +715,6 @@ fn native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes(
         assert!(open_action(&mut w, asked));
     }
     drop((fr, cr));
-    println!("\nFCAD_31A_NATIVE_ROUTES_EXECUTED routes=5");
 }
 
 /// This comparison consumes existing output files; it creates only CLI peers

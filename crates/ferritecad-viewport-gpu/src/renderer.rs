@@ -3543,7 +3543,7 @@ mod tests {
         let mut renderer = match Renderer::new() {
             Ok(renderer) => renderer,
             Err(error) if error.kind() == ErrorKind::Unsupported => {
-                eprintln!("skipped: {error}");
+                ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                 return;
             }
             Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
@@ -3709,7 +3709,7 @@ mod tests {
         let mut renderer = match Renderer::new() {
             Ok(renderer) => renderer,
             Err(error) if error.kind() == ErrorKind::Unsupported => {
-                eprintln!("skipped: {error}");
+                ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                 return;
             }
             Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
@@ -3999,7 +3999,7 @@ mod tests {
         let mut renderer = match Renderer::new() {
             Ok(renderer) => renderer,
             Err(error) if error.kind() == ErrorKind::Unsupported => {
-                eprintln!("skipped: {error}");
+                ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                 return;
             }
             Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
@@ -4110,7 +4110,7 @@ mod tests {
         let mut renderer = match Renderer::new() {
             Ok(renderer) => renderer,
             Err(error) if error.kind() == ErrorKind::Unsupported => {
-                eprintln!("skipped: {error}");
+                ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                 return;
             }
             Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
@@ -4248,7 +4248,7 @@ mod tests {
         let mut renderer = match Renderer::new() {
             Ok(renderer) => renderer,
             Err(error) if error.kind() == ErrorKind::Unsupported => {
-                eprintln!("skipped: {error}");
+                ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                 return;
             }
             Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
@@ -4322,7 +4322,7 @@ mod tests {
         let mut renderer = match Renderer::new() {
             Ok(renderer) => renderer,
             Err(error) if error.kind() == ErrorKind::Unsupported => {
-                eprintln!("skipped: {error}");
+                ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                 return;
             }
             Err(error) => panic!("a renderer failed after adapter discovery: {error}"),

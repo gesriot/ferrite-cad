@@ -19,7 +19,7 @@ use ferritecad_types::ErrorKind;
 #[test]
 fn open_cascade_resolves_the_committed_plate_as_recorded() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -53,7 +53,7 @@ fn open_cascade_resolves_the_committed_plate_as_recorded() {
 #[test]
 fn open_cascade_agrees_with_itself_warm_and_cold() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -97,7 +97,7 @@ fn open_cascade_agrees_with_itself_warm_and_cold() {
 #[test]
 fn open_cascade_loses_only_the_dropped_segments_name() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

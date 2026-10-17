@@ -209,7 +209,7 @@ fn native_json_step_import_publication_rejection_and_delivery() {
             "{error}"
         );
         assert_eq!(error.kind(), ErrorKind::Unsupported);
-        eprintln!("skipped: this build has no Open CASCADE (JSON STEP import)");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     for (group, file, name, exit) in [

@@ -1373,7 +1373,7 @@ pub(crate) mod tests {
     #[test]
     fn stub_creation_is_refused_at_the_picture() {
         if ferritecad_occt::is_available() {
-            eprintln!("skipped: requires stub");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         let sessions = tempfile::tempdir().expect("sessions");
@@ -1973,7 +1973,6 @@ pub(crate) mod tests {
             "handed back, to be asked again"
         );
         assert!(creates.new_ended().is_none());
-        println!("\nFCAD_30T_QUESTION_GENERATION_EXECUTED");
     }
 
     /// Discarding New is the one moment its draft goes: the form, the drawing and a
@@ -2044,7 +2043,6 @@ pub(crate) mod tests {
             creates.stop_all();
             assert!(creates.running.is_empty());
         }
-        println!("\nFCAD_30T_STOP_NEW_EXECUTED");
     }
 
     /// The abandoned creation's answer cannot touch a newer one: New again, Create
@@ -2103,7 +2101,6 @@ pub(crate) mod tests {
         assert_eq!(creates.status(), &CreateStatus::Shown);
         drop(candidate);
         creates.stop_all();
-        println!("\nFCAD_30T_ABANDONED_NEVER_ANSWERS_EXECUTED");
     }
 
     #[test]
@@ -2150,8 +2147,7 @@ pub(crate) mod tests {
     #[test]
     fn both_clients_reopen_rebuild_resolve_and_export_the_saved_plate() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: this build has no Open CASCADE (create geometry gate)");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let dir = tempfile::tempdir().expect("directory");

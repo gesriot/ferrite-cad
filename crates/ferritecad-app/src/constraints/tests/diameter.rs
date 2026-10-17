@@ -364,7 +364,6 @@ fn a_circle_diameter_is_the_half_radius_in_one_step_through_the_real_widgets() {
     }
     click(&ctx, &mut e, "Cancel constraints draft");
     assert!(!e.active());
-    println!("\nFCAD_31E_WIDGETS_EXECUTED");
 }
 
 /// Focused text fields must honor the same busy state as their action buttons.
@@ -411,7 +410,6 @@ fn running_jobs_freeze_focused_constraint_numbers_until_editing_resumes() {
         changed.is_empty(),
         "focused fields changed during a job: {changed:?}"
     );
-    println!("\nFCAD_31E_FROZEN_NUMBERS_EXECUTED");
 }
 
 #[test]
@@ -467,7 +465,6 @@ fn a_stored_radius_is_replaced_by_a_diameter_in_one_exact_remove_and_add() {
         e.take_request().expect("one atomic request").edits,
         replacement
     );
-    println!("\nFCAD_31E_REPLACE_EXECUTED");
 }
 
 /// A ring's diameters follow the circle that is picked, by its UUID, whatever
@@ -541,7 +538,6 @@ fn ring_diameters_follow_the_picked_uuid_not_the_stored_order() {
             vec![radius_of(bore, 2.125), radius_of(boundary, 6.75)]
         );
     }
-    println!("\nFCAD_31E_RING_EXECUTED");
 }
 
 /// The signed volume, bounds and edge pairing of a binary STL, read here and not
@@ -581,23 +577,11 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
     use ferritecad_kernel::FaceSurface;
     // Each missing piece is excused only where that piece is not required: a build
     // with the kernel and no solver skips here and still runs the kernel-only gates.
-    for (present, required, what) in [
-        (
-            ferritecad_occt::is_available(),
-            "FERRITECAD_REQUIRE_OCCT",
-            "OCCT",
-        ),
-        (
-            ferritecad_sketch_solver::is_available(),
-            "FERRITECAD_REQUIRE_PLANEGCS",
-            "planegcs",
-        ),
-    ] {
-        if !present {
-            assert_ne!(std::env::var(required).as_deref(), Ok("1"));
-            eprintln!("skipped: the diameter gate needs {what}");
-            return;
-        }
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+    ]) {
+        return;
     }
     // The ring carries data this editor knows nothing about (an attached source
     // claim, an unknown table and capability rows): it has to come through.
@@ -974,5 +958,4 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
         std::fs::create_dir_all(&dir).expect("artifact directory");
         std::fs::copy(&fbx, dir.join("diameter.fbx")).expect("FBX for the pinned reader");
     }
-    println!("\nFCAD_31E_NATIVE_EXECUTED radii=6.75,2.125 constraints=4 faces=4");
 }

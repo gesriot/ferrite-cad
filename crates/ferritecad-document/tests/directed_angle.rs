@@ -217,7 +217,6 @@ fn degrees_are_the_input_radians_are_the_stored_value_and_the_range_is_one_full_
     assert!(DirectedLine::new(id, LineEndpoint::End, LineEndpoint::End).is_err());
     let v = DirectedLine::new(id, LineEndpoint::End, LineEndpoint::Start).expect("reversed");
     assert_eq!((v.from(), v.to()), (LineEndpoint::End, LineEndpoint::Start));
-    println!("\nFCAD_31F_DOCUMENT_CONVERSION_EXECUTED");
 }
 
 #[test]
@@ -301,7 +300,6 @@ fn a_directed_angle_is_stored_as_said_in_layout_v4_and_declares_its_own_capabili
         assert_eq!(&d.object(object.id).expect("read").expect("kept"), object);
     }
     assert!(d.validate().expect("validate").is_ok());
-    println!("\nFCAD_31F_DOCUMENT_V4_EXECUTED");
 }
 
 #[test]
@@ -407,7 +405,6 @@ fn every_way_of_saying_one_relation_occupies_the_slot_and_only_an_exact_replace_
         "EqualLength + closure only"
     );
     assert!(d.validate().expect("validate").is_ok());
-    println!("\nFCAD_31F_DOCUMENT_SLOT_EXECUTED");
 }
 
 #[test]
@@ -514,5 +511,4 @@ fn what_a_sketch_declares_is_decided_by_what_it_holds_and_the_old_families_do_no
             "{fine} rad"
         );
     }
-    println!("\nFCAD_31F_DOCUMENT_LAYOUT_EXECUTED");
 }

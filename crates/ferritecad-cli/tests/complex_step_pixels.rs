@@ -81,7 +81,7 @@ fn renderer_or_skip() -> Option<Renderer> {
                      {reason}"
                 ),
                 MissingAdapter::Skip => {
-                    eprintln!("skipped: {reason}");
+                    ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                     None
                 }
             }
@@ -286,7 +286,7 @@ fn picture(path: &Path) -> LoadedScene {
 #[test]
 fn each_complex_leaf_definition_is_measured_without_healing() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -401,7 +401,7 @@ fn each_complex_leaf_definition_is_measured_without_healing() {
 #[test]
 fn the_complex_partial_import_reaches_repeatable_identified_pixels() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let Some(mut renderer) = renderer_or_skip() else {
