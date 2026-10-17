@@ -3,14 +3,13 @@
 """Compare passed tests in old named steps with new whole-workspace steps.
 
 Example:
-  python3 tools/compare-ci-tests.py --before 38931197204 38931197196 \
+  python3 tools/occt/compare-ci-tests.py --before 38931197204 38931197196 \
       --after <ci-run> <runtime-run> --cache /tmp/ferritecad-ci-logs
 
 Download immutable logs and job metadata with gh. Exclude echoed shell scripts,
 non-suite steps and ignored statuses. Compare each platform separately.
 """
 import argparse
-from datetime import datetime
 import io
 import json
 from pathlib import Path
@@ -27,10 +26,6 @@ def gh(*args):
     return subprocess.check_output(["gh", *args])
 
 
-def timestamp(value):
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
 def platform(name):
     for value, aliases in [("linux", ("linux", "ubuntu")),
                            ("macos", ("macos",)),
@@ -40,19 +35,30 @@ def platform(name):
     return None
 
 
-def named_steps(ref, workflow):
-    source = subprocess.check_output(
-        ["git", "show", f"{ref}:.github/workflows/{workflow}"], text=True)
-    result = set()
-    for step in re.split(r"(?=^      - )", source, flags=re.M):
-        if "cargo test" not in step or "--no-run" in step:
+def passed_tests(log, before):
+    # Actions echoes each run script inside a group. Use those exact boundaries:
+    # job metadata rounds step timestamps to seconds and loses short steps.
+    capturing, selected, body = False, False, []
+    for line in log.splitlines():
+        match = TIMESTAMP.match(ANSI.sub("", line))
+        if not match:
             continue
-        if not re.search(r"--exact|--test |--bin ", step):
+        content = match[2]
+        if content.startswith("##[group]Run "):
+            capturing, selected, body = True, False, [content]
             continue
-        match = re.match(r"      - name: (.+)", step)
-        if match:
-            result.add(match[1])
-    return result
+        if capturing:
+            if content == "##[endgroup]":
+                script = "\n".join(body)
+                selected = ("cargo test" in script and bool(re.search(r"--exact|--test |--bin ", script))
+                            if before else "cargo test --workspace" in script)
+                capturing = False
+            else:
+                body.append(content)
+            continue
+        passed = PASSED.fullmatch(content)
+        if selected and passed:
+            yield passed[1]
 
 
 def collect(run, before, cache, repository):
@@ -65,13 +71,6 @@ def collect(run, before, cache, repository):
     metadata = json.loads(metadata_path.read_text())
     if metadata["conclusion"] != "success":
         raise SystemExit(f"run {run} did not succeed: {metadata['conclusion']}")
-    if before:
-        workflow = "ci.yml" if metadata["workflowName"] == "CI" else "runtime-layout.yml"
-        selected = named_steps(metadata["headSha"], workflow)
-    else:
-        selected = {step["name"] for job in metadata["jobs"] for step in job["steps"]
-                    if step["name"].startswith("Run the whole workspace with OCCT")
-                    or step["name"] == "Run cargo test --workspace"}
     results = {os: set() for os in ("linux", "macos", "windows")}
     archive = zipfile.ZipFile(io.BytesIO(log_path.read_bytes()))
     for job in metadata["jobs"]:
@@ -82,18 +81,8 @@ def collect(run, before, cache, repository):
                  if "/" not in name and re.sub(r"^\d+_", "", name) == job["name"] + ".txt"]
         if len(files) != 1:
             raise SystemExit(f"run {run}: cannot identify log for {job['name']}")
-        steps = [step for step in job["steps"] if step["startedAt"] != "0001-01-01T00:00:00Z"]
-        for line in archive.read(files[0]).decode("utf-8-sig").splitlines():
-            match = TIMESTAMP.match(ANSI.sub("", line))
-            if not match:
-                continue
-            time, content = timestamp(match[1]), match[2]
-            passed = PASSED.fullmatch(content)
-            if not passed:
-                continue
-            active = next((step for step in reversed(steps) if timestamp(step["startedAt"]) <= time), None)
-            if active and active["name"] in selected:
-                results[os].add(passed[1])
+        log = archive.read(files[0]).decode("utf-8-sig")
+        results[os].update(passed_tests(log, before))
     return results
 
 
