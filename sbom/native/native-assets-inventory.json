@@ -461,19 +461,19 @@
     {
       "path": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json",
       "ref": "ferritecad:rust-fragment:aarch64-apple-darwin",
-      "sha256": "5cc2bd819a53ffcf52c2edf7c5dbacf7a4abd862258b45b1a12fb13a6684aeff",
+      "sha256": "87efdd1004cb9e98de46db3e0a6e087bee08ac74b96ee1196bf2896b784fd50e",
       "target": "aarch64-apple-darwin"
     },
     {
       "path": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json",
       "ref": "ferritecad:rust-fragment:x86_64-pc-windows-msvc",
-      "sha256": "89d34059e30d804e677ec96841b3f320fc8357bd97c59db7ae4bc460b02df41a",
+      "sha256": "500f6c8e46d079166e8a3b8b00bd0ca71c7c506c23ddff646dd2e4a3f5b5c9cf",
       "target": "x86_64-pc-windows-msvc"
     },
     {
       "path": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json",
       "ref": "ferritecad:rust-fragment:x86_64-unknown-linux-gnu",
-      "sha256": "fc2d63983a622bdc85e3ed6f07e682c42db3986c0c88f73fac115ab00abc891c",
+      "sha256": "4a59b55dbb854fefe27b73a0380cba0c5b06cecda890a99c10a7d9a28a2a42e6",
       "target": "x86_64-unknown-linux-gnu"
     }
   ],

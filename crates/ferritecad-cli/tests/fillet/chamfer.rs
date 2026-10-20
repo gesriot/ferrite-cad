@@ -1742,8 +1742,16 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         .expect("branched");
     });
     refused_everywhere("two Chamfers over one plate", &branch, 2);
-    // Every forgery is also refused as an edit target, and none was repaired.
-    for path in [&wide, &thin, &alien, &narrow, &branch] {
+    // Geometry failures can be repaired. A missing joint and a forked history
+    // still fail the existing edit preflight.
+    for (path, repairable) in [
+        (&wide, true),
+        (&thin, true),
+        (&narrow, true),
+        (&alien, false),
+        (&branch, false),
+    ] {
+        let before = std::fs::read(path).expect("source bytes");
         let request = f.root.path().join("forged.json");
         write(&request, &json!({"request_version":1,"distance_mm":1.0}));
         let catalog = inspect(path);
@@ -1751,11 +1759,19 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
             .as_str()
             .expect("version")
             .to_owned();
-        let out = f.root.path().join("forged-out.fcad");
+        let out = path.with_extension("repaired.fcad");
         let v = edit_from(path, &id.to_string(), &version, &request, &out)
             .output()
             .expect("process");
-        assert!(!v.status.success() || !out.exists(), "{v:?}");
-        assert!(!out.exists(), "a forged document was edited");
+        if repairable {
+            let result = reply(v, "edit-chamfer-distance", 0);
+            assert_eq!(result["result"]["rebuild"]["failed"], json!([]));
+            assert_eq!(result["result"]["rebuild"]["skipped"], json!([]));
+            assert!(out.exists(), "the repaired copy was not published");
+        } else {
+            assert!(!v.status.success(), "{v:?}");
+            assert!(!out.exists(), "an invalid edit target was published");
+        }
+        assert_eq!(std::fs::read(path).expect("source bytes"), before);
     }
 }
