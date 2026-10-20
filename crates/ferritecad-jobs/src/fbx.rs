@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use ferritecad_exchange::Import;
 use ferritecad_export::{ExportScene, FbxWriteReport, write_fbx_ascii_7400};
 use ferritecad_kernel::{CancelToken, GeometryKernel, OperationContext, TessellationParams};
-use ferritecad_scene::export_scene;
+use ferritecad_scene::export_scene_with_report;
 use ferritecad_types::{CadError, Result};
 
 use crate::publish::{Existing, Temporary, refuse_source_as_destination};
@@ -86,6 +86,7 @@ impl<'a> FbxExportRequest<'a> {
 /// on a panel; neither of those belongs to the work itself.
 #[derive(Debug)]
 pub struct FbxExport {
+    pub rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     report: FbxWriteReport,
 }
@@ -140,10 +141,12 @@ where
     // Cold on purpose, and the same reading a picture is built from with the
     // hierarchy kept. Every shape this makes is released before it returns,
     // whatever happens.
-    let scene = export_scene(request.document, kernel, read_step, params, context)?;
+    let (scene, rebuild) =
+        export_scene_with_report(request.document, kernel, read_step, params, context)?;
 
     let report = write_and_publish(&request, &scene, context.cancel())?;
     Ok(FbxExport {
+        rebuild,
         destination: request.destination.to_path_buf(),
         report,
     })

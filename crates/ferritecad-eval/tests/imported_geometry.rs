@@ -113,9 +113,13 @@ fn a_document_holding_an_import_still_rebuilds() {
     // read as if this document held no geometry at all.
     assert_eq!(built.imports(), [object]);
     assert_eq!(built.shape_count(), 0, "an import is not rebuilt");
+    assert!(matches!(
+        built.status(object),
+        Some(ferritecad_eval::RebuildStatus::Built)
+    ));
     assert!(
-        !built.order().contains(&object),
-        "an object that was not evaluated is listed among those that were"
+        built.order().contains(&object),
+        "every plan object has an outcome, including stored imports"
     );
 
     built.release_all(&mut kernel);

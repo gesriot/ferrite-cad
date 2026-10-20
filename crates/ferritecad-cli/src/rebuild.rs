@@ -34,11 +34,16 @@ pub fn rebuild(args: RebuildArgs) -> Result<ExitCode> {
     // `rebuild_cold` takes no cache and has no way to reach one, so the
     // sidecar is untouched by construction rather than by promise.
     let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())?;
+    let complete = built.all_built();
     let outcome = report(&document, &built, kernel.identity().to_string());
     built.release_all(&mut kernel);
 
     print!("{}", outcome?);
-    Ok(ExitCode::SUCCESS)
+    Ok(if complete {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(crate::EXIT_FAILED)
+    })
 }
 
 /// The whole report as text, built before anything is printed.
@@ -105,6 +110,19 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
             object.payload.type_name()
         );
 
+        match built.status(*id) {
+            Some(ferritecad_eval::RebuildStatus::Built) => line.push_str("Built; "),
+            Some(ferritecad_eval::RebuildStatus::Failed { error }) => {
+                writeln!(out, "{line}Failed: {error}").expect("String write");
+                continue;
+            }
+            Some(ferritecad_eval::RebuildStatus::Skipped { cause }) => {
+                writeln!(out, "{line}Skipped: depends on {} ({cause})", named(*cause))
+                    .expect("String write");
+                continue;
+            }
+            None => {}
+        }
         match &object.payload {
             ObjectPayload::Sketch(_) => {
                 if let Some(profile) = built.profile(*id) {

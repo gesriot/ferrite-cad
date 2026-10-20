@@ -444,7 +444,7 @@ fn cancelling_after_a_hit_releases_what_was_restored() {
 }
 
 #[test]
-fn a_later_failure_releases_what_the_cache_restored() {
+fn a_later_failure_keeps_what_the_cache_restored() {
     let (dir, mut document, plate) = sample(10.0);
     let document_id = document.meta().document_id;
     let context = OperationContext::default();
@@ -527,19 +527,30 @@ fn a_later_failure_releases_what_the_cache_restored() {
 
     let mut kernel = MockKernel::new();
     let mut cache = store(dir.path(), &kernel, document_id);
-    let err = rebuild_cached(&document, &mut kernel, &mut cache, &context)
-        .expect_err("the second operation is outside this slice");
-    assert_eq!(err.kind(), ferritecad_types::ErrorKind::Unsupported);
-    assert_eq!(
-        kernel.extrude_count(),
-        0,
-        "the first feature was restored before the later failure"
+    let (built, _) =
+        rebuild_cached(&document, &mut kernel, &mut cache, &context).expect("partial rebuild");
+    assert!(matches!(
+        built.status(plate.second),
+        Some(ferritecad_eval::RebuildStatus::Failed { .. })
+    ));
+    assert_eq!(kernel.extrude_count(), 0, "the first feature was restored");
+    assert_eq!(kernel.live_shape_count(), 1);
+    let warm_report = built.report();
+    built.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
+    let cold = rebuild_cold(&document, &mut kernel, &context).expect("partial cold rebuild");
+    assert_eq!(warm_report, cold.report());
+    cold.release_all(&mut kernel);
+    let (again, events) =
+        rebuild_cached(&document, &mut kernel, &mut cache, &context).expect("again");
+    assert_eq!(warm_report, again.report());
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.feature == plate.second && e.outcome == CacheOutcome::Hit)
     );
-    assert_eq!(
-        kernel.live_shape_count(),
-        0,
-        "a failed rebuild hands back cached geometry too"
-    );
+    again.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
 }
 
 #[test]
@@ -651,4 +662,46 @@ fn an_entry_from_another_kernel_build_is_a_miss() {
     assert_eq!(original.extrude_count(), 0);
     assert!(events.iter().all(|e| e.outcome == CacheOutcome::Hit));
     built.release_all(&mut original);
+}
+
+#[test]
+fn failed_kernel_results_are_never_cached_and_independent_hits_keep_the_same_statuses() {
+    let (dir, document, plate) = sample(10.0);
+    let context = OperationContext::default();
+    let mut kernel = MockKernel::new();
+    kernel.fail_extrude_at(1);
+    let mut cache = store(dir.path(), &kernel, document.meta().document_id);
+    let (first, _) =
+        rebuild_cached(&document, &mut kernel, &mut cache, &context).expect("partial rebuild");
+    let report = first.report();
+    assert_eq!(report.failed[0].id, plate.extrude);
+    first.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
+    let mut cold_kernel = MockKernel::new();
+    cold_kernel.fail_extrude_at(1);
+    let cold = rebuild_cold(&document, &mut cold_kernel, &context).expect("cold reference");
+    assert_eq!(report, cold.report());
+    cold.release_all(&mut cold_kernel);
+    let mut warm_kernel = MockKernel::new();
+    warm_kernel.fail_extrude_at(1);
+    let (warm, events) =
+        rebuild_cached(&document, &mut warm_kernel, &mut cache, &context).expect("warm rebuild");
+    assert_eq!(report, warm.report());
+    assert!(
+        events
+            .iter()
+            .any(|e| e.feature == plate.extrude && e.outcome == CacheOutcome::Miss)
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.feature == plate.extrude && e.outcome == CacheOutcome::Hit)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.feature == plate.second && e.outcome == CacheOutcome::Hit)
+    );
+    warm.release_all(&mut warm_kernel);
+    assert_eq!(warm_kernel.live_shape_count(), 0);
 }

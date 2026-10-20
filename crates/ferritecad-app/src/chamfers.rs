@@ -992,6 +992,7 @@ pub(crate) mod tests {
             max_distance_mm: 0.5,
         };
         ferritecad_jobs::AddedEdgeChamfer {
+            rebuild: Default::default(),
             destination: PathBuf::from("stale.fcad"),
             document_id: ferritecad_types::DocumentId::new(),
             body: ObjectId::new(),

@@ -13,9 +13,8 @@
 //!
 //! # What is deliberately not reachable from here
 //!
-//! A sketch whose profile does not build makes no scene at all – the rebuild
-//! refuses before a drawing exists – so a *model* circle or point cannot be
-//! loaded from a document in this slice. Both are drawn by the render input
+//! A sketch whose profile does not build has no drawing; the scene still
+//! opens and reports that sketch's failure. Both are drawn by the render input
 //! and by the device all the same, and the gates for that live where a
 //! drawing can be built directly. Here they appear as construction geometry,
 //! which is the only way a document can hold them today.

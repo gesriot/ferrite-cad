@@ -24,6 +24,7 @@ pub struct ModelTreeRow {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelTree {
+    pub unbuilt_features: usize,
     pub rows: Vec<ModelTreeRow>,
 }
 
@@ -116,7 +117,10 @@ impl ModelTree {
                 _ => "Stored object; references do not imply ownership",
             }));
         }
-        Self { rows }
+        Self {
+            rows,
+            unbuilt_features: 0,
+        }
     }
 }
 

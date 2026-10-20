@@ -258,13 +258,11 @@ fn a_feature_this_slice_cannot_build_fails_without_leaking() {
         .expect("the document stores it; it is the rebuild that cannot");
 
     let mut kernel = OcctKernel::new().expect("opens");
-    let err = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect_err("ThroughAll is not implemented");
-
-    assert_eq!(err.kind(), ferritecad_types::ErrorKind::Unsupported);
-    assert_eq!(
-        kernel.live_shape_count(),
-        0,
-        "the solid built before the failure must not be left in Open CASCADE"
-    );
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("partial rebuild");
+    assert!(!built.all_built());
+    assert_eq!(built.report().failed.len(), 1);
+    assert!(kernel.live_shape_count() > 0, "keep the independent solid");
+    built.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
 }

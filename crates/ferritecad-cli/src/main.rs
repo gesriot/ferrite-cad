@@ -453,9 +453,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::ClearCache(args) => clear_cache(args),
-        Command::ExportStl(args) if args.json => Ok(json::emit(
+        Command::ExportStl(args) if args.json => Ok(json::emit_with_exit(
             json::Operation::ExportStl,
-            export::export_stl_result(args).map(json::ExportedStl::from),
+            export::export_stl_result(args).map(|exported| {
+                let exit = if exported.complete { 0 } else { EXIT_PARTIAL };
+                (json::ExportedStl::from(exported), exit)
+            }),
         )),
         Command::ExportStl(args) => export::export_stl(args),
         Command::ExportFbx(args) if args.json => Ok(json::emit_with_exit(

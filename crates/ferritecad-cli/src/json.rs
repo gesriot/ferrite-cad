@@ -79,6 +79,8 @@ enum Outcome<T> {
 
 #[derive(Serialize)]
 struct Failure {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rebuild: Option<ferritecad_eval::RebuildReport>,
     kind: &'static str,
     message: String,
     causes: Vec<String>,
@@ -100,6 +102,7 @@ impl From<&CadError> for Failure {
             source = cause.source();
         }
         Self {
+            rebuild: ferritecad_eval::RebuildRefusal::from_error(error).map(|r| r.report.clone()),
             kind: error.kind().as_str(),
             message: error.to_string(),
             causes,
@@ -112,6 +115,9 @@ impl From<&CadError> for Failure {
 
 #[derive(Serialize)]
 pub struct Inspection {
+    rebuild: Option<ferritecad_eval::RebuildReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rebuild_error: Option<Failure>,
     document_id: DocumentId,
     content_version: ContentHash,
     display_units: DisplayUnits,
@@ -1160,6 +1166,9 @@ impl<E: EndForm, P: ProfileForm> CutDiscovery<E, P> {
 
 #[derive(Serialize)]
 pub struct ExportedStl {
+    complete: bool,
+    omissions: Vec<StlOmission>,
+    rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     body_id: ObjectId,
     body_name: Option<String>,
@@ -1168,10 +1177,26 @@ pub struct ExportedStl {
     length_unit: &'static str,
 }
 
+#[derive(Serialize)]
+struct StlOmission {
+    body_id: ObjectId,
+    body_name: Option<String>,
+}
+
 impl From<ferritecad_jobs::StlExport> for ExportedStl {
     fn from(exported: ferritecad_jobs::StlExport) -> Self {
         Self {
             destination: exported.destination,
+            complete: exported.complete,
+            omissions: exported
+                .omissions
+                .into_iter()
+                .map(|b| StlOmission {
+                    body_id: b.id,
+                    body_name: b.name,
+                })
+                .collect(),
+            rebuild: exported.rebuild,
             body_id: exported.body.id,
             body_name: exported.body.name,
             triangles: exported.triangles,
@@ -1516,6 +1541,7 @@ impl<E: EndForm, P: ProfileForm> CutParameterDiscovery<E, P> {
 
 #[derive(Serialize)]
 pub struct Edited {
+    rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     document_id: DocumentId,
     feature_id: ObjectId,
@@ -1524,6 +1550,7 @@ pub struct Edited {
 impl From<ferritecad_jobs::EditedDocument> for Edited {
     fn from(edited: ferritecad_jobs::EditedDocument) -> Self {
         Self {
+            rebuild: edited.rebuild,
             destination: edited.destination,
             document_id: edited.document_id,
             feature_id: edited.feature,
@@ -1602,6 +1629,25 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     // One pinned read, one catalog and one content hash. In particular, do not
     // call read_extrude_source(path) or the text renderer beside this reading.
     let source = ExtrudeEditSource::read(&document)?;
+    let (rebuild, rebuild_error) = if ferritecad_occt::is_available() {
+        let evaluated = (|| -> Result<_> {
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            let built = ferritecad_eval::rebuild_cold(
+                &document,
+                &mut kernel,
+                &ferritecad_kernel::OperationContext::default(),
+            )?;
+            let report = built.report();
+            built.release_all(&mut kernel);
+            Ok(report)
+        })();
+        match evaluated {
+            Ok(report) => (Some(report), None),
+            Err(error) => (None, Some(Failure::from(&error))),
+        }
+    } else {
+        (None, None)
+    };
     let refusal = source.unavailable_reason().map(str::to_owned);
     let mut constraint_choices: std::collections::BTreeMap<_, _> = source
         .constraint_sketches
@@ -1661,6 +1707,8 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .map(|c| chamfer::ChamferFeatureDiscovery::new(c, source.refusal.clone()))
         .collect();
     let result = Inspection {
+        rebuild,
+        rebuild_error,
         document_id: source.version.document_id,
         content_version: source.version.content,
         display_units: DisplayUnits {

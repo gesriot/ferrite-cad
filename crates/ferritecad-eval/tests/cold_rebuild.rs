@@ -271,7 +271,7 @@ fn releasing_gives_every_shape_back() {
 }
 
 #[test]
-fn a_failed_rebuild_releases_what_it_had_already_made() {
+fn a_local_failure_preserves_previously_built_geometry() {
     let (_dir, mut document, plate) = sample();
 
     // A second extrude that cannot be built, ordered after the good one.
@@ -307,15 +307,16 @@ fn a_failed_rebuild_releases_what_it_had_already_made() {
         .expect("the document stores it; it is the rebuild that cannot");
 
     let mut kernel = MockKernel::new();
-    let err = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect_err("ThroughAll is not implemented");
-
-    assert_eq!(err.kind(), ErrorKind::Unsupported);
-    assert_eq!(
-        kernel.live_shape_count(),
-        0,
-        "the solid built before the failure must not be left behind"
-    );
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("partial rebuild");
+    assert!(matches!(
+        built.status(broken),
+        Some(ferritecad_eval::RebuildStatus::Failed { .. })
+    ));
+    assert!(built.shape(plate.extrude).is_some());
+    assert_eq!(kernel.live_shape_count(), 1);
+    built.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
 }
 
 #[test]
@@ -543,10 +544,11 @@ fn a_sketch_with_a_circle_is_unsupported_rather_than_approximated() {
         .expect("writes");
 
     let mut kernel = MockKernel::new();
-    let err = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect_err("a circular profile is not implemented in this slice");
-
-    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("partial rebuild");
+    assert!(!built.all_built());
+    assert_eq!(built.report().failed[0].id, extrude);
+    built.release_all(&mut kernel);
     assert_eq!(kernel.live_shape_count(), 0);
 }
 
@@ -638,4 +640,171 @@ fn an_empty_document_rebuilds_to_nothing() {
     assert!(built.order().is_empty());
     assert_eq!(built.shape_count(), 0);
     built.release_all(&mut kernel);
+}
+
+#[test]
+fn independent_branches_continue_at_every_failure_position_without_leaks() {
+    for failed in 1..=3 {
+        let (_dir, mut document, first) = sample();
+        let second = populate(&mut document, 30.0, 20.0, 5.0).expect("second branch");
+        let third = populate(&mut document, 20.0, 10.0, 2.0).expect("third branch");
+        let branches = [first, second, third];
+        let mut kernel = MockKernel::new();
+        kernel.fail_extrude_at(failed);
+        let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+            .expect("partial rebuild");
+        for (index, plate) in branches.iter().enumerate() {
+            if index as u64 + 1 == failed {
+                assert!(matches!(
+                    built.status(plate.extrude),
+                    Some(ferritecad_eval::RebuildStatus::Failed { .. })
+                ));
+                assert!(
+                    matches!(built.status(plate.body), Some(ferritecad_eval::RebuildStatus::Skipped { cause }) if *cause == plate.extrude)
+                );
+                assert!(built.shape(plate.body).is_none());
+            } else {
+                assert!(built.shape(plate.body).is_some());
+            }
+        }
+        assert_eq!(kernel.live_shape_count(), 2);
+        built.release_all(&mut kernel);
+        assert_eq!(kernel.live_shape_count(), 0);
+    }
+}
+
+#[test]
+fn a_failed_cut_releases_its_tool_and_keeps_the_last_built_predecessor() {
+    use ferritecad_document::{Fillet, SweptEdge};
+    use ferritecad_types::ProfileJoint;
+    let (_dir, mut document, plate) = sample();
+    let cut = ObjectId::new();
+    let dependent = ObjectId::new();
+    document
+        .write(|w| {
+            w.put_object(
+                cut,
+                None,
+                4,
+                Some("Cut"),
+                &ObjectPayload::Extrude(Extrude {
+                    profile: plate.sketch,
+                    previous: Some(plate.extrude),
+                    operation: SolidOperation::Cut,
+                    target_body: None,
+                    end_condition: EndCondition::ThroughAll,
+                    reversed: false,
+                }),
+            )?;
+            w.add_dependency(Dependency {
+                dependent: cut,
+                dependency: plate.sketch,
+                role: DependencyRole::Profile,
+            })?;
+            w.add_dependency(Dependency {
+                dependent: cut,
+                dependency: plate.extrude,
+                role: DependencyRole::Predecessor,
+            })?;
+            w.put_object(
+                dependent,
+                None,
+                5,
+                Some("Dependent"),
+                &ObjectPayload::Fillet(Fillet {
+                    previous: cut,
+                    edge: SweptEdge {
+                        feature: cut,
+                        joint: ProfileJoint::new(plate.segments[0], plate.segments[1])?,
+                    },
+                    radius_mm: 1.0,
+                }),
+            )?;
+            w.add_dependency(Dependency {
+                dependent,
+                dependency: cut,
+                role: DependencyRole::Predecessor,
+            })?;
+            w.put_object(
+                plate.body,
+                None,
+                3,
+                Some("Plate"),
+                &ObjectPayload::Body(Body {
+                    tip_feature: Some(dependent),
+                }),
+            )?;
+            w.remove_dependency(Dependency {
+                dependent: plate.body,
+                dependency: plate.extrude,
+                role: DependencyRole::BodyTip,
+            })?;
+            w.add_dependency(Dependency {
+                dependent: plate.body,
+                dependency: dependent,
+                role: DependencyRole::BodyTip,
+            })
+        })
+        .expect("writes chain");
+    let mut kernel = MockKernel::new();
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("partial rebuild");
+    assert!(matches!(
+        built.status(cut),
+        Some(ferritecad_eval::RebuildStatus::Failed { .. })
+    ));
+    assert!(
+        matches!(built.status(dependent), Some(ferritecad_eval::RebuildStatus::Skipped { cause }) if *cause == cut)
+    );
+    assert_eq!(built.shape(plate.body), built.shape(plate.extrude));
+    let report = built.report();
+    assert_eq!(
+        report.degraded_bodies[0].rolled_back_to,
+        Some(plate.extrude)
+    );
+    assert_eq!(report.degraded_bodies[0].cause, cut);
+    assert_eq!(kernel.extrude_count(), 2, "the failed cut allocated a tool");
+    assert_eq!(
+        kernel.live_shape_count(),
+        1,
+        "the tool was released immediately"
+    );
+    built.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn an_edit_may_keep_existing_failures_but_cannot_move_them_to_another_branch() {
+    let (_dir, mut document, _) = sample();
+    populate(&mut document, 30.0, 20.0, 5.0).expect("independent branch");
+    let context = OperationContext::default();
+    let mut kernel = MockKernel::new();
+    kernel.fail_extrude_at(1);
+    let baseline = rebuild_cold(&document, &mut kernel, &context).expect("baseline");
+    let existing = baseline.report().unbuilt();
+    baseline.release_all(&mut kernel);
+    let mut kernel = MockKernel::new();
+    kernel.fail_extrude_at(1);
+    let candidate = rebuild_cold(&document, &mut kernel, &context).expect("candidate");
+    let candidate = candidate
+        .require_no_new_failures(&existing, &mut kernel)
+        .expect("same failing objects are allowed");
+    candidate.release_all(&mut kernel);
+    let mut kernel = MockKernel::new();
+    kernel.fail_extrude_at(2);
+    let candidate = rebuild_cold(&document, &mut kernel, &context).expect("candidate");
+    let refused = candidate
+        .require_no_new_failures(&existing, &mut kernel)
+        .expect_err("new failure");
+    let report = &ferritecad_eval::RebuildRefusal::from_error(&refused)
+        .expect("typed refusal")
+        .report;
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.failed[0].id, report.skipped[0].cause);
+    assert_eq!(
+        kernel.live_shape_count(),
+        0,
+        "a rejection releases all candidate shapes"
+    );
 }

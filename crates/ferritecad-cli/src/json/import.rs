@@ -136,6 +136,7 @@ pub fn emit_import(result: Result<StepImportOutcome>) -> ExitCode {
             Outcome::Failure {
                 ok: false,
                 error: Box::new(Failure {
+                    rebuild: None,
                     constraint_conflict: None,
                     recovery_refusal: None,
                     kind: ErrorKind::Input.as_str(),

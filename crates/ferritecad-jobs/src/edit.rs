@@ -22,6 +22,7 @@ pub struct EditExtrudeRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditedDocument {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     pub feature: ObjectId,
@@ -37,7 +38,7 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
 ) -> Result<EditedDocument> {
     context.check_cancelled()?;
     ferritecad_document::validate_extrude_distance(request.distance_mm)?;
-    edit_object_copy(
+    let rebuild = edit_object_copy(
         &request.source,
         request.expected,
         &request.destination,
@@ -52,9 +53,10 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
                 )?,
             )))
         },
-        |_, _| Ok(()),
+        |_, checked| Ok(checked.rebuild),
     )?;
     Ok(EditedDocument {
+        rebuild,
         destination: request.destination.clone(),
         document_id: request.expected.document_id,
         feature: request.feature,
@@ -72,6 +74,7 @@ pub struct EditSketchRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditedSketch {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     pub sketch: ObjectId,
@@ -83,7 +86,7 @@ pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
     context: &OperationContext,
 ) -> Result<EditedSketch> {
     context.check_cancelled()?;
-    edit_object_copy(
+    let rebuild = edit_object_copy(
         &request.source,
         request.expected,
         &request.destination,
@@ -98,9 +101,10 @@ pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
                 )?,
             ))
         },
-        |_, _| Ok(()),
+        |_, checked| Ok(checked.rebuild),
     )?;
     Ok(EditedSketch {
+        rebuild,
         destination: request.destination.clone(),
         document_id: request.expected.document_id,
         sketch: request.sketch,
@@ -128,7 +132,7 @@ pub fn edit_revolve_angle_copy<K: GeometryKernel + ?Sized>(
     context: &OperationContext,
 ) -> Result<EditedDocument> {
     context.check_cancelled()?;
-    edit_object_copy(
+    let rebuild = edit_object_copy(
         &request.source,
         request.expected,
         &request.destination,
@@ -138,9 +142,10 @@ pub fn edit_revolve_angle_copy<K: GeometryKernel + ?Sized>(
             ferritecad_document::prepare_revolve_angle(source, request.feature, request.degrees)
                 .map(CopyWrite::RevolveAngle)
         },
-        |_, _| Ok(()),
+        |_, checked| Ok(checked.rebuild),
     )?;
     Ok(EditedDocument {
+        rebuild,
         destination: request.destination.clone(),
         document_id: request.expected.document_id,
         feature: request.feature,
@@ -161,6 +166,7 @@ pub struct EditFilletRadiusRequest {
 /// What one published radius edit is, from the prepared edit itself.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditedFilletRadius {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     pub body: ObjectId,
@@ -199,12 +205,13 @@ pub fn edit_fillet_radius_copy<K: GeometryKernel + ?Sized>(
                 .map(Box::new)
                 .map(CopyWrite::FilletRadius)
         },
-        |prepared, _| {
+        |prepared, checked| {
             let CopyWrite::FilletRadius(prepared) = prepared else {
                 return Err(CadError::input("missing prepared Fillet radius edit"));
             };
             let saved = prepared.saved();
             Ok(EditedFilletRadius {
+                rebuild: checked.rebuild,
                 destination: request.destination.clone(),
                 document_id: request.expected.document_id,
                 body: saved.body,
@@ -234,6 +241,7 @@ pub struct EditChamferDistanceRequest {
 /// What one published distance edit is, from the prepared edit itself.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditedChamferDistance {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     pub body: ObjectId,
@@ -273,12 +281,13 @@ pub fn edit_chamfer_distance_copy<K: GeometryKernel + ?Sized>(
             .map(Box::new)
             .map(CopyWrite::ChamferDistance)
         },
-        |prepared, _| {
+        |prepared, checked| {
             let CopyWrite::ChamferDistance(prepared) = prepared else {
                 return Err(CadError::input("missing prepared Chamfer distance edit"));
             };
             let saved = prepared.saved();
             Ok(EditedChamferDistance {
+                rebuild: checked.rebuild,
                 destination: request.destination.clone(),
                 document_id: request.expected.document_id,
                 body: saved.body,
@@ -306,6 +315,7 @@ pub struct EditCircleRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditedCircle {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     pub sketch: ObjectId,
@@ -323,7 +333,7 @@ pub fn edit_circle_copy<K: GeometryKernel + ?Sized>(
     context: &OperationContext,
 ) -> Result<EditedCircle> {
     context.check_cancelled()?;
-    edit_object_copy(
+    let rebuild = edit_object_copy(
         &request.source,
         request.expected,
         &request.destination,
@@ -333,9 +343,10 @@ pub fn edit_circle_copy<K: GeometryKernel + ?Sized>(
             ferritecad_document::replace_circle_geometry(source, request.sketch, &request.edit)
                 .map(CopyWrite::Circle)
         },
-        |_, _| Ok(()),
+        |_, checked| Ok(checked.rebuild),
     )?;
     Ok(EditedCircle {
+        rebuild,
         destination: request.destination.clone(),
         document_id: request.expected.document_id,
         sketch: request.sketch,
@@ -357,6 +368,7 @@ pub struct EditAnnulusRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditedAnnulus {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     pub sketch: ObjectId,
@@ -376,7 +388,7 @@ pub fn edit_annulus_copy<K: GeometryKernel + ?Sized>(
     context: &OperationContext,
 ) -> Result<EditedAnnulus> {
     context.check_cancelled()?;
-    edit_object_copy(
+    let rebuild = edit_object_copy(
         &request.source,
         request.expected,
         &request.destination,
@@ -386,9 +398,10 @@ pub fn edit_annulus_copy<K: GeometryKernel + ?Sized>(
             ferritecad_document::replace_annulus_geometry(source, request.sketch, &request.edit)
                 .map(CopyWrite::Annulus)
         },
-        |_, _| Ok(()),
+        |_, checked| Ok(checked.rebuild),
     )?;
     Ok(EditedAnnulus {
+        rebuild,
         destination: request.destination.clone(),
         document_id: request.expected.document_id,
         sketch: request.sketch,
@@ -407,6 +420,7 @@ pub struct EditSketchConstraintsRequest {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditedSketchConstraints {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     pub sketch: ObjectId,
@@ -445,6 +459,7 @@ pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
                 return Err(CadError::input("missing prepared constraint edit"));
             };
             Ok(EditedSketchConstraints {
+                rebuild: checked.rebuild,
                 destination: request.destination.clone(),
                 document_id: request.expected.document_id,
                 sketch: request.sketch,
@@ -468,6 +483,7 @@ pub struct CircularCutRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddedCircularCut {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     /// The body that gained the feature. Its identity is the source's.
@@ -506,11 +522,12 @@ pub fn circular_cut_copy<K: GeometryKernel + ?Sized>(
                 .map(Box::new)
                 .map(CopyWrite::Cut)
         },
-        |prepared, _| {
+        |prepared, checked| {
             let CopyWrite::Cut(prepared) = prepared else {
                 return Err(CadError::input("missing prepared cut"));
             };
             Ok(AddedCircularCut {
+                rebuild: checked.rebuild,
                 destination: request.destination.clone(),
                 document_id: request.expected.document_id,
                 body: request.body,
@@ -537,6 +554,7 @@ pub struct EdgeFilletRequest {
 /// What one published fillet is, in identities.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddedEdgeFillet {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     /// The Body whose tip the Fillet now is; its identity is the source's.
@@ -587,6 +605,7 @@ pub fn fillet_edge_copy<K: GeometryKernel + ?Sized>(
                 CadError::input("the rebuilt copy reported no corner for the new Fillet")
             })?;
             Ok(AddedEdgeFillet {
+                rebuild: checked.rebuild,
                 destination: request.destination.clone(),
                 document_id: request.expected.document_id,
                 body: request.body,
@@ -615,6 +634,7 @@ pub struct EdgeChamferRequest {
 /// What one published chamfer is, in identities.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddedEdgeChamfer {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     /// The Body whose tip the Chamfer now is; its identity is the source's.
@@ -653,11 +673,12 @@ pub fn chamfer_edge_copy<K: GeometryKernel + ?Sized>(
                 .map(Box::new)
                 .map(CopyWrite::Chamfer)
         },
-        |prepared, _| {
+        |prepared, checked| {
             let CopyWrite::Chamfer(prepared) = prepared else {
                 return Err(CadError::input("missing prepared chamfer"));
             };
             Ok(AddedEdgeChamfer {
+                rebuild: checked.rebuild,
                 destination: request.destination.clone(),
                 document_id: request.expected.document_id,
                 body: request.body,
@@ -684,6 +705,7 @@ pub struct EditCircularCutRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditedCircularCut {
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
     /// The body whose history contains the cut; unchanged by this edit.
@@ -727,11 +749,12 @@ pub fn edit_circular_cut_copy<K: GeometryKernel + ?Sized>(
                 .map(Box::new)
                 .map(CopyWrite::CutParameters)
         },
-        |prepared, _| {
+        |prepared, checked| {
             let CopyWrite::CutParameters(prepared) = prepared else {
                 return Err(CadError::input("missing prepared cut edit"));
             };
             Ok(EditedCircularCut {
+                rebuild: checked.rebuild,
                 destination: request.destination.clone(),
                 document_id: request.expected.document_id,
                 body: prepared.body(),
@@ -845,7 +868,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     let mut document = Document::open(temporary.path())?;
     // Baseline and edited refs are compared by their stored IDs. An already
     // unresolved ref may remain unresolved; a previously resolved one may not
-    // be lost. Rebuild errors (including solver diagnostics) always refuse.
+    // be lost. Names produced by already unbuilt features do not block repair.
     let baseline = checked_rebuild(
         &document,
         kernel,
@@ -853,9 +876,15 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         None,
         None,
         None,
-    )?
-    .0;
-    if prepared.requires_resolved_references() && baseline.len() != document.topology_refs()?.len()
+        None,
+    )?;
+    let baseline_unbuilt = baseline.1.unbuilt;
+    let baseline = baseline.0;
+    if prepared.requires_resolved_references()
+        && document.topology_refs()?.iter().any(|reference| {
+            !baseline.contains(&reference.id)
+                && !baseline_unbuilt.contains(&reference.producer_feature)
+        })
     {
         return Err(CadError::topology(
             "saved sketch has unresolved topology references",
@@ -918,6 +947,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         Some(&required),
         constraints,
         fillet,
+        Some(&baseline_unbuilt),
     )?;
     let completed = complete(&prepared, checked)?;
     document.close()?;
@@ -974,6 +1004,8 @@ struct SolveCheck {
 /// What the rebuild of a written copy found, for its completion.
 #[derive(Debug, Default)]
 struct Checked {
+    rebuild: ferritecad_eval::RebuildReport,
+    unbuilt: BTreeSet<ObjectId>,
     solve: Option<ferritecad_eval::SketchSolveReport>,
     /// The corner of a new Fillet, on the plate the rebuild built.
     fillet_corner: Option<ferritecad_document::FilletCorner>,
@@ -986,8 +1018,15 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
     baseline: Option<&BTreeSet<StableEntityId>>,
     constraints: Option<SolveCheck>,
     fillet: Option<ObjectId>,
+    baseline_unbuilt: Option<&BTreeSet<ObjectId>>,
 ) -> Result<(BTreeSet<StableEntityId>, Checked)> {
     let built = rebuild_cold(document, kernel, context)?;
+    let built = match baseline_unbuilt {
+        Some(baseline) => built.require_no_new_failures(baseline, kernel)?,
+        None => built,
+    };
+    let rebuild = built.report();
+    let unbuilt = rebuild.unbuilt();
     let result = (|| {
         let mut resolved = BTreeSet::new();
         for reference in document.topology_refs()? {
@@ -1148,6 +1187,8 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
         Ok((
             resolved,
             Checked {
+                rebuild,
+                unbuilt,
                 solve,
                 fillet_corner,
             },

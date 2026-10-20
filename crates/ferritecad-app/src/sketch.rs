@@ -7285,6 +7285,7 @@ pub(crate) mod tests {
             .start_sketch(request, |_, _, _| std::thread::spawn(|| {}))
             .expect("started");
         let stale = ferritecad_jobs::EditedSketch {
+            rebuild: Default::default(),
             destination: PathBuf::from("stale.fcad"),
             document_id: reading.version.document_id,
             sketch: choice.sketch,
@@ -7453,6 +7454,7 @@ pub(crate) mod tests {
             .start_sketch(request, |_, _, _| std::thread::spawn(|| {}))
             .expect("started");
         let stale = ferritecad_jobs::EditedSketch {
+            rebuild: Default::default(),
             destination: PathBuf::from("stale.fcad"),
             document_id: reading.version.document_id,
             sketch: choice.sketch,
@@ -7673,6 +7675,7 @@ pub(crate) mod tests {
             .start_sketch(request, |_, _, _| std::thread::spawn(|| {}))
             .expect("started");
         let stale = ferritecad_jobs::EditedSketch {
+            rebuild: Default::default(),
             destination: PathBuf::from("stale.fcad"),
             document_id: reading.version.document_id,
             sketch: choice.sketch,
@@ -8080,6 +8083,7 @@ pub(crate) mod tests {
                 &mut edits,
                 generation,
                 Ok(ferritecad_jobs::EditedSketch {
+                    rebuild: Default::default(),
                     destination: published.clone(),
                     document_id: reading.version.document_id,
                     sketch: choice.sketch,

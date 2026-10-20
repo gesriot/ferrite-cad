@@ -698,7 +698,7 @@ fn drawings_arrive_in_document_order() {
 }
 
 // ---------------------------------------------------------------------------
-// A load that fails publishes nothing, and one that succeeds changes no picture
+// A load keeps independent drawings when another sketch fails
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -721,16 +721,21 @@ fn a_document_whose_constraints_disagree_publishes_no_drawing_at_all() {
     write(&path, Transform::IDENTITY, &[good, bad]);
 
     let mut kernel = MockKernel::new();
-    let error = snapshot_of(
+    let scene = snapshot_of(
         &path,
         &mut kernel,
         no_step,
         &params(),
         &OperationContext::default(),
     )
-    .expect_err("a plate that is two widths at once has no picture");
-
-    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Constraint);
+    .expect("partial scene");
+    assert_eq!(scene.rebuild.failed.len(), 1);
+    assert_eq!(scene.rebuild.failed[0].kind, "constraint");
+    assert_eq!(
+        scene.sketch_presentations.len(),
+        1,
+        "the independent sketch still has a drawing"
+    );
     assert_eq!(
         kernel.live_shape_count(),
         0,

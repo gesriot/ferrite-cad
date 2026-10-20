@@ -398,6 +398,10 @@ pub(crate) struct PreparedNode {
 pub(crate) trait LoadSink {
     type Output;
 
+    fn exports_geometry(&self) -> bool {
+        false
+    }
+
     /// The single read-only open and the single cold rebuild, before any
     /// object is looked at.
     ///
@@ -497,15 +501,9 @@ where
                 ObjectPayload::Body(body) => {
                     // A body with no tip feature is empty by definition rather
                     // than broken: nothing has been built into it yet.
-                    if body.tip_feature.is_none() {
+                    if body.tip_feature.is_none() && !sink.exports_geometry() {
                         continue;
                     }
-                    let shape = built.shape(object.id).ok_or_else(|| {
-                        CadError::topology(format!(
-                            "body {} names a feature but the rebuild produced no geometry for it",
-                            object.id
-                        ))
-                    })?;
                     // Two bodies are two definitions however alike they look:
                     // the object that holds one is what it is, and a document
                     // may give two of them one name.
@@ -520,10 +518,43 @@ where
                             ..Seen::default()
                         },
                     )?;
+                    let degraded = built
+                        .report()
+                        .degraded_bodies
+                        .into_iter()
+                        .find(|b| b.id == object.id);
+                    let shape = built.shape(object.id);
                     if first {
-                        let mesh = kernel.tessellate(shape, params, &scoped)?;
-                        registry.meshed(definition)?;
-                        sink.definition(definition, Geometry::Mesh(&mesh))?;
+                        if (sink.exports_geometry() && degraded.is_some()) || shape.is_none() {
+                            let reason = format!(
+                                "body {} ({}) has no fully built tip{}",
+                                object.name.as_deref().unwrap_or("unnamed"),
+                                object.id,
+                                degraded
+                                    .map(|b| format!("; caused by {}", b.cause))
+                                    .unwrap_or_default()
+                            );
+                            registry.omit(
+                                definition,
+                                GeometryOmission {
+                                    diagnostic: Diagnostic {
+                                        stage: Stage::Validation,
+                                        severity: Severity::Fail,
+                                        entity: object.id.to_string(),
+                                        message: reason.clone(),
+                                    },
+                                    reason,
+                                },
+                            )?;
+                            sink.definition(
+                                definition,
+                                Geometry::Omitted(TessellationRefusal::UnbuiltBody),
+                            )?;
+                        } else if let Some(shape) = shape {
+                            let mesh = kernel.tessellate(shape, params, &scoped)?;
+                            registry.meshed(definition)?;
+                            sink.definition(definition, Geometry::Mesh(&mesh))?;
+                        }
                     }
                     sink.node(&PreparedNode {
                         definition,

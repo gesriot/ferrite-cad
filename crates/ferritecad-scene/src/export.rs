@@ -61,6 +61,17 @@ pub fn export_scene<K>(
 where
     K: GeometryKernel + ?Sized,
 {
+    export_scene_with_report(path, kernel, read_step, params, context).map(|(scene, _)| scene)
+}
+
+/// Export geometry and portable evaluation facts from the same rebuild.
+pub fn export_scene_with_report<K: GeometryKernel + ?Sized>(
+    path: &Path,
+    kernel: &mut K,
+    read_step: impl FnMut(&mut K, &[u8]) -> Result<Import>,
+    params: &TessellationParams,
+    context: &OperationContext,
+) -> Result<(ExportScene, ferritecad_eval::RebuildReport)> {
     prepare::load(path, kernel, read_step, params, context, Export::default())
 }
 
@@ -109,6 +120,7 @@ impl Triangles {
 /// What an export keeps from one reading of a document.
 #[derive(Debug, Default)]
 struct Export {
+    rebuild: ferritecad_eval::RebuildReport,
     /// The geometry of each prepared definition that has any, by its index.
     triangles: BTreeMap<usize, Triangles>,
     /// Why each prepared definition that has none has none.
@@ -118,14 +130,18 @@ struct Export {
 }
 
 impl LoadSink for Export {
-    type Output = ExportScene;
+    type Output = (ExportScene, ferritecad_eval::RebuildReport);
+    fn exports_geometry(&self) -> bool {
+        true
+    }
 
     fn opened(
         &mut self,
         _document: &ferritecad_document::Document,
         _objects: &[ferritecad_document::ObjectRecord],
-        _built: &ferritecad_eval::RebuildResult,
+        built: &ferritecad_eval::RebuildResult,
     ) -> Result<()> {
+        self.rebuild = built.report();
         // An export needs neither the durable names of faces nor what a solve
         // found out: a static mesh file can carry neither, and reading them
         // here would be work whose result is thrown away.
@@ -152,7 +168,7 @@ impl LoadSink for Export {
         Ok(())
     }
 
-    fn finish(self, definitions: &[PreparedDefinition]) -> Result<ExportScene> {
+    fn finish(self, definitions: &[PreparedDefinition]) -> Result<Self::Output> {
         let mut builder = ExportSceneBuilder::new();
         let mut definition_ids: Vec<ExportDefinitionId> = Vec::with_capacity(definitions.len());
         for (index, prepared) in definitions.iter().enumerate() {
@@ -213,7 +229,7 @@ impl LoadSink for Export {
             )?);
         }
 
-        builder.finish()
+        Ok((builder.finish()?, self.rebuild))
     }
 }
 

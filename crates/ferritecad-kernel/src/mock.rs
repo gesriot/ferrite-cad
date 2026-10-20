@@ -69,6 +69,7 @@ pub struct MockKernel {
     next_index: u64,
     extrusions: u64,
     refuse_named_encoding: bool,
+    fail_extrude_at: Option<u64>,
 }
 
 impl MockKernel {
@@ -99,6 +100,7 @@ impl MockKernel {
             next_index: 0,
             extrusions: 0,
             refuse_named_encoding: false,
+            fail_extrude_at: None,
         }
     }
 
@@ -118,6 +120,11 @@ impl MockKernel {
     /// silently recomputed everything would produce identical geometry and
     /// identical names, so nothing about its result distinguishes it from a
     /// cold one — the difference is a call that did not happen.
+    /// Refuse one numbered extrusion request, for failure and cleanup tests.
+    pub fn fail_extrude_at(&mut self, request: u64) {
+        self.fail_extrude_at = Some(request);
+    }
+
     pub fn extrude_count(&self) -> u64 {
         self.extrusions
     }
@@ -267,6 +274,9 @@ impl GeometryKernel for MockKernel {
     ) -> Result<ExtrudeResult> {
         context.check_cancelled()?;
         self.extrusions += 1;
+        if self.fail_extrude_at == Some(self.extrusions) {
+            return Err(CadError::kernel("requested mock extrusion failure"));
+        }
 
         let profile = request.profile();
         if !profile.inner().is_empty() {

@@ -449,6 +449,11 @@ pub struct TopologyMap {
 }
 
 impl TopologyMap {
+    /// Discard names of an object whose evaluation failed.
+    pub fn remove_feature(&mut self, producer: ObjectId) {
+        self.features.remove(&producer);
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

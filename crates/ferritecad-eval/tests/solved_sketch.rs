@@ -722,8 +722,9 @@ fn a_build_with_no_solver_refuses_before_the_kernel() {
     drop(written);
 
     let mut kernel = MockKernel::new();
-    let error = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect_err("with no solver there is nothing that could have solved this sketch");
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("partial rebuild");
+    let error = local_error(built, &mut kernel);
 
     assert_eq!(
         error.kind(),
@@ -768,8 +769,9 @@ fn a_conflict_is_named_in_the_documents_own_constraint_identifiers() {
 
     let mut kernel = MockKernel::new();
     let live_before = solver::native_live_sessions();
-    let error = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect_err("a plate that is both 60 and 75 wide cannot be built");
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("partial rebuild");
+    let error = local_error(built, &mut kernel);
 
     assert_eq!(
         error.kind(),
@@ -1418,13 +1420,14 @@ fn a_conflicting_sketch_is_refused_by_the_cached_path_too() {
 
     let mut kernel = MockKernel::new();
     let mut cache = sidecar(&dir, &document, &kernel);
-    let error = rebuild_cached(
+    let built = rebuild_cached(
         &document,
         &mut kernel,
         &mut cache,
         &OperationContext::default(),
     )
-    .expect_err("a cache cannot rescue a sketch that cannot hold");
+    .expect("partial rebuild");
+    let error = local_error(built.0, &mut kernel);
 
     assert_eq!(error.kind(), ErrorKind::Constraint);
     assert_eq!(kernel.extrude_count(), 0);
@@ -1436,4 +1439,18 @@ fn a_conflicting_sketch_is_refused_by_the_cached_path_too() {
 fn the_error_type_is_the_documents_own() {
     let error: CadError = CadError::constraint("a plate cannot be two widths at once");
     assert_eq!(error.kind(), ErrorKind::Constraint);
+}
+
+fn local_error(
+    built: ferritecad_eval::RebuildResult,
+    kernel: &mut impl ferritecad_kernel::GeometryKernel,
+) -> ferritecad_types::CadError {
+    built
+        .into_statuses(kernel)
+        .into_values()
+        .find_map(|s| match s {
+            ferritecad_eval::RebuildStatus::Failed { error } => Some(error),
+            _ => None,
+        })
+        .expect("the sketch failed locally")
 }

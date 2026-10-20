@@ -89,6 +89,7 @@ fn result(args: &EditRevolveAngleArgs) -> Result<EditedDocument> {
 
 #[derive(Serialize)]
 struct Published {
+    rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     document_id: DocumentId,
     feature_id: ObjectId,
@@ -100,6 +101,7 @@ pub fn run(args: EditRevolveAngleArgs) -> Result<ExitCode> {
         Ok(crate::json::emit(
             crate::json::Operation::EditRevolveAngle,
             result.map(|r| Published {
+                rebuild: r.rebuild,
                 destination: r.destination,
                 document_id: r.document_id,
                 feature_id: r.feature,

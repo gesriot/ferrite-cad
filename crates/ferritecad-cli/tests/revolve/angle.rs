@@ -841,20 +841,21 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
         degrees: 220.,
         destination: d.path().join(name),
     };
-    // A kernel that cannot build the saved part refuses at the baseline
-    // rebuild, before anything is written or published.
-    let names = entries(d.path());
-    let error = ferritecad_jobs::edit_revolve_angle_copy(
+    // Existing failures may remain while an edit introduces no new unbuilt object.
+    let edited = ferritecad_jobs::edit_revolve_angle_copy(
         &job("mock.fcad"),
         &mut ferritecad_kernel::mock::MockKernel::new(),
         &OperationContext::default(),
     )
-    .expect_err("no rebuild");
+    .expect("the same unsupported Revolve remains failed");
+    assert!(!edited.rebuild.all_built());
     assert!(
-        error.to_string().contains("cannot turn a profile"),
-        "{error}"
+        edited.rebuild.failed[0]
+            .message
+            .contains("cannot turn a profile")
     );
-    assert_eq!(entries(d.path()), names, "no copy and no scratch");
+    assert!(job("mock.fcad").destination.exists());
+    let names = entries(d.path());
     // Cancelled after the baseline check, before the write: nothing at all.
     let token = CancelToken::new();
     let stop = token.clone();

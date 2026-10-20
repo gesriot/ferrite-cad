@@ -567,18 +567,17 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
         d.close().expect("close");
         let d = Document::open_read_only(&copy).expect("reopen");
         let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
-        let built = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default());
-        match (fits, built) {
-            (true, Ok(built)) => built.release_all(&mut k),
-            (false, Err(e)) => {
-                let text = e.to_string();
-                assert!(
-                    text.contains(&id) && text.contains("does not fit the solved plate"),
-                    "{text}"
-                );
-            }
-            (fits, other) => panic!("{distance}: fits={fits}, got {:?}", other.map(|_| ())),
+        let built = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default())
+            .expect("structurally valid rebuild");
+        assert_eq!(built.all_built(), fits);
+        if !fits {
+            let text = built.report().failed[0].message.clone();
+            assert!(
+                text.contains(&id) && text.contains("does not fit the solved plate"),
+                "{text}"
+            );
         }
+        built.release_all(&mut k);
         d.close().expect("close");
     }
     let names = entries(g.root.path());
@@ -682,9 +681,14 @@ fn native_constraint_refusals_under_a_chamfer_are_atomic() {
         !named.is_empty() && named.iter().all(|c| c["constraint_id"].is_string()),
         "{v}"
     );
+    let root = &v["error"]["constraint_conflict"]["sketch_id"];
     assert!(
-        !v.to_string().contains(&chamfer),
-        "a solver conflict is not the Chamfer's"
+        v["error"]["rebuild"]["skipped"]
+            .as_array()
+            .expect("skipped")
+            .iter()
+            .any(|s| s["id"] == chamfer && &s["cause"] == root),
+        "the Chamfer depends on the conflicting sketch: {v}"
     );
     // Stale version and an occupied destination.
     f.ask_constraints(&[], &[length(&f.line(1), 11.5)]);

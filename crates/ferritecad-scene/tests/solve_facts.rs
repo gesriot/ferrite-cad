@@ -27,7 +27,7 @@ use ferritecad_kernel::{
     ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, TessellationParams,
     mock::MockKernel,
 };
-use ferritecad_scene::{LoadedScene, SketchConflict, SketchSolveFacts, snapshot_of};
+use ferritecad_scene::{LoadedScene, SketchSolveFacts, snapshot_of};
 use ferritecad_sketch_solver as solver;
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Transform};
 
@@ -701,7 +701,7 @@ fn impossible_plate(path: &Path) -> (ObjectId, Vec<SketchConstraint>) {
 }
 
 #[test]
-fn a_document_that_cannot_be_loaded_gives_back_no_scene() {
+fn a_conflicting_sketch_opens_with_its_failure_and_no_solve_facts() {
     solver_or_skip!();
 
     let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -709,69 +709,18 @@ fn a_document_that_cannot_be_loaded_gives_back_no_scene() {
     impossible_plate(&path);
 
     let mut kernel = MockKernel::new();
-    let error = snapshot_of(
+    let scene = snapshot_of(
         &path,
         &mut kernel,
         no_step,
         &params(),
         &OperationContext::default(),
     )
-    .expect_err("a plate that is two widths at once has no picture");
-
-    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Constraint);
-    assert_eq!(
-        kernel.live_shape_count(),
-        0,
-        "a failed load left shapes behind"
-    );
-}
-
-#[test]
-fn a_load_refused_for_a_conflict_says_which_constraints_disagree() {
-    solver_or_skip!();
-
-    let directory = tempfile::tempdir().expect("a temporary directory is available");
-    let path = directory.path().join("impossible.fcad");
-    let (sketch, stored) = impossible_plate(&path);
-
-    let mut kernel = MockKernel::new();
-    let error = snapshot_of(
-        &path,
-        &mut kernel,
-        no_step,
-        &params(),
-        &OperationContext::default(),
-    )
-    .expect_err("a plate that is two widths at once has no picture");
-
-    // A caller reads the refusal by asking the type whether it is one of its
-    // own. Nothing here reads the message, which is a sentence for a person.
-    let conflict = SketchConflict::of(&error).expect(
-        "a load refused because a drawing contradicts itself gave back a sentence and nothing \
-         a program could act on",
-    );
-    assert_eq!(conflict.sketch(), sketch);
-    assert_eq!(
-        conflict
-            .constraints()
-            .iter()
-            .map(|constraint| (constraint.id(), *constraint.rule()))
-            .collect::<Vec<_>>(),
-        vec![
-            (stored[9].id, stored[9].rule),
-            (stored[10].id, stored[10].rule),
-        ],
-        "the refusal did not name the two sizes that disagree, in the document's order"
-    );
-
-    // And nothing of a scene was made on the way: no picture, no catalogue,
-    // no names and no account of any solve. There is no `LoadedScene` at all,
-    // which is the whole of that claim, and the kernel is empty.
-    assert_eq!(
-        kernel.live_shape_count(),
-        0,
-        "a refused load left shapes behind"
-    );
+    .expect("partial scene");
+    assert_eq!(scene.rebuild.failed.len(), 1);
+    assert_eq!(scene.rebuild.failed[0].kind, "constraint");
+    assert!(scene.sketch_solves.is_empty());
+    assert_eq!(kernel.live_shape_count(), 0);
 }
 
 // ---------------------------------------------------------------------------

@@ -1038,3 +1038,12 @@ Inspect JSON v1 обнаруживает Sketch/curve UUID и координат
 Discovery даёт typed `cut_history`, polygon draft и writer используют одну
 проверку. [Контракт/рецепт](edit-cut-base-sketch.md). Остальные профильные editors
 по-прежнему требуют отдельный четырёхобъектный документ.
+
+`rebuild --cold` reports Built, Failed (with reason), or Skipped (with root
+failure) for every plan object. Independent branches continue after local
+geometry failures. An incomplete rebuild uses the existing failure exit code 2;
+structural errors and cancellation still fail the whole operation. Bodies may
+show an earlier built predecessor for repair, but STL/FBX exports omit such
+bodies and report a partial result (exit 6). Native JSON inspection and exports,
+and rebuild-related edit refusals, carry the structured `rebuild` report
+specified in `cli-json-v1.md`.

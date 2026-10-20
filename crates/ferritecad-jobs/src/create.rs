@@ -301,7 +301,8 @@ fn check_profile(
     let phase = context
         .clone()
         .with_progress(ProgressSink::new(move |f| progress.report(0.1 + 0.7 * f)));
-    let built = ferritecad_eval::rebuild_cold(document, kernel, &phase)?;
+    let built = ferritecad_eval::rebuild_cold(document, kernel, &phase)?
+        .require_no_new_failures(&std::collections::BTreeSet::new(), kernel)?;
     context.progress().report(0.8); // geometry checked next; nothing is published yet
     let checked = (|| {
         if built.shape_count() != 1 {
@@ -439,6 +440,11 @@ fn populate_sample_plate(document: &mut Document, size: PlateSize) -> Result<()>
         height,
     } = size;
 
+    if width == 0.0 || depth == 0.0 {
+        return Err(ferritecad_types::CadError::input(
+            "sample plate dimensions must be nonzero",
+        ));
+    }
     let corners = [
         Point2::new(0.0, 0.0)?,
         Point2::new(width, 0.0)?,

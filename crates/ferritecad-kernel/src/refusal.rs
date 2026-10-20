@@ -14,6 +14,8 @@ use ferritecad_types::CadError;
 pub enum TessellationRefusal {
     /// At least one face has no complete, usable triangle representation.
     IncompleteFace,
+    /// The body tip did not build; fallback geometry is display-only.
+    UnbuiltBody,
 }
 
 impl TessellationRefusal {
@@ -28,6 +30,7 @@ impl TessellationRefusal {
     pub fn stable_name(&self) -> &'static str {
         match self {
             Self::IncompleteFace => "IncompleteFace",
+            Self::UnbuiltBody => "UnbuiltBody",
         }
     }
 
@@ -48,6 +51,7 @@ impl std::fmt::Display for TessellationRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::IncompleteFace => f.write_str("one or more faces have no usable triangles"),
+            Self::UnbuiltBody => f.write_str("body has no fully built tip"),
         }
     }
 }
