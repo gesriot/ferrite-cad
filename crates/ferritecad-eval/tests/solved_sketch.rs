@@ -722,9 +722,8 @@ fn a_build_with_no_solver_refuses_before_the_kernel() {
     drop(written);
 
     let mut kernel = MockKernel::new();
-    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect("partial rebuild");
-    let error = local_error(built, &mut kernel);
+    let error = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect_err("with no solver there is nothing that could have solved this sketch");
 
     assert_eq!(
         error.kind(),

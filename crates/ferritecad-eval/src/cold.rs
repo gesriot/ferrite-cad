@@ -1229,5 +1229,21 @@ fn ensure_rebuildable(document: &Document) -> Result<BTreeMap<ObjectId, Vec<Stri
             )));
         }
     }
+    // A missing solver limits this build, as an unsupported capability does.
+    // As a sketch's own failure it would be in every baseline, so an edit
+    // nothing could check would pass as one that adds no failure.
+    if let Err(unavailable) = ferritecad_sketch_solver::availability() {
+        for object in objects.values() {
+            if let ObjectPayload::Sketch(sketch) = &object.payload
+                && !sketch.constraints.is_empty()
+            {
+                return Err(CadError::unsupported(format!(
+                    "sketch {} carries {} constraint(s) and {unavailable}",
+                    object.id,
+                    sketch.constraints.len()
+                )));
+            }
+        }
+    }
     Ok(local)
 }

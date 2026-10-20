@@ -614,7 +614,13 @@ fn a_build_with_no_solver_refuses_without_inventing_a_conflict() {
         vec![(Some("Profile"), curves, named(plate_rules(&edges)))],
     );
 
-    let (error, _) = refused(&path);
+    let document = Document::open_read_only(&path).expect("reopens");
+    let error = rebuild_cold(
+        &document,
+        &mut MockKernel::new(),
+        &OperationContext::default(),
+    )
+    .expect_err("a build with no solver cannot evaluate a constrained sketch");
     assert_eq!(
         error.kind(),
         ErrorKind::Unsupported,
