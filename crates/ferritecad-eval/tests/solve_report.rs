@@ -979,8 +979,9 @@ fn a_conflicting_sketch_publishes_no_facts() {
     let document = reopen(&document);
 
     let mut kernel = MockKernel::new();
-    let error = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect_err("a plate that is both sixty and seventy five wide cannot be built");
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("partial rebuild");
+    let error = local_error(built, &mut kernel);
 
     assert_eq!(error.kind(), ErrorKind::Constraint);
     assert_eq!(kernel.live_shape_count(), 0, "a refusal left shapes behind");
@@ -1170,4 +1171,18 @@ fn store_import(
         kernel.release(shape);
     }
     Ok((object, stored))
+}
+
+fn local_error(
+    built: ferritecad_eval::RebuildResult,
+    kernel: &mut impl ferritecad_kernel::GeometryKernel,
+) -> ferritecad_types::CadError {
+    built
+        .into_statuses(kernel)
+        .into_values()
+        .find_map(|s| match s {
+            ferritecad_eval::RebuildStatus::Failed { error } => Some(error),
+            _ => None,
+        })
+        .expect("the sketch failed locally")
 }

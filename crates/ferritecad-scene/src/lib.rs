@@ -42,7 +42,7 @@ use std::fmt;
 use std::path::Path;
 
 pub use drawing::{CIRCLE_SEGMENTS, sketch_drawing, sketch_drawings};
-pub use export::export_scene;
+pub use export::{export_scene, export_scene_with_report};
 use ferritecad_document::{
     Document, EntityKind, ImportedDefinitionRef, ObjectPayload, ObjectRecord, SelectionRule,
     SemanticRole, Sketch, SketchConstraintRule, TopologyRef,
@@ -66,6 +66,7 @@ use serde::{Deserialize, Serialize};
 /// document can store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadedScene {
+    pub rebuild: ferritecad_eval::RebuildReport,
     /// Edit facts from the same pinned reading as the picture.
     pub edit_source: Option<ferritecad_document::ExtrudeEditSource>,
     pub snapshot: RenderSnapshot,
@@ -814,6 +815,7 @@ where
 
 /// What a picture keeps from one reading of a document.
 struct Picture {
+    rebuild: ferritecad_eval::RebuildReport,
     edit_source: Option<ferritecad_document::ExtrudeEditSource>,
     builder: SnapshotBuilder,
     /// Every stored reference that names exactly one entity of this rebuild,
@@ -842,6 +844,7 @@ struct Picture {
 impl Picture {
     fn new() -> Self {
         Self {
+            rebuild: Default::default(),
             edit_source: None,
             builder: SnapshotBuilder::new(),
             named: Vec::new(),
@@ -935,7 +938,10 @@ impl prepare::LoadSink for Picture {
         objects: &[ObjectRecord],
         built: &ferritecad_eval::RebuildResult,
     ) -> Result<()> {
-        self.edit_source = Some(ferritecad_document::ExtrudeEditSource::read(document)?);
+        self.rebuild = built.report();
+        let mut source = ferritecad_document::ExtrudeEditSource::read(document)?;
+        project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
+        self.edit_source = Some(source);
         // Resolved once, in the order the document stores its references, so
         // what an entity is called does not depend on the order faces, edges
         // or vertices happen to be tessellated in.
@@ -1071,6 +1077,7 @@ impl prepare::LoadSink for Picture {
             });
         }
         Ok(LoadedScene {
+            rebuild: self.rebuild,
             edit_source: self.edit_source,
             faces: face_names(&snapshot, self.names)?,
             edges: edge_names(&snapshot, self.edge_named)?,
@@ -1221,6 +1228,60 @@ fn semantic_context_identity(
         }
     }
     hasher.finish()
+}
+
+/// Add evaluation facts to every occurrence of an object in the model tree.
+pub fn project_rebuild_status(
+    tree: &mut ferritecad_document::ModelTree,
+    objects: &[ObjectRecord],
+    report: &ferritecad_eval::RebuildReport,
+) {
+    let name = |id: ObjectId| {
+        objects
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|o| o.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+    tree.unbuilt_features = report
+        .unbuilt()
+        .iter()
+        .filter(|id| {
+            objects
+                .iter()
+                .any(|o| o.id == **id && !matches!(o.payload, ObjectPayload::Body(_)))
+        })
+        .count();
+    for row in &mut tree.rows {
+        let id = row.id.0;
+        let note = if let Some(body) = report.degraded_bodies.iter().find(|b| b.id == id) {
+            Some(format!(
+                "Rolled back to {} because of {}",
+                body.rolled_back_to
+                    .map(&name)
+                    .unwrap_or_else(|| "no built feature".into()),
+                name(body.cause)
+            ))
+        } else if let Some(failed) = report.failed.iter().find(|f| f.id == id) {
+            Some(format!("Failed: {}", failed.message))
+        } else {
+            report
+                .skipped
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| format!("not built: depends on {}", name(s.cause)))
+        };
+        if let Some(note) = note {
+            row.name = format!("⚠ {}", row.name);
+            row.note = note;
+        }
+        for warning in report.warnings.iter().filter(|w| w.owner == id) {
+            row.note.push_str(&format!(
+                "; reference {}: {}",
+                warning.reference, warning.message
+            ));
+        }
+    }
 }
 
 #[cfg(test)]

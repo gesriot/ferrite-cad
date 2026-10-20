@@ -408,6 +408,18 @@ fn a_reference_to_a_deleted_segment_is_lost_rather_than_retargeted() {
     // A lost reference, reported. Emphatically not one of the three faces that
     // are there.
     assert_eq!(err.kind(), ErrorKind::Topology);
+    assert!(
+        built
+            .report()
+            .warnings
+            .iter()
+            .any(|warning| warning.owner == plate.extrude
+                && warning.message.contains(&removed.to_string()))
+    );
+    assert!(
+        built.all_built(),
+        "a saved reference warning does not fail its owner"
+    );
 
     // The segments that survived still resolve, so the failure is about the
     // removed one and not about the rebuild.

@@ -13,6 +13,13 @@ pub fn export_stl(args: ExportStlArgs) -> Result<ExitCode> {
     let linear = args.linear_deflection;
     let angular = args.angular_deflection;
     let exported = export_stl_result(args)?;
+    if !exported.complete {
+        eprintln!(
+            "partial STL export; omitted {}; no file written",
+            exported.body.label()
+        );
+        return Ok(ExitCode::from(crate::EXIT_PARTIAL));
+    }
     println!(
         "wrote {} ({} triangles, {} bytes) from {}",
         exported.destination.display(),

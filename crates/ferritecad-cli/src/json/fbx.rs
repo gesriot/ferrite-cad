@@ -11,6 +11,7 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct ExportedFbx {
+    rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     bytes: u64,
     models: u32,
@@ -24,6 +25,7 @@ impl From<&FbxExport> for ExportedFbx {
     fn from(exported: &FbxExport) -> Self {
         let report = exported.report();
         Self {
+            rebuild: exported.rebuild.clone(),
             destination: exported.destination().to_path_buf(),
             bytes: report.bytes(),
             models: report.models(),

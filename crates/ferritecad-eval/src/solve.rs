@@ -181,8 +181,11 @@ impl SketchConflict {
     /// that would not open, a sketch that would not converge, a build with no
     /// solver – answers `None`, because none of them put one here.
     pub fn of(error: &CadError) -> Option<&Self> {
-        if !matches!(error, CadError::Constraint { .. }) {
+        if error.kind() != ferritecad_types::ErrorKind::Constraint {
             return None;
+        }
+        if let Some(refusal) = crate::RebuildRefusal::from_error(error) {
+            return refusal.errors.values().find_map(Self::of);
         }
         let source = std::error::Error::source(error)?;
         source.downcast_ref::<Self>()

@@ -49,6 +49,7 @@ fn open_action(w: &mut Window, asked: ModelAction) -> bool {
 // not geometry evidence; native tests below use the production scene worker.
 pub(in crate::sessions::tests::tabs) fn facts_scene(path: &Path) -> Result<LoadedScene> {
     Ok(LoadedScene {
+        rebuild: Default::default(),
         edit_source: Some(read_extrude_source(path)?),
         snapshot: ferritecad_viewport::SnapshotBuilder::new().build(),
         catalogue: vec![],

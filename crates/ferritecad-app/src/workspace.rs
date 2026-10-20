@@ -236,6 +236,17 @@ pub(crate) fn compose(ui: &mut egui::Ui, view: &mut View<'_>) -> Answers {
                     .max_height(STATUS_HEIGHT)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        if let Some(source) = view.scene.edit_source {
+                            match source.model_tree.unbuilt_features {
+                                0 => {}
+                                1 => {
+                                    ui.label("1 feature does not build");
+                                }
+                                n => {
+                                    ui.label(format!("{n} features do not build"));
+                                }
+                            }
+                        }
                         let lines = ferritecad_ui::activity_lines(ui, activity);
                         answers.chosen.cancel = lines.cancel;
                         answers.chosen.cancel_create = lines.cancel_create;
@@ -411,6 +422,15 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
     // What is in the picture and what is chosen in it.
     ui.separator();
     ui.heading("Details");
+    if let Some((_, navigation)) = &sections.model
+        && let Some(key) = navigation.selected
+        && let Some(row) = scene
+            .edit_source
+            .and_then(|s| s.model_tree.rows.iter().find(|r| r.id == key))
+    {
+        ui.label(&row.name);
+        ui.label(&row.note);
+    }
     group(ui, "details", |ui| {
         // Every definition in the picture, whether or not any of it is on
         // screen: a part hidden behind another, too small to hit or out of

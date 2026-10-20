@@ -729,6 +729,7 @@ dependencies = [
  "ferritecad-kernel",
  "ferritecad-occt",
  "ferritecad-scene",
+ "ferritecad-sketch-solver",
  "ferritecad-types",
  "ferritecad-viewport",
  "ferritecad-viewport-gpu",
@@ -763,6 +764,7 @@ dependencies = [
  "ferritecad-sketch-solver",
  "ferritecad-topology",
  "ferritecad-types",
+ "serde",
  "tempfile",
 ]
 
@@ -809,7 +811,9 @@ dependencies = [
  "ferritecad-export",
  "ferritecad-fixtures",
  "ferritecad-kernel",
+ "ferritecad-occt",
  "ferritecad-scene",
+ "ferritecad-sketch-solver",
  "ferritecad-types",
  "same-file",
  "tempfile",

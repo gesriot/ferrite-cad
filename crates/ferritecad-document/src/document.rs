@@ -1903,7 +1903,15 @@ impl Document {
         evaluation_order(&nodes, &self.dependencies()?)
     }
 
-    /// Checks everything that must hold for this document to be rebuildable.
+    /// Refuse evaluation when the document declares a capability this build lacks.
+    pub fn require_supported_capabilities(&self) -> Result<()> {
+        match determine_access(&self.conn)? {
+            Access::ReadOnly { reason } => Err(CadError::unsupported(reason)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Checks the stored document's integrity and semantic structure.
     pub fn validate(&self) -> Result<ValidationReport> {
         crate::validate::validate(self)
     }

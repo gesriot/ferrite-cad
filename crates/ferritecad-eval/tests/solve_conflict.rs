@@ -2,8 +2,8 @@
 //! What a rebuild says when a drawing contradicts itself.
 //!
 //! A conflicting solve produces no coordinates, so it produces no profile, no
-//! solid and no scene. Until now it also produced nothing a program could act
-//! on: a sentence, and a caller left to read it. These gates are about the
+//! solid for that branch. Its Failed status retains the error a program can
+//! inspect. These gates are about the
 //! other thing it produces — the constraints the solve blamed, said in the
 //! document's own words, carried out with the refusal.
 //!
@@ -269,8 +269,9 @@ fn stored_constraints(path: &std::path::Path, sketch: ObjectId) -> Vec<SketchCon
 fn refused(path: &std::path::Path) -> (ferritecad_types::CadError, MockKernel) {
     let mut kernel = MockKernel::new();
     let document = Document::open_read_only(path).expect("reopens");
-    let error = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect_err("a drawing that contradicts itself has no solid");
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("partial rebuild");
+    let error = local_error(built, &mut kernel);
     (error, kernel)
 }
 
@@ -613,7 +614,13 @@ fn a_build_with_no_solver_refuses_without_inventing_a_conflict() {
         vec![(Some("Profile"), curves, named(plate_rules(&edges)))],
     );
 
-    let (error, _) = refused(&path);
+    let document = Document::open_read_only(&path).expect("reopens");
+    let error = rebuild_cold(
+        &document,
+        &mut MockKernel::new(),
+        &OperationContext::default(),
+    )
+    .expect_err("a build with no solver cannot evaluate a constrained sketch");
     assert_eq!(
         error.kind(),
         ErrorKind::Unsupported,
@@ -769,4 +776,18 @@ fn a_document_that_solves_still_builds_and_reports_what_it_found() {
     );
     assert_eq!(built.solve_reports().count(), 1);
     drop(built);
+}
+
+fn local_error(
+    built: ferritecad_eval::RebuildResult,
+    kernel: &mut impl ferritecad_kernel::GeometryKernel,
+) -> ferritecad_types::CadError {
+    built
+        .into_statuses(kernel)
+        .into_values()
+        .find_map(|s| match s {
+            ferritecad_eval::RebuildStatus::Failed { error } => Some(error),
+            _ => None,
+        })
+        .expect("the sketch failed locally")
 }

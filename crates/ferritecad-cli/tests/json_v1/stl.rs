@@ -442,7 +442,9 @@ fn published(
         result["result"],
         serde_json::json!({
             "destination": destination, "body_id": body, "body_name": name,
-            "triangles": 12, "bytes": 684, "length_unit": "mm"
+            "triangles": 12, "bytes": 684, "length_unit": "mm",
+            "complete": true, "omissions": [],
+            "rebuild": { "failed": [], "skipped": [], "degraded_bodies": [], "warnings": [] }
         })
     );
     let bytes = std::fs::read(destination).expect("success requires published STL");

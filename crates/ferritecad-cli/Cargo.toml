@@ -35,6 +35,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 # The vertical gate ends in pixels, so the test needs a GPU. Dev-only: the
 # command line neither opens a window nor draws anything.
 [dev-dependencies]
+ferritecad-sketch-solver.workspace = true
 ferritecad-fixtures.workspace = true
 ferritecad-viewport.workspace = true
 ferritecad-viewport-gpu.workspace = true

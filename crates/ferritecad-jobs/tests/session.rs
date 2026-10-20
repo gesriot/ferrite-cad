@@ -717,33 +717,22 @@ fn apply_constraints(
     session.commit_step(step)
 }
 
-/// A rebuild of a constrained Sketch needs the sketch solver. Where the build has
-/// none these gates say so and stop, unless the build is required to have one.
-fn without_solver(result: Result<StepCommit, CadError>) -> bool {
-    let Err(error) = result else {
-        return false;
-    };
-    assert!(
-        error.to_string().contains("did not link planegcs"),
-        "height: {error}"
-    );
-
-    ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
-    true
-}
-
 #[test]
 fn a_constraint_edit_is_a_session_step_beside_height_with_undo_and_redo() {
     use ferritecad_document::SketchConstraintEdits;
+    if !ferritecad_fixtures::native_dependencies(&[(
+        ferritecad_sketch_solver::is_available(),
+        "PLANEGCS",
+    )]) {
+        return;
+    }
     let (f, sketch, ids) = constrained();
     assert_eq!(ids.len(), 4);
     let private = private_root();
     let mut session = open(&f, private.path(), HistoryLimits::default());
     let before = bytes(&f.file);
 
-    if without_solver(apply(&mut session, f.feature, 21.5)) {
-        return;
-    }
+    apply(&mut session, f.feature, 21.5).expect("height");
     let expected = session.current().version();
     let remove_two = SketchConstraintEdits {
         remove: vec![ids[2], ids[3]],
@@ -825,13 +814,17 @@ fn a_constraint_edit_is_a_session_step_beside_height_with_undo_and_redo() {
 #[test]
 fn a_constraint_edit_from_an_older_version_or_without_edits_changes_nothing() {
     use ferritecad_document::SketchConstraintEdits;
+    if !ferritecad_fixtures::native_dependencies(&[(
+        ferritecad_sketch_solver::is_available(),
+        "PLANEGCS",
+    )]) {
+        return;
+    }
     let (f, sketch, ids) = constrained();
     let private = private_root();
     let mut session = open(&f, private.path(), HistoryLimits::default());
     let old = session.current().version();
-    if without_solver(apply(&mut session, f.feature, 30.0)) {
-        return;
-    }
+    apply(&mut session, f.feature, 30.0).expect("height");
     let depth = session.undo_depth();
     let listing = files(session.private_directory());
     let remove = SketchConstraintEdits {

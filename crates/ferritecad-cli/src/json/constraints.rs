@@ -359,6 +359,7 @@ struct Solve {
 }
 #[derive(Serialize)]
 pub(crate) struct Published {
+    rebuild: ferritecad_eval::RebuildReport,
     destination: std::path::PathBuf,
     document_id: ferritecad_types::DocumentId,
     sketch_id: ObjectId,
@@ -372,6 +373,7 @@ pub(crate) struct Published {
 impl From<ferritecad_jobs::EditedSketchConstraints> for Published {
     fn from(p: ferritecad_jobs::EditedSketchConstraints) -> Self {
         Self {
+            rebuild: p.rebuild,
             destination: p.destination,
             document_id: p.document_id,
             sketch_id: p.sketch,

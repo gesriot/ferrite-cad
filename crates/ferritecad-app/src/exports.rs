@@ -226,6 +226,7 @@ pub(crate) enum ExportStatus {
     },
     /// A complete STL of one native Body; FBX omissions do not apply.
     WroteStl {
+        complete: bool,
         destination: String,
         body: String,
         triangles: usize,
@@ -282,6 +283,12 @@ impl ExportStatus {
             Self::Wrote { destination, .. } => {
                 format!("{EXPORTED_WITH_OMISSIONS}: {destination}")
             }
+            Self::WroteStl {
+                destination,
+                body,
+                complete: false,
+                ..
+            } => format!("Partial STL export: omitted {body}; no file written to {destination}"),
             Self::WroteStl { destination, .. } => format!("Exported STL {destination}"),
             Self::Cancelled { destination } => format!("{EXPORT_CANCELLED}: {destination}"),
             Self::Failed {
@@ -320,6 +327,7 @@ impl ExportStatus {
                     body,
                     triangles,
                     bytes,
+                    ..
                 } => Some(ferritecad_ui::PublishedStl {
                     destination,
                     body,

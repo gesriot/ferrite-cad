@@ -1672,6 +1672,7 @@ mod tests {
                 e.finish(
                     g + 1,
                     Ok(EditedDocument {
+                        rebuild: Default::default(),
                         destination: ui.clone(),
                         document_id: reading.version.document_id,
                         feature
@@ -1925,6 +1926,7 @@ mod tests {
             e.finish(
                 g + 1,
                 Ok(EditedDocument {
+                    rebuild: Default::default(),
                     destination: PathBuf::from("stale.fcad"),
                     document_id: reading.version.document_id,
                     feature: base.feature,
@@ -2132,6 +2134,7 @@ mod tests {
             e.finish(
                 g + 1,
                 Ok(EditedDocument {
+                    rebuild: Default::default(),
                     destination: PathBuf::from("stale.fcad"),
                     document_id: reading.version.document_id,
                     feature: base.feature,

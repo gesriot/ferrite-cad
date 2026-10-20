@@ -242,7 +242,14 @@ fn all_geometry_exits_release_shapes_without_publishing_a_failed_export() {
             },
             &OperationContext::default(),
         );
-        assert_eq!(result.is_ok(), fault == "none", "{fault}: {result:?}");
+        assert_eq!(
+            result.is_ok(),
+            matches!(fault, "none" | "rebuild"),
+            "{fault}: {result:?}"
+        );
+        if let Ok(exported) = &result {
+            assert_eq!(exported.complete, fault == "none");
+        }
         assert_eq!(
             live.load(Ordering::SeqCst),
             0,

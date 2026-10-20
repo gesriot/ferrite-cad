@@ -101,6 +101,7 @@ fn result(args: &EditChamferDistanceArgs) -> Result<EditedChamferDistance> {
 
 #[derive(Serialize)]
 struct Published {
+    rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     document_id: DocumentId,
     body_id: ObjectId,
@@ -120,6 +121,7 @@ pub fn run(args: EditChamferDistanceArgs) -> Result<ExitCode> {
         Ok(crate::json::emit(
             crate::json::Operation::EditChamferDistance,
             result.map(|r| Published {
+                rebuild: r.rebuild,
                 destination: r.destination,
                 document_id: r.document_id,
                 body_id: r.body,

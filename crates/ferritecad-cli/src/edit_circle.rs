@@ -110,6 +110,7 @@ fn result(args: &EditCircleArgs) -> Result<EditedCircle> {
 
 #[derive(Serialize)]
 struct Published {
+    rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     document_id: DocumentId,
     sketch_id: ObjectId,
@@ -122,6 +123,7 @@ pub fn run(args: EditCircleArgs) -> Result<ExitCode> {
         Ok(crate::json::emit(
             crate::json::Operation::EditCircle,
             result.map(|r| Published {
+                rebuild: r.rebuild,
                 destination: r.destination,
                 document_id: r.document_id,
                 sketch_id: r.sketch,

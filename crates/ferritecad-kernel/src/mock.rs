@@ -69,6 +69,7 @@ pub struct MockKernel {
     next_index: u64,
     extrusions: u64,
     refuse_named_encoding: bool,
+    fail_extrude_at: Option<u64>,
 }
 
 impl MockKernel {
@@ -99,6 +100,7 @@ impl MockKernel {
             next_index: 0,
             extrusions: 0,
             refuse_named_encoding: false,
+            fail_extrude_at: None,
         }
     }
 
@@ -110,6 +112,11 @@ impl MockKernel {
     /// free to offer the same, and it is worth having for the same reason.
     pub fn live_shape_count(&self) -> usize {
         self.shapes.len()
+    }
+
+    /// Refuse one numbered extrusion request, for failure and cleanup tests.
+    pub fn fail_extrude_at(&mut self, request: u64) {
+        self.fail_extrude_at = Some(request);
     }
 
     /// How many extrusions this session has been asked to compute.
@@ -267,6 +274,9 @@ impl GeometryKernel for MockKernel {
     ) -> Result<ExtrudeResult> {
         context.check_cancelled()?;
         self.extrusions += 1;
+        if self.fail_extrude_at == Some(self.extrusions) {
+            return Err(CadError::kernel("requested mock extrusion failure"));
+        }
 
         let profile = request.profile();
         if !profile.inner().is_empty() {

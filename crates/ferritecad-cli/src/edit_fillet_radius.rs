@@ -96,6 +96,7 @@ fn result(args: &EditFilletRadiusArgs) -> Result<EditedFilletRadius> {
 
 #[derive(Serialize)]
 struct Published {
+    rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     document_id: DocumentId,
     body_id: ObjectId,
@@ -117,6 +118,7 @@ pub fn run(args: EditFilletRadiusArgs) -> Result<ExitCode> {
         Ok(crate::json::emit(
             crate::json::Operation::EditFilletRadius,
             result.map(|r| Published {
+                rebuild: r.rebuild,
                 destination: r.destination,
                 document_id: r.document_id,
                 body_id: r.body,

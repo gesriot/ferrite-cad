@@ -133,6 +133,7 @@ fn result(args: &CutArgs) -> Result<AddedCircularCut> {
 /// order rows happen to sit in.
 #[derive(Serialize)]
 struct Published {
+    rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     document_id: DocumentId,
     body_id: ObjectId,
@@ -149,6 +150,7 @@ pub fn run(args: CutArgs) -> Result<ExitCode> {
         Ok(crate::json::emit(
             crate::json::Operation::CutCircularCopy,
             result.map(|r| Published {
+                rebuild: r.rebuild,
                 destination: r.destination,
                 document_id: r.document_id,
                 body_id: r.body,

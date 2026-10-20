@@ -37,6 +37,11 @@ use ferritecad_topology::{
 };
 use ferritecad_types::{CadError, ObjectId, Result};
 
+use crate::{
+    DegradedBody, FailedFeature, RebuildRefusal, RebuildReport, RebuildStatus, ReferenceWarning,
+    SkippedFeature,
+};
+
 use crate::cache::{
     chamfer_archive_key, cut_archive_key, extrude_archive_key, fillet_archive_key,
     load_feature_archive, revolve_archive_key, store_feature_archive,
@@ -89,6 +94,9 @@ use crate::solve::SketchSolveReport;
 /// extrusions of one drawing.
 #[derive(Debug, Default)]
 pub struct RebuildResult {
+    statuses: BTreeMap<ObjectId, RebuildStatus>,
+    degraded_bodies: Vec<DegradedBody>,
+    warnings: Vec<ReferenceWarning>,
     shapes: BTreeMap<ObjectId, ShapeHandle>,
     profiles: BTreeMap<ObjectId, Profile>,
     solve_reports: BTreeMap<ObjectId, SketchSolveReport>,
@@ -107,6 +115,69 @@ pub struct RebuildResult {
 }
 
 impl RebuildResult {
+    pub fn status(&self, id: ObjectId) -> Option<&RebuildStatus> {
+        self.statuses.get(&id)
+    }
+    pub fn all_built(&self) -> bool {
+        self.statuses
+            .values()
+            .all(|s| matches!(s, RebuildStatus::Built))
+    }
+    pub fn report(&self) -> RebuildReport {
+        let mut report = RebuildReport {
+            degraded_bodies: self.degraded_bodies.clone(),
+            warnings: self.warnings.clone(),
+            ..RebuildReport::default()
+        };
+        for id in &self.order {
+            match self.statuses.get(id) {
+                Some(RebuildStatus::Failed { error }) => report.failed.push(FailedFeature {
+                    id: *id,
+                    kind: error.kind().as_str().into(),
+                    message: error.to_string(),
+                }),
+                Some(RebuildStatus::Skipped { cause }) => report.skipped.push(SkippedFeature {
+                    id: *id,
+                    cause: *cause,
+                }),
+                _ => {}
+            }
+        }
+        report
+    }
+    /// Reject a candidate only when it introduces an unbuilt object.
+    pub fn require_no_new_failures(
+        mut self,
+        baseline: &std::collections::BTreeSet<ObjectId>,
+        kernel: &mut (impl GeometryKernel + ?Sized),
+    ) -> Result<Self> {
+        let report = self.report();
+        if report.unbuilt().is_subset(baseline) {
+            return Ok(self);
+        }
+        let errors = std::mem::take(&mut self.statuses)
+            .into_iter()
+            .filter_map(|(id, status)| match status {
+                RebuildStatus::Failed { error } => Some((id, error)),
+                _ => None,
+            })
+            .collect();
+        self.release_all(kernel);
+        let refusal = RebuildRefusal { report, errors };
+        let message = format!("edit would leave features unbuilt:\n{refusal}");
+        let kind = refusal
+            .errors
+            .values()
+            .next()
+            .map(CadError::kind)
+            .unwrap_or(ferritecad_types::ErrorKind::Constraint);
+        Err(CadError::Context {
+            kind,
+            message,
+            source: Box::new(refusal),
+        })
+    }
+
     /// The shape a feature or body resolved to.
     pub fn shape(&self, object: ObjectId) -> Option<ShapeHandle> {
         self.shapes.get(&object).copied()
@@ -185,6 +256,16 @@ impl RebuildResult {
         self.owned.len()
     }
 
+    /// Release geometry while retaining the original per-object errors.
+    pub fn into_statuses(
+        mut self,
+        kernel: &mut (impl GeometryKernel + ?Sized),
+    ) -> BTreeMap<ObjectId, RebuildStatus> {
+        let statuses = std::mem::take(&mut self.statuses);
+        self.release_all(kernel);
+        statuses
+    }
+
     /// Hands every shape back to the kernel.
     pub fn release_all(self, kernel: &mut (impl GeometryKernel + ?Sized)) {
         // Later features may share storage with their inputs in a real kernel,
@@ -197,9 +278,8 @@ impl RebuildResult {
 
 /// Rebuilds every object in `document` from scratch.
 ///
-/// Fails on the first feature that cannot be built, having released whatever it
-/// had already made. A half-built rebuild is worse than none: it would leave
-/// the caller holding shapes it cannot name and a model it cannot trust.
+/// Reports local failures and continues independent branches. Structural errors
+/// and cancellation release all shapes and fail the operation.
 ///
 /// Reads and writes no cache, and cannot be made to: there is no parameter
 /// through which one could be supplied.
@@ -258,7 +338,7 @@ fn run<K: GeometryKernel + ?Sized>(
     state: &mut RebuildResult,
     events: &mut Vec<CacheEvent>,
 ) -> Result<()> {
-    ensure_rebuildable(document)?;
+    let validation_failures = ensure_rebuildable(document)?;
 
     let graph = DocumentGraph::read(document)?;
     let plan = graph.plan_full()?;
@@ -294,496 +374,608 @@ fn run<K: GeometryKernel + ?Sized>(
             ))
         })?;
 
-        match &object.payload {
-            ObjectPayload::DatumPlane(datum) => {
-                planes.insert(*id, plane_from_datum(datum)?);
-            }
-
-            ObjectPayload::Sketch(sketch) => {
-                let plane = planes.get(&sketch.plane).copied().ok_or_else(|| {
-                    CadError::input(format!(
-                        "sketch {id} is placed on {}, which is not a datum plane",
-                        sketch.plane
-                    ))
-                })?;
-                // Converted here rather than when the extrude asks for it, so a
-                // malformed sketch is reported against the sketch.
-                let evaluated = profile_from_sketch(sketch, *id, plane)?;
-                state.profiles.insert(*id, evaluated.profile);
-                // Filed for every sketch, however it was arrived at. The
-                // profile above and this were built from one set of
-                // coordinates, so nothing downstream has to choose between
-                // them or ask for them again.
-                state.presentations.insert(*id, evaluated.presentation);
-                // Filed only when there was a solve to report. Absent is the
-                // honest answer for a sketch nobody constrained, and an empty
-                // report would read as one that was solved and found rigid.
-                if let Some(report) = evaluated.report {
-                    state.solve_reports.insert(*id, report);
+        state.order.push(*id);
+        let cause = graph
+            .dependencies()
+            .iter()
+            .filter(|d| d.dependent == *id)
+            .find_map(|d| {
+                state
+                    .status(d.dependency)
+                    .and_then(|s| s.root_failure(d.dependency))
+            });
+        if let Some(cause) = cause {
+            state.statuses.insert(*id, RebuildStatus::Skipped { cause });
+            if let ObjectPayload::Body(body) = &object.payload {
+                let mut current = body.tip_feature;
+                let mut fallback = None;
+                while let Some(feature) = current {
+                    if matches!(state.status(feature), Some(RebuildStatus::Built))
+                        && state.shape(feature).is_some()
+                    {
+                        fallback = Some(feature);
+                        break;
+                    }
+                    current = objects
+                        .get(&feature)
+                        .and_then(|o| o.payload.previous_feature());
                 }
+                if let Some(shape) = fallback.and_then(|f| state.shape(f)) {
+                    state.shapes.insert(*id, shape);
+                }
+                state.degraded_bodies.push(DegradedBody {
+                    id: *id,
+                    rolled_back_to: fallback,
+                    cause,
+                });
             }
+            continue;
+        }
+        if let Some(messages) = validation_failures.get(id) {
+            state.statuses.insert(
+                *id,
+                RebuildStatus::Failed {
+                    error: CadError::input(messages.join("; ")),
+                },
+            );
+            continue;
+        }
+        let owned_before = state.owned.len();
+        let outcome = (|| -> Result<()> {
+            match &object.payload {
+                ObjectPayload::DatumPlane(datum) => {
+                    planes.insert(*id, plane_from_datum(datum)?);
+                }
 
-            ObjectPayload::Extrude(feature) => {
-                let profile = state
-                    .profiles
-                    .get(&feature.profile)
-                    .cloned()
-                    .ok_or_else(|| {
+                ObjectPayload::Sketch(sketch) => {
+                    let plane = planes.get(&sketch.plane).copied().ok_or_else(|| {
                         CadError::input(format!(
-                            "extrude {id} reads {}, which produced no profile",
-                            feature.profile
+                            "sketch {id} is placed on {}, which is not a datum plane",
+                            sketch.plane
                         ))
                     })?;
-
-                match feature.previous {
-                    // A feature that starts a body, exactly as before.
-                    None => {
-                        let request = extrude_request(feature, profile)?;
-                        if let Some(reach) = Reach::of_new_body(feature, datum_of(feature.profile)?)
-                        {
-                            reaches.insert(*id, reach);
-                        }
-                        let key = extrude_archive_key(kernel.identity(), &request, &scoped);
-
-                        let restored = match cache.as_deref_mut() {
-                            Some(cache) => {
-                                restore(kernel, cache, &scoped, key, *id, state, events)?
-                            }
-                            None => false,
-                        };
-
-                        if !restored {
-                            let result = kernel.extrude(&request, &scoped)?;
-
-                            // Register ownership before checking again: a
-                            // kernel can finish the operation and then invoke a
-                            // progress callback that cancels the rebuild. The
-                            // resulting shape still belongs to us and must
-                            // participate in error cleanup.
-                            state.owned.push(result.shape);
-                            context.check_cancelled()?;
-
-                            // Named while the result is still whole. The
-                            // correspondence between a segment and the face it
-                            // raised lives across the history and the caps, and
-                            // reassembling it from those parts afterwards would
-                            // be inventing it rather than recording it.
-                            state
-                                .topology
-                                .record_extrude(*id, request.profile(), &result)?;
-                            state.shapes.insert(*id, result.shape);
-
-                            if let Some(cache) = cache.as_deref_mut() {
-                                store(kernel, cache, key, *id, state, events);
-                            }
-                        }
-                        state.keys.insert(*id, key);
+                    // Converted here rather than when the extrude asks for it, so a
+                    // malformed sketch is reported against the sketch.
+                    let evaluated = profile_from_sketch(sketch, *id, plane)?;
+                    state.profiles.insert(*id, evaluated.profile);
+                    // Filed for every sketch, however it was arrived at. The
+                    // profile above and this were built from one set of
+                    // coordinates, so nothing downstream has to choose between
+                    // them or ask for them again.
+                    state.presentations.insert(*id, evaluated.presentation);
+                    // Filed only when there was a solve to report. Absent is the
+                    // honest answer for a sketch nobody constrained, and an empty
+                    // report would read as one that was solved and found rigid.
+                    if let Some(report) = evaluated.report {
+                        state.solve_reports.insert(*id, report);
                     }
+                }
 
-                    // A feature that changes the result of an earlier one. The
-                    // tool it removes with is an extrusion of its own sketch,
-                    // built here and released with everything else: it is the
-                    // shape the boolean consumed, not a body of the document,
-                    // and nothing outside this loop may name it.
-                    Some(previous) => {
-                        let reach = reaches.get(&previous).copied();
-                        let tool_request =
-                            cut_tool_request(feature, profile, datum_of(feature.profile)?, reach)?;
-                        if let Some(reach) = reach {
-                            reaches.insert(*id, reach);
+                ObjectPayload::Extrude(feature) => {
+                    let profile =
+                        state
+                            .profiles
+                            .get(&feature.profile)
+                            .cloned()
+                            .ok_or_else(|| {
+                                CadError::input(format!(
+                                    "extrude {id} reads {}, which produced no profile",
+                                    feature.profile
+                                ))
+                            })?;
+
+                    match feature.previous {
+                        // A feature that starts a body, exactly as before.
+                        None => {
+                            let request = extrude_request(feature, profile)?;
+                            if let Some(reach) =
+                                Reach::of_new_body(feature, datum_of(feature.profile)?)
+                            {
+                                reaches.insert(*id, reach);
+                            }
+                            let key = extrude_archive_key(kernel.identity(), &request, &scoped);
+
+                            let restored = match cache.as_deref_mut() {
+                                Some(cache) => {
+                                    restore(kernel, cache, &scoped, key, *id, state, events)?
+                                }
+                                None => false,
+                            };
+
+                            if !restored {
+                                let result = kernel.extrude(&request, &scoped)?;
+
+                                // Register ownership before checking again: a
+                                // kernel can finish the operation and then invoke a
+                                // progress callback that cancels the rebuild. The
+                                // resulting shape still belongs to us and must
+                                // participate in error cleanup.
+                                state.owned.push(result.shape);
+                                context.check_cancelled()?;
+
+                                // Named while the result is still whole. The
+                                // correspondence between a segment and the face it
+                                // raised lives across the history and the caps, and
+                                // reassembling it from those parts afterwards would
+                                // be inventing it rather than recording it.
+                                state
+                                    .topology
+                                    .record_extrude(*id, request.profile(), &result)?;
+                                state.shapes.insert(*id, result.shape);
+
+                                if let Some(cache) = cache.as_deref_mut() {
+                                    store(kernel, cache, key, *id, state, events);
+                                }
+                            }
+                            state.keys.insert(*id, key);
                         }
-                        let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
+
+                        // A feature that changes the result of an earlier one. The
+                        // tool it removes with is an extrusion of its own sketch,
+                        // built here and released with everything else: it is the
+                        // shape the boolean consumed, not a body of the document,
+                        // and nothing outside this loop may name it.
+                        Some(previous) => {
+                            let reach = reaches.get(&previous).copied();
+                            let tool_request = cut_tool_request(
+                                feature,
+                                profile,
+                                datum_of(feature.profile)?,
+                                reach,
+                            )?;
+                            if let Some(reach) = reach {
+                                reaches.insert(*id, reach);
+                            }
+                            let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
                             CadError::input(format!(
                                 "feature {id} modifies {previous}, which produced no result to                                  modify"
                             ))
                         })?;
-                        let tool_key =
-                            extrude_archive_key(kernel.identity(), &tool_request, &scoped);
-                        let key = cut_archive_key(
-                            kernel.identity(),
-                            previous,
-                            &target_key,
-                            &tool_key,
-                            matches!(feature.end_condition, EndCondition::ThroughAll),
-                            &scoped,
-                        );
+                            let tool_key =
+                                extrude_archive_key(kernel.identity(), &tool_request, &scoped);
+                            let key = cut_archive_key(
+                                kernel.identity(),
+                                previous,
+                                &target_key,
+                                &tool_key,
+                                matches!(feature.end_condition, EndCondition::ThroughAll),
+                                &scoped,
+                            );
 
-                        let restored = match cache.as_deref_mut() {
-                            Some(cache) => {
-                                restore(kernel, cache, &scoped, key, *id, state, events)?
-                            }
-                            None => false,
-                        };
+                            let restored = match cache.as_deref_mut() {
+                                Some(cache) => {
+                                    restore(kernel, cache, &scoped, key, *id, state, events)?
+                                }
+                                None => false,
+                            };
 
-                        if !restored {
-                            let tool = kernel.extrude(&tool_request, &scoped)?;
-                            state.owned.push(tool.shape);
-                            context.check_cancelled()?;
+                            if !restored {
+                                let tool = kernel.extrude(&tool_request, &scoped)?;
+                                state.owned.push(tool.shape);
+                                context.check_cancelled()?;
 
-                            // The tool's own names, recorded under a producer
-                            // the document does not hold. They live only long
-                            // enough for the boolean to be asked about them;
-                            // see `record_cut`.
-                            let mut tool_names = TopologyMap::new();
-                            let tool_producer = *id;
-                            tool_names.record_extrude(
-                                tool_producer,
-                                tool_request.profile(),
-                                &tool,
-                            )?;
-                            let tool_names = tool_names
-                                .feature(tool_producer)
-                                .cloned()
-                                .expect("just recorded");
+                                // The tool's own names, recorded under a producer
+                                // the document does not hold. They live only long
+                                // enough for the boolean to be asked about them;
+                                // see `record_cut`.
+                                let mut tool_names = TopologyMap::new();
+                                let tool_producer = *id;
+                                tool_names.record_extrude(
+                                    tool_producer,
+                                    tool_request.profile(),
+                                    &tool,
+                                )?;
+                                let tool_names = tool_names
+                                    .feature(tool_producer)
+                                    .cloned()
+                                    .expect("just recorded");
 
-                            let previous_names =
-                                state.topology.feature(previous).cloned().ok_or_else(|| {
+                                let previous_names =
+                                    state.topology.feature(previous).cloned().ok_or_else(|| {
+                                        CadError::topology(format!(
+                                            "feature {id} modifies {previous}, which named nothing"
+                                        ))
+                                    })?;
+                                let target_shape = previous_names.shape().ok_or_else(|| {
                                     CadError::topology(format!(
-                                        "feature {id} modifies {previous}, which named nothing"
+                                        "feature {id} modifies {previous}, which built no shape"
                                     ))
                                 })?;
-                            let target_shape = previous_names.shape().ok_or_else(|| {
-                                CadError::topology(format!(
-                                    "feature {id} modifies {previous}, which built no shape"
+
+                                // Everything either input is called, so the kernel
+                                // answers about every name the document could ask
+                                // after. Which of those answers matter is decided
+                                // above this call, from the names — never from the
+                                // geometry.
+                                let track = tracked(&previous_names, &tool_names);
+                                let request = CutRequest::new(target_shape, tool.shape)?;
+                                let result = kernel.cut(&request, &track, &scoped)?;
+                                state.owned.push(result.shape);
+                                context.check_cancelled()?;
+
+                                state.topology.record_cut(
+                                    *id,
+                                    previous,
+                                    tool_request.profile(),
+                                    tool.shape,
+                                    &tool_names,
+                                    &previous_names,
+                                    &result,
+                                )?;
+                                state.shapes.insert(*id, result.shape);
+
+                                if let Some(cache) = cache.as_deref_mut() {
+                                    store(kernel, cache, key, *id, state, events);
+                                }
+                            }
+                            state.keys.insert(*id, key);
+                        }
+                    }
+                }
+
+                // A body started by turning a profile. The same cold and cached
+                // path as a NewBody extrusion: one request, one key, restore or
+                // build, name while the result is whole, store. It records no
+                // reach, so nothing downstream can run ThroughAll against it.
+                ObjectPayload::Revolve(feature) => {
+                    let profile =
+                        state
+                            .profiles
+                            .get(&feature.profile)
+                            .cloned()
+                            .ok_or_else(|| {
+                                CadError::input(format!(
+                                    "revolve {id} reads {}, which produced no profile",
+                                    feature.profile
                                 ))
                             })?;
-
-                            // Everything either input is called, so the kernel
-                            // answers about every name the document could ask
-                            // after. Which of those answers matter is decided
-                            // above this call, from the names — never from the
-                            // geometry.
-                            let track = tracked(&previous_names, &tool_names);
-                            let request = CutRequest::new(target_shape, tool.shape)?;
-                            let result = kernel.cut(&request, &track, &scoped)?;
-                            state.owned.push(result.shape);
-                            context.check_cancelled()?;
-
-                            state.topology.record_cut(
-                                *id,
-                                previous,
-                                tool_request.profile(),
-                                tool.shape,
-                                &tool_names,
-                                &previous_names,
-                                &result,
-                            )?;
-                            state.shapes.insert(*id, result.shape);
-
-                            if let Some(cache) = cache.as_deref_mut() {
-                                store(kernel, cache, key, *id, state, events);
-                            }
-                        }
-                        state.keys.insert(*id, key);
-                    }
-                }
-            }
-
-            // A body started by turning a profile. The same cold and cached
-            // path as a NewBody extrusion: one request, one key, restore or
-            // build, name while the result is whole, store. It records no
-            // reach, so nothing downstream can run ThroughAll against it.
-            ObjectPayload::Revolve(feature) => {
-                let profile = state
-                    .profiles
-                    .get(&feature.profile)
-                    .cloned()
-                    .ok_or_else(|| {
-                        CadError::input(format!(
-                            "revolve {id} reads {}, which produced no profile",
-                            feature.profile
-                        ))
-                    })?;
-                let request = revolve_request(feature, profile)?;
-                let key = revolve_archive_key(kernel.identity(), &request, &scoped);
-                let restored = match cache.as_deref_mut() {
-                    Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
-                    None => false,
-                };
-                if !restored {
-                    let result = kernel.revolve(&request, &scoped)?;
-                    state.owned.push(result.shape);
-                    context.check_cancelled()?;
-                    state.topology.record_revolve(
-                        *id,
-                        request.profile(),
-                        request.axis_segment(),
-                        request.turn(),
-                        &result,
-                    )?;
-                    state.shapes.insert(*id, result.shape);
-                    if let Some(cache) = cache.as_deref_mut() {
-                        store(kernel, cache, key, *id, state, events);
-                    }
-                }
-                state.keys.insert(*id, key);
-            }
-
-            ObjectPayload::Body(body) => {
-                // A body in this slice is a name for its tip feature's result.
-                // It creates nothing, so it owns nothing to release.
-                if let Some(tip) = body.tip_feature {
-                    let shape = state.shapes.get(&tip).copied().ok_or_else(|| {
-                        CadError::input(format!(
-                            "body {id} names tip feature {tip}, which produced no shape"
-                        ))
-                    })?;
-                    state.shapes.insert(*id, shape);
-                }
-            }
-
-            // Parameters carry no geometry. Expressions arrive with their own
-            // stage; evaluating one here would be inventing a semantics.
-            ObjectPayload::Parameter(_) => {}
-
-            // An imported STEP object holds geometry that was never built from
-            // features. It comes from bytes the document stores, and reading
-            // them again needs an importer rather than a geometry kernel –
-            // which is why this stops here rather than being wired through:
-            // nothing in the shipped graph points from a kernel adapter back
-            // at the document, and rebuilding through this crate would.
-            //
-            // Named rather than skipped. A document that holds imported
-            // geometry and rebuilds "completely" would be telling a caller
-            // that this result covers everything in it, and it does not.
-            ObjectPayload::ImportedStep(_) => {
-                state.imports.push(*id);
-                continue;
-            }
-
-            // §28A: one edge of the result this feature consumes, rounded. The
-            // same cold and cached path as a Cut: one key, restore or build,
-            // name while the result is whole, store.
-            ObjectPayload::Fillet(fillet) => {
-                let previous = fillet.previous;
-                let joint = fillet.edge.joint;
-                // The class, asked of the saved objects, and the radius
-                // policy, asked of the Lines the predecessor was built from:
-                // the drawing this rebuild already solved for it (§28E), cold
-                // or cached alike, and never a second solve. For an
-                // unconstrained profile those are the stored Lines. §28G: the
-                // plate is the feature that swept the edge, which a second
-                // Fillet names while it rounds the first one's result.
-                let saved: Vec<_> = objects.values().cloned().collect();
-                let built: Option<Vec<ferritecad_document::SketchCurve>> =
-                    match objects.get(&fillet.edge.feature).map(|o| &o.payload) {
-                        Some(ObjectPayload::Extrude(e)) => {
-                            state.presentations.get(&e.profile).map(|p| {
-                                p.curves()
-                                    .iter()
-                                    .map(|c| ferritecad_document::SketchCurve {
-                                        id: c.id(),
-                                        construction: c.is_construction(),
-                                        geometry: c.geometry().clone(),
-                                    })
-                                    .collect()
-                            })
-                        }
-                        _ => None,
+                    let request = revolve_request(feature, profile)?;
+                    let key = revolve_archive_key(kernel.identity(), &request, &scoped);
+                    let restored = match cache.as_deref_mut() {
+                        Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
+                        None => false,
                     };
-                ferritecad_document::evaluable_fillet(&saved, fillet, built.as_deref())?;
-                let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
-                    CadError::input(format!(
-                        "fillet {id} rounds an edge of {previous}, which produced no result"
-                    ))
-                })?;
-                let key = fillet_archive_key(
-                    kernel.identity(),
-                    previous,
-                    &target_key,
-                    fillet.edge.feature,
-                    joint,
-                    fillet.radius_mm,
-                    &scoped,
-                );
-                let restored = match cache.as_deref_mut() {
-                    Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
-                    None => false,
-                };
-                if !restored {
-                    let previous_names =
-                        state.topology.feature(previous).cloned().ok_or_else(|| {
-                            CadError::topology(format!(
-                                "fillet {id} rounds an edge of {previous}, which named nothing"
+                    if !restored {
+                        let result = kernel.revolve(&request, &scoped)?;
+                        state.owned.push(result.shape);
+                        context.check_cancelled()?;
+                        state.topology.record_revolve(
+                            *id,
+                            request.profile(),
+                            request.axis_segment(),
+                            request.turn(),
+                            &result,
+                        )?;
+                        state.shapes.insert(*id, result.shape);
+                        if let Some(cache) = cache.as_deref_mut() {
+                            store(kernel, cache, key, *id, state, events);
+                        }
+                    }
+                    state.keys.insert(*id, key);
+                }
+
+                ObjectPayload::Body(body) => {
+                    // A body in this slice is a name for its tip feature's result.
+                    // It creates nothing, so it owns nothing to release.
+                    if let Some(tip) = body.tip_feature {
+                        let shape = state.shapes.get(&tip).copied().ok_or_else(|| {
+                            CadError::input(format!(
+                                "body {id} names tip feature {tip}, which produced no shape"
                             ))
                         })?;
-                    let target_shape = previous_names.shape().ok_or_else(|| {
-                        CadError::topology(format!(
-                            "fillet {id} rounds an edge of {previous}, which built no shape"
+                        state.shapes.insert(*id, shape);
+                    }
+                }
+
+                // Parameters carry no geometry. Expressions arrive with their own
+                // stage; evaluating one here would be inventing a semantics.
+                ObjectPayload::Parameter(_) => {}
+
+                // An imported STEP object holds geometry that was never built from
+                // features. It comes from bytes the document stores, and reading
+                // them again needs an importer rather than a geometry kernel –
+                // which is why this stops here rather than being wired through:
+                // nothing in the shipped graph points from a kernel adapter back
+                // at the document, and rebuilding through this crate would.
+                //
+                // Named rather than skipped. A document that holds imported
+                // geometry and rebuilds "completely" would be telling a caller
+                // that this result covers everything in it, and it does not.
+                ObjectPayload::ImportedStep(_) => {
+                    state.imports.push(*id);
+                }
+
+                // §28A: one edge of the result this feature consumes, rounded. The
+                // same cold and cached path as a Cut: one key, restore or build,
+                // name while the result is whole, store.
+                ObjectPayload::Fillet(fillet) => {
+                    let previous = fillet.previous;
+                    let joint = fillet.edge.joint;
+                    // The class, asked of the saved objects, and the radius
+                    // policy, asked of the Lines the predecessor was built from:
+                    // the drawing this rebuild already solved for it (§28E), cold
+                    // or cached alike, and never a second solve. For an
+                    // unconstrained profile those are the stored Lines. §28G: the
+                    // plate is the feature that swept the edge, which a second
+                    // Fillet names while it rounds the first one's result.
+                    let saved: Vec<_> = objects.values().cloned().collect();
+                    let built: Option<Vec<ferritecad_document::SketchCurve>> =
+                        match objects.get(&fillet.edge.feature).map(|o| &o.payload) {
+                            Some(ObjectPayload::Extrude(e)) => {
+                                state.presentations.get(&e.profile).map(|p| {
+                                    p.curves()
+                                        .iter()
+                                        .map(|c| ferritecad_document::SketchCurve {
+                                            id: c.id(),
+                                            construction: c.is_construction(),
+                                            geometry: c.geometry().clone(),
+                                        })
+                                        .collect()
+                                })
+                            }
+                            _ => None,
+                        };
+                    ferritecad_document::evaluable_fillet(&saved, fillet, built.as_deref())
+                        .map_err(|error| CadError::Context {
+                            kind: error.kind(),
+                            message: format!(
+                                "fillet {id}, edge {} at {joint}: {error}",
+                                fillet.edge.feature
+                            ),
+                            source: Box::new(error),
+                        })?;
+                    let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
+                        CadError::input(format!(
+                            "fillet {id} rounds an edge of {previous}, which produced no result"
                         ))
                     })?;
-                    // Exactly the edge the payload means, found by its name
-                    // in the predecessor's own output: its own sweep edge,
-                    // or (§28G) the plate's edge as the earlier Fillet's
-                    // history carried it. None, or more than one, is a
-                    // refusal: never the nearest edge.
-                    let edge_feature = fillet.edge.feature;
-                    let edges: Vec<_> = if edge_feature == previous {
-                        previous_names.sweep_edge(joint).collect()
-                    } else {
-                        let carried = CarriedName::SweepEdge(joint);
-                        if previous_names.origin_is_deleted(edge_feature, carried) {
-                            return Err(CadError::topology(format!(
-                                "fillet {id} rounds the edge {edge_feature} swept at {joint}, \
-                                 and {previous} already removed it"
-                            )));
-                        }
-                        previous_names
-                            .origin_sweep_edge(edge_feature, joint)
-                            .collect()
-                    };
-                    let [edge] = edges.as_slice() else {
-                        return Err(CadError::topology(format!(
-                            "fillet {id} rounds the edge {edge_feature} swept at {joint} on the \
-                             result of {previous}, and that name matches {} edges; it must \
-                             match exactly one",
-                            edges.len()
-                        )));
-                    };
-                    let mut track = tracked(&previous_names, &FeatureNames::default());
-                    // §28G: the predecessor's sweep edges and its own fillet
-                    // faces too, so the history says what became of each.
-                    for joint in previous_names.named_joints() {
-                        track.extend(previous_names.sweep_edge(joint));
-                    }
-                    for (made_from, rounded) in previous_names.named_fillet_edges() {
-                        track.extend(previous_names.fillet_face(made_from, rounded));
-                    }
-                    if !track.contains(edge) {
-                        track.push(*edge);
-                    }
-                    let request = FilletRequest::new(target_shape, *edge, fillet.radius_mm)?;
-                    let result = kernel.fillet_edge(&request, &track, &scoped)?;
-                    state.owned.push(result.shape);
-                    context.check_cancelled()?;
-                    state.topology.record_fillet(
-                        *id,
+                    let key = fillet_archive_key(
+                        kernel.identity(),
                         previous,
+                        &target_key,
                         fillet.edge.feature,
                         joint,
-                        &previous_names,
-                        *edge,
-                        &result,
-                    )?;
-                    state.shapes.insert(*id, result.shape);
-                    if let Some(cache) = cache.as_deref_mut() {
-                        store(kernel, cache, key, *id, state, events);
-                    }
-                }
-                state.keys.insert(*id, key);
-            }
-
-            // §29A: one edge of the result this feature consumes, cut away at
-            // one equal distance. The same cold and cached path as a Fillet,
-            // keyed by its own meaning, naming its own face under its own role.
-            ObjectPayload::Chamfer(chamfer) => {
-                let previous = chamfer.previous;
-                let joint = chamfer.edge.joint;
-                // The class, asked of the saved objects, and the distance
-                // policy, asked of the Lines the plate was built from.
-                let saved: Vec<_> = objects.values().cloned().collect();
-                let built: Option<Vec<ferritecad_document::SketchCurve>> =
-                    match objects.get(&chamfer.edge.feature).map(|o| &o.payload) {
-                        Some(ObjectPayload::Extrude(e)) => {
-                            state.presentations.get(&e.profile).map(|p| {
-                                p.curves()
-                                    .iter()
-                                    .map(|c| ferritecad_document::SketchCurve {
-                                        id: c.id(),
-                                        construction: c.is_construction(),
-                                        geometry: c.geometry().clone(),
-                                    })
-                                    .collect()
-                            })
-                        }
-                        _ => None,
+                        fillet.radius_mm,
+                        &scoped,
+                    );
+                    let restored = match cache.as_deref_mut() {
+                        Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
+                        None => false,
                     };
-                ferritecad_document::evaluable_chamfer(&saved, chamfer, built.as_deref())?;
-                let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
-                    CadError::input(format!(
-                        "chamfer {id} cuts an edge of {previous}, which produced no result"
-                    ))
-                })?;
-                let key = chamfer_archive_key(
-                    kernel.identity(),
-                    previous,
-                    &target_key,
-                    chamfer.edge.feature,
-                    joint,
-                    chamfer.distance_mm,
-                    &scoped,
-                );
-                let restored = match cache.as_deref_mut() {
-                    Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
-                    None => false,
-                };
-                if !restored {
-                    let previous_names =
-                        state.topology.feature(previous).cloned().ok_or_else(|| {
+                    if !restored {
+                        let previous_names =
+                            state.topology.feature(previous).cloned().ok_or_else(|| {
+                                CadError::topology(format!(
+                                    "fillet {id} rounds an edge of {previous}, which named nothing"
+                                ))
+                            })?;
+                        let target_shape = previous_names.shape().ok_or_else(|| {
                             CadError::topology(format!(
-                                "chamfer {id} cuts an edge of {previous}, which named nothing"
+                                "fillet {id} rounds an edge of {previous}, which built no shape"
                             ))
                         })?;
-                    let target_shape = previous_names.shape().ok_or_else(|| {
-                        CadError::topology(format!(
-                            "chamfer {id} cuts an edge of {previous}, which built no shape"
+                        // Exactly the edge the payload means, found by its name
+                        // in the predecessor's own output: its own sweep edge,
+                        // or (§28G) the plate's edge as the earlier Fillet's
+                        // history carried it. None, or more than one, is a
+                        // refusal: never the nearest edge.
+                        let edge_feature = fillet.edge.feature;
+                        let edges: Vec<_> = if edge_feature == previous {
+                            previous_names.sweep_edge(joint).collect()
+                        } else {
+                            let carried = CarriedName::SweepEdge(joint);
+                            if previous_names.origin_is_deleted(edge_feature, carried) {
+                                return Err(CadError::topology(format!(
+                                    "fillet {id} rounds the edge {edge_feature} swept at {joint}, \
+                                 and {previous} already removed it"
+                                )));
+                            }
+                            previous_names
+                                .origin_sweep_edge(edge_feature, joint)
+                                .collect()
+                        };
+                        let [edge] = edges.as_slice() else {
+                            return Err(CadError::topology(format!(
+                                "fillet {id} rounds the edge {edge_feature} swept at {joint} on the \
+                             result of {previous}, and that name matches {} edges; it must \
+                             match exactly one",
+                                edges.len()
+                            )));
+                        };
+                        let mut track = tracked(&previous_names, &FeatureNames::default());
+                        // §28G: the predecessor's sweep edges and its own fillet
+                        // faces too, so the history says what became of each.
+                        for joint in previous_names.named_joints() {
+                            track.extend(previous_names.sweep_edge(joint));
+                        }
+                        for (made_from, rounded) in previous_names.named_fillet_edges() {
+                            track.extend(previous_names.fillet_face(made_from, rounded));
+                        }
+                        if !track.contains(edge) {
+                            track.push(*edge);
+                        }
+                        let request = FilletRequest::new(target_shape, *edge, fillet.radius_mm)?;
+                        let result = kernel.fillet_edge(&request, &track, &scoped)?;
+                        state.owned.push(result.shape);
+                        context.check_cancelled()?;
+                        state.topology.record_fillet(
+                            *id,
+                            previous,
+                            fillet.edge.feature,
+                            joint,
+                            &previous_names,
+                            *edge,
+                            &result,
+                        )?;
+                        state.shapes.insert(*id, result.shape);
+                        if let Some(cache) = cache.as_deref_mut() {
+                            store(kernel, cache, key, *id, state, events);
+                        }
+                    }
+                    state.keys.insert(*id, key);
+                }
+
+                // §29A: one edge of the result this feature consumes, cut away at
+                // one equal distance. The same cold and cached path as a Fillet,
+                // keyed by its own meaning, naming its own face under its own role.
+                ObjectPayload::Chamfer(chamfer) => {
+                    let previous = chamfer.previous;
+                    let joint = chamfer.edge.joint;
+                    // The class, asked of the saved objects, and the distance
+                    // policy, asked of the Lines the plate was built from.
+                    let saved: Vec<_> = objects.values().cloned().collect();
+                    let built: Option<Vec<ferritecad_document::SketchCurve>> =
+                        match objects.get(&chamfer.edge.feature).map(|o| &o.payload) {
+                            Some(ObjectPayload::Extrude(e)) => {
+                                state.presentations.get(&e.profile).map(|p| {
+                                    p.curves()
+                                        .iter()
+                                        .map(|c| ferritecad_document::SketchCurve {
+                                            id: c.id(),
+                                            construction: c.is_construction(),
+                                            geometry: c.geometry().clone(),
+                                        })
+                                        .collect()
+                                })
+                            }
+                            _ => None,
+                        };
+                    ferritecad_document::evaluable_chamfer(&saved, chamfer, built.as_deref())
+                        .map_err(|error| CadError::Context {
+                            kind: error.kind(),
+                            message: format!(
+                                "chamfer {id}, edge {} at {joint}: {error}",
+                                chamfer.edge.feature
+                            ),
+                            source: Box::new(error),
+                        })?;
+                    let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
+                        CadError::input(format!(
+                            "chamfer {id} cuts an edge of {previous}, which produced no result"
                         ))
                     })?;
-                    // Exactly the edge the payload means, found by its name in
-                    // the plate's own output: none, or more than one, is a
-                    // refusal, never the nearest edge.
-                    let edges: Vec<_> = previous_names.sweep_edge(joint).collect();
-                    let [edge] = edges.as_slice() else {
-                        return Err(CadError::topology(format!(
-                            "chamfer {id} cuts the edge {previous} swept at {joint}, and that \
-                             name matches {} edges; it must match exactly one",
-                            edges.len()
-                        )));
-                    };
-                    let mut track = tracked(&previous_names, &FeatureNames::default());
-                    for joint in previous_names.named_joints() {
-                        track.extend(previous_names.sweep_edge(joint));
-                    }
-                    if !track.contains(edge) {
-                        track.push(*edge);
-                    }
-                    let request = ChamferRequest::new(target_shape, *edge, chamfer.distance_mm)?;
-                    let result = kernel.chamfer_edge(&request, &track, &scoped)?;
-                    state.owned.push(result.shape);
-                    context.check_cancelled()?;
-                    state.topology.record_chamfer(
-                        *id,
+                    let key = chamfer_archive_key(
+                        kernel.identity(),
                         previous,
+                        &target_key,
                         chamfer.edge.feature,
                         joint,
-                        &previous_names,
-                        *edge,
-                        &result,
-                    )?;
-                    state.shapes.insert(*id, result.shape);
-                    if let Some(cache) = cache.as_deref_mut() {
-                        store(kernel, cache, key, *id, state, events);
+                        chamfer.distance_mm,
+                        &scoped,
+                    );
+                    let restored = match cache.as_deref_mut() {
+                        Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
+                        None => false,
+                    };
+                    if !restored {
+                        let previous_names =
+                            state.topology.feature(previous).cloned().ok_or_else(|| {
+                                CadError::topology(format!(
+                                    "chamfer {id} cuts an edge of {previous}, which named nothing"
+                                ))
+                            })?;
+                        let target_shape = previous_names.shape().ok_or_else(|| {
+                            CadError::topology(format!(
+                                "chamfer {id} cuts an edge of {previous}, which built no shape"
+                            ))
+                        })?;
+                        // Exactly the edge the payload means, found by its name in
+                        // the plate's own output: none, or more than one, is a
+                        // refusal, never the nearest edge.
+                        let edges: Vec<_> = previous_names.sweep_edge(joint).collect();
+                        let [edge] = edges.as_slice() else {
+                            return Err(CadError::topology(format!(
+                                "chamfer {id} cuts the edge {previous} swept at {joint}, and that \
+                             name matches {} edges; it must match exactly one",
+                                edges.len()
+                            )));
+                        };
+                        let mut track = tracked(&previous_names, &FeatureNames::default());
+                        for joint in previous_names.named_joints() {
+                            track.extend(previous_names.sweep_edge(joint));
+                        }
+                        if !track.contains(edge) {
+                            track.push(*edge);
+                        }
+                        let request =
+                            ChamferRequest::new(target_shape, *edge, chamfer.distance_mm)?;
+                        let result = kernel.chamfer_edge(&request, &track, &scoped)?;
+                        state.owned.push(result.shape);
+                        context.check_cancelled()?;
+                        state.topology.record_chamfer(
+                            *id,
+                            previous,
+                            chamfer.edge.feature,
+                            joint,
+                            &previous_names,
+                            *edge,
+                            &result,
+                        )?;
+                        state.shapes.insert(*id, result.shape);
+                        if let Some(cache) = cache.as_deref_mut() {
+                            store(kernel, cache, key, *id, state, events);
+                        }
                     }
+                    state.keys.insert(*id, key);
                 }
-                state.keys.insert(*id, key);
+
+                ObjectPayload::Unknown(unknown) => {
+                    return Err(CadError::unsupported(format!(
+                        "object {id} has type {:?}, which this build preserves but cannot rebuild",
+                        unknown.type_name
+                    )));
+                }
+
+                other => {
+                    return Err(CadError::unsupported(format!(
+                        "object {id} has payload {}, which the cold evaluator does not implement",
+                        other.type_name()
+                    )));
+                }
             }
 
-            ObjectPayload::Unknown(unknown) => {
-                return Err(CadError::unsupported(format!(
-                    "object {id} has type {:?}, which this build preserves but cannot rebuild",
-                    unknown.type_name
-                )));
+            Ok(())
+        })();
+        match outcome {
+            Ok(()) => {
+                state.statuses.insert(*id, RebuildStatus::Built);
             }
-
-            other => {
-                return Err(CadError::unsupported(format!(
-                    "object {id} has payload {}, which the cold evaluator does not implement",
-                    other.type_name()
-                )));
+            Err(error) if error.kind() == ferritecad_types::ErrorKind::Cancellation => {
+                return Err(error);
+            }
+            Err(error) => {
+                for shape in state.owned.drain(owned_before..).rev() {
+                    kernel.release(shape);
+                }
+                state.shapes.remove(id);
+                state.profiles.remove(id);
+                state.keys.remove(id);
+                state.topology.remove_feature(*id);
+                state.statuses.insert(*id, RebuildStatus::Failed { error });
             }
         }
-
-        state.order.push(*id);
+    }
+    for reference in document.topology_refs()? {
+        match state.resolve(&reference) {
+            Ok(found)
+                if !found.is_empty()
+                    && (!matches!(
+                        reference.selection,
+                        ferritecad_document::SelectionRule::Exact
+                    ) || found.len() == 1) => {}
+            resolved => state.warnings.push(ReferenceWarning {
+                owner: reference.owner,
+                reference: reference.id,
+                message: match resolved {
+                    Err(error) => error.to_string(),
+                    Ok(found) => format!(
+                        "reference {} matches {} entities",
+                        reference.id,
+                        found.len()
+                    ),
+                },
+            }),
+        }
     }
 
     // Covers a cancellation concurrent with the final non-kernel feature.
@@ -900,6 +1092,9 @@ fn restore<K: GeometryKernel + ?Sized>(
     // map is left untouched by a failure here, so the fresh build below
     // records this feature over nothing rather than over a half-restore.
     if let Err(error) = restore_feature(kernel, &archived, &mut state.topology) {
+        if error.kind() == ferritecad_types::ErrorKind::Cancellation {
+            return Err(error);
+        }
         events.push(CacheEvent::new(
             id,
             CacheOutcome::Rejected,
@@ -986,18 +1181,69 @@ fn within(context: &OperationContext, done: usize, total: usize) -> OperationCon
         }))
 }
 
-fn ensure_rebuildable(document: &Document) -> Result<()> {
+fn ensure_rebuildable(document: &Document) -> Result<BTreeMap<ObjectId, Vec<String>>> {
+    document.require_supported_capabilities()?;
     let report = document.validate()?;
-    if report.is_ok() {
-        return Ok(());
+    let objects: BTreeMap<_, _> = document.objects()?.into_iter().map(|o| (o.id, o)).collect();
+    let mut local = BTreeMap::<ObjectId, Vec<String>>::new();
+    let mut structural = Vec::new();
+    for diagnostic in report.errors() {
+        // These describe the edge consumed by the feature, not graph integrity.
+        if matches!(
+            diagnostic.code,
+            "fillet.edge-outside-history" | "chamfer.edge-outside-history"
+        ) && let Some(id) = diagnostic.object
+            && objects
+                .get(&id)
+                .and_then(|o| match &o.payload {
+                    ObjectPayload::Fillet(f) => Some(f.edge.feature),
+                    ObjectPayload::Chamfer(f) => Some(f.edge.feature),
+                    _ => None,
+                })
+                .and_then(|edge_feature| objects.get(&edge_feature))
+                .is_some_and(|o| {
+                    o.payload
+                        .kind()
+                        .is_some_and(ferritecad_document::ObjectKind::is_feature)
+                })
+        {
+            local
+                .entry(id)
+                .or_default()
+                .push(format!("{}: {}", diagnostic.code, diagnostic.message));
+        } else {
+            structural.push(format!("{}: {}", diagnostic.code, diagnostic.message));
+        }
     }
-
-    let errors = report
-        .errors()
-        .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
-        .collect::<Vec<_>>()
-        .join("; ");
-    Err(CadError::input(format!(
-        "document validation failed before cold rebuild: {errors}"
-    )))
+    if !structural.is_empty() {
+        return Err(CadError::input(format!(
+            "document validation failed before cold rebuild: {}",
+            structural.join("; ")
+        )));
+    }
+    for object in objects.values() {
+        if let ObjectPayload::Unknown(unknown) = &object.payload {
+            return Err(CadError::unsupported(format!(
+                "object {} has unsupported type {}",
+                object.id, unknown.type_name
+            )));
+        }
+    }
+    // A missing solver limits this build, as an unsupported capability does.
+    // As a sketch's own failure it would be in every baseline, so an edit
+    // nothing could check would pass as one that adds no failure.
+    if let Err(unavailable) = ferritecad_sketch_solver::availability() {
+        for object in objects.values() {
+            if let ObjectPayload::Sketch(sketch) = &object.payload
+                && !sketch.constraints.is_empty()
+            {
+                return Err(CadError::unsupported(format!(
+                    "sketch {} carries {} constraint(s) and {unavailable}",
+                    object.id,
+                    sketch.constraints.len()
+                )));
+            }
+        }
+    }
+    Ok(local)
 }

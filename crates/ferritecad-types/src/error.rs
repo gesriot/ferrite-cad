@@ -62,6 +62,14 @@ impl std::fmt::Display for ErrorKind {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CadError {
+    /// Add a report at a boundary while retaining the original error class.
+    #[error("{message}")]
+    Context {
+        kind: ErrorKind,
+        message: String,
+        #[source]
+        source: BoxError,
+    },
     #[error("invalid input: {message}")]
     Input {
         message: String,
@@ -118,6 +126,7 @@ pub enum CadError {
 impl CadError {
     pub fn kind(&self) -> ErrorKind {
         match self {
+            Self::Context { kind, .. } => *kind,
             Self::Input { .. } => ErrorKind::Input,
             Self::Constraint { .. } => ErrorKind::Constraint,
             Self::Topology { .. } => ErrorKind::Topology,

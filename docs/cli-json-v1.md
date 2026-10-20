@@ -2077,3 +2077,26 @@ add в одном request, в том числе на другой ответ т�
 трогает Coincident closure, H/V, длины, Fixed и остальные связи, а замена
 ведущей длины сохраняет их UUID.
 [Полный контракт и рецепт](line-pair-orientation.md).
+
+### Per-object rebuild results
+
+Native `inspect --json`, checked creation, edits, STL and FBX exports include
+`rebuild` with arrays
+`failed` (`id`, error `kind`, `message`), `skipped` (`id`, root failed `cause`),
+`degraded_bodies` (`id`, optional `rolled_back_to`, `cause`) and `warnings`
+(`owner`, saved `reference`, `message`). Inspection without a native kernel
+reports `rebuild: null`; creations that need no kernel also return null.
+Inspection still returns stored metadata when a structural
+or capability error prevents evaluation: `rebuild` is null and `rebuild_error`
+carries the ordinary error fields. Unresolved saved references are warnings; consumed
+references fail their feature without retargeting.
+
+An edit refusal caused by new failed/skipped objects includes the same object
+under `error.rebuild`. Its message lists every failed object and every skipped
+object with its root cause. Existing unresolved-reference checks still apply.
+
+An STL export of a degraded or shapeless selected body returns exit 6,
+`complete: false`, named `omissions`, zero `triangles` and `bytes`, and writes
+no file. The requested `destination` is retained in the response. FBX exports
+retain omitted body placements and use the existing completeness and omission
+fields, with refusal `UnbuiltBody`. Fallback geometry is never exported.

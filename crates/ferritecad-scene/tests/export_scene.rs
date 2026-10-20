@@ -634,6 +634,7 @@ fn a_body_with_nothing_built_into_it_is_not_exported_and_is_not_a_failure() {
     .expect("an unbuilt body is not a failure");
     assert_eq!(scene.definitions().len(), 1);
     assert_eq!(scene.nodes().len(), 1);
+    assert!(scene.completeness().is_complete());
 }
 
 #[test]

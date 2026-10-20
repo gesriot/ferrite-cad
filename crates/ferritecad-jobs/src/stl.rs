@@ -53,6 +53,9 @@ pub struct StlExportRequest<'a> {
 /// Facts about a completed publication, never a started worker or a GPU mesh.
 #[derive(Debug)]
 pub struct StlExport {
+    pub complete: bool,
+    pub omissions: Vec<StlBody>,
+    pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
     pub body: StlBody,
     pub triangles: usize,
@@ -94,6 +97,20 @@ pub fn export_document_as_stl<K: GeometryKernel>(
             progress.report(fraction * 0.8);
         }));
     let built = rebuild_cold(&document, &mut kernel, &building)?;
+    let rebuild = built.report();
+    if rebuild.degraded_bodies.iter().any(|b| b.id == body.id) || built.shape(body.id).is_none() {
+        built.release_all(&mut kernel);
+        context.check_cancelled()?;
+        return Ok(StlExport {
+            destination: request.destination.to_path_buf(),
+            omissions: vec![body.clone()],
+            body,
+            complete: false,
+            rebuild,
+            triangles: 0,
+            bytes: 0,
+        });
+    }
     let serialized: Result<_> = (|| {
         let shape = built.shape(body.id).ok_or_else(|| {
             CadError::input(format!("{} produced no geometry to export", body.label()))
@@ -111,6 +128,9 @@ pub fn export_document_as_stl<K: GeometryKernel>(
     document.close()?;
     write_and_publish(&request, &bytes, context)?;
     Ok(StlExport {
+        complete: true,
+        omissions: Vec::new(),
+        rebuild,
         destination: request.destination.to_path_buf(),
         body,
         triangles,

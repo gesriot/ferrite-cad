@@ -515,3 +515,237 @@ pub fn native_dependencies(dependencies: &[(bool, &str)]) -> bool {
     }
     available
 }
+
+/// A repairable plate history, stored directly so evaluation can reject a radius.
+#[derive(Debug, Clone, Copy)]
+pub struct FilletChain {
+    pub sketch: ferritecad_types::ObjectId,
+    pub extrude: ferritecad_types::ObjectId,
+    pub first: ferritecad_types::ObjectId,
+    pub second: ferritecad_types::ObjectId,
+    pub body: ferritecad_types::ObjectId,
+}
+pub fn write_fillet_chain(path: &Path, radius: f64) -> Result<FilletChain> {
+    use ferritecad_document::{
+        Body, CapSide, Dependency, DependencyRole, EntityKind, Fillet, SelectionRule, SemanticRole,
+        SweptEdge, TopologyRef,
+    };
+    use ferritecad_types::{ObjectId, ProfileJoint};
+    write_plate(path)?;
+    let mut document = Document::open(path)?;
+    let objects = document.objects()?;
+    let sketch = objects
+        .iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+        .expect("plate sketch");
+    let extrude = objects
+        .iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Extrude(_)))
+        .expect("plate extrusion")
+        .id;
+    let body = objects
+        .iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+        .expect("plate body")
+        .id;
+    let ObjectPayload::Sketch(profile) = &sketch.payload else {
+        unreachable!()
+    };
+    let segments: Vec<_> = profile.curves.iter().map(|c| c.id).collect();
+    let first = ObjectId::new();
+    let second = ObjectId::new();
+    document.write(|w| {
+        for (id, previous, joint, r, name) in [
+            (
+                first,
+                extrude,
+                ProfileJoint::new(segments[3], segments[0])?,
+                radius,
+                "Fillet1",
+            ),
+            (
+                second,
+                first,
+                ProfileJoint::new(segments[1], segments[2])?,
+                3.0,
+                "Fillet2",
+            ),
+        ] {
+            w.put_object(
+                id,
+                None,
+                4,
+                Some(name),
+                &ObjectPayload::Fillet(Fillet {
+                    previous,
+                    edge: SweptEdge {
+                        feature: extrude,
+                        joint,
+                    },
+                    radius_mm: r,
+                }),
+            )?;
+            w.add_dependency(Dependency {
+                dependent: id,
+                dependency: previous,
+                role: DependencyRole::Predecessor,
+            })?;
+            let mut roles = vec![(
+                SemanticRole::EdgeFilletFace {
+                    edge_feature: extrude,
+                    joint,
+                },
+                SelectionRule::Exact,
+            )];
+            for side in [CapSide::Start, CapSide::End] {
+                roles.push((
+                    SemanticRole::OriginCap {
+                        origin_feature: extrude,
+                        side,
+                    },
+                    SelectionRule::Exact,
+                ));
+            }
+            for segment in &segments {
+                roles.push((
+                    SemanticRole::OriginSide {
+                        origin_feature: extrude,
+                        profile_segment: *segment,
+                    },
+                    SelectionRule::AllDerivedFrom { ancestor: *segment },
+                ));
+            }
+            if id == second {
+                roles.push((
+                    SemanticRole::OriginFilletFace {
+                        origin_feature: first,
+                        edge_feature: extrude,
+                        joint: ProfileJoint::new(segments[3], segments[0])?,
+                    },
+                    SelectionRule::Exact,
+                ));
+            }
+            for (output_role, selection) in roles {
+                w.put_topology_ref(&TopologyRef {
+                    id: StableEntityId::new(),
+                    owner: id,
+                    producer_feature: id,
+                    expected_kind: EntityKind::Face,
+                    output_role,
+                    selection,
+                    fallback_signature: None,
+                })?;
+            }
+        }
+        w.put_object(
+            body,
+            None,
+            3,
+            Some("Plate"),
+            &ObjectPayload::Body(Body {
+                tip_feature: Some(second),
+            }),
+        )?;
+        w.remove_dependency(Dependency {
+            dependent: body,
+            dependency: extrude,
+            role: DependencyRole::BodyTip,
+        })?;
+        w.add_dependency(Dependency {
+            dependent: body,
+            dependency: second,
+            role: DependencyRole::BodyTip,
+        })
+    })?;
+    document.close()?;
+    Ok(FilletChain {
+        sketch: sketch.id,
+        extrude,
+        first,
+        second,
+        body,
+    })
+}
+
+/// Stored profile coordinates remain an initial guess; dimensions drive the part.
+pub fn write_constrained_fillet_chain(
+    path: &Path,
+    radius: f64,
+    width: f64,
+    depth: f64,
+) -> Result<FilletChain> {
+    use ferritecad_document::{
+        SketchConstraint, SketchConstraintRule, SketchPointRef, SketchPointSelector,
+    };
+    let chain = write_fillet_chain(path, radius)?;
+    let mut document = Document::open(path)?;
+    let object = document
+        .objects()?
+        .into_iter()
+        .find(|o| o.id == chain.sketch)
+        .expect("fixture sketch");
+    let ObjectPayload::Sketch(mut sketch) = object.payload else {
+        unreachable!()
+    };
+    let edges: Vec<_> = sketch.curves.iter().map(|c| c.id).collect();
+    let start = |i| SketchPointRef::new(edges[i], SketchPointSelector::Start);
+    let end = |i| SketchPointRef::new(edges[i], SketchPointSelector::End);
+    let mut rules = Vec::new();
+    for i in 0..4 {
+        rules.push(SketchConstraintRule::Coincident {
+            a: end(i),
+            b: start((i + 1) % 4),
+        });
+    }
+    rules.extend([
+        SketchConstraintRule::Fixed {
+            point: start(0),
+            x: 0.0,
+            y: 0.0,
+        },
+        SketchConstraintRule::Horizontal {
+            a: start(0),
+            b: end(0),
+        },
+        SketchConstraintRule::Vertical {
+            a: start(1),
+            b: end(1),
+        },
+        SketchConstraintRule::Horizontal {
+            a: start(2),
+            b: end(2),
+        },
+        SketchConstraintRule::Vertical {
+            a: start(3),
+            b: end(3),
+        },
+        SketchConstraintRule::Distance {
+            a: start(0),
+            b: end(0),
+            distance: width,
+        },
+        SketchConstraintRule::Distance {
+            a: start(1),
+            b: end(1),
+            distance: depth,
+        },
+    ]);
+    sketch.constraints = rules
+        .into_iter()
+        .map(|rule| SketchConstraint {
+            id: StableEntityId::new(),
+            rule,
+        })
+        .collect();
+    document.write(|w| {
+        w.put_object(
+            object.id,
+            object.parent,
+            object.ordinal,
+            object.name.as_deref(),
+            &ObjectPayload::Sketch(sketch),
+        )
+    })?;
+    document.close()?;
+    Ok(chain)
+}

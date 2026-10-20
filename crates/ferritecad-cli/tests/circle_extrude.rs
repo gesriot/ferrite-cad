@@ -463,6 +463,10 @@ fn native_circle_extrude_process_analytic_geometry_and_delivery() {
     request(&input);
     let v = reply(create(&input, &out).output().expect("process"), 0);
     assert_eq!(v["result"]["destination"], out.to_str().expect("UTF-8"));
+    assert_eq!(
+        v["result"]["rebuild"],
+        json!({"failed":[], "skipped":[], "degraded_bodies":[], "warnings":[]})
+    );
     let saved = std::fs::read(&out).expect("source");
     let doc = Document::open_read_only(&out).expect("reopen");
     assert_eq!(

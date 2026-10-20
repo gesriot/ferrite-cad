@@ -1623,7 +1623,7 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         ObjectPayload::Chamfer(c) => c,
         other => panic!("{other:?}"),
     };
-    let refused_everywhere = |why: &str, path: &Path| {
+    let refused_everywhere = |why: &str, path: &Path, exit: i32| {
         for command in [vec!["rebuild", "--cold"], vec!["rebuild"]] {
             let out = cli()
                 .arg(command[0])
@@ -1642,7 +1642,18 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
             .arg("--json")
             .output()
             .expect("export");
-        assert_eq!(out.status.code(), Some(2), "{why}: {out:?}");
+        assert_eq!(out.status.code(), Some(exit), "{why}: {out:?}");
+        if exit == 6 {
+            let reply: serde_json::Value =
+                serde_json::from_slice(&out.stdout).expect("partial export JSON");
+            assert_eq!(reply["result"]["complete"], false);
+            assert!(
+                !reply["result"]["rebuild"]["failed"]
+                    .as_array()
+                    .expect("failed")
+                    .is_empty()
+            );
+        }
         assert!(!stl.exists(), "{why}: a partial plate was exported");
     };
     // A distance past the bound a writer never checked.
@@ -1651,14 +1662,14 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         c.distance_mm = 100.0;
         rewrite(d, id, ObjectPayload::Chamfer(c));
     });
-    refused_everywhere("a distance past the bound", &wide);
+    refused_everywhere("a distance past the bound", &wide, 6);
     // A distance below the minimum.
     let thin = forge("thin", &|d, id| {
         let mut c = chamfer_of(d, id);
         c.distance_mm = 1e-9;
         rewrite(d, id, ObjectPayload::Chamfer(c));
     });
-    refused_everywhere("a distance below the minimum", &thin);
+    refused_everywhere("a distance below the minimum", &thin, 6);
     // A joint that is not a corner of this plate.
     let alien = forge("alien", &|d, id| {
         let mut c = chamfer_of(d, id);
@@ -1669,7 +1680,7 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         .expect("joint");
         rewrite(d, id, ObjectPayload::Chamfer(c));
     });
-    refused_everywhere("a joint of no corner", &alien);
+    refused_everywhere("a joint of no corner", &alien, 6);
     // The plate drawn narrower after the Chamfer was saved: the distance no
     // longer fits the Lines the plate is built from.
     let narrow = forge("narrow", &|d, _| {
@@ -1701,7 +1712,7 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         })
         .expect("narrowed");
     });
-    refused_everywhere("a plate too narrow for the distance", &narrow);
+    refused_everywhere("a plate too narrow for the distance", &narrow, 6);
     // A second feature over the same plate: a Chamfer cutting it too.
     let branch = forge("branch", &|d, id| {
         let c = chamfer_of(d, id);
@@ -1730,9 +1741,17 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         })
         .expect("branched");
     });
-    refused_everywhere("two Chamfers over one plate", &branch);
-    // Every forgery is also refused as an edit target, and none was repaired.
-    for path in [&wide, &thin, &alien, &narrow, &branch] {
+    refused_everywhere("two Chamfers over one plate", &branch, 2);
+    // Geometry failures can be repaired. A missing joint and a forked history
+    // still fail the existing edit preflight.
+    for (path, repairable) in [
+        (&wide, true),
+        (&thin, true),
+        (&narrow, true),
+        (&alien, false),
+        (&branch, false),
+    ] {
+        let before = std::fs::read(path).expect("source bytes");
         let request = f.root.path().join("forged.json");
         write(&request, &json!({"request_version":1,"distance_mm":1.0}));
         let catalog = inspect(path);
@@ -1740,11 +1759,19 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
             .as_str()
             .expect("version")
             .to_owned();
-        let out = f.root.path().join("forged-out.fcad");
+        let out = path.with_extension("repaired.fcad");
         let v = edit_from(path, &id.to_string(), &version, &request, &out)
             .output()
             .expect("process");
-        assert!(!v.status.success() || !out.exists(), "{v:?}");
-        assert!(!out.exists(), "a forged document was edited");
+        if repairable {
+            let result = reply(v, "edit-chamfer-distance", 0);
+            assert_eq!(result["result"]["rebuild"]["failed"], json!([]));
+            assert_eq!(result["result"]["rebuild"]["skipped"], json!([]));
+            assert!(out.exists(), "the repaired copy was not published");
+        } else {
+            assert!(!v.status.success(), "{v:?}");
+            assert!(!out.exists(), "an invalid edit target was published");
+        }
+        assert_eq!(std::fs::read(path).expect("source bytes"), before);
     }
 }

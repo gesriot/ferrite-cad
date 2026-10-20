@@ -1186,6 +1186,7 @@ pub(crate) mod tests {
             max_radius_mm: 0.5,
         };
         ferritecad_jobs::AddedEdgeFillet {
+            rebuild: Default::default(),
             destination: PathBuf::from("stale.fcad"),
             document_id: ferritecad_types::DocumentId::new(),
             body: ObjectId::new(),
@@ -1885,6 +1886,7 @@ pub(crate) mod tests {
             .start_fillet_radius(refused, |_, _, _| std::thread::spawn(|| {}))
             .expect("started");
         let stale = ferritecad_jobs::EditedFilletRadius {
+            rebuild: Default::default(),
             destination: PathBuf::from("stale.fcad"),
             document_id: ferritecad_types::DocumentId::new(),
             body: ObjectId::new(),

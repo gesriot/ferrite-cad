@@ -192,6 +192,7 @@ pub(crate) fn finish_stl_export(
         input,
         generation,
         result.map(|exported| ExportStatus::WroteStl {
+            complete: exported.complete,
             destination: display(&exported.destination),
             body: exported.body.label(),
             triangles: exported.triangles,

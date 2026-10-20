@@ -33,6 +33,8 @@ ferritecad-types.workspace = true
 same-file = "1"
 
 [dev-dependencies]
+ferritecad-occt.workspace = true
+ferritecad-sketch-solver.workspace = true
 ferritecad-fixtures.workspace = true
 tempfile = "3"
 

@@ -62,3 +62,6 @@ pub use solve::{ConflictingConstraint, SketchConflict, SketchSolveReport};
 pub fn solver_available() -> bool {
     ferritecad_sketch_solver::is_available()
 }
+
+mod status;
+pub use status::*;
