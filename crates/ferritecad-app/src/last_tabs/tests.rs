@@ -584,12 +584,11 @@ fn two_processes_publish_whole_lists_and_one_of_them_stays() {
                 .expect("a child")
         })
         .collect();
-    let (mut _reads, mut seen, mut _io) = (0, [0, 0], 0);
+    let mut seen = [0, 0];
     while children
         .iter_mut()
         .any(|child| child.try_wait().expect("wait").is_none())
     {
-        _reads += 1;
         match folder.read() {
             Ok(None) => {}
             Ok(Some(read)) => {
@@ -606,11 +605,9 @@ fn two_processes_publish_whole_lists_and_one_of_them_stays() {
                     cfg!(windows) && error.kind() == "io",
                     "a reading during publication was refused: {error}"
                 );
-                _io += 1;
             }
         }
     }
-    let mut said = Vec::new();
     for child in children {
         let output = child.wait_with_output().expect("output");
         let text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -619,11 +616,9 @@ fn two_processes_publish_whole_lists_and_one_of_them_stays() {
             text.contains("test result: ok. 1 passed; 0 failed"),
             "{text}"
         );
-        said.push(
-            text.lines()
-                .find(|line| line.starts_with("FCAD-30R-CHILD"))
-                .expect("the child said what it did")
-                .to_owned(),
+        assert!(
+            text.lines().any(|line| line.starts_with("FCAD-30R-CHILD")),
+            "the child said what it did: {text}"
         );
     }
     let last = folder.read().expect("read").expect("a list");

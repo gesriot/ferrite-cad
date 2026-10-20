@@ -9514,24 +9514,6 @@ mod tests {
         Some((directory, scene))
     }
 
-    /// Whether a machine with no adapter may skip a pixel gate.
-    ///
-    /// A contributor's headless machine may. A pin run may not: its green
-    /// result is a product claim that a document reached pixels, and a skip
-    /// that looked like a pass would make that claim readable only by
-    /// inspecting a log for the absence of a line.
-    /// The decision itself, over the answer rather than over the environment,
-    /// so it can be held to both outcomes without one being arranged.
-    fn a_missing_adapter_may_skip_when(required: bool) -> bool {
-        !required
-    }
-
-    #[test]
-    fn a_pin_run_cannot_turn_a_missing_gpu_into_a_green_skip() {
-        assert!(a_missing_adapter_may_skip_when(false));
-        assert!(!a_missing_adapter_may_skip_when(true));
-    }
-
     /// A renderer, or a reason this machine cannot run a pixel gate.
     macro_rules! renderer_or_skip {
         () => {

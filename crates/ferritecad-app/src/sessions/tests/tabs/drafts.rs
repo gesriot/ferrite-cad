@@ -1776,7 +1776,6 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
         area * 9.5
     );
     super::super::analytic::assert_round(&b_stl, [-3.5, 4.25], 8.0, None, 15.25);
-    let (_, _height_b, _volume_b) = super::super::checkpoints::stl_facts(&b_stl);
     if let Ok(dir) = std::env::var("FCAD_TAB_DRAFTS_ARTIFACTS") {
         let dir = PathBuf::from(dir);
         for (name, stl, fbx) in [("drafts-a", &a_stl, &a_fbx), ("drafts-b", &b_stl, &b_fbx)] {

@@ -1348,7 +1348,6 @@ fn native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_com
     assert!((height_a - 26.0).abs() < 1e-4, "{height_a}");
     assert!((volume_a - 80.0 * 40.0 * 26.0).abs() < 1e-2, "{volume_a}");
     super::analytic::assert_round(&b_stl, [-3.5, 4.25], 8.0, None, 15.25);
-    let (_, _height_b, _volume_b) = super::checkpoints::stl_facts(&b_stl);
     if let Ok(dir) = std::env::var("FCAD_TABS_SESSION_ARTIFACTS") {
         let dir = PathBuf::from(dir);
         for (name, stl, fbx) in [("tabs-a", &a_stl, &a_fbx), ("tabs-b", &b_stl, &b_fbx)] {
