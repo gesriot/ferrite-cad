@@ -501,7 +501,7 @@ where
                 ObjectPayload::Body(body) => {
                     // A body with no tip feature is empty by definition rather
                     // than broken: nothing has been built into it yet.
-                    if body.tip_feature.is_none() && !sink.exports_geometry() {
+                    if body.tip_feature.is_none() {
                         continue;
                     }
                     // Two bodies are two definitions however alike they look:

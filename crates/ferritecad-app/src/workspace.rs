@@ -236,13 +236,16 @@ pub(crate) fn compose(ui: &mut egui::Ui, view: &mut View<'_>) -> Answers {
                     .max_height(STATUS_HEIGHT)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        if let Some(source) = view.scene.edit_source
-                            && source.model_tree.unbuilt_features > 0
-                        {
-                            ui.label(format!(
-                                "{} features do not build",
-                                source.model_tree.unbuilt_features
-                            ));
+                        if let Some(source) = view.scene.edit_source {
+                            match source.model_tree.unbuilt_features {
+                                0 => {}
+                                1 => {
+                                    ui.label("1 feature does not build");
+                                }
+                                n => {
+                                    ui.label(format!("{n} features do not build"));
+                                }
+                            }
                         }
                         let lines = ferritecad_ui::activity_lines(ui, activity);
                         answers.chosen.cancel = lines.cancel;

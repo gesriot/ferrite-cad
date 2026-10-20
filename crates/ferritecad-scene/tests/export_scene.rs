@@ -604,7 +604,7 @@ fn sketches_datums_and_features_are_not_exported_as_nodes() {
 }
 
 #[test]
-fn a_body_without_a_shape_is_named_in_a_partial_export() {
+fn a_body_with_nothing_built_into_it_is_not_exported_and_is_not_a_failure() {
     let directory = tempfile::tempdir().expect("a temporary directory is available");
     let path = directory.path().join("empty-body.fcad");
     several_bodies(&path, 1);
@@ -632,13 +632,9 @@ fn a_body_without_a_shape_is_named_in_a_partial_export() {
         &OperationContext::default(),
     )
     .expect("an unbuilt body is not a failure");
-    assert_eq!(scene.definitions().len(), 2);
-    assert_eq!(scene.nodes().len(), 2);
-    assert!(!scene.completeness().is_complete());
-    assert_eq!(
-        scene.completeness().omissions()[0].source,
-        ferritecad_export::ExportSource::Body { object: empty }
-    );
+    assert_eq!(scene.definitions().len(), 1);
+    assert_eq!(scene.nodes().len(), 1);
+    assert!(scene.completeness().is_complete());
 }
 
 #[test]

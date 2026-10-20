@@ -114,17 +114,17 @@ impl MockKernel {
         self.shapes.len()
     }
 
+    /// Refuse one numbered extrusion request, for failure and cleanup tests.
+    pub fn fail_extrude_at(&mut self, request: u64) {
+        self.fail_extrude_at = Some(request);
+    }
+
     /// How many extrusions this session has been asked to compute.
     ///
     /// The only way to prove a cache was actually used. A warm rebuild that
     /// silently recomputed everything would produce identical geometry and
     /// identical names, so nothing about its result distinguishes it from a
     /// cold one — the difference is a call that did not happen.
-    /// Refuse one numbered extrusion request, for failure and cleanup tests.
-    pub fn fail_extrude_at(&mut self, request: u64) {
-        self.fail_extrude_at = Some(request);
-    }
-
     pub fn extrude_count(&self) -> u64 {
         self.extrusions
     }

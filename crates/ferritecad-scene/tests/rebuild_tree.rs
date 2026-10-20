@@ -34,19 +34,27 @@ fn tree_occurrences_show_errors_root_dependencies_and_body_fallback() {
     };
     ferritecad_scene::project_rebuild_status(&mut tree, &objects, &report);
     assert_eq!(tree.unbuilt_features, 2);
-    for row in &tree.rows {
-        if row.id.0 == chain.first {
-            assert!(row.note.contains("radius does not fit"));
-            assert!(row.name.starts_with('⚠'));
-        }
-        if row.id.0 == chain.second {
-            assert_eq!(row.note, "not built: depends on Fillet1");
-        }
-        if row.id.0 == chain.body {
-            assert!(
-                row.note
-                    .contains("Rolled back to Extrude1 because of Fillet1")
-            );
-        }
+    let rows = |id| {
+        let rows: Vec<_> = tree.rows.iter().filter(|row| row.id.0 == id).collect();
+        assert!(!rows.is_empty(), "the tree shows {id}");
+        rows
+    };
+    for row in rows(chain.first) {
+        assert!(row.note.contains("radius does not fit"));
+        assert!(row.name.starts_with('⚠'));
+    }
+    for row in rows(chain.second) {
+        assert_eq!(row.note, "not built: depends on Fillet1");
+        assert!(row.name.starts_with('⚠'));
+    }
+    for row in rows(chain.body) {
+        assert!(
+            row.note
+                .contains("Rolled back to Extrude1 because of Fillet1")
+        );
+        assert!(row.name.starts_with('⚠'));
+    }
+    for row in rows(chain.extrude) {
+        assert!(!row.name.starts_with('⚠'), "a built feature is not marked");
     }
 }
