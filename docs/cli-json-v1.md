@@ -2080,11 +2080,13 @@ add в одном request, в том числе на другой ответ т�
 
 ### Per-object rebuild results
 
-Native `inspect --json`, STL and FBX exports include `rebuild` with arrays
+Native `inspect --json`, checked creation, edits, STL and FBX exports include
+`rebuild` with arrays
 `failed` (`id`, error `kind`, `message`), `skipped` (`id`, root failed `cause`),
 `degraded_bodies` (`id`, optional `rolled_back_to`, `cause`) and `warnings`
 (`owner`, saved `reference`, `message`). Inspection without a native kernel
-reports `rebuild: null`. Inspection still returns stored metadata when a structural
+reports `rebuild: null`; creations that need no kernel also return null.
+Inspection still returns stored metadata when a structural
 or capability error prevents evaluation: `rebuild` is null and `rebuild_error`
 carries the ordinary error fields. Unresolved saved references are warnings; consumed
 references fail their feature without retargeting.

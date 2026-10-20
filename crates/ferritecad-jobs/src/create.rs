@@ -199,6 +199,7 @@ impl<'a> CreateDocumentRequest<'a> {
 /// window turns it into a file to open. Neither of those belongs to the work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatedDocument {
+    rebuild: Option<ferritecad_eval::RebuildReport>,
     destination: PathBuf,
     document_id: DocumentId,
     annulus: Option<CreatedAnnulus>,
@@ -227,6 +228,11 @@ pub struct CreatedAnnulus {
 }
 
 impl CreatedDocument {
+    /// The checked creation's rebuild, absent when creation needed no kernel.
+    pub fn rebuild(&self) -> Option<&ferritecad_eval::RebuildReport> {
+        self.rebuild.as_ref()
+    }
+
     /// Where the document is. The path that was asked for, published.
     pub fn destination(&self) -> &Path {
         &self.destination
@@ -281,22 +287,33 @@ pub fn create_document_with_kernel<K: GeometryKernel>(
     factory: impl FnOnce() -> Result<K>,
     context: &OperationContext,
 ) -> Result<CreatedDocument> {
+    if let NewDocument::SamplePlate(size) = &request.content
+        && (size.width == 0.0 || size.depth == 0.0)
+    {
+        return Err(ferritecad_types::CadError::input(
+            "sample plate dimensions must be nonzero",
+        ));
+    }
     let drawn = request.content.needs_kernel();
-    create_checked(request, context, |document| {
+    let mut rebuild = None;
+    let mut created = create_checked(request, context, |document| {
         if !drawn {
             return Ok(());
         }
         context.check_cancelled()?;
         let mut kernel = factory()?;
-        check_profile(document, &mut kernel, context)
-    })
+        rebuild = Some(check_profile(document, &mut kernel, context)?);
+        Ok(())
+    })?;
+    created.rebuild = rebuild;
+    Ok(created)
 }
 
 fn check_profile(
     document: &Document,
     kernel: &mut impl GeometryKernel,
     context: &OperationContext,
-) -> Result<()> {
+) -> Result<ferritecad_eval::RebuildReport> {
     let progress = context.progress().clone();
     let phase = context
         .clone()
@@ -319,8 +336,9 @@ fn check_profile(
         }
         context.check_cancelled()
     })();
+    let report = built.report();
     built.release_all(kernel);
-    checked
+    checked.map(|()| report)
 }
 
 fn create_checked(
@@ -352,6 +370,7 @@ fn create_checked(
     // Publication is the completion boundary. Do not check cancellation again.
     context.progress().report(1.0);
     Ok(CreatedDocument {
+        rebuild: None,
         destination: request.destination.to_path_buf(),
         document_id,
         annulus,
@@ -440,11 +459,6 @@ fn populate_sample_plate(document: &mut Document, size: PlateSize) -> Result<()>
         height,
     } = size;
 
-    if width == 0.0 || depth == 0.0 {
-        return Err(ferritecad_types::CadError::input(
-            "sample plate dimensions must be nonzero",
-        ));
-    }
     let corners = [
         Point2::new(0.0, 0.0)?,
         Point2::new(width, 0.0)?,
@@ -1666,7 +1680,7 @@ mod tests {
                 "keep",
             ),
             &ctx,
-            |doc| check_profile(doc, &mut kernel, &ctx),
+            |doc| check_profile(doc, &mut kernel, &ctx).map(|_| ()),
         )
         .expect_err("a circle this kernel cannot build is not published");
         assert_eq!(error.kind(), ErrorKind::Unsupported);

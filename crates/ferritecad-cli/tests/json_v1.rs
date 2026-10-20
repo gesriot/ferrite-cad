@@ -1099,7 +1099,7 @@ fn native_json_inspect_edit_contract() {
         let result = reply(&output, "edit-extrude", 0);
         assert_eq!(
             result["result"],
-            serde_json::json!({"destination":destination,"document_id":reading["document_id"],"feature_id":feature})
+            serde_json::json!({"destination":destination,"document_id":reading["document_id"],"feature_id":feature,"rebuild":{"failed":[],"skipped":[],"degraded_bodies":[],"warnings":[]}})
         );
         let edited = inspect(&destination);
         assert_eq!(edited["document_id"], reading["document_id"]);

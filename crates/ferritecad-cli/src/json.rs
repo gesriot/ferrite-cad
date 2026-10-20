@@ -1560,6 +1560,7 @@ impl From<ferritecad_jobs::EditedDocument> for Edited {
 
 #[derive(Serialize)]
 pub struct Created {
+    rebuild: Option<ferritecad_eval::RebuildReport>,
     destination: PathBuf,
     document_id: DocumentId,
 }
@@ -1567,6 +1568,7 @@ pub struct Created {
 impl From<ferritecad_jobs::CreatedDocument> for Created {
     fn from(created: ferritecad_jobs::CreatedDocument) -> Self {
         Self {
+            rebuild: created.rebuild().cloned(),
             destination: created.destination().to_path_buf(),
             document_id: created.document_id(),
         }
@@ -1582,6 +1584,7 @@ impl From<ferritecad_jobs::CreatedDocument> for Created {
 /// separately and neither is findable from the other.
 #[derive(Serialize)]
 pub struct CreatedAnnulus {
+    pub rebuild: Option<ferritecad_eval::RebuildReport>,
     pub destination: PathBuf,
     pub document_id: DocumentId,
     pub sketch_id: ObjectId,
@@ -1603,6 +1606,7 @@ impl TryFrom<ferritecad_jobs::CreatedDocument> for CreatedAnnulus {
             CadError::kernel("the creation published no annular identities to report")
         })?;
         Ok(Self {
+            rebuild: created.rebuild().cloned(),
             destination: created.destination().to_path_buf(),
             document_id: created.document_id(),
             sketch_id: annulus.sketch,

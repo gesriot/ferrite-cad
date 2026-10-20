@@ -955,7 +955,12 @@ fn run<K: GeometryKernel + ?Sized>(
     }
     for reference in document.topology_refs()? {
         match state.resolve(&reference) {
-            Ok(found) if found.len() == 1 => {}
+            Ok(found)
+                if !found.is_empty()
+                    && (!matches!(
+                        reference.selection,
+                        ferritecad_document::SelectionRule::Exact
+                    ) || found.len() == 1) => {}
             resolved => state.warnings.push(ReferenceWarning {
                 owner: reference.owner,
                 reference: reference.id,

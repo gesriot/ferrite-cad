@@ -706,6 +706,10 @@ fn native_annular_extrude_process_analytic_geometry_and_delivery() {
     request(&input);
     let v = reply(create(&input, &out).output().expect("process"), 0);
     assert_eq!(v["result"]["destination"], out.to_str().expect("UTF-8"));
+    assert_eq!(
+        v["result"]["rebuild"],
+        json!({"failed":[], "skipped":[], "degraded_bodies":[], "warnings":[]})
+    );
     let saved = std::fs::read(&out).expect("source");
 
     // The document stores two circles, by centre and radius, each with its own
