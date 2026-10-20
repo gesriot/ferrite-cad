@@ -7369,7 +7369,8 @@
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-sketch-solver#ferritecad-sketch-solver@0.0.1",
         "path+crates/ferritecad-topology#ferritecad-topology@0.0.1",
-        "path+crates/ferritecad-types#ferritecad-types@0.0.1"
+        "path+crates/ferritecad-types#ferritecad-types@0.0.1",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229"
       ],
       "ref": "path+crates/ferritecad-eval#ferritecad-eval@0.0.1"
     },
@@ -8707,7 +8708,7 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json@sha256:fc2d63983a622bdc85e3ed6f07e682c42db3986c0c88f73fac115ab00abc891c"
+        "value": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json@sha256:4a59b55dbb854fefe27b73a0380cba0c5b06cecda890a99c10a7d9a28a2a42e6"
       },
       {
         "name": "ferritecad:sbom:product-format",
