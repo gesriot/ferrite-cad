@@ -940,7 +940,9 @@ fn run<K: GeometryKernel + ?Sized>(
             Ok(()) => {
                 state.statuses.insert(*id, RebuildStatus::Built);
             }
-            Err(CadError::Cancelled) => return Err(CadError::Cancelled),
+            Err(error) if error.kind() == ferritecad_types::ErrorKind::Cancellation => {
+                return Err(error);
+            }
             Err(error) => {
                 for shape in state.owned.drain(owned_before..).rev() {
                     kernel.release(shape);
@@ -1090,6 +1092,9 @@ fn restore<K: GeometryKernel + ?Sized>(
     // map is left untouched by a failure here, so the fresh build below
     // records this feature over nothing rather than over a half-restore.
     if let Err(error) = restore_feature(kernel, &archived, &mut state.topology) {
+        if error.kind() == ferritecad_types::ErrorKind::Cancellation {
+            return Err(error);
+        }
         events.push(CacheEvent::new(
             id,
             CacheOutcome::Rejected,
