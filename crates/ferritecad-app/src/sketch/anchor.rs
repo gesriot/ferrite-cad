@@ -220,7 +220,6 @@ mod tests {
         let both = row(&[30.0, 5.0], 4.0);
         let q = query([0.0, 0.0], 4.0);
         assert_eq!(track(Some(both[0]), &both, &q), Some(both[1]));
-        println!("\nFCAD_31H_APERTURE_EXECUTED");
     }
 
     #[test]
@@ -274,7 +273,6 @@ mod tests {
             track(Some(crossing), &all, &query([12.0, 9.5], 1.0)),
             Some(crossing)
         );
-        println!("\nFCAD_31H_REPLACE_EXECUTED");
     }
 
     #[test]
@@ -319,7 +317,6 @@ mod tests {
             let permuted: Vec<_> = layout.iter().map(|&i| all[i]).collect();
             assert_eq!(track(None, &permuted, &q), Some(first));
         }
-        println!("\nFCAD_31H_FIRST_EXECUTED");
     }
 
     #[test]
@@ -352,7 +349,6 @@ mod tests {
         for cursor in [[f64::NAN, 0.0], [0.0, f64::INFINITY]] {
             assert_eq!(track(Some(held), &all, &query(cursor, scale)), None);
         }
-        println!("\nFCAD_31H_RELEASE_EXECUTED");
     }
 
     #[test]
@@ -372,7 +368,6 @@ mod tests {
         // Held 11 against 8 is three points: replaced; held 8 stays.
         assert_eq!(seen[0].1.as_deref(), Some("vertex 2"));
         assert_eq!(seen[0].2.as_deref(), Some("vertex 2"));
-        println!("\nFCAD_31H_SCALES_EXECUTED");
     }
 
     #[test]
@@ -418,6 +413,5 @@ mod tests {
                 assert!(words.contains(fragment), "{fragment:?} in {words:?}");
             }
         }
-        println!("\nFCAD_31H_WORDS_EXECUTED");
     }
 }

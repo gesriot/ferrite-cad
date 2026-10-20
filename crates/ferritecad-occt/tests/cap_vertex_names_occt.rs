@@ -30,7 +30,7 @@ use ferritecad_types::{ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId
 macro_rules! kernel_or_skip {
     () => {
         if !is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
     };

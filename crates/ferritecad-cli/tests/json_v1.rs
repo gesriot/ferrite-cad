@@ -1069,12 +1069,7 @@ fn closed_stderr_does_not_prevent_structured_errors_or_delivery_exit() {
 #[test]
 fn native_json_inspect_edit_contract() {
     if !ferritecad_occt::is_available() {
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(),
-            Ok("1"),
-            "native JSON gate requires OCCT"
-        );
-        eprintln!("skipped: this build has no Open CASCADE (JSON edit/STL process gate)");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     stl::native_contract();

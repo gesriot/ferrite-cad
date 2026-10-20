@@ -347,7 +347,6 @@ mod tests {
             .map(SnapKind::label),
             ["Intersection", "Endpoint", "Midpoint"]
         );
-        println!("\nFCAD_31C_KINDS_EXECUTED");
     }
 
     /// A segment 1.9, 2.0 and 2.1 logical points long, the pointer on its middle:
@@ -374,7 +373,6 @@ mod tests {
                 assert_eq!(hit.at, middle);
             }
         }
-        println!("\nFCAD_31C_CROWDED_EXECUTED");
     }
 
     #[test]
@@ -392,7 +390,6 @@ mod tests {
         assert_eq!(winner(2.01), SnapKind::Endpoint, "1.02 points further");
         assert_eq!(winner(1.99), SnapKind::Intersection, "0.98 points further");
         assert_eq!(winner(1.5), SnapKind::Intersection, "same distance, kind");
-        println!("\nFCAD_31C_ONE_POINT_GAP_EXECUTED");
     }
 
     #[test]
@@ -431,7 +428,6 @@ mod tests {
         }
         // The same ends and the same distance, but the later one listed first.
         assert_eq!(pick(&[b, c], &at), Some(c));
-        println!("\nFCAD_31C_TIES_EXECUTED");
     }
 
     #[test]
@@ -457,7 +453,6 @@ mod tests {
             ..origin
         };
         assert!(pick(&[at(1.0, SnapKind::Endpoint)], &hidden).is_none());
-        println!("\nFCAD_31C_APERTURE_EXECUTED");
     }
 
     /// The same drawing on screen at three canvas scales: the choice is made in
@@ -487,7 +482,6 @@ mod tests {
             assert_eq!(chunk, first.as_slice());
         }
         assert_eq!(first[0].1, SnapKind::Intersection);
-        println!("\nFCAD_31C_SCALE_EXECUTED");
     }
 
     #[test]
@@ -522,7 +516,6 @@ mod tests {
                 if closed { 4 } else { 3 }
             );
         }
-        println!("\nFCAD_31C_FINITE_CROSSING_EXECUTED");
     }
 
     #[test]
@@ -619,7 +612,6 @@ mod tests {
             "not the zero edge's"
         );
         assert_eq!(of_kind(&all, SnapKind::Endpoint).len(), 5);
-        println!("\nFCAD_31C_DEGENERATE_EXECUTED");
     }
 
     #[test]
@@ -662,7 +654,6 @@ mod tests {
             .collect();
         assert_eq!(of_kind(&expected, SnapKind::Intersection), [[5., 0.125]]);
         assert_eq!(collect(&touching, false, Some(window)), expected);
-        println!("\nFCAD_31C_WINDOW_EXECUTED");
     }
 
     #[test]
@@ -688,7 +679,6 @@ mod tests {
                 assert!(a.iter().zip(&b).all(|(p, q)| near(*p, *q)), "{kind:?}");
             }
         }
-        println!("\nFCAD_31C_REVERSED_EXECUTED");
     }
 
     #[test]
@@ -740,7 +730,6 @@ mod tests {
                 .iter()
                 .any(|p| near(*p, [5.0, 0.0]))
         );
-        println!("\nFCAD_31C_FROZEN_EXECUTED");
     }
 
     /// The editor's largest drawing: 256 vertices, every edge crossing many.
@@ -775,7 +764,6 @@ mod tests {
         // Pressing the first vertex removes only what sits on it.
         let kept = frozen(&star, true, star[0]);
         assert!(kept.len() < all.len() && kept.len() + 300 > all.len());
-        println!("\nFCAD_31C_LARGEST_EXECUTED");
     }
 
     #[test]
@@ -788,6 +776,5 @@ mod tests {
         for v in [1.0 / 3.0, 5e-7, 123456.789012345, -1e-9] {
             assert_eq!(coordinate(v).parse::<f64>().expect("number"), v);
         }
-        println!("\nFCAD_31C_COORDINATE_EXECUTED");
     }
 }

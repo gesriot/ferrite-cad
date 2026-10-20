@@ -1835,11 +1835,7 @@ mod tests {
             .as_ref()
             .is_err_and(|e| e.kind() == ferritecad_types::ErrorKind::Unsupported)
         {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: no PlaneGCS for constraint phase faults");
+            ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
             return;
         }
         probe.expect("constraint solve with test kernel");

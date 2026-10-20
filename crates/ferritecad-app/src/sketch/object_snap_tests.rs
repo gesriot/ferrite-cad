@@ -185,7 +185,6 @@ fn the_switch_sits_beside_the_grid_step_and_changes_only_editor_state() {
     assert_eq!((e.canvas.snap, e.canvas.object_snap), (Snap::Five, false));
     assert_eq!(e.draft, before);
     assert!(e.undo.is_empty() && e.redo.is_empty());
-    println!("\nFCAD_31C_SWITCH_EXECUTED");
 }
 
 #[test]
@@ -242,7 +241,6 @@ fn new_points_take_crossing_midpoint_and_endpoint_with_a_marker_and_a_name() {
         e.redo();
         assert_eq!(e.draft.as_ref(), Some(&draft));
     }
-    println!("\nFCAD_31C_NEW_POINTS_EXECUTED");
 }
 
 #[test]
@@ -306,7 +304,6 @@ fn an_object_point_beats_the_grid_is_never_rounded_and_typed_text_stays_exact() 
     let out = frame(&ctx, &mut e, vec![]);
     click(&ctx, &mut e, text_at(&out, "Add point"));
     assert_eq!(strings(&e, 2), pair(" 7.5 ", "1e1"));
-    println!("\nFCAD_31C_GRID_AND_TEXT_EXECUTED");
 }
 
 #[test]
@@ -400,7 +397,6 @@ fn a_drag_lands_on_the_frozen_incident_midpoint_never_on_itself_and_is_one_undo(
         assert!(marker(&out).expect(name).distance(spot) < 0.01);
         escape(&ctx, &mut e);
     }
-    println!("\nFCAD_31C_DRAG_EXECUTED");
 }
 
 #[test]
@@ -463,7 +459,6 @@ fn a_snap_that_breaks_the_contour_stays_a_draft_and_cancelling_leaves_history_al
     assert_eq!(e.redo.len(), 0, "a new step ends the old Redo");
     let x: f64 = strings(&e, 2)[0].parse().expect("a number");
     assert!(x > 118.75, "released outside, at {x}");
-    println!("\nFCAD_31C_CANCEL_AND_INVALID_EXECUTED");
 }
 
 #[test]
@@ -535,7 +530,6 @@ fn packed_events_keep_order_and_a_switch_in_the_frame_changes_only_the_next_gest
     let switch_at = text_at(&frame(&ctx, &mut e, vec![]), "Object snap");
     click(&ctx, &mut e, switch_at);
     assert!(e.canvas.object_snap, "a held gesture keeps its settings");
-    println!("\nFCAD_31C_PACKED_EXECUTED");
 }
 
 #[test]
@@ -630,7 +624,6 @@ fn off_busy_and_covered_canvases_offer_no_snap() {
         }]);
     }
     assert_eq!(e.draft, before, "no point through the window");
-    println!("\nFCAD_31C_BLOCKED_EXECUTED");
 }
 
 #[test]
@@ -696,7 +689,6 @@ fn one_and_two_pixels_per_point_and_other_canvas_scales_pick_the_same_point() {
         }
     }
     assert!(scales[0] > 3. * scales[1], "scales differ: {scales:?}");
-    println!("\nFCAD_31C_SCALE_PIXELS_EXECUTED");
 }
 
 #[test]
@@ -714,7 +706,6 @@ fn only_what_the_canvas_shows_is_offered() {
     let edge = rect(&ctx, &mut e);
     let pointer = egui::pos2(edge.right() - 2., at(&ctx, &mut e, [118., 10.]).y);
     assert!(painted(&hover(&ctx, &mut e, pointer), "Midpoint"));
-    println!("\nFCAD_31C_VISIBLE_EXECUTED");
 }
 
 #[test]
@@ -770,7 +761,6 @@ fn saved_vertices_drag_to_a_midpoint_and_ask_for_the_request_typed_numbers_make(
     );
     assert!(e.canvas.object_snap, "restoring leaves the editor setting");
     assert_ne!(e.draft, moved);
-    println!("\nFCAD_31C_SAVED_EXECUTED");
 }
 
 /// Whether the editor's Object snap is on (for tests of the owners around it).
@@ -818,8 +808,7 @@ fn native_object_snap_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
     use ferritecad_kernel::OperationContext;
     use rusqlite::types::Value;
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: no OCCT for the object-snap native gate");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let root = tempfile::tempdir().expect("directory");
@@ -1011,5 +1000,4 @@ fn native_object_snap_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
             .expect("mtime"),
         modified
     );
-    println!("\nFCAD_31C_NATIVE_EXECUTED sql_cells=2 volume=14000 triangles=20");
 }

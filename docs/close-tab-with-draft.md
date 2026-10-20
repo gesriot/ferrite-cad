@@ -74,8 +74,9 @@ its recovery lane.
 
 All new owner tests live beside the existing tab/draft fixtures in
 `sessions::tests::tabs::drafts::close_form`; widgets are real egui with synthetic
-input, **not an OS window**. `ci.yml` names each kernel-free gate exactly and
-requires its execution marker, one passed assertion test and no `skipped:`:
+input, **not an OS window**. They run in the complete stub and native workspace
+suites described in [build-occt.md](build-occt.md#ci-suites). The marker columns
+below record the original verification; current CI has no per-test gates.
 
 | Gate suffix | Evidence / marker |
 |---|---|

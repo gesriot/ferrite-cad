@@ -33,6 +33,7 @@ ferritecad-types.workspace = true
 same-file = "1"
 
 [dev-dependencies]
+ferritecad-fixtures.workspace = true
 tempfile = "3"
 
 # Forwarded, never re-decided: whether there is a sketch solver is settled by

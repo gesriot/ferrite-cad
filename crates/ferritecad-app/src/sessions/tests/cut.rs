@@ -760,7 +760,6 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
 #[test]
 fn stub_cut_apply_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        eprintln!("skipped: requires no OCCT");
         return;
     }
     let (_root, source, reading) = fixture(3);
@@ -778,8 +777,9 @@ fn stub_cut_apply_refuses_without_publication() {
 }
 #[test]
 fn mixed_cut_apply_uses_occt_without_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
-        eprintln!("skipped: requires OCCT without solver");
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     gate(3, true, "mixed-cut");

@@ -3599,8 +3599,7 @@ pub(crate) mod tests {
     #[test]
     fn annulus_widgets_name_both_roles_and_build_one_parametric_request() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the accepted scene this form reads");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (_root, path, source) = annulus_fixture();
@@ -3805,8 +3804,7 @@ pub(crate) mod tests {
     #[test]
     fn circle_widgets_add_a_radius_and_a_fixed_centre_as_one_request_each() {
         if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: no OCCT for the accepted scene this form reads");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let (_root, path, source) = circle_fixture();
@@ -4006,13 +4004,10 @@ pub(crate) mod tests {
 
     #[test]
     fn native_circle_constraint_worker_and_cli_publish_the_same_solid() {
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: circle constraint worker needs OCCT and planegcs");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let (root, path, source) = circle_fixture();
@@ -4207,13 +4202,10 @@ pub(crate) mod tests {
     /// again as a removal of rows that were already persisted.
     #[test]
     fn native_annular_constraint_worker_and_cli_publish_the_same_ring() {
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-            eprintln!("skipped: annular constraint worker needs OCCT and planegcs");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let (root, path, source) = annulus_fixture();
@@ -4931,9 +4923,10 @@ pub(crate) mod tests {
     #[test]
     fn native_fixed_point_worker_and_cli_pin_the_same_solved_body() {
         use crate::creates::tests::ferritecad;
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: constraint worker requires OCCT and PlaneGCS");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -5259,9 +5252,10 @@ pub(crate) mod tests {
     #[test]
     fn native_equal_length_worker_and_cli_tie_the_same_solved_body() {
         use crate::creates::tests::ferritecad;
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: constraint worker requires OCCT and PlaneGCS");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -5570,9 +5564,10 @@ pub(crate) mod tests {
     #[test]
     fn native_line_relations_worker_and_cli_orient_the_same_solved_body() {
         use crate::creates::tests::ferritecad;
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: constraint worker requires OCCT and PlaneGCS");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -5907,9 +5902,10 @@ pub(crate) mod tests {
     }
     fn native_constraint_worker_and_cli(lengths: bool) {
         use crate::creates::tests::ferritecad;
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-            eprintln!("skipped: constraint worker requires OCCT and PlaneGCS");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let root = tempfile::tempdir().expect("dir");
@@ -6529,17 +6525,10 @@ pub(crate) mod tests {
     fn native_fillet_base_constraint_worker_and_cli_publish_the_same_part() {
         // Each requirement is asserted only for what is actually missing: a
         // build with OCCT and no PlaneGCS is not an OCCT failure.
-        if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        }
-        if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-        }
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-            eprintln!("skipped: the constraint worker needs OCCT and PlaneGCS");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let (root, path, source) = crate::fillets::tests::rounded(2.375);
@@ -6773,17 +6762,10 @@ pub(crate) mod tests {
     /// the analytic one at the chosen corner.
     #[test]
     fn native_chamfer_base_constraint_worker_and_cli_publish_the_same_part() {
-        if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        }
-        if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-        }
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-            eprintln!("skipped: the constraint worker needs OCCT and PlaneGCS");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
@@ -6979,17 +6961,10 @@ pub(crate) mod tests {
     /// stored guess unchanged — and byte-identical STL and FBX.
     #[test]
     fn native_two_fillet_base_constraint_worker_and_cli_publish_the_same_part() {
-        if !ferritecad_occt::is_available() {
-            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        }
-        if !ferritecad_sketch_solver::is_available() {
-            assert_ne!(
-                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-                Ok("1")
-            );
-        }
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-            eprintln!("skipped: the constraint worker needs OCCT and PlaneGCS");
+        if !ferritecad_fixtures::native_dependencies(&[
+            (ferritecad_occt::is_available(), "OCCT"),
+            (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+        ]) {
             return;
         }
         let (root, path, source) = crate::fillets::tests::rounded_twice(2.375, 3.0625);

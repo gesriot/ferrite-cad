@@ -52,7 +52,7 @@ fn plate_stl(kernel: &mut OcctKernel) -> Vec<u8> {
 #[test]
 fn open_cascade_geometry_exports_to_a_file_a_reader_would_accept() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -132,7 +132,7 @@ fn open_cascade_geometry_exports_to_a_file_a_reader_would_accept() {
 #[test]
 fn two_sessions_export_the_same_part_to_the_same_bytes() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

@@ -74,8 +74,7 @@ fn native() -> bool {
     if ferritecad_occt::is_available() {
         true
     } else {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: no OCCT for annular edit geometry");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         false
     }
 }

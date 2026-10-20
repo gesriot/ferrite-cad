@@ -130,7 +130,6 @@ fn idle_empty_and_sample_new_back_late_abort_and_original_create_are_executable(
         crate::QuitEnd::Exit
     );
     assert!(!empty.creates.has_held_new() && empty.tabs.count() == 0);
-    println!("\nFCAD_30W_IDLE_FORMS_EXECUTED");
 }
 
 fn two_forms(w: &mut Window, root: &Path) -> (TabId, TabId, ObjectId, ObjectId) {
@@ -304,7 +303,6 @@ fn late_cancel_after_save_or_deferred_discard_returns_new_above_b_and_both_tab_f
             crate::QuitEnd::Exit
         );
     }
-    println!("\nFCAD_30W_LATE_CANCEL_EXECUTED");
 }
 
 #[test]
@@ -358,7 +356,6 @@ fn consent_names_quit_and_new_once_and_never_skips_the_dirty_model() {
     assert!(!w.tabs.decide_quit_model(&w.sessions, model));
     assert!(w.answer_quit_new(newer, CloseFormChoice::Back));
     w.assert_literal_new(NewContent::Empty);
-    println!("\nFCAD_30W_ADDRESS_EXECUTED");
 }
 
 #[test]
@@ -441,7 +438,6 @@ fn save_refusals_dialog_cancel_save_as_and_external_conflict_return_whole_new() 
             .features
             .is_empty()
     );
-    println!("\nFCAD_30W_SAVE_REFUSALS_EXECUTED");
 }
 
 #[test]
@@ -517,7 +513,6 @@ fn scene_switch_refusals_and_first_last_tabs_error_return_all_owners_second_erro
         "changed §30R second-refusal boundary"
     );
     assert!(!w.creates.has_held_new());
-    println!("\nFCAD_30W_SWITCH_LASTTABS_EXECUTED");
 }
 
 #[test]
@@ -620,7 +615,6 @@ fn running_queued_and_unaccepted_create_hold_quit_and_deliver_their_original_res
     trailing.hold_quit_new();
     trailing.stop_quit();
     trailing.assert_literal_new(NewContent::Empty);
-    println!("\nFCAD_30W_CREATE_BARRIERS_EXECUTED");
 }
 
 fn held_generation(creates: &crate::creates::Creates) -> crate::creates::CreateGeneration {
@@ -744,7 +738,6 @@ fn real_new_quit_widgets_explain_loss_and_back_and_discard_address_the_actual_ow
             }
         }
     }
-    println!("\nFCAD_30W_WIDGETS_EXECUTED");
 }
 
 fn drawing_already_open(w: &mut Window) -> (Vec<[String; 2]>, usize, usize) {
@@ -794,7 +787,6 @@ fn stub_real_creation_refusal_returns_idle_new_and_underlying_form() {
     w.assert_literal_new(NewContent::SamplePlate);
     w.answer_new(NewChoice::Cancel);
     assert_eq!(w.edits.typed(), Some((Some(af), " a literal ")));
-    println!("\nFCAD_30W_STUB_EXECUTED");
 }
 
 #[test]
@@ -867,7 +859,6 @@ fn idle_new_transition_checks_foreground_and_gestures_before_taking_any_form() {
     let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut w.creates.sketch);
     assert!(!w.begin_quit(), "a held pan in New lost its hold");
     crate::sketch::navigation_tests::release_pan(&ctx, &mut w.creates.sketch, at);
-    println!("\nFCAD_30W_GUARDS_EXECUTED");
 }
 
 #[test]
@@ -924,7 +915,6 @@ fn new_contour_over_saved_sketch_returns_both_editors_with_functional_history() 
         crate::sketch::tests::vertex_draft(&w.creates.sketch),
         Some(saved)
     );
-    println!("\nFCAD_30W_SHARED_EDITOR_EXECUTED");
 }
 
 const NEW_OUTPUTS: &[&str] = &[
@@ -1233,12 +1223,13 @@ fn native_returned_new_creates_then_publishes_and_matches_cli_sql_uuid_cold_geom
             std::fs::copy(root.path().join(name), dest.join(name)).expect("artifact");
         }
     }
-    println!("\nFCAD_30W_NATIVE_EXECUTED volume_n=700.000 all_SQL_cells=true");
 }
 
 #[test]
 fn mixed_returned_new_creates_with_occt_without_solver_and_keeps_both_forms() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     let root = tempfile::tempdir().expect("root");
@@ -1259,7 +1250,6 @@ fn mixed_returned_new_creates_with_occt_without_solver_and_keeps_both_forms() {
     assert!(!w.scene.catalogue.is_empty(), "OCCT picture never executed");
     w.round(a);
     assert_eq!(w.edits.typed(), Some((Some(af), " a literal ")));
-    println!("\nFCAD_30W_MIXED_EXECUTED");
 }
 
 #[test]

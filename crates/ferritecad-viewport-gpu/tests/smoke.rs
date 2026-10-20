@@ -36,7 +36,7 @@ macro_rules! renderer_or_skip {
         match Renderer::new() {
             Ok(renderer) => renderer,
             Err(reason) if reason.kind() == ErrorKind::Unsupported => {
-                eprintln!("skipped: {reason}");
+                ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                 return;
             }
             Err(reason) => panic!("a renderer failed after adapter discovery: {reason}"),
@@ -7722,7 +7722,6 @@ fn a_model_in_a_shifted_region_stays_in_it_and_is_picked_through_the_same_geomet
         corner,
         "the corner survived a lost origin"
     );
-    println!("\nFCAD_31B_GPU_REGION_EXECUTED");
 }
 
 /// §31B: a window with no room for the picture, a camera sized for some other
@@ -7792,5 +7791,4 @@ fn a_region_with_no_area_clears_and_a_region_that_disagrees_is_refused() {
             .any(|(x, y)| drawn.colour_at(x, y) != Some([0, 0, 0, 255])),
         "nothing was drawn into a region that agrees with its camera"
     );
-    println!("\nFCAD_31B_GPU_REFUSALS_EXECUTED");
 }

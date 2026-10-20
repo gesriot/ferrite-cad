@@ -15,6 +15,7 @@ name: product sbom
 # Nothing here researches a licence. ADR 0003 makes unresolved licence evidence
 # a recorded risk rather than a gate, and the merge carries the Rust
 # components' licence fields across mechanically and unexamined.
+# Check the product inventory independently of the complete workspace suites.
 on:
   push:
     branches: [main]

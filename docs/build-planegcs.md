@@ -286,12 +286,13 @@ planegcs's API reaches Rust.
 
 The `planegcs` cargo feature is off. With it on and no library present, the
 build script warns and the lab reports the candidate as unavailable; ordinary
-workspace CI runs `--all-features` on machines that have never built planegcs
+workspace lint runs `--all-features` on machines that have never built planegcs
 and stays green, without reaching the network.
 
 `FERRITECAD_REQUIRE_PLANEGCS=1` turns every reason to skip into a failure: no
 feature, no library, no import library, an unloadable library. The
-[pin workflow](../.github/workflows/planegcs-pin.yml) sets it, because a run
+[pin workflow](../.github/workflows/planegcs-pin.yml) and the complete native
+workspace suites set it, because a run
 whose job is to prove planegcs works cannot pass by not having it.
 
 Without a library the product crate still compiles, and every entry point

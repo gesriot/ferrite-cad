@@ -64,17 +64,10 @@ fn entries(path: &Path) -> Vec<std::ffi::OsString> {
     v
 }
 fn native() -> bool {
-    if ferritecad_occt::is_available() && ferritecad_eval::solver_available() {
-        true
-    } else {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: this build has no kernel or no solver");
-        false
-    }
+    ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_eval::solver_available(), "PLANEGCS"),
+    ])
 }
 /// Keeps a published artefact where a CI step can hand it to the pinned reader.
 fn keep(path: &Path, name: &str) {
@@ -1388,8 +1381,7 @@ fn native_annular_constraint_refusals_are_atomic() {
 #[test]
 fn occt_without_solver_builds_plain_annuli_and_refuses_annular_constraints() {
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: OCCT is required for the mixed kernel/solver gate");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     assert!(
@@ -1578,5 +1570,4 @@ fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
         analytic_matches(&analytic(&replaced), boundary_id, bore_id, 6.75, 2.75, 15.0);
         assert_eq!(std::fs::read(&f.source).expect("source"), source_bytes);
     }
-    println!("\nFCAD_31E_CLI_ANNULUS_EXECUTED");
 }

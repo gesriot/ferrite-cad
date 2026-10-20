@@ -37,7 +37,7 @@ macro_rules! renderer_or_skip {
         match Renderer::new() {
             Ok(renderer) => renderer,
             Err(reason) if reason.kind() == ErrorKind::Unsupported => {
-                eprintln!("skipped: {reason}");
+                ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                 return;
             }
             Err(reason) => panic!("a renderer failed after adapter discovery: {reason}"),

@@ -319,7 +319,6 @@ fn saved_markers_are_the_seven_families_with_their_exact_references_in_rule_orde
         ]
     );
     assert!(m.names(ids[0]) && m.names(ids[2]) && !m.names(ids[1]) && !m.names(ids[3]));
-    println!("\nFCAD_31N_SAVED_EXECUTED");
 }
 
 #[test]
@@ -381,7 +380,6 @@ fn a_marker_says_its_kind_in_ascii_and_a_prepared_removal_beside_it() {
     }
     let shorts: std::collections::BTreeSet<_> = kinds.iter().map(|k| k.2).collect();
     assert_eq!(shorts.len(), 7, "no two kinds share a marker");
-    println!("\nFCAD_31N_TEXT_EXECUTED");
 }
 
 #[test]
@@ -550,7 +548,6 @@ fn a_marker_stands_where_its_references_are_and_is_absent_when_they_cannot_be_dr
     let low = vec![line(ids[0], [20., 1.], [60., 1.])];
     let slid = place(&horizontal, &low, &view, canvas, size).expect("placed");
     assert!(band(canvas).contains_rect(slid), "{slid:?}");
-    println!("\nFCAD_31N_PLACE_EXECUTED");
 }
 
 #[test]
@@ -634,7 +631,6 @@ fn markers_overlap_in_saved_order_and_a_marker_is_exactly_its_box() {
     let clipped = egui::Rect::from_min_max(visible.min, egui::pos2(r.center().x, visible.max.y));
     assert!(reach(&one, clipped, r.right_center()).is_none());
     assert!(reach(&one, clipped, r.left_center()).is_some());
-    println!("\nFCAD_31N_HIT_EXECUTED");
 }
 
 #[test]
@@ -691,5 +687,4 @@ fn a_marker_carries_its_references_whole_and_reaches_nothing_when_nothing_stands
         Refs::Line(at(ids[0], At::End), at(ids[0], At::Start)),
     );
     assert_eq!(horizontal.refs_words(&name), "Line A");
-    println!("\nFCAD_31N_REFS_EXECUTED");
 }

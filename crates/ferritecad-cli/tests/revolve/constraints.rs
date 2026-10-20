@@ -48,15 +48,10 @@ const SECTOR_TALL: [[f64; 2]; 5] = [
 const SECTOR_DEG: f64 = 137.5;
 
 pub(super) fn solver() -> bool {
-    if ferritecad_occt::is_available() && cfg!(feature = "planegcs") {
-        return true;
-    }
-    assert_ne!(
-        std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-        Ok("1")
-    );
-    eprintln!("skipped: solved Revolve constraints require OCCT and PlaneGCS");
-    false
+    ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (cfg!(feature = "planegcs"), "PLANEGCS"),
+    ])
 }
 
 pub(super) fn constrain(source: &Path, catalog: &Value, request: &Path, out: &Path) -> Command {
@@ -1328,7 +1323,6 @@ fn occt_without_solver_refuses_revolve_constraints_honestly() {
         return;
     }
     if cfg!(feature = "planegcs") {
-        eprintln!("skipped: this build links PlaneGCS; see the native constraint gates");
         return;
     }
     let d = tempfile::tempdir().expect("dir");

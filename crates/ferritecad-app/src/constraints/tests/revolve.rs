@@ -351,12 +351,10 @@ fn revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length() {
 #[test]
 fn native_revolve_constraint_worker_and_cli_publish_the_same_solved_sector() {
     use crate::creates::tests::ferritecad;
-    if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: the Revolve constraint worker requires OCCT and PlaneGCS");
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+    ]) {
         return;
     }
     let root = tempfile::tempdir().expect("dir");
@@ -670,12 +668,10 @@ fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
 #[test]
 fn native_axis_closed_worker_and_cli_publish_the_same_solved_shaft() {
     use crate::creates::tests::ferritecad;
-    if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: the Revolve constraint worker requires OCCT and PlaneGCS");
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+    ]) {
         return;
     }
     let root = tempfile::tempdir().expect("dir");

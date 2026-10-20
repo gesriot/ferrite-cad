@@ -92,9 +92,9 @@ lock; against them a claim sees an exclusive holder and answers `active`, as bef
 
 ## Gates
 
-Every gate runs with `--exact` and fails on `skipped:`; the three that print a marker
-are checked by their `test NAME ... ` line, `test result: ok. 1 passed` and the marker
-on its own line.
+CI runs these tests as part of the complete stub and native workspace suites.
+Required native dependencies fail through the shared test helper; there are no
+per-test names, pass counts or execution markers in the workflows.
 
 **Kernel-free, every platform (existing `ci.yml` stub step):**
 

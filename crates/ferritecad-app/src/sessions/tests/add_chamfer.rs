@@ -664,11 +664,7 @@ fn native_constraints_close_add_but_constraints_and_distance_after_add_still_app
         return;
     }
     if !ferritecad_sketch_solver::is_available() {
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: requires solver");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     // Constraints first: no Add on the constrained plate.
@@ -736,7 +732,6 @@ fn native_constraints_close_add_but_constraints_and_distance_after_add_still_app
 #[test]
 fn stub_add_chamfer_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        eprintln!("skipped: requires stub");
         return;
     }
     let (_root, source, reading) = plate();
@@ -756,8 +751,9 @@ fn stub_add_chamfer_refuses_without_publication() {
 /// OCCT without PlaneGCS: the free plate takes the whole native gate.
 #[test]
 fn mixed_add_chamfer_uses_occt_without_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
-        eprintln!("skipped: requires OCCT/no solver");
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     gate("add-chamfer-mixed");

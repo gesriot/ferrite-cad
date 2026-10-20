@@ -211,7 +211,6 @@ fn the_rules_the_selection_and_the_prepared_removal_of_a_form_follow_its_tab() {
     assert_eq!(in_c.4.remove, vec![a_rules.fixed]);
     w.round(a);
     assert_eq!(mark_state(&w), in_a, "the copy's removal is not A's");
-    println!("\nFCAD_31N_TAB_EXECUTED");
 }
 
 #[test]
@@ -288,7 +287,6 @@ fn a_rule_form_held_on_another_version_loses_its_markers_and_keeps_its_rows_sele
         .draft_edits()
         .expect("the held form's request");
     assert_eq!(prepared.remove, vec![rules.parallel]);
-    println!("\nFCAD_31N_TAB_STALE_EXECUTED");
 }
 
 #[test]
@@ -334,5 +332,4 @@ fn a_rule_form_given_back_by_a_cancelled_close_or_an_aborted_quit_keeps_all_of_i
     }
     assert!(painted(&frame(&mut w, &ctx, vec![]), "H -> removed"));
     assert!(!w.sessions.stale_draft() && !w.sessions.dirty());
-    println!("\nFCAD_31N_TAB_GIVEN_BACK_EXECUTED");
 }

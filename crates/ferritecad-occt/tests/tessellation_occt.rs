@@ -214,7 +214,7 @@ fn face_of(built: &Built, role: ferritecad_document::SemanticRole) -> SubShapeHa
 #[test]
 fn every_named_face_gets_the_area_and_place_it_should_have() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -286,7 +286,7 @@ fn every_named_face_gets_the_area_and_place_it_should_have() {
 #[test]
 fn each_triangle_belongs_to_exactly_one_face() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -338,7 +338,7 @@ fn each_triangle_belongs_to_exactly_one_face() {
 #[test]
 fn a_finer_deflection_is_the_same_shape_measured_more_closely() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -371,7 +371,7 @@ fn a_finer_deflection_is_the_same_shape_measured_more_closely() {
 #[test]
 fn a_coarse_request_does_not_reuse_an_earlier_fine_mesh() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -413,7 +413,7 @@ fn a_coarse_request_does_not_reuse_an_earlier_fine_mesh() {
 #[test]
 fn the_same_shape_meshes_the_same_way_twice() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -435,7 +435,7 @@ fn the_same_shape_meshes_the_same_way_twice() {
 #[test]
 fn a_cancelled_tessellation_produces_no_mesh() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -460,7 +460,7 @@ fn a_cancelled_tessellation_produces_no_mesh() {
 #[test]
 fn drawing_does_not_change_the_shape_that_is_archived() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -509,7 +509,7 @@ fn drawing_does_not_change_the_shape_that_is_archived() {
 #[test]
 fn a_restored_solid_draws_the_same_as_the_one_that_was_built() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -638,7 +638,7 @@ fn corners_of(mesh: &Mesh, range: &ferritecad_kernel::MeshEdgeRange) -> Vec<[f32
 #[test]
 fn every_edge_of_the_plate_is_named_and_drawn_from_both_of_its_faces() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -731,7 +731,7 @@ fn every_edge_of_the_plate_is_named_and_drawn_from_both_of_its_faces() {
 #[test]
 fn a_curved_edge_is_many_segments_and_still_one_edge() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -798,7 +798,7 @@ fn a_curved_edge_is_many_segments_and_still_one_edge() {
 #[test]
 fn the_same_shape_names_the_same_edges_twice() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -852,7 +852,7 @@ fn cap_edge_reference(
 #[test]
 fn every_profile_segment_names_its_two_cap_boundary_edges() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -981,7 +981,7 @@ fn cap_edge_of(
 #[test]
 fn the_two_ends_of_a_sweep_are_never_confused_for_each_other() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let mut built = build();
@@ -1058,7 +1058,7 @@ fn face_of_side(built: &Built, side: ferritecad_document::CapSide) -> SubShapeHa
 #[test]
 fn a_reversed_and_a_symmetric_sweep_name_their_cap_edges_too() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     for (what, extent, reversed) in [
@@ -1100,7 +1100,7 @@ fn a_reversed_and_a_symmetric_sweep_name_their_cap_edges_too() {
 #[test]
 fn an_arc_segment_names_the_curved_edge_of_each_cap() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let (mut built, _) = swept(ExtrudeExtent::blind(5.0).expect("valid"), false, true);
@@ -1148,7 +1148,7 @@ fn an_arc_segment_names_the_curved_edge_of_each_cap() {
 #[test]
 fn the_edges_along_the_sweep_stay_unnamed() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let mut built = build();
@@ -1194,7 +1194,7 @@ fn the_edges_along_the_sweep_stay_unnamed() {
 #[test]
 fn two_features_with_the_same_shape_do_not_share_a_name() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     // Two extrusions of geometrically identical profiles, each with its own

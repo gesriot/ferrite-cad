@@ -25,7 +25,7 @@ fn no_imports<K>(_: &mut K, _: &[u8]) -> Result<ferritecad_exchange::Import> {
 #[test]
 fn the_plate_is_read_from_disk_into_real_geometry() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -84,7 +84,7 @@ fn the_plate_is_read_from_disk_into_real_geometry() {
 #[test]
 fn a_cancelled_load_leaves_the_real_session_empty() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -177,7 +177,7 @@ fn plate_with_named_cap_edges(path: &std::path::Path) -> Vec<ferritecad_document
 #[test]
 fn a_stored_cap_edge_name_reaches_the_edge_of_the_picture_it_names() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -340,7 +340,7 @@ fn a_stored_cap_edge_name_reaches_the_edge_of_the_picture_it_names() {
 #[test]
 fn every_stored_name_of_one_edge_is_kept_in_document_order() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     use ferritecad_document::{CapSide, Document, EntityKind, SelectionRule, SemanticRole};
@@ -440,7 +440,7 @@ fn every_stored_name_of_one_edge_is_kept_in_document_order() {
 #[test]
 fn two_readings_of_one_picture_differ_when_only_the_edge_names_do() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -570,7 +570,7 @@ fn plate_with_every_edge_named(
 #[test]
 fn the_sweep_edge_names_and_the_cap_edge_names_together_cover_the_plate() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     use ferritecad_document::SemanticRole;
@@ -686,7 +686,7 @@ fn the_sweep_edge_names_and_the_cap_edge_names_together_cover_the_plate() {
 #[test]
 fn a_picture_with_no_sweep_edge_names_invents_none() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     use ferritecad_document::SemanticRole;
@@ -731,7 +731,7 @@ fn a_picture_with_no_sweep_edge_names_invents_none() {
 #[test]
 fn every_stored_sweep_edge_name_of_one_edge_is_kept_in_document_order() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     use ferritecad_document::{Document, EntityKind, SelectionRule, SemanticRole};
@@ -816,7 +816,7 @@ fn every_stored_sweep_edge_name_of_one_edge_is_kept_in_document_order() {
 #[test]
 fn a_stale_or_foreign_edge_identity_names_no_sweep_edge() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -968,7 +968,7 @@ fn plate_with_named_cap_vertices(path: &std::path::Path) -> Vec<ferritecad_docum
 #[test]
 fn a_stored_cap_vertex_name_reaches_the_corner_of_the_picture_it_names() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -1034,7 +1034,7 @@ fn a_stored_cap_vertex_name_reaches_the_corner_of_the_picture_it_names() {
 #[test]
 fn what_each_named_corner_is_called_is_what_the_document_stored() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     use ferritecad_document::{CapSide, SemanticRole};
@@ -1223,7 +1223,7 @@ fn what_each_named_corner_is_called_is_what_the_document_stored() {
 #[test]
 fn several_exact_names_for_one_corner_all_come_back_in_document_order() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     use ferritecad_document::{CapSide, Document, EntityKind, SelectionRule, SemanticRole};
@@ -1346,7 +1346,7 @@ fn several_exact_names_for_one_corner_all_come_back_in_document_order() {
 #[test]
 fn reading_the_same_document_twice_names_the_same_corners() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -1395,7 +1395,7 @@ fn reading_the_same_document_twice_names_the_same_corners() {
 #[test]
 fn nothing_transient_survives_into_what_a_corner_is_called() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -1449,7 +1449,7 @@ fn nothing_transient_survives_into_what_a_corner_is_called() {
 #[test]
 fn a_load_that_names_corners_and_then_fails_leaves_no_shape_behind() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -1488,7 +1488,7 @@ fn a_load_that_names_corners_and_then_fails_leaves_no_shape_behind() {
 #[test]
 fn a_corner_the_document_does_not_name_carries_no_invented_name() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     use ferritecad_document::{
@@ -1579,7 +1579,7 @@ fn a_corner_the_document_does_not_name_carries_no_invented_name() {
 #[test]
 fn a_profile_whose_pair_meets_twice_gets_no_invented_corner_name() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     use ferritecad_document::{
@@ -1732,7 +1732,7 @@ fn a_profile_whose_pair_meets_twice_gets_no_invented_corner_name() {
 #[test]
 fn the_corners_of_an_imported_part_carry_no_durable_names() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     use ferritecad_document::{Document, StepImportRequest};

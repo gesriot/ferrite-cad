@@ -125,7 +125,7 @@ fn export_of(path: &std::path::Path) -> ExportScene {
 #[test]
 fn the_complex_assembly_exports_its_whole_hierarchy_and_says_what_is_missing() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -443,7 +443,7 @@ fn the_complex_assembly_exports_its_whole_hierarchy_and_says_what_is_missing() {
 #[test]
 fn the_picture_of_the_same_document_is_the_flattened_one_it_always_was() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

@@ -72,8 +72,7 @@ fn native() -> bool {
     if ferritecad_occt::is_available() {
         true
     } else {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         false
     }
 }
@@ -1216,8 +1215,7 @@ fn native_cut_refusals_are_atomic() {
 #[test]
 fn occt_without_solver_cuts_an_unconstrained_part() {
     if !ferritecad_occt::is_available() {
-        eprintln!("skipped: this gate is for a build with OCCT and no planegcs");
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     assert!(

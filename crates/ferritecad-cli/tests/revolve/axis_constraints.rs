@@ -638,7 +638,6 @@ fn occt_without_solver_refuses_axis_closed_constraints_honestly() {
         return;
     }
     if cfg!(feature = "planegcs") {
-        eprintln!("skipped: this build links PlaneGCS; see the native constraint gates");
         return;
     }
     let d = tempfile::tempdir().expect("dir");

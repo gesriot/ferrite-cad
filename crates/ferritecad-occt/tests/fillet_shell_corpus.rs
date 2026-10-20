@@ -229,7 +229,7 @@ fn build(kernel: &mut OcctKernel, part: &Part) -> ShapeHandle {
 #[test]
 fn every_part_of_the_corpus_builds_into_a_sound_solid() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -252,7 +252,7 @@ fn every_part_of_the_corpus_builds_into_a_sound_solid() {
 #[test]
 fn a_fillet_is_either_sound_or_refused_at_every_radius() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -329,7 +329,7 @@ fn a_fillet_is_either_sound_or_refused_at_every_radius() {
 #[test]
 fn a_shell_is_either_sound_or_refused_at_every_thickness() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -412,7 +412,7 @@ fn a_shell_is_either_sound_or_refused_at_every_thickness() {
 #[test]
 fn the_same_fillet_and_shell_on_the_same_part_give_the_same_result_twice() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -484,7 +484,7 @@ fn the_same_fillet_and_shell_on_the_same_part_give_the_same_result_twice() {
 #[test]
 fn an_impossible_request_is_refused_rather_than_approximated() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -535,7 +535,7 @@ fn an_impossible_request_is_refused_rather_than_approximated() {
 #[test]
 fn the_radii_that_open_cascade_calls_success_are_still_refused() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

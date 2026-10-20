@@ -326,21 +326,18 @@ jobs:
             fi
             # Every executable the run will launch, taken from cargo rather than
             # from a list of names somebody has to remember to extend.
-            jq -r 'select(.reason == "compiler-artifact")
-                   | select(.target.test == true)
-                   | .executable // empty' "build-${package}.json" >> binaries.txt
+            jq -r --arg package "$package" 'select(.reason == "compiler-artifact")
+                   | select(.package_id | contains($package))
+                   | select(.profile.test == true)
+                   | .executable // empty' "build-${package}.json" \
+              | tr -d '\r' > "binaries-${package}.txt"
+            cat "binaries-${package}.txt" >> binaries.txt
           done
           LC_ALL=C sort -u -o binaries.txt binaries.txt
-          if [ ! -s binaries.txt ]; then
-            echo "::error::the build produced no test executable"
+          if [ ! -s binaries.txt ] || [ ! -s binaries-ferritecad-sketch-solver.txt ]; then
+            echo "::error::the solver and lab did not produce test executables"
             exit 1
           fi
-          # The product crate's own gates must be among them. A run that built
-          # only the bench would prove nothing about the path an application
-          # takes, and would look exactly like this one.
-          grep -Eq '[/\\](product|boundary)-[0-9a-f]+(\.exe)?$' binaries.txt \
-            || { echo "::error::the product solver's own gates were not built"; \
-                 cat binaries.txt; exit 1; }
           cat binaries.txt
 
       - name: Require the shim to have been compiled against the delivered headers
@@ -398,6 +395,7 @@ jobs:
           fi
 
           found=0
+          : > linked-product-binaries.txt
           while IFS= read -r binary; do
             # A carriage return survives every echo unchanged and every open
             # not at all, which is how a path can be printed correctly and
@@ -434,9 +432,12 @@ jobs:
             # than copied in: a statically linked planegcs would name nothing.
             if grep -iq 'planegcs\.\(so\|dylib\|dll\)' deps.txt; then
               found=$((found + 1))
+              if grep -Fxq "$binary" binaries-ferritecad-sketch-solver.txt; then
+                echo "$binary" >> linked-product-binaries.txt
+              fi
             fi
           done < binaries.txt
-          if [ "$found" -eq 0 ]; then
+          if [ "$found" -eq 0 ] || [ ! -s linked-product-binaries.txt ]; then
             echo "::error::no test executable names planegcs at run time, so nothing here \
             is a statement about planegcs"
             exit 1
@@ -452,7 +453,7 @@ jobs:
           # binary is linked by a different cargo invocation and finds the
           # library through the loader's search path, which the step above set
           # and which the case below checks.
-          own="$(grep -E '[/\\](product|boundary)-[0-9a-f]+(\.exe)?$' binaries.txt | head -1)"
+          own="$(head -1 linked-product-binaries.txt)"
           own="$(printf '%s' "$own" | tr -d '\r')"
           if [ -z "$own" ]; then
             echo "::error::no product-solver test binary to inspect"
@@ -515,145 +516,6 @@ jobs:
           cargo test --release -p ferritecad-solver-lab --features planegcs \
             -- --nocapture --test-threads=1 2>&1 | tee lab.txt
 
-      - name: Refuse a run that skipped, or that ran no planegcs gate
-        run: |
-          set -euo pipefail
-          for skip in \
-            'skipped: this build did not link planegcs' \
-            'skipped: this build has no sketch solver' \
-            'skipped: this build has no planegcs'
-          do
-            if grep -qF "$skip" product.txt lab.txt; then
-              echo "::error::a gate skipped itself under FERRITECAD_REQUIRE_PLANEGCS=1"
-              exit 1
-            fi
-          done
-          # §25N: the analytic circle's own measurements, by name. The package
-          # run above already includes them, but a named check is what says they
-          # executed rather than that the package compiled.
-          for gate in \
-            a_free_circle_has_three_degrees_of_freedom_and_each_constraint_removes_its_own \
-            a_solved_circle_carries_the_radius_and_centre_it_was_asked_for \
-            two_circles_answer_for_themselves_whichever_order_they_were_added_in \
-            two_different_radii_on_one_circle_conflict_and_two_equal_ones_are_redundant \
-            a_circle_the_contract_cannot_state_is_refused_before_any_library_is_asked \
-            a_circle_keeps_the_identity_and_centre_it_was_given
-          do
-            if ! grep -Fq "test $gate ... ok" product.txt; then
-              echo "::error::circle solver gate $gate did not execute and pass"
-              exit 1
-            fi
-          done
-
-          # Named rather than counted. A count is satisfied by any number of
-          # tests, including ones that never call into the library; these are
-          # the gates that only mean something when planegcs is linked, and
-          # every one of them has to have run and passed.
-          missing=0
-          check() {
-            if ! grep -qF "test $2 ..." "$1"; then
-              echo "::error::the planegcs gate $2 did not run"
-              missing=$((missing + 1))
-            fi
-          }
-
-          # The product path: what an application will call.
-          for gate in \
-            'a_required_build_opens_the_product_solver_and_the_pinned_library_answers' \
-            'the_product_path_asks_planegcs_rather_than_answering_for_it' \
-            'every_one_of_the_eight_constraint_types_crosses_the_product_boundary' \
-            'a_solved_rectangle_is_actually_a_rectangle' \
-            'a_sketch_with_freedom_left_solves_and_says_how_much' \
-            'a_constraint_said_twice_is_redundant_and_still_solves' \
-            'a_conflict_is_reported_in_the_callers_own_sparse_identifiers' \
-            'a_native_tag_is_never_returned_as_a_storage_position' \
-            'caller_identifiers_survive_a_permuted_store' \
-            'a_sketch_that_cannot_be_satisfied_publishes_nothing' \
-            'a_gesture_holds_one_native_system_and_moves_the_point_it_was_given' \
-            'a_native_system_is_released_exactly_once'
-          do
-            check product.txt "$gate"
-          done
-
-          # §31F: the directed angle on the real library (its sign, its half turn,
-          # its equivalent spellings, its diagnosis with caller identifiers, the
-          # collapsed vector the measured residual refuses) and the C boundary written
-          # by hand. A marker is printed after a gate's last assertion.
-          for gate in \
-            'a_positive_and_a_negative_angle_are_different_solutions' \
-            'zero_is_codirectional_and_one_hundred_eighty_is_opposite_and_neither_is_the_other' \
-            'the_turn_across_plus_and_minus_one_hundred_eighty_is_the_short_way' \
-            'a_swapped_or_turned_vector_is_the_same_relation_with_the_documented_angle' \
-            'parallel_still_accepts_both_directions_and_does_not_invent_one' \
-            'degrees_of_freedom_come_from_the_solver_and_one_angle_removes_exactly_one' \
-            'a_fourth_right_angle_of_a_closed_contour_is_redundant_and_a_wrong_one_conflicts' \
-            'a_vector_the_solver_collapses_is_never_a_satisfied_angle' \
-            'a_drag_keeps_the_angle_while_its_end_follows_the_pointer' \
-            'planegcs::tests::the_shim_names_the_new_kind_and_refuses_what_the_header_forbids'
-          do
-            check product.txt "$gate"
-          done
-          for marker in \
-            FCAD_31F_SOLVER_SIGN_EXECUTED FCAD_31F_SOLVER_WRAP_EXECUTED \
-            FCAD_31F_SOLVER_EQUIVALENT_FORMS_EXECUTED FCAD_31F_SOLVER_DIAGNOSIS_EXECUTED \
-            FCAD_31F_RESIDUAL_EXECUTED
-          do
-            if ! grep -Fxq "$marker" product.txt; then
-              echo "::error::the directed angle gate behind $marker did not run to its end"
-              missing=$((missing + 1))
-            fi
-          done
-
-          # §31G: collinearity on the real library (the offset a Parallel does not
-          # hold, either spelling, the freedom it takes, the equation a closed pair
-          # still needs, the conflict that names it, the collapsed segment the measured
-          # residual refuses, a drag) and the C boundary of its kind written by hand.
-          for gate in \
-            'disjoint_parallel_segments_on_different_lines_are_brought_onto_one_and_parallel_alone_is_not' \
-            'an_inclined_pair_holds_the_same_line_whichever_way_each_segment_is_written' \
-            'a_collinear_removes_two_degrees_of_freedom_from_a_separate_pair' \
-            'a_closed_pair_keeps_the_direction_part_of_a_collinear_and_it_is_not_called_redundant' \
-            'a_pinned_offset_makes_a_collinear_conflict_and_the_conflict_names_it' \
-            'a_repeated_collinear_is_redundant_by_its_own_id_only_when_every_equation_is' \
-            'a_dependency_that_holds_only_on_the_solved_line_is_not_seen_at_the_start_but_is_solved' \
-            'a_segment_the_solver_collapses_is_never_a_satisfied_collinear' \
-            'a_drag_keeps_the_segments_collinear_while_one_end_follows_the_pointer' \
-            'planegcs::tests::the_shim_names_the_collinear_kind_and_refuses_what_the_header_forbids'
-          do
-            check product.txt "$gate"
-          done
-          for marker in \
-            FCAD_31G_SOLVER_OFFSET_EXECUTED FCAD_31G_SOLVER_SPELLINGS_EXECUTED \
-            FCAD_31G_SOLVER_DOF_EXECUTED FCAD_31G_SOLVER_PARTIAL_EXECUTED \
-            FCAD_31G_SOLVER_REDUNDANT_EXECUTED FCAD_31G_SOLVER_COLLAPSE_EXECUTED \
-            FCAD_31G_SOLVER_DRAG_EXECUTED FCAD_31G_SHIM_EXECUTED FCAD_31G_RESIDUAL_EXECUTED
-          do
-            if ! grep -Fxq "$marker" product.txt; then
-              echo "::error::the collinear gate behind $marker did not run to its end"
-              missing=$((missing + 1))
-            fi
-          done
-
-          # The bench: that the corpus still passes through the product path.
-          for gate in \
-            'against_planegcs::both_solvers_agree_about_the_geometry' \
-            'against_planegcs::both_solvers_agree_about_what_is_wrong_with_a_sketch' \
-            'against_planegcs::the_library_the_lab_loaded_is_the_pinned_one'
-          do
-            check lab.txt "$gate"
-          done
-          [ "$missing" -eq 0 ] || exit 1
-
-          # And the comparison really had two candidates in it, rather than one
-          # that passes on its own.
-          grep -q 'planegcs-dogleg' lab.txt \
-            || { echo "::error::no planegcs result appears in the comparison"; exit 1; }
-          grep -qF 'second candidate: planegcs from FreeCAD 1.0.1' lab.txt \
-            || { echo "::error::the library did not identify itself as the pinned planegcs"; exit 1; }
-          grep -qF 'product sketch solver: planegcs from FreeCAD 1.0.1' product.txt \
-            || { echo "::error::the product solver did not open the pinned library"; exit 1; }
-          echo "every planegcs gate ran, on both the product path and the bench"
-
       - name: Run the rebuild path and the scene boundary through the real library
         env:
           FERRITECAD_REQUIRE_PLANEGCS: '1'
@@ -662,111 +524,8 @@ jobs:
           CARGO_TERM_COLOR: never
         run: |
           set -euo pipefail
-          # The evaluator is what turns a stored constraint into a solved
-          # coordinate, and since 21B-2a it is also what says how the sketch
-          # was solved. Neither claim is exercised by the crate's own gates
-          # above: those state sketches directly, and these start from bytes on
-          # disk. Only the two test binaries that need a library, so a run here
-          # cannot pass by exercising something else.
-          cargo test --release -p ferritecad-eval --features planegcs \
-            --test solved_sketch --test solve_report --test solve_conflict \
-            -- --nocapture --test-threads=1 2>&1 | tee eval.txt
-
-          # And the boundary that carries those facts out of a rebuild into a
-          # loaded picture, from a real file through the real solver. Since
-          # 21C-1a the same boundary carries the drawings themselves, and
-          # whether they hold the solved coordinates or the stored ones is a
-          # question only a linked library can answer.
-          cargo test --release -p ferritecad-scene --features planegcs \
-            --test solve_facts --test sketch_geometry --test sketch_drawing \
-            -- --nocapture --test-threads=1 2>&1 | tee scene.txt
-
-          for skip in \
-            'skipped: this build did not link planegcs' \
-            'skipped: this build has no sketch solver'
-          do
-            if grep -qF "$skip" eval.txt scene.txt; then
-              echo "::error::a gate skipped itself under FERRITECAD_REQUIRE_PLANEGCS=1"
-              exit 1
-            fi
-          done
-
-          missing=0
-          check() {
-            if ! grep -qF "test $2 ... ok" "$1"; then
-              echo "::error::the planegcs gate $2 did not run and pass"
-              missing=$((missing + 1))
-            fi
-          }
-
-          # The rebuild path: a stored sketch solved, and what the solve found
-          # out kept without a second one.
-          for gate in \
-            'a_stored_constrained_plate_reaches_the_kernel_at_its_solved_coordinates' \
-            'two_features_reading_one_sketch_solve_it_once' \
-            'a_conflict_is_named_in_the_documents_own_constraint_identifiers' \
-            'an_under_constrained_sketch_reports_the_freedom_it_has_left' \
-            'a_repeated_constraint_is_named_by_the_identifier_the_document_stores' \
-            'several_repeated_constraints_arrive_in_the_order_the_document_stores_them' \
-            'the_solved_coordinates_and_the_report_are_two_halves_of_one_solve' \
-            'two_features_reading_one_sketch_get_one_solve_and_one_report' \
-            'a_cached_rebuild_reports_what_the_cold_one_did_and_solves_no_more_often' \
-            'a_conflict_carries_the_constraints_it_blamed_in_the_documents_own_words' \
-            'several_blamed_constraints_arrive_in_the_order_the_document_stores_them' \
-            'moving_the_contradiction_to_the_front_moves_what_is_reported_with_it' \
-            'identical_rules_under_different_identifiers_stay_apart' \
-            'the_conflict_names_the_sketch_that_holds_it_and_not_its_neighbour' \
-            'a_failure_that_is_not_a_conflict_carries_no_conflict' \
-            'a_document_that_will_not_open_carries_no_conflict' \
-            'a_conflict_asks_the_solver_once_and_reads_the_document_once' \
-            'a_conflict_publishes_nothing_that_lasts_one_solve' \
-            'a_solve_that_refused_for_some_other_reason_carries_no_conflict' \
-            'a_document_that_solves_still_builds_and_reports_what_it_found' \
-            'the_profile_and_the_drawing_are_the_same_answer' \
-            'a_sketch_nobody_constrained_is_carried_exactly_as_it_is_stored'
-          do
-            check eval.txt "$gate"
-          done
-
-          # The scene boundary: the facts arrive in the document's words, and
-          # the picture does not change because of them.
-          for gate in \
-            'a_loaded_scene_says_what_the_solve_of_each_sketch_found_out' \
-            'two_sketches_keep_their_own_facts_and_the_documents_order' \
-            'every_repeated_constraint_arrives_with_the_rule_stored_under_its_identifier' \
-            'a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says' \
-            'what_a_solve_found_out_is_no_part_of_the_picture' \
-            'a_load_refused_for_a_conflict_says_which_constraints_disagree' \
-            'a_constrained_sketch_reaches_the_scene_at_the_coordinates_it_was_solved_to' \
-            'the_picture_and_the_drawing_are_the_same_answer' \
-            'an_unconstrained_sketch_is_carried_without_a_solver' \
-            'construction_geometry_of_every_kind_survives' \
-            'curve_identities_and_document_order_survive' \
-            'two_curves_that_draw_the_same_thing_are_two_curves' \
-            'the_plane_the_sketch_was_actually_placed_on_is_carried' \
-            'two_extrudes_of_one_sketch_give_one_drawing' \
-            'two_sketches_that_draw_the_same_thing_stay_two_drawings' \
-            'drawings_arrive_in_document_order' \
-            'a_document_whose_constraints_disagree_publishes_no_drawing_at_all' \
-            'carrying_the_drawings_changes_nothing_about_the_picture' \
-            'a_drawing_names_nothing_that_lasts_one_solve' \
-            'every_kind_of_curve_a_document_can_hold_becomes_something_to_draw' \
-            'a_circle_is_closed_and_is_not_an_arc_that_nearly_meets_itself' \
-            'an_arc_runs_the_way_its_angles_say_and_not_the_other_way' \
-            'a_drawing_sits_on_the_datum_the_sketch_is_actually_on' \
-            'what_guides_a_drawing_is_drawn_differently_from_what_bounds_a_face' \
-            'construction_geometry_reaches_the_drawing_rather_than_being_dropped_with_the_profile' \
-            'a_sketch_no_feature_reads_is_still_a_drawing' \
-            'a_drawing_carries_no_name_for_anything_and_no_order_that_could_become_one' \
-            'a_drawing_is_no_part_of_the_picture_it_travels_beside' \
-            'a_construction_curve_changes_the_drawing_and_leaves_the_picture_byte_for_byte' \
-            'a_coordinate_no_picture_can_hold_is_refused_rather_than_drawn_somewhere_else' \
-            'the_origin_is_an_ordinary_place_for_a_drawing_to_be'
-          do
-            check scene.txt "$gate"
-          done
-          [ "$missing" -eq 0 ] || exit 1
-          echo "the rebuild path and the scene boundary ran against the pinned library"
+          cargo test --release -p ferritecad-eval -p ferritecad-scene --features planegcs \
+            -- --nocapture --test-threads=1
 
       - name: Build the real application against planegcs
         env:
@@ -899,213 +658,15 @@ jobs:
           esac
           echo "an unbundled application run reaches $out through the loader"
 
-      - name: Run the application's own gate through the real library
+      - name: Run all application tests through the real library
         env:
           FERRITECAD_REQUIRE_PLANEGCS: '1'
-          # The log is parsed below. Colour escapes immediately before `ok`
-          # would make an executed gate indistinguishable from an absent one.
-          CARGO_TERM_COLOR: never
-        run: |
-          set -euo pipefail
-          # Run this before the direct command below. The gate owns a deadline
-          # and kills and reaps a child that entered an event loop; without
-          # this order the direct command could wait forever on macOS or
-          # Windows before the deadline gate ever got a turn.
-          cargo test --release -p ferritecad-app --features planegcs \
-            --test solver_info -- --nocapture --test-threads=1 2>&1 | tee app-test.txt
-          grep -qF \
-            'test the_viewer_says_which_sketch_solver_it_has_and_opens_nothing ... ok' \
-            app-test.txt \
-            || { echo "::error::the application process gate did not run and pass"; exit 1; }
-          grep -qF \
-            'test a_required_build_answers_with_the_library_it_loaded ... ok' \
-            app-test.txt \
-            || { echo "::error::the required linked-application gate did not run and pass"; exit 1; }
-
-      - name: Run the window's own account of a solve through the real library
-        env:
-          FERRITECAD_REQUIRE_PLANEGCS: '1'
-          # The log is parsed below. Colour escapes immediately before `ok`
-          # would make an executed gate indistinguishable from an absent one.
-          CARGO_TERM_COLOR: never
-        run: |
-          set -euo pipefail
-          # Since 21B-2b the window shows what the solve of each constrained
-          # sketch found out. These gates start from a document written to a
-          # temporary file, read it through the real loader, hand the result
-          # across the same atomic commit the picture goes through, and then
-          # lay the section out and read the words back off it. None of that
-          # is a statement about anything until a real library did the solving,
-          # which is why it is here and not only in CI.
-          #
-          # Named one by one rather than run as a whole binary: the window's
-          # other gates want a graphics device, and a run that passed by
-          # skipping those would look exactly like this one.
-          cargo test --release -p ferritecad-app --features planegcs \
-            --bin ferritecad-viewer -- \
-            a_constrained_document_reaches_the_window_and_says_what_its_solve_found_out \
-            a_document_with_nothing_to_solve_takes_away_what_the_last_one_said \
-            a_load_that_failed_leaves_what_the_last_solve_said_alone \
-            a_load_that_was_given_up_on_leaves_what_the_last_solve_said_alone \
-            a_picture_that_could_not_be_prepared_leaves_what_the_last_solve_said_alone \
-            a_repeated_constraint_reaches_the_window_explained_rather_than_merely_named \
-            every_sketch_keeps_its_own_name_and_its_own_account \
-            no_sketch_is_given_the_explanation_of_its_neighbour \
-            opening_a_document_replaces_what_the_last_solve_said_with_this_one \
-            several_repeated_constraints_are_explained_one_by_one_in_the_documents_order \
-            showing_what_a_solve_found_out_asks_no_solver_and_uploads_nothing \
-            showing_what_a_solve_found_out_changes_nothing_a_person_chose \
-            the_section_says_nothing_a_solve_kept_to_itself \
-            two_documents_that_draw_one_picture_can_say_different_things_about_it \
-            a_conflicting_document_reaches_the_boundary_as_facts_and_not_as_a_sentence \
-            a_refused_open_replaces_neither_the_picture_nor_what_it_came_with \
-            a_failure_that_is_not_a_conflict_stays_what_it_is \
-            a_conflict_costs_one_native_system_and_one_reading_of_the_document \
-            a_conflict_at_the_boundary_says_nothing_that_lasts_one_solve \
-            a_conflicting_document_says_in_the_window_which_constraints_disagree \
-            several_conflicting_constraints_stay_in_the_order_the_document_stores_them \
-            a_failed_open_names_the_file_it_failed_on_and_not_the_one_on_screen \
-            a_failed_open_leaves_the_picture_and_everything_chosen_in_it_alone \
-            the_conflict_is_not_filed_with_what_the_documents_own_solves_found_out \
-            a_stale_failure_after_a_newer_document_opened_says_nothing_anywhere \
-            a_stale_failure_while_another_document_is_being_read_says_nothing_anywhere \
-            asking_for_another_document_takes_down_the_last_attempts_account \
-            giving_up_on_a_reading_leaves_no_account_of_it \
-            a_document_that_opens_takes_away_the_account_of_the_one_that_did_not \
-            a_failure_with_nothing_to_explain_takes_away_the_last_ones_constraints \
-            a_conflict_wrapped_in_another_failure_is_not_reported_as_one \
-            a_failed_open_with_no_picture_behind_it_still_reads \
-            one_accepted_failure_asks_for_one_frame_and_laying_it_out_again_changes_nothing \
-            the_diagnostic_stream_gets_the_current_failure_only_and_none_of_the_words \
-            a_document_that_opens_replaces_the_drawings_with_its_own \
-            a_load_that_failed_leaves_the_drawings_alone \
-            a_load_that_was_given_up_on_leaves_the_drawings_alone \
-            a_picture_that_could_not_be_prepared_leaves_the_drawings_alone \
-            a_window_left_alone_neither_solves_again_nor_loses_the_drawings \
-            --nocapture --test-threads=1 2>&1 | tee window.txt
-
-          if grep -qF 'skipped: this build has no sketch solver' window.txt; then
-            echo "::error::a gate skipped itself under FERRITECAD_REQUIRE_PLANEGCS=1"
-            exit 1
-          fi
-
-          missing=0
-          for gate in \
-            'a_constrained_document_reaches_the_window_and_says_what_its_solve_found_out' \
-            'a_document_with_nothing_to_solve_takes_away_what_the_last_one_said' \
-            'a_load_that_failed_leaves_what_the_last_solve_said_alone' \
-            'a_load_that_was_given_up_on_leaves_what_the_last_solve_said_alone' \
-            'a_picture_that_could_not_be_prepared_leaves_what_the_last_solve_said_alone' \
-            'a_repeated_constraint_reaches_the_window_explained_rather_than_merely_named' \
-            'every_sketch_keeps_its_own_name_and_its_own_account' \
-            'no_sketch_is_given_the_explanation_of_its_neighbour' \
-            'opening_a_document_replaces_what_the_last_solve_said_with_this_one' \
-            'several_repeated_constraints_are_explained_one_by_one_in_the_documents_order' \
-            'showing_what_a_solve_found_out_asks_no_solver_and_uploads_nothing' \
-            'showing_what_a_solve_found_out_changes_nothing_a_person_chose' \
-            'the_section_says_nothing_a_solve_kept_to_itself' \
-            'two_documents_that_draw_one_picture_can_say_different_things_about_it' \
-            'a_conflicting_document_reaches_the_boundary_as_facts_and_not_as_a_sentence' \
-            'a_refused_open_replaces_neither_the_picture_nor_what_it_came_with' \
-            'a_failure_that_is_not_a_conflict_stays_what_it_is' \
-            'a_conflict_costs_one_native_system_and_one_reading_of_the_document' \
-            'a_conflict_at_the_boundary_says_nothing_that_lasts_one_solve' \
-            'a_conflicting_document_says_in_the_window_which_constraints_disagree' \
-            'several_conflicting_constraints_stay_in_the_order_the_document_stores_them' \
-            'a_failed_open_names_the_file_it_failed_on_and_not_the_one_on_screen' \
-            'a_failed_open_leaves_the_picture_and_everything_chosen_in_it_alone' \
-            'the_conflict_is_not_filed_with_what_the_documents_own_solves_found_out' \
-            'a_stale_failure_after_a_newer_document_opened_says_nothing_anywhere' \
-            'a_stale_failure_while_another_document_is_being_read_says_nothing_anywhere' \
-            'asking_for_another_document_takes_down_the_last_attempts_account' \
-            'giving_up_on_a_reading_leaves_no_account_of_it' \
-            'a_document_that_opens_takes_away_the_account_of_the_one_that_did_not' \
-            'a_failure_with_nothing_to_explain_takes_away_the_last_ones_constraints' \
-            'a_conflict_wrapped_in_another_failure_is_not_reported_as_one' \
-            'a_failed_open_with_no_picture_behind_it_still_reads' \
-            'one_accepted_failure_asks_for_one_frame_and_laying_it_out_again_changes_nothing' \
-            'the_diagnostic_stream_gets_the_current_failure_only_and_none_of_the_words' \
-            'a_document_that_opens_replaces_the_drawings_with_its_own' \
-            'a_load_that_failed_leaves_the_drawings_alone' \
-            'a_load_that_was_given_up_on_leaves_the_drawings_alone' \
-            'a_picture_that_could_not_be_prepared_leaves_the_drawings_alone' \
-            'a_window_left_alone_neither_solves_again_nor_loses_the_drawings'
-          do
-            if ! grep -qF "test tests::${gate} ... ok" window.txt; then
-              echo "::error::the window gate ${gate} did not run and pass"
-              missing=$((missing + 1))
-            fi
-          done
-          [ "$missing" -eq 0 ] || exit 1
-
-          # Thirty-nine gates ran and no fortieth crept in: this filter
-          # is what keeps the run away from the gates that want a graphics
-          # device.
-          grep -qE 'test result: ok\. 39 passed; 0 failed' window.txt \
-            || { echo "::error::the window gates did not run as exactly thirty-nine passes"; exit 1; }
-          echo "the window carried a real solve from a real document to a screen"
-
-      - name: Draw a solved sketch on a real device
-        env:
-          FERRITECAD_REQUIRE_PLANEGCS: '1'
-          # A missing adapter is a failure here, not a skip: the claim this
-          # step makes is that a constrained document reached pixels, and a
-          # skip that looked like a pass would make that claim readable only
-          # by hunting a log for a line that is not there.
           FERRITECAD_REQUIRE_GPU: '1'
           CARGO_TERM_COLOR: never
         run: |
           set -euo pipefail
-          # The whole of 21C-1b in one line: a document written to a temporary
-          # file, solved by the pinned library, loaded by the real loader,
-          # turned into world-space drawings at the one boundary that does
-          # that, uploaded to a real device beside the picture, drawn into a
-          # real offscreen frame, and read back as pixels that are compared
-          # against the very camera matrix they were drawn with.
-          #
-          # Only a linked library can say whether those pixels are at the
-          # coordinates the constraints ask for or at the ones the file
-          # stores: the stored plate is fifty wide and the constrained one is
-          # sixty, so a drawing at the stored coordinates leaves the corner
-          # this gate looks at bare.
-          cargo test --release -p ferritecad-app --features planegcs \
-            --bin ferritecad-viewer -- \
-            a_solved_sketch_is_drawn_where_its_constraints_put_it \
-            hiding_every_definition_of_a_document_leaves_its_drawings_on_screen \
-            twenty_frames_of_one_document_read_nothing_and_upload_nothing \
-            a_pin_run_cannot_turn_a_missing_gpu_into_a_green_skip \
-            --nocapture --test-threads=1 2>&1 | tee drawn.txt
-
-          for skip in \
-            'skipped: this build has no sketch solver' \
-            'skipped: no graphics adapter'
-          do
-            if grep -qF "$skip" drawn.txt; then
-              echo "::error::a pixel gate skipped itself under a required run"
-              exit 1
-            fi
-          done
-
-          missing=0
-          for gate in \
-            'a_solved_sketch_is_drawn_where_its_constraints_put_it' \
-            'hiding_every_definition_of_a_document_leaves_its_drawings_on_screen' \
-            'twenty_frames_of_one_document_read_nothing_and_upload_nothing' \
-            'a_pin_run_cannot_turn_a_missing_gpu_into_a_green_skip'
-          do
-            if ! grep -qF "test tests::${gate} ... ok" drawn.txt; then
-              echo "::error::the drawing gate ${gate} did not run and pass"
-              missing=$((missing + 1))
-            fi
-          done
-          [ "$missing" -eq 0 ] || exit 1
-
-          # Four gates ran and no fifth crept in, for the reason the window
-          # step gives: the filter is what keeps this run to the gates whose
-          # green result is the claim being made.
-          grep -qE 'test result: ok\. 4 passed; 0 failed' drawn.txt \
-            || { echo "::error::the drawing gates did not run as exactly four passes"; exit 1; }
-          echo "a constrained document reached pixels through the pinned library"
+          cargo build --release -p ferritecad-cli --features planegcs
+          cargo test --release -p ferritecad-app --features planegcs -- --include-ignored --nocapture --test-threads=1
 
       - name: Ask the real application which sketch solver it has
         run: |
@@ -1390,7 +951,7 @@ jobs:
 
           # Run time first, on the binary that has already passed: the process
           # must not start without the file it named in its import table.
-          binary="$(grep -E '[/\\](product|boundary)-[0-9a-f]+(\.exe)?$' binaries.txt | head -1)"
+          binary="$(head -1 linked-product-binaries.txt)"
           if [ '${{ matrix.name }}' = windows ]; then
             # cargo reports a Windows path; this shell needs its own spelling.
             binary="$(cygpath -u "$binary")"

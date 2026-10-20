@@ -239,7 +239,6 @@ fn saved_dimensions_are_the_whole_line_lengths_and_the_one_circle_radius_in_curv
     assert!(saved(&square).is_empty());
     round.constraints = vec![distance(circle_id, START_END, 5.)];
     assert!(saved(&round).is_empty());
-    println!("\nFCAD_31L_SAVED_EXECUTED");
 }
 
 #[test]
@@ -366,7 +365,6 @@ fn a_label_states_the_target_and_beside_it_only_what_is_prepared_in_its_place() 
         ),
         Some(Pending::Replaced(8.5))
     );
-    println!("\nFCAD_31L_TEXT_EXECUTED");
 }
 
 /// The box of the label of `words` for `shape` in the view and canvas of these tests.
@@ -473,7 +471,6 @@ fn a_label_stands_beside_its_curve_whichever_way_it_is_stored_and_inside_the_can
             }
         }
     }
-    println!("\nFCAD_31L_PLACE_EXECUTED");
 }
 
 #[test]
@@ -543,7 +540,6 @@ fn a_label_is_none_when_its_curve_cannot_be_drawn_or_its_anchor_is_off_the_canva
     )
     .expect("the origin is the canvas's corner");
     assert!(dot.is_finite());
-    println!("\nFCAD_31L_BOUNDS_EXECUTED");
 }
 
 #[test]
@@ -624,5 +620,4 @@ fn labels_that_overlap_are_reached_in_stored_order_and_a_label_is_exactly_its_bo
     // A dimension whose curve is not in the drawing has no box and no label.
     let lost = dimension(StableEntityId::new(), Kind::Length, 1.);
     assert!(placed(&[shown(lost, None)], &curves, &view(), rect(), &measure).is_empty());
-    println!("\nFCAD_31L_HIT_EXECUTED");
 }

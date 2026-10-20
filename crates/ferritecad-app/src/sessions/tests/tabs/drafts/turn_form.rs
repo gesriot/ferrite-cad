@@ -151,7 +151,6 @@ fn the_angles_the_selection_the_text_and_the_prepared_replacement_of_a_form_foll
     assert!(painted(&out, "A>B -70 -> 110°") && painted(&out, "A>B 110°"));
     assert!(!painted(&out, "A>B 110 -> 70°"));
     assert!(!w.sessions.dirty(), "a prepared replacement is no change");
-    println!("\nFCAD_31M_TAB_EXECUTED");
 }
 
 #[test]
@@ -224,7 +223,6 @@ fn an_angle_form_held_on_another_version_loses_its_labels_and_keeps_its_rows_sel
         .draft_edits()
         .expect("the held form's request");
     assert_eq!(prepared.remove, vec![rules[1]]);
-    println!("\nFCAD_31M_TAB_STALE_EXECUTED");
 }
 
 #[test]
@@ -275,5 +273,4 @@ fn an_angle_form_given_back_by_a_cancelled_close_or_an_aborted_quit_keeps_all_of
     }
     assert!(painted(&frame(&mut w, &ctx, vec![]), "A>B -70 -> 110°"));
     assert!(!w.sessions.stale_draft() && !w.sessions.dirty());
-    println!("\nFCAD_31M_TAB_GIVEN_BACK_EXECUTED");
 }

@@ -484,7 +484,6 @@ fn wheel_and_pinch_zoom_about_the_cursor_on_every_canvas_and_edit_nothing() {
             assert_ne!(r.view().1, opening.1);
         }
     }
-    println!("\nFCAD_31J_ZOOM_WIDGETS_EXECUTED");
 }
 
 #[test]
@@ -555,7 +554,6 @@ fn a_pan_follows_the_pointer_holds_the_window_and_edits_nothing() {
             assert!(!r.pending_request());
         }
     }
-    println!("\nFCAD_31J_PAN_WIDGETS_EXECUTED");
 }
 
 /// One drag of a vertex or a handle, the grid, object snap and guides on for the Line,
@@ -673,7 +671,6 @@ fn a_pan_that_does_not_move_is_no_click_and_places_or_selects_nothing_on_the_lin
         r.frame(vec![primary(vertex, false)]);
         assert_ne!(r.facts(), facts, "{form:?}: a plain click does nothing");
     }
-    println!("\nFCAD_31J_PAN_CLICK_EXECUTED");
 }
 
 #[test]
@@ -707,7 +704,6 @@ fn a_held_edit_gesture_freezes_the_view_and_what_the_press_froze() {
         assert_eq!(r.facts(), edited, "{form:?}: a wheel after the drag edited");
         assert_eq!(r.depth().0, 1);
     }
-    println!("\nFCAD_31J_FROZEN_EXECUTED");
 }
 
 #[test]
@@ -852,7 +848,6 @@ fn navigation_reaches_only_the_visible_uncovered_canvas_of_a_form_that_is_free()
         r.frame(vec![wheel_lines(1.)]);
         assert_eq!(r.facts(), queued, "{form:?}: refused navigation edited");
     }
-    println!("\nFCAD_31J_REFUSED_EXECUTED");
 }
 
 #[test]
@@ -939,7 +934,6 @@ fn a_pan_ends_without_a_trace_by_release_outside_escape_focus_pointer_gone_or_a_
             "{form:?}: a cancelled or ended pan edited"
         );
     }
-    println!("\nFCAD_31J_PAN_ENDS_EXECUTED");
 }
 
 #[test]
@@ -1086,7 +1080,6 @@ fn events_of_one_frame_keep_their_order_and_gestures_read_the_view_the_person_sa
         );
         assert!(!same(r.view(), start));
     }
-    println!("\nFCAD_31J_ORDER_EXECUTED");
 }
 
 /// What a Line drag of the third vertex to a point `off` points above the middle of the
@@ -1246,7 +1239,6 @@ fn zooming_in_makes_close_vertices_short_midpoints_and_a_tiny_bore_pickable_in_l
         assert_eq!(held_at(&mut r, c), Some(Handle::Centre));
         assert_eq!(r.facts(), facts, "picking edited");
     }
-    println!("\nFCAD_31J_SMALL_GEOMETRY_EXECUTED");
 }
 
 #[test]
@@ -1335,7 +1327,6 @@ fn fit_is_the_only_way_back_and_typing_dragging_and_invalid_text_never_refit() {
             assert!(fitted.1.is_finite() && fitted.1 > 0.);
         }
     }
-    println!("\nFCAD_31J_FIT_EXPLICIT_EXECUTED");
 }
 
 #[test]
@@ -1386,7 +1377,6 @@ fn the_hint_names_the_gestures_and_says_when_the_view_is_locked() {
             "{form:?}"
         );
     }
-    println!("\nFCAD_31J_HINT_EXECUTED");
 }
 
 #[test]
@@ -1466,7 +1456,6 @@ fn each_profile_keeps_its_own_view_and_cancelling_the_draft_forgets_all_of_them(
         (r.e.canvas.minimum, r.e.canvas.scale),
         (Canvas::default().minimum, Canvas::default().scale)
     ));
-    println!("\nFCAD_31J_PROFILES_EXECUTED");
 }
 
 #[test]
@@ -1588,7 +1577,6 @@ fn navigation_over_a_canvas_never_reaches_the_3d_camera_and_a_viewport_drag_stil
             );
         }
     }
-    println!("\nFCAD_31J_ROUTING_EXECUTED");
 }
 
 /// §31J: a pan of the view of the canvas the form shows, begun and still held, as

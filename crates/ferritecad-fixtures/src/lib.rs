@@ -496,3 +496,22 @@ fn first_sentence(message: &str) -> String {
         .trim()
         .to_owned()
 }
+
+/// Check each native dependency separately before a test may skip it.
+#[track_caller]
+pub fn native_dependencies(dependencies: &[(bool, &str)]) -> bool {
+    let mut available = true;
+    for &(present, dependency) in dependencies {
+        if !present {
+            let requirement = format!("FERRITECAD_REQUIRE_{dependency}");
+            assert_ne!(
+                std::env::var(&requirement).as_deref(),
+                Ok("1"),
+                "{requirement}=1 but {dependency} is unavailable"
+            );
+            eprintln!("skipped: {dependency} is unavailable");
+            available = false;
+        }
+    }
+    available
+}

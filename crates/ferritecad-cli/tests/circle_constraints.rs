@@ -68,17 +68,10 @@ fn solver_available() -> bool {
     ferritecad_eval::solver_available()
 }
 fn native() -> bool {
-    if ferritecad_occt::is_available() && solver_available() {
-        true
-    } else {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: this build has no kernel or no solver");
-        false
-    }
+    ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (solver_available(), "PLANEGCS"),
+    ])
 }
 /// Keeps a published artefact where a CI step can hand it to the pinned reader.
 fn keep(path: &Path, name: &str) {
@@ -1362,8 +1355,7 @@ fn native_circle_constraint_refusals_and_late_delivery_are_atomic() {
 #[test]
 fn occt_without_solver_builds_plain_circles_and_refuses_circle_constraints() {
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: OCCT is required for the mixed kernel/solver gate");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     assert!(!solver_available(), "the mixed gate must not link a solver");
@@ -1633,7 +1625,6 @@ fn circle_diameter_request_is_strict_and_converts_without_native() {
         assert_eq!(entries(root.path()), names);
         assert_eq!(std::fs::read(&source).expect("source"), before);
     }
-    println!("\nFCAD_31E_CLI_STRICT_EXECUTED");
 }
 
 /// §31E, native: a diameter is the stored Radius `D/2` in the Radius slot, and
@@ -1820,5 +1811,4 @@ fn native_circle_diameter_is_the_stored_radius_in_the_same_slot() {
     assert_eq!(texts(&rest), ["fixed center (-3.5, 4.25)"]);
     analytic_matches(&analytic(&freed), before.curve, 10., 15.);
     assert_eq!(std::fs::read(&f.source).expect("source"), source_bytes);
-    println!("\nFCAD_31E_CLI_CIRCLE_EXECUTED");
 }

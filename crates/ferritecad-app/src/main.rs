@@ -9496,7 +9496,7 @@ mod tests {
     /// is that a real edge, named by Open CASCADE, reaches a pixel.
     fn native_plate_scene() -> Option<(tempfile::TempDir, LoadedScene)> {
         if !ferritecad_occt::is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return None;
         }
         let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -9526,12 +9526,6 @@ mod tests {
         !required
     }
 
-    fn a_missing_adapter_may_skip() -> bool {
-        a_missing_adapter_may_skip_when(
-            std::env::var("FERRITECAD_REQUIRE_GPU").as_deref() == Ok("1"),
-        )
-    }
-
     #[test]
     fn a_pin_run_cannot_turn_a_missing_gpu_into_a_green_skip() {
         assert!(a_missing_adapter_may_skip_when(false));
@@ -9544,11 +9538,7 @@ mod tests {
             match Renderer::new() {
                 Ok(renderer) => renderer,
                 Err(reason) if reason.kind() == ferritecad_types::ErrorKind::Unsupported => {
-                    assert!(
-                        a_missing_adapter_may_skip(),
-                        "FERRITECAD_REQUIRE_GPU=1 was set, so a pixel gate may not skip: {reason}"
-                    );
-                    eprintln!("skipped: {reason}");
+                    ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
                     return;
                 }
                 Err(reason) => panic!("a renderer failed after adapter discovery: {reason}"),
@@ -9795,7 +9785,7 @@ mod tests {
         use ferritecad_document::{CapSide, Document, EntityKind, SelectionRule};
 
         if !ferritecad_occt::is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return None;
         }
         let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -9867,7 +9857,7 @@ mod tests {
         use ferritecad_document::{CapSide, Document, EntityKind, ObjectPayload, SelectionRule};
 
         if !ferritecad_occt::is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return None;
         }
         let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -9985,7 +9975,7 @@ mod tests {
         use ferritecad_document::{Document, EntityKind, ObjectPayload, SelectionRule};
 
         if !ferritecad_occt::is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return None;
         }
         let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -10960,7 +10950,7 @@ mod tests {
         use ferritecad_document::{Document, EntityKind, SelectionRule};
 
         if !ferritecad_occt::is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -11447,7 +11437,7 @@ mod tests {
         use ferritecad_document::{Document, EntityKind, ObjectPayload, SelectionRule};
 
         if !ferritecad_occt::is_available() {
-            eprintln!("skipped: this build has no Open CASCADE");
+            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return;
         }
         let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -18226,12 +18216,8 @@ mod tests {
         if ferritecad_sketch_solver::is_available() {
             return true;
         }
-        assert!(
-            !ferritecad_sketch_solver::is_required(),
-            "FERRITECAD_REQUIRE_PLANEGCS=1 was set, so no gate may skip: a window that has \
-             never been handed a real solve has not been shown to carry one"
-        );
-        eprintln!("skipped: this build has no sketch solver");
+
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         false
     }
 
@@ -18806,7 +18792,6 @@ mod tests {
         }
         assert!(!said.contains("0.52") && !said.contains("rad"), "{said}");
         assert!(!said.contains("no words"), "{said}");
-        println!("\nFCAD_31F_SENTENCE_EXECUTED");
     }
 
     /// §31G: a collinearity is said as itself, with both Lines written out as
@@ -18856,7 +18841,6 @@ mod tests {
             "{said}"
         );
         assert!(!parallel.contains("Collinear"), "{parallel}");
-        println!("\nFCAD_31G_SENTENCE_EXECUTED");
     }
 
     #[test]
@@ -22232,9 +22216,6 @@ mod tests {
             }
         }
         assert_eq!(chosen_things, 6);
-        println!(
-            "\nFCAD_31B_NATIVE_REGION_EXECUTED picks={chosen_things} scales=2 kinds=face,edge,corner"
-        );
     }
 
     /// §30A: the window is named for the user's file with a mark while there are

@@ -175,7 +175,7 @@ fn native_shared_step_import_owns_geometry_and_matches_cli() {
             "{error}"
         );
         assert_eq!(error.kind(), ErrorKind::Unsupported);
-        eprintln!("skipped: this build has no Open CASCADE (shared STEP import)");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     for (kind, fixture, expected_code) in [
@@ -565,7 +565,7 @@ fn text_import_keeps_lossy_basename_and_explicit_name_rules() {
     if OcctKernel::new().is_err() {
         assert_eq!(output.status.code(), Some(2));
         assert!(!destination.exists());
-        eprintln!("skipped: this build has no Open CASCADE (lossy stored import name)");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     assert_eq!(output.status.code(), Some(0));

@@ -1192,8 +1192,7 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     use ferritecad_document::Document;
     use ferritecad_kernel::OperationContext;
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: no OCCT for the solid Revolve worker");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let pi = std::f64::consts::PI;
@@ -1534,8 +1533,7 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     use ferritecad_document::{Document, ObjectPayload, RevolveExtent};
     use ferritecad_kernel::OperationContext;
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: no OCCT for the partial Revolve profile worker");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let root = tempfile::tempdir().expect("directory");

@@ -119,7 +119,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
 #[test]
 fn a_saved_document_rebuilds_into_open_cascade_geometry() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -181,7 +181,7 @@ fn a_saved_document_rebuilds_into_open_cascade_geometry() {
 #[test]
 fn two_cold_rebuilds_of_one_document_agree() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 
@@ -217,7 +217,7 @@ fn two_cold_rebuilds_of_one_document_agree() {
 #[test]
 fn a_feature_this_slice_cannot_build_fails_without_leaking() {
     if !is_available() {
-        eprintln!("skipped: this build has no Open CASCADE");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
 

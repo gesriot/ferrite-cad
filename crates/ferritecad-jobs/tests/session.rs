@@ -727,12 +727,8 @@ fn without_solver(result: Result<StepCommit, CadError>) -> bool {
         error.to_string().contains("did not link planegcs"),
         "height: {error}"
     );
-    assert_ne!(
-        std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-        Ok("1"),
-        "this build is required to have the sketch solver"
-    );
-    eprintln!("skipped: constraints need PlaneGCS");
+
+    ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
     true
 }
 

@@ -102,27 +102,10 @@ fn entries(p: &Path) -> Vec<std::ffi::OsString> {
 /// Whether this build has what the gate needs, each missing piece excused only
 /// where that piece is not required.
 fn have(kernel: bool, solver: bool) -> bool {
-    for (needed, present, required, what) in [
-        (
-            kernel,
-            ferritecad_occt::is_available(),
-            "FERRITECAD_REQUIRE_OCCT",
-            "OCCT",
-        ),
-        (
-            solver,
-            ferritecad_eval::solver_available(),
-            "FERRITECAD_REQUIRE_PLANEGCS",
-            "planegcs",
-        ),
-    ] {
-        if needed && !present {
-            assert_ne!(std::env::var(required).as_deref(), Ok("1"));
-            eprintln!("skipped: the collinear gate needs {what}");
-            return false;
-        }
-    }
-    true
+    ferritecad_fixtures::native_dependencies(&[
+        (!kernel || ferritecad_occt::is_available(), "OCCT"),
+        (!solver || ferritecad_eval::solver_available(), "PLANEGCS"),
+    ])
 }
 
 /// A saved XY Line profile written by the shipped creation command.
@@ -635,7 +618,6 @@ fn a_collinear_request_is_strict_and_refuses_before_anything_is_published() {
     }
     assert!(!s.root.path().join("never.fcad").exists());
     assert_eq!(std::fs::read(&s.path).expect("source"), before);
-    println!("\nFCAD_31G_CLI_STRICT_EXECUTED");
 }
 
 /// Discovery: a stored collinearity is reported by its own kind and both Lines,
@@ -775,7 +757,6 @@ fn discovery_names_a_stored_collinear_and_both_lines_and_leaves_the_older_forms_
         )
         .expect("version");
     assert_eq!(version, 2, "a Parallel and the joints only");
-    println!("\nFCAD_31G_CLI_DISCOVERY_EXECUTED");
 }
 
 /// What the request cannot be, said after the document is read and before any
@@ -839,7 +820,6 @@ fn the_pair_and_the_lines_of_a_request_are_checked_before_any_solver_is_asked() 
         );
         assert!(error.get("constraint_conflict").is_none(), "{name}");
     }
-    println!("\nFCAD_31G_CLI_REQUEST_SLOT_EXECUTED");
 }
 
 /// The refusals that happen before the solver is asked: the pair slot, with a
@@ -923,7 +903,6 @@ fn the_pair_slot_holds_every_other_answer_off_a_collinear_pair_before_the_solver
         constraint_ids(&catalog).len() + 1,
         "one more constraint, and the collinearity is still there"
     );
-    println!("\nFCAD_31G_CLI_SLOT_EXECUTED");
 }
 
 /// OCCT without a solver: a document that holds a collinearity is neither
@@ -931,8 +910,9 @@ fn the_pair_slot_holds_every_other_answer_off_a_collinear_pair_before_the_solver
 /// document, its coordinates and its exports) works exactly as before.
 #[test]
 fn without_a_solver_a_collinear_document_is_not_solved_and_the_unconstrained_route_works() {
-    if !ferritecad_occt::is_available() || ferritecad_eval::solver_available() {
-        eprintln!("skipped: this gate is the OCCT-without-solver shape");
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_eval::solver_available()
+    {
         return;
     }
     use ferritecad_document::{
@@ -1012,7 +992,6 @@ fn without_a_solver_a_collinear_document_is_not_solved_and_the_unconstrained_rou
     let catalog = inspect(&with);
     let error = s.refused(&with, &catalog, &[s.rule("equal_length", 1, 2)]);
     assert_eq!(error["kind"], "unsupported", "{error}");
-    println!("\nFCAD_31G_NOSOLVER_EXECUTED");
 }
 
 /// The U's two rims are parallel, apart and 2 mm off one another's line. The
@@ -1091,7 +1070,6 @@ fn native_collinear_brings_disjoint_parallel_rims_onto_one_line_and_a_parallel_d
     // The source did not move.
     assert_eq!(std::fs::read(&s.path).expect("source"), bytes);
     assert_eq!(flat_modified(&s.path), mtime);
-    println!("\nFCAD_31G_CLI_U_EXECUTED offset=2 dof=14 control=15");
 }
 
 /// Off the axes, and with Lines running opposite ways: the same relation. The
@@ -1154,7 +1132,6 @@ fn native_collinear_holds_on_a_turned_u_and_between_lines_that_run_opposite_ways
             exports(&path, &together, "z");
         }
     }
-    println!("\nFCAD_31G_CLI_TURNED_EXECUTED");
 }
 
 /// Replacement and removal by exact UUID, the solver's own conflict and
@@ -1364,7 +1341,6 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
         .expect("stale");
     assert_eq!(stale.status.code(), Some(2), "{stale:?}");
     assert!(!s.root.path().join("stale.fcad").exists());
-    println!("\nFCAD_31G_CLI_EDIT_EXECUTED");
 }
 
 /// A warm rebuild never serves one profile's solid for another's: the cache key
@@ -1429,5 +1405,4 @@ fn native_collinear_cache_keys_follow_the_solved_profile() {
             "{again} vs {independent}"
         );
     }
-    println!("\nFCAD_31G_CLI_CACHE_EXECUTED");
 }

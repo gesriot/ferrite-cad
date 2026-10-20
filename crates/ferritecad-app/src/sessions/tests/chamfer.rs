@@ -607,11 +607,7 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
         return;
     }
     if !ferritecad_sketch_solver::is_available() {
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: requires solver");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     use ferritecad_document::{
@@ -813,7 +809,6 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
 #[test]
 fn stub_distance_apply_refuses_without_publication() {
     if ferritecad_occt::is_available() {
-        eprintln!("skipped: requires stub");
         return;
     }
     let (_root, source, reading) = fixture();
@@ -831,8 +826,9 @@ fn stub_distance_apply_refuses_without_publication() {
 }
 #[test]
 fn mixed_distance_apply_uses_occt_without_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
-        eprintln!("skipped: requires OCCT/no solver");
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     gate("chamfer-mixed");

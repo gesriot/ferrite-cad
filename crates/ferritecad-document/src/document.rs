@@ -3122,7 +3122,6 @@ mod constraint_write_tests {
         );
         d.write_sketch_constraints(&honest)
             .expect("the honest plan");
-        println!("\nFCAD_31F_WRITER_GUARD_EXECUTED");
     }
 
     /// §31G: the writer re-derives the plan against the document it consumes. A
@@ -3265,7 +3264,6 @@ mod constraint_write_tests {
         );
         d.write_sketch_constraints(&honest)
             .expect("the honest plan");
-        println!("\nFCAD_31G_WRITER_GUARD_EXECUTED");
     }
 
     #[test]

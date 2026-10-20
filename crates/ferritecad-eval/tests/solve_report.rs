@@ -59,12 +59,8 @@ fn ready() -> bool {
     if solver::is_available() {
         return true;
     }
-    assert!(
-        !solver::is_required(),
-        "FERRITECAD_REQUIRE_PLANEGCS=1 was set, so no gate may skip: this build has no sketch \
-         solver, and a rebuild that cannot solve has nothing to report about a solve"
-    );
-    eprintln!("skipped: this build has no sketch solver");
+
+    ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
     false
 }
 
@@ -1020,7 +1016,6 @@ fn a_cancelled_rebuild_publishes_no_facts() {
 #[test]
 fn a_build_with_no_solver_publishes_no_facts() {
     if solver::is_available() {
-        eprintln!("skipped: this build has a sketch solver, so it has nothing to refuse for");
         return;
     }
 

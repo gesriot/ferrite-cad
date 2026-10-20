@@ -224,7 +224,6 @@ fn a_collinear_is_one_step_on_a_picked_pair_and_reads_neither_vector_direction()
     }
     click(&ctx, &mut e, "Cancel constraints draft");
     assert!(!e.active());
-    println!("\nFCAD_31G_WIDGETS_EXECUTED");
 }
 
 /// A stored collinearity is listed with both Lines, comes off by its exact
@@ -305,7 +304,6 @@ fn a_stored_collinear_is_replaced_by_a_parallel_in_one_exact_remove_and_add() {
             .as_deref()
             .is_some_and(|r| r.contains("Collinear"))
     );
-    println!("\nFCAD_31G_REPLACE_EXECUTED");
 }
 
 /// A U with two disjoint, parallel rims at different heights: the right one
@@ -357,23 +355,11 @@ fn measure(vectors: &[[[f64; 2]; 2]], first: usize, second: usize) -> ([f64; 4],
 #[test]
 fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
     use crate::creates::tests::ferritecad;
-    for (present, required, what) in [
-        (
-            ferritecad_occt::is_available(),
-            "FERRITECAD_REQUIRE_OCCT",
-            "OCCT",
-        ),
-        (
-            ferritecad_sketch_solver::is_available(),
-            "FERRITECAD_REQUIRE_PLANEGCS",
-            "planegcs",
-        ),
-    ] {
-        if !present {
-            assert_ne!(std::env::var(required).as_deref(), Ok("1"));
-            eprintln!("skipped: the collinear gate needs {what}");
-            return;
-        }
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
+    ]) {
+        return;
     }
     // The U carries data this editor knows nothing about (an attached source
     // claim, an unknown table and capability rows): it has to come through.
@@ -773,5 +759,4 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
         assert_eq!(ids_of(path), new_ui[..8].to_vec(), "only the joints remain");
         assert_eq!(solved(path).1.0, 16);
     }
-    println!("\nFCAD_31G_NATIVE_EXECUTED rims=14dof control=15dof");
 }

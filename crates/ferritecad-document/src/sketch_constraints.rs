@@ -1372,6 +1372,5 @@ mod tests {
                 "diameter {bad:e} was accepted"
             );
         }
-        println!("\nFCAD_31E_DIAMETER_CONVERSION_EXECUTED");
     }
 }

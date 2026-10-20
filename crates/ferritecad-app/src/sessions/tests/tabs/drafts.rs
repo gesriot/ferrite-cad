@@ -341,7 +341,6 @@ fn height_drafts_of_two_copies_stay_literal_and_apply_only_to_their_own_tab() {
         "and kept the form"
     );
     assert_ne!(std::fs::read(&b_file).expect("b"), originals.1);
-    println!("\nFCAD_30P_HEIGHT_DRAFTS_EXECUTED");
 }
 
 /// The constraints form of two copies — the same Sketch, the same Line ids, the
@@ -434,7 +433,6 @@ fn constraint_drafts_with_one_set_of_ids_keep_picks_changes_and_history_per_tab(
         std::fs::read(&b_file).expect("b"),
         "nothing was written"
     );
-    println!("\nFCAD_30P_CONSTRAINT_DRAFTS_EXECUTED");
 }
 
 /// §31F: two copies of one plate (one set of ids, the same controls) keep each
@@ -523,7 +521,6 @@ fn a_typed_angle_its_pair_and_directions_follow_their_tab() {
         !w.sessions.dirty() && !w.hidden(b).dirty(),
         "a draft is not a change"
     );
-    println!("\nFCAD_31F_TABS_EXECUTED");
 }
 
 /// §31G: two copies of one plate (one set of ids, the same controls) keep each
@@ -591,7 +588,6 @@ fn a_picked_pair_and_a_pending_collinear_follow_their_tab() {
         !w.sessions.dirty() && !w.hidden(a).dirty(),
         "a draft is not a change"
     );
-    println!("\nFCAD_31G_TABS_EXECUTED");
 }
 
 /// §31E: two copies of one cylinder (one set of ids, the same controls) keep each
@@ -600,8 +596,7 @@ fn a_picked_pair_and_a_pending_collinear_follow_their_tab() {
 #[test]
 fn a_typed_diameter_and_the_picked_circle_follow_their_tab() {
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: the picture of a circle in a tab needs OCCT");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let user = tempfile::tempdir().expect("user");
@@ -689,7 +684,6 @@ fn a_typed_diameter_and_the_picked_circle_follow_their_tab() {
         !w.sessions.dirty() && !w.hidden(b).dirty(),
         "a draft is not a change"
     );
-    println!("\nFCAD_31E_TABS_EXECUTED");
 }
 
 /// §31I: two copies of one ring keep each their canvas view, the strings their canvas
@@ -699,8 +693,7 @@ fn a_typed_diameter_and_the_picked_circle_follow_their_tab() {
 fn the_canvas_view_its_dragged_numbers_and_their_history_follow_their_tab() {
     use crate::sketch::analytic_tests::{canvas_facts, drag_role, press_on_form, settle_form};
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: the picture of a ring in a tab needs OCCT");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let user = tempfile::tempdir().expect("user");
@@ -774,7 +767,6 @@ fn the_canvas_view_its_dragged_numbers_and_their_history_follow_their_tab() {
         !w.sessions.dirty() && !w.hidden(b).dirty(),
         "a draft is not a change"
     );
-    println!("\nFCAD_31I_TABS_EXECUTED");
 }
 
 /// §31J: the zoom and pan of each tab's canvas are that tab's own and survive every switch;
@@ -787,8 +779,7 @@ fn the_canvas_zoom_and_pan_follow_their_tab_and_a_held_pan_holds_the_window() {
         navigation_tests::{hold_pan, pan_form, release_pan, zoom_form},
     };
     if !ferritecad_occt::is_available() {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-        eprintln!("skipped: the picture of a ring in a tab needs OCCT");
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
     }
     let user = tempfile::tempdir().expect("user");
@@ -875,7 +866,6 @@ fn the_canvas_zoom_and_pan_follow_their_tab_and_a_held_pan_holds_the_window() {
         !w.sessions.dirty() && !w.hidden(b).dirty(),
         "a view is not a change"
     );
-    println!("\nFCAD_31J_TABS_EXECUTED");
 }
 
 /// Showing another tab waits for everything that is not an idle form; a switch
@@ -1059,7 +1049,6 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
     assert!(!w.hidden(a).dirty());
     w.round(a);
     assert_eq!(w.edits.typed(), Some((Some(feature_a), "a-draft")));
-    println!("\nFCAD_30P_REFUSED_SWITCHES_EXECUTED");
 }
 
 /// Closing and Quit never lose an open form, even over a clean model: the tab
@@ -1154,7 +1143,6 @@ fn close_and_quit_keep_an_open_form_even_over_a_clean_model() {
     assert_eq!(w.close(a).expect("closed"), Some(b));
     assert!(!a_private.exists(), "A's draft lease went with A");
     assert!(w.hidden(b).dirty() && w.hidden(b).export_path().is_some());
-    println!("\nFCAD_30P_CLOSE_QUIT_FORMS_EXECUTED");
 }
 
 /// A hidden tab's version cannot change through the window. If it does, its
@@ -1217,7 +1205,6 @@ fn a_draft_made_on_another_version_comes_back_held_and_is_never_applied() {
     w.edits.type_height(feature, "22");
     assert!(w.apply_height_form());
     assert_eq!(height_in(&w.sessions), 22.0);
-    println!("\nFCAD_30P_STALE_DRAFT_EXECUTED");
 }
 
 /// Two tabs' height forms have the same controls. Drawn the way the window draws
@@ -1289,7 +1276,6 @@ fn the_same_control_in_two_tabs_shares_no_focus_or_text() {
     frame(&mut b, tab_b, vec![egui::Event::Text("9".into())]);
     assert_eq!(b.typed(), Some((Some(feature), "12")), "B's text changed");
     assert_eq!(a.typed().expect("A").1, typed_a);
-    println!("\nFCAD_30P_FORM_FOCUS_EXECUTED");
 }
 
 /// The polygon form of two copies keeps each tab's typed vertices and its own
@@ -1344,7 +1330,6 @@ fn vertex_drafts_of_two_copies_keep_their_own_text_and_draft_history() {
         Some(a_draft)
     );
     assert!(w.tabs.has_draft(b) && !w.sessions.dirty() && !w.hidden(b).dirty());
-    println!("\nFCAD_30P_VERTEX_DRAFTS_EXECUTED");
 }
 
 /// §31C: Object snap and a snapped draft belong to their tab's editor, like the
@@ -1406,7 +1391,6 @@ fn object_snap_and_its_snapped_draft_follow_their_tab() {
     assert!(!crate::sketch::object_snap_tests::object_snap_on(
         &w.creates.sketch
     ));
-    println!("\nFCAD_31C_TABS_EXECUTED");
 }
 
 /// §31D-1: the Guides choice, the Length text and a guided draft belong to their
@@ -1462,7 +1446,6 @@ fn guides_a_typed_length_and_the_guided_draft_follow_their_tab() {
         Some(b_draft)
     );
     assert_eq!(guide_state(&w.creates.sketch), ("Off", String::new()));
-    println!("\nFCAD_31D_TABS_EXECUTED");
 }
 
 /// §31D-2: the From object mode is the tab's editor setting, like Guides and the grid
@@ -1525,8 +1508,6 @@ fn the_anchor_mode_follows_its_tab_and_the_resting_anchor_follows_nobody() {
         (true, false),
         "B kept the mode it switched on, and no anchor either"
     );
-
-    println!("\nFCAD_31H_TABS_EXECUTED");
 }
 
 /// Without a kernel, showing a tab is refused at its picture: both tabs' drafts
@@ -1562,14 +1543,15 @@ fn stub_a_refused_switch_keeps_both_drafts() {
     w.drawn = Drawn::Mock;
     w.round(a);
     assert_eq!(w.edits.typed(), Some((Some(feature), "a")));
-    println!("\nFCAD_30P_STUB_DRAFTS_EXECUTED");
 }
 
 /// Open CASCADE without the solver: height drafts of two plates are kept through
 /// switches drawn by Open CASCADE and applied after returning.
 #[test]
 fn mixed_drafts_switch_and_apply_with_occt_and_no_solver() {
-    if !ferritecad_occt::is_available() || ferritecad_sketch_solver::is_available() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+        || ferritecad_sketch_solver::is_available()
+    {
         return;
     }
     let user = tempfile::tempdir().expect("user");
@@ -1597,7 +1579,6 @@ fn mixed_drafts_switch_and_apply_with_occt_and_no_solver() {
     assert!(w.apply_height_form());
     assert_eq!(height_in(&w.sessions), 19.0);
     assert_eq!(height_in(w.hidden(a)), 18.0);
-    println!("\nFCAD_30P_MIXED_DRAFTS_EXECUTED");
 }
 
 // --- native: Open CASCADE and PlaneGCS, against the shipped command line ---------
@@ -1795,7 +1776,7 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
         area * 9.5
     );
     super::super::analytic::assert_round(&b_stl, [-3.5, 4.25], 8.0, None, 15.25);
-    let (_, height_b, volume_b) = super::super::checkpoints::stl_facts(&b_stl);
+    let (_, _height_b, _volume_b) = super::super::checkpoints::stl_facts(&b_stl);
     if let Ok(dir) = std::env::var("FCAD_TAB_DRAFTS_ARTIFACTS") {
         let dir = PathBuf::from(dir);
         for (name, stl, fbx) in [("drafts-a", &a_stl, &a_fbx), ("drafts-b", &b_stl, &b_fbx)] {
@@ -1803,10 +1784,6 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
             std::fs::write(dir.join(format!("{name}.fbx")), fbx).expect("artifact");
         }
     }
-    println!(
-        "\nFCAD_30P_NATIVE_DRAFTS_EXECUTED volume_a={volume_a:.3} height_b={height_b:.3} \
-         volume_b={volume_b:.3}"
-    );
 }
 
 /// Two copies of a dimensioned plate, each with a *Replace length* draft — one
@@ -1820,11 +1797,7 @@ fn native_replace_length_drafts_of_two_copies_apply_to_their_own_tab_like_the_co
         return;
     }
     if !ferritecad_sketch_solver::is_available() {
-        assert_ne!(
-            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
-            Ok("1")
-        );
-        eprintln!("skipped: constraints need PlaneGCS");
+        ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
     let (root, path, source) = crate::fillets::tests::dimensioned();
@@ -1881,7 +1854,6 @@ fn native_replace_length_drafts_of_two_copies_apply_to_their_own_tab_like_the_co
         let added = same_model_with_explicit_new_ids(file, &peer, sketch, &old, tag);
         assert_eq!(added.len(), 1, "{tag}: one new constraint");
     }
-    println!("\nFCAD_30P_NATIVE_CONSTRAINT_DRAFTS_EXECUTED");
 }
 
 // --- the real window's artifacts --------------------------------------------------

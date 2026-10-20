@@ -33,12 +33,8 @@ fn ready() -> bool {
     if solver::is_available() {
         return true;
     }
-    assert!(
-        !solver::is_required(),
-        "FERRITECAD_REQUIRE_PLANEGCS=1 was set, so no gate may skip: this build has no product \
-         sketch solver, and a solver that is not there has not been shown to work"
-    );
-    eprintln!("skipped: this build has no sketch solver");
+
+    ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
     false
 }
 

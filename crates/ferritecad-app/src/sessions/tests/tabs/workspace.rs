@@ -384,7 +384,6 @@ fn long_messages_and_long_lists_cannot_move_the_viewport_or_paint_over_it() {
         SCREEN.1 - loud.answers.central.max.y,
         SCREEN.1 - quiet.answers.central.max.y
     );
-    println!("\nFCAD_31B_LAYOUT_BOUNDS_EXECUTED");
 }
 
 #[test]
@@ -419,7 +418,6 @@ fn the_same_layout_at_two_pixels_per_point_is_the_same_rectangle_twice_as_large(
     assert_eq!(near.take_hover(), Hover::At(30.0, 20.0));
     assert_eq!(sharp.take_hover(), Hover::At(60.0, 40.0));
     assert_eq!(near.camera().aspect(), sharp.camera().aspect());
-    println!("\nFCAD_31B_SCALE_EXECUTED");
 }
 
 #[test]
@@ -510,7 +508,6 @@ fn an_empty_window_and_an_empty_document_stay_controllable() {
         assert_eq!(input.camera().eye(), eye);
         assert_eq!(input.camera().target(), target);
     }
-    println!("\nFCAD_31B_EMPTY_EXECUTED");
 }
 
 /// Moves to `at` (in points) and then presses or releases there, as the window
@@ -625,7 +622,6 @@ fn panels_keep_their_presses_and_the_viewport_keeps_its_own() {
     deliver(&mut w, &ctx, 1.0, across, Some(false));
     assert!(!w.input.is_dragging());
     assert_eq!(w.input.take_pick(), None, "the end of a drag picked");
-    println!("\nFCAD_31B_OWNERSHIP_EXECUTED");
 }
 
 #[test]
@@ -675,7 +671,6 @@ fn dragging_a_panel_moves_the_viewport_and_what_was_asked_in_the_old_one_is_drop
     assert_eq!(w.input.take_pick(), None, "an old click survived the move");
     assert_eq!(w.input.take_hover(), Hover::Cleared);
     assert_eq!(w.input.camera().width(), first.width());
-    println!("\nFCAD_31B_REGION_MOVE_EXECUTED");
 }
 
 #[test]
@@ -749,7 +744,6 @@ fn each_tab_keeps_its_camera_across_a_layout_change_and_is_fitted_to_the_present
     assert_eq!(w.input.camera().eye(), camera_a.eye());
     assert_eq!(w.input.region(), present);
     drop(paths);
-    println!("\nFCAD_31B_TABS_EXECUTED");
 }
 
 #[test]
@@ -799,7 +793,6 @@ fn a_question_that_must_be_answered_first_leaves_the_layout_and_the_viewport_alo
         !pressed,
         "a disabled button took a press during the question"
     );
-    println!("\nFCAD_31B_MODAL_EXECUTED");
 }
 
 #[test]
@@ -885,5 +878,4 @@ fn a_form_keeps_its_focus_and_text_when_the_groups_above_it_come_and_go() {
         );
         assert_eq!(w.edits.typed().expect("open").1, typed);
     }
-    println!("\nFCAD_31B_FORM_IDS_EXECUTED");
 }
