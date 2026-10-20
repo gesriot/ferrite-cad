@@ -545,7 +545,8 @@ the production route"
     # reading of the stored STEP or a second call to the writer would each be a
     # second answer to a question this job answers once.
     for what in \
-        'export_scene(|builds the export scene|1' \
+        'export_scene_with_report(|builds the export scene|1' \
+        'export_scene(|builds another export scene|0' \
         'write_fbx_ascii_7400(|calls the writer|1' \
         'OcctKernel::new(|opens a kernel session of its own|0' \
         'Document::open|opens the document itself|0' \
@@ -630,6 +631,7 @@ publishes at line ${published}; the last check must come first"
         'export_document_as_fbx(|calls the shared job|1' \
         'OcctKernel::new(|opens the kernel session|1' \
         'export_scene(|builds a scene of its own|0' \
+        'export_scene_with_report(|builds a scene of its own|0' \
         'write_fbx_ascii_7400(|calls the writer itself|0' \
         'Temporary|publishes a file itself|0' \
         'Command::new(|starts another program|0' \
@@ -716,6 +718,7 @@ publishes at line ${published}; the last check must come first"
         'export_document_as_fbx(|calls the shared job|1' \
         'OcctKernel::new(|opens the kernel session|1' \
         'export_scene(|builds a scene of its own|0' \
+        'export_scene_with_report(|builds a scene of its own|0' \
         'write_fbx_ascii_7400(|calls the writer itself|0' \
         'Temporary|publishes a file itself|0' \
         'std::fs::rename|replaces a file itself|0' \

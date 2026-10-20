@@ -2,7 +2,7 @@
 //! One document, one FBX, however it was asked for.
 //!
 //! The whole route from a stored document to a file another program opens as a
-//! model: [`export_scene`] keeps the hierarchy, the placements and the
+//! model: [`export_scene_with_report`] keeps the hierarchy, the placements and the
 //! definitions that a picture throws away, [`write_fbx_ascii_7400`] is handed
 //! that and a byte sink and nothing else, and the result reaches its
 //! destination in one step or not at all.
