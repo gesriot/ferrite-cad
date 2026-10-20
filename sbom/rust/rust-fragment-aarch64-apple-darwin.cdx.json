@@ -5901,7 +5901,8 @@
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-sketch-solver#ferritecad-sketch-solver@0.0.1",
         "path+crates/ferritecad-topology#ferritecad-topology@0.0.1",
-        "path+crates/ferritecad-types#ferritecad-types@0.0.1"
+        "path+crates/ferritecad-types#ferritecad-types@0.0.1",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229"
       ],
       "ref": "path+crates/ferritecad-eval#ferritecad-eval@0.0.1"
     },
