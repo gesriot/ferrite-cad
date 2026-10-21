@@ -246,6 +246,11 @@ fn a_rule_form_held_on_another_version_loses_its_markers_and_keeps_its_rows_sele
                     feature,
                     20.0,
                     &mut MockKernel::new(),
+                    |_, _| {
+                        Err(ferritecad_types::CadError::unsupported(
+                            "no STEP imports in this model",
+                        ))
+                    },
                     &OperationContext::default(),
                 ))
                 .expect("edit");

@@ -293,7 +293,7 @@ fn gate(count: usize, name: &str) {
     let original = std::fs::read(&source).expect("source");
     let initial = history(&source);
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let base = initial[0].base_feature;
     let mut peers = source.clone();
     let mut accepted = vec![s.export_path().expect("initial")];
@@ -404,7 +404,7 @@ fn gate(count: usize, name: &str) {
     saved(&mut s, SaveTarget::InPlace);
     assert_eq!(sql(&source), sql(&peers));
     cold(&source, 38.75, 12.25, 9.25);
-    let reopened = DocumentSession::open(&source).expect("reopen");
+    let reopened = crate::sessions::test_open::open(&source).expect("reopen");
     assert!(!reopened.is_dirty());
     assert_eq!(sql(reopened.current().path()), sql(&source));
     drop(reopened);
@@ -578,7 +578,7 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
         LineConstraintKind::Distance(LineLengthMm::new(41.).expect("width")),
     ));
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let cr = ferritecad_jobs::EditSketchConstraintsRequest {
         source: source.clone(),
         expected: reading.version,
@@ -765,7 +765,7 @@ fn stub_radius_apply_refuses_without_publication() {
     let (_root, source, reading) = fixture(1);
     let original = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let (_form, r) = typed_radius(
         &source,
         &reading,

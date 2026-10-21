@@ -46,7 +46,7 @@ fn tell(c: &mut creates::Creates, s: &sessions::Sessions) {
 }
 fn opened(path: &Path) -> sessions::Sessions {
     let mut s = sessions::Sessions::default();
-    s.adopt(ferritecad_jobs::DocumentSession::open(path).expect("session"));
+    s.adopt(crate::sessions::test_open::open(path).expect("session"));
     s
 }
 pub(crate) fn typed_radius(

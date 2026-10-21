@@ -30,8 +30,11 @@ impl Window {
         match self.drawn {
             Drawn::Native => open_for_view(self.private.path(), path, &OperationContext::default()),
             Drawn::Mock => {
-                let session =
-                    DocumentSession::open_in(self.private.path(), path, HistoryLimits::default())?;
+                let session = crate::sessions::test_open::open_in(
+                    self.private.path(),
+                    path,
+                    HistoryLimits::default(),
+                )?;
                 let scene = self.picture(session.current().path())?;
                 Ok((scene, session))
             }

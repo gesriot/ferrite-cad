@@ -77,6 +77,11 @@ impl Window {
                     feature,
                     millimetres,
                     &mut MockKernel::new(),
+                    |_, _| {
+                        Err(ferritecad_types::CadError::unsupported(
+                            "no STEP imports in this model",
+                        ))
+                    },
                     &OperationContext::default(),
                 );
                 tx.send(edit).expect("edit");
@@ -1023,6 +1028,11 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
                     feature_b,
                     16.0,
                     &mut MockKernel::new(),
+                    |_, _| {
+                        Err(ferritecad_types::CadError::unsupported(
+                            "no STEP imports in this model",
+                        ))
+                    },
                     &OperationContext::default(),
                 ))
                 .expect("edit");
@@ -1173,6 +1183,11 @@ fn a_draft_made_on_another_version_comes_back_held_and_is_never_applied() {
                     feature,
                     20.0,
                     &mut MockKernel::new(),
+                    |_, _| {
+                        Err(ferritecad_types::CadError::unsupported(
+                            "no STEP imports in this model",
+                        ))
+                    },
                     &OperationContext::default(),
                 ))
                 .expect("edit");

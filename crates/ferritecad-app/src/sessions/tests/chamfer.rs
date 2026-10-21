@@ -338,7 +338,7 @@ fn gate(name: &str) {
     let initial = saved_of(&opened);
     assert_eq!(initial.corner.corner_mm, CORNER);
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let base = initial.base_feature;
     let mut peers = source.clone();
     let mut accepted = vec![s.export_path().expect("initial")];
@@ -448,7 +448,7 @@ fn gate(name: &str) {
     saved(&mut s, SaveTarget::InPlace);
     assert_eq!(sql(&source), sql(&peers));
     cold(&source, rect, corner, 9.25);
-    let reopened = DocumentSession::open(&source).expect("reopen");
+    let reopened = crate::sessions::test_open::open(&source).expect("reopen");
     assert!(!reopened.is_dirty());
     assert_eq!(sql(reopened.current().path()), sql(&source));
     drop(reopened);
@@ -658,7 +658,7 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
         LineConstraintKind::Distance(LineLengthMm::new(41.).expect("width")),
     ));
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     apply_constraints_native(
         &mut s,
         &ferritecad_jobs::EditSketchConstraintsRequest {
@@ -814,7 +814,7 @@ fn stub_distance_apply_refuses_without_publication() {
     let (_root, source, reading) = fixture();
     let original = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let (_form, r) = typed_distance(&source, &reading, &s, saved_of(&reading).feature, "3.125");
     let before = state(&s);
     let (g, rx) = start(&mut s, &r);

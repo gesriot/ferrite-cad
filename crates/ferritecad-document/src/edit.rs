@@ -126,6 +126,11 @@ impl ExtrudeEditSource {
         // uses: `Ok(None)` for a document with none, a typed refusal naming the
         // guilty feature for one outside its class.
         let chamfer = crate::chamfer::saved_chamfer(document, &objects);
+        let scoped_heights = if height.is_err() {
+            crate::height_edit::scoped_cut_heights(document, &objects).unwrap_or_default()
+        } else {
+            Default::default()
+        };
         let features = objects
             .iter()
             .filter_map(|object| {
@@ -138,6 +143,7 @@ impl ExtrudeEditSource {
                     }
                     _ => None,
                 };
+                let height = scoped_heights.get(&object.id).unwrap_or(&height);
                 Some(ExtrudeChoice {
                     feature: object.id,
                     name: object.name.clone(),

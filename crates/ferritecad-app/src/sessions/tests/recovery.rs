@@ -23,7 +23,7 @@ fn recovery_reserves_document_mutation_and_cancel_rejects_its_late_answer() {
     let f = fixture();
     let mut sessions = Sessions::default();
     sessions.adopt(
-        DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
             .expect("session"),
     );
     let accepted = sessions.export_source().expect("snapshot");
@@ -127,7 +127,7 @@ fn only_a_version_shown_with_its_picture_is_copied_and_saved_or_undone_states_ha
     let store = RecoveryStore::open(root.path()).expect("store");
     let mut s = recording(&store);
     s.adopt(
-        DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
             .expect("session"),
     );
     assert_eq!(settle(&s), Some(RecoveryStatus::Off), "a clean Open");
@@ -206,7 +206,7 @@ fn discard_and_quit_end_the_copy_and_an_exit_nobody_chose_keeps_it() {
     // Discard: the dirty document is replaced by one the person accepted.
     let mut s = recording(&store);
     s.adopt(
-        DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
             .expect("session"),
     );
     let (generation, _) = apply(&mut s, f.feature, 25.0);
@@ -221,7 +221,7 @@ fn discard_and_quit_end_the_copy_and_an_exit_nobody_chose_keeps_it() {
     );
     assert_eq!(copies(root.path()).len(), 1, "kept until the replacement");
     s.adopt(
-        DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
             .expect("the replacement"),
     );
     assert_eq!(settle(&s), Some(RecoveryStatus::Off));
@@ -242,7 +242,7 @@ fn discard_and_quit_end_the_copy_and_an_exit_nobody_chose_keeps_it() {
     // Quit after the question: the copy goes.
     let mut s = recording(&store);
     s.adopt(
-        DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
             .expect("session"),
     );
     let (generation, _) = apply(&mut s, f.feature, 33.0);
@@ -260,14 +260,20 @@ fn discard_and_quit_end_the_copy_and_an_exit_nobody_chose_keeps_it() {
 
 /// An orphaned record holding the fixture's plate after one height edit.
 fn orphan(f: &Fixture, store: &RecoveryStore, millimetres: f64) -> (RecordId, DocumentSession) {
-    let mut session = DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
-        .expect("session");
+    let mut session =
+        crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
+            .expect("session");
     let step = session
         .begin_step()
         .edit_extrude_height(
             f.feature,
             millimetres,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("edit");
@@ -345,7 +351,7 @@ fn stub_recovery_is_refused_at_the_picture_and_keeps_the_record_and_the_open_doc
     let (id, before) = orphan(&f, &store, 21.5);
     let mut s = Sessions::default();
     s.adopt(
-        DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
             .expect("session"),
     );
     let refused = recover_for_view(f.private.path(), &store, id, &OperationContext::default())
@@ -428,7 +434,8 @@ fn recovery_child_entry() {
         "plate" => {
             let file = work.join("plate.fcad");
             s.adopt(
-                DocumentSession::open_in(&private, &file, HistoryLimits::default()).expect("open"),
+                crate::sessions::test_open::open_in(&private, &file, HistoryLimits::default())
+                    .expect("open"),
             );
             let opened = read_extrude_source(&file).expect("reading");
             let feature = opened.features[0].feature;
@@ -863,7 +870,7 @@ fn compare_with_controls(root: &Path) {
         &|r| {
             let store = RecoveryStore::open(&r.join("recovery")).expect("store");
             let private = tempfile::tempdir().expect("private");
-            let session = DocumentSession::open_in(
+            let session = crate::sessions::test_open::open_in(
                 private.path(),
                 &r.join("inputs/plate.fcad"),
                 HistoryLimits::default(),
@@ -922,7 +929,8 @@ fn native_recovery_window_scenario_on_session_files_passes_the_comparator_and_it
     // 1–3: open, Apply 21.5, export, and the window ends without a decision.
     let mut a = recording(&store);
     a.adopt(
-        DocumentSession::open_in(private.path(), &plate, HistoryLimits::default()).expect("open"),
+        crate::sessions::test_open::open_in(private.path(), &plate, HistoryLimits::default())
+            .expect("open"),
     );
     let feature = read_extrude_source(&plate).expect("reading").features[0].feature;
     apply_native(&mut a, feature, 21.5);

@@ -429,7 +429,7 @@ fn gate(name: &str) {
     cold(&source);
     let body = opened.cut_bodies[0].body;
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     // Dirty base: height, then the left wall's two vertices.
     apply_native(&mut s, selected(&opened, 0).base_feature, 15.25);
     let peer_height = root.path().join("peer-height.fcad");
@@ -613,7 +613,7 @@ fn gate(name: &str) {
     );
     assert_eq!(whole, map, "history-order pairing is the step-by-step one");
     cold(&source);
-    let reopened = DocumentSession::open(&source).expect("reopen");
+    let reopened = crate::sessions::test_open::open(&source).expect("reopen");
     assert!(!reopened.is_dirty());
     drop(reopened);
     if let Some(dir) = std::env::var_os("FCAD_ADD_CUT_SESSION_ARTIFACTS") {
@@ -1013,7 +1013,7 @@ fn native_seventeenth_cut_is_refused_and_keeps_history() {
         "the catalogue offers no Add"
     );
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let r = CircularCutRequest {
         source: source.clone(),
         expected: reading.version,
@@ -1046,7 +1046,7 @@ fn native_constrained_base_refuses_add_even_after_an_unsaved_constraint_apply() 
         "an unconstrained base can be cut"
     );
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let base = opened
         .sketches
         .iter()
@@ -1107,7 +1107,7 @@ fn stub_add_cut_refuses_without_publication() {
     let (_root, source, reading) = fixture(3);
     let bytes = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let (_form, r) = typed_add(
         &source,
         &reading,

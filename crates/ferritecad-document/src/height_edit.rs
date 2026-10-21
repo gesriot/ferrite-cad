@@ -71,7 +71,7 @@ pub(crate) fn has_history(document: &Document, objects: &[ObjectRecord]) -> Resu
         matches!(
             d.role,
             DependencyRole::Predecessor | DependencyRole::TargetBody
-        )
+        ) && objects.iter().any(|o| o.id == d.dependent)
     }) {
         return Ok(true);
     }
@@ -82,7 +82,7 @@ pub(crate) fn has_history(document: &Document, objects: &[ObjectRecord]) -> Resu
                 | SemanticRole::CarriedSide { .. }
                 | SemanticRole::OriginCap { .. }
                 | SemanticRole::OriginSide { .. }
-        )
+        ) && objects.iter().any(|o| o.id == r.producer_feature)
     }))
 }
 
@@ -190,13 +190,108 @@ impl PreparedExtrudeHeight {
     }
 }
 
+fn body_scopes(
+    document: &Document,
+    objects: &[ObjectRecord],
+) -> Result<Vec<std::collections::BTreeSet<ObjectId>>> {
+    let mut inputs = std::collections::BTreeMap::<ObjectId, Vec<ObjectId>>::new();
+    for dependency in document.dependencies()? {
+        inputs
+            .entry(dependency.dependent)
+            .or_default()
+            .push(dependency.dependency);
+    }
+    let mut scopes = Vec::new();
+    for body in objects
+        .iter()
+        .filter(|o| matches!(o.payload, ObjectPayload::Body(_)))
+    {
+        let mut ids = std::collections::BTreeSet::new();
+        let mut pending = vec![body.id];
+        while let Some(id) = pending.pop() {
+            if ids.insert(id)
+                && let Some(dependencies) = inputs.get(&id)
+            {
+                pending.extend(dependencies);
+            }
+        }
+        scopes.push(ids);
+    }
+    Ok(scopes)
+}
+
+/// Select policy inputs through the owning body's dependencies, so independent
+/// bodies do not change which history the selected height belongs to. Keep
+/// unclaimed objects visible to policy checks, including malformed extra features.
+pub(crate) fn objects_for_feature(
+    document: &Document,
+    objects: &[ObjectRecord],
+    feature: ObjectId,
+) -> Result<Vec<ObjectRecord>> {
+    let all_scopes = body_scopes(document, objects)?;
+    let claimed: std::collections::BTreeSet<_> = all_scopes.iter().flatten().copied().collect();
+    let mut scopes = all_scopes.iter().filter(|ids| ids.contains(&feature));
+    let selected = scopes.next();
+    if scopes.next().is_some() {
+        return Err(CadError::unsupported(
+            "the selected feature belongs to multiple bodies",
+        ));
+    }
+    Ok(match selected {
+        Some(ids) => objects
+            .iter()
+            .filter(|o| ids.contains(&o.id) || !claimed.contains(&o.id))
+            .cloned()
+            .collect(),
+        None => objects.to_vec(),
+    })
+}
+
+pub(crate) fn scoped_cut_heights(
+    document: &Document,
+    objects: &[ObjectRecord],
+) -> Result<
+    std::collections::BTreeMap<ObjectId, std::result::Result<Option<BaseHeightContext>, String>>,
+> {
+    let mut contexts = std::collections::BTreeMap::new();
+    let scopes = body_scopes(document, objects)?;
+    let claimed: std::collections::BTreeSet<_> = scopes.iter().flatten().copied().collect();
+    for scope in scopes {
+        let local: Vec<_> = objects
+            .iter()
+            .filter(|o| scope.contains(&o.id) || !claimed.contains(&o.id))
+            .cloned()
+            .collect();
+        let height = (|| {
+            if has_history(document, &local)? {
+                Ok(Some(
+                    crate::cut_edit::saved_history(document, &local)?.height_context(),
+                ))
+            } else {
+                Ok(None)
+            }
+        })()
+        .map_err(|error: CadError| error.to_string());
+        for object in local
+            .iter()
+            .filter(|o| scope.contains(&o.id) && matches!(o.payload, ObjectPayload::Extrude(_)))
+        {
+            let value = contexts.entry(object.id).or_insert_with(|| height.clone());
+            if value != &height {
+                *value = Err("the selected feature belongs to multiple bodies".to_owned());
+            }
+        }
+    }
+    Ok(contexts)
+}
+
 pub fn prepare_extrude_height(
     document: &Document,
     feature: ObjectId,
     height_mm: f64,
 ) -> Result<PreparedExtrudeHeight> {
     validate_extrude_distance(height_mm)?;
-    let objects = document.objects()?;
+    let objects = objects_for_feature(document, &document.objects()?, feature)?;
     let mut record = objects
         .iter()
         .find(|o| o.id == feature)

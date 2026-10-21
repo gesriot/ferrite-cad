@@ -105,11 +105,33 @@ fn a_broken_history_opens_exports_partially_and_can_be_repaired_and_undone() {
     std::fs::create_dir(&sessions).expect("sessions");
     let mut session =
         DocumentSession::open_in(&sessions, &path, HistoryLimits::default()).expect("session");
+    session
+        .current()
+        .remember_rebuild(loaded.rebuild_facts.as_ref().expect("opening facts"))
+        .expect("same model");
     let expected = session.current().version();
-    let step = session
+    let mut step = session
         .begin_step()
-        .edit_fillet_radius(chain.first, 2.0, expected, &mut kernel, &context)
+        .edit_fillet_radius(
+            chain.first,
+            2.0,
+            expected,
+            &mut kernel,
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
+            &context,
+        )
         .expect("repair accepted");
+    assert!(
+        step.take_scene()
+            .expect("repair picture")
+            .rebuild
+            .unbuilt()
+            .is_empty()
+    );
     session.commit_step(step).expect("commit repair");
     let document = Document::open_read_only(session.current().path()).expect("repaired");
     let built = rebuild_cold(&document, &mut kernel, &context).expect("rebuild");
@@ -178,7 +200,7 @@ fn shrinking_a_constrained_plate_lists_both_fillets_and_publishes_nothing() {
             source: path.clone(),
             expected: version(&path),
             sketch: chain.sketch,
-            edits,
+            edits: edits.clone(),
             destination: destination.clone(),
         },
         &mut OcctKernel::new().expect("kernel"),
@@ -200,4 +222,43 @@ fn shrinking_a_constrained_plate_lists_both_fillets_and_publishes_nothing() {
     assert!(error.to_string().contains(&chain.second.to_string()));
     assert!(!destination.exists());
     assert_eq!(std::fs::read(&path).expect("source"), before);
+
+    let mut session = DocumentSession::open(&path).expect("session");
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    session
+        .current()
+        .load_scene(
+            &mut kernel,
+            |k, bytes| k.import_step(bytes),
+            &TessellationParams::default(),
+            &context,
+        )
+        .expect("Open supplies the baseline facts");
+    let expected = session.current().version();
+    let ticket = session.begin_step();
+    let output = ticket.destination().to_path_buf();
+    let error = ticket
+        .edit_sketch_constraints(
+            chain.sketch,
+            edits,
+            expected,
+            &mut kernel,
+            |k, bytes| k.import_step(bytes),
+            &context,
+        )
+        .expect_err("the session also refuses both dependents");
+    let report = &RebuildRefusal::from_error(&error)
+        .expect("structured refusal")
+        .report;
+    assert!(report.failed.iter().any(|f| f.id == chain.first));
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|s| s.id == chain.second && s.cause == chain.first)
+    );
+    assert!(!output.exists());
+    assert_eq!(session.current().version(), expected);
+    assert!(!session.is_dirty() && !session.can_undo());
 }

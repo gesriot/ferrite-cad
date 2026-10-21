@@ -379,7 +379,7 @@ fn matrix() {
             sql(&current),
             "{name}: the saved file is the version"
         );
-        let reopened = DocumentSession::open(&file).expect("reopen");
+        let reopened = crate::sessions::test_open::open(&file).expect("reopen");
         assert!(!reopened.is_dirty());
         assert_eq!(
             Document::open_read_only(&file)

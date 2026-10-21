@@ -2,6 +2,8 @@
 //! §30L: a new document is a session before it is a file. No path, no checkpoint,
 //! unsaved until its first Save As is published; files and state only, no window.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 
 use ferritecad_document::{Document, DocumentVersion};
@@ -65,12 +67,16 @@ fn feature_of(session: &DocumentSession) -> ObjectId {
 }
 
 fn apply(session: &mut DocumentSession, feature: ObjectId, millimetres: f64) {
-    let step = session
-        .begin_step()
+    let step = support::viewed(session.begin_step())
         .edit_extrude_height(
             feature,
             millimetres,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("an edit");
@@ -223,12 +229,16 @@ fn edits_undo_and_redo_before_the_first_save_never_make_it_saved() {
 
     // A no-op is still not a step.
     let generation = session.generation();
-    let step = session
-        .begin_step()
+    let step = support::viewed(session.begin_step())
         .edit_extrude_height(
             feature,
             22.0,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("an edit");

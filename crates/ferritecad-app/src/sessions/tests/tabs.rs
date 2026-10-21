@@ -151,9 +151,12 @@ impl Window {
     fn open(&mut self, path: &Path) -> Opening {
         let opening = self.tabs.opening(&self.sessions, path);
         if opening == Opening::Load {
-            let session =
-                DocumentSession::open_in(self.private.path(), path, HistoryLimits::default())
-                    .expect("session");
+            let session = crate::sessions::test_open::open_in(
+                self.private.path(),
+                path,
+                HistoryLimits::default(),
+            )
+            .expect("session");
             let shown = session.current().path().to_path_buf();
             let scene = self.picture(&shown);
             self.present(&shown, scene, Bind::Open(Box::new(session)), Ok(()))
@@ -203,6 +206,11 @@ impl Window {
                         feature,
                         millimetres,
                         &mut MockKernel::new(),
+                        |_, _| {
+                            Err(ferritecad_types::CadError::unsupported(
+                                "no STEP imports in this model",
+                            ))
+                        },
                         &OperationContext::default(),
                     );
                     tx.send(edit).expect("edit");
@@ -510,8 +518,9 @@ fn opening_a_file_open_by_any_name_shows_its_tab_and_copies_are_new_tabs() {
     assert_eq!(w.tabs.count(), 2, "nothing was read twice");
 
     // A duplicate reaching the bind anyway (a defensive check) adds nothing.
-    let twice = DocumentSession::open_in(w.private.path(), &file, HistoryLimits::default())
-        .expect("session");
+    let twice =
+        crate::sessions::test_open::open_in(w.private.path(), &file, HistoryLimits::default())
+            .expect("session");
     let twice_dir = twice.private_directory().to_path_buf();
     let shown = twice.current().path().to_path_buf();
     let scene = w.picture(&shown);
@@ -894,6 +903,11 @@ fn late_cancelled_or_foreign_answers_change_no_tab_and_release_no_slot() {
                     feature,
                     17.0,
                     &mut MockKernel::new(),
+                    |_, _| {
+                        Err(ferritecad_types::CadError::unsupported(
+                            "no STEP imports in this model",
+                        ))
+                    },
                     &OperationContext::default(),
                 );
                 tx.send(edit).expect("edit");
@@ -975,8 +989,9 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
     // unsaved, is not replaced.
     let orphan = {
         let other = tempfile::tempdir().expect("other window");
-        let mut session = DocumentSession::open_in(other.path(), &b_file, HistoryLimits::default())
-            .expect("open");
+        let mut session =
+            crate::sessions::test_open::open_in(other.path(), &b_file, HistoryLimits::default())
+                .expect("open");
         let mut lane = RecoveryRecorder::start(store.clone(), || {});
         let feature = read_extrude_source(session.current().path())
             .expect("reading")
@@ -988,6 +1003,11 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
                 feature,
                 33.0,
                 &mut MockKernel::new(),
+                |_, _| {
+                    Err(ferritecad_types::CadError::unsupported(
+                        "no STEP imports in this model",
+                    ))
+                },
                 &OperationContext::default(),
             )
             .expect("edit");
@@ -1064,8 +1084,9 @@ fn the_ninth_document_is_refused_before_anything_changes() {
     // A candidate that reached the bind anyway is refused there too.
     let shown_tab = w.sessions.tab();
     let shown = w.scene.document.clone();
-    let session = DocumentSession::open_in(w.private.path(), &file, HistoryLimits::default())
-        .expect("session");
+    let session =
+        crate::sessions::test_open::open_in(w.private.path(), &file, HistoryLimits::default())
+            .expect("session");
     let dir = session.private_directory().to_path_buf();
     let path = session.current().path().to_path_buf();
     let scene = w.picture(&path);
@@ -1894,6 +1915,11 @@ fn a_cancelled_switch_reply_is_ignored_while_an_apply_runs() {
                     feature,
                     19.0,
                     &mut MockKernel::new(),
+                    |_, _| {
+                        Err(ferritecad_types::CadError::unsupported(
+                            "no STEP imports in this model",
+                        ))
+                    },
                     &OperationContext::default(),
                 );
                 let _ = tx.send(result);

@@ -47,6 +47,7 @@ use ferritecad_document::{
     Document, EntityKind, ImportedDefinitionRef, ObjectPayload, ObjectRecord, SelectionRule,
     SemanticRole, Sketch, SketchConstraintRule, TopologyRef,
 };
+pub use ferritecad_eval::RebuildFacts;
 pub use ferritecad_eval::{
     ConflictingConstraint, PresentedCurve, SketchConflict, SketchPresentation, SketchSolveReport,
 };
@@ -66,6 +67,8 @@ use serde::{Deserialize, Serialize};
 /// document can store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadedScene {
+    /// Facts from the rebuild that supplied this picture; absent for unstored scenes.
+    pub rebuild_facts: Option<ferritecad_eval::RebuildFacts>,
     pub rebuild: ferritecad_eval::RebuildReport,
     /// Edit facts from the same pinned reading as the picture.
     pub edit_source: Option<ferritecad_document::ExtrudeEditSource>,
@@ -813,8 +816,30 @@ where
     prepare::load(path, kernel, read_step, params, context, Picture::new())
 }
 
+/// Tessellates a checked rebuild in the kernel session that owns its shapes.
+/// The caller releases the rebuild, including when preparing the picture fails.
+pub fn snapshot_from_rebuild<K: GeometryKernel + ?Sized>(
+    document: &Document,
+    built: &ferritecad_eval::RebuildResult,
+    kernel: &mut K,
+    read_step: impl FnMut(&mut K, &[u8]) -> Result<Import>,
+    params: &TessellationParams,
+    context: &OperationContext,
+) -> Result<LoadedScene> {
+    prepare::from_rebuild(
+        document,
+        built,
+        kernel,
+        read_step,
+        params,
+        context,
+        Picture::new(),
+    )
+}
+
 /// What a picture keeps from one reading of a document.
 struct Picture {
+    rebuild_facts: Option<ferritecad_eval::RebuildFacts>,
     rebuild: ferritecad_eval::RebuildReport,
     edit_source: Option<ferritecad_document::ExtrudeEditSource>,
     builder: SnapshotBuilder,
@@ -844,6 +869,7 @@ struct Picture {
 impl Picture {
     fn new() -> Self {
         Self {
+            rebuild_facts: None,
             rebuild: Default::default(),
             edit_source: None,
             builder: SnapshotBuilder::new(),
@@ -938,6 +964,7 @@ impl prepare::LoadSink for Picture {
         objects: &[ObjectRecord],
         built: &ferritecad_eval::RebuildResult,
     ) -> Result<()> {
+        self.rebuild_facts = Some(ferritecad_eval::RebuildFacts::of(document, built)?);
         self.rebuild = built.report();
         let mut source = ferritecad_document::ExtrudeEditSource::read(document)?;
         project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
@@ -1077,6 +1104,7 @@ impl prepare::LoadSink for Picture {
             });
         }
         Ok(LoadedScene {
+            rebuild_facts: self.rebuild_facts,
             rebuild: self.rebuild,
             edit_source: self.edit_source,
             faces: face_names(&snapshot, self.names)?,

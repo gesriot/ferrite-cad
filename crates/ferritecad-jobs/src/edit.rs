@@ -31,10 +31,20 @@ pub struct EditedDocument {
 /// A saved version of the same model, preserving every identity. The caller
 /// owns the kernel thread. Cancellation before publication leaves no output;
 /// after publication this returns success even if cancellation has arrived.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
     request: &EditExtrudeRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<EditedDocument> {
+    edit_extrude_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn edit_extrude_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditExtrudeRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<EditedDocument> {
     context.check_cancelled()?;
     ferritecad_document::validate_extrude_distance(request.distance_mm)?;
@@ -44,6 +54,7 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             Ok(CopyWrite::Height(Box::new(
                 ferritecad_document::prepare_extrude_height(
@@ -80,10 +91,20 @@ pub struct EditedSketch {
     pub sketch: ObjectId,
 }
 
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
     request: &EditSketchRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<EditedSketch> {
+    edit_sketch_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn edit_sketch_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditSketchRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<EditedSketch> {
     context.check_cancelled()?;
     let rebuild = edit_object_copy(
@@ -92,6 +113,7 @@ pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             Ok(CopyWrite::Coordinates(
                 ferritecad_document::replace_sketch_coordinates(
@@ -126,10 +148,20 @@ pub struct EditRevolveAngleRequest {
 /// written through the shared copy spine: the prepared row is derived again
 /// inside the write, every saved name must resolve after a cold rebuild, and
 /// the source is checked once more before a no-clobber publication.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn edit_revolve_angle_copy<K: GeometryKernel + ?Sized>(
     request: &EditRevolveAngleRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<EditedDocument> {
+    edit_revolve_angle_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn edit_revolve_angle_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditRevolveAngleRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<EditedDocument> {
     context.check_cancelled()?;
     let rebuild = edit_object_copy(
@@ -138,6 +170,7 @@ pub fn edit_revolve_angle_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::prepare_revolve_angle(source, request.feature, request.degrees)
                 .map(CopyWrite::RevolveAngle)
@@ -188,10 +221,20 @@ pub struct EditedFilletRadius {
 /// The same snapshot, baseline rebuild, reference check, version recheck and
 /// atomic publication every other copy edit uses. Nothing is minted, so every
 /// saved name, and only those, must resolve after the edit.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn edit_fillet_radius_copy<K: GeometryKernel + ?Sized>(
     request: &EditFilletRadiusRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<EditedFilletRadius> {
+    edit_fillet_radius_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn edit_fillet_radius_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditFilletRadiusRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<EditedFilletRadius> {
     context.check_cancelled()?;
     edit_object_copy(
@@ -200,6 +243,7 @@ pub fn edit_fillet_radius_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::prepare_fillet_radius(source, request.feature, request.radius_mm)
                 .map(Box::new)
@@ -260,10 +304,20 @@ pub struct EditedChamferDistance {
 /// The same snapshot, baseline rebuild, reference check, version recheck and
 /// atomic publication every other copy edit uses. Nothing is minted, so every
 /// saved name, and only those, must resolve after the edit.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn edit_chamfer_distance_copy<K: GeometryKernel + ?Sized>(
     request: &EditChamferDistanceRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<EditedChamferDistance> {
+    edit_chamfer_distance_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn edit_chamfer_distance_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditChamferDistanceRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<EditedChamferDistance> {
     context.check_cancelled()?;
     edit_object_copy(
@@ -272,6 +326,7 @@ pub fn edit_chamfer_distance_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::prepare_chamfer_distance(
                 source,
@@ -327,10 +382,20 @@ pub struct EditedCircle {
 /// The same snapshot, baseline rebuild, reference check, version recheck and
 /// atomic publication every other copy edit uses; only the prepared payload
 /// differs. Nothing here opens a second copier or relaxes the reference rule.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn edit_circle_copy<K: GeometryKernel + ?Sized>(
     request: &EditCircleRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<EditedCircle> {
+    edit_circle_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn edit_circle_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditCircleRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<EditedCircle> {
     context.check_cancelled()?;
     let rebuild = edit_object_copy(
@@ -339,6 +404,7 @@ pub fn edit_circle_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::replace_circle_geometry(source, request.sketch, &request.edit)
                 .map(CopyWrite::Circle)
@@ -382,10 +448,20 @@ pub struct EditedAnnulus {
 /// The same snapshot, baseline rebuild, reference check, version recheck and
 /// atomic publication every other copy edit uses; only the prepared payload
 /// differs. Nothing here opens a second copier or relaxes the reference rule.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn edit_annulus_copy<K: GeometryKernel + ?Sized>(
     request: &EditAnnulusRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<EditedAnnulus> {
+    edit_annulus_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn edit_annulus_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditAnnulusRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<EditedAnnulus> {
     context.check_cancelled()?;
     let rebuild = edit_object_copy(
@@ -394,6 +470,7 @@ pub fn edit_annulus_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::replace_annulus_geometry(source, request.sketch, &request.edit)
                 .map(CopyWrite::Annulus)
@@ -438,10 +515,20 @@ pub struct EditedSketchConstraints {
     pub solve: Option<ferritecad_eval::SketchSolveReport>,
 }
 
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
     request: &EditSketchConstraintsRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<EditedSketchConstraints> {
+    edit_sketch_constraints_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn edit_sketch_constraints_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditSketchConstraintsRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<EditedSketchConstraints> {
     context.check_cancelled()?;
     edit_object_copy(
@@ -450,6 +537,7 @@ pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::prepare_sketch_constraints(source, request.sketch, &request.edits)
                 .map(|p| CopyWrite::Constraints(Box::new(p)))
@@ -505,10 +593,20 @@ pub struct AddedCircularCut {
 /// The same snapshot, version guard, read-only source, baseline rebuild,
 /// reference check, SQLite close and atomic no-clobber publication every other
 /// copy operation uses. What differs is only what is written.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn circular_cut_copy<K: GeometryKernel + ?Sized>(
     request: &CircularCutRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<AddedCircularCut> {
+    circular_cut_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn circular_cut_copy_with<K: GeometryKernel + ?Sized>(
+    request: &CircularCutRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<AddedCircularCut> {
     context.check_cancelled()?;
     edit_object_copy(
@@ -517,6 +615,7 @@ pub fn circular_cut_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::prepare_circular_cut(source, request.body, &request.cut)
                 .map(Box::new)
@@ -580,10 +679,20 @@ pub struct AddedEdgeFillet {
 /// The same snapshot, version guard, read-only source, baseline rebuild,
 /// reference check (every baseline and every minted name must resolve),
 /// SQLite close and atomic no-clobber publication every copy operation uses.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn fillet_edge_copy<K: GeometryKernel + ?Sized>(
     request: &EdgeFilletRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<AddedEdgeFillet> {
+    fillet_edge_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn fillet_edge_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EdgeFilletRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<AddedEdgeFillet> {
     context.check_cancelled()?;
     edit_object_copy(
@@ -592,6 +701,7 @@ pub fn fillet_edge_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::prepare_edge_fillet(source, request.body, &request.fillet)
                 .map(Box::new)
@@ -656,10 +766,20 @@ pub struct AddedEdgeChamfer {
 /// The same snapshot, version guard, read-only source, baseline rebuild,
 /// reference check (every baseline and every minted name must resolve),
 /// SQLite close and atomic no-clobber publication every copy operation uses.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn chamfer_edge_copy<K: GeometryKernel + ?Sized>(
     request: &EdgeChamferRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<AddedEdgeChamfer> {
+    chamfer_edge_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn chamfer_edge_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EdgeChamferRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<AddedEdgeChamfer> {
     context.check_cancelled()?;
     edit_object_copy(
@@ -668,6 +788,7 @@ pub fn chamfer_edge_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::prepare_edge_chamfer(source, request.body, &request.chamfer)
                 .map(Box::new)
@@ -732,10 +853,20 @@ pub struct EditedCircularCut {
 /// already existed, and the floor names gained by stopping inside the part:
 /// its own historical name, plus a final origin name when editing the first
 /// of two cuts.
+/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
 pub fn edit_circular_cut_copy<K: GeometryKernel + ?Sized>(
     request: &EditCircularCutRequest,
     kernel: &mut K,
     context: &OperationContext,
+) -> Result<EditedCircularCut> {
+    edit_circular_cut_copy_with(request, kernel, context, &mut EditRun::standalone())
+}
+
+pub(crate) fn edit_circular_cut_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditCircularCutRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+    run: &mut EditRun<'_, K>,
 ) -> Result<EditedCircularCut> {
     context.check_cancelled()?;
     edit_object_copy(
@@ -744,6 +875,7 @@ pub fn edit_circular_cut_copy<K: GeometryKernel + ?Sized>(
         &request.destination,
         kernel,
         context,
+        run,
         |source| {
             ferritecad_document::prepare_cut_parameters(source, request.cut, &request.edit)
                 .map(Box::new)
@@ -829,14 +961,40 @@ impl CopyWrite {
     }
 }
 
+pub(crate) type Observe<'a, K> = dyn FnMut(
+        &Document,
+        &ferritecad_eval::RebuildResult,
+        &mut K,
+        &OperationContext,
+    ) -> Result<ferritecad_scene::LoadedScene>
+    + 'a;
+
+pub(crate) struct EditRun<'a, K: ?Sized> {
+    pub(crate) baseline: Option<&'a ferritecad_eval::RebuildFacts>,
+    pub(crate) observe: Option<&'a mut Observe<'a, K>>,
+    pub(crate) scene: Option<ferritecad_scene::LoadedScene>,
+}
+
+impl<K: ?Sized> EditRun<'_, K> {
+    fn standalone() -> Self {
+        Self {
+            baseline: None,
+            observe: None,
+            scene: None,
+        }
+    }
+}
+
 /// Shared snapshot, transaction, cold references, cancellation and publication.
 /// All owned completion facts are prepared fallibly BEFORE publication.
+#[allow(clippy::too_many_arguments)]
 fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     source_path: &Path,
     expected: DocumentVersion,
     destination: &Path,
     kernel: &mut K,
     context: &OperationContext,
+    run: &mut EditRun<'_, K>,
     prepare: impl FnOnce(&Document) -> Result<CopyWrite>,
     complete: impl FnOnce(&CopyWrite, Checked) -> Result<T>,
 ) -> Result<T> {
@@ -869,17 +1027,26 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     // Baseline and edited refs are compared by their stored IDs. An already
     // unresolved ref may remain unresolved; a previously resolved one may not
     // be lost. Names produced by already unbuilt features do not block repair.
-    let baseline = checked_rebuild(
-        &document,
-        kernel,
-        &phase(context, 0.1, 0.4),
-        None,
-        None,
-        None,
-        None,
-    )?;
-    let baseline_unbuilt = baseline.1.unbuilt;
-    let baseline = baseline.0;
+    let computed;
+    let facts = match run.baseline {
+        Some(facts) => facts,
+        None => {
+            computed = checked_rebuild(
+                &document,
+                kernel,
+                &phase(context, 0.1, 0.4),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )?
+            .0;
+            &computed
+        }
+    };
+    let baseline_unbuilt = &facts.unbuilt;
+    let baseline = &facts.resolved;
     if prepared.requires_resolved_references()
         && document.topology_refs()?.iter().any(|reference| {
             !baseline.contains(&reference.id)
@@ -940,15 +1107,17 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::Fillet(p) => Some(p.feature().id),
         _ => None,
     };
-    let (_, checked) = checked_rebuild(
+    let (_, mut checked) = checked_rebuild(
         &document,
         kernel,
         &phase(context, 0.4, 0.9),
         Some(&required),
         constraints,
         fillet,
-        Some(&baseline_unbuilt),
+        Some(baseline_unbuilt),
+        run.observe.as_deref_mut(),
     )?;
+    run.scene = checked.scene.take();
     let completed = complete(&prepared, checked)?;
     document.close()?;
     context.progress().report(0.95);
@@ -1004,13 +1173,14 @@ struct SolveCheck {
 /// What the rebuild of a written copy found, for its completion.
 #[derive(Debug, Default)]
 struct Checked {
+    scene: Option<ferritecad_scene::LoadedScene>,
     rebuild: ferritecad_eval::RebuildReport,
-    unbuilt: BTreeSet<ObjectId>,
     solve: Option<ferritecad_eval::SketchSolveReport>,
     /// The corner of a new Fillet, on the plate the rebuild built.
     fillet_corner: Option<ferritecad_document::FilletCorner>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn checked_rebuild<K: GeometryKernel + ?Sized>(
     document: &Document,
     kernel: &mut K,
@@ -1019,8 +1189,14 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
     constraints: Option<SolveCheck>,
     fillet: Option<ObjectId>,
     baseline_unbuilt: Option<&BTreeSet<ObjectId>>,
-) -> Result<(BTreeSet<StableEntityId>, Checked)> {
-    let built = rebuild_cold(document, kernel, context)?;
+    observe: Option<&mut Observe<'_, K>>,
+) -> Result<(ferritecad_eval::RebuildFacts, Checked)> {
+    let rebuilding = if observe.is_some() {
+        phase(context, 0.0, 0.7)
+    } else {
+        context.clone()
+    };
+    let built = rebuild_cold(document, kernel, &rebuilding)?;
     let built = match baseline_unbuilt {
         Some(baseline) => built.require_no_new_failures(baseline, kernel)?,
         None => built,
@@ -1185,10 +1361,16 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
             None => None,
         };
         Ok((
-            resolved,
+            ferritecad_eval::RebuildFacts {
+                model: document.model_without_checkpoints()?,
+                resolved,
+                unbuilt: unbuilt.clone(),
+            },
             Checked {
+                scene: observe
+                    .map(|observe| observe(document, &built, kernel, &phase(context, 0.7, 1.0)))
+                    .transpose()?,
                 rebuild,
-                unbuilt,
                 solve,
                 fillet_corner,
             },

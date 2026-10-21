@@ -716,6 +716,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferritecad-bench"
+version = "0.0.1"
+dependencies = [
+ "ferritecad-document",
+ "ferritecad-eval",
+ "ferritecad-fixtures",
+ "ferritecad-jobs",
+ "ferritecad-kernel",
+ "ferritecad-occt",
+ "ferritecad-scene",
+ "ferritecad-sketch-solver",
+ "ferritecad-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "ferritecad-cli"
 version = "0.0.1"
 dependencies = [

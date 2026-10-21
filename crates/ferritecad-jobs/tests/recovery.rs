@@ -5,6 +5,8 @@
 //! as a child process, which makes and accepts versions, waits until the recorder
 //! says the copy is written, and is then killed by its own PID.
 
+mod support;
+
 use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -55,12 +57,16 @@ fn feature_of(session: &DocumentSession) -> ObjectId {
 
 fn apply(session: &mut DocumentSession, millimetres: f64) {
     let feature = feature_of(session);
-    let step = session
-        .begin_step()
+    let step = support::viewed(session.begin_step())
         .edit_extrude_height(
             feature,
             millimetres,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("an edit");

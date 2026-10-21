@@ -252,7 +252,7 @@ fn gate(name: &str) {
     let original = std::fs::read(&source).expect("source");
     let body = opened.chamfer_bodies[0].body;
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let mut accepted = vec![s.export_path().expect("opened")];
     let peer_base = dirty_base(&mut s, &source, root.path(), &mut accepted);
     let before_add = s.export_path().expect("dirty base");
@@ -400,7 +400,7 @@ fn gate(name: &str) {
         "pairing from the saved file is the step-by-step one"
     );
     cold(&source, RECT, A.0, 9.25);
-    let reopened = DocumentSession::open(&source).expect("reopen");
+    let reopened = crate::sessions::test_open::open(&source).expect("reopen");
     assert!(!reopened.is_dirty());
     drop(reopened);
     artifacts(name, &stl, &fbx, exact_volume, approx);
@@ -573,7 +573,7 @@ fn native_every_corner_adds_its_own_plane_like_the_cli() {
     ] {
         let (root, source, reading) = plate();
         let mut s = Sessions::default();
-        s.adopt(DocumentSession::open(&source).expect("session"));
+        s.adopt(crate::sessions::test_open::open(&source).expect("session"));
         let (_form, r) = typed_add(&source, &reading, &s, at, distance);
         let exact = root.path().join("exact.fcad");
         peer_add(&source, reading.chamfer_bodies[0].body, &r.chamfer, &exact);
@@ -672,7 +672,7 @@ fn native_constraints_close_add_but_constraints_and_distance_after_add_still_app
     let original = std::fs::read(&source).expect("source");
     let body = reading.chamfer_bodies[0].body;
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let (mut form, r) = typed_add(&source, &reading, &s, [-4.5, 3.25], "2.375");
     let draft = add_draft_state(&form);
     apply_constraints_native(&mut s, &solved_rectangle(&source));
@@ -699,7 +699,7 @@ fn native_constraints_close_add_but_constraints_and_distance_after_add_still_app
     // Add first, then the same constraints, then a distance on the solved plate.
     let (root, source, reading) = plate();
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let (_form, r) = typed_add(&source, &reading, &s, [-4.5, 3.25], "2.375");
     assert!(matches!(add(&mut s, &r), Edited::Show(_)), "{}", s.status);
     let added = s.export_path().expect("added");
@@ -737,7 +737,7 @@ fn stub_add_chamfer_refuses_without_publication() {
     let (_root, source, reading) = plate();
     let original = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let (_form, r) = typed_add(&source, &reading, &s, [33., 3.25], "1.5");
     let before = state(&s);
     let (g, rx) = start(&mut s, &r);
@@ -1024,7 +1024,7 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
         &std::fs::read(&source).expect("source"),
     );
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     // Confirm and the request history are the form's own; nothing is written.
     let (form, _) = typed_add(&source, &opened, &s, WINDOW_B.0, WINDOW_B.1);
     drop(form);

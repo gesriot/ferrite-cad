@@ -163,6 +163,19 @@ run_cyclonedx() { # target
         mv "$produced" "$work/bom-$bin.json"
     done
 
+    # Unpublished workspace instruments are not product roots. Derive their
+    # binary names from Cargo rather than maintaining a second package list;
+    # an undeclared publishable binary still fails the stray-file check below.
+    while IFS= read -r produced; do
+        rm -f "$produced"
+    done < <(cargo metadata --locked --format-version 1 --no-deps 2>/dev/null \
+        | jq -r '(.workspace_root | gsub("\\\\"; "/")) as $root
+                 | .packages[] | select(.publish == [])
+                 | (.manifest_path | gsub("\\\\"; "/")
+                    | ltrimstr($root + "/") | rtrimstr("Cargo.toml")) as $dir
+                 | .targets[] | select(.kind | index("bin"))
+                 | $dir + .name + "_bin.cdx.json"')
+
     # Found by generating from a copy of the tree that was not a git checkout:
     # the first spelling of this asked git, and git answered "not a repository"
     # into a discarded stream, so the check passed by doing nothing.

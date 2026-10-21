@@ -3509,7 +3509,13 @@ impl ApplicationHandler<AppEvent> for App {
                 // reply nobody is waiting for (another operation, a stop) shows
                 // nothing and changes nothing.
                 if let Some(staged) = self.sessions.staged_path(generation) {
-                    let outcome = self.show(&staged, *result, sessions::Bind::Staged);
+                    let result = result.and_then(|scene| {
+                        if let Some(facts) = &scene.rebuild_facts {
+                            self.sessions.remember_staged_rebuild(facts)?;
+                        }
+                        Ok(scene)
+                    });
+                    let outcome = self.show(&staged, result, sessions::Bind::Staged);
                     let shown = outcome.is_ok();
                     if let Err(error) = &outcome {
                         journal::report(format_args!("ferritecad: {error}"));
@@ -6145,30 +6151,6 @@ impl App {
         }
     }
 
-    /// Builds the picture of a version that is waiting to become current.
-    fn stage_scene(&mut self, generation: sessions::Address, path: PathBuf) {
-        let Some(cancel) = self.sessions.scene_token(generation) else {
-            return;
-        };
-        let proxy = self.proxy.clone();
-        let worker = if self.sessions.staged_keeps_picture(generation) {
-            sessions::spawn_kept_facts(path, cancel, move |result| {
-                let _ = proxy.send_event(AppEvent::KeptFacts {
-                    generation,
-                    result: Box::new(result),
-                });
-            })
-        } else {
-            sessions::spawn_scene(path, cancel, move |result| {
-                let _ = proxy.send_event(AppEvent::SceneStaged {
-                    generation,
-                    result: Box::new(result),
-                });
-            })
-        };
-        self.sessions.attach_scene(generation, worker);
-    }
-
     /// The form describes only the document whose scene was accepted.
     fn begin_edit(&mut self) {
         if !can_begin_new(&self.creates, &self.loads, &self.exports) {
@@ -7824,6 +7806,7 @@ mod tests {
 
     fn loaded(snapshot: RenderSnapshot) -> LoadedScene {
         LoadedScene {
+            rebuild_facts: None,
             rebuild: Default::default(),
             edit_source: None,
             faces: FaceNames::default(),
@@ -20437,7 +20420,7 @@ mod tests {
         let mut creates = creates::Creates::default();
         let edits = edits::Edits::default();
         let mut sessions = sessions::Sessions::default();
-        sessions.adopt(ferritecad_jobs::DocumentSession::open(&path).expect("session"));
+        sessions.adopt(crate::sessions::test_open::open(&path).expect("session"));
         assert!(ask_new(
             &mut creates,
             &Loads::default(),
@@ -20744,12 +20727,8 @@ mod tests {
         let reading = read_extrude_source(&file).expect("reading");
         let mut sessions = sessions::Sessions::default();
         sessions.adopt(
-            ferritecad_jobs::DocumentSession::open_in(
-                private.path(),
-                &file,
-                HistoryLimits::default(),
-            )
-            .expect("session"),
+            crate::sessions::test_open::open_in(private.path(), &file, HistoryLimits::default())
+                .expect("session"),
         );
         let (creates, loads, exports) = (
             creates::Creates::default(),
@@ -20780,6 +20759,11 @@ mod tests {
                         feature,
                         25.0,
                         &mut ferritecad_kernel::mock::MockKernel::new(),
+                        |_, _| {
+                            Err(ferritecad_types::CadError::unsupported(
+                                "no STEP imports in this model",
+                            ))
+                        },
                         &OperationContext::default(),
                     ))
                     .expect("deliver");

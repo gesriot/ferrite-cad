@@ -8,7 +8,7 @@ use crate::creates::Creates;
 use crate::edits::Edits;
 use crate::sessions::Sessions;
 use crate::tabs::Tabs;
-use ferritecad_jobs::{DocumentSession, HistoryLimits};
+use ferritecad_jobs::HistoryLimits;
 use ferritecad_ui::{NewChoice, NewContent, ViewportInput};
 
 /// One frame of the window's form sections for the shown tab `key`: the tab's
@@ -74,7 +74,8 @@ fn new_opened_over_a_floating_form_shares_no_focus_or_text_with_it() {
     analytic_apply::write_round(&path, [12.0, -7.0], &[10.0], 15.0, false);
     let mut sessions = Sessions::default();
     sessions.adopt(
-        DocumentSession::open_in(root.path(), &path, HistoryLimits::default()).expect("session"),
+        crate::sessions::test_open::open_in(root.path(), &path, HistoryLimits::default())
+            .expect("session"),
     );
     let key = sessions.tab().key();
     let current = sessions.export_path().expect("shown");

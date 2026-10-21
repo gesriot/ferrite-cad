@@ -4002,7 +4002,7 @@ pub(crate) mod tests {
         let private = tempfile::tempdir().expect("private root");
         let mut sessions = sessions::Sessions::default();
         sessions.adopt(
-            ferritecad_jobs::DocumentSession::open_in(
+            crate::sessions::test_open::open_in(
                 private.path(),
                 &path,
                 ferritecad_jobs::HistoryLimits::default(),
