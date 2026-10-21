@@ -46,7 +46,7 @@
 //! gives the session a path and a checkpoint.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ferritecad_document::{CheckpointEntry, Document, DocumentVersion};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
@@ -61,10 +61,10 @@ use crate::edit::{
     CircularCutRequest, EdgeChamferRequest, EdgeFilletRequest, EditAnnulusRequest,
     EditChamferDistanceRequest, EditCircleRequest, EditCircularCutRequest, EditExtrudeRequest,
     EditFilletRadiusRequest, EditRevolveAngleRequest, EditSketchConstraintsRequest,
-    EditSketchRequest, chamfer_edge_copy, circular_cut_copy, edit_annulus_copy,
-    edit_chamfer_distance_copy, edit_circle_copy, edit_circular_cut_copy, edit_extrude_copy,
-    edit_fillet_radius_copy, edit_revolve_angle_copy, edit_sketch_constraints_copy,
-    edit_sketch_copy, fillet_edge_copy,
+    EditSketchRequest, chamfer_edge_copy_with, circular_cut_copy_with, edit_annulus_copy_with,
+    edit_chamfer_distance_copy_with, edit_circle_copy_with, edit_circular_cut_copy_with,
+    edit_extrude_copy_with, edit_fillet_radius_copy_with, edit_revolve_angle_copy_with,
+    edit_sketch_constraints_copy_with, edit_sketch_copy_with, fillet_edge_copy_with,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
 
@@ -132,10 +132,10 @@ impl Drop for SessionDir {
     }
 }
 
-/// One accepted version of the document: an immutable private file and the two
-/// facts about it a session needs.
+/// One accepted version: an immutable private file and its kernel-free facts.
 #[derive(Debug)]
 pub struct Snapshot {
+    rebuild_facts: OnceLock<ferritecad_eval::RebuildFacts>,
     path: PathBuf,
     /// Document id and complete content version, exactly as a copy job pins them.
     disk: DocumentVersion,
@@ -167,6 +167,7 @@ impl Snapshot {
             .map_err(|e| CadError::io(format!("measuring {}", path.display()), e))?
             .len();
         Ok(Arc::new(Self {
+            rebuild_facts: OnceLock::new(),
             path,
             disk,
             model,
@@ -175,6 +176,35 @@ impl Snapshot {
             bytes,
             _directory: directory,
         }))
+    }
+
+    pub fn rebuild_facts(&self) -> Option<&ferritecad_eval::RebuildFacts> {
+        self.rebuild_facts.get()
+    }
+
+    /// Keeps facts from the rebuild that drew this immutable model.
+    pub fn remember_rebuild(&self, facts: &ferritecad_eval::RebuildFacts) -> Result<()> {
+        if facts.model != self.drawn {
+            return Err(CadError::input("rebuild facts belong to a different model"));
+        }
+        // A second viewing may rebuild this version, but never changes its facts.
+        let _ = self.rebuild_facts.set(facts.clone());
+        Ok(())
+    }
+
+    /// Opens the picture once and retains its baseline facts for subsequent edits.
+    pub fn load_scene<K: GeometryKernel + ?Sized>(
+        &self,
+        kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
+        params: &ferritecad_kernel::TessellationParams,
+        context: &OperationContext,
+    ) -> Result<ferritecad_scene::LoadedScene> {
+        let scene = ferritecad_scene::snapshot_of(self.path(), kernel, read_step, params, context)?;
+        if let Some(facts) = &scene.rebuild_facts {
+            self.remember_rebuild(facts)?;
+        }
+        Ok(scene)
     }
 
     /// The private file. For jobs that read a path (exports, scene loads, edits);
@@ -527,8 +557,8 @@ impl DocumentSession {
 
     /// Whether committing this step would change the model.
     ///
-    /// Asked before the step's scene is built, so a no-op Apply costs neither a
-    /// scene load nor a history entry.
+    /// A no-op Apply does not create an accepted history version or discard a
+    /// redo branch.
     pub fn changes_model(&self, step: &ProducedStep) -> bool {
         step.snapshot.model != self.history[self.current].model
     }
@@ -670,27 +700,35 @@ impl StepTicket {
     /// operation, reading the current version and writing the next, so the
     /// result is what the command line's `edit-extrude` makes from the same
     /// document. The caller owns the kernel and its thread.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_extrude_height<K: GeometryKernel + ?Sized>(
         self,
         feature: ObjectId,
         distance_mm: f64,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
-        self.run(|source, expected, destination| {
-            edit_extrude_copy(
-                &EditExtrudeRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    feature,
-                    distance_mm,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                edit_extrude_copy_with(
+                    &EditExtrudeRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        feature,
+                        distance_mm,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// Moves the vertices of one saved Line Sketch: the reused `edit-sketch-copy`
@@ -701,12 +739,14 @@ impl StepTicket {
     /// the session has moved on since (an Apply, an Undo, a Redo), the request is
     /// about a picture that is no longer the document and is refused, so an old
     /// form can never be applied to a newer version.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_sketch_vertices<K: GeometryKernel + ?Sized>(
         self,
         sketch: ObjectId,
         vertices: Vec<ferritecad_document::SketchVertex>,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         if expected != self.source.version() {
@@ -714,20 +754,26 @@ impl StepTicket {
                 "the document changed after this form was opened; open it again to edit the current version",
             ));
         }
-        self.run(|source, expected, destination| {
-            edit_sketch_copy(
-                &EditSketchRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    sketch,
-                    vertices,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                edit_sketch_copy_with(
+                    &EditSketchRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        sketch,
+                        vertices,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// Adds and removes constraints of one saved Sketch: the reused
@@ -741,12 +787,14 @@ impl StepTicket {
     /// edit that leaves the model as it was is not a step (`changes_model`); a
     /// replaced constraint is a different UUID and so is a step even when the
     /// solved drawing is the same.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_sketch_constraints<K: GeometryKernel + ?Sized>(
         self,
         sketch: ObjectId,
         edits: ferritecad_document::SketchConstraintEdits,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         if expected != self.source.version() {
@@ -754,20 +802,26 @@ impl StepTicket {
                 "the document changed after this form was opened; open it again to edit the current version",
             ));
         }
-        self.run(|source, expected, destination| {
-            edit_sketch_constraints_copy(
-                &EditSketchConstraintsRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    sketch,
-                    edits,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                edit_sketch_constraints_copy_with(
+                    &EditSketchConstraintsRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        sketch,
+                        edits,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// Moves and resizes one saved analytic circle: the reused `edit-circle`
@@ -778,85 +832,109 @@ impl StepTicket {
     /// `expected` is the version the form that asked for this was opened on; a
     /// request about any other version is refused, as for the other forms. A
     /// request that leaves the model as it was is not a step (`changes_model`).
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_circle<K: GeometryKernel + ?Sized>(
         self,
         sketch: ObjectId,
         edit: ferritecad_document::CircleEdit,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         self.check_form_version(expected)?;
-        self.run(|source, expected, destination| {
-            edit_circle_copy(
-                &EditCircleRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    sketch,
-                    edit,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                edit_circle_copy_with(
+                    &EditCircleRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        sketch,
+                        edit,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// Moves and resizes the two circles of one saved annular profile: the reused
     /// `edit-annular` copy operation, each circle named by its own UUID in the
     /// role it already holds. Version rule and no-op rule as for the circle.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_annulus<K: GeometryKernel + ?Sized>(
         self,
         sketch: ObjectId,
         edit: ferritecad_document::AnnulusEdit,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         self.check_form_version(expected)?;
-        self.run(|source, expected, destination| {
-            edit_annulus_copy(
-                &EditAnnulusRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    sketch,
-                    edit,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                edit_annulus_copy_with(
+                    &EditAnnulusRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        sketch,
+                        edit,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// Changes one existing Cut by its saved feature/tool identities, using the
     /// current accepted snapshot and the CLI's existing copy operation. New floor
     /// refs belong to the produced version; Undo/Redo never regenerates them.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_circular_cut<K: GeometryKernel + ?Sized>(
         self,
         cut: ObjectId,
         edit: ferritecad_document::CircularCutEdit,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         self.check_form_version(expected)?;
-        self.run(|source, expected, destination| {
-            edit_circular_cut_copy(
-                &EditCircularCutRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    cut,
-                    edit,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                edit_circular_cut_copy_with(
+                    &EditCircularCutRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        cut,
+                        edit,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// §30I: adds one new circular Cut to the Body named by its saved UUID, using
@@ -864,57 +942,73 @@ impl StepTicket {
     /// The feature, tool Sketch, Circle and references get their UUIDs here, in
     /// the produced version only; Undo/Redo move between accepted files and never
     /// run the job again, so Redo returns exactly these UUIDs.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_circular_cut<K: GeometryKernel + ?Sized>(
         self,
         body: ObjectId,
         cut: ferritecad_document::CircularCut,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         self.check_form_version(expected)?;
-        self.run(|source, expected, destination| {
-            circular_cut_copy(
-                &CircularCutRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    body,
-                    cut,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                circular_cut_copy_with(
+                    &CircularCutRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        body,
+                        cut,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// Changes the angle of one supported saved partial Revolve using the same
     /// copy job as the CLI. The form must name the current version; model-content
     /// comparison decides no-op, preserving Redo and releasing the private file.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_revolve_angle<K: GeometryKernel + ?Sized>(
         self,
         feature: ObjectId,
         degrees: f64,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         self.check_form_version(expected)?;
-        self.run(|source, expected, destination| {
-            edit_revolve_angle_copy(
-                &EditRevolveAngleRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    feature,
-                    degrees,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                edit_revolve_angle_copy_with(
+                    &EditRevolveAngleRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        feature,
+                        degrees,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// §30J: adds one Fillet to the Body named by its saved UUID, at the corner
@@ -922,56 +1016,72 @@ impl StepTicket {
     /// snapshot and the CLI's existing `fillet_edge_copy`. The feature and its
     /// references get their UUIDs here, in the produced version only; Undo/Redo
     /// move between accepted files and never run the job again.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_edge_fillet<K: GeometryKernel + ?Sized>(
         self,
         body: ObjectId,
         fillet: ferritecad_document::EdgeFillet,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         self.check_form_version(expected)?;
-        self.run(|source, expected, destination| {
-            fillet_edge_copy(
-                &EdgeFilletRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    body,
-                    fillet,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                fillet_edge_copy_with(
+                    &EdgeFilletRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        body,
+                        fillet,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// Changes the selected existing Fillet by UUID through the same copy job as
     /// the CLI. No identity is created; model comparison discards a numeric no-op.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_fillet_radius<K: GeometryKernel + ?Sized>(
         self,
         feature: ObjectId,
         radius_mm: f64,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         self.check_form_version(expected)?;
-        self.run(|source, expected, destination| {
-            edit_fillet_radius_copy(
-                &EditFilletRadiusRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    feature,
-                    radius_mm,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                edit_fillet_radius_copy_with(
+                    &EditFilletRadiusRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        feature,
+                        radius_mm,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// §30K: adds one Chamfer to the Body named by its saved UUID, at the corner
@@ -980,58 +1090,74 @@ impl StepTicket {
     /// closure-only plate, no other edge feature) is the domain's, unchanged. The
     /// feature and its references get their UUIDs here, in the produced version
     /// only; Undo/Redo move between accepted files and never run the job again.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_edge_chamfer<K: GeometryKernel + ?Sized>(
         self,
         body: ObjectId,
         chamfer: ferritecad_document::EdgeChamfer,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         self.check_form_version(expected)?;
-        self.run(|source, expected, destination| {
-            chamfer_edge_copy(
-                &EdgeChamferRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    body,
-                    chamfer,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                chamfer_edge_copy_with(
+                    &EdgeChamferRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        body,
+                        chamfer,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// Changes the distance of the selected existing Chamfer by UUID through the
     /// CLI's copy job, reading the accepted snapshot. No identity is created; the
     /// bound is the domain's and, on a constrained base, the evaluator's on the
     /// solved Lines. Model comparison discards a numeric no-op.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_chamfer_distance<K: GeometryKernel + ?Sized>(
         self,
         feature: ObjectId,
         distance_mm: f64,
         expected: DocumentVersion,
         kernel: &mut K,
+        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
         self.check_form_version(expected)?;
-        self.run(|source, expected, destination| {
-            edit_chamfer_distance_copy(
-                &EditChamferDistanceRequest {
-                    source: source.to_path_buf(),
-                    expected,
-                    feature,
-                    distance_mm,
-                    destination: destination.to_path_buf(),
-                },
-                kernel,
-                context,
-            )
-            .map(|_| ())
-        })
+        self.run_edit(
+            kernel,
+            read_step,
+            context,
+            |source, expected, destination, kernel, run| {
+                edit_chamfer_distance_copy_with(
+                    &EditChamferDistanceRequest {
+                        source: source.to_path_buf(),
+                        expected,
+                        feature,
+                        distance_mm,
+                        destination: destination.to_path_buf(),
+                    },
+                    kernel,
+                    context,
+                    run,
+                )
+                .map(|_| ())
+            },
+        )
     }
 
     /// §30N: adds a checkpoint named `name` of the current model. The model is
@@ -1095,6 +1221,58 @@ impl StepTicket {
         Ok(())
     }
 
+    fn run_edit<K: GeometryKernel + ?Sized>(
+        self,
+        kernel: &mut K,
+        mut read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
+        context: &OperationContext,
+        produce: impl FnOnce(
+            &Path,
+            DocumentVersion,
+            &Path,
+            &mut K,
+            &mut crate::edit::EditRun<'_, K>,
+        ) -> Result<()>,
+    ) -> Result<ProducedStep> {
+        context.check_cancelled()?;
+        let baseline = self
+            .source
+            .rebuild_facts
+            .get()
+            .ok_or_else(|| CadError::input("load the session picture before editing its model"))?
+            .clone();
+        let mut observe = |document: &Document,
+                           built: &ferritecad_eval::RebuildResult,
+                           kernel: &mut K,
+                           context: &OperationContext| {
+            ferritecad_scene::snapshot_from_rebuild(
+                document,
+                built,
+                kernel,
+                &mut read_step,
+                &ferritecad_kernel::TessellationParams::default(),
+                context,
+            )
+        };
+        let mut run = crate::edit::EditRun {
+            baseline: Some(&baseline),
+            observe: Some(&mut observe),
+            scene: None,
+        };
+        let mut step = self.run(|source, expected, destination| {
+            produce(source, expected, destination, kernel, &mut run)
+        })?;
+        step.scene = run.scene.take().map(Box::new);
+        if let Some(facts) = step
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.rebuild_facts.as_ref())
+        {
+            step.snapshot.remember_rebuild(facts)?;
+        }
+        Ok(step)
+    }
+
     /// Runs any copy operation that reads `source` (checking it is still the
     /// `expected` version) and publishes a new file at `destination`.
     ///
@@ -1117,6 +1295,11 @@ impl StepTicket {
             .inspect_err(|_| {
                 let _ = std::fs::remove_file(&self.destination);
             })?;
+        if snapshot.drawn == self.source.drawn
+            && let Some(facts) = self.source.rebuild_facts.get()
+        {
+            snapshot.remember_rebuild(facts)?;
+        }
         if snapshot.disk.document_id != self.source.disk.document_id {
             return Err(CadError::input(
                 "the edit produced a different document; it was not applied",
@@ -1126,6 +1309,7 @@ impl StepTicket {
             generation: self.generation,
             base: self.source,
             snapshot,
+            scene: None,
         })
     }
 }
@@ -1134,13 +1318,23 @@ impl StepTicket {
 /// file and changes nothing else.
 #[derive(Debug)]
 pub struct ProducedStep {
+    scene: Option<Box<ferritecad_scene::LoadedScene>>,
     generation: u64,
     base: Arc<Snapshot>,
     snapshot: Arc<Snapshot>,
 }
 
 impl ProducedStep {
-    /// The new version's private file, for the scene load that shows it.
+    /// The picture made from the candidate's checked rebuild, consumed once by the UI.
+    pub fn take_scene(&mut self) -> Option<ferritecad_scene::LoadedScene> {
+        self.scene.take().map(|scene| *scene)
+    }
+
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
+    /// The new version's private file, retained while its picture is staged.
     pub fn path(&self) -> &Path {
         self.snapshot.path()
     }
@@ -1166,6 +1360,10 @@ pub struct Move {
 }
 
 impl Move {
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.target
+    }
+
     /// The version to show, for the scene load that shows it.
     pub fn path(&self) -> &Path {
         self.target.path()

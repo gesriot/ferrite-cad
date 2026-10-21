@@ -19,7 +19,7 @@ impl Window {
         let root = tempfile::tempdir().expect("root");
         let mut sessions = sessions::Sessions::default();
         sessions.adopt(
-            ferritecad_jobs::DocumentSession::open_in(
+            crate::sessions::test_open::open_in(
                 root.path(),
                 path,
                 ferritecad_jobs::HistoryLimits::default(),

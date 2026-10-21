@@ -365,7 +365,7 @@ fn form_and_model_answers_address_attempt_tab_and_snapshot_once() {
     assert!(!w.tabs.back_quit_form(&w.sessions, old));
     let mut foreign = Sessions::default();
     foreign.adopt(
-        DocumentSession::open_in(w.private.path(), &file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(w.private.path(), &file, HistoryLimits::default())
             .expect("foreign same DocumentId"),
     );
     assert!(!w.tabs.confirm_quit_form(&foreign, new));
@@ -389,7 +389,7 @@ fn form_and_model_answers_address_attempt_tab_and_snapshot_once() {
             .is_err()
     );
     w.sessions.adopt(
-        DocumentSession::open_in(w.private.path(), &file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(w.private.path(), &file, HistoryLimits::default())
             .expect("new accepted snapshot"),
     );
     assert!(

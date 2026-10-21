@@ -227,7 +227,7 @@ fn gate(name: &str) {
     let target = opened.fillet_bodies[0].target.clone().expect("target");
     let (body, base) = (target.body, target.base_feature);
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     // Dirty base: height, then the left wall's two vertices.
     let ph = root.path().join("peer-height.fcad");
     cli(&[
@@ -436,7 +436,7 @@ fn gate(name: &str) {
     );
     assert_eq!(whole, map, "history-order pairing is the step-by-step one");
     cold(&source, 38.75, 12.25, 9.25);
-    let reopened = DocumentSession::open(&source).expect("reopen");
+    let reopened = crate::sessions::test_open::open(&source).expect("reopen");
     assert!(!reopened.is_dirty());
     drop(reopened);
     artifacts(name, &stl, &fbx, exact, approx);
@@ -624,7 +624,7 @@ fn native_add_on_unsaved_constraints_is_measured_on_solved_lines() {
     let original = std::fs::read(&source).expect("source");
     let target = reading.fillet_bodies[0].target.clone().expect("target");
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     apply_constraints_native(&mut s, &solved_rectangle(&source, &reading, 10.));
     let current = s.export_path().expect("constraints");
     let reading = read_extrude_source(&current).expect("reading");
@@ -752,7 +752,7 @@ fn stub_add_fillet_refuses_without_publication() {
     let (_root, source, reading) = fixture(0);
     let original = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let (_form, r) = typed_add(&source, &reading, &s, [33., 3.25], "2.375");
     let before = state(&s);
     let (g, rx) = start(&mut s, &r);
@@ -780,17 +780,18 @@ fn mixed_add_fillet_uses_occt_without_solver() {
         .expect("prepared constraints");
     d.write_sketch_constraints(&prepared).expect("written");
     d.close().expect("close");
-    let reading = read_extrude_source(&source).expect("reading");
     let original = std::fs::read(&source).expect("source");
-    let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
-    let (_form, r) = typed_add(&source, &reading, &s, [33., 15.5], "2.375");
-    let before = state(&s);
-    let (g, rx) = start(&mut s, &r);
-    let e = rx.recv().expect("answer").expect_err("no solver");
-    assert_eq!(e.kind(), ferritecad_types::ErrorKind::Unsupported, "{e}");
-    assert_eq!(s.finish_apply(g, Err(e)), Edited::Failed);
-    assert_eq!(state(&s), before);
+    let private = tempfile::tempdir().expect("private");
+    let error = open_for_view(private.path(), &source, &OperationContext::default())
+        .expect_err("the constrained plate has no baseline picture without a solver");
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
+    assert!(error.to_string().contains("planegcs"));
+    assert_eq!(
+        std::fs::read_dir(private.path())
+            .expect("private files")
+            .count(),
+        0
+    );
     assert_eq!(std::fs::read(source).expect("source"), original);
 }
 
@@ -1083,7 +1084,7 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
     put("source/plate.fcad", &original);
     let target = opened.fillet_bodies[0].target.clone().expect("target");
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     apply_native(&mut s, target.base_feature, 9.25);
     let current = s.export_path().expect("current");
     let reading = read_extrude_source(&current).expect("reading");

@@ -399,7 +399,7 @@ fn gate(count: usize, height: bool, name: &str) {
     let original = std::fs::read(&source).expect("source");
     cold(&source);
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let mut peer_before = source.clone();
     let mut base_steps = 0;
     if height {
@@ -538,7 +538,7 @@ fn gate(count: usize, height: bool, name: &str) {
     saved(&mut s, SaveTarget::InPlace);
     same_sql(&source, &peer_before, &before_cut);
     cold(&source);
-    let reopened = DocumentSession::open(&source).expect("reopen");
+    let reopened = crate::sessions::test_open::open(&source).expect("reopen");
     assert!(!reopened.is_dirty());
     assert_eq!(sql(reopened.current().path(), &[]), sql(&source, &[]));
     drop(reopened);
@@ -670,7 +670,7 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     let (root, source, opened) = fixture(3);
     let original = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     // Blind-through <-> ThroughAll preserves expressed intent; then through -> pocket.
     let mut r = request(&s, 0);
     r.edit.extent = CutExtent::Blind { depth_mm: 12.75 };
@@ -765,7 +765,7 @@ fn stub_cut_apply_refuses_without_publication() {
     let (_root, source, reading) = fixture(3);
     let bytes = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(DocumentSession::open(&source).expect("session"));
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     let (_form, r) = typed_cut(&source, &reading, &s, 0, "7.5", "1.625", None);
     let (g, rx) = start(&mut s, &r);
     let error = rx.recv().expect("answer").expect_err("refusal");

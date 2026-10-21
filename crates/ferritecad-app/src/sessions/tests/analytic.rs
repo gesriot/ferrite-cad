@@ -352,7 +352,7 @@ fn analytic_gate(
     let private = tempfile::tempdir().expect("private root");
     let mut sessions = Sessions::default();
     sessions.adopt(
-        DocumentSession::open_in(private.path(), source, HistoryLimits::default())
+        crate::sessions::test_open::open_in(private.path(), source, HistoryLimits::default())
             .expect("session"),
     );
     let alias = sessions.logical_path().expect("logical").to_path_buf();
@@ -734,7 +734,7 @@ fn canvas_gate(
     let private = tempfile::tempdir().expect("private root");
     let mut sessions = Sessions::default();
     sessions.adopt(
-        DocumentSession::open_in(private.path(), source, HistoryLimits::default())
+        crate::sessions::test_open::open_in(private.path(), source, HistoryLimits::default())
             .expect("session"),
     );
     let alias = sessions.logical_path().expect("logical").to_path_buf();
@@ -1105,7 +1105,7 @@ fn without_a_kernel_a_circle_apply_is_refused_and_the_document_stays_clean() {
     let private = tempfile::tempdir().expect("private");
     let mut sessions = Sessions::default();
     sessions.adopt(
-        DocumentSession::open_in(private.path(), &source, HistoryLimits::default())
+        crate::sessions::test_open::open_in(private.path(), &source, HistoryLimits::default())
             .expect("session"),
     );
     let files = private_files(&sessions);
@@ -1147,7 +1147,7 @@ fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circl
     let private = tempfile::tempdir().expect("private root");
     let mut sessions = Sessions::default();
     sessions.adopt(
-        DocumentSession::open_in(private.path(), &source, HistoryLimits::default())
+        crate::sessions::test_open::open_in(private.path(), &source, HistoryLimits::default())
             .expect("session"),
     );
     let (_form, constraints) = crate::constraints::tests::session_apply::typed_circle(

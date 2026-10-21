@@ -7,6 +7,8 @@
 //! check, version re-check and publication the command line uses. Geometry is
 //! measured by the native tests; what is asserted here is state and files.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 
 use ferritecad_jobs::{
@@ -67,11 +69,16 @@ fn apply(
     feature: ObjectId,
     millimetres: f64,
 ) -> Result<StepCommit, CadError> {
-    let ticket = session.begin_step();
+    let ticket = support::viewed(session.begin_step());
     let step = ticket.edit_extrude_height(
         feature,
         millimetres,
         &mut MockKernel::new(),
+        |_, _| {
+            Err(ferritecad_types::CadError::unsupported(
+                "no STEP imports in this model",
+            ))
+        },
         &OperationContext::default(),
     )?;
     session.commit_step(step)
@@ -170,12 +177,17 @@ fn editing_back_to_the_saved_value_is_clean_and_a_no_op_is_not_a_step() {
 
     // The same value applied again rewrites only the stamp: no step.
     let before = (session.history_len(), session.generation());
-    let ticket = session.begin_step();
+    let ticket = support::viewed(session.begin_step());
     let step = ticket
         .edit_extrude_height(
             f.feature,
             f.height,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("a no-op still produces a file");
@@ -284,12 +296,17 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
     assert!(!session.is_dirty() && !session.can_undo());
 
     // A step produced and then dropped (its scene could not be prepared) too.
-    let ticket = session.begin_step();
+    let ticket = support::viewed(session.begin_step());
     let step = ticket
         .edit_extrude_height(
             f.feature,
             22.0,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("produced");
@@ -302,12 +319,16 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
     assert!(!session.is_dirty());
 
     // A step made before the session moved on is stale and is not applied.
-    let stale = session
-        .begin_step()
+    let stale = support::viewed(session.begin_step())
         .edit_extrude_height(
             f.feature,
             23.0,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("produced");
@@ -473,11 +494,16 @@ fn apply_vertices(
     vertices: Vec<ferritecad_document::SketchVertex>,
     expected: ferritecad_document::DocumentVersion,
 ) -> Result<StepCommit, CadError> {
-    let step = session.begin_step().edit_sketch_vertices(
+    let step = support::viewed(session.begin_step()).edit_sketch_vertices(
         sketch,
         vertices,
         expected,
         &mut MockKernel::new(),
+        |_, _| {
+            Err(ferritecad_types::CadError::unsupported(
+                "no STEP imports in this model",
+            ))
+        },
         &OperationContext::default(),
     )?;
     session.commit_step(step)
@@ -707,11 +733,16 @@ fn apply_constraints(
     edits: ferritecad_document::SketchConstraintEdits,
     expected: ferritecad_document::DocumentVersion,
 ) -> Result<StepCommit, CadError> {
-    let step = session.begin_step().edit_sketch_constraints(
+    let step = support::viewed(session.begin_step()).edit_sketch_constraints(
         sketch,
         edits,
         expected,
         &mut MockKernel::new(),
+        |_, _| {
+            Err(ferritecad_types::CadError::unsupported(
+                "no STEP imports in this model",
+            ))
+        },
         &OperationContext::default(),
     )?;
     session.commit_step(step)

@@ -181,8 +181,12 @@ fn a_checkpoint_shares_the_operation_slot_and_a_cancelled_or_late_answer_changes
         .expect("started");
     let other = fixture();
     s.adopt(
-        DocumentSession::open_in(other.private.path(), &other.file, HistoryLimits::default())
-            .expect("another document"),
+        crate::sessions::test_open::open_in(
+            other.private.path(),
+            &other.file,
+            HistoryLimits::default(),
+        )
+        .expect("another document"),
     );
     let replaced = state(&s);
     let result = rx.recv().expect("answer");
@@ -249,8 +253,9 @@ fn the_checkpoint_predicate_says_why_and_waits_for_forms_operations_names_and_th
         .expect("within the limit");
         source = next;
     }
-    let full = DocumentSession::open_in(f.private.path(), &source, HistoryLimits::default())
-        .expect("opens");
+    let full =
+        crate::sessions::test_open::open_in(f.private.path(), &source, HistoryLimits::default())
+            .expect("opens");
     let (create, act) = reasons(availability(true, false, Some(&full.current()), "one more"));
     assert!(create.expect("full").contains("at most 32 checkpoints"));
     assert!(act.is_none());
@@ -265,8 +270,9 @@ fn the_checkpoint_predicate_says_why_and_waits_for_forms_operations_names_and_th
             [],
         )
         .expect("hand edit");
-    let opened = DocumentSession::open_in(f.private.path(), &damaged, HistoryLimits::default())
-        .expect("the model still opens");
+    let opened =
+        crate::sessions::test_open::open_in(f.private.path(), &damaged, HistoryLimits::default())
+            .expect("the model still opens");
     let snapshot: Arc<Snapshot> = opened.current();
     assert!(snapshot.checkpoints().is_err());
     let (create, act) = reasons(availability(true, false, Some(&snapshot), "A"));
@@ -285,7 +291,7 @@ fn a_crash_copy_of_the_window_carries_its_checkpoints() {
     let mut s = Sessions::default();
     s.keep_recovery(RecoveryRecorder::start(store.clone(), || {}));
     s.adopt(
-        DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
             .expect("session"),
     );
     let a = create(&mut s, "Before the crash");
@@ -607,8 +613,9 @@ fn native_checkpoints_restore_undo_redo_save_reopen_and_extract_like_the_command
 
     saved(&mut s, SaveTarget::InPlace);
     drop(s);
-    let reopened = DocumentSession::open_in(f.private.path(), &f.file, HistoryLimits::default())
-        .expect("reopens");
+    let reopened =
+        crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
+            .expect("reopens");
     assert_eq!(
         reopened.current().checkpoints().expect("readable"),
         [a.clone(), b.clone()].as_slice()
@@ -718,7 +725,7 @@ fn native_an_imported_step_checkpoint_needs_no_step_file() {
     let private = tempfile::tempdir().expect("private");
     let mut s = Sessions::default();
     s.adopt(
-        DocumentSession::open_in(private.path(), &document, HistoryLimits::default())
+        crate::sessions::test_open::open_in(private.path(), &document, HistoryLimits::default())
             .expect("session"),
     );
     let a = create(&mut s, "As imported");

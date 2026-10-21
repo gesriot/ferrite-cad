@@ -2,6 +2,8 @@
 //! Save and Save As: what the guard refuses, what it publishes, and the real race
 //! boundaries. Files and state only; no window, no geometry.
 
+mod support;
+
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
@@ -53,12 +55,16 @@ fn open(f: &Fixture) -> DocumentSession {
 }
 
 fn apply(session: &mut DocumentSession, feature: ObjectId, millimetres: f64) {
-    let step = session
-        .begin_step()
+    let step = support::viewed(session.begin_step())
         .edit_extrude_height(
             feature,
             millimetres,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("an edit");

@@ -287,7 +287,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     let private = tempfile::tempdir().expect("private");
     let mut s = Sessions::default();
     s.adopt(
-        DocumentSession::open_in(private.path(), &source, HistoryLimits::default())
+        crate::sessions::test_open::open_in(private.path(), &source, HistoryLimits::default())
             .expect("session"),
     );
     let opened = read_extrude_source(&source).expect("reading");
@@ -421,8 +421,9 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     saved(&mut s, SaveTarget::InPlace);
     assert_eq!(cells(&source), cells(&exact_peer));
     cold(&source, inner, 8.75, height, 212.25);
-    let reopened = DocumentSession::open_in(private.path(), &source, HistoryLimits::default())
-        .expect("cold session");
+    let reopened =
+        crate::sessions::test_open::open_in(private.path(), &source, HistoryLimits::default())
+            .expect("cold session");
     assert!(!reopened.is_dirty());
     assert_eq!(cells(reopened.current().path()), cells(&exact_peer));
     drop(reopened);
@@ -548,7 +549,8 @@ fn stub_angle_apply_refuses_without_publication() {
     let bytes = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
     s.adopt(
-        DocumentSession::open_in(root.path(), &source, HistoryLimits::default()).expect("session"),
+        crate::sessions::test_open::open_in(root.path(), &source, HistoryLimits::default())
+            .expect("session"),
     );
     let reading = read_extrude_source(&source).expect("reading");
     let (_form, r) = typed_angle(&source, &reading, &s, "212.25");
@@ -606,18 +608,17 @@ fn mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained() {
     .expect("constraints");
     d.close().expect("close");
     let bytes = std::fs::read(&source).expect("bytes");
-    let mut s = Sessions::default();
-    s.adopt(
-        DocumentSession::open_in(root.path(), &source, HistoryLimits::default()).expect("session"),
+    let private = tempfile::tempdir().expect("private");
+    let error = open_for_view(private.path(), &source, &OperationContext::default())
+        .expect_err("the constrained profile has no baseline picture without a solver");
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
+    assert!(error.to_string().contains("planegcs"));
+    assert_eq!(
+        std::fs::read_dir(private.path())
+            .expect("private files")
+            .count(),
+        0
     );
-    let r = request(&s, 212.25);
-    let (g, rx) = start(&mut s, &r);
-    let e = rx.recv().expect("answer").expect_err("no solver");
-    assert_eq!(e.kind(), ferritecad_types::ErrorKind::Unsupported);
-    assert!(e.to_string().contains("planegcs"));
-    s.finish_apply(g, Err(e));
-    assert!(!s.dirty() && !s.can_undo());
-    assert_eq!(private_files(&s).len(), 1);
     assert_eq!(std::fs::read(&source).expect("source"), bytes);
 }
 

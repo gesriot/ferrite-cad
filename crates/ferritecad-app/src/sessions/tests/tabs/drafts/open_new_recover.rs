@@ -36,8 +36,11 @@ impl Window {
     /// What the reading worker answers for `path`: its session and its picture
     /// (on the mock kernel here; `open_for_view` in the kernel gates).
     pub(super) fn read(&self, path: &Path) -> Result<(LoadedScene, DocumentSession)> {
-        let session =
-            DocumentSession::open_in(self.private.path(), path, HistoryLimits::default())?;
+        let session = crate::sessions::test_open::open_in(
+            self.private.path(),
+            path,
+            HistoryLimits::default(),
+        )?;
         let scene = self.picture(session.current().path())?;
         Ok((scene, session))
     }
@@ -240,8 +243,8 @@ pub(super) fn orphan(
     private: &Path,
     millimetres: f64,
 ) -> RecordId {
-    let mut session =
-        DocumentSession::open_in(private, file, HistoryLimits::default()).expect("session");
+    let mut session = crate::sessions::test_open::open_in(private, file, HistoryLimits::default())
+        .expect("session");
     let feature = read_extrude_source(session.current().path())
         .expect("reading")
         .features[0]
@@ -252,6 +255,11 @@ pub(super) fn orphan(
             feature,
             millimetres,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("edit");

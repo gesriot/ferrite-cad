@@ -65,3 +65,6 @@ pub fn solver_available() -> bool {
 
 mod status;
 pub use status::*;
+
+mod facts;
+pub use facts::RebuildFacts;

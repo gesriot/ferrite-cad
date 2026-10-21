@@ -49,6 +49,7 @@ fn open_action(w: &mut Window, asked: ModelAction) -> bool {
 // not geometry evidence; native tests below use the production scene worker.
 pub(in crate::sessions::tests::tabs) fn facts_scene(path: &Path) -> Result<LoadedScene> {
     Ok(LoadedScene {
+        rebuild_facts: None,
         rebuild: Default::default(),
         edit_source: Some(read_extrude_source(path)?),
         snapshot: ferritecad_viewport::SnapshotBuilder::new().build(),
@@ -61,8 +62,9 @@ pub(in crate::sessions::tests::tabs) fn facts_scene(path: &Path) -> Result<Loade
     })
 }
 pub(in crate::sessions::tests::tabs) fn open_facts(w: &mut Window, path: &Path) {
-    let session = DocumentSession::open_in(w.private.path(), path, HistoryLimits::default())
-        .expect("session");
+    let session =
+        crate::sessions::test_open::open_in(w.private.path(), path, HistoryLimits::default())
+            .expect("session");
     let path = session.current().path().to_path_buf();
     w.present(
         &path,
@@ -290,7 +292,7 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
     w.answer_new(ferritecad_ui::NewChoice::Cancel);
     let current = source(&w).clone();
     let selected = w.tabs.model_navigation(a).selected;
-    let candidate = DocumentSession::open(&copy).expect("candidate");
+    let candidate = crate::sessions::test_open::open(&copy).expect("candidate");
     let staged = candidate.current().path().to_path_buf();
     let loaded = facts_scene(&staged);
     assert!(

@@ -354,13 +354,14 @@ fn close_decisions_are_once_only_and_address_the_tab_attempt_and_snapshot() {
     ));
     let mut other = Sessions::default();
     other.adopt(
-        DocumentSession::open_in(w.private.path(), &file, HistoryLimits::default()).expect("other"),
+        crate::sessions::test_open::open_in(w.private.path(), &file, HistoryLimits::default())
+            .expect("other"),
     );
     assert!(!w.tabs.decide_form_close(&other, new));
     assert!(w.tabs.close(&mut other, a).is_err());
     // Changing the accepted snapshot invalidates the answer, even with same TabId.
     w.sessions.adopt(
-        DocumentSession::open_in(w.private.path(), &file, HistoryLimits::default())
+        crate::sessions::test_open::open_in(w.private.path(), &file, HistoryLimits::default())
             .expect("new base"),
     );
     assert_eq!(w.sessions.tab(), a);
@@ -413,7 +414,7 @@ pub(super) fn form_families(quit: bool) {
         let reading = read_extrude_source(path).expect("reading");
         let mut w = Window::new(Drawn::Mock, None);
         w.sessions.adopt(
-            DocumentSession::open_in(w.private.path(), path, HistoryLimits::default())
+            crate::sessions::test_open::open_in(w.private.path(), path, HistoryLimits::default())
                 .expect("session"),
         );
         match kind {

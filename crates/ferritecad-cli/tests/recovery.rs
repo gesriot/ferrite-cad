@@ -319,12 +319,28 @@ fn dirty_copy_of_a_source(root: &Path, user: &Path, sessions: &Path) -> Dirty {
         .expect("reading")
         .features[0]
         .feature;
+    if session.current().rebuild_facts().is_none() {
+        session
+            .current()
+            .load_scene(
+                &mut ferritecad_kernel::mock::MockKernel::new(),
+                |_, _| unreachable!("no imports in this fixture"),
+                &ferritecad_kernel::TessellationParams::default(),
+                &ferritecad_kernel::OperationContext::default(),
+            )
+            .expect("Open picture and baseline facts");
+    }
     let step = session
         .begin_step()
         .edit_extrude_height(
             feature,
             22.0,
             &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
             &OperationContext::default(),
         )
         .expect("an edit");

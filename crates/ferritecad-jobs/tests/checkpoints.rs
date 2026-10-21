@@ -5,6 +5,8 @@
 //! the session's steps, the real committed schema v3 file, the copy operations'
 //! guards and faults, and the crash copy carrying the catalog.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 
 use ferritecad_document::{CheckpointEntry, Document, DocumentVersion};
@@ -48,8 +50,7 @@ fn context() -> OperationContext {
 }
 
 fn produce_create(session: &mut DocumentSession, name: &str) -> ProducedStep {
-    session
-        .begin_step()
+    support::viewed(session.begin_step())
         .create_checkpoint(name, &context())
         .expect("a checkpoint step")
 }
@@ -77,9 +78,18 @@ fn apply(session: &mut DocumentSession, millimetres: f64) {
         .expect("reading")
         .features[0]
         .feature;
-    let step = session
-        .begin_step()
-        .edit_extrude_height(feature, millimetres, &mut MockKernel::new(), &context())
+    let step = support::viewed(session.begin_step())
+        .edit_extrude_height(
+            feature,
+            millimetres,
+            &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
+            &context(),
+        )
         .expect("an edit");
     assert!(!step.keeps_picture(), "a height changes what is drawn");
     session.commit_step(step).expect("accepted");
@@ -178,8 +188,7 @@ fn restore_is_one_step_that_keeps_the_catalog_and_undo_redo_move_through_it() {
     let user_bytes = bytes(&user);
 
     // Restore A: the model is A's again; the catalog is the current one.
-    let step = session
-        .begin_step()
+    let step = support::viewed(session.begin_step())
         .restore_checkpoint(a.id, &context())
         .expect("restores");
     assert!(!step.keeps_picture(), "a restored model has to be drawn");
@@ -202,8 +211,7 @@ fn restore_is_one_step_that_keeps_the_catalog_and_undo_redo_move_through_it() {
     assert!(std::sync::Arc::ptr_eq(&session.current(), &restored));
 
     // Restoring the model already current is no change; restoring B again is.
-    let again = session
-        .begin_step()
+    let again = support::viewed(session.begin_step())
         .restore_checkpoint(a.id, &context())
         .expect("restores");
     assert!(again.keeps_picture());
@@ -214,8 +222,7 @@ fn restore_is_one_step_that_keeps_the_catalog_and_undo_redo_move_through_it() {
     assert!(std::sync::Arc::ptr_eq(&session.current(), &restored));
 
     // Delete is a step of its own; Undo brings the checkpoint back.
-    let step = session
-        .begin_step()
+    let step = support::viewed(session.begin_step())
         .delete_checkpoint(a.id, &context())
         .expect("deletes");
     assert!(step.keeps_picture());
@@ -229,8 +236,7 @@ fn restore_is_one_step_that_keeps_the_catalog_and_undo_redo_move_through_it() {
 
     // A checkpoint that is not there is refused and changes nothing.
     let current = session.current();
-    let refused = session
-        .begin_step()
+    let refused = support::viewed(session.begin_step())
         .restore_checkpoint(a.id, &context())
         .expect_err("deleted");
     assert!(refused.to_string().contains("no checkpoint"), "{refused}");
@@ -487,8 +493,7 @@ fn a_crash_copy_carries_the_checkpoints_of_the_accepted_version() {
         session.current().drawn_model()
     );
     let mut recovered = recovered;
-    let step = recovered
-        .begin_step()
+    let step = support::viewed(recovered.begin_step())
         .restore_checkpoint(a.id, &context())
         .expect("a recovered checkpoint restores");
     recovered.commit_step(step).expect("accepted");

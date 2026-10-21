@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-bench"
+description = "Generated modelling corpus and end-to-end operation measurements"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ferritecad-document.workspace = true
+ferritecad-eval.workspace = true
+ferritecad-fixtures.workspace = true
+ferritecad-jobs.workspace = true
+ferritecad-kernel.workspace = true
+ferritecad-occt.workspace = true
+ferritecad-scene.workspace = true
+ferritecad-sketch-solver.workspace = true
+ferritecad-types.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+
+[features]
+planegcs = ["ferritecad-jobs/planegcs", "ferritecad-sketch-solver/planegcs"]
+
+[lints]
+workspace = true
