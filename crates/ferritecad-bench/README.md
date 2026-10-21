@@ -23,10 +23,11 @@ Cold and warm rebuilds release their shapes inside the timed interval. The warm
 cache is populated before timing. Open includes read, rebuild and tessellation.
 Apply starts with a session whose picture has already been loaded; timing ends
 after the returned picture is available and the version is committed. Height,
-fillet radius and Revolve angle are measured where applicable. Undo starts with
-one accepted edit and includes a fresh scene load and commit. STL selects one
-body and includes the full document rebuild, tessellation and atomic publication.
-There is no GPU upload in these timings.
+fillet radius and Revolve angle are measured where the document's edit
+catalogue offers them; documents with several bodies offer no edit yet. Undo
+starts with one accepted edit and includes a fresh scene load and commit. STL
+selects one body and includes the full document rebuild, tessellation and atomic
+publication. There is no GPU upload in these timings.
 
 For interactive checks, retain freshly generated documents:
 

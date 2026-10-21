@@ -1370,7 +1370,6 @@ fn read_history(
     if document
         .dependencies()?
         .into_iter()
-        .filter(|d| covered.contains(&d.dependent))
         .collect::<BTreeSet<_>>()
         != expected
     {

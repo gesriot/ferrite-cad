@@ -448,7 +448,20 @@ where
     K: GeometryKernel + ?Sized,
     S: LoadSink,
 {
+    // Opening is read-only, which neither migrates a schema nor changes a
+    // persistent pragma. Anything that quietly rewrote the file it was asked
+    // to look at would be the worst kind of surprise: the change would be
+    // invisible, and it would happen to the one copy the user has.
     let document = Document::open_read_only(path)?;
+
+    // Two phases of one job, so they share one scale. Building the geometry
+    // is the slow half and gets most of it; the rest is describing what was
+    // built. A bar that reached the end when the rebuild did would sit at
+    // "finished" for the whole of the meshing.
+    //
+    // Cold on purpose, as everywhere else a result must be right rather than
+    // quick: consulting a cache would make what comes out depend on the state
+    // of a sidecar that exists only to save time.
     let built = rebuild_cold(&document, kernel, &phase(context, 0.0, BUILDING))?;
     let output = from_rebuild(
         &document,

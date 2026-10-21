@@ -1131,11 +1131,7 @@ pub(crate) fn spawn_apply(
                 feature,
                 distance_mm,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1163,11 +1159,7 @@ pub(crate) fn spawn_apply_sketch(
                 vertices,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1196,11 +1188,7 @@ pub(crate) fn spawn_apply_constraints(
                 edits,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1228,11 +1216,7 @@ pub(crate) fn spawn_apply_circle(
                 edit,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1260,11 +1244,7 @@ pub(crate) fn spawn_apply_annulus(
                 edit,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1292,11 +1272,7 @@ pub(crate) fn spawn_apply_angle(
                 degrees,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1324,11 +1300,7 @@ pub(crate) fn spawn_apply_cut(
                 edit,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1356,11 +1328,7 @@ pub(crate) fn spawn_add_cut(
                 cut,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1388,11 +1356,7 @@ pub(crate) fn spawn_add_fillet(
                 fillet,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1420,11 +1384,7 @@ pub(crate) fn spawn_apply_fillet_radius(
                 radius_mm,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1452,11 +1412,7 @@ pub(crate) fn spawn_add_chamfer(
                 chamfer,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -1484,11 +1440,7 @@ pub(crate) fn spawn_apply_chamfer_distance(
                 distance_mm,
                 expected,
                 &mut kernel,
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
+                |kernel, source| kernel.import_step(source),
                 &context,
             )
         },
@@ -2756,7 +2708,7 @@ mod tests {
 
     /// The window's own Apply, on the real workers: the edit on the kernel's thread,
     /// then the picture of the new version, then the version becoming current.
-    fn apply_native(sessions: &mut Sessions, feature: ObjectId, millimetres: f64) {
+    fn apply_native(sessions: &mut Sessions, feature: ObjectId, millimetres: f64) -> LoadedScene {
         let (tx, rx) = mpsc::channel();
         let generation = sessions
             .begin_apply(|ticket, _, cancel| {
@@ -2776,20 +2728,74 @@ mod tests {
             panic!("the edit was not shown: {}", sessions.status);
         };
         let (tx, rx) = mpsc::channel();
-        let token = sessions.scene_token(generation).expect("token");
-        let worker = spawn_scene(path, token, move |scene| tx.send(scene).expect("deliver"));
-        assert!(sessions.attach_scene(generation, worker));
+        sessions.stage_picture(
+            generation,
+            path,
+            move |scene| tx.send(scene).expect("deliver"),
+            |_, _, _| panic!("Apply must not spawn a scene worker"),
+        );
         let scene = rx
             .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("scene");
-        assert!(
-            !scene
-                .expect("the picture of the new version")
-                .catalogue
-                .is_empty()
-        );
+            .expect("scene")
+            .expect("the picture of the new version");
+        assert!(!scene.catalogue.is_empty());
         sessions.bind(Bind::Staged).expect("bind");
         assert!(sessions.finish_scene(generation, Ok(())));
+        scene
+    }
+
+    /// The Apply worker reads a stored STEP part with its kernel, as Open does,
+    /// so a height edit beside an imported part still shows both.
+    #[test]
+    fn an_apply_beside_an_imported_step_part_shows_both() {
+        use ferritecad_kernel::GeometryKernel as _;
+        if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+            return;
+        }
+        let root = tempfile::tempdir().expect("root");
+        let path = root.path().join("mixed.fcad");
+        ferritecad_fixtures::write_plate(&path).expect("plate");
+        let step = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/step/canonical/01-single-part.step"
+        ))
+        .expect("STEP corpus");
+        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+        let import = kernel.import_step(&step).expect("import");
+        let mut document = Document::open(&path).expect("writable");
+        document
+            .store_step_import(ferritecad_document::StepImportRequest {
+                object: ObjectId::new(),
+                name: Some("Part"),
+                source: &step,
+                source_name: Some("part.step"),
+                import: &import,
+                importer: kernel.identity(),
+            })
+            .expect("stored");
+        document.close().expect("closed");
+        if let ferritecad_exchange::Import::Imported { scene, .. } = &import {
+            for shape in scene.shapes().collect::<Vec<_>>() {
+                kernel.release(shape);
+            }
+        }
+        let feature = read_extrude_source(&path).expect("reading").features[0].feature;
+        let private = tempfile::tempdir().expect("private");
+        let mut sessions = Sessions::default();
+        sessions.adopt(
+            crate::sessions::test_open::open_in(private.path(), &path, HistoryLimits::default())
+                .expect("session"),
+        );
+        let scene = apply_native(&mut sessions, feature, 12.0);
+        assert!(
+            scene
+                .catalogue
+                .iter()
+                .any(|entry| entry.source_file.as_deref() == Some("part.step")),
+            "{:?}",
+            scene.catalogue
+        );
+        assert!(sessions.can_undo());
     }
 
     fn move_native(sessions: &mut Sessions, undo: bool) {

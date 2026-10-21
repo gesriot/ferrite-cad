@@ -60,6 +60,7 @@ pub fn run(root: &Path, runs: usize, smoke: bool) -> Result<Vec<Measurement>> {
             if (operation == "apply_height" && case.extrude.is_none())
                 || (operation == "apply_fillet" && case.fillet.is_none())
                 || (operation == "apply_angle" && case.revolve.is_none())
+                || (operation == "undo" && case.extrude.is_none() && case.revolve.is_none())
             {
                 continue;
             }

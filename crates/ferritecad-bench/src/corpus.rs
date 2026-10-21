@@ -197,14 +197,18 @@ fn describe(name: &str, path: PathBuf, bodies: usize) -> Result<Case> {
     let find = |predicate: fn(&ObjectPayload) -> bool| {
         objects.iter().find(|o| predicate(&o.payload)).map(|o| o.id)
     };
+    // Only a height the edit catalogue offers; several bodies offer none yet.
+    let extrude = ExtrudeEditSource::read(&document)?
+        .features
+        .into_iter()
+        .find(|choice| choice.refusal.is_none())
+        .map(|choice| choice.feature);
     Ok(Case {
         name: name.to_owned(),
         path,
         bodies,
         body,
-        extrude: find(
-            |p| matches!(p, ObjectPayload::Extrude(e) if e.operation == SolidOperation::NewBody),
-        ),
+        extrude,
         fillet: find(|p| matches!(p, ObjectPayload::Fillet(_))),
         revolve: find(|p| matches!(p, ObjectPayload::Revolve(_))),
     })

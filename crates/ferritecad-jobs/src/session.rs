@@ -938,7 +938,7 @@ impl StepTicket {
     }
 
     /// §30I: adds one new circular Cut to the Body named by its saved UUID, using
-    /// the current accepted snapshot and the CLI's existing `circular_cut_copy_with`.
+    /// the current accepted snapshot and the CLI's existing `circular_cut_copy`.
     /// The feature, tool Sketch, Circle and references get their UUIDs here, in
     /// the produced version only; Undo/Redo move between accepted files and never
     /// run the job again, so Redo returns exactly these UUIDs.
@@ -1013,7 +1013,7 @@ impl StepTicket {
 
     /// §30J: adds one Fillet to the Body named by its saved UUID, at the corner
     /// named by the base feature and its two Line UUIDs, using the current accepted
-    /// snapshot and the CLI's existing `fillet_edge_copy_with`. The feature and its
+    /// snapshot and the CLI's existing `fillet_edge_copy`. The feature and its
     /// references get their UUIDs here, in the produced version only; Undo/Redo
     /// move between accepted files and never run the job again.
     #[allow(clippy::too_many_arguments)]
@@ -1086,7 +1086,7 @@ impl StepTicket {
 
     /// §30K: adds one Chamfer to the Body named by its saved UUID, at the corner
     /// named by the base feature and its two Line UUIDs, using the current accepted
-    /// snapshot and the CLI's existing `chamfer_edge_copy_with`. Its class (free or
+    /// snapshot and the CLI's existing `chamfer_edge_copy`. Its class (free or
     /// closure-only plate, no other edge feature) is the domain's, unchanged. The
     /// feature and its references get their UUIDs here, in the produced version
     /// only; Undo/Redo move between accepted files and never run the job again.
