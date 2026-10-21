@@ -174,7 +174,8 @@ run_cyclonedx() { # target
                  | (.manifest_path | gsub("\\\\"; "/")
                     | ltrimstr($root + "/") | rtrimstr("Cargo.toml")) as $dir
                  | .targets[] | select(.kind | index("bin"))
-                 | $dir + .name + "_bin.cdx.json"')
+                 | $dir + .name + "_bin.cdx.json"' \
+        | sbom_strip_cr)
 
     # Found by generating from a copy of the tree that was not a git checkout:
     # the first spelling of this asked git, and git answered "not a repository"
