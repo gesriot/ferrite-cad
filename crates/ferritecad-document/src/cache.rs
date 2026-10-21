@@ -44,11 +44,7 @@ pub struct CacheStore {
 
 impl CacheStore {
     /// Opens the sidecar for `document_id`, rebuilding it from scratch if what
-    /// is there belongs to a different document, format or kernel.
-    ///
-    /// A stale sidecar is discarded rather than migrated or repaired. Repairing
-    /// derived data risks keeping an entry that no longer means what its key
-    /// says, and the only cost of discarding is time.
+    /// is unreadable or belongs to a different document or kernel.
     pub fn open(
         path: impl AsRef<Path>,
         document_id: DocumentId,
@@ -57,35 +53,20 @@ impl CacheStore {
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
 
-        if path.exists() && !matches(&path, document_id, kernel_id, kernel_version)? {
-            std::fs::remove_file(&path).map_err(|e| {
-                CadError::io(format!("discarding stale cache {}", path.display()), e)
-            })?;
-            // WAL companions belong to the discarded database, not to the new one.
-            for suffix in ["-wal", "-shm"] {
-                let mut companion = path.clone().into_os_string();
-                companion.push(suffix);
-                let _ = std::fs::remove_file(PathBuf::from(companion));
-            }
+        let reusable = path.exists() && matches(&path, document_id, kernel_id, kernel_version);
+        if !reusable {
+            Self::discard(&path)?;
         }
-
         let mut conn = Connection::open(&path)
             .map_err(|e| CadError::io(format!("opening cache {}", path.display()), e))?;
         schema::configure_cache_connection(&conn)?;
-        schema::migrate_cache(&mut conn)?;
-
-        conn.execute(
-            "INSERT INTO cache_meta (id, document_id, format_version, kernel_id, kernel_version)
-             VALUES (1, ?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO NOTHING",
-            params![
-                document_id.to_bytes().as_slice(),
-                schema::FORMAT_VERSION,
-                kernel_id,
-                kernel_version,
-            ],
-        )
-        .map_err(|e| CadError::io("binding cache to its document", e))?;
+        if !reusable {
+            schema::create_cache(&mut conn)?;
+            conn.execute(
+                "INSERT INTO cache_meta (id, document_id, kernel_id, kernel_version) VALUES (1, ?1, ?2, ?3)",
+                params![document_id.to_bytes().as_slice(), kernel_id, kernel_version],
+            ).map_err(|e| CadError::io("binding cache to its document", e))?;
+        }
 
         Ok(Self { conn, path })
     }
@@ -100,6 +81,21 @@ impl CacheStore {
     /// same object and input key, and byte-level de-duplication must not make
     /// one masquerade as the other.
     pub fn get(
+        &self,
+        object: ObjectId,
+        key: ContentHash,
+        kind: &str,
+    ) -> Result<Option<CacheEntry>> {
+        match self.read_entry(object, key, kind) {
+            Ok(entry) => Ok(entry),
+            Err(_) => {
+                let _ = self.conn.execute("DELETE FROM blobs", []);
+                Ok(None)
+            }
+        }
+    }
+
+    fn read_entry(
         &self,
         object: ObjectId,
         key: ContentHash,
@@ -144,7 +140,7 @@ impl CacheStore {
         // The content is addressed by its own hash, so a mismatch means the
         // sidecar is damaged. Report a miss and let the caller rebuild.
         if ContentHash::of_bytes(&bytes) != hash {
-            return Ok(None);
+            return Err(CadError::input("cached content does not match its hash"));
         }
 
         Ok(Some(CacheEntry {
@@ -247,40 +243,30 @@ impl CacheStore {
 }
 
 /// Whether an existing sidecar still describes this document and kernel.
-fn matches(
-    path: &Path,
-    document_id: DocumentId,
-    kernel_id: &str,
-    kernel_version: &str,
-) -> Result<bool> {
-    let conn = match Connection::open(path) {
-        Ok(conn) => conn,
-        // An unreadable sidecar is simply not a match; it will be replaced.
-        Err(_) => return Ok(false),
+fn matches(path: &Path, document_id: DocumentId, kernel_id: &str, kernel_version: &str) -> bool {
+    let check = || -> Result<bool> {
+        let conn = Connection::open(path).map_err(|e| CadError::io("reading cache", e))?;
+        schema::check_application_id(&conn, CACHE_APPLICATION_ID, "cache")?;
+        let integrity: String = conn
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .map_err(|e| CadError::io("checking cache", e))?;
+        if integrity != "ok" {
+            return Ok(false);
+        }
+        conn.prepare("SELECT b.hash, b.byte_len, b.created_at, r.object_id, r.cache_key, r.kind, c.seq, c.data FROM blobs b JOIN blob_refs r ON b.hash=r.hash JOIN blob_chunks c ON b.hash=c.hash")
+            .map_err(|e| CadError::io("reading cache tables", e))?;
+        let (stored_id, stored_kernel, stored_version): (Vec<u8>, String, String) = conn
+            .query_row(
+                "SELECT document_id, kernel_id, kernel_version FROM cache_meta WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|e| CadError::io("reading cache key", e))?;
+        Ok(stored_id == document_id.to_bytes()
+            && stored_kernel == kernel_id
+            && stored_version == kernel_version)
     };
-
-    if schema::check_application_id(&conn, CACHE_APPLICATION_ID, "cache").is_err() {
-        return Ok(false);
-    }
-
-    let row: Option<(Vec<u8>, u32, String, String)> = conn
-        .query_row(
-            "SELECT document_id, format_version, kernel_id, kernel_version
-             FROM cache_meta WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()
-        .unwrap_or(None);
-
-    let Some((stored_id, format_version, stored_kernel, stored_version)) = row else {
-        return Ok(false);
-    };
-
-    Ok(stored_id == document_id.to_bytes()
-        && format_version == schema::FORMAT_VERSION
-        && stored_kernel == kernel_id
-        && stored_version == kernel_version)
+    check().unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -290,6 +276,59 @@ mod tests {
     fn store(dir: &tempfile::TempDir, document: DocumentId) -> CacheStore {
         CacheStore::open(dir.path().join("m.fcad-cache"), document, "occt", "8.0.0")
             .expect("sidecar opens")
+    }
+
+    #[test]
+    fn damaged_chunks_are_rebuilt_instead_of_reused() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut cache = store(&directory, DocumentId::new());
+        let object = ObjectId::new();
+        let key = ContentHash::of_bytes(b"input");
+        cache.put(object, key, "brep", b"solid").expect("stores");
+        cache
+            .conn
+            .execute("UPDATE blob_chunks SET data = X'FF'", [])
+            .expect("damage chunk");
+        assert!(cache.get(object, key, "brep").expect("miss").is_none());
+        cache.put(object, key, "brep", b"solid").expect("rebuild");
+        assert_eq!(
+            cache
+                .get(object, key, "brep")
+                .expect("reads")
+                .expect("rebuilt")
+                .bytes,
+            b"solid"
+        );
+    }
+
+    #[test]
+    fn unreadable_and_incomplete_sidecars_are_recreated() {
+        let dir = tempfile::tempdir().expect("directory");
+        let path = dir.path().join("m.fcad-cache");
+        let document = DocumentId::new();
+        std::fs::write(&path, b"damaged SQLite").expect("damaged cache");
+        let mut cache = store(&dir, document);
+        let object = ObjectId::new();
+        let key = ContentHash::of_bytes(b"key");
+        assert!(
+            cache
+                .get(object, key, "brep")
+                .expect("cache miss")
+                .is_none()
+        );
+        cache.put(object, key, "brep", b"solid").expect("stores");
+        cache
+            .conn
+            .execute_batch("DROP TABLE blob_chunks")
+            .expect("damage schema");
+        drop(cache);
+        let cache = store(&dir, document);
+        assert!(
+            cache
+                .get(object, key, "brep")
+                .expect("fresh cache")
+                .is_none()
+        );
     }
 
     #[test]

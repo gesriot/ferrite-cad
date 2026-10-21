@@ -603,32 +603,6 @@ fn a_symmetric_extrusion_straddles_the_sketch_plane() {
 }
 
 #[test]
-fn an_object_this_build_cannot_interpret_stops_the_rebuild() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let mut document = Document::create(dir.path().join("part.fcad")).expect("creates");
-
-    let future = ferritecad_document::Envelope::new("feature.loft", 1, Vec::new(), vec![0xf6])
-        .to_bytes()
-        .expect("serialises");
-    let payload = ObjectPayload::from_storage_bytes(&future).expect("header is readable");
-
-    document
-        .write(|w| {
-            w.put_object(ObjectId::new(), None, 0, Some("Loft1"), &payload)?;
-            Ok(())
-        })
-        .expect("preserved verbatim");
-
-    let mut kernel = MockKernel::new();
-    let err = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect_err("an unknown feature cannot be rebuilt");
-
-    // Preserving it on disk and rebuilding it are different questions, and the
-    // answer to the second is a plain refusal.
-    assert_eq!(err.kind(), ErrorKind::Unsupported);
-}
-
-#[test]
 fn an_empty_document_rebuilds_to_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
     let document = Document::create(dir.path().join("part.fcad")).expect("creates");

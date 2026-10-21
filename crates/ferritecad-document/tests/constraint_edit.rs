@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
 use ferritecad_document::*;
-use ferritecad_types::{ContentHash, ErrorKind, ObjectId, StableEntityId, Transform};
-use rusqlite::{Connection, params, types::Value};
+use ferritecad_types::{ErrorKind, ObjectId, StableEntityId, Transform};
+use rusqlite::{Connection, types::Value};
 use std::{collections::BTreeMap, path::Path};
 
 fn fixture() -> (tempfile::TempDir, Document, ObjectId) {
@@ -121,127 +121,6 @@ fn cells(path: &Path) -> BTreeMap<String, Vec<Vec<Value>>> {
             (name, rows)
         })
         .collect()
-}
-#[test]
-fn constraint_write_preserves_claims_rows_metadata_and_remaining_ids() {
-    for (optional, kind) in [false, true].into_iter().flat_map(|optional| {
-        [
-            LineConstraintKind::Horizontal,
-            LineConstraintKind::Distance(LineLengthMm::new(60.).expect("length")),
-        ]
-        .map(|kind| (optional, kind))
-    }) {
-        let (root, d, id) = fixture();
-        let path = root.path().join("source.fcad");
-        d.close().expect("close");
-        let c = Connection::open(&path).expect("SQL");
-        let bytes = b"complete attached source\0\xff";
-        c.execute("INSERT INTO imported_sources VALUES(?1,'future.sketch-source',?2,?3,?4,'keep-created')",params![StableEntityId::new().to_bytes().as_slice(),bytes.as_slice(),ContentHash::of_bytes(bytes).as_bytes().as_slice(),bytes.len()]).expect("source");
-        c.execute(
-            "INSERT INTO imported_source_refs SELECT ?1,id FROM imported_sources",
-            params![id.to_bytes().as_slice()],
-        )
-        .expect("claim");
-        c.execute_batch("UPDATE capabilities SET rowid=101; INSERT INTO capabilities(rowid,name,required) VALUES(999,'optional.future',0); CREATE TABLE extra(k TEXT,v BLOB); INSERT INTO extra(rowid,k,v) VALUES(73,'keep',x'0022ff');").expect("sentinels");
-        if optional {
-            c.execute(
-                "INSERT INTO capabilities(rowid,name,required) VALUES(501,?1,0)",
-                [SKETCH_CONSTRAINTS_CAPABILITY],
-            )
-            .expect("optional constraint capability");
-        }
-        drop(c);
-        let baseline = cells(&path);
-        let mut d = Document::open(&path).expect("open");
-        let original = stored(&d, id);
-        let meta = d.meta().clone();
-        let plan =
-            prepare_sketch_constraints(&d, id, &add(original.curves[0].id, kind)).expect("plan");
-        assert_eq!(plan.added.len(), 5);
-        d.write_sketch_constraints(&plan).expect("write");
-        assert_eq!(d.meta(), &meta);
-        let valid = d.validate().expect("validate").is_ok();
-        d.close().expect("close");
-        let after = cells(&path);
-        for (table, rows) in &baseline {
-            if !["objects", "capabilities"].contains(&table.as_str()) {
-                assert_eq!(&after[table], rows, "{table}");
-            }
-        }
-        assert!(valid, "constraint payload and source claims validate");
-        for row in &baseline["objects"] {
-            let actual = after["objects"]
-                .iter()
-                .find(|r| r[1] == row[1])
-                .expect("same ID");
-            if row[1] != Value::Blob(id.to_bytes().to_vec()) {
-                assert_eq!(actual, row);
-            } else {
-                for col in [0, 1, 2, 4, 5, 6] {
-                    assert_eq!(actual[col], row[col]);
-                }
-            }
-        }
-        for row in &baseline["capabilities"] {
-            let actual = after["capabilities"]
-                .iter()
-                .find(|r| r[1] == row[1])
-                .expect("capability");
-            if row[1] != Value::Text(SKETCH_CONSTRAINTS_CAPABILITY.into()) {
-                assert_eq!(actual, row);
-            } else {
-                assert_eq!(actual[0], row[0]);
-                assert_eq!(actual[2], Value::Integer(1));
-            }
-        }
-        let mut d = Document::open(&path).expect("reopen");
-        let now = stored(&d, id);
-        assert_eq!(original.curves, now.curves);
-        assert_eq!(now.constraints, plan.added);
-        let raw: Vec<u8> = Connection::open(&path)
-            .expect("SQL")
-            .query_row(
-                "SELECT payload FROM objects WHERE id=?1",
-                [id.to_bytes().as_slice()],
-                |r| r.get(0),
-            )
-            .expect("payload");
-        let envelope = Envelope::from_bytes(&raw).expect("envelope");
-        assert_eq!(envelope.schema_version, 2);
-        assert!(
-            envelope
-                .required_capabilities
-                .contains(&SKETCH_CONSTRAINTS_CAPABILITY.to_owned())
-        );
-        let h = now.constraints.last().expect("H").id;
-        let removed = prepare_sketch_constraints(
-            &d,
-            id,
-            &SketchConstraintEdits {
-                remove: vec![h],
-                add: vec![],
-            },
-        )
-        .expect("remove exact");
-        d.write_sketch_constraints(&removed).expect("remove");
-        let closed = stored(&d, id);
-        assert_eq!(closed.constraints, now.constraints[..4]);
-        assert_eq!(closed.schema_version(), 2);
-        assert!(
-            ExtrudeEditSource::read(&d).expect("catalog").sketches[0]
-                .refusal
-                .is_some()
-        );
-        let v = prepare_sketch_constraints(
-            &d,
-            id,
-            &add(original.curves[1].id, LineConstraintKind::Vertical),
-        )
-        .expect("add V");
-        assert_eq!(v.added.len(), 1);
-        d.write_sketch_constraints(&v).expect("write V");
-        assert_eq!(&stored(&d, id).constraints[..4], &now.constraints[..4]);
-    }
 }
 #[test]
 fn ordered_requests_refuse_duplicates_foreign_ids_and_closure_removal_atomically() {
@@ -927,7 +806,7 @@ fn equal_length_pairs_are_checked_stored_and_removed_without_touching_other_ids(
             for row in rows {
                 let actual = now[table].iter().find(|r| r[1] == row[1]).expect("same ID");
                 for col in 0..row.len() {
-                    if row[1] == Value::Blob(id.to_bytes().to_vec()) && [3, 7, 8].contains(&col) {
+                    if row[1] == Value::Blob(id.to_bytes().to_vec()) && [6, 7].contains(&col) {
                         continue;
                     }
                     assert_eq!(actual[col], row[col], "{table} cell {col}");
@@ -1231,7 +1110,7 @@ fn line_relations_are_checked_stored_and_removed_without_touching_other_ids() {
             for row in rows {
                 let actual = now[table].iter().find(|r| r[1] == row[1]).expect("same ID");
                 for col in 0..row.len() {
-                    if row[1] == Value::Blob(id.to_bytes().to_vec()) && [3, 7, 8].contains(&col) {
+                    if row[1] == Value::Blob(id.to_bytes().to_vec()) && [6, 7].contains(&col) {
                         continue;
                     }
                     assert_eq!(actual[col], row[col], "{table} cell {col}");

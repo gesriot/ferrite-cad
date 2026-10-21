@@ -1510,8 +1510,8 @@ fn native_unknown_tables_survive_and_a_stored_trigger_stops_the_edit() {
         c.execute_batch(
             "CREATE TABLE extra_data (id INTEGER PRIMARY KEY, payload BLOB);
              INSERT INTO extra_data VALUES (1, X'001122FF');
-             INSERT INTO capabilities(rowid,name,required) VALUES (17,'example.cut.optional',0);
-             UPDATE capabilities SET rowid=rowid+100;",
+
+             ",
         )
         .expect("an extension table this build knows nothing about");
     }

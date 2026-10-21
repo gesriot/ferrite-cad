@@ -707,33 +707,13 @@ fn tables(path: &Path) -> BTreeMap<String, (Vec<String>, Rows)> {
         })
         .collect()
 }
-fn capability_names(path: &Path) -> Vec<String> {
-    let c = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .expect("SQL");
-    c.prepare("SELECT name FROM capabilities ORDER BY rowid")
-        .expect("names")
-        .query_map([], |r| r.get(0))
-        .expect("names")
-        .collect::<rusqlite::Result<_>>()
-        .expect("names")
-}
 
 /// Every SQL cell of the source survives into the copy, and the new cells are
 /// exactly the ones a Fillet is allowed to add: one object, the Body's tip,
 /// the predecessor and tip edges, seven names, capabilities, and the copy's
 /// own timestamp.
 fn only_the_fillet_was_added(source: &Path, copy: &Path, body: ferritecad_types::ObjectId) {
-    only_a_fillet_was_added(
-        source,
-        copy,
-        body,
-        7,
-        &[
-            "feature.fillet.v1",
-            "topology.origin-face.v1",
-            "feature.predecessor.v1",
-        ],
-    );
+    only_a_fillet_was_added(source, copy, body, 7);
 }
 
 /// [`only_the_fillet_was_added`] with the number of new names and the
@@ -744,7 +724,6 @@ fn only_a_fillet_was_added(
     copy: &Path,
     body: ferritecad_types::ObjectId,
     names: usize,
-    new_capabilities: &[&str],
 ) {
     let before = tables(source);
     let after = tables(copy);
@@ -775,7 +754,7 @@ fn only_a_fillet_was_added(
                 }
                 assert_eq!(mine.len(), rows.len() + 1, "one new object");
             }
-            "deps" | "topology_refs" | "capabilities" => {
+            "deps" | "topology_refs" => {
                 for row in rows {
                     let kept = mine.iter().any(|m| m[1..] == row[1..]);
                     let is_old_tip = table == "deps" && row.contains(&selected);
@@ -801,15 +780,6 @@ fn only_a_fillet_was_added(
             }
             _ => assert_eq!(rows, mine, "{table} changed"),
         }
-    }
-    let old = capability_names(source);
-    let new = capability_names(copy);
-    assert!(new.contains(&"feature.fillet.v1".to_owned()));
-    for name in &new {
-        assert!(
-            old.contains(name) || new_capabilities.contains(&name.as_str()),
-            "capability {name} was added"
-        );
     }
 }
 
@@ -4140,20 +4110,7 @@ mod constraints {
         for (table, (columns, rows)) in &before {
             let (theirs, mine) = &after[table];
             assert_eq!(columns, theirs, "{table} columns");
-            if table == "capabilities" {
-                let text = |r: &Vec<rusqlite::types::Value>| format!("{r:?}");
-                let kept: Vec<_> = rows.iter().map(text).collect();
-                let new: Vec<_> = mine.iter().map(text).collect();
-                assert!(kept.iter().all(|r| new.contains(r)), "a capability changed");
-                assert!(
-                    new.iter()
-                        .filter(|r| !kept.contains(r))
-                        .all(|r| r.contains("sketch.constraints.v1")),
-                    "{new:?}"
-                );
-                assert!(mine.len() <= rows.len() + 1);
-                continue;
-            }
+
             assert_eq!(rows.len(), mine.len(), "{table} rows");
             for (a, b) in rows.iter().zip(mine) {
                 for (i, column) in columns.iter().enumerate() {
@@ -4172,11 +4129,7 @@ mod constraints {
                 }
             }
         }
-        assert!(
-            capability_names(copy).contains(&"sketch.constraints.v1".to_owned()),
-            "{:?}",
-            capability_names(copy)
-        );
+
         moved
     }
 
@@ -5659,8 +5612,6 @@ mod sequential {
     use super::*;
     use ferritecad_types::ObjectId;
 
-    const SEQUENTIAL: &str = "feature.fillet.sequential.v1";
-
     /// What one reference resolves to on the rebuilt part.
     #[derive(Debug, Clone, PartialEq)]
     struct Named {
@@ -6005,7 +5956,7 @@ mod sequential {
         assert_eq!(stored.previous, first_id, "it rounds Fillet 1's result");
         assert_eq!(stored.edge.feature, base, "the producer is not substituted");
         assert_eq!(stored.radius_mm, r2);
-        assert_eq!(stored.schema_version(), 2);
+
         let ObjectPayload::Fillet(kept) = &objects
             .iter()
             .find(|o| o.id == first_id)
@@ -6014,7 +5965,7 @@ mod sequential {
         else {
             panic!("a Fillet");
         };
-        assert_eq!(kept.schema_version(), 1, "Fillet 1 stays a §28A Fillet");
+
         assert!(objects.iter().any(|o| matches!(
             o.payload,
             ObjectPayload::Body(ferritecad_document::Body { tip_feature: Some(t) }) if t == second_id
@@ -6046,24 +5997,8 @@ mod sequential {
                 other => panic!("unexpected new role {other:?}"),
             }
         }
-        only_a_fillet_was_added(&g.source, &copy, body, 8, &[SEQUENTIAL]);
-        assert!(!capability_names(&g.source).contains(&SEQUENTIAL.to_owned()));
-        assert!(capability_names(&copy).contains(&SEQUENTIAL.to_owned()));
-        let schema = |path: &Path, object: ObjectId| -> i64 {
-            let c = rusqlite::Connection::open_with_flags(
-                path,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .expect("SQL");
-            c.query_row(
-                "SELECT schema_version FROM objects WHERE id=?1",
-                [object.to_bytes().to_vec()],
-                |r| r.get(0),
-            )
-            .expect("row")
-        };
-        assert_eq!(schema(&copy, second_id), 2, "payload v2 on disk");
-        assert_eq!(schema(&copy, first_id), 1);
+        only_a_fillet_was_added(&g.source, &copy, body, 8);
+
         if part.constrained {
             let sketch = g.plate_sketch_id();
             assert_eq!(sketch_row(&copy, sketch), sketch_row(&g.source, sketch));

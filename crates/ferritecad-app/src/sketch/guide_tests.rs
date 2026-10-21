@@ -1193,7 +1193,7 @@ fn native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
             }
         }
     }
-    // objects: rowid, id, kind, schema_version, parent_id, ordinal, name, payload,
+    // objects: rowid, id, kind, parent_id, ordinal, name, payload,
     // payload_hash. The kind cell is at column 2 of the same row.
     let kind = Value::Text("sketch".into());
     assert_eq!(changed.len(), 2, "{changed:?}");
@@ -1202,7 +1202,7 @@ fn native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
             .iter()
             .all(|c| c.0 == "objects" && c.1 == changed[0].1 && c.3 == kind)
     );
-    assert_eq!(changed.iter().map(|c| c.2).collect::<Vec<_>>(), [7, 8]);
+    assert_eq!(changed.iter().map(|c| c.2).collect::<Vec<_>>(), [6, 7]);
 
     verify_published(
         &source,

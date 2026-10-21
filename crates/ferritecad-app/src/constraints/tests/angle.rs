@@ -623,7 +623,7 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     );
     assert_eq!(ui_sketch.curves, source_sketch.curves, "the guess was kept");
     assert_eq!(cli_sketch.curves, source_sketch.curves);
-    assert_eq!(ui_sketch.schema_version(), 4);
+
     let rules = |s: &Sketch| s.constraints.iter().map(|c| c.rule).collect::<Vec<_>>();
     assert_eq!(rules(&ui_sketch), rules(&cli_sketch), "the same five rules");
     assert_eq!(ui_sketch.constraints.len(), 5);
@@ -682,24 +682,7 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     for (table, (_, rows)) in &s {
         match table.as_str() {
             "meta" => {}
-            "capabilities" => {
-                for row in rows {
-                    assert!(
-                        a[table].1.iter().any(|m| m[1..] == row[1..]),
-                        "capability row {row:?} lost"
-                    );
-                }
-                let angle = a[table]
-                    .1
-                    .iter()
-                    .filter(|m| {
-                        m.contains(&rusqlite::types::Value::Text(
-                            "sketch.constraints.angle.v1".into(),
-                        ))
-                    })
-                    .count();
-                assert_eq!(angle, 1, "the angle capability is declared once");
-            }
+
             "objects" => {
                 let rest = |rows: &Rows| {
                     rows.iter()
@@ -927,11 +910,7 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     peer(&ui2, &from_ui2.version, &remove.edits, &cli3);
     for path in [&ui3, &cli3] {
         assert_eq!(ids_of(path), new_ui[..4].to_vec(), "only the joints remain");
-        assert_eq!(
-            sketch_of(path).0.schema_version(),
-            2,
-            "the layout every older build writes"
-        );
+
         assert_eq!(corner(path).1, 8);
     }
     assert_eq!(

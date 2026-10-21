@@ -110,8 +110,8 @@ path are targets of this migration, not claims about the current implementation.
 
 Change the format whenever a task needs it, without migrations, compatibility
 code, version checks or messages for older documents. Regenerate affected
-fixtures. Byte-for-byte preservation of unknown objects remains for now; task 05
-will decide whether that mechanism is still needed.
+fixtures. Unknown object types and unreadable payloads are structural errors of
+the entire opening operation, reported with the object identity and type.
 
 ### D7. Verification is proportionate to the change
 

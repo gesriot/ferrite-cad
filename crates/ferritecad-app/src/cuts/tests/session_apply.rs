@@ -54,8 +54,8 @@ pub(crate) fn fixture(count: usize) -> (tempfile::TempDir, PathBuf, ExtrudeEditS
     let db = rusqlite::Connection::open(&path).expect("fixture SQL");
     db.execute_batch(
         "UPDATE objects SET rowid=-rowid, ordinal=100-ordinal, name='same';
-        UPDATE capabilities SET rowid=rowid+100;
-        INSERT INTO capabilities(rowid,name,required) VALUES(900,'optional.extension',0);
+
+
         CREATE TABLE extra_data(id INTEGER PRIMARY KEY,bytes BLOB);
         INSERT INTO extra_data VALUES(91,x'010203');",
     )

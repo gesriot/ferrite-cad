@@ -5,7 +5,7 @@
 //! they prove today's writer agrees with today's reader and nothing more. This
 //! crate holds a document that was written once and committed: a real `.fcad`
 //! file, checked in, with no cache sidecar and no B-Rep anywhere in it. What a
-//! rebuild makes of it is the compatibility gate.
+//! rebuild makes of it checks geometry and naming.
 //!
 //! # The manifest names nothing that changes
 //!
@@ -26,8 +26,7 @@
 //!
 //! # Nothing opens the committed file in place
 //!
-//! [`Document::open`][ferritecad_document::Document::open] migrates and sets
-//! pragmas, which would rewrite the fixture. Every entry point here copies it
+//! Every entry point copies the fixture
 //! into a directory the caller owns, so a test run leaves the checkout as it
 //! found it.
 

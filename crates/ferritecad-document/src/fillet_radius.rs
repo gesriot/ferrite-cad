@@ -1993,24 +1993,14 @@ mod tests {
         let selected = rusqlite::types::Value::Blob(sketch.to_bytes().to_vec());
         for (table, (columns, rows)) in &before {
             let (_, mine) = &after[table];
-            if table == "capabilities" {
-                assert!(
-                    rows.iter().all(|r| mine.contains(r)),
-                    "a capability changed"
-                );
-                let new: Vec<_> = mine.iter().filter(|r| !rows.contains(r)).collect();
-                assert_eq!(new.len(), 1, "{new:?}");
-                assert!(format!("{new:?}").contains("sketch.constraints.v1"));
-                continue;
-            }
+
             assert_eq!(rows.len(), mine.len(), "{table}");
             for (a, b) in rows.iter().zip(mine) {
                 for (i, column) in columns.iter().enumerate() {
                     if a[i] != b[i] {
                         assert!(
                             table == "objects"
-                                && ["schema_version", "payload", "payload_hash"]
-                                    .contains(&column.as_str())
+                                && ["payload", "payload_hash"].contains(&column.as_str())
                                 && a.contains(&selected),
                             "{table}.{column} changed"
                         );
@@ -2479,28 +2469,18 @@ mod tests {
         before: &std::collections::BTreeMap<String, (Vec<String>, Rows)>,
         after: &std::collections::BTreeMap<String, (Vec<String>, Rows)>,
         sketch: ObjectId,
-        new_capabilities: usize,
     ) {
         let selected = rusqlite::types::Value::Blob(sketch.to_bytes().to_vec());
         for (table, (columns, rows)) in before {
             let (_, mine) = &after[table];
-            if table == "capabilities" {
-                assert!(
-                    rows.iter().all(|r| mine.contains(r)),
-                    "a capability changed"
-                );
-                let new: Vec<_> = mine.iter().filter(|r| !rows.contains(r)).collect();
-                assert_eq!(new.len(), new_capabilities, "{new:?}");
-                continue;
-            }
+
             assert_eq!(rows.len(), mine.len(), "{table}");
             for (a, b) in rows.iter().zip(mine) {
                 for (i, column) in columns.iter().enumerate() {
                     if a[i] != b[i] {
                         assert!(
                             (table == "objects"
-                                && ["schema_version", "payload", "payload_hash"]
-                                    .contains(&column.as_str())
+                                && ["payload", "payload_hash"].contains(&column.as_str())
                                 && a.contains(&selected))
                                 || (table == "meta" && column == "modified_at"),
                             "{table}.{column} changed"
@@ -2546,7 +2526,7 @@ mod tests {
             let before = cells(&d);
             constrained(&mut d);
             let after = cells(&d);
-            only_the_constraints_moved(&before, &after, sketch, 1);
+            only_the_constraints_moved(&before, &after, sketch);
             assert_eq!(
                 rows(&d),
                 (f1.clone(), f2.clone(), extrude.clone()),
@@ -2614,7 +2594,7 @@ mod tests {
             assert_eq!(p.fillets().get(1).map(|f| f.feature), Some(second));
             let before = cells(&d);
             d.write_sketch_constraints(&p).expect("replaced");
-            only_the_constraints_moved(&before, &cells(&d), sketch, 0);
+            only_the_constraints_moved(&before, &cells(&d), sketch);
             let now = stored_constraints(&d, sketch);
             assert!(
                 closures.iter().all(|c| now.contains(c)),
@@ -2639,7 +2619,7 @@ mod tests {
             let p = crate::prepare_sketch_constraints(&d, sketch, &strip).expect("strip");
             let before = cells(&d);
             d.write_sketch_constraints(&p).expect("stripped");
-            only_the_constraints_moved(&before, &cells(&d), sketch, 0);
+            only_the_constraints_moved(&before, &cells(&d), sketch);
             assert_eq!(stored_constraints(&d, sketch), closures);
             assert_eq!(rows(&d), (f1, f2, extrude), "unchanged rows");
             let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");

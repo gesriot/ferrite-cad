@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use ferritecad_document::{Document, ImporterIdentity, StepImportRequest};
-use ferritecad_exchange::{Diagnostic, Import, PersistedScene, StoredScene};
+use ferritecad_exchange::{Diagnostic, Import, PersistedScene};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_types::{CadError, ContentHash, DocumentId, ImportedSourceId, ObjectId, Result};
 
@@ -138,11 +138,7 @@ pub fn import_step_document<K: GeometryKernel>(
         importer: owned.kernel.identity(),
     })?;
     boundary(context, 0.8)?;
-    let StoredScene::V3(scene) = stored.scene else {
-        return Err(CadError::unsupported(
-            "STEP import storage did not return occurrence identities",
-        ));
-    };
+    let scene = stored.scene;
     let published = Box::new(PublishedStepImport {
         destination: request.destination.to_owned(),
         document_id: document.meta().document_id,

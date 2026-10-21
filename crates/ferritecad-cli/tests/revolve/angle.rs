@@ -8,8 +8,7 @@
 //! their planes under the exact saved UUIDs; its STL is read independently;
 //! and every SQL cell outside the allowlist is compared with the source.
 use super::partial::{
-    angle, axis_line, check_partial_mesh, doc_sketch, expected_capabilities, measure_partial,
-    pappus, payload_version, request_v2,
+    angle, axis_line, check_partial_mesh, doc_sketch, measure_partial, pappus, request_v2,
 };
 use super::*;
 use ferritecad_document::{CapSide, RevolveAngle};
@@ -236,8 +235,6 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
             assert_eq!(std::fs::read(&previous).expect("source"), kept);
             check_angle_cells(&previous, &out, &feature, true);
             assert_eq!(refs(&out), saved_refs, "every saved name, unchanged");
-            assert_eq!(payload_version(&out), if solid { 4 } else { 3 });
-            assert_eq!(capability_rows(&out), expected_capabilities(solid));
 
             let c = inspect(&out);
             let r = &c["revolves"][0];

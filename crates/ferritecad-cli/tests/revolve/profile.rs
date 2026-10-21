@@ -12,10 +12,7 @@ use super::angle::{
     revolve_payload, stub_sector, target, write_angle,
 };
 use super::edit::{cells, check_cells, edit, edit_reply, saved, write_edit};
-use super::partial::{
-    angle, axis_line, check_partial_mesh, expected_capabilities, measure_partial, pappus,
-    payload_version, request_v2,
-};
+use super::partial::{angle, axis_line, check_partial_mesh, measure_partial, pappus, request_v2};
 use super::*;
 use ferritecad_document::SketchVertex;
 use ferritecad_kernel::{CancelToken, ProgressSink};
@@ -114,7 +111,6 @@ fn native_partial_profile_edits_measure_caps_names_cache_sql_and_exports() {
     let d = tempfile::tempdir().expect("dir");
     let mut artifact = 0;
     for (name, a, b) in profiles() {
-        let solid = axis_line(&a).is_some();
         assert_eq!(axis_line(&b), axis_line(&a), "the edit keeps the axis Line");
         let (full_a, full_b) = (pappus(&a), pappus(&b));
         for degrees in [137.5, 220.] {
@@ -144,8 +140,7 @@ fn native_partial_profile_edits_measure_caps_names_cache_sql_and_exports() {
                 "the angle is not touched"
             );
             assert_eq!(refs(&edited), saved_refs, "every name, both caps");
-            assert_eq!(payload_version(&edited), if solid { 4 } else { 3 });
-            assert_eq!(capability_rows(&edited), expected_capabilities(solid));
+
             let c = inspect(&edited);
             let row = &c["sketches"][0];
             assert_eq!(row["editable"], true);

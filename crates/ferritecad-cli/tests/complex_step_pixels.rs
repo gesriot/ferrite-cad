@@ -14,7 +14,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use ferritecad_document::{Document, ObjectPayload};
-use ferritecad_exchange::{Stage, StoredScene};
+use ferritecad_exchange::Stage;
 use ferritecad_kernel::{
     GeometryKernel, OperationContext, TessellationParams, TessellationRefusal,
 };
@@ -462,9 +462,7 @@ fn the_complex_partial_import_reaches_repeatable_identified_pixels() {
                 _ => None,
             })
             .expect("the FCAD contains its imported STEP object");
-        let StoredScene::V3(scene) = &stored.scene else {
-            panic!("the import did not persist durable definition keys and placement identities");
-        };
+        let scene = &stored.scene;
 
         let validation: BTreeSet<&str> = stored
             .diagnostics_at_import

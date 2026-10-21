@@ -827,15 +827,6 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
             "meta" => {}
             // The foreign capability rows stay; a constraint adds
             // the circle vocabulary beside them.
-            "capabilities" => {
-                for row in rows {
-                    assert!(
-                        a[table].1.iter().any(|m| m[1..] == row[1..]),
-                        "capability row {row:?} lost"
-                    );
-                }
-                assert!(a[table].1.len() > rows.len());
-            }
             "objects" => {
                 let rest = |rows: &Rows| {
                     rows.iter()

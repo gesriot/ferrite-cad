@@ -10,11 +10,9 @@
 #![allow(clippy::panic)]
 
 use ferritecad_document::{
-    Access, Body, CORE_CAPABILITY, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole,
-    Document, EXTRUDE_CAP_EDGE_CAPABILITY, EXTRUDE_CAP_VERTEX_CAPABILITY,
-    EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind, Envelope, Expression, Extrude,
-    ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry,
-    SolidOperation, TopologyRef,
+    Access, Body, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole, Document,
+    EndCondition, EntityKind, Envelope, Expression, Extrude, ObjectPayload, Point2, SelectionRule,
+    SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
 };
 use ferritecad_types::{
     CadError, ContentHash, ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId, Transform,
@@ -250,215 +248,6 @@ fn a_read_only_open_refuses_wal_without_changing_the_directory() {
 }
 
 #[test]
-fn a_read_only_open_refuses_an_old_schema_instead_of_migrating_it() {
-    let (_dir, path) = workspace();
-    Document::create(&path)
-        .expect("creates")
-        .close()
-        .expect("closes");
-
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    conn.pragma_update(None, "user_version", 1i64)
-        .expect("marks the schema old");
-    drop(conn);
-    let before = std::fs::read(&path).expect("reads before");
-
-    let error = Document::open_read_only(&path).expect_err("migration would be a write");
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert!(error.to_string().contains("needs migration"), "{error}");
-    assert_eq!(std::fs::read(&path).expect("reads after"), before);
-}
-
-#[test]
-fn an_object_of_an_unknown_type_survives_a_full_cycle_byte_for_byte() {
-    let (_dir, path) = workspace();
-    let id = ObjectId::new();
-
-    // Something a future build writes and this one has never heard of.
-    let original = Envelope::new(
-        "feature.loft",
-        3,
-        vec!["core.part.v1".to_owned()],
-        vec![0x83, 0x01, 0x02, 0x03],
-    )
-    .to_bytes()
-    .expect("serialises");
-    let payload = ObjectPayload::from_storage_bytes(&original).expect("header is readable");
-    assert!(matches!(payload, ObjectPayload::Unknown(_)));
-
-    let mut document = Document::create(&path).expect("creates");
-    document
-        .write(|w| {
-            w.put_object(id, None, 0, Some("Loft1"), &payload)?;
-            Ok(())
-        })
-        .expect("writes");
-    document.close().expect("closes");
-
-    let mut reopened = Document::open(&path).expect("reopens");
-    let read = reopened.object(id).expect("reads").expect("present");
-    assert_eq!(
-        read.payload.to_storage_bytes().expect("re-encodes"),
-        original,
-        "an unknown payload must be returned exactly as it was stored"
-    );
-
-    // And a save that touches it must still not alter it.
-    reopened
-        .write(|w| {
-            w.put_object(id, None, 0, Some("Loft1"), &read.payload)?;
-            Ok(())
-        })
-        .expect("rewrites");
-    reopened.close().expect("closes");
-
-    let final_read = Document::open(&path).expect("reopens");
-    assert_eq!(
-        final_read
-            .object(id)
-            .expect("reads")
-            .expect("present")
-            .payload
-            .to_storage_bytes()
-            .expect("re-encodes"),
-        original
-    );
-}
-
-#[test]
-fn a_document_needing_an_unimplemented_capability_opens_read_only() {
-    let (_dir, path) = workspace();
-
-    let future = Envelope::new(
-        "feature.sheetmetal",
-        1,
-        vec!["sheetmetal.v1".to_owned()],
-        vec![0xf6],
-    )
-    .to_bytes()
-    .expect("serialises");
-    let payload = ObjectPayload::from_storage_bytes(&future).expect("header is readable");
-
-    let mut document = Document::create(&path).expect("creates");
-    document
-        .write(|w| {
-            w.put_object(ObjectId::new(), None, 0, Some("Flange"), &payload)?;
-            Ok(())
-        })
-        .expect("writes");
-    document.close().expect("closes");
-
-    let mut reopened = Document::open(&path).expect("a read-only document still opens");
-    match reopened.access() {
-        Access::ReadOnly { reason } => assert!(reason.contains("sheetmetal.v1"), "{reason}"),
-        other => panic!("expected read-only access, got {other:?}"),
-    }
-
-    let err = reopened
-        .write(|w| {
-            w.put_object(
-                ObjectId::new(),
-                None,
-                9,
-                None,
-                &ObjectPayload::Body(Body { tip_feature: None }),
-            )?;
-            Ok(())
-        })
-        .expect_err("writing a read-only document must fail");
-    assert_eq!(err.kind(), ErrorKind::Unsupported);
-}
-
-#[test]
-fn an_envelope_capability_cannot_be_hidden_by_a_stale_index() {
-    let (_dir, path) = workspace();
-    let future = Envelope::new(
-        "feature.sheetmetal",
-        1,
-        vec!["sheetmetal.v1".to_owned()],
-        vec![0xf6],
-    )
-    .to_bytes()
-    .expect("serialises");
-    let payload = ObjectPayload::from_storage_bytes(&future).expect("header is readable");
-
-    let mut document = Document::create(&path).expect("creates");
-    document
-        .write(|w| {
-            w.put_object(ObjectId::new(), None, 0, None, &payload)?;
-            Ok(())
-        })
-        .expect("writes unknown payload");
-    document.close().expect("closes");
-
-    // A damaged/hand-edited index must not trick the reader into write access.
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    conn.execute("DELETE FROM capabilities WHERE name = 'sheetmetal.v1'", [])
-        .expect("removes only the index entry");
-    drop(conn);
-
-    let reopened = Document::open(&path).expect("opens for inspection");
-    assert!(matches!(reopened.access(), Access::ReadOnly { .. }));
-}
-
-#[test]
-fn a_stale_capability_index_does_not_keep_a_document_read_only() {
-    let (_dir, path) = workspace();
-    let id = ObjectId::new();
-
-    let mut document = Document::create(&path).expect("creates");
-    document
-        .write(|w| {
-            w.put_object(
-                id,
-                None,
-                0,
-                None,
-                &ObjectPayload::Body(Body { tip_feature: None }),
-            )?;
-            Ok(())
-        })
-        .expect("writes body");
-    document.close().expect("closes");
-
-    // Simulate an old implementation that only appended capability rows and
-    // never removed them after a future object disappeared.
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    conn.execute(
-        "INSERT INTO capabilities (name, required) VALUES ('sheetmetal.v1', 1)",
-        [],
-    )
-    .expect("leaves a stale index row");
-    drop(conn);
-
-    let mut reopened = Document::open(&path).expect("opens");
-    assert!(reopened.access().is_writable());
-    reopened
-        .write(|w| {
-            w.put_object(
-                id,
-                None,
-                0,
-                None,
-                &ObjectPayload::Body(Body { tip_feature: None }),
-            )?;
-            Ok(())
-        })
-        .expect("a successful edit refreshes the index");
-    reopened.close().expect("closes");
-
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    let stale: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM capabilities WHERE name = 'sheetmetal.v1'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("counts");
-    assert_eq!(stale, 0);
-}
-
-#[test]
 fn deleting_the_cache_sidecar_changes_nothing() {
     let (_dir, path) = workspace();
 
@@ -612,8 +401,6 @@ fn a_corrupted_payload_is_detected_rather_than_decoded() {
     // Simulate on-disk damage: change the payload without changing its hash.
     let tampered = Envelope::new(
         "body",
-        1,
-        vec![CORE_CAPABILITY.to_owned()],
         vec![
             0xa1, 0x6b, b't', b'i', b'p', b'_', b'f', b'e', b'a', b't', b'u', b'r', b'e', 0xf6,
         ],
@@ -629,15 +416,11 @@ fn a_corrupted_payload_is_detected_rather_than_decoded() {
     .expect("tampers");
     drop(conn);
 
-    let reopened = Document::open(&path).expect("reopens");
-    let report = reopened.validate().expect("validates");
-    assert!(!report.is_ok());
+    let error = Document::open(&path).expect_err("corrupt payload refuses opening");
+    assert_eq!(error.kind(), ErrorKind::Input);
     assert!(
-        report
-            .errors()
-            .any(|d| d.code == "object.payload-hash-mismatch"),
-        "{:?}",
-        report.diagnostics
+        error.to_string().contains(&plate.body.to_string()),
+        "{error}"
     );
 }
 
@@ -669,12 +452,9 @@ fn a_kind_column_cannot_disagree_with_its_cbor_envelope() {
     .expect("tampers");
     drop(conn);
 
-    let reopened = Document::open(&path).expect("container is readable");
-    let err = reopened
-        .object(id)
-        .expect_err("metadata mismatch is unsafe");
-    assert_eq!(err.kind(), ErrorKind::Input);
-    assert!(err.to_string().contains("disagrees"));
+    let error = Document::open(&path).expect_err("metadata mismatch refuses opening");
+    assert_eq!(error.kind(), ErrorKind::Input);
+    assert!(error.to_string().contains(&id.to_string()), "{error}");
 }
 
 #[test]
@@ -836,256 +616,6 @@ fn modification_time_advances_only_on_a_successful_edit() {
 }
 
 #[test]
-fn naming_a_cap_edge_declares_a_capability_and_nothing_else_does() {
-    let (_dir, path) = workspace();
-    let mut document = Document::create(&path).expect("creates");
-    let plate = populate(&mut document).expect("populates");
-
-    // Before: this document names faces only, so it asks a reader for exactly
-    // what it asked for before this build existed.
-    let stored = document.topology_refs().expect("reads");
-    assert!(!stored.is_empty(), "the fixture stores a reference");
-    let reopened = Document::open(&path).expect("opens");
-    assert!(
-        reopened.access().is_writable(),
-        "a document of faces must stay writable"
-    );
-    drop(reopened);
-
-    let cap_edge = StableEntityId::new();
-    document
-        .write(|w| {
-            w.put_topology_ref(&TopologyRef {
-                id: cap_edge,
-                owner: plate.extrude,
-                producer_feature: plate.extrude,
-                expected_kind: EntityKind::Edge,
-                output_role: SemanticRole::ExtrudeCapEdge {
-                    side: CapSide::Start,
-                    profile_segment: plate.first_segment,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })
-        })
-        .expect("stores the cap edge reference");
-
-    // After: it comes back exactly as written, and this build may still write.
-    let reopened = Document::open(&path).expect("opens");
-    assert!(
-        reopened.access().is_writable(),
-        "this build implements the capability it declares"
-    );
-    let refs = reopened.topology_refs().expect("reads");
-    let restored = refs
-        .iter()
-        .find(|stored| stored.id == cap_edge)
-        .expect("the cap edge reference is there");
-    assert_eq!(
-        restored.output_role,
-        SemanticRole::ExtrudeCapEdge {
-            side: CapSide::Start,
-            profile_segment: plate.first_segment,
-        }
-    );
-    assert_eq!(restored.expected_kind, EntityKind::Edge);
-}
-
-#[test]
-fn a_cap_edge_role_cannot_hide_the_capability_it_needs() {
-    let (_dir, path) = workspace();
-    let mut document = Document::create(&path).expect("creates");
-    let plate = populate(&mut document).expect("populates");
-    let cap_edge = StableEntityId::new();
-    document
-        .write(|w| {
-            w.put_topology_ref(&TopologyRef {
-                id: cap_edge,
-                owner: plate.extrude,
-                producer_feature: plate.extrude,
-                expected_kind: EntityKind::Edge,
-                output_role: SemanticRole::ExtrudeCapEdge {
-                    side: CapSide::Start,
-                    profile_segment: plate.first_segment,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })
-        })
-        .expect("stores the cap edge reference");
-    document.close().expect("closes");
-
-    // Simulate damage that is internally consistent at the byte/hash level:
-    // the role is still a cap edge, but the envelope lies by declaring only
-    // the older core capability. Looking only at the declaration would grant
-    // write access and defeat the purpose of capability negotiation.
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    let stored: Vec<u8> = conn
-        .query_row(
-            "SELECT payload FROM topology_refs WHERE id = ?1",
-            [cap_edge.to_bytes().as_slice()],
-            |row| row.get(0),
-        )
-        .expect("reads topology reference envelope");
-    let mut envelope = Envelope::from_bytes(&stored).expect("decodes envelope");
-    assert!(
-        envelope
-            .required_capabilities
-            .iter()
-            .any(|name| name == EXTRUDE_CAP_EDGE_CAPABILITY),
-        "the writer must establish the precondition"
-    );
-    envelope.required_capabilities = vec![CORE_CAPABILITY.to_owned()];
-    let damaged = envelope.to_bytes().expect("re-encodes damaged envelope");
-    let damaged_hash = ContentHash::of_bytes(&damaged);
-    conn.execute(
-        "UPDATE topology_refs SET payload = ?1, payload_hash = ?2 WHERE id = ?3",
-        rusqlite::params![
-            damaged,
-            damaged_hash.as_bytes().as_slice(),
-            cap_edge.to_bytes().as_slice()
-        ],
-    )
-    .expect("updates bytes and their integrity hash");
-    drop(conn);
-
-    let refusal = match Document::open(&path) {
-        Ok(_) => panic!("an under-declared cap-edge role gained write access"),
-        Err(error) => error,
-    };
-    assert_eq!(refusal.kind(), ErrorKind::Input);
-    assert!(
-        refusal.to_string().contains(EXTRUDE_CAP_EDGE_CAPABILITY),
-        "the refusal should name the missing contract, got: {refusal}"
-    );
-}
-
-#[test]
-fn a_sweep_edge_reference_declares_its_own_capability_and_round_trips() {
-    let (_dir, path) = workspace();
-    let mut document = Document::create(&path).expect("creates");
-    let plate = populate(&mut document).expect("populates");
-    let other_segment = StableEntityId::new();
-    let joint = ProfileJoint::new(plate.first_segment, other_segment).expect("two segments");
-    let sweep_edge = StableEntityId::new();
-
-    document
-        .write(|w| {
-            w.put_topology_ref(&TopologyRef {
-                id: sweep_edge,
-                owner: plate.extrude,
-                producer_feature: plate.extrude,
-                expected_kind: EntityKind::Edge,
-                output_role: SemanticRole::ExtrudeSweepEdge { joint },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })
-        })
-        .expect("stores the sweep edge reference");
-
-    let reopened = Document::open(&path).expect("opens");
-    assert!(
-        reopened.access().is_writable(),
-        "this build implements the capability it declares"
-    );
-    let refs = reopened.topology_refs().expect("reads");
-    let restored = refs
-        .iter()
-        .find(|stored| stored.id == sweep_edge)
-        .expect("the sweep edge reference is there");
-    assert_eq!(
-        restored.output_role,
-        SemanticRole::ExtrudeSweepEdge { joint }
-    );
-    assert_eq!(restored.expected_kind, EntityKind::Edge);
-
-    // Its own capability, not the cap-edge one: a reader that understands
-    // where a cap meets a swept face does not thereby understand a corner.
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    let stored: Vec<u8> = conn
-        .query_row(
-            "SELECT payload FROM topology_refs WHERE id = ?1",
-            [sweep_edge.to_bytes().as_slice()],
-            |row| row.get(0),
-        )
-        .expect("reads the envelope");
-    let envelope = Envelope::from_bytes(&stored).expect("decodes");
-    assert!(
-        envelope
-            .required_capabilities
-            .iter()
-            .any(|name| name == EXTRUDE_SWEEP_EDGE_CAPABILITY)
-    );
-    assert!(
-        !envelope
-            .required_capabilities
-            .iter()
-            .any(|name| name == EXTRUDE_CAP_EDGE_CAPABILITY),
-        "a sweep edge must not ask for the cap-edge contract"
-    );
-}
-
-#[test]
-fn a_sweep_edge_role_cannot_hide_the_capability_it_needs() {
-    let (_dir, path) = workspace();
-    let mut document = Document::create(&path).expect("creates");
-    let plate = populate(&mut document).expect("populates");
-    let joint =
-        ProfileJoint::new(plate.first_segment, StableEntityId::new()).expect("two segments");
-    let sweep_edge = StableEntityId::new();
-    document
-        .write(|w| {
-            w.put_topology_ref(&TopologyRef {
-                id: sweep_edge,
-                owner: plate.extrude,
-                producer_feature: plate.extrude,
-                expected_kind: EntityKind::Edge,
-                output_role: SemanticRole::ExtrudeSweepEdge { joint },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })
-        })
-        .expect("stores the sweep edge reference");
-    document.close().expect("closes");
-
-    // Byte-consistent damage: the role is still a sweep edge, but the envelope
-    // declares only the older core capability. Trusting the declaration would
-    // grant write access to a reader that cannot reproduce the reference.
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    let stored: Vec<u8> = conn
-        .query_row(
-            "SELECT payload FROM topology_refs WHERE id = ?1",
-            [sweep_edge.to_bytes().as_slice()],
-            |row| row.get(0),
-        )
-        .expect("reads the envelope");
-    let mut envelope = Envelope::from_bytes(&stored).expect("decodes");
-    envelope.required_capabilities = vec![CORE_CAPABILITY.to_owned()];
-    let damaged = envelope.to_bytes().expect("re-encodes");
-    let damaged_hash = ContentHash::of_bytes(&damaged);
-    conn.execute(
-        "UPDATE topology_refs SET payload = ?1, payload_hash = ?2 WHERE id = ?3",
-        rusqlite::params![
-            damaged,
-            damaged_hash.as_bytes().as_slice(),
-            sweep_edge.to_bytes().as_slice()
-        ],
-    )
-    .expect("updates bytes and their integrity hash");
-    drop(conn);
-
-    let refusal = match Document::open(&path) {
-        Ok(_) => panic!("an under-declared sweep-edge role gained write access"),
-        Err(error) => error,
-    };
-    assert_eq!(refusal.kind(), ErrorKind::Input);
-    assert!(
-        refusal.to_string().contains(EXTRUDE_SWEEP_EDGE_CAPABILITY),
-        "the refusal should name the missing contract, got: {refusal}"
-    );
-}
-
-#[test]
 fn one_corner_has_one_meaning_and_one_stored_spelling() {
     let feature = ObjectId::new();
     let one = StableEntityId::new();
@@ -1133,158 +663,6 @@ fn one_corner_has_one_meaning_and_one_stored_spelling() {
     let refusal = ciborium::from_reader::<ProfileJoint, _>(swapped.as_slice())
         .expect_err("a swapped stored pair is refused");
     assert!(refusal.to_string().contains("canonical order"), "{refusal}");
-}
-
-#[test]
-fn a_stored_corner_keeps_its_side_its_pair_and_its_own_capability() {
-    let (_dir, path) = workspace();
-    let mut document = Document::create(&path).expect("creates");
-    let plate = populate(&mut document).expect("populates");
-    let joint =
-        ProfileJoint::new(plate.first_segment, StableEntityId::new()).expect("two segments");
-    let cap_vertex = StableEntityId::new();
-
-    document
-        .write(|w| {
-            w.put_topology_ref(&TopologyRef {
-                id: cap_vertex,
-                owner: plate.extrude,
-                producer_feature: plate.extrude,
-                expected_kind: EntityKind::Vertex,
-                output_role: SemanticRole::ExtrudeCapVertex {
-                    side: CapSide::End,
-                    joint,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })
-        })
-        .expect("stores the cap vertex reference");
-
-    let reopened = Document::open(&path).expect("opens");
-    assert!(
-        reopened.access().is_writable(),
-        "this build implements the capability it declares"
-    );
-    let refs = reopened.topology_refs().expect("reads");
-    let restored = refs
-        .iter()
-        .find(|stored| stored.id == cap_vertex)
-        .expect("the cap vertex reference is there");
-    assert_eq!(
-        restored.output_role,
-        SemanticRole::ExtrudeCapVertex {
-            side: CapSide::End,
-            joint,
-        },
-        "the side and both segments came back"
-    );
-    assert_eq!(restored.expected_kind, EntityKind::Vertex);
-
-    // Its own capability. A reader that understands the edge running along a
-    // corner does not thereby understand the point where it reaches a cap.
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    let stored: Vec<u8> = conn
-        .query_row(
-            "SELECT payload FROM topology_refs WHERE id = ?1",
-            [cap_vertex.to_bytes().as_slice()],
-            |row| row.get(0),
-        )
-        .expect("reads the envelope");
-    let envelope = Envelope::from_bytes(&stored).expect("decodes");
-    assert!(
-        envelope
-            .required_capabilities
-            .iter()
-            .any(|name| name == EXTRUDE_CAP_VERTEX_CAPABILITY)
-    );
-    for other in [EXTRUDE_SWEEP_EDGE_CAPABILITY, EXTRUDE_CAP_EDGE_CAPABILITY] {
-        assert!(
-            !envelope.required_capabilities.iter().any(|n| n == other),
-            "a cap vertex must not ask for the {other} contract"
-        );
-    }
-
-    // And nothing session-local reached the bytes. A handle is a slot index by
-    // another name, and one written down here is what silently retargets a
-    // reference after an upstream edit.
-    let text = String::from_utf8_lossy(&stored);
-    for forbidden in ["session#", "shape#", "vertex#", "SubShapeHandle", "PickId"] {
-        assert!(
-            !text.contains(forbidden),
-            "a stored corner mentions {forbidden}"
-        );
-    }
-    let debug = format!("{:?}", restored.output_role);
-    for forbidden in ["session", "shape#", "Handle", "PickId"] {
-        assert!(
-            !debug.contains(forbidden),
-            "the portable Debug of a corner mentions {forbidden}: {debug}"
-        );
-    }
-}
-
-#[test]
-fn a_cap_vertex_role_cannot_hide_the_capability_it_needs() {
-    let (_dir, path) = workspace();
-    let mut document = Document::create(&path).expect("creates");
-    let plate = populate(&mut document).expect("populates");
-    let joint =
-        ProfileJoint::new(plate.first_segment, StableEntityId::new()).expect("two segments");
-    let cap_vertex = StableEntityId::new();
-    document
-        .write(|w| {
-            w.put_topology_ref(&TopologyRef {
-                id: cap_vertex,
-                owner: plate.extrude,
-                producer_feature: plate.extrude,
-                expected_kind: EntityKind::Vertex,
-                output_role: SemanticRole::ExtrudeCapVertex {
-                    side: CapSide::Start,
-                    joint,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })
-        })
-        .expect("stores the cap vertex reference");
-    document.close().expect("closes");
-
-    // Byte-consistent damage: the role is still a cap vertex, and the envelope
-    // declares only the older core capability. Trusting the declaration would
-    // grant write access to a reader that cannot reproduce the reference.
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    let stored: Vec<u8> = conn
-        .query_row(
-            "SELECT payload FROM topology_refs WHERE id = ?1",
-            [cap_vertex.to_bytes().as_slice()],
-            |row| row.get(0),
-        )
-        .expect("reads the envelope");
-    let mut envelope = Envelope::from_bytes(&stored).expect("decodes");
-    envelope.required_capabilities = vec![CORE_CAPABILITY.to_owned()];
-    let damaged = envelope.to_bytes().expect("re-encodes");
-    let damaged_hash = ContentHash::of_bytes(&damaged);
-    conn.execute(
-        "UPDATE topology_refs SET payload = ?1, payload_hash = ?2 WHERE id = ?3",
-        rusqlite::params![
-            damaged,
-            damaged_hash.as_bytes().as_slice(),
-            cap_vertex.to_bytes().as_slice()
-        ],
-    )
-    .expect("updates bytes and their integrity hash");
-    drop(conn);
-
-    let refusal = match Document::open(&path) {
-        Ok(_) => panic!("an under-declared cap-vertex role gained write access"),
-        Err(error) => error,
-    };
-    assert_eq!(refusal.kind(), ErrorKind::Input);
-    assert!(
-        refusal.to_string().contains(EXTRUDE_CAP_VERTEX_CAPABILITY),
-        "the refusal should name the missing contract, got: {refusal}"
-    );
 }
 
 #[test]
@@ -1384,43 +762,53 @@ fn a_corner_role_survives_being_written_down_as_itself() {
 }
 
 #[test]
-fn a_document_naming_no_corner_declares_exactly_what_it_did_before() {
-    let (_dir, path) = workspace();
-    let mut document = Document::create(&path).expect("creates");
-    let plate = populate(&mut document).expect("populates");
-    let cap = StableEntityId::new();
-    document
-        .write(|w| {
-            w.put_topology_ref(&TopologyRef {
-                id: cap,
-                owner: plate.extrude,
-                producer_feature: plate.extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap {
-                    side: CapSide::Start,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
+fn unknown_types_and_corrupt_payloads_refuse_open_without_changing_the_file() {
+    for (type_name, payload) in [("feature.unrecognised", vec![0xf6]), ("body", vec![0xff])] {
+        let (_dir, path) = workspace();
+        let mut document = Document::create(&path).expect("creates");
+        let body = ObjectId::new();
+        document
+            .write(|writer| {
+                writer.put_object(
+                    body,
+                    None,
+                    0,
+                    None,
+                    &ObjectPayload::Body(Body { tip_feature: None }),
+                )?;
+                Ok(())
             })
-        })
-        .expect("stores an ordinary cap reference");
-    document.close().expect("closes");
-
-    let conn = rusqlite::Connection::open(&path).expect("opens raw");
-    let stored: Vec<u8> = conn
-        .query_row(
-            "SELECT payload FROM topology_refs WHERE id = ?1",
-            [cap.to_bytes().as_slice()],
-            |row| row.get(0),
+            .expect("stores body");
+        document.close().expect("closes");
+        let bytes = Envelope::new(type_name, payload)
+            .to_bytes()
+            .expect("envelope");
+        let sql = rusqlite::Connection::open(&path).expect("SQL");
+        sql.execute(
+            "UPDATE objects SET kind=?1, payload=?2, payload_hash=?3 WHERE id=?4",
+            rusqlite::params![
+                type_name,
+                bytes,
+                ContentHash::of_bytes(&bytes).as_bytes().as_slice(),
+                body.to_bytes().as_slice()
+            ],
         )
-        .expect("reads the envelope");
-    let envelope = Envelope::from_bytes(&stored).expect("decodes");
-    assert_eq!(
-        envelope.required_capabilities,
-        vec![CORE_CAPABILITY.to_owned()],
-        "a document that names no corner must not start asking for the corner contract"
-    );
-    drop(conn);
-
-    assert!(Document::open(&path).expect("opens").access().is_writable());
+        .expect("damage object");
+        sql.close().expect("closes SQL");
+        let before = std::fs::read(&path).expect("original bytes");
+        for read_only in [false, true] {
+            let result = if read_only {
+                Document::open_read_only(&path)
+            } else {
+                Document::open(&path)
+            };
+            let error = result.expect_err("structural damage refuses the whole open");
+            let message = error.to_string();
+            assert!(
+                message.contains(&body.to_string()) && message.contains(type_name),
+                "{message}"
+            );
+            assert_eq!(std::fs::read(&path).expect("unchanged bytes"), before);
+        }
+    }
 }

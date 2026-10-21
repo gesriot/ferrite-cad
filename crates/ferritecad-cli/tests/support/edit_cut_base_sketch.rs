@@ -11,7 +11,6 @@ const EXPANDED: [[f64; 2]; 2] = [[-4., -3.], [86., 56.]];
 /// The two-Cut case stores the opposite winding, without changing curve identity.
 pub(super) fn measured_fixture(root: &Path, tools: &[CircularCut]) -> PathBuf {
     let path = history::fixture(root, tools);
-    let caps = tables(&path)["capabilities"].clone();
     let mut d = Document::open(&path).expect("doc");
     let (_, selected) = choice(&path);
     let context = selected.cut_history.as_ref().expect("context");
@@ -78,17 +77,6 @@ pub(super) fn measured_fixture(root: &Path, tools: &[CircularCut]) -> PathBuf {
         6
     );
     d.close().expect("close");
-    // Retain the scrambled capability rows/optional extension of this fixture.
-    let sql = rusqlite::Connection::open(&path).expect("SQL");
-    sql.execute("DELETE FROM capabilities", [])
-        .expect("fixture capabilities");
-    for row in caps.1 {
-        sql.execute(
-            "INSERT INTO capabilities(rowid,name,required) VALUES (?1,?2,?3)",
-            rusqlite::params_from_iter(row),
-        )
-        .expect("restore fixture capability row");
-    }
     path
 }
 

@@ -8,7 +8,6 @@
 #![allow(clippy::panic)]
 use ferritecad_document::*;
 use ferritecad_types::{ObjectId, StableEntityId, Transform};
-use rusqlite::Connection;
 
 /// A slanted four-Line frame, as the shipped editor reads one.
 fn fixture() -> (tempfile::TempDir, Document, ObjectId, Vec<StableEntityId>) {
@@ -122,79 +121,6 @@ fn refusal(d: &Document, id: ObjectId, e: &SketchConstraintEdits) -> String {
     assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input, "{error}");
     error.to_string()
 }
-fn segment(
-    curve: StableEntityId,
-    from: SketchPointSelector,
-    to: SketchPointSelector,
-) -> SketchSegmentRef {
-    SketchSegmentRef::new(
-        SketchPointRef::new(curve, from),
-        SketchPointRef::new(curve, to),
-    )
-}
-
-#[test]
-fn a_collinear_is_stored_in_layout_v5_as_its_own_kind_and_declares_its_own_capability() {
-    use SketchPointSelector::{End, Start};
-    let (root, mut d, id, c) = fixture();
-    let before = d.objects().expect("objects");
-    // The two sides that do not touch: nothing about the pair is a joint.
-    let prepared = write(&mut d, id, &edits(vec![], vec![collinear(c[2], c[0])]));
-    let rule = prepared.added.last().expect("the collinear");
-    let sketch = stored(&d, id);
-    assert_eq!(sketch.schema_version(), 5);
-    assert_eq!(
-        sketch.required_capabilities(),
-        vec![
-            CORE_CAPABILITY.to_owned(),
-            SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
-            SKETCH_COLLINEAR_CONSTRAINTS_CAPABILITY.to_owned()
-        ]
-    );
-    assert_eq!(
-        sketch.constraints.last().map(|k| k.rule),
-        Some(SketchConstraintRule::Collinear {
-            a: segment(c[2], Start, End),
-            b: segment(c[0], Start, End),
-        }),
-        "the Lines are named whole, in the order they were asked"
-    );
-    assert_eq!(rule.id, sketch.constraints.last().expect("stored").id);
-    // Its own named kind on the wire: no old kind can carry it, and in
-    // particular it is not a Parallel that an older build could rewrite.
-    let bytes = ObjectPayload::Sketch(sketch.clone())
-        .to_storage_bytes()
-        .expect("encodes");
-    let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
-    assert!(has(b"collinear"), "the rule is its own named kind");
-    assert!(!has(b"parallel") && !has(b"directed_angle"));
-    // The new layout and its capability are in the file's own table, required.
-    d.close().expect("close");
-    let connection = Connection::open(root.path().join("source.fcad")).expect("SQL");
-    let required: i64 = connection
-        .query_row(
-            "SELECT required FROM capabilities WHERE name='sketch.constraints.collinear.v1'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("the capability row");
-    assert_eq!(required, 1);
-    let version: i64 = connection
-        .query_row(
-            "SELECT schema_version FROM objects WHERE kind='sketch'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("sketch row");
-    assert_eq!(version, 5);
-    // Only the Sketch changed; this build still opens it for writing.
-    let d = Document::open(root.path().join("source.fcad")).expect("this build opens its own v5");
-    assert!(d.access().is_writable(), "the new capability is supported");
-    for object in before.iter().filter(|o| o.id != id) {
-        assert_eq!(&d.object(object.id).expect("read").expect("kept"), object);
-    }
-    assert!(d.validate().expect("validate").is_ok());
-}
 
 #[test]
 fn a_collinear_shares_the_relation_slot_in_either_order_and_only_an_exact_replace_frees_it() {
@@ -286,109 +212,8 @@ fn a_collinear_shares_the_relation_slot_in_either_order_and_only_an_exact_replac
         .collect();
     assert_eq!(ids.len(), 2);
     write(&mut d, id, &edits(ids, vec![]));
-    assert_eq!(
-        stored(&d, id).schema_version(),
-        2,
-        "EqualLength + closure only"
-    );
-    assert!(d.validate().expect("validate").is_ok());
-}
 
-#[test]
-fn what_a_sketch_declares_is_decided_by_what_it_holds_and_collinear_is_never_an_older_kind() {
-    use SketchPointSelector::{End, Start};
-    let (_root, mut d, id, c) = fixture();
-    // The older families stay where they were and never name the new capability.
-    write(
-        &mut d,
-        id,
-        &edits(
-            vec![],
-            vec![
-                relation(c[0], c[2], LineRelation::Parallel),
-                angle(
-                    vector(c[0], LineEndpoint::Start),
-                    vector(c[1], LineEndpoint::Start),
-                    30.,
-                ),
-            ],
-        ),
-    );
-    let angled = stored(&d, id);
-    assert_eq!(angled.schema_version(), 4);
-    assert_eq!(
-        angled.required_capabilities(),
-        vec![
-            CORE_CAPABILITY.to_owned(),
-            SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
-            SKETCH_ANGLE_CONSTRAINTS_CAPABILITY.to_owned()
-        ]
-    );
-    // A stored collinearity moves the layout to v5 whatever else it holds, and
-    // v5 is cumulative: it needs the collinear capability and no more.
-    let mut with_collinear = angled.clone();
-    with_collinear.constraints.push(SketchConstraint {
-        id: StableEntityId::new(),
-        rule: SketchConstraintRule::Collinear {
-            a: segment(c[1], Start, End),
-            b: segment(c[3], Start, End),
-        },
-    });
-    assert_eq!(with_collinear.schema_version(), 5);
-    assert_eq!(
-        with_collinear.required_capabilities(),
-        ObjectKind::Sketch.required_capabilities(5)
-    );
-    let bytes = ObjectPayload::Sketch(with_collinear.clone())
-        .to_storage_bytes()
-        .expect("encodes");
-    assert_eq!(
-        ObjectPayload::from_storage_bytes(&bytes).expect("decodes"),
-        ObjectPayload::Sketch(with_collinear.clone())
-    );
-    assert!(ObjectKind::Sketch.readable_schema_versions().contains(&5));
-    // A header that misdescribes the payload is refused in every direction: a
-    // v2 or v4 header over a collinearity would let a build that cannot see it
-    // rewrite the sketch, and the v5 header over a sketch without one locks
-    // readers out for nothing.
-    for older in [1, 2, 3, 4] {
-        let lying = Envelope::encode(
-            "sketch".to_owned(),
-            older,
-            ObjectKind::Sketch.required_capabilities(older),
-            &with_collinear,
-        )
-        .expect("envelope")
-        .to_bytes()
-        .expect("bytes");
-        assert!(
-            ObjectPayload::from_storage_bytes(&lying).is_err(),
-            "v{older}"
-        );
-    }
-    let hoarding = Envelope::encode(
-        "sketch".to_owned(),
-        5,
-        ObjectKind::Sketch.required_capabilities(5),
-        &angled,
-    )
-    .expect("envelope")
-    .to_bytes()
-    .expect("bytes");
-    assert!(ObjectPayload::from_storage_bytes(&hoarding).is_err());
-    // A segment runs between two points: a collinearity over a segment that
-    // names one point twice is refused where it is stored.
-    for (a, b) in [
-        (segment(c[1], Start, Start), segment(c[3], Start, End)),
-        (segment(c[1], Start, End), segment(c[3], End, End)),
-    ] {
-        let mut zero = angled.clone();
-        zero.constraints.push(SketchConstraint {
-            id: StableEntityId::new(),
-            rule: SketchConstraintRule::Collinear { a, b },
-        });
-        assert!(ObjectPayload::Sketch(zero).to_storage_bytes().is_err());
-    }
+    assert!(d.validate().expect("validate").is_ok());
 }
 
 #[test]

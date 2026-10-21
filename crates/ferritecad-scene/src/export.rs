@@ -342,7 +342,6 @@ fn occurrence_of(identity: NodeIdentity) -> ExportOccurrence {
     match identity {
         NodeIdentity::Object(object) => ExportOccurrence::Object(object),
         NodeIdentity::Occurrence(occurrence) => ExportOccurrence::Occurrence(occurrence),
-        NodeIdentity::Unrecorded => ExportOccurrence::Unrecorded,
     }
 }
 

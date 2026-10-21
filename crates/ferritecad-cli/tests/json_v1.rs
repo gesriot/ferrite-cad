@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use ferritecad_document::{
-    Dependency, DependencyRole, Document, EndCondition, Envelope, Expression, ExtrudeEditSource,
+    Dependency, DependencyRole, Document, EndCondition, Expression, ExtrudeEditSource,
     ObjectPayload, Parameter, SketchGeometry,
 };
 use ferritecad_jobs::{CreateDocumentRequest, NewDocument, PlateSize, create_document};
@@ -488,7 +488,7 @@ fn mixed_catalog_matches_common_facts_order_optional_values_and_copy_access() {
     };
     let source = root.path().join(name);
     mixed_catalog(&source);
-    for guard in ["none", "trigger", "future"] {
+    for guard in ["none", "trigger"] {
         if guard == "trigger" {
             rusqlite::Connection::open(&source)
                 .expect("fixture")
@@ -496,25 +496,6 @@ fn mixed_catalog_matches_common_facts_order_optional_values_and_copy_access() {
                     "CREATE TRIGGER extension_write AFTER UPDATE ON objects BEGIN SELECT 1; END;",
                 )
                 .expect("guarded schema");
-        } else if guard == "future" {
-            rusqlite::Connection::open(&source)
-                .expect("fixture")
-                .execute_batch("DROP TRIGGER extension_write;")
-                .expect("remove own fixture trigger");
-            let mut document = Document::open(&source).expect("fixture");
-            let envelope = Envelope::new(
-                "future.feature",
-                1,
-                vec!["future.required.v1".into()],
-                vec![0x01],
-            )
-            .to_bytes()
-            .expect("envelope");
-            let payload = ObjectPayload::from_storage_bytes(&envelope).expect("unknown");
-            document
-                .write(|w| w.put_object(ObjectId::new(), None, 99, None, &payload))
-                .expect("future capability");
-            document.close().expect("close");
         }
         let before = std::fs::read(&source).expect("bytes");
         let catalog = inspect(&source);
@@ -593,7 +574,7 @@ fn mixed_catalog_matches_common_facts_order_optional_values_and_copy_access() {
 }
 
 #[test]
-fn read_failures_are_structured_and_never_migrate_or_create_files() {
+fn read_failures_are_structured_and_create_no_files() {
     let root = tempfile::tempdir().expect("dir");
     let missing = root.path().join("missing.fcad");
     let output = run(cli().arg("inspect").arg(&missing).arg("--json"));
@@ -606,13 +587,7 @@ fn read_failures_are_structured_and_never_migrate_or_create_files() {
             .is_empty()
     );
     assert!(entries(root.path()).is_empty());
-    for case in [
-        "corrupt",
-        "old schema",
-        "future reader",
-        "wal",
-        "hidden rowid",
-    ] {
+    for case in ["corrupt", "wal", "hidden rowid"] {
         let path = root.path().join(format!("{case}.fcad"));
         if case == "corrupt" {
             std::fs::write(&path, b"not a document").expect("broken fixture");
@@ -621,8 +596,6 @@ fn read_failures_are_structured_and_never_migrate_or_create_files() {
             let connection = rusqlite::Connection::open(&path).expect("fixture");
             connection
                 .execute_batch(match case {
-                    "old schema" => "PRAGMA user_version = 1;",
-                    "future reader" => "UPDATE meta SET minimum_reader_version = 999;",
                     "wal" => "PRAGMA journal_mode = WAL;",
                     "hidden rowid" => "CREATE TABLE extension(rowid TEXT, _ROWID_ TEXT, oid TEXT);",
                     _ => unreachable!(),

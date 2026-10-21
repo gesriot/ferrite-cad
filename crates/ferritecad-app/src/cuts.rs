@@ -2148,7 +2148,7 @@ pub(crate) mod tests {
                 .into_iter()
                 .find(|o| matches!(&o.payload, ferritecad_document::ObjectPayload::Extrude(x) if x.previous.is_some()))
                 .expect("the cut");
-            assert_eq!(cut.payload.schema_version(), 3);
+
             assert!(
                 !d.topology_refs()
                     .expect("refs")
@@ -2310,12 +2310,7 @@ pub(crate) mod tests {
                         }
                         other => format!("{:?}", other.kind()),
                     };
-                    (
-                        o.name.clone(),
-                        o.ordinal,
-                        o.payload.schema_version(),
-                        meaning,
-                    )
+                    (o.name.clone(), o.ordinal, meaning)
                 })
                 .collect();
             let mut roles: Vec<_> = d

@@ -1116,15 +1116,7 @@ mod tests {
         };
         let payload = ObjectPayload::Chamfer(chamfer.clone());
         assert_eq!(payload.type_name(), "feature.chamfer");
-        assert_eq!(payload.schema_version(), 1);
-        assert_eq!(
-            payload.required_capabilities(),
-            [
-                "core.part.v1",
-                "feature.predecessor.v1",
-                "feature.chamfer.v1"
-            ]
-        );
+
         let bytes = payload.to_storage_bytes().expect("encodes");
         assert_eq!(
             ObjectPayload::from_storage_bytes(&bytes).expect("decodes"),

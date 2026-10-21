@@ -1194,8 +1194,8 @@ mod tests {
             "CREATE UNIQUE INDEX extension_key ON objects(payload_hash); \
              CREATE TABLE extension(value BLOB REFERENCES objects(payload_hash) ON UPDATE CASCADE); \
              INSERT INTO extension SELECT payload_hash FROM objects WHERE kind = 'feature.extrude';",
-            "CREATE TABLE extension(value TEXT REFERENCES capabilities(name) ON DELETE CASCADE); \
-             INSERT INTO extension SELECT name FROM capabilities;",
+            "CREATE UNIQUE INDEX extension_key ON meta(document_id); CREATE TABLE extension(value BLOB REFERENCES meta(document_id) ON DELETE CASCADE); \
+             INSERT INTO extension SELECT document_id FROM meta;",
         ] {
             let root = tempfile::tempdir().expect("directory");
             let (source, feature) = make(root.path(), ["80", "50", "12"]);

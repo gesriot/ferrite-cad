@@ -1850,59 +1850,81 @@ mod tests {
         assert!(reading.features.is_empty());
         assert!(reading.unavailable_reason().is_some());
     }
+
     #[test]
-    fn parameter_dependencies_and_unknown_capabilities_are_not_silently_rewritten() {
-        for future in [false, true] {
-            let (_root, mut request) = fixture();
-            let mut document = Document::open(&request.source).expect("source");
-            document
-                .write(|w| {
-                    let id = ObjectId::new();
-                    if future {
-                        let bytes = ferritecad_document::Envelope::new(
-                            "future.feature",
-                            1,
-                            vec!["future.required".into()],
-                            vec![0x01],
-                        )
-                        .to_bytes()?;
-                        w.put_object(
-                            id,
-                            None,
-                            50,
-                            Some("Future"),
-                            &ObjectPayload::from_storage_bytes(&bytes)?,
-                        )?;
-                    } else {
-                        w.put_object(
-                            id,
-                            None,
-                            50,
-                            Some("Height"),
-                            &ObjectPayload::Parameter(ferritecad_document::Parameter {
-                                name: "height".into(),
-                                dimension: ferritecad_types::Dimension::Length,
-                                expression: Expression::constant(13.0)?,
-                            }),
-                        )?;
-                        w.add_dependency(Dependency {
-                            dependent: request.feature,
-                            dependency: id,
-                            role: DependencyRole::Parameter,
-                        })?;
-                    }
-                    Ok(())
-                })
-                .expect("fixture");
+    fn parameter_dependencies_are_not_silently_rewritten() {
+        let (_root, mut request) = fixture();
+        let mut document = Document::open(&request.source).expect("source");
+        document
+            .write(|writer| {
+                let parameter = ObjectId::new();
+                writer.put_object(
+                    parameter,
+                    None,
+                    50,
+                    Some("Height"),
+                    &ObjectPayload::Parameter(ferritecad_document::Parameter {
+                        name: "height".into(),
+                        dimension: ferritecad_types::Dimension::Length,
+                        expression: Expression::constant(13.0)?,
+                    }),
+                )?;
+                writer.add_dependency(Dependency {
+                    dependent: request.feature,
+                    dependency: parameter,
+                    role: DependencyRole::Parameter,
+                })?;
+                Ok(())
+            })
+            .expect("parameter fixture");
+        document.close().expect("close");
+        request.expected = read_extrude_source(&request.source)
+            .expect("version")
+            .version;
+        refused(
+            &request,
+            &OperationContext::default(),
+            ferritecad_types::ErrorKind::Unsupported,
+        );
+    }
+
+    #[test]
+    fn unreadable_objects_refuse_copy_before_rebuild_or_publication() {
+        for unknown_type in [false, true] {
+            let (_root, request) = fixture();
+            let document = Document::open_read_only(&request.source).expect("source");
+            let record = document
+                .object(request.feature)
+                .expect("row")
+                .expect("feature");
+            let encoded = record.payload.to_storage_bytes().expect("payload");
             document.close().expect("close");
-            request.expected = read_extrude_source(&request.source)
-                .expect("version")
-                .version;
+            let mut bytes = std::fs::read(&request.source).expect("bytes");
+            if unknown_type {
+                let old = b"feature.extrude";
+                let offsets: Vec<_> = bytes
+                    .windows(old.len())
+                    .enumerate()
+                    .filter_map(|(index, value)| (value == old).then_some(index))
+                    .collect();
+                assert!(!offsets.is_empty());
+                for index in offsets {
+                    bytes[index..index + old.len()].copy_from_slice(b"feature.unknown");
+                }
+            } else {
+                let index = bytes
+                    .windows(encoded.len())
+                    .position(|value| value == encoded)
+                    .expect("SQLite holds the encoded envelope");
+                bytes[index] = 0xff;
+            }
+            std::fs::write(&request.source, bytes).expect("structural damage");
             refused(
                 &request,
                 &OperationContext::default(),
-                ferritecad_types::ErrorKind::Unsupported,
+                ferritecad_types::ErrorKind::Input,
             );
+            assert!(!request.destination.exists());
         }
     }
 

@@ -14,14 +14,6 @@ fn plate_v3() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../ferritecad-fixtures/plate/plate.fcad")
 }
 
-fn user_version(path: &Path) -> i64 {
-    let conn =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .expect("opens");
-    conn.query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("reads")
-}
-
 /// Every row of every table, rowid first, as text; `skip` names tables left out.
 fn cells(path: &Path, skip: &[&str]) -> BTreeMap<String, Vec<String>> {
     let conn =
@@ -111,88 +103,6 @@ fn rename_first_object(document: &mut Document, name: &str) {
             )
         })
         .expect("a model change");
-}
-
-#[test]
-fn a_schema_v3_document_is_listed_and_read_without_being_written() {
-    let dir = tempfile::tempdir().expect("dir");
-    let path = dir.path().join("old.fcad");
-    std::fs::copy(plate_v3(), &path).expect("copies");
-    assert_eq!(user_version(&path), 3, "the committed plate is schema v3");
-    let before = std::fs::read(&path).expect("bytes");
-    let modified = std::fs::metadata(&path)
-        .expect("meta")
-        .modified()
-        .expect("time");
-
-    let document = Document::open_read_only(&path).expect("v3 reads without migration");
-    assert!(document.checkpoints().expect("lists").is_empty());
-    assert_ne!(
-        document.model_without_checkpoints().expect("hash"),
-        document.model_version().expect("hash"),
-        "two hashes, two domains"
-    );
-    let missing = document
-        .extract_checkpoint_image(CheckpointId::new(), &dir.path().join("x.fcad"))
-        .expect_err("nothing to extract");
-    assert!(missing.to_string().contains("no checkpoint"), "{missing}");
-    document.close().expect("closes");
-
-    assert_eq!(
-        std::fs::read(&path).expect("bytes"),
-        before,
-        "not one byte written"
-    );
-    assert_eq!(
-        std::fs::metadata(&path)
-            .expect("meta")
-            .modified()
-            .expect("time"),
-        modified
-    );
-    assert_eq!(user_version(&path), 3);
-    assert!(!dir.path().join("x.fcad").exists());
-}
-
-#[test]
-fn in_a_v3_file_a_table_called_checkpoints_is_somebody_elses() {
-    let dir = tempfile::tempdir().expect("dir");
-    let path = dir.path().join("old.fcad");
-    std::fs::copy(plate_v3(), &path).expect("copies");
-    let conn = rusqlite::Connection::open(&path).expect("opens");
-    conn.execute_batch(
-        "CREATE TABLE checkpoints (note TEXT); INSERT INTO checkpoints VALUES ('x');",
-    )
-    .expect("an extension's table");
-    drop(conn);
-    assert_eq!(user_version(&path), 3);
-    let read = |path: &Path| {
-        let document = Document::open_read_only(path).expect("reads");
-        let facts = (
-            document.checkpoints().expect("not a catalog").len(),
-            document.model_without_checkpoints().expect("hash"),
-        );
-        document.close().expect("closes");
-        facts
-    };
-    let (listed, before) = read(&path);
-    assert_eq!(listed, 0, "not read as checkpoints");
-    let conn = rusqlite::Connection::open(&path).expect("opens");
-    conn.execute("UPDATE checkpoints SET note = 'y'", [])
-        .expect("changes");
-    drop(conn);
-    assert_ne!(
-        read(&path).1,
-        before,
-        "its rows are model content like any unknown table"
-    );
-    let bytes = std::fs::read(&path).expect("bytes");
-    Document::open(&path).expect_err("v4 cannot be added over it; refused, not merged");
-    assert_eq!(
-        std::fs::read(&path).expect("bytes"),
-        bytes,
-        "and nothing was written"
-    );
 }
 
 #[test]

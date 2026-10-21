@@ -99,20 +99,9 @@ in-place Save и выражения вместо literal чисел.
 * `Fixed` центра — прежнее точечное правило §25N, один pin на профиль. Одного
   допустимого pin вместе с концентричностью хватает, чтобы закрепить оба центра.
 
-## Persisted layout и capability не поднимаются
+## Storage
 
-Проверено первым: **существующий** контракт `payload v3` +
-`sketch.constraints.circle.v1` выражает новый словарь без потерь.
-
-`Sketch::schema_version` ставит v3, как только хоть одно ограничение
-`needs_circle_vocabulary()`, а это правило уже включает **любой**
-`SketchPointSelector::Center` среди точек правила — не только `Fixed`. Значит
-`Coincident` двух центров сам по себе поднимает Sketch до v3 и требует
-`sketch.constraints.circle.v1`; сборка, знающая эту capability, знает и `Center`,
-и `Coincident`, и переписывает такой Sketch без потерь, а сборка, не знающая
-её, останавливается прежней проверкой. Новое имя или новый layout добавили бы
-слово и ни одного отказа, поэтому не добавлены. Прежние v1/v2 не тронуты, схема
-SQLite не поднята, `require_declared_contract` работает как работал.
+See the [current document format](file-format.md).
 
 ## Writer
 

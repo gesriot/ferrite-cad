@@ -1340,14 +1340,6 @@ mod tests {
             ObjectPayload::from_storage_bytes(&bytes).expect("decode"),
             payload
         );
-        let capabilities = payload.required_capabilities();
-        for needed in [
-            crate::CORE_CAPABILITY,
-            crate::FEATURE_PREDECESSOR_CAPABILITY,
-            crate::FEATURE_FILLET_CAPABILITY,
-        ] {
-            assert!(capabilities.iter().any(|c| c == needed), "{needed}");
-        }
         for radius in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let mut bad = fillet.clone();
             bad.radius_mm = radius;
@@ -1735,14 +1727,7 @@ mod tests {
             stored.edge.feature, target.base_feature,
             "never the producer"
         );
-        assert_eq!(stored.schema_version(), 2);
-        assert!(
-            honest
-                .feature()
-                .payload
-                .required_capabilities()
-                .contains(&crate::FEATURE_FILLET_SEQUENTIAL_CAPABILITY.to_owned())
-        );
+
         assert_eq!(
             honest.references()[7].output_role,
             SemanticRole::OriginFilletFace {

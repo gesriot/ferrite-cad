@@ -2,7 +2,7 @@
 //! §31A: real projection, tab/form owners and egui; no window or device.
 use super::*;
 use crate::model_tree::{actions, availability, open};
-use ferritecad_document::{Dependency, DependencyRole, ModelTree, ObjectPayload};
+use ferritecad_document::{Dependency, DependencyRole, ObjectPayload};
 use ferritecad_ui::{ModelAction, ModelEdit, ModelKey};
 
 fn source(w: &Window) -> &ferritecad_document::ExtrudeEditSource {
@@ -88,112 +88,6 @@ pub(in crate::sessions::tests::tabs) fn switch_facts(w: &mut Window, tab: TabId)
         .deliver_switch(generation, wait(&rx), Ok(()))
         .expect("awaited");
     outcome.expect("accepted");
-}
-
-#[test]
-fn history_uses_dependencies_exact_uuids_and_honest_shared_references() {
-    let (_root, path, reading) = crate::cuts::tests::session_apply::fixture(16);
-    let d = Document::open_read_only(&path).expect("document");
-    let mut objects = d.objects().expect("objects");
-    let mut deps = d.dependencies().expect("dependencies");
-    let saved = crate::cuts::tests::session_apply::selected(&reading, 0);
-    let tree = &reading.model_tree;
-    let chain: Vec<_> = tree
-        .rows
-        .iter()
-        .filter(|r| r.depth == 1)
-        .map(|r| r.id.0)
-        .collect();
-    assert_eq!(
-        chain,
-        std::iter::once(saved.base_feature)
-            .chain(saved.tools.iter().map(|t| t.feature))
-            .collect::<Vec<_>>(),
-        "history must ignore SQL order and identical names"
-    );
-    assert_eq!(tree.rows.iter().filter(|r| r.kind == "Cut").count(), 16);
-    assert!(tree.rows.iter().all(|r| r.name == "same"));
-    // A second Body shares the same chain. Its occurrences are references,
-    // while two different features also read exactly the same profile.
-    let mut second = objects
-        .iter()
-        .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
-        .expect("Body")
-        .clone();
-    let first_body = second.id;
-    second.id = ObjectId::new();
-    let second_body = second.id;
-    objects.push(second);
-    let tip = deps
-        .iter()
-        .find(|d| d.dependent == first_body && d.role == DependencyRole::BodyTip)
-        .expect("tip")
-        .dependency;
-    deps.push(Dependency {
-        dependent: second_body,
-        dependency: tip,
-        role: DependencyRole::BodyTip,
-    });
-    let profile = deps
-        .iter()
-        .find(|d| d.dependent == saved.base_feature && d.role == DependencyRole::Profile)
-        .expect("profile")
-        .dependency;
-    deps.retain(|d| !(d.dependent == saved.feature && d.role == DependencyRole::Profile));
-    deps.push(Dependency {
-        dependent: saved.feature,
-        dependency: profile,
-        role: DependencyRole::Profile,
-    });
-    // An unknown envelope remains readable, but has no fabricated editor.
-    let mut unknown = objects[0].clone();
-    unknown.id = ObjectId::new();
-    unknown.payload = ObjectPayload::from_storage_bytes(
-        &ferritecad_document::Envelope::encode("future.widget", 77, vec![], &42u32)
-            .expect("envelope")
-            .to_bytes()
-            .expect("bytes"),
-    )
-    .expect("unknown");
-    let unknown_id = unknown.id;
-    objects.push(unknown);
-    objects.reverse();
-    deps.reverse();
-    let tree = ModelTree::project(&objects, &deps);
-    let keys: std::collections::HashSet<_> = tree.rows.iter().map(|r| r.id).collect();
-    assert_eq!(
-        keys.len(),
-        tree.rows.len(),
-        "shared DAG occurrences must have distinct identities"
-    );
-    assert_eq!(
-        tree.rows
-            .iter()
-            .filter(|r| r.id.0 == profile && r.depth == 2)
-            .count(),
-        4
-    );
-    assert!(
-        tree.rows
-            .iter()
-            .filter(|r| r.depth > 0)
-            .all(|r| r.note.contains("reference"))
-    );
-    assert!(tree.rows.iter().any(|r| r.id.0 == unknown_id
-        && r.kind == "future.widget"
-        && r.note.contains("no editor")));
-    let unavailable = ModelTree::from_dependencies(
-        &objects,
-        Err(CadError::unsupported("future dependency role")),
-    );
-    assert_eq!(unavailable.rows.len(), objects.len());
-    assert!(
-        unavailable
-            .rows
-            .iter()
-            .all(|r| r.depth == 0 && r.note.contains("History unavailable"))
-    );
-    assert!(unavailable.rows.iter().any(|r| r.id.0 == unknown_id));
 }
 
 #[test]
@@ -844,4 +738,95 @@ fn native_compare_real_model_tree_window_outputs() {
         });
     }
     println!("\nFCAD_31A_GUI_COMPARE_OK all_SQL_cells=true controls=3");
+}
+
+#[test]
+fn history_uses_dependencies_exact_uuids_and_honest_shared_references() {
+    let (_root, path, reading) = crate::cuts::tests::session_apply::fixture(16);
+    let d = Document::open_read_only(&path).expect("document");
+    let mut objects = d.objects().expect("objects");
+    let mut deps = d.dependencies().expect("dependencies");
+    let saved = crate::cuts::tests::session_apply::selected(&reading, 0);
+    let tree = &reading.model_tree;
+    let chain: Vec<_> = tree
+        .rows
+        .iter()
+        .filter(|r| r.depth == 1)
+        .map(|r| r.id.0)
+        .collect();
+    assert_eq!(
+        chain,
+        std::iter::once(saved.base_feature)
+            .chain(saved.tools.iter().map(|t| t.feature))
+            .collect::<Vec<_>>(),
+        "history must ignore SQL order and identical names"
+    );
+    assert_eq!(tree.rows.iter().filter(|r| r.kind == "Cut").count(), 16);
+    assert!(tree.rows.iter().all(|r| r.name == "same"));
+    // A second Body shares the same chain. Its occurrences are references,
+    // while two different features also read exactly the same profile.
+    let mut second = objects
+        .iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+        .expect("Body")
+        .clone();
+    let first_body = second.id;
+    second.id = ObjectId::new();
+    let second_body = second.id;
+    objects.push(second);
+    let tip = deps
+        .iter()
+        .find(|d| d.dependent == first_body && d.role == DependencyRole::BodyTip)
+        .expect("tip")
+        .dependency;
+    deps.push(Dependency {
+        dependent: second_body,
+        dependency: tip,
+        role: DependencyRole::BodyTip,
+    });
+    let profile = deps
+        .iter()
+        .find(|d| d.dependent == saved.base_feature && d.role == DependencyRole::Profile)
+        .expect("profile")
+        .dependency;
+    deps.retain(|d| !(d.dependent == saved.feature && d.role == DependencyRole::Profile));
+    deps.push(Dependency {
+        dependent: saved.feature,
+        dependency: profile,
+        role: DependencyRole::Profile,
+    });
+    objects.reverse();
+    deps.reverse();
+    let tree = ferritecad_document::ModelTree::project(&objects, &deps);
+    let keys: std::collections::HashSet<_> = tree.rows.iter().map(|r| r.id).collect();
+    assert_eq!(
+        keys.len(),
+        tree.rows.len(),
+        "shared DAG occurrences must have distinct identities"
+    );
+    assert_eq!(
+        tree.rows
+            .iter()
+            .filter(|r| r.id.0 == profile && r.depth == 2)
+            .count(),
+        4
+    );
+    assert!(
+        tree.rows
+            .iter()
+            .filter(|r| r.depth > 0)
+            .all(|r| r.note.contains("reference"))
+    );
+
+    let unavailable = ferritecad_document::ModelTree::from_dependencies(
+        &objects,
+        Err(CadError::unsupported("future dependency role")),
+    );
+    assert_eq!(unavailable.rows.len(), objects.len());
+    assert!(
+        unavailable
+            .rows
+            .iter()
+            .all(|r| r.depth == 0 && r.note.contains("History unavailable"))
+    );
 }

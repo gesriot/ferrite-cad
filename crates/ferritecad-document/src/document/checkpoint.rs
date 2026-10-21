@@ -151,9 +151,6 @@ impl Document {
     }
 
     fn listed(&self) -> Result<Vec<(i64, CheckpointEntry)>> {
-        if !schema::has_checkpoint_table(&self.conn)? {
-            return Ok(Vec::new());
-        }
         let sql = |e| CadError::io("listing checkpoints", e);
         let mut statement = self.conn.prepare(LIST).map_err(sql)?;
         let mut rows = statement.query([]).map_err(sql)?;
@@ -186,11 +183,6 @@ impl Document {
                 self.path.display()
             )));
         }
-        if !schema::has_checkpoint_table(&self.conn)? {
-            return Err(CadError::unsupported(
-                "this document's schema has no checkpoint table; open it for writing to migrate it",
-            ));
-        }
         Ok(())
     }
 
@@ -202,11 +194,6 @@ impl Document {
     /// and [`Self::model_without_checkpoints`] equal to this version's. Returns
     /// that value.
     pub fn write_checkpoint_image(&self, scratch: &Path, image: &Path) -> Result<ContentHash> {
-        if !schema::has_checkpoint_table(&self.conn)? {
-            return Err(CadError::unsupported(
-                "this document's schema has no checkpoint table; open it for writing to migrate it",
-            ));
-        }
         let expected = self.model_without_checkpoints()?;
         let target = image
             .to_str()

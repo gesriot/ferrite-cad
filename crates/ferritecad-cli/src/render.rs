@@ -16,10 +16,6 @@ pub fn inspect(document: &Document) -> Result<()> {
     println!("document {}", document.path().display());
     println!("  id                 {}", meta.document_id);
     println!("  content version    {}", document.content_version()?);
-    println!(
-        "  format             v{} (needs reader v{}+)",
-        meta.format_version, meta.minimum_reader_version
-    );
     println!("  generator          {}", meta.generator);
     println!("  created            {}", meta.created_at);
     println!("  modified           {}", meta.modified_at);
@@ -216,8 +212,7 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
             None => "empty".to_owned(),
         },
         ObjectPayload::ImportedStep(i) => format!(
-            "scene v{}, {} definitions, {} placements, {} byte(s) of source ({}), read by {}{}",
-            i.scene.version(),
+            "scene: {} definitions, {} placements, {} byte(s) of source ({}), read by {}{}",
             i.scene.definition_count(),
             i.scene.instance_count(),
             i.source_byte_len,
@@ -228,16 +223,6 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
             match i.diagnostics_at_import.len() {
                 0 => String::new(),
                 one => format!(", which reported {one} thing(s) at the time"),
-            }
-        ),
-        ObjectPayload::Unknown(u) => format!(
-            "preserved verbatim: {} v{}, requires {}",
-            u.type_name,
-            u.schema_version,
-            if u.required_capabilities.is_empty() {
-                "nothing".to_owned()
-            } else {
-                u.required_capabilities.join(", ")
             }
         ),
         _ => return None,

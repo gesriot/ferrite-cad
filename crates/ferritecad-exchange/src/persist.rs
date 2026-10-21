@@ -57,25 +57,13 @@
 //! a fresh reading knows the geometry and knows nothing about which occurrence
 //! the document decided each place was.
 //!
-//! # Why a version and not a capability
-//!
-//! Both exist and they answer different questions. A capability says a reader
-//! must understand a *vocabulary* — a role, a constraint family — whose bytes
-//! are laid out exactly as before. A version says the bytes themselves are laid
-//! out differently. This adds a field to every stored placement, so a reader
-//! that has never heard of it cannot parse the payload at all, which is a
-//! version. `exchange.step.imported.v1` already answers the only capability
-//! question there is here: whether the reader understands imported STEP objects
-//! and their source-of-truth bytes. Naming a second one would be counting
-//! rather than saying something.
-
 use std::collections::BTreeMap;
 
 use ferritecad_types::{CadError, OccurrenceId, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::project::{Identify, Placed, Projection, normalise, require_finite};
-use crate::{ColourSource, KeyedScene, LegacyScene, Scene};
+use crate::project::{Placed, Projection, normalise, require_finite};
+use crate::{ColourSource, Scene};
 
 /// A definition as a document keeps it: what identifies it, what it was called
 /// and how much solid geometry it turned out to hold. The shape itself is not
@@ -92,13 +80,6 @@ pub struct PersistedDefinition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersistedInstance {
     /// What durably identifies *this place*, as opposed to the part in it.
-    ///
-    /// Required rather than optional, and that is what makes this a version of
-    /// its own. A layout in which the identity could be absent would be a
-    /// layout in which "the document never recorded one" and "something dropped
-    /// it" are the same value, and every reader would have to guess which. Here
-    /// the older layouts are the ones with no field, they are read as
-    /// themselves, and they say so — see [`StoredScene::occurrences`].
     ///
     /// Minted once by [`Scene::persist`] and afterwards only ever read back.
     /// Nothing derives it from the ordinal, the parent, the name, the transform
@@ -134,190 +115,33 @@ pub struct PersistedScene {
     pub instances: Vec<PersistedInstance>,
 }
 
-/// What a stored scene can say about the durable identity of its placements.
-///
-/// Two states and no third, because there is no honest third. Either the
-/// document wrote an identity down for every placement or it wrote none at all:
-/// a layout does not have some.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum StoredOccurrences {
-    /// This scene was stored at a layout written before placements carried
-    /// identities.
-    ///
-    /// Not lost and not missing: never recorded. The distinction is the reason
-    /// this is a variant rather than an empty list — a caller handed an empty
-    /// list would go looking for what went wrong, and nothing did.
-    Unrecorded,
-    /// One identity per instance, in the order the instances are stored.
-    ///
-    /// Positional alignment, and it is sound for exactly one reason: a binding
-    /// has already required the fresh reading to have the same instances in the
-    /// same order as the stored scene, in full. Without that check this would be
-    /// an index dressed as an identity.
-    Recorded(Vec<OccurrenceId>),
-}
-
-/// What a stored scene can say about the durable identity of its definitions.
-///
-/// Two states and no third, for the same reason [`StoredOccurrences`] has two:
-/// a layout either recorded the key of every definition or recorded none. The
-/// keys themselves are not carried here, because a binding has already proven
-/// the fresh reading holds exactly those definitions with exactly those keys —
-/// what is missing from a legacy layout is not the text but the promise that
-/// the text means the same thing next time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum StoredDefinitionIdentities {
-    /// This scene was stored at a layout written before definitions carried
-    /// keys, so the keys a reading shows come from the importer that has just
-    /// run and the document never confirmed any of them.
-    ///
-    /// Not lost and not missing: never recorded. A caller that needs a durable
-    /// definition identity has to say so rather than pass this reading's keys
-    /// off as one.
-    Unrecorded,
-    /// The document stored the key of every definition, and a binding proved
-    /// the fresh reading has the same ones.
-    Recorded,
-}
-
-/// A stored scene, at whichever layout it was written with.
-///
-/// Version 1 and version 2 documents keep working. They were written under
-/// weaker guarantees and they still get exactly those, rather than being
-/// refused for having been written first. What they cannot have is anything
-/// that needs an identity they never recorded — see [`Self::keys`] and
-/// [`Self::occurrences`].
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum StoredScene {
-    /// Written before definitions carried identities. Binds by position.
-    V1(LegacyScene),
-    /// Definitions carry the keys their source gave them; placements carry
-    /// nothing of their own.
-    V2(KeyedScene),
-    /// Placements carry their own durable identities as well.
-    V3(PersistedScene),
-}
-
-impl StoredScene {
-    /// Attaches this stored scene to a freshly imported one.
-    ///
-    /// See [`PersistedScene::bind`]. Version 1 differs only in identifying its
-    /// definitions by position, which is what it was stored with; version 2
-    /// differs only in having no placement identities to hand on afterwards.
-    pub fn bind(&self, current: Scene) -> Result<Scene> {
-        match self {
-            Self::V1(scene) => scene.bind(current),
-            Self::V2(scene) => scene.bind(current),
-            Self::V3(scene) => scene.bind(current),
-        }
+impl PersistedScene {
+    pub fn occurrences(&self) -> Vec<OccurrenceId> {
+        self.instances
+            .iter()
+            .map(|instance| instance.occurrence)
+            .collect()
     }
 
-    /// The durable identity of every placement, in stored order, or the fact
-    /// that this layout recorded none.
-    ///
-    /// Read from the payload and computed from nothing. There is deliberately
-    /// no path here that mints, hashes, enumerates or otherwise produces an
-    /// identity: a caller that needs one and is told
-    /// [`StoredOccurrences::Unrecorded`] must say so rather than fill it in.
-    pub fn occurrences(&self) -> StoredOccurrences {
-        match self {
-            Self::V1(_) | Self::V2(_) => StoredOccurrences::Unrecorded,
-            Self::V3(scene) => StoredOccurrences::Recorded(
-                scene
-                    .instances
-                    .iter()
-                    .map(|instance| instance.occurrence)
-                    .collect(),
-            ),
-        }
-    }
-
-    /// Whether this layout recorded the identity of its definitions at all.
-    ///
-    /// The typed half of [`Self::keys`], for a caller that needs the fact
-    /// rather than the text. Derived from the layout and computed from nothing
-    /// else: there is deliberately no arm here that decides a legacy scene has
-    /// identities because its fresh reading happens to show keys.
-    pub fn definition_identities(&self) -> StoredDefinitionIdentities {
-        match self {
-            Self::V1(_) => StoredDefinitionIdentities::Unrecorded,
-            Self::V2(_) | Self::V3(_) => StoredDefinitionIdentities::Recorded,
-        }
-    }
-
-    /// The identity of every definition, in stored order, or `None` when this
-    /// scene predates identities.
-    ///
-    /// `None` is what anything needing a durable reference has to refuse on.
-    /// Synthesising keys from positions would produce something that looks like
-    /// an identity and behaves like an index, which is the one failure this
-    /// format exists to prevent.
-    pub fn keys(&self) -> Option<Vec<&str>> {
-        match self {
-            Self::V1(_) => None,
-            Self::V2(scene) => Some(keys_of(&scene.definitions)),
-            Self::V3(scene) => Some(keys_of(&scene.definitions)),
-        }
-    }
-
-    /// The layout this was stored at, which decides how it is written back.
-    pub fn version(&self) -> u32 {
-        match self {
-            Self::V1(_) => 1,
-            Self::V2(_) => 2,
-            Self::V3(_) => 3,
-        }
+    pub fn keys(&self) -> Vec<&str> {
+        self.definitions
+            .iter()
+            .map(|definition| definition.key.as_str())
+            .collect()
     }
 
     pub fn source_unit(&self) -> &str {
-        match self {
-            Self::V1(scene) => &scene.source_unit,
-            Self::V2(scene) => &scene.source_unit,
-            Self::V3(scene) => &scene.source_unit,
-        }
+        &self.source_unit
     }
-
     pub fn schema(&self) -> &str {
-        match self {
-            Self::V1(scene) => &scene.schema,
-            Self::V2(scene) => &scene.schema,
-            Self::V3(scene) => &scene.schema,
-        }
+        &self.schema
     }
-
     pub fn definition_count(&self) -> usize {
-        match self {
-            Self::V1(scene) => scene.definitions.len(),
-            Self::V2(scene) => scene.definitions.len(),
-            Self::V3(scene) => scene.definitions.len(),
-        }
+        self.definitions.len()
     }
-
     pub fn instance_count(&self) -> usize {
-        match self {
-            Self::V1(scene) => scene.instances.len(),
-            Self::V2(scene) => scene.instances.len(),
-            Self::V3(scene) => scene.instances.len(),
-        }
+        self.instances.len()
     }
-
-    pub fn validate(&self) -> Result<()> {
-        match self {
-            Self::V1(scene) => scene.validate(),
-            Self::V2(scene) => scene.validate(),
-            Self::V3(scene) => scene.validate(),
-        }
-    }
-}
-
-fn keys_of(definitions: &[PersistedDefinition]) -> Vec<&str> {
-    definitions
-        .iter()
-        .map(|definition| definition.key.as_str())
-        .collect()
 }
 
 impl Scene {
@@ -332,7 +156,7 @@ impl Scene {
     /// # This is the only place an occurrence identity is created
     ///
     /// And it is called when a file is first brought into a document, never
-    /// when one is read back: reading goes through [`StoredScene::bind`], which
+    /// when one is read back: reading goes through [`PersistedScene::bind`], which
     /// hands on what the payload already says. A second minting site would be a
     /// second answer to "which placement is this", and the reading is the half
     /// that would be wrong — a fresh import knows the geometry and knows
@@ -591,7 +415,7 @@ impl PersistedScene {
         // session-local handles become visible, so it must not rely on a caller
         // having remembered to validate the stored half first.
         self.validate()?;
-        let fresh = current.project(Identify::Key)?;
+        let fresh = current.project()?;
         project_keyed(
             &self.source_unit,
             &self.schema,
@@ -610,7 +434,7 @@ mod tests {
     use ferritecad_kernel::{SessionId, ShapeHandle};
 
     use super::*;
-    use crate::{Definition, Instance, KeyedInstance, LegacyDefinition, LegacyInstance};
+    use crate::{Definition, Instance};
 
     /// Answers "does this type implement `Serialize`" as a `const bool`.
     ///
@@ -649,16 +473,6 @@ mod tests {
     const _: () = assert!(
         Probe::<PersistedScene>::SERIALISABLE,
         "the persisted projection must be storable"
-    );
-    const _: () = assert!(
-        Probe::<LegacyScene>::SERIALISABLE,
-        "a version 1 scene must still be readable from a document"
-    );
-    // And the versioned wrapper is not: which layout a scene is at is said by
-    // the envelope around it, not by a tag inside it.
-    const _: () = assert!(
-        !Probe::<StoredScene>::SERIALISABLE,
-        "StoredScene became serialisable, which would put the layout in two places"
     );
 
     const PLATE: &str = "step.product_definition#5";
@@ -709,6 +523,28 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn a_current_scene_offers_one_identity_per_placement_in_stored_order() {
+        let persisted = scene(SessionId::new()).persist().expect("projects");
+        let stored = persisted.clone();
+        assert_eq!(stored.keys(), vec![PLATE, BOLT]);
+
+        let recorded = stored.occurrences();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(
+            recorded,
+            vec![
+                persisted.instances[0].occurrence,
+                persisted.instances[1].occurrence
+            ],
+            "the identities offered are not the ones stored, in the order stored"
+        );
+        assert_ne!(
+            recorded[0], recorded[1],
+            "two placements of one scene were given one identity"
+        );
     }
 
     #[test]
@@ -907,142 +743,6 @@ mod tests {
         let mut stored = scene(SessionId::new()).persist().expect("projects");
         stored.definitions[1].key = String::new();
         assert!(stored.bind(scene(SessionId::new())).is_err());
-    }
-
-    /// The same assembly as [`scene`], as version 1 recorded it.
-    fn legacy() -> LegacyScene {
-        LegacyScene {
-            source_unit: "MM".to_owned(),
-            schema: "AP242".to_owned(),
-            definitions: vec![
-                LegacyDefinition {
-                    name: "Plate".to_owned(),
-                    solids: 1,
-                },
-                LegacyDefinition {
-                    name: "Bolt".to_owned(),
-                    solids: 2,
-                },
-            ],
-            instances: vec![
-                LegacyInstance {
-                    definition: 0,
-                    parent: None,
-                    name: "Assembly".to_owned(),
-                    placement: IDENTITY,
-                    colour_source: ColourSource::None,
-                    colour: [0.0; 3],
-                },
-                LegacyInstance {
-                    definition: 1,
-                    parent: Some(0),
-                    name: "Bolt/1".to_owned(),
-                    placement: moved(3.0),
-                    colour_source: ColourSource::Instance,
-                    colour: [0.25, 0.5, 0.75],
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn a_version_1_scene_binds_by_position_and_says_it_has_no_keys() {
-        let stored = StoredScene::V1(legacy());
-        assert_eq!(stored.version(), 1);
-        assert!(
-            stored.keys().is_none(),
-            "a scene stored without identities must not offer any"
-        );
-
-        let later = SessionId::new();
-        stored
-            .bind(scene(later))
-            .expect("an unchanged scene binds by position");
-
-        // The reordering version 2 accepts is refused here, and rightly:
-        // position was the only thing this scene ever recorded.
-        let mut swapped = scene(SessionId::new());
-        swapped.definitions.swap(0, 1);
-        for instance in &mut swapped.instances {
-            instance.definition = 1 - instance.definition;
-        }
-        assert!(stored.bind(swapped).is_err());
-    }
-
-    /// The same assembly as [`scene`], as version 2 recorded it.
-    fn keyed() -> KeyedScene {
-        let current = scene(SessionId::new()).persist().expect("projects");
-        KeyedScene {
-            source_unit: current.source_unit,
-            schema: current.schema,
-            definitions: current.definitions,
-            instances: current
-                .instances
-                .into_iter()
-                .map(|instance| KeyedInstance {
-                    definition: instance.definition,
-                    parent: instance.parent,
-                    name: instance.name,
-                    placement: instance.placement,
-                    colour_source: instance.colour_source,
-                    colour: instance.colour,
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn a_version_2_scene_offers_its_keys_and_says_it_has_no_placement_identities() {
-        let stored = StoredScene::V2(keyed());
-        assert_eq!(stored.version(), 2);
-        assert_eq!(stored.keys(), Some(vec![PLATE, BOLT]));
-        assert_eq!(stored.definition_count(), 2);
-        assert_eq!(stored.instance_count(), 2);
-        assert_eq!(stored.source_unit(), "MM");
-        assert_eq!(stored.schema(), "AP242");
-        assert_eq!(
-            stored.occurrences(),
-            StoredOccurrences::Unrecorded,
-            "a scene stored before placements had identities must not offer any"
-        );
-        // And it still binds, unchanged and by key, which is the guarantee it
-        // was written under.
-        stored
-            .bind(scene(SessionId::new()))
-            .expect("an unchanged version 2 scene still binds");
-    }
-
-    #[test]
-    fn a_version_1_scene_has_no_placement_identities_either() {
-        assert_eq!(
-            StoredScene::V1(legacy()).occurrences(),
-            StoredOccurrences::Unrecorded
-        );
-    }
-
-    #[test]
-    fn a_current_scene_offers_one_identity_per_placement_in_stored_order() {
-        let persisted = scene(SessionId::new()).persist().expect("projects");
-        let stored = StoredScene::V3(persisted.clone());
-        assert_eq!(stored.version(), 3);
-        assert_eq!(stored.keys(), Some(vec![PLATE, BOLT]));
-
-        let StoredOccurrences::Recorded(recorded) = stored.occurrences() else {
-            unreachable!("the current layout records placement identities")
-        };
-        assert_eq!(recorded.len(), 2);
-        assert_eq!(
-            recorded,
-            vec![
-                persisted.instances[0].occurrence,
-                persisted.instances[1].occurrence
-            ],
-            "the identities offered are not the ones stored, in the order stored"
-        );
-        assert_ne!(
-            recorded[0], recorded[1],
-            "two placements of one scene were given one identity"
-        );
     }
 
     #[test]

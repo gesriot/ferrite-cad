@@ -95,16 +95,9 @@ retained состоянию). `EqualLength` на той же паре — дру
  "angle_deg": 30}
 ```
 
-## Совместимость и capability
+## Storage
 
-Sketch с таким ограничением хранится как **payload v4** и требует
-`sketch.constraints.v1` + `sketch.constraints.angle.v1` (она же в
-`SUPPORTED_CAPABILITIES`). v4 кумулятивен (читатель угла знает и словарь
-окружностей). Сборка main читает только `[3, 2, 1]`: v4 она **сохраняет дословно** и
-открывает документ read-only; ни `Parallel`, ни `Perpendicular` её не подменяют
-(измерено, ниже). Sketch без угла остаётся v1/v2/v3; удаление последнего угла
-возвращает прежний layout. Версия SQLite-схемы **не** повышалась: механизма
-payload-версии и capability достаточно.
+See the [current document format](file-format.md).
 
 ## Solver, shim и ABI
 

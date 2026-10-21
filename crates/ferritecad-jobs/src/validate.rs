@@ -41,7 +41,7 @@ fn validate_snapshot(document: Document) -> Result<ValidatedDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferritecad_document::{Envelope, ObjectPayload};
+    use ferritecad_document::{ObjectPayload, Sketch};
     use ferritecad_types::ObjectId;
 
     #[test]
@@ -52,27 +52,28 @@ mod tests {
         let id = writer.meta().document_id;
         let snapshot = Document::open_read_only(&path).expect("pinned metadata");
         let object = ObjectId::new();
-        let bytes = Envelope::new("future.note", 1, vec![], vec![0x01])
-            .to_bytes()
-            .expect("envelope");
-        let payload = ObjectPayload::from_storage_bytes(&bytes).expect("unknown payload");
+        let payload = ObjectPayload::Sketch(Sketch {
+            plane: ObjectId::new(),
+            curves: vec![],
+            constraints: vec![],
+        });
         writer
             .write(|w| {
                 w.put_object(object, None, 0, None, &payload)?;
-                // The writer has changed source state between metadata and report.
-                // The report must still describe the pinned committed reading.
                 let checked = validate_snapshot(snapshot)?;
                 assert_eq!(checked.document_id, id);
                 assert!(checked.report.diagnostics.is_empty());
                 Ok(())
             })
-            .expect("commit succeeds: the job released its SQLite read lock");
+            .expect("commit after the job releases its SQLite read lock");
         writer.close().expect("close writer");
         let later = validate_document(&path).expect("new reading");
         assert_eq!(later.document_id, id);
-        assert!(later.report.is_ok());
-        assert_eq!(later.report.diagnostics.len(), 1);
-        assert_eq!(later.report.diagnostics[0].code, "object.unknown-type");
-        assert_eq!(later.report.diagnostics[0].object, Some(object));
+        assert!(
+            later
+                .report
+                .errors()
+                .any(|finding| finding.object == Some(object))
+        );
     }
 }

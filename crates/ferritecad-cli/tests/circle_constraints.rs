@@ -169,7 +169,6 @@ struct Stored {
     constraints: Vec<(ferritecad_types::StableEntityId, String)>,
     refs: Vec<ferritecad_document::TopologyRef>,
     objects: usize,
-    schema_version: u32,
 }
 fn stored(path: &Path) -> Stored {
     let d = Document::open_read_only(path).expect("reopen");
@@ -214,7 +213,6 @@ fn stored(path: &Path) -> Stored {
         .collect();
     let refs = d.topology_refs().expect("refs");
     let count = objects.len();
-    let schema_version = sketch.schema_version();
     d.close().expect("close");
     Stored {
         sketch: row.id,
@@ -225,7 +223,6 @@ fn stored(path: &Path) -> Stored {
         constraints,
         refs,
         objects: count,
-        schema_version,
     }
 }
 
@@ -538,36 +535,7 @@ fn only_the_constraint_payload_changed(
     for (table, (columns, rows)) in &before {
         let (mine_columns, mine) = &after[table];
         assert_eq!(columns, mine_columns, "{table} columns");
-        if table == "capabilities" {
-            // A circle constraint declares one more capability than the sketch
-            // did, so this table may gain a row. Nothing may be lost from it,
-            // and the one the new vocabulary needs has to be there: a copy that
-            // stored the constraint without announcing it would tell a reader
-            // it implements a vocabulary the payload has outgrown.
-            for row in rows {
-                assert!(
-                    mine.iter().any(|m| m[1..] == row[1..]),
-                    "capability row {row:?} disappeared"
-                );
-            }
-            let declared: Vec<String> = mine
-                .iter()
-                .filter_map(|m| match &m[1] {
-                    rusqlite::types::Value::Text(name) => Some(name.clone()),
-                    _ => None,
-                })
-                .collect();
-            for required in [
-                ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY,
-                ferritecad_document::SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
-            ] {
-                assert!(
-                    declared.iter().any(|name| name == required),
-                    "the copy stores a circle constraint without declaring {required}: {declared:?}"
-                );
-            }
-            continue;
-        }
+
         assert_eq!(rows.len(), mine.len(), "{table} row count");
         for (a, b) in rows.iter().zip(mine) {
             for (i, cell) in a.iter().enumerate() {
@@ -577,8 +545,7 @@ fn only_the_constraint_payload_changed(
                 let column = columns[i].as_str();
                 let allowed = match table.as_str() {
                     "objects" => {
-                        a.contains(&selected)
-                            && matches!(column, "payload" | "payload_hash" | "schema_version")
+                        a.contains(&selected) && matches!(column, "payload" | "payload_hash")
                     }
                     "meta" => column == "modified_at",
                     _ => false,
@@ -1007,7 +974,6 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     assert_eq!(before.center, [12., -7.]);
     assert_eq!(before.radius, 10.);
     assert_eq!(before.height_mm, 15.);
-    assert_eq!(before.schema_version, 1, "an unconstrained sketch is v1");
 
     // One request: a radius and a pinned centre, both about the stored circle.
     f.ask(
@@ -1056,10 +1022,7 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     assert_eq!(after.height_mm, 15.);
     assert_eq!(after.refs, before.refs, "same reference UUIDs and roles");
     assert_eq!(after.objects, before.objects);
-    assert_eq!(
-        after.schema_version, 3,
-        "a circle constraint puts the sketch at the circle layout"
-    );
+
     let mut kinds: Vec<_> = after.constraints.iter().map(|(_, k)| k.clone()).collect();
     kinds.sort();
     assert_eq!(kinds, ["fixed center (-3.5, 4.25)", "radius 6.75"]);
@@ -1185,7 +1148,7 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     );
     let plain = stored(&freed);
     assert!(plain.constraints.is_empty());
-    assert_eq!(plain.schema_version, 1, "back to the unconstrained layout");
+
     assert_eq!(plain.center, [12., -7.]);
     assert_eq!(plain.radius, 10.);
     // The stored guess is what the geometry is again: this build makes no
@@ -1693,7 +1656,6 @@ fn native_circle_diameter_is_the_stored_radius_in_the_same_slot() {
         assert_eq!(s.curve, before.curve);
         assert_eq!((s.center, s.radius), (before.center, before.radius));
         assert_eq!(s.refs, before.refs, "same reference UUIDs and roles");
-        assert_eq!(s.schema_version, 3);
     }
     let minted: std::collections::BTreeSet<_> = sd
         .constraints

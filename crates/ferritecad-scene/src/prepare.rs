@@ -28,10 +28,7 @@ use ferritecad_document::{
     Document, ImportedDefinitionRef, ObjectPayload, ObjectRecord, StepImporter,
 };
 use ferritecad_eval::{RebuildResult, rebuild_cold};
-use ferritecad_exchange::{
-    ColourSource, Diagnostic, Import, Scene, Severity, Stage, StoredDefinitionIdentities,
-    StoredOccurrences,
-};
+use ferritecad_exchange::{ColourSource, Diagnostic, Import, Scene, Severity, Stage};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, Mesh, OperationContext, ProgressSink, ShapeHandle,
     TessellationParams, TessellationRefusal,
@@ -357,8 +354,6 @@ pub(crate) enum NodeIdentity {
     Object(ObjectId),
     /// One placement of an imported scene, read back from the stored payload.
     Occurrence(OccurrenceId),
-    /// The stored layout this placement came from predates placement identity.
-    Unrecorded,
 }
 
 /// One place a definition appears, exactly as the source recorded it.
@@ -643,7 +638,6 @@ where
                         kernel,
                         Reading {
                             source: reopened.source(),
-                            definitions: reopened.definition_identities(),
                             occurrences: reopened.occurrences(),
                             file: source_file,
                             omittable: &omittable,
@@ -674,12 +668,11 @@ struct Reading<'a> {
     /// Whether the stored layout recorded which key belongs to which
     /// definition, or whether the keys below came from the importer that has
     /// just run and the document never confirmed them.
-    definitions: StoredDefinitionIdentities,
     /// What the document stored as the durable identity of each placement, or
     /// the fact that its layout stored none. Positionally aligned with
     /// `scene.instances`, which the binding above has already required to be
     /// the same instances in the same order.
-    occurrences: &'a StoredOccurrences,
+    occurrences: &'a [ferritecad_types::OccurrenceId],
     /// What to call the file it came from. A name to read, never a path to
     /// open: the bytes in the document are the source, and the place they were
     /// read from years ago may hold something else entirely by now.
@@ -798,21 +791,7 @@ where
             solids: Some(definition.solids),
             source_unit: Some(scene.source_unit.clone()),
             schema: Some(scene.schema.clone()),
-            // Read off the stored layout, not off the presence of a key: a
-            // legacy reading shows keys too, because the importer that has just
-            // run produced them, and treating those as identities is exactly
-            // the mistake this state exists to prevent.
-            identified: match from.definitions {
-                StoredDefinitionIdentities::Recorded => Identified::Yes,
-                StoredDefinitionIdentities::Unrecorded => Identified::No,
-                // A stored layout this build has not been measured against is
-                // not silently treated as having recorded identities.
-                _ => {
-                    return Err(CadError::unsupported(
-                        "this document records definition identity in a way this build does                          not know how to read",
-                    ));
-                }
-            },
+            identified: Identified::Yes,
         };
         let (registry_index, _) = registry.register(item, seen)?;
         registered.insert(instance.definition, registry_index);
@@ -867,9 +846,8 @@ where
     // is reported. Two lists of different lengths cannot be aligned, and the
     // failure of aligning them anyway is silent: every placement after the
     // first missing one would carry its neighbour's identity.
-    if let StoredOccurrences::Recorded(recorded) = from.occurrences
-        && recorded.len() != scene.instances.len()
-    {
+    let recorded = from.occurrences;
+    if recorded.len() != scene.instances.len() {
         return Err(CadError::input(format!(
             "the document stored {} placement identities for a scene of {} placements, so \
              they cannot be the identities of these placements",
@@ -890,27 +868,7 @@ where
         // nothing. There is no arm here that falls back to the index, the
         // parent, the name or the key: a placement the document never gave an
         // identity says so all the way to the export boundary.
-        let identity = match from.occurrences {
-            StoredOccurrences::Unrecorded => NodeIdentity::Unrecorded,
-            StoredOccurrences::Recorded(recorded) => {
-                NodeIdentity::Occurrence(*recorded.get(index).ok_or_else(|| {
-                    CadError::input(format!(
-                        "instance {index} has no stored placement identity among the {} this \
-                         document recorded",
-                        recorded.len()
-                    ))
-                })?)
-            }
-            // A stored layout this build has not been measured against is not
-            // silently treated as having no identity: that would turn a
-            // document that recorded one into one that appears not to have.
-            _ => {
-                return Err(CadError::unsupported(
-                    "this document records placement identity in a way this build does not \
-                     know how to read",
-                ));
-            }
-        };
+        let identity = NodeIdentity::Occurrence(recorded[index]);
         sink.node(&PreparedNode {
             definition,
             parent: instance.parent.map(|parent| base + parent),

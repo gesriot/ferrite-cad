@@ -320,14 +320,13 @@ fn height_discovery_and_structural_refusals_without_kernel() {
                         e.target_body = None;
                         let bytes = object.payload.to_storage_bytes().expect("payload");
                         sql.execute(
-                            "UPDATE objects SET payload=?1,payload_hash=?2,schema_version=?4 WHERE id=?3",
+                            "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
                             rusqlite::params![
                                 &bytes,
                                 ferritecad_types::ContentHash::of_bytes(&bytes)
                                     .as_bytes()
                                     .as_slice(),
                                 object.id.to_bytes().as_slice(),
-                                object.payload.schema_version()
                             ],
                         )
                         .expect("erase boolean payload");

@@ -59,27 +59,9 @@ The same domain value, `FullTurnRevolution`, is checked in several places:
 A profile the domain refuses is never published, even if the kernel could
 build it.
 
-### Persistence and capability
+### Storage
 
-* **New object kind** `feature.revolve`, payload schema v1:
-  `{profile, axis:"sketch_y", extent:"full_turn", operation:"new_body"}`.
-* **New capability** `feature.revolve.v1`. It is required by:
-  - that payload;
-  - every stored `RevolveFace` reference;
-  - the document's capability index.
-
-  The Extrude capabilities are not widened.
-* **Dependency edges:**
-  - `revolve → sketch` (`Profile`);
-  - `sketch → plane` (`Plane`);
-  - `body → revolve` (`BodyTip`).
-
-  The DAG and BodyTip rules are the ones Extrude uses; a Revolve is a feature
-  for `Body.tip_feature`.
-* **Old builds** (9d1a5f5 and earlier) do not know the object kind or the
-  capability. They preserve the object verbatim and open the document
-  read-only: a write or rebuild is refused rather than corrupting it. No SQL
-  schema change.
+See the [current document format](file-format.md).
 
 ### Topology outputs
 

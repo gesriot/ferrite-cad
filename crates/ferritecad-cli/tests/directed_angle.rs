@@ -673,27 +673,6 @@ fn discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone() 
                "a":{"from":end(2,"start"),"to":end(2,"end")},
                "b":{"from":end(3,"start"),"to":end(3,"end")}})
     );
-    // Cold, from the file: the angle is the layout the new capability names.
-    let c = rusqlite::Connection::open(&with).expect("SQL");
-    let names: Vec<String> = c
-        .prepare("SELECT name FROM capabilities WHERE required=1 ORDER BY name")
-        .expect("query")
-        .query_map([], |r| r.get(0))
-        .expect("rows")
-        .collect::<Result<_, _>>()
-        .expect("names");
-    assert!(
-        names.contains(&"sketch.constraints.angle.v1".to_owned()),
-        "{names:?}"
-    );
-    let version: i64 = c
-        .query_row(
-            "SELECT schema_version FROM objects WHERE kind='sketch'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("version");
-    assert_eq!(version, 4);
     let valid = reply(
         cli()
             .arg("validate")

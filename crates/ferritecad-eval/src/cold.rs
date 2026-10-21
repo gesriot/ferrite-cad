@@ -919,13 +919,6 @@ fn run<K: GeometryKernel + ?Sized>(
                     state.keys.insert(*id, key);
                 }
 
-                ObjectPayload::Unknown(unknown) => {
-                    return Err(CadError::unsupported(format!(
-                        "object {id} has type {:?}, which this build preserves but cannot rebuild",
-                        unknown.type_name
-                    )));
-                }
-
                 other => {
                     return Err(CadError::unsupported(format!(
                         "object {id} has payload {}, which the cold evaluator does not implement",
@@ -1182,7 +1175,6 @@ fn within(context: &OperationContext, done: usize, total: usize) -> OperationCon
 }
 
 fn ensure_rebuildable(document: &Document) -> Result<BTreeMap<ObjectId, Vec<String>>> {
-    document.require_supported_capabilities()?;
     let report = document.validate()?;
     let objects: BTreeMap<_, _> = document.objects()?.into_iter().map(|o| (o.id, o)).collect();
     let mut local = BTreeMap::<ObjectId, Vec<String>>::new();
@@ -1220,14 +1212,6 @@ fn ensure_rebuildable(document: &Document) -> Result<BTreeMap<ObjectId, Vec<Stri
             "document validation failed before cold rebuild: {}",
             structural.join("; ")
         )));
-    }
-    for object in objects.values() {
-        if let ObjectPayload::Unknown(unknown) = &object.payload {
-            return Err(CadError::unsupported(format!(
-                "object {} has unsupported type {}",
-                object.id, unknown.type_name
-            )));
-        }
     }
     // A missing solver limits this build, as an unsupported capability does.
     // As a sketch's own failure it would be in every baseline, so an edit

@@ -344,14 +344,7 @@ fn native_solid_revolutions_create_measure_name_cache_and_export() {
             assert_eq!(r["axis_curve_id"], axis.as_str());
             assert_eq!(r["profile"]["available"], true);
             assert_eq!(c["features"], json!([]));
-            assert_eq!(
-                capability_rows(&out),
-                vec![
-                    "core.part.v1".to_owned(),
-                    "feature.revolve.axis-closed.v1".to_owned(),
-                    "feature.revolve.v1".to_owned()
-                ]
-            );
+
             let cold = measure_solid(&out, &p, analytic, None);
             assert_eq!(
                 cold,
@@ -406,19 +399,6 @@ fn native_solid_revolutions_create_measure_name_cache_and_export() {
     );
     assert_eq!(c["revolves"][0]["closure"], "radial_clear");
     assert_eq!(c["revolves"][0]["axis_curve_id"], Value::Null);
-    assert_eq!(
-        capability_rows(&out),
-        vec!["core.part.v1".to_owned(), "feature.revolve.v1".to_owned()]
-    );
-    let sql = rusqlite::Connection::open(&out).expect("SQL");
-    let version: i64 = sql
-        .query_row(
-            "SELECT schema_version FROM objects WHERE kind='feature.revolve'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("version");
-    assert_eq!(version, 1, "a bore keeps payload v1");
 }
 
 #[test]
@@ -916,16 +896,9 @@ fn solid_revolution_discovery_payload_and_writer_without_kernel() {
     );
     assert_eq!(c["revolves"][0]["closure"], "axis_closed");
     assert_eq!(c["revolves"][0]["axis_curve_id"], labels[3].to_string());
-    assert!(capability_rows(&source).contains(&"feature.revolve.axis-closed.v1".to_owned()));
+
     let sql = rusqlite::Connection::open(&source).expect("SQL");
-    let version: i64 = sql
-        .query_row(
-            "SELECT schema_version FROM objects WHERE kind='feature.revolve'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("version");
-    assert_eq!(version, 2, "an axis Line moves the layout to v2");
+
     drop(sql);
 
     // A stated axis Line the coordinates disagree with refuses in discovery.
@@ -1030,44 +1003,6 @@ fn solid_revolution_discovery_payload_and_writer_without_kernel() {
     let mut doc = Document::open(&target).expect("open");
     doc.write_sketch_geometry(&prepared)
         .expect("the honest edit");
-    doc.close().expect("close");
-
-    // A v1 header carrying an axis Line would hide it from a §27A build: it
-    // is refused when read, never taken for a bore.
-    let forged = d.path().join("forged.fcad");
-    std::fs::copy(&source, &forged).expect("copy");
-    {
-        let raw = rusqlite::Connection::open(&forged).expect("SQL");
-        let bytes: Vec<u8> = raw
-            .query_row(
-                "SELECT payload FROM objects WHERE kind='feature.revolve'",
-                [],
-                |r| r.get(0),
-            )
-            .expect("payload");
-        let mut envelope = ferritecad_document::Envelope::from_bytes(&bytes).expect("envelope");
-        envelope.schema_version = 1;
-        envelope
-            .required_capabilities
-            .retain(|c| c != "feature.revolve.axis-closed.v1");
-        let bytes = envelope.to_bytes().expect("bytes");
-        raw.execute(
-            "UPDATE objects SET payload=?1,payload_hash=?2,schema_version=1 WHERE kind='feature.revolve'",
-            rusqlite::params![
-                bytes,
-                ferritecad_types::ContentHash::of_bytes(&bytes)
-                    .as_bytes()
-                    .as_slice()
-            ],
-        )
-        .expect("forge");
-    }
-    let doc = Document::open_read_only(&forged).expect("opens");
-    let error = doc.objects().expect_err("a v1 header over an axis Line");
-    assert!(
-        error.to_string().contains("does not match what it holds"),
-        "{error}"
-    );
     doc.close().expect("close");
 
     if !ferritecad_occt::is_available() {
