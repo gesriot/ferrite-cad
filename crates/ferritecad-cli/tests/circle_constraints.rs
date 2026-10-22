@@ -1182,7 +1182,7 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     };
     let taller = f.root.path().join("taller.fcad");
     let r = cli()
-        .arg("edit-extrude")
+        .arg("edit")
         .arg(&sized)
         .arg("--feature")
         .arg(extrude.to_string())
@@ -1192,7 +1192,7 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
         .arg(&taller)
         .arg("--json")
         .output()
-        .expect("edit-extrude");
+        .expect("edit");
     assert!(r.status.success(), "{r:?}");
     let raised = stored(&taller);
     assert_eq!(raised.height_mm, 25.);

@@ -43,8 +43,19 @@ fn fixture() -> Fixture {
     .expect("a plate");
     let reading = read_extrude_source(&file).expect("reading");
     Fixture {
-        feature: reading.features[0].feature,
-        height: reading.features[0].distance_mm.expect("a height"),
+        feature: reading
+            .expression_slots
+            .iter()
+            .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+            .expect("height slot")
+            .object,
+        height: reading
+            .expression_slots
+            .iter()
+            .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+            .expect("height slot")
+            .expression
+            .value(),
         file,
         root,
     }
@@ -59,9 +70,14 @@ fn open(fixture: &Fixture, root: &Path, limits: HistoryLimits) -> DocumentSessio
 }
 
 fn height_of(path: &Path) -> f64 {
-    read_extrude_source(path).expect("reading").features[0]
-        .distance_mm
-        .expect("a height")
+    read_extrude_source(path)
+        .expect("reading")
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("height slot")
+        .expression
+        .value()
 }
 
 fn apply(
@@ -70,17 +86,28 @@ fn apply(
     millimetres: f64,
 ) -> Result<StepCommit, CadError> {
     let ticket = support::viewed(session.begin_step());
-    let step = ticket.edit_extrude_height(
-        feature,
-        millimetres,
-        &mut MockKernel::new(),
-        |_, _| {
-            Err(ferritecad_types::CadError::unsupported(
-                "no STEP imports in this model",
-            ))
-        },
-        &OperationContext::default(),
-    )?;
+    let step = {
+        let ticket = ticket;
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    millimetres,
+                )
+                .expect("test value"),
+            ],
+            expected,
+            &mut MockKernel::new(),
+            |_, _| {
+                Err(ferritecad_types::CadError::unsupported(
+                    "no STEP imports in this model",
+                ))
+            },
+            &OperationContext::default(),
+        )
+    }?;
     session.commit_step(step)
 }
 
@@ -178,10 +205,19 @@ fn editing_back_to_the_saved_value_is_clean_and_a_no_op_is_not_a_step() {
     // The same value applied again rewrites only the stamp: no step.
     let before = (session.history_len(), session.generation());
     let ticket = support::viewed(session.begin_step());
-    let step = ticket
-        .edit_extrude_height(
-            f.feature,
-            f.height,
+    let step = {
+        let ticket = ticket;
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    f.feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    f.height,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -190,7 +226,8 @@ fn editing_back_to_the_saved_value_is_clean_and_a_no_op_is_not_a_step() {
             },
             &OperationContext::default(),
         )
-        .expect("a no-op still produces a file");
+    }
+    .expect("a no-op still produces a file");
     assert!(!session.changes_model(&step), "the model is the same");
     assert_eq!(
         session.commit_step(step).expect("commit"),
@@ -297,10 +334,19 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
 
     // A step produced and then dropped (its scene could not be prepared) too.
     let ticket = support::viewed(session.begin_step());
-    let step = ticket
-        .edit_extrude_height(
-            f.feature,
-            22.0,
+    let step = {
+        let ticket = ticket;
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    f.feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    22.0,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -309,7 +355,8 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
             },
             &OperationContext::default(),
         )
-        .expect("produced");
+    }
+    .expect("produced");
     assert_eq!(
         files(session.private_directory()).len(),
         before_files.len() + 1
@@ -319,10 +366,19 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
     assert!(!session.is_dirty());
 
     // A step made before the session moved on is stale and is not applied.
-    let stale = support::viewed(session.begin_step())
-        .edit_extrude_height(
-            f.feature,
-            23.0,
+    let stale = {
+        let ticket = support::viewed(session.begin_step());
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    f.feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    23.0,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -331,7 +387,8 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
             },
             &OperationContext::default(),
         )
-        .expect("produced");
+    }
+    .expect("produced");
     apply(&mut session, f.feature, 24.0).expect("the session moves on");
     let error = session.commit_step(stale).expect_err("stale");
     assert_eq!(error.to_string(), format!("invalid input: {STALE_STEP}"));
@@ -702,7 +759,12 @@ fn constrained() -> (Fixture, ObjectId, Vec<ferritecad_types::StableEntityId>) {
     document.close().expect("close");
     let reading = read_extrude_source(&file).expect("reading");
     let ids = stored_ids(&file);
-    f.feature = reading.features[0].feature;
+    f.feature = reading
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("height slot")
+        .object;
     f.file = file;
     f.root = root;
     (f, sketch, ids)

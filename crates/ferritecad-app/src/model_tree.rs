@@ -42,14 +42,6 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
     }
     let id = key.0;
     let mut out = Vec::new();
-    if source.unavailable_reason().is_none()
-        && source
-            .features
-            .iter()
-            .any(|c| c.feature == id && c.refusal.is_none())
-    {
-        out.push(ModelEdit::Height);
-    }
     if source.sketches.iter().any(|c| {
         c.sketch == id && c.refusal.is_none() && c.vertices.is_some() && c.profile_use.is_some()
     }) {
@@ -83,26 +75,30 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
     {
         out.push(ModelEdit::Cut);
     }
-    if source
-        .fillet_features
-        .iter()
-        .any(|c| c.feature == id && c.refusal.is_none() && c.saved.is_some())
-    {
-        out.push(ModelEdit::Fillet);
-    }
-    if source
-        .chamfer_features
-        .iter()
-        .any(|c| c.feature == id && c.refusal.is_none() && c.saved.is_some())
-    {
-        out.push(ModelEdit::Chamfer);
-    }
-    if source
-        .revolve_angles
-        .iter()
-        .any(|c| c.feature == id && c.refusal.is_none() && c.radians.is_some())
-    {
-        out.push(ModelEdit::RevolveAngle);
+    for (slot, action) in [
+        (
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            ModelEdit::Height,
+        ),
+        (
+            ferritecad_document::ExpressionSlot::FilletRadius,
+            ModelEdit::Fillet,
+        ),
+        (
+            ferritecad_document::ExpressionSlot::ChamferDistance,
+            ModelEdit::Chamfer,
+        ),
+        (
+            ferritecad_document::ExpressionSlot::RevolveAngle,
+            ModelEdit::RevolveAngle,
+        ),
+    ] {
+        if source
+            .expression_slot(id, slot)
+            .is_some_and(|s| s.refusal.is_none())
+        {
+            out.push(action);
+        }
     }
     out
 }

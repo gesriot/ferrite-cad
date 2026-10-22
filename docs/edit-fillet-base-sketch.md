@@ -326,7 +326,7 @@ def redrawn(source, row, version, was, rect, name):
     assert tables(out)["topology_refs"] == refs, "a name moved"
     after = inspect(out)
     (again,) = after["fillets"]
-    assert again["feature_id"] == fillet["feature_id"] and again["radius_mm"] == r, again
+    assert again["feature_id"] == fillet["feature_id"] and again["expression"]["value"] == r, again
     assert again["edge"] == fillet["edge"], again
     at_corner = moved(rect, was, corner if was == SAVED else row["fillet_base"]["corner_mm"])
     assert again["corner_mm"] == at_corner, (again, at_corner)

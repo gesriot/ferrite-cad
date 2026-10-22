@@ -233,18 +233,24 @@ fn gate(name: &str) {
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     // Dirty base: height, then the left wall's two vertices.
     let ph = root.path().join("peer-height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        base.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        opened.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "9.25".as_ref(),
-        "-o".as_ref(),
-        ph.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &base.to_string(),
+            "extrude_distance",
+            &"9.25",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            opened.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            ph.as_os_str(),
+        ])
+    };
     apply_native(&mut s, base, 9.25);
     same_model(
         &s.export_path().expect("height"),
@@ -368,7 +374,8 @@ fn gate(name: &str) {
     let reading = read_extrude_source(&current).expect("reading");
     let (mut form, r) = typed_radius(&current, &reading, &s, added[3], "4.5");
     let mut theirs = r.clone();
-    theirs.feature = ObjectId::from_bytes(map[&r.feature.to_bytes()]).expect("id");
+    theirs.changes[0].object =
+        ObjectId::from_bytes(map[&r.changes[0].object.to_bytes()]).expect("id");
     let edited_peer = root.path().join("peer-edit.fcad");
     radius_peer(&peer_before, &theirs, &edited_peer);
     assert!(
@@ -862,18 +869,24 @@ fn compare_gui(root: &Path) {
     let target = reading.fillet_bodies[0].target.clone().expect("target");
     let body = target.body;
     let height = tmp.path().join("height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        target.base_feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        reading.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "9.25".as_ref(),
-        "-o".as_ref(),
-        height.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &target.base_feature.to_string(),
+            "extrude_distance",
+            &"9.25",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            height.as_os_str(),
+        ])
+    };
     let reading = read_extrude_source(&height).expect("height reading");
     let mut vertices = reading
         .sketches
@@ -902,11 +915,18 @@ fn compare_gui(root: &Path) {
     let radius = tmp.path().join("radius.fcad");
     radius_peer(
         &a,
-        &ferritecad_jobs::EditFilletRadiusRequest {
+        &ferritecad_jobs::EditRequest {
             source: a.clone(),
             expected: read_extrude_source(&a).expect("a").version,
-            feature: history(&a)[0].feature,
-            radius_mm: WINDOW_A_RADIUS.parse().expect("radius"),
+
+            changes: vec![
+                ferritecad_document::ExpressionChange::constant(
+                    history(&a)[0].feature,
+                    ferritecad_document::ExpressionSlot::FilletRadius,
+                    WINDOW_A_RADIUS.parse().expect("radius"),
+                )
+                .expect("validated expression"),
+            ],
             destination: PathBuf::new(),
         },
         &radius,

@@ -188,18 +188,24 @@ fn dirty_base(
     let opened = read_extrude_source(source).expect("reading");
     let target = opened.chamfer_bodies[0].target.clone().expect("target");
     let ph = root.join("peer-height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        target.base_feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        opened.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "9.25".as_ref(),
-        "-o".as_ref(),
-        ph.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &target.base_feature.to_string(),
+            "extrude_distance",
+            &"9.25",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            opened.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            ph.as_os_str(),
+        ])
+    };
     apply_native(s, target.base_feature, 9.25);
     same_model(
         &s.export_path().expect("height"),
@@ -347,7 +353,7 @@ fn gate(name: &str) {
     // The new Chamfer's distance is changed at once through §30H's own form.
     let (mut form, d) = typed_distance(&added, &after, &s, feature, A_DISTANCE);
     let mut theirs = d.clone();
-    theirs.feature = ObjectId::from_bytes(map[&feature.to_bytes()]).expect("id");
+    theirs.changes[0].object = ObjectId::from_bytes(map[&feature.to_bytes()]).expect("id");
     let edited_peer = root.path().join("peer-distance.fcad");
     distance_peer(&independent, &theirs, &edited_peer);
     assert!(
@@ -379,7 +385,11 @@ fn gate(name: &str) {
     assert!(
         read_extrude_source(&s.export_path().expect("opened"))
             .expect("reading")
-            .chamfer_features
+            .expression_slots
+            .iter()
+            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ChamferDistance)
+            .cloned()
+            .collect::<Vec<_>>()
             .is_empty(),
         "the undone Chamfer left discovery"
     );
@@ -605,9 +615,9 @@ fn solved_rectangle(path: &Path) -> ferritecad_jobs::EditSketchConstraintsReques
         .find_map(|c| c.target.as_ref().map(|t| t.profile))
         .or_else(|| {
             reading
-                .chamfer_features
-                .first()
-                .and_then(|c| c.saved.as_ref().map(|s| s.profile))
+                .sketches
+                .iter()
+                .find_map(|s| s.chamfer.as_ref().map(|s| s.profile))
         })
         .expect("plate profile");
     let d = Document::open_read_only(path).expect("document");
@@ -832,18 +842,24 @@ fn compare_gui(root: &Path) {
     let target = reading.chamfer_bodies[0].target.clone().expect("target");
     let body = target.body;
     let height = tmp.path().join("height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        target.base_feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        reading.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "9.25".as_ref(),
-        "-o".as_ref(),
-        height.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &target.base_feature.to_string(),
+            "extrude_distance",
+            &"9.25",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            height.as_os_str(),
+        ])
+    };
     let reading = read_extrude_source(&height).expect("height reading");
     let mut vertices = reading
         .sketches
@@ -872,11 +888,18 @@ fn compare_gui(root: &Path) {
     let last = tmp.path().join("last.fcad");
     distance_peer(
         &a,
-        &ferritecad_jobs::EditChamferDistanceRequest {
+        &ferritecad_jobs::EditRequest {
             source: a.clone(),
             expected: read_extrude_source(&a).expect("a").version,
-            feature: new_chamfer(&base, &a).expect("their Chamfer"),
-            distance_mm: WINDOW_A_DISTANCE.parse().expect("distance"),
+
+            changes: vec![
+                ferritecad_document::ExpressionChange::constant(
+                    new_chamfer(&base, &a).expect("their Chamfer"),
+                    ferritecad_document::ExpressionSlot::ChamferDistance,
+                    WINDOW_A_DISTANCE.parse().expect("distance"),
+                )
+                .expect("validated expression"),
+            ],
             destination: PathBuf::new(),
         },
         &last,

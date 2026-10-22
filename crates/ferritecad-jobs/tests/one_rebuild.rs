@@ -157,7 +157,22 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
         let ticket = session.begin_step();
         let result = match operation {
             "height" => {
-                ticket.edit_extrude_height(feature, 12.0, &mut kernel, no_imports, &context)
+                let ticket = ticket;
+                let expected = ticket.source().version();
+                ticket.edit(
+                    vec![
+                        ferritecad_document::ExpressionChange::constant(
+                            feature,
+                            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                            12.0,
+                        )
+                        .expect("test value"),
+                    ],
+                    expected,
+                    &mut kernel,
+                    no_imports,
+                    &context,
+                )
             }
             "vertices" => {
                 let vertices = sketch
@@ -267,9 +282,15 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
                 no_imports,
                 &context,
             ),
-            "fillet_radius" => ticket.edit_fillet_radius(
-                selected,
-                2.5,
+            "fillet_radius" => ticket.edit(
+                vec![
+                    ferritecad_document::ExpressionChange::constant(
+                        selected,
+                        ferritecad_document::ExpressionSlot::FilletRadius,
+                        2.5,
+                    )
+                    .expect("test value"),
+                ],
                 expected,
                 &mut kernel,
                 no_imports,
@@ -286,17 +307,29 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
                 no_imports,
                 &context,
             ),
-            "chamfer_distance" => ticket.edit_chamfer_distance(
-                selected,
-                2.5,
+            "chamfer_distance" => ticket.edit(
+                vec![
+                    ferritecad_document::ExpressionChange::constant(
+                        selected,
+                        ferritecad_document::ExpressionSlot::ChamferDistance,
+                        2.5,
+                    )
+                    .expect("test value"),
+                ],
                 expected,
                 &mut kernel,
                 no_imports,
                 &context,
             ),
-            "revolve_angle" => ticket.edit_revolve_angle(
-                feature,
-                200.0_f64.to_radians(),
+            "revolve_angle" => ticket.edit(
+                vec![
+                    ferritecad_document::ExpressionChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::RevolveAngle,
+                        200.0_f64.to_radians(),
+                    )
+                    .expect("test value"),
+                ],
                 expected,
                 &mut kernel,
                 no_imports,
@@ -351,14 +384,33 @@ fn a_picture_failure_releases_the_rebuild_and_keeps_the_accepted_version() {
     let original = session.current().version();
     let feature = read_extrude_source(session.current().path())
         .expect("source")
-        .features[0]
-        .feature;
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("height slot")
+        .object;
     kernel.refuse_mesh = true;
     let ticket = session.begin_step();
     let destination = ticket.destination().to_path_buf();
-    let error = ticket
-        .edit_extrude_height(feature, 12.0, &mut kernel, no_imports, &context)
-        .expect_err("mesh refused");
+    let error = {
+        let ticket = ticket;
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    12.0,
+                )
+                .expect("test value"),
+            ],
+            expected,
+            &mut kernel,
+            no_imports,
+            &context,
+        )
+    }
+    .expect_err("mesh refused");
     assert!(error.to_string().contains("requested mesh failure"));
     assert!(!destination.exists());
     assert_eq!(session.current().version(), original);

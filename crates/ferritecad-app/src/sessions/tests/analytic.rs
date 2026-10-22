@@ -348,7 +348,13 @@ fn analytic_gate(
 ) {
     let original = std::fs::read(source).expect("source");
     let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
-    let feature = opened.features[0].feature;
+    let feature = opened
+        .expression_slots
+        .iter()
+        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .cloned()
+        .collect::<Vec<_>>()[0]
+        .object;
     let private = tempfile::tempdir().expect("private root");
     let mut sessions = Sessions::default();
     sessions.adopt(
@@ -366,18 +372,24 @@ fn analytic_gate(
     // The command line, doing the same two things to the same document.
     let peer1 = root.join("peer-height.fcad");
     let peer2 = root.join("peer-geometry.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        opened.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        numbers.height.to_string().as_ref(),
-        "-o".as_ref(),
-        peer1.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &feature.to_string(),
+            "extrude_distance",
+            &numbers.height.to_string(),
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            opened.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            peer1.as_os_str(),
+        ])
+    };
     request.peer(&peer1, root, &peer2);
     let (original_stl, original_fbx) = peer_bytes(source, root, "a-original");
     let (h_stl, h_fbx) = peer_bytes(&peer1, root, "a-height");

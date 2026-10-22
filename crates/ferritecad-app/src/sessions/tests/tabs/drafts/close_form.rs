@@ -499,7 +499,13 @@ pub(super) fn form_families(quit: bool) {
                     path,
                     &reading,
                     &w.sessions,
-                    reading.fillet_features[0].feature,
+                    reading
+                        .expression_slots
+                        .iter()
+                        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::FilletRadius)
+                        .cloned()
+                        .collect::<Vec<_>>()[0]
+                        .object,
                     " 2.0 ",
                 )
                 .0;
@@ -516,7 +522,13 @@ pub(super) fn form_families(quit: bool) {
                     path,
                     &reading,
                     &w.sessions,
-                    reading.chamfer_features[0].feature,
+                    reading
+                        .expression_slots
+                        .iter()
+                        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ChamferDistance)
+                        .cloned()
+                        .collect::<Vec<_>>()[0]
+                        .object,
                     " 2.0 ",
                 )
                 .0;
@@ -873,18 +885,31 @@ pub(super) fn compare_close(root: &Path) {
     let source = root.join("inputs/a.fcad");
     let reading = read_extrude_source(&source).expect("source");
     let peer = work.path().join("peer.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        reading.features[0].feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        reading.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "26".as_ref(),
-        "-o".as_ref(),
-        peer.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object
+                .to_string(),
+            "extrude_distance",
+            &"26",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            peer.as_os_str(),
+        ])
+    };
     let saved = root.join("a.fcad");
     assert_eq!(
         all_sql(&saved, &[], false),

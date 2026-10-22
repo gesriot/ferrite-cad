@@ -112,9 +112,15 @@ fn a_broken_history_opens_exports_partially_and_can_be_repaired_and_undone() {
     let expected = session.current().version();
     let mut step = session
         .begin_step()
-        .edit_fillet_radius(
-            chain.first,
-            2.0,
+        .edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    chain.first,
+                    ferritecad_document::ExpressionSlot::FilletRadius,
+                    2.0,
+                )
+                .expect("test value"),
+            ],
             expected,
             &mut kernel,
             |_, _| {

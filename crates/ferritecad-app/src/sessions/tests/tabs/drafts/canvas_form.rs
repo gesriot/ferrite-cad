@@ -173,17 +173,28 @@ fn a_form_held_on_another_version_loses_its_drawing_and_keeps_its_picks() {
     let generation = hidden
         .begin_apply(|ticket, _, _| {
             std::thread::spawn(move || {
-                tx.send(ticket.edit_extrude_height(
-                    feature,
-                    20.0,
-                    &mut MockKernel::new(),
-                    |_, _| {
-                        Err(ferritecad_types::CadError::unsupported(
-                            "no STEP imports in this model",
-                        ))
-                    },
-                    &OperationContext::default(),
-                ))
+                tx.send({
+                    let ticket = ticket;
+                    let expected = ticket.source().version();
+                    ticket.edit(
+                        vec![
+                            ferritecad_document::ExpressionChange::constant(
+                                feature,
+                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                                20.0,
+                            )
+                            .expect("test value"),
+                        ],
+                        expected,
+                        &mut MockKernel::new(),
+                        |_, _| {
+                            Err(ferritecad_types::CadError::unsupported(
+                                "no STEP imports in this model",
+                            ))
+                        },
+                        &OperationContext::default(),
+                    )
+                })
                 .expect("edit");
             })
         })

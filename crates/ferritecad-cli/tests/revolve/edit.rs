@@ -610,7 +610,6 @@ fn revolve_profile_discovery_protocol_and_writer_without_kernel() {
     assert_eq!(row["circle_edit"]["available"], false);
     assert_eq!(row["annulus_edit"]["available"], false);
     assert_eq!(row["cut_history_v3"], Value::Null);
-    assert_eq!(c["edit_extrude"]["available"], false);
 
     // Structures outside the class: discovery refuses and the command
     // publishes nothing. Without a kernel the command stops at the kernel

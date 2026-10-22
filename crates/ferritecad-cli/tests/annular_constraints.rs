@@ -1231,7 +1231,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         .expect("feature")
         .to_owned();
     let raised = cli()
-        .arg("edit-extrude")
+        .arg("edit")
         .arg(&sized)
         .args(["--feature", &feature])
         .args(["--distance-mm", "25"])
@@ -1239,7 +1239,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         .arg(&taller)
         .arg("--json")
         .output()
-        .expect("edit-extrude");
+        .expect("edit");
     assert!(raised.status.success(), "{raised:?}");
     let up = inspect(&taller);
     assert_eq!(up["features"][0]["distance_mm"], 25.0);

@@ -51,16 +51,28 @@ fn make_plate(path: &Path) {
 fn feature_of(session: &DocumentSession) -> ObjectId {
     read_extrude_source(session.current().path())
         .expect("reading")
-        .features[0]
-        .feature
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("height slot")
+        .object
 }
 
 fn apply(session: &mut DocumentSession, millimetres: f64) {
     let feature = feature_of(session);
-    let step = support::viewed(session.begin_step())
-        .edit_extrude_height(
-            feature,
-            millimetres,
+    let step = {
+        let ticket = support::viewed(session.begin_step());
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    millimetres,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -69,7 +81,8 @@ fn apply(session: &mut DocumentSession, millimetres: f64) {
             },
             &OperationContext::default(),
         )
-        .expect("an edit");
+    }
+    .expect("an edit");
     session.commit_step(step).expect("accepted");
 }
 

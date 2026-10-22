@@ -77,14 +77,11 @@ pub use create::{
 };
 pub use edit::{
     AddedCircularCut, AddedEdgeChamfer, AddedEdgeFillet, CircularCutRequest, EdgeChamferRequest,
-    EdgeFilletRequest, EditAnnulusRequest, EditChamferDistanceRequest, EditCircleRequest,
-    EditCircularCutRequest, EditExtrudeRequest, EditFilletRadiusRequest, EditRevolveAngleRequest,
-    EditSketchConstraintsRequest, EditSketchRequest, EditedAnnulus, EditedChamferDistance,
-    EditedCircle, EditedCircularCut, EditedDocument, EditedFilletRadius, EditedSketch,
-    EditedSketchConstraints, chamfer_edge_copy, circular_cut_copy, edit_annulus_copy,
-    edit_chamfer_distance_copy, edit_circle_copy, edit_circular_cut_copy, edit_extrude_copy,
-    edit_fillet_radius_copy, edit_revolve_angle_copy, edit_sketch_constraints_copy,
-    edit_sketch_copy, fillet_edge_copy, read_extrude_source,
+    EdgeFilletRequest, EditAnnulusRequest, EditCircleRequest, EditCircularCutRequest, EditRequest,
+    EditSketchConstraintsRequest, EditSketchRequest, EditedAnnulus, EditedCircle,
+    EditedCircularCut, EditedDocument, EditedSketch, EditedSketchConstraints, chamfer_edge_copy,
+    circular_cut_copy, edit_annulus_copy, edit_circle_copy, edit_circular_cut_copy, edit_copy,
+    edit_sketch_constraints_copy, edit_sketch_copy, fillet_edge_copy, read_extrude_source,
 };
 pub use fbx::{FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx};
 pub use import::{

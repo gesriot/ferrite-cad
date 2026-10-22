@@ -829,7 +829,7 @@ fn annulus_discovery_and_protocol_without_kernel() {
         json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
                "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
                "outer_radius_mm":10}),
-        // The height belongs to edit-extrude, and a lone radius to edit-circle.
+        // The height belongs to edit, and a lone radius to edit-circle.
         json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
                "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
                "outer_radius_mm":10,"inner_radius_mm":4,"height_mm":20}),
@@ -1219,7 +1219,7 @@ fn native_annulus_edit_moves_and_resizes_only_the_named_pair() {
     };
     let taller = root.path().join("taller.fcad");
     let r = cli()
-        .arg("edit-extrude")
+        .arg("edit")
         .arg(all)
         .arg("--feature")
         .arg(extrude.to_string())
@@ -1229,7 +1229,7 @@ fn native_annulus_edit_moves_and_resizes_only_the_named_pair() {
         .arg(&taller)
         .arg("--json")
         .output()
-        .expect("edit-extrude");
+        .expect("edit");
     assert!(r.status.success(), "{r:?}");
     let raised = stored(&taller);
     assert_eq!(raised.outer, all_stored.outer);

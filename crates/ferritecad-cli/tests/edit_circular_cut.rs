@@ -874,20 +874,16 @@ fn cut_edit_discovery_and_protocol_without_native() {
         .iter()
         .find(|x| x["circular_cut_edit"]["available"] == json!(false))
         .expect("the base extrusion");
-    assert_eq!(base["editable"], json!(true), "edit-extrude still owns it");
+    assert_eq!(base["editable"], json!(true), "edit still owns it");
     assert!(
         base["circular_cut_edit"]["refusal"]
             .as_str()
             .expect("a reason")
-            .contains("edit-extrude"),
+            .contains("edit"),
         "the refusal must say where that distance is edited"
     );
     assert!(base["circular_cut_edit"]["saved"].is_null());
-    assert_eq!(
-        f.cut()["editable"],
-        json!(false),
-        "a Cut is not edit-extrude"
-    );
+    assert_eq!(f.cut()["editable"], json!(false), "a Cut is not edit");
 
     let saved = f.saved();
     let s = stored(&f.source);

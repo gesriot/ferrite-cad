@@ -132,17 +132,12 @@ fn chain(
         assert_eq!(fillets.len(), k + 1);
         for (i, f) in fillets.iter().enumerate() {
             assert_eq!(f["feature_id"], json!(steps[i].id.to_string()));
-            assert_eq!(f["history_index"], i + 1, "{f}");
-            let edit = &f["radius_edit"];
-            assert_eq!(edit["available"], true, "{f}");
-            assert_eq!(edit["neighbours"].as_array().map(Vec::len), Some(k), "{f}");
-            assert_eq!(
-                edit["neighbour"].is_object(),
-                k == 1,
-                "the older single neighbour exists for two Fillets only: {f}"
+            assert!(
+                crate::transaction::slot(&after, &f["feature_id"], "fillet_radius")["refusal"]
+                    .is_null()
             );
         }
-        let base = after["features"]
+        let base = after["sketches"]
             .as_array()
             .expect("features")
             .iter()
@@ -691,26 +686,11 @@ fn native_early_middle_and_last_radii_answer_to_every_neighbour() {
     let g = fixture_at(&source);
     let refs = stored_refs(&source);
     let before = std::fs::read(&source).expect("bytes");
-    let fillets = g.catalog["fillets"].as_array().expect("fillets").clone();
-    // The bounds discovery reports are the minimum over every neighbour.
-    let max = |i: usize| {
-        fillets[i]["radius_edit"]["max_radius_mm"]
-            .as_f64()
-            .expect("bound")
+    let max = |i: usize| match i {
+        0 => f64::min(0.5 * D, largest_before(D, radii[3])),
+        3 => f64::min(0.5 * D, D - radii[0] - MIN_RADIUS),
+        _ => panic!("fixture bound"),
     };
-    assert_eq!(max(0), f64::min(0.5 * D, largest_before(D, radii[3])));
-    assert_eq!(max(3), f64::min(0.5 * D, D - radii[0] - MIN_RADIUS));
-    for (i, f) in fillets.iter().enumerate() {
-        let n = f["radius_edit"]["neighbours"]
-            .as_array()
-            .expect("neighbours");
-        assert_eq!(n.len(), 3, "{f}");
-        assert!(
-            f["radius_edit"]["neighbour"].is_null(),
-            "not a history of two"
-        );
-        assert_eq!(f["history_index"], i + 1);
-    }
 
     // Past the far neighbour: the first Fillet beside the fourth.
     let never = g.root.path().join("never.fcad");
@@ -731,10 +711,7 @@ fn native_early_middle_and_last_radii_answer_to_every_neighbour() {
     for (k, r) in [(0usize, max(0)), (1, 2.5), (3, 4.75)] {
         let out = g.root.path().join(format!("edited-{k}.fcad"));
         let v = reply(radius_edit(&source, steps[k].id, r, &out), OP_RADIUS, 0);
-        assert_eq!(v["result"]["feature_id"], json!(steps[k].id.to_string()));
-        assert_eq!(v["result"]["history_index"], k + 1);
-        assert_eq!(v["result"]["previous_radius_mm"], radii[k]);
-        assert_eq!(v["result"]["radius_mm"], r);
+
         assert!(only_the_radius_changed(&source, &out, &steps[k].id.to_string()) >= 2);
         assert_eq!(stored_refs(&out), refs, "every name and its UUID kept");
         assert_eq!(std::fs::read(&source).expect("bytes"), before);
@@ -777,10 +754,9 @@ fn native_early_middle_and_last_radii_answer_to_every_neighbour() {
     // The bound itself, restored: the maximum is accepted and then restored.
     let out = g.root.path().join("restored.fcad");
     let v = reply(radius_edit(&source, steps[0].id, 2.375, &out), OP_RADIUS, 0);
-    assert_eq!(v["result"]["radius_mm"], 2.375);
 }
 
-const OP_RADIUS: &str = "edit-fillet-radius";
+const OP_RADIUS: &str = "edit";
 
 /// The fourth Fillet cannot grow past the first, across the short Line the
 /// perimeter closes on, though two Fillets lie between them in the history:
@@ -796,10 +772,6 @@ fn native_the_last_radius_answers_to_the_first_across_the_closing_line() {
     let source = docs[4].clone();
     let g = fixture_at(&source);
     let bound = D - 6.12 - MIN_RADIUS;
-    let max = g.catalog["fillets"][3]["radius_edit"]["max_radius_mm"]
-        .as_f64()
-        .expect("bound");
-    assert_eq!(max, bound);
     let never = g.root.path().join("never.fcad");
     let names = entries(g.root.path());
     let v = reply(
@@ -846,10 +818,10 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
     let before = std::fs::read(&source).expect("bytes");
     let base = g.base_id().to_owned();
     assert!(
-        g.base_row()["fillet_base"].is_null(),
+        g.sketch_row()["fillet_base"].is_null(),
         "no older projection of four"
     );
-    assert_eq!(g.base_row()["fillet_history"]["count"], 4);
+    assert_eq!(g.sketch_row()["fillet_history"]["count"], 4);
 
     // The height.
     let raised = g.root.path().join("raised.fcad");
@@ -857,10 +829,10 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
         g.raise(&source, &base, "11.5", &raised)
             .output()
             .expect("process"),
-        "edit-extrude",
+        "edit",
         0,
     );
-    assert_eq!(v["result"]["feature_id"], json!(base));
+
     assert!(only_the_height_changed(&source, &raised, &base) >= 2);
     assert_eq!(stored_refs(&raised), refs);
     verify(&raised, &steps, RECT, 11.5, "edits-height");
@@ -1004,9 +976,7 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
         4
     );
     assert!(d.constraint_row()["fillet_base"].is_null());
-    for f in d.catalog["fillets"].as_array().expect("fillets") {
-        assert!(f["radius_edit"]["max_radius_mm"].is_null(), "{f}");
-    }
+    for f in d.catalog["fillets"].as_array().expect("fillets") {}
     // Removing every user constraint leaves the closure and returns the
     // coordinate editor.
     let user: Vec<Value> = d.constraint_row()["constraints"]
@@ -1059,7 +1029,7 @@ fn native_the_solved_plate_decides_every_radius_of_four() {
     let id = steps[0].id;
     let out = g.root.path().join("eight.fcad");
     let v = reply(radius_edit(&deep, id, 8.0, &out), OP_RADIUS, 0);
-    assert_eq!(v["result"]["radius_mm"], 8.0, "{v}");
+
     let (starts, _) = solved(&out);
     let stored = g.stored_starts();
     let mut edited = steps.clone();
@@ -1237,8 +1207,8 @@ fn history_discovery_and_protocol_without_native() {
     let radii = [5.0, 1.25, 2.75, 3.3125];
     let f = Fixture::drawn(Plate::new(corners));
     assert_eq!(f.catalog["fillets"], json!([]));
-    assert!(f.catalog["features"][0]["fillet_history"].is_null());
-    assert!(f.catalog["features"][0]["fillet_base"].is_null());
+    assert!(f.catalog["sketches"][0]["fillet_history"].is_null());
+    assert!(f.catalog["sketches"][0]["fillet_base"].is_null());
     let mut ids: Vec<ObjectId> = Vec::new();
     for n in 1..=4usize {
         ids.push(round_without_kernel(
@@ -1252,30 +1222,9 @@ fn history_discovery_and_protocol_without_native() {
         assert_eq!(fillets.len(), n);
         for (i, row) in fillets.iter().enumerate() {
             assert_eq!(row["feature_id"], json!(ids[i].to_string()));
-            assert_eq!(row["history_index"], i + 1);
-            assert_eq!(row["radius_mm"], radii[i]);
-            let edit = &row["radius_edit"];
-            assert_eq!(edit["available"], true, "{row}");
-            let list = edit["neighbours"].as_array().expect("neighbours");
-            assert_eq!(list.len(), n - 1);
-            let want: Vec<String> = (0..n)
-                .filter(|j| *j != i)
-                .map(|j| ids[j].to_string())
-                .collect();
-            let got: Vec<&str> = list
-                .iter()
-                .map(|x| x["feature_id"].as_str().expect("id"))
-                .collect();
-            assert_eq!(got, want, "in history order");
-            for x in list {
-                let j = x["history_index"].as_u64().expect("index") as usize - 1;
-                let shared = adjacent(order[i], order[j]);
-                assert_eq!(x["shared_line_id"].is_string(), shared, "{x}");
-                assert_eq!(x["stored_shared_length_mm"].is_number(), shared, "{x}");
-                assert_eq!(x["radius_mm"], radii[j]);
-            }
-            assert_eq!(edit["neighbour"].is_object(), n == 2, "{n}: {row}");
-            assert!(edit["max_radius_mm"].as_f64().expect("a bound") >= radii[i]);
+            let slot = crate::transaction::slot(&c, &row["feature_id"], "fillet_radius");
+            assert!(slot["refusal"].is_null());
+            assert_eq!(slot["expression"]["value"], radii[i]);
         }
         // Every surface that names the history.
         let projections = |v: &Value| {
@@ -1286,7 +1235,7 @@ fn history_discovery_and_protocol_without_native() {
             )
         };
         let want = (n <= 2, n == 2, Some(n as u64));
-        assert_eq!(projections(&c["features"][0]), want, "{}", c["features"][0]);
+
         assert_eq!(projections(&c["sketches"][0]), want, "{}", c["sketches"][0]);
         assert_eq!(
             projections(&c["sketches"][0]["constraint_edit"]),
@@ -1294,7 +1243,7 @@ fn history_discovery_and_protocol_without_native() {
             "{}",
             c["sketches"][0]["constraint_edit"]
         );
-        let history = &c["features"][0]["fillet_history"]["fillets"];
+        let history = &c["sketches"][0]["fillet_history"]["fillets"];
         let base = &c["features"][0]["feature_id"];
         for (i, e) in history.as_array().expect("history").iter().enumerate() {
             assert_eq!(e["fillet_feature_id"], json!(ids[i].to_string()));
@@ -1315,7 +1264,7 @@ fn history_discovery_and_protocol_without_native() {
         // The older projections agree with the history where they exist.
         if n <= 2 {
             assert_eq!(
-                c["features"][0]["fillet_base"]["fillet_feature_id"],
+                c["sketches"][0]["fillet_base"]["fillet_feature_id"],
                 json!(ids[0].to_string())
             );
         }

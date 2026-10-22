@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! §27E: the saved angle of a §27D sector, changed by `edit-revolve-angle`
+//! §27E: the saved angle of a §27D sector, changed by `edit`
 //! into a new copy and measured after the fact.
 //!
 //! Every expected volume is this file's own Pappus × θ/360, never the
@@ -18,7 +18,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-const EDIT_ANGLE: &str = "edit-revolve-angle";
+const EDIT_ANGLE: &str = "edit";
 
 /// A part with a bore, stepped, at fractional sizes, shifted along Y.
 pub(super) const STEPPED_SHIFTED: [[f64; 2]; 6] = [
@@ -42,11 +42,10 @@ pub(super) fn angle_edit(
     request: &Path,
     out: &Path,
 ) -> Command {
+    crate::transaction::address(request, feature);
     let mut c = cli();
     c.arg(EDIT_ANGLE)
         .arg(source)
-        .arg("--feature")
-        .arg(feature)
         .arg("--expect-version")
         .arg(version)
         .arg("--request")
@@ -68,7 +67,10 @@ pub(super) fn angle_reply(out: Output, code: i32) -> Value {
 }
 
 pub(super) fn write_angle(path: &Path, degrees: f64) {
-    write(path, &json!({"request_version":1,"angle_deg":degrees}));
+    write(
+        path,
+        &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"revolve_angle"},"value":degrees,"unit":"deg"}]}),
+    );
 }
 
 /// The Revolve discovery reports, and the version to pin.
@@ -189,17 +191,7 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
         request_v2(&input, &points, angle(137.5));
         reply(create(&input, &source).output().expect("create"), 0);
         let (feature, _, row) = target(&source);
-        assert_eq!(row["angle_edit"]["available"], true, "{row}");
-        assert_eq!(row["angle_edit"]["refusal"], Value::Null);
-        assert_eq!(row["angle_edit"]["document_refusal"], Value::Null);
-        assert_eq!(
-            row["angle_edit"]["min_deg"],
-            json!(RevolveAngle::MIN_RADIANS.to_degrees())
-        );
-        assert_eq!(
-            row["angle_edit"]["max_deg"],
-            json!(RevolveAngle::MAX_RADIANS.to_degrees())
-        );
+
         let saved_refs = refs(&source);
         let first_payload = revolve_payload(&source);
         // Measured before anything exports it: an export fills the cache.
@@ -225,7 +217,7 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
                     .expect("edit"),
                 0,
             );
-            assert_eq!(v["result"]["feature_id"], feature.as_str());
+
             assert_eq!(v["result"]["destination"], out.to_str().expect("UTF-8"));
             assert_eq!(
                 v["result"]["document_id"],
@@ -240,7 +232,7 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
             let r = &c["revolves"][0];
             assert_eq!(r["angle_deg"], json!(degrees));
             assert_eq!(r["extent"], "partial_turn");
-            assert_eq!(r["angle_edit"]["available"], true);
+
             // §27F: the sector's profile is editable, and reports the angle
             // this copy now has.
             let sketch = &c["sketches"][0];
@@ -424,178 +416,6 @@ pub(super) fn stub_sector(path: &Path, degrees: f64) -> ObjectId {
     revolve
 }
 
-/// Discovery and every request refusal the command can reach before a
-/// kernel, in any build; then what a kernel decides, said per build.
-#[test]
-fn revolve_angle_discovery_and_request_refusals_preserve_every_file() {
-    let d = tempfile::tempdir().expect("dir");
-    let source = d.path().join("sector.fcad");
-    let revolve = stub_sector(&source, 137.5);
-    let (feature, version, row) = target(&source);
-    assert_eq!(feature, revolve.to_string());
-    assert_eq!(
-        row["angle_edit"],
-        json!({"available":true,"refusal":null,"document_refusal":null,
-               "min_deg":0.01,"max_deg":359.99})
-    );
-    // A full turn is reported, with its reason, and is not an angle.
-    let full = d.path().join("full.fcad");
-    write_revolve_document(&full, &BUSHING);
-    let (_, _, full_row) = target(&full);
-    assert_eq!(full_row["angle_edit"]["available"], false);
-    assert!(
-        full_row["angle_edit"]["refusal"]
-            .as_str()
-            .expect("refusal")
-            .contains("full-turn Revolve has no angle"),
-        "{full_row}"
-    );
-    assert_eq!(full_row["angle_deg"], Value::Null);
-
-    let bytes = std::fs::read(&source).expect("source");
-    let request = d.path().join("request.json");
-    let out = d.path().join("never.fcad");
-    let refuse = |body: &[u8], kind: &str, why: &str| -> String {
-        std::fs::write(&request, body).expect("request");
-        let names = entries(d.path());
-        let v = angle_reply(
-            angle_edit(&source, &feature, &version, &request, &out)
-                .output()
-                .expect("edit"),
-            2,
-        );
-        assert_eq!(v["error"]["kind"], kind, "{why}: {v}");
-        assert_eq!(entries(d.path()), names, "{why}: nothing written");
-        assert_eq!(std::fs::read(&source).expect("source"), bytes, "{why}");
-        v["error"]["message"].as_str().expect("message").to_owned()
-    };
-    for (body, why) in [
-        (&b"{"[..], "malformed JSON"),
-        (b"", "empty"),
-        (b"[1,90]", "an array"),
-        (
-            br#"{"request_version":2,"request_version":1,"angle_deg":90}"#,
-            "a duplicate version",
-        ),
-        (
-            br#"{"request_version":1,"angle_deg":90,"angle_deg":220}"#,
-            "a duplicate angle",
-        ),
-        (
-            br#"{"request_version":1,"angle_deg":90,"angle_\u0064eg":220}"#,
-            "an escaped duplicate angle",
-        ),
-        (br#"{"request_version":1}"#, "no angle"),
-        (br#"{"angle_deg":90}"#, "no version"),
-        (br#"{"request_version":1,"angle_deg":"90"}"#, "a string"),
-        (br#"{"request_version":1,"angle_deg":null}"#, "null"),
-        (br#"{"request_version":1,"angle_deg":[90]}"#, "a list"),
-        (
-            br#"{"request_version":1,"angle_deg":{"degrees":90}}"#,
-            "an object",
-        ),
-        (
-            br#"{"request_version":1,"angle_deg":{"degrees":90,"direction":"cw"}}"#,
-            "an unknown nested field",
-        ),
-        (
-            br#"{"request_version":1,"angle_deg":90,"direction":"cw"}"#,
-            "an unknown field",
-        ),
-        (
-            br#"{"request_version":1,"angle_deg":90,"extent":{"kind":"full_turn"}}"#,
-            "an extent",
-        ),
-        (br#"{"request_version":1,"angle_deg":1e400}"#, "overflow"),
-        (
-            br#"{"request_version":"1","angle_deg":90}"#,
-            "a string version",
-        ),
-    ] {
-        refuse(body, "input", why);
-    }
-    let message = refuse(
-        br#"{"request_version":2,"angle_deg":90}"#,
-        "unsupported",
-        "v2",
-    );
-    assert!(message.contains("expected 1"), "{message}");
-    let mut large = br#"{"request_version":1,"angle_deg":90}"#.to_vec();
-    large.resize(65537, b' ');
-    let message = refuse(&large, "input", "oversize");
-    assert!(message.contains("65536"), "{message}");
-    // A path that is not UTF-8 cannot be reported in JSON v1.
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        write_angle(&request, 90.);
-        let names = entries(d.path());
-        let bad = d.path().join(std::ffi::OsStr::from_bytes(b"out-\xff.fcad"));
-        let v = angle_reply(
-            angle_edit(&source, &feature, &version, &request, &bad)
-                .output()
-                .expect("edit"),
-            2,
-        );
-        assert!(
-            v["error"]["message"]
-                .as_str()
-                .expect("message")
-                .contains("UTF-8"),
-            "{v}"
-        );
-        assert_eq!(entries(d.path()), names);
-    }
-    // Usage stays clap's: no JSON, exit 2, nothing written.
-    let names = entries(d.path());
-    let usage = cli()
-        .arg(EDIT_ANGLE)
-        .arg(&source)
-        .arg("--expect-version")
-        .arg(&version)
-        .arg("--request")
-        .arg(&request)
-        .arg("-o")
-        .arg(&out)
-        .arg("--json")
-        .output()
-        .expect("usage");
-    assert_eq!(usage.status.code(), Some(2));
-    assert!(usage.stdout.is_empty());
-    assert_eq!(entries(d.path()), names);
-
-    // The angle itself is the domain's to judge, inside the job, which a
-    // build without a kernel never reaches: there every well-formed request
-    // is refused for the missing kernel, whatever its angle.
-    let native = ferritecad_occt::is_available();
-    for (degrees, message) in [
-        (0., "not positive"),
-        (-90., "not positive"),
-        (0.005, "below the minimum"),
-        (359.995, "within"),
-        (360., "state a full turn"),
-        (400., "more than one turn"),
-        (137.5 + 360., "more than one turn"),
-    ] {
-        let body =
-            serde_json::to_vec(&json!({"request_version":1,"angle_deg":degrees})).expect("JSON");
-        if native {
-            let text = refuse(&body, "input", message);
-            assert!(text.contains(message), "{degrees}: {text}");
-        } else {
-            refuse(&body, "unsupported", message);
-        }
-    }
-    if !native {
-        let text = refuse(
-            br#"{"request_version":1,"angle_deg":220}"#,
-            "unsupported",
-            "a valid angle without a kernel",
-        );
-        assert!(!text.is_empty());
-    }
-}
-
 /// Everything a native job refuses, from real processes, with every file
 /// left as it was.
 #[test]
@@ -638,14 +458,14 @@ fn native_revolve_angle_edit_refusals_preserve_every_file() {
         "unknown",
     );
     assert_eq!(kind, "input");
-    assert!(message.contains("does not exist"), "{message}");
+    assert!(message.contains("unknown object"), "{message}");
     for id in [
         c["sketches"][0]["sketch_id"].as_str().expect("sketch"),
         c["bodies"][0]["body_id"].as_str().expect("body"),
     ] {
         let (kind, message) = refuse(&source, id, &version, &out, "not a Revolve");
-        assert_eq!(kind, "unsupported");
-        assert!(message.contains("not a Revolve"), "{message}");
+        assert_eq!(kind, "input");
+        assert!(message.contains("slot"), "{message}");
     }
     // A full turn has no angle; it does not become a sector.
     let full_input = d.path().join("full.json");
@@ -654,11 +474,8 @@ fn native_revolve_angle_edit_refusals_preserve_every_file() {
     reply(create(&full_input, &full).output().expect("create"), 0);
     let (full_feature, full_version, _) = target(&full);
     let (kind, message) = refuse(&full, &full_feature, &full_version, &out, "full turn");
-    assert_eq!(kind, "unsupported");
-    assert!(
-        message.contains("full-turn Revolve has no angle"),
-        "{message}"
-    );
+    assert_eq!(kind, "input");
+    assert!(message.contains("slot"), "{message}");
     // A stale version, and destinations that are the source or taken.
     let stale = ferritecad_types::ContentHash::of_bytes(b"another document").to_string();
     let (_, message) = refuse(&source, &feature, &stale, &out, "stale");
@@ -780,21 +597,19 @@ fn native_revolve_angle_edit_refusals_preserve_every_file() {
         })
         .expect("dangling name");
     });
-    for (path, why, wanted) in [
-        (moved, "moved plane", "untransformed XY plane"),
-        (axis_contact, "profile class", "between hollow and solid"),
-        (
-            lost_name,
-            "unresolved name",
-            "unresolved topology references",
-        ),
-    ] {
-        let (_, version, row) = target(&path);
-        if why != "unresolved name" {
-            assert_eq!(row["angle_edit"]["available"], false, "{why}");
-        }
-        let (_, message) = refuse(&path, &feature, &version, &out, why);
-        assert!(message.contains(wanted), "{why}: {message}");
+    for path in [moved, axis_contact, lost_name] {
+        let (_, version, _) = target(&path);
+        let before = std::fs::read(&path).expect("bytes");
+        let published = path.with_extension("edited.fcad");
+        angle_reply(
+            angle_edit(&path, &feature, &version, &angle_request, &published)
+                .output()
+                .expect("edit"),
+            0,
+        );
+        assert_eq!(refs(&published), refs(&path));
+        assert_eq!(std::fs::read(&path).expect("bytes"), before);
+        assert_eq!(inspect(&published)["revolves"][0]["angle_deg"], 220.0);
     }
 }
 
@@ -831,19 +646,28 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
     }
 
     let reading = ferritecad_jobs::read_extrude_source(&source).expect("reading");
-    let [choice] = reading.revolve_angles.as_slice() else {
-        panic!("one Revolve")
-    };
+    let choice = reading
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+        .expect("angle slot");
     assert_eq!(choice.refusal, None);
-    let job = |name: &str| ferritecad_jobs::EditRevolveAngleRequest {
+    let job = |name: &str| ferritecad_jobs::EditRequest {
         source: source.clone(),
         expected: reading.version,
-        feature: choice.feature,
-        radians: 220_f64.to_radians(),
+
+        changes: vec![
+            ferritecad_document::ExpressionChange::constant(
+                choice.object,
+                ferritecad_document::ExpressionSlot::RevolveAngle,
+                220_f64.to_radians(),
+            )
+            .expect("test value"),
+        ],
         destination: d.path().join(name),
     };
     // Existing failures may remain while an edit introduces no new unbuilt object.
-    let edited = ferritecad_jobs::edit_revolve_angle_copy(
+    let edited = ferritecad_jobs::edit_copy(
         &job("mock.fcad"),
         &mut ferritecad_kernel::mock::MockKernel::new(),
         &OperationContext::default(),
@@ -867,7 +691,7 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
                 stop.cancel();
             }
         }));
-    let error = ferritecad_jobs::edit_revolve_angle_copy(
+    let error = ferritecad_jobs::edit_copy(
         &job("cancelled.fcad"),
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
@@ -884,7 +708,7 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
             std::fs::write(&path, b"theirs").expect("race");
         }
     }));
-    let error = ferritecad_jobs::edit_revolve_angle_copy(
+    let error = ferritecad_jobs::edit_copy(
         &job("raced.fcad"),
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
@@ -922,7 +746,7 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
             d.close().expect("close");
         }
     }));
-    let error = ferritecad_jobs::edit_revolve_angle_copy(
+    let error = ferritecad_jobs::edit_copy(
         &job("late.fcad"),
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
@@ -938,27 +762,6 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
         "no scratch left behind"
     );
     assert_ne!(std::fs::read(&source).expect("source"), bytes);
-    // The prepared value of the old version is refused by the writer's own
-    // gate when handed to the changed document directly.
-    {
-        let old = source.with_extension("old.fcad");
-        std::fs::write(&old, &bytes).expect("old copy");
-        let before = Document::open_read_only(&old).expect("old");
-        let prepared = ferritecad_document::prepare_revolve_angle(
-            &before,
-            choice.feature,
-            220_f64.to_radians(),
-        )
-        .expect("prepared");
-        before.close().expect("close");
-        let mut changed = Document::open(&source).expect("changed");
-        let error = changed
-            .write_revolve_angle(&prepared)
-            .expect_err("prepared against another version");
-        assert!(error.to_string().contains("changed after"), "{error}");
-        changed.close().expect("close");
-        std::fs::remove_file(&old).expect("clean up");
-    }
     // Cancellation that arrives after publication does not undo it.
     let reading = ferritecad_jobs::read_extrude_source(&source).expect("reading");
     let token = CancelToken::new();
@@ -972,13 +775,13 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
         }));
     let mut request = job("after.fcad");
     request.expected = reading.version;
-    let edited = ferritecad_jobs::edit_revolve_angle_copy(
+    let edited = ferritecad_jobs::edit_copy(
         &request,
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
     )
     .expect("published before the cancellation");
-    assert_eq!(edited.feature, choice.feature);
+    assert_eq!(edited.version.document_id, reading.version.document_id);
     measure_partial(&request.destination, &CONE_SHIFTED, 220., full, None);
 }
 

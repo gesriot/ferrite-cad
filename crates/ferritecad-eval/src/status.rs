@@ -70,6 +70,7 @@ impl RebuildReport {
 pub struct RebuildRefusal {
     pub report: RebuildReport,
     pub errors: BTreeMap<ObjectId, CadError>,
+    pub lost_references: BTreeMap<StableEntityId, CadError>,
 }
 impl std::fmt::Display for RebuildRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -92,6 +93,9 @@ impl std::fmt::Display for RebuildRefusal {
                     .unwrap_or_default()
             )?;
         }
+        for (id, error) in &self.lost_references {
+            writeln!(f, "lost reference {id}: {error}")?;
+        }
         Ok(())
     }
 }
@@ -100,6 +104,7 @@ impl std::error::Error for RebuildRefusal {
         self.errors
             .values()
             .next()
+            .or_else(|| self.lost_references.values().next())
             .map(|e| e as &dyn std::error::Error)
     }
 }

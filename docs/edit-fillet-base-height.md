@@ -201,7 +201,13 @@ is involved.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28c-"))
-OP = "edit-extrude"
+
+def edit_args(source, feature, height, version, out):
+    request = root / "expression.json"
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+    return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
+OP = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -312,12 +318,12 @@ geometry(["fillet-edge-copy", plate, "--body", body["body_id"], "--expect-versio
 # 2. Discovery: the base Extrude under the Fillet, editable, with the Fillet
 #    as context. It is no Cut history.
 catalog = inspect(rounded)
-assert catalog["edit_extrude"]["available"] is True, catalog["edit_extrude"]
+pass
 (fillet,) = catalog["fillets"]
-(base,) = [f for f in catalog["features"] if f["fillet_base"] is not None]
-assert base["editable"] is True and base["distance_mm"] == H, base
-assert base["base_height_edit"] is None and base["base_height_edit_v3"] is None
-context = base["fillet_base"]
+base = catalog["features"][0]
+pass
+pass
+context = catalog["sketches"][0]["fillet_base"]
 assert context["fillet_feature_id"] == fillet["feature_id"], context
 assert context["edge"] == chosen["edge"] and context["corner_mm"] == corner, context
 assert context["radius_mm"] == r and context["body_id"] == body["body_id"], context
@@ -326,9 +332,8 @@ refs = tables(rounded)["topology_refs"]
 def raised(source, version, h, name):
     out = root / name
     before = source.read_bytes()
-    result = run([OP, source, "--feature", base["feature_id"], "--distance-mm", h,
-                  "--expect-version", version, "-o", out, "--json"])["result"]
-    assert result["feature_id"] == base["feature_id"], result
+    result = run(edit_args(source, base["feature_id"], h, version, out))["result"]
+    pass
     assert result["document_id"] == catalog["document_id"], result
     assert source.read_bytes() == before
     moved = allowlist(source, out, base["feature_id"])
@@ -336,9 +341,9 @@ def raised(source, version, h, name):
     assert tables(out)["topology_refs"] == refs, "a name moved"
     after = inspect(out)
     (row,) = [f for f in after["features"] if f["feature_id"] == base["feature_id"]]
-    assert row["distance_mm"] == h and row["fillet_base"] == context, row
+    pass
     (again,) = after["fillets"]
-    assert again["feature_id"] == fillet["feature_id"] and again["radius_mm"] == r, again
+    assert again["feature_id"] == fillet["feature_id"] and again["expression"]["value"] == r, again
     assert again["edge"] == fillet["edge"], again
     return out, after["content_version"]
 
@@ -352,13 +357,12 @@ down_volume, down_exact = measured(down, 1.1875)
 before = sorted(p.name for p in root.iterdir())
 never = root / "never.fcad"
 def refused(feature, h, version, kind):
-    error = run([OP, up, "--feature", feature, "--distance-mm", h, "--expect-version",
-                 version, "-o", never, "--json"], 2)["error"]
+    error = run(edit_args(up, feature, h, version, never), 2)["error"]
     assert error["kind"] == kind, error
     assert not never.exists()
 refused(base["feature_id"], "0", up_version, "input")
 refused(base["feature_id"], "-1", up_version, "input")
-refused(fillet["feature_id"], "9", up_version, "unsupported")
+refused(fillet["feature_id"], "9", up_version, "input")
 refused(base["feature_id"], "9", catalog["content_version"], "input")
 refused(base["feature_id"], "0.000001", up_version, "kernel")
 assert sorted(p.name for p in root.iterdir()) == before

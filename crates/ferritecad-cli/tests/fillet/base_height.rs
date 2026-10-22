@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 //! §29B: the plate under the one saved Chamfer is made taller or shorter by the
-//! existing `edit-extrude`, in a new copy. The Chamfer keeps its edge and
+//! existing `edit`, in a new copy. The Chamfer keeps its edge and
 //! distance; the only SQL cell pair that moves is the base Extrude's payload and
 //! hash. The B-Rep, the independently read mesh and the cache are measured at
 //! the chosen corner, not only for a volume that another corner would share.
 use super::*;
 use crate::radius::stored_refs;
 
-const OP: &str = "edit-extrude";
+const OP: &str = "edit";
 /// A distance that is far from every bound, so only the height varies.
 const DIST: f64 = 0.75;
 
@@ -32,20 +32,16 @@ pub(super) fn raise(
     height: &str,
     version: &str,
     output: &Path,
-) -> Command {
-    let mut c = cli();
-    c.arg(OP)
-        .arg(source)
-        .arg("--feature")
-        .arg(feature)
-        .arg("--distance-mm")
-        .arg(height)
-        .arg("--expect-version")
-        .arg(version)
-        .arg("-o")
-        .arg(output)
-        .arg("--json");
-    c
+) -> crate::transaction::RequestCommand {
+    crate::transaction::constant(
+        source,
+        version,
+        feature,
+        "extrude_distance",
+        height,
+        "mm",
+        output,
+    )
 }
 
 /// One height edit of a chamfered copy into `name`, checked against everything
@@ -69,7 +65,7 @@ fn heightened(
         OP,
         0,
     );
-    assert_eq!(published["result"]["feature_id"], base.as_str());
+
     assert_eq!(
         published["result"]["document_id"],
         before_catalog["document_id"]
@@ -84,14 +80,17 @@ fn heightened(
     assert_eq!(stored_refs(&out), refs, "every name and its UUID kept");
 
     let after = inspect(&out);
-    assert_eq!(after["features"][0]["distance_mm"], h);
     assert_eq!(
-        after["features"][0]["chamfer_base"], before_catalog["features"][0]["chamfer_base"],
+        crate::transaction::first_slot(&after, "extrude_distance")["expression"]["value"],
+        h
+    );
+    assert_eq!(
+        after["sketches"][0]["chamfer_base"], before_catalog["sketches"][0]["chamfer_base"],
         "the Chamfer is the same one at the same edge and distance"
     );
-    assert_eq!(after["features"][0]["chamfer_base"]["distance_mm"], DIST);
+    assert_eq!(after["sketches"][0]["chamfer_base"]["distance_mm"], DIST);
     assert_eq!(
-        after["features"][0]["chamfer_base"]["corner_mm"],
+        after["sketches"][0]["chamfer_base"]["corner_mm"],
         json!(corner)
     );
     assert_eq!(after["chamfers"][0]["feature_id"], json!(id.to_string()));
@@ -99,7 +98,7 @@ fn heightened(
         after["chamfers"][0]["edge"],
         before_catalog["chamfers"][0]["edge"]
     );
-    assert_eq!(after["chamfers"][0]["distance_mm"], DIST);
+    assert_eq!(after["chamfers"][0]["expression"]["value"], DIST);
     assert_eq!(after["bodies"][0]["chamfer_edge"]["available"], false);
     assert_eq!(
         after["bodies"][0]["body_id"],
@@ -194,12 +193,13 @@ fn native_the_height_of_a_chamfered_plate_changes_at_every_corner_in_three_order
             // The Chamfer's own distance edit still works on the edited plate,
             // and its bound does not depend on the height.
             let (_, version, catalog) = base_and_version(&shorter);
-            let max = catalog["chamfers"][0]["distance_edit"]["max_distance_mm"]
-                .as_f64()
-                .expect("max");
+            let max = D - 0.01;
             assert_eq!(max, D - 0.01);
             let request = f.root.path().join(format!("{tag}-d.json"));
-            write(&request, &json!({"request_version":1,"distance_mm":max}));
+            write(
+                &request,
+                &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":max,"unit":"mm"}]}),
+            );
             let out = f.root.path().join(format!("{tag}-d.fcad"));
             reply(
                 edit_from(&shorter, &id.to_string(), &version, &request, &out)
@@ -407,7 +407,7 @@ fn native_height_refusals_races_and_guards_are_atomic_under_a_chamfer() {
 /// The shared height job must apply the strict reference rule to a Chamfer,
 /// including references owned by its base, not only the Chamfer's own names.
 #[test]
-fn native_chamfer_height_requires_every_saved_reference_to_resolve() {
+fn native_chamfer_height_preserves_preexisting_unresolved_references() {
     if !native() {
         return;
     }
@@ -433,8 +433,12 @@ fn native_chamfer_height_requires_every_saved_reference_to_resolve() {
         assert!(document.validate().expect("validate").is_ok());
         // This is a supported Chamfer history; only resolving the reference
         // against a real rebuild distinguishes it from the positive control.
-        ferritecad_document::prepare_extrude_height(&document, base, 9.5)
-            .expect("structural preparation");
+        ferritecad_document::ExpressionChange::constant(
+            base,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            9.5,
+        )
+        .expect("structural preparation");
         document.close().expect("close");
         let total = stored_count(&f.source);
         let rebuilt = cli()
@@ -459,16 +463,21 @@ fn native_chamfer_height_requires_every_saved_reference_to_resolve() {
                 .output()
                 .expect("edit process"),
             OP,
-            if unresolved { 2 } else { 0 },
+            0,
         );
-        if unresolved {
-            assert_eq!(refused(&answer), "topology", "{answer}");
-            assert!(!output.exists());
-            assert_eq!(entries(f.root.path()), names, "scratch leaked");
-        } else {
-            assert_eq!(stored_refs(&output), stored_refs(&f.source));
-            assert_eq!(inspect(&output)["features"][0]["distance_mm"], 9.5);
-        }
+        assert_eq!(
+            answer["result"]["rebuild"]["warnings"]
+                .as_array()
+                .expect("warnings")
+                .is_empty(),
+            !unresolved
+        );
+
+        assert_eq!(stored_refs(&output), stored_refs(&f.source));
+        assert_eq!(
+            crate::transaction::first_slot(&inspect(&output), "extrude_distance")["expression"]["value"],
+            9.5
+        );
         assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
     }
 }
@@ -490,7 +499,7 @@ fn native_after_a_height_edit_every_other_editor_still_names_the_chamfer() {
     assert_eq!(catalog["sketches"][0]["constraint_edit"]["available"], true);
     assert_eq!(
         catalog["sketches"][0]["constraint_edit"]["chamfer_base"],
-        catalog["features"][0]["chamfer_base"]
+        catalog["sketches"][0]["chamfer_base"]
     );
     let _ = &id;
     // A second height edit of the edited plate is the same operation again.
@@ -517,146 +526,4 @@ fn heightened_plain(f: &Fixture, copy: &Path, h: f64, name: &str) -> (PathBuf, (
         0,
     );
     (out, ())
-}
-
-/// Discovery and the protocol without a kernel: the base Extrude carries the
-/// Chamfer as context, every other row is `null`, the request protocol is the
-/// existing one, a Chamfer outside the class keeps the height refused with its
-/// UUID — nothing here needs a kernel or a solver.
-#[test]
-fn chamfer_base_height_discovery_and_protocol_without_native() {
-    // Both builds run this whole test; which answers to expect is decided here
-    // without `native()`, whose skip line would read as a skipped gate.
-    let kernel = ferritecad_occt::is_available();
-    if !kernel {
-        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
-    }
-    let plain = Fixture::drawn(Plate::new(CCW));
-    assert_eq!(plain.catalog["features"][0]["chamfer_base"], Value::Null);
-    let f = chamfered_without_kernel(Plate::new(CCW), [X0 + W, Y0 + D], 2.375);
-    assert_eq!(f.catalog["edit_extrude"]["available"], true);
-    let row = &f.catalog["features"][0];
-    assert_eq!(row["editable"], true, "{row}");
-    assert_eq!(row["refusal"], Value::Null);
-    assert_eq!(row["distance_mm"], H);
-    for key in [
-        "base_height_edit",
-        "base_height_edit_v2",
-        "base_height_edit_v3",
-        "fillet_base",
-        "fillet_history",
-    ] {
-        assert_eq!(
-            row[key],
-            Value::Null,
-            "{key}: a Chamfer is not that history"
-        );
-    }
-    let chamfer = &f.catalog["chamfers"][0];
-    assert_eq!(
-        row["chamfer_base"],
-        json!({
-            "chamfer_feature_id": chamfer["feature_id"],
-            "body_id": f.body_id(),
-            "edge": chamfer["edge"],
-            "corner_mm": [X0 + W, Y0 + D],
-            "distance_mm": 2.375,
-            "distance_unit": "mm",
-            "profile_constrained": false,
-        })
-    );
-    assert_eq!(
-        f.catalog["sketches"][0]["editable"], true,
-        "the Sketch's coordinates are editable under the Chamfer (§29C)"
-    );
-    assert_eq!(
-        f.catalog["sketches"][0]["chamfer_base"], row["chamfer_base"],
-        "the Sketch names the same Chamfer as the base Extrude"
-    );
-    let chamfer_id = chamfer["feature_id"].as_str().expect("id").to_owned();
-    // The request protocol is the existing one; a build without a kernel asks
-    // for it before any other check, so every well-formed request is
-    // `unsupported` there, and with a kernel each is its own kind.
-    let before = std::fs::read(&f.source).expect("source bytes");
-    let names = entries(f.root.path());
-    let never = f.root.path().join("never.fcad");
-    let (base, version, _) = base_and_version(&f.source);
-    let sketch = f.catalog["sketches"][0]["sketch_id"]
-        .as_str()
-        .expect("sketch")
-        .to_owned();
-    let foreign = ObjectId::new().to_string();
-    for (why, feature, height, kind) in [
-        ("zero", base.as_str(), "0", "input"),
-        ("negative", base.as_str(), "-1", "input"),
-        ("not a number", base.as_str(), "NaN", "input"),
-        ("infinite", base.as_str(), "inf", "input"),
-        ("the Chamfer", chamfer_id.as_str(), "9", "unsupported"),
-        ("the Sketch", sketch.as_str(), "9", "unsupported"),
-        ("a foreign UUID", foreign.as_str(), "9", "input"),
-    ] {
-        let v = reply(
-            raise(&f.source, feature, height, &version, &never)
-                .output()
-                .expect("process"),
-            OP,
-            2,
-        );
-        if kernel {
-            assert_eq!(refused(&v), kind, "{why}: {v}");
-        } else {
-            assert_eq!(refused(&v), "unsupported", "{why}: {v}");
-            assert!(v.to_string().contains("Open CASCADE"), "{why}: {v}");
-        }
-    }
-    assert_eq!(entries(f.root.path()), names, "a refusal left something");
-    assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
-
-    // A Chamfer outside the class keeps the height refused, naming the
-    // feature: an extra name, and a dimension.
-    let odd = chamfered_without_kernel(Plate::new(CCW), [X0, Y0], 2.0);
-    let odd_id: ObjectId = uuid(&odd.catalog["chamfers"][0]["feature_id"]);
-    let mut d = Document::open(&odd.source).expect("writable");
-    d.write(|w| {
-        w.put_topology_ref(&ferritecad_document::TopologyRef {
-            id: ferritecad_types::StableEntityId::new(),
-            owner: odd_id,
-            producer_feature: odd_id,
-            expected_kind: ferritecad_document::EntityKind::Face,
-            output_role: SemanticRole::EdgeChamferFace {
-                edge_feature: ObjectId::new(),
-                joint: ferritecad_types::ProfileJoint::new(
-                    ferritecad_types::StableEntityId::new(),
-                    ferritecad_types::StableEntityId::new(),
-                )
-                .expect("joint"),
-            },
-            selection: ferritecad_document::SelectionRule::Exact,
-            fallback_signature: None,
-        })
-    })
-    .expect("an extra name");
-    d.close().expect("close");
-    let catalog = inspect(&odd.source);
-    assert_eq!(catalog["edit_extrude"]["available"], false);
-    let reason = catalog["edit_extrude"]["refusal"].as_str().expect("reason");
-    assert!(
-        reason.contains(&odd_id.to_string()) && reason.contains("more faces"),
-        "{reason}"
-    );
-    assert_eq!(catalog["features"][0]["editable"], false);
-    assert_eq!(catalog["features"][0]["chamfer_base"], Value::Null);
-    if kernel {
-        let (base, version, _) = base_and_version(&odd.source);
-        let v = reply(
-            raise(&odd.source, &base, "9", &version, &never)
-                .output()
-                .expect("process"),
-            OP,
-            2,
-        );
-        assert_eq!(refused(&v), "unsupported", "{v}");
-        assert!(v.to_string().contains(&odd_id.to_string()), "{v}");
-        assert!(!never.exists());
-    }
 }

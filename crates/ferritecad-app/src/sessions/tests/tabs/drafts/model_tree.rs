@@ -205,7 +205,13 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
     let plate_path = root.path().join("plate.fcad");
     plate(&plate_path, 12.);
     w.open(&plate_path);
-    let accepted_id = source(&w).features[0].feature;
+    let accepted_id = source(&w)
+        .expression_slots
+        .iter()
+        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .cloned()
+        .collect::<Vec<_>>()[0]
+        .object;
     assert!(
         source(&w)
             .model_tree
@@ -219,7 +225,17 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
     w.apply(17.25);
     w.step(true);
     w.step(false);
-    assert_eq!(source(&w).features[0].distance_mm, Some(17.25));
+    assert_eq!(
+        source(&w)
+            .expression_slots
+            .iter()
+            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+            .cloned()
+            .collect::<Vec<_>>()[0]
+            .expression
+            .value(),
+        17.25
+    );
     assert!(!open_action(&mut w, other));
     let selected = w.tabs.model_navigation(current_tab).selected;
     let mut vanished = source(&w).clone();
@@ -582,8 +598,26 @@ fn native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes(
     );
     let rs = read_extrude_source(&rp).expect("reading");
     for (path, id, edit) in [
-        (&fp, fs.fillet_features[0].feature, ModelEdit::Fillet),
-        (&cp, cs.chamfer_features[0].feature, ModelEdit::Chamfer),
+        (
+            &fp,
+            fs.expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::FilletRadius)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object,
+            ModelEdit::Fillet,
+        ),
+        (
+            &cp,
+            cs.expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ChamferDistance)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object,
+            ModelEdit::Chamfer,
+        ),
         (&rp, revolve, ModelEdit::RevolveAngle),
         (&rp, rs.sketches[0].sketch, ModelEdit::Vertices),
         (

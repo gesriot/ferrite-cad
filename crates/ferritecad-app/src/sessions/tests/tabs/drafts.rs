@@ -64,26 +64,44 @@ impl Window {
         if !offer.apply {
             return false;
         }
-        let Some((feature, millimetres)) = self.edits.apply_request() else {
+        let Some((feature, millimetres, expected)) = self.edits.apply_request() else {
             return false;
         };
         let drawn = self.drawn;
         self.accept(move |ticket, cancel, tx| match drawn {
-            Drawn::Native => spawn_apply(ticket, feature, millimetres, cancel.clone(), move |v| {
-                tx.send(v).expect("edit");
-            }),
+            Drawn::Native => spawn_apply(
+                expected,
+                ticket,
+                feature,
+                millimetres,
+                cancel.clone(),
+                move |v| {
+                    tx.send(v).expect("edit");
+                },
+            ),
             Drawn::Mock => std::thread::spawn(move || {
-                let edit = ticket.edit_extrude_height(
-                    feature,
-                    millimetres,
-                    &mut MockKernel::new(),
-                    |_, _| {
-                        Err(ferritecad_types::CadError::unsupported(
-                            "no STEP imports in this model",
-                        ))
-                    },
-                    &OperationContext::default(),
-                );
+                let edit = {
+                    let ticket = ticket;
+                    let expected = ticket.source().version();
+                    ticket.edit(
+                        vec![
+                            ferritecad_document::ExpressionChange::constant(
+                                feature,
+                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                                millimetres,
+                            )
+                            .expect("test value"),
+                        ],
+                        expected,
+                        &mut MockKernel::new(),
+                        |_, _| {
+                            Err(ferritecad_types::CadError::unsupported(
+                                "no STEP imports in this model",
+                            ))
+                        },
+                        &OperationContext::default(),
+                    )
+                };
                 tx.send(edit).expect("edit");
             }),
         });
@@ -1024,17 +1042,28 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
         .sessions
         .begin_apply(|ticket, _, _| {
             std::thread::spawn(move || {
-                tx.send(ticket.edit_extrude_height(
-                    feature_b,
-                    16.0,
-                    &mut MockKernel::new(),
-                    |_, _| {
-                        Err(ferritecad_types::CadError::unsupported(
-                            "no STEP imports in this model",
-                        ))
-                    },
-                    &OperationContext::default(),
-                ))
+                tx.send({
+                    let ticket = ticket;
+                    let expected = ticket.source().version();
+                    ticket.edit(
+                        vec![
+                            ferritecad_document::ExpressionChange::constant(
+                                feature_b,
+                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                                16.0,
+                            )
+                            .expect("test value"),
+                        ],
+                        expected,
+                        &mut MockKernel::new(),
+                        |_, _| {
+                            Err(ferritecad_types::CadError::unsupported(
+                                "no STEP imports in this model",
+                            ))
+                        },
+                        &OperationContext::default(),
+                    )
+                })
                 .expect("edit");
             })
         })
@@ -1179,17 +1208,28 @@ fn a_draft_made_on_another_version_comes_back_held_and_is_never_applied() {
     let generation = hidden
         .begin_apply(|ticket, _, _| {
             std::thread::spawn(move || {
-                tx.send(ticket.edit_extrude_height(
-                    feature,
-                    20.0,
-                    &mut MockKernel::new(),
-                    |_, _| {
-                        Err(ferritecad_types::CadError::unsupported(
-                            "no STEP imports in this model",
-                        ))
-                    },
-                    &OperationContext::default(),
-                ))
+                tx.send({
+                    let ticket = ticket;
+                    let expected = ticket.source().version();
+                    ticket.edit(
+                        vec![
+                            ferritecad_document::ExpressionChange::constant(
+                                feature,
+                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                                20.0,
+                            )
+                            .expect("test value"),
+                        ],
+                        expected,
+                        &mut MockKernel::new(),
+                        |_, _| {
+                            Err(ferritecad_types::CadError::unsupported(
+                                "no STEP imports in this model",
+                            ))
+                        },
+                        &OperationContext::default(),
+                    )
+                })
                 .expect("edit");
             })
         })
@@ -1228,7 +1268,13 @@ fn a_draft_made_on_another_version_comes_back_held_and_is_never_applied() {
 #[test]
 fn the_same_control_in_two_tabs_shares_no_focus_or_text() {
     let (_root, path, reading) = crate::fillets::tests::plate();
-    let feature = reading.features[0].feature;
+    let feature = reading
+        .expression_slots
+        .iter()
+        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .cloned()
+        .collect::<Vec<_>>()[0]
+        .object;
     let mut a = crate::edits::Edits::default();
     let mut b = crate::edits::Edits::default();
     for edits in [&mut a, &mut b] {
@@ -1624,7 +1670,13 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
         super::super::checkpoints::ids_and_refs(&b_file),
     );
     let a_reading = read_extrude_source(&a_file).expect("a");
-    let feature = a_reading.features[0].feature;
+    let feature = a_reading
+        .expression_slots
+        .iter()
+        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .cloned()
+        .collect::<Vec<_>>()[0]
+        .object;
     let sketch = a_reading
         .sketches
         .iter()
@@ -1689,18 +1741,24 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
 
     // The command line does the same three things to the untouched files.
     let a_height = user.join("a-height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        a_file.as_os_str(),
-        "--feature".as_ref(),
-        feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        a_reading.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "9.5".as_ref(),
-        "-o".as_ref(),
-        a_height.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &feature.to_string(),
+            "extrude_distance",
+            &"9.5",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            a_file.as_os_str(),
+            "--expect-version".as_ref(),
+            a_reading.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            a_height.as_os_str(),
+        ])
+    };
     let a_peer = user.join("a-peer.fcad");
     sketch_peer(&a_height, &vertices, user, &a_peer);
     let b_reading = read_extrude_source(&b_file).expect("b");
@@ -2013,18 +2071,31 @@ fn compare_drafts_with_controls(root: &Path) {
             let (a_peer, _) = draft_peers(&r.join("inputs"), work.path());
             let reading = read_extrude_source(&a_peer).expect("peer");
             let applied = work.path().join("a-30.fcad");
-            cli(&[
-                "edit-extrude".as_ref(),
-                a_peer.as_os_str(),
-                "--feature".as_ref(),
-                reading.features[0].feature.to_string().as_ref(),
-                "--expect-version".as_ref(),
-                reading.version.content.to_string().as_ref(),
-                "--distance-mm".as_ref(),
-                "30".as_ref(),
-                "-o".as_ref(),
-                applied.as_os_str(),
-            ]);
+            {
+                let request = crate::edits::tests::expression_request(
+                    &reading
+                        .expression_slots
+                        .iter()
+                        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+                        .cloned()
+                        .collect::<Vec<_>>()[0]
+                        .object
+                        .to_string(),
+                    "extrude_distance",
+                    &"30",
+                    "mm",
+                );
+                cli(&[
+                    "edit".as_ref(),
+                    a_peer.as_os_str(),
+                    "--expect-version".as_ref(),
+                    reading.version.content.to_string().as_ref(),
+                    "--request".as_ref(),
+                    request.path().as_os_str(),
+                    "--output".as_ref(),
+                    applied.as_os_str(),
+                ])
+            };
             std::fs::write(r.join("a.fcad"), std::fs::read(applied).expect("30")).expect("w");
         },
     );

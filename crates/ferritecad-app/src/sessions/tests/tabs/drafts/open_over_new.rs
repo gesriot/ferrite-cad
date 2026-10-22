@@ -774,7 +774,13 @@ fn open_alone_leaves_an_unfinished_new_and_every_other_hold_stays() {
         let current = w.sessions.export_path().expect("shown");
         let reading = read_extrude_source(&current).expect("reading");
         assert!(copying.begin(&current, &reading));
-        let feature = reading.features[0].feature;
+        let feature = reading
+            .expression_slots
+            .iter()
+            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+            .cloned()
+            .collect::<Vec<_>>()[0]
+            .object;
         copying.type_height(feature, "20");
         copying
             .request(user.path().join("copy-out.fcad"))

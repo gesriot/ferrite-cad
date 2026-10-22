@@ -889,7 +889,6 @@ fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
             assert_eq!(entries(d.path()), names, "{name}, {why}: nothing written");
             assert_eq!(std::fs::read(&source).expect("source"), before);
         }
-        assert_eq!(c["edit_extrude"]["available"], false);
     }
 }
 

@@ -90,12 +90,20 @@ pub(crate) fn typed_angle(
     reading: &ExtrudeEditSource,
     sessions: &sessions::Sessions,
     value: &str,
-) -> (Editor, EditRevolveAngleRequest) {
+) -> (Editor, EditRequest) {
     let mut creates = creates::Creates::default();
     assert!(
-        creates
-            .sketch
-            .begin_angle_edit(path, reading, reading.revolve_angles[0].feature)
+        creates.sketch.begin_angle_edit(
+            path,
+            reading,
+            reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object
+        )
     );
     let ready = can_apply_angle(
         &creates,
@@ -123,8 +131,17 @@ fn angle_apply_uses_current_fields_and_confirmation_is_only_draft_history() {
     let mut w = Window::open(&path);
     assert!(!w.ready());
     assert!(
-        w.form()
-            .begin_angle_edit(&path, &reading, reading.revolve_angles[0].feature)
+        w.form().begin_angle_edit(
+            &path,
+            &reading,
+            reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object
+        )
     );
     assert!(w.ready(), "own form blocks Apply");
     w.tell();
@@ -133,9 +150,18 @@ fn angle_apply_uses_current_fields_and_confirmation_is_only_draft_history() {
     type_angle(&ctx, w.form(), "212.25");
     press(&ctx, w.form(), "Apply angle");
     let r = w.form().take_apply_angle_request().expect("Apply");
-    assert_eq!(r.radians.to_degrees(), 212.25);
+    assert_eq!(r.changes[0].expression.value().to_degrees(), 212.25);
     assert_eq!(r.expected, reading.version);
-    assert_eq!(r.feature, reading.revolve_angles[0].feature);
+    assert_eq!(
+        r.changes[0].object,
+        reading
+            .expression_slots
+            .iter()
+            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+            .cloned()
+            .collect::<Vec<_>>()[0]
+            .object
+    );
     assert!(w.form().angle_undo.is_empty());
     assert!(w.form().editing_saved_angle());
     let out = frame(&ctx, w.form(), vec![]);
@@ -161,7 +187,9 @@ fn angle_apply_uses_current_fields_and_confirmation_is_only_draft_history() {
         w.form()
             .take_apply_angle_request()
             .expect("unconfirmed fields")
-            .radians
+            .changes[0]
+            .expression
+            .value()
             .to_degrees(),
         198.125
     );
@@ -175,8 +203,17 @@ fn angle_apply_busy_guards_first_prove_a_changed_request_is_available() {
     let (_root, path, reading) = fixture();
     let mut w = Window::open(&path);
     assert!(
-        w.form()
-            .begin_angle_edit(&path, &reading, reading.revolve_angles[0].feature)
+        w.form().begin_angle_edit(
+            &path,
+            &reading,
+            reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object
+        )
     );
     w.tell();
     let ctx = egui::Context::default();
@@ -267,8 +304,17 @@ fn angle_apply_busy_guards_first_prove_a_changed_request_is_available() {
     w.form().dismiss();
     assert!(creates::open_form(&mut w.creates, &mut input));
     assert!(
-        w.form()
-            .begin_angle_edit(&path, &reading, reading.revolve_angles[0].feature)
+        w.form().begin_angle_edit(
+            &path,
+            &reading,
+            reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object
+        )
     );
     assert!(!w.ready(), "another New form");
 }
@@ -282,8 +328,17 @@ fn angle_apply_requires_its_own_form_and_session_and_supported_kind() {
     assert!(!w.ready());
     w.form().dismiss();
     assert!(
-        w.form()
-            .begin_angle_edit(&path, &reading, reading.revolve_angles[0].feature)
+        w.form().begin_angle_edit(
+            &path,
+            &reading,
+            reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object
+        )
     );
     w.sessions = sessions::Sessions::default();
     assert!(!w.ready());
@@ -291,7 +346,13 @@ fn angle_apply_requires_its_own_form_and_session_and_supported_kind() {
     assert!(!w.ready());
     assert!(!w.form().begin_angle_edit(&path, &reading, sketch));
     let mut d = ferritecad_document::Document::open(&path).expect("open");
-    let id = reading.revolve_angles[0].feature;
+    let id = reading
+        .expression_slots
+        .iter()
+        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+        .cloned()
+        .collect::<Vec<_>>()[0]
+        .object;
     let o = d.object(id).expect("object").expect("Revolve");
     let ferritecad_document::ObjectPayload::Revolve(mut r) = o.payload else {
         panic!("Revolve")
@@ -319,8 +380,17 @@ fn angle_range_refusal_status_and_accepted_scene_dismissal_are_visible() {
     let (_root, path, reading) = fixture();
     let mut w = Window::open(&path);
     assert!(
-        w.form()
-            .begin_angle_edit(&path, &reading, reading.revolve_angles[0].feature)
+        w.form().begin_angle_edit(
+            &path,
+            &reading,
+            reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object
+        )
     );
     w.tell();
     let ctx = egui::Context::default();
@@ -359,8 +429,17 @@ fn angle_range_refusal_status_and_accepted_scene_dismissal_are_visible() {
     w.form().finish_session_change();
     assert!(!w.form().active());
     assert!(
-        w.form()
-            .begin_angle_edit(&path, &reading, reading.revolve_angles[0].feature)
+        w.form().begin_angle_edit(
+            &path,
+            &reading,
+            reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object
+        )
     );
     settle(&ctx, w.form());
     type_angle(&ctx, w.form(), "212.25");
@@ -378,7 +457,13 @@ fn angle_form_opens_dirty_and_withholds_only_the_copy_workflow() {
     // Kernel-free accepted model change, through the real session step. The
     // widget gate needs actual dirty state, not a manually set can_apply flag.
     let (tx, rx) = std::sync::mpsc::channel();
-    let id = reading.revolve_angles[0].feature;
+    let id = reading
+        .expression_slots
+        .iter()
+        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+        .cloned()
+        .collect::<Vec<_>>()[0]
+        .object;
     let g = w
         .sessions
         .begin_apply(|ticket, _, _| {

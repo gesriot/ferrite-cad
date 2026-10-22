@@ -1029,7 +1029,7 @@ fn native_circle_edit_moves_and_resizes_only_the_named_circle() {
         .expect("feature")
         .to_owned();
     let r = cli()
-        .arg("edit-extrude")
+        .arg("edit")
         .arg(&both)
         .arg("--feature")
         .arg(&feature)
@@ -1039,7 +1039,7 @@ fn native_circle_edit_moves_and_resizes_only_the_named_circle() {
         .arg(&taller)
         .arg("--json")
         .output()
-        .expect("edit-extrude");
+        .expect("edit");
     assert!(r.status.success(), "{r:?}");
     let grown = stored(&taller);
     assert_eq!(grown.curve, original.curve, "the circle keeps its UUID");

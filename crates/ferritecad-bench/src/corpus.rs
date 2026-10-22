@@ -199,12 +199,14 @@ fn describe(name: &str, path: PathBuf, bodies: usize) -> Result<Case> {
     let find = |predicate: fn(&ObjectPayload) -> bool| {
         objects.iter().find(|o| predicate(&o.payload)).map(|o| o.id)
     };
-    // Only a height the edit catalogue offers; several bodies offer none yet.
-    let extrude = ExtrudeEditSource::read(&document)?
-        .features
+    let extrude = document
+        .expression_slots()?
         .into_iter()
-        .find(|choice| choice.refusal.is_none())
-        .map(|choice| choice.feature);
+        .find(|slot| {
+            slot.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance
+                && slot.refusal.is_none()
+        })
+        .map(|slot| slot.object);
     Ok(Case {
         name: name.to_owned(),
         path,

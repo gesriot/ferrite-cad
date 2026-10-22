@@ -1040,7 +1040,7 @@ fn native_annulus_height_copy_keeps_both_circles_and_every_identity() {
     };
     let taller = d.path().join("taller.fcad");
     let r = cli()
-        .arg("edit-extrude")
+        .arg("edit")
         .arg(&source)
         .arg("--feature")
         .arg(extrude.to_string())
@@ -1050,7 +1050,7 @@ fn native_annulus_height_copy_keeps_both_circles_and_every_identity() {
         .arg(&taller)
         .arg("--json")
         .output()
-        .expect("edit-extrude");
+        .expect("edit");
     assert!(r.status.success(), "{r:?}");
 
     // Both circles, both identities and every other stored fact are the

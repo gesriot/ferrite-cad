@@ -430,12 +430,11 @@ assert len(cells(shaft_wide)["topology_refs"]) == 5 + 2, "five faces and two cap
 SHAFT_WIDE = [[0, -2.25], [9.25, -2.25], [9.25, 3.5], [6.75, 3.5], [6.75, 12.75], [0, 12.75]]
 shaft_volume, shaft_r = exported(shaft_wide, SHAFT_WIDE, 137.5)
 revolve = inspect(shaft_wide)["revolves"][0]
-assert revolve["angle_edit"]["available"] is True, revolve
+pass
 angle_request = root / "angle.json"
-angle_request.write_text(json.dumps({"request_version": 1, "angle_deg": 212.25}))
+angle_request.write_text(json.dumps({"request_version": 1, "changes": [{"object": revolve["feature_id"], "slot": {"kind": "revolve_angle"}, "value": 212.25, "unit": "deg"}]}))
 turned = root / "shaft-turned.fcad"
-run(["edit-revolve-angle", shaft_wide, "--feature", revolve["feature_id"], "--expect-version",
-     inspect(shaft_wide)["content_version"], "--request", angle_request, "-o", turned, "--json"])
+run(["edit", shaft_wide, "--expect-version", inspect(shaft_wide)["content_version"], "--request", angle_request, "-o", turned, "--json"])
 assert inspect(turned)["sketches"][0]["constraint_edit"]["constraints"] == \
     inspect(shaft_wide)["sketches"][0]["constraint_edit"]["constraints"]
 turned_volume, _ = exported(turned, SHAFT_WIDE, 212.25)

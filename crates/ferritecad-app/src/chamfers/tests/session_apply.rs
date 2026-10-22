@@ -58,13 +58,15 @@ pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
     (root, path, reading)
 }
-pub(crate) fn saved_of(reading: &ExtrudeEditSource) -> SavedChamfer {
-    let [choice] = reading.chamfer_features.as_slice() else {
-        panic!("one saved Chamfer: {:?}", reading.chamfer_features);
-    };
-    assert_eq!(choice.refusal, None);
-    choice.saved.clone().expect("editable")
+pub(crate) fn saved_of(reading: &ExtrudeEditSource) -> ferritecad_document::SavedChamfer {
+    reading
+        .sketches
+        .iter()
+        .find_map(|s| s.chamfer.as_ref())
+        .expect("saved Chamfer")
+        .clone()
 }
+
 fn ready(c: &creates::Creates, s: &sessions::Sessions) -> bool {
     can_apply_chamfer_distance(
         c,
@@ -91,7 +93,7 @@ pub(crate) fn typed_distance(
     s: &sessions::Sessions,
     feature: ObjectId,
     value: &str,
-) -> (crate::sketch::Editor, EditChamferDistanceRequest) {
+) -> (crate::sketch::Editor, EditRequest) {
     let mut c = creates::Creates::default();
     assert!(c.sketch.chamfers.begin_distance(path, reading, feature));
     assert!(ready(&c, s), "own form allows a changed idle request");
@@ -107,7 +109,7 @@ pub(crate) fn typed_distance(
         .chamfers
         .take_apply_request()
         .expect("changed widget request");
-    assert_eq!(r.feature, feature);
+    assert_eq!(r.changes[0].object, feature);
     assert_eq!(r.expected, reading.version);
     assert_eq!(
         c.sketch.chamfers.distance.as_ref().expect("draft").typed,
@@ -138,7 +140,7 @@ fn distance_current_text_draft_history_noop_clean_copy_and_add_exclusion() {
     let chosen = saved_of(&reading);
     assert_eq!(chosen.corner.corner_mm, CORNER);
     let (form, r) = typed_distance(&path, &reading, &s, chosen.feature, "3.06250");
-    assert_eq!(r.distance_mm, 3.0625);
+    assert_eq!(r.changes[0].expression.value(), 3.0625);
     let mut c = creates::Creates::default();
     c.sketch = form;
     let e = &mut c.sketch.chamfers;
@@ -174,14 +176,18 @@ fn distance_current_text_draft_history_noop_clean_copy_and_add_exclusion() {
     // Apply after a draft Undo uses what the field now says.
     click(&ctx, e, "Apply distance");
     assert_eq!(
-        e.take_apply_request().expect("current text").distance_mm,
+        e.take_apply_request().expect("current text").changes[0]
+            .expression
+            .value(),
         3.0625
     );
     assert!(e.distance.as_ref().expect("draft").history.can_redo());
     // The clean copy of the confirmed request.
     click(&ctx, e, "Save distance copy…");
     assert_eq!(
-        e.take_distance_request().expect("clean copy").distance_mm,
+        e.take_distance_request().expect("clean copy").changes[0]
+            .expression
+            .value(),
         3.0625
     );
     // Another spelling of the stored number is no change.
@@ -193,7 +199,9 @@ fn distance_current_text_draft_history_noop_clean_copy_and_add_exclusion() {
     click(&ctx, e, "Confirm draft number");
     click(&ctx, e, "Save distance copy…");
     assert_eq!(
-        e.take_distance_request().expect("no-op copy").distance_mm,
+        e.take_distance_request().expect("no-op copy").changes[0]
+            .expression
+            .value(),
         2.375
     );
     e.dismiss();
@@ -440,12 +448,7 @@ fn distance_dirty_discovery_copy_reason_refusal_retains_text_and_acceptance_clos
     for _ in 0..3 {
         frame(&ctx, e, false);
     }
-    let past = chosen.corner.max_distance_mm.next_up().to_string();
-    for (text, why) in [
-        ("banana", "finite"),
-        ("0", "at least"),
-        (past.as_str(), "too large"),
-    ] {
+    for (text, why) in [("banana", "finite"), ("0", "positive"), ("inf", "finite")] {
         new_distance(&ctx, e, text);
         click(&ctx, e, "Apply distance");
         assert!(e.take_apply_request().is_none(), "{text}");

@@ -5,24 +5,26 @@ use crate::fillets::tests::session_apply::{
     draft_state, fixture, selected, typed_radius, visible_outcome,
 };
 use ferritecad_document::{ObjectPayload, SavedFillet};
-use ferritecad_jobs::EditFilletRadiusRequest;
+use ferritecad_jobs::EditRequest;
 use ferritecad_kernel::GeometryKernel;
 
-fn start(
-    s: &mut Sessions,
-    r: &EditFilletRadiusRequest,
-) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_apply_fillet_radius(t, r.feature, r.radius_mm, r.expected, c.clone(), move |v| {
-                tx.send(v).expect("deliver")
-            })
+            spawn_apply_fillet_radius(
+                t,
+                r.changes[0].object,
+                r.changes[0].expression.value(),
+                r.expected,
+                c.clone(),
+                move |v| tx.send(v).expect("deliver"),
+            )
         })
         .expect("start");
     (g, rx)
 }
-pub(super) fn apply(s: &mut Sessions, r: &EditFilletRadiusRequest) -> Edited {
+pub(super) fn apply(s: &mut Sessions, r: &EditRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(g, rx.recv().expect("answer"));
     if let Edited::Show(path) = &edited {
@@ -37,41 +39,57 @@ pub(super) fn apply(s: &mut Sessions, r: &EditFilletRadiusRequest) -> Edited {
     }
     edited
 }
-fn request(s: &Sessions, index: usize, radius_mm: f64) -> EditFilletRadiusRequest {
+fn request(s: &Sessions, index: usize, radius_mm: f64) -> EditRequest {
     let source = s.export_path().expect("current");
     let reading = read_extrude_source(&source).expect("reading");
-    EditFilletRadiusRequest {
+    EditRequest {
         source,
         expected: reading.version,
-        feature: selected(&reading, index).feature,
-        radius_mm,
+
+        changes: vec![
+            ferritecad_document::ExpressionChange::constant(
+                selected(&reading, index).feature,
+                ferritecad_document::ExpressionSlot::FilletRadius,
+                radius_mm,
+            )
+            .expect("validated expression"),
+        ],
         destination: PathBuf::new(),
     }
 }
-pub(super) fn peer(source: &Path, r: &EditFilletRadiusRequest, out: &Path) {
+pub(super) fn peer(source: &Path, r: &EditRequest, out: &Path) {
     let file = out.with_extension("json");
     std::fs::write(
         &file,
-        format!(r#"{{"request_version":1,"radius_mm":{}}}"#, r.radius_mm),
+        format!(
+            r#"{{"request_version":1,"radius_mm":{}}}"#,
+            r.changes[0].expression.value()
+        ),
     )
     .expect("request");
-    cli(&[
-        "edit-fillet-radius".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        r.feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        read_extrude_source(source)
-            .expect("reading")
-            .version
-            .content
-            .to_string()
-            .as_ref(),
-        "--request".as_ref(),
-        file.as_os_str(),
-        "-o".as_ref(),
-        out.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &r.changes[0].object.to_string(),
+            "fillet_radius",
+            &r.changes[0].expression.value().to_string(),
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            read_extrude_source(source)
+                .expect("reading")
+                .version
+                .content
+                .to_string()
+                .as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            out.as_os_str(),
+        ])
+    };
 }
 // Every table/row/cell and SQLite rowid; only modified_at is set aside. There
 // are no new identities in this operation and no UUID normalization anywhere.
@@ -139,7 +157,7 @@ pub(super) fn state(
         private_files(s),
     )
 }
-fn refuse(s: &mut Sessions, r: &EditFilletRadiusRequest) -> String {
+fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     let before = state(s);
     assert_eq!(apply(s, r), Edited::Failed);
     assert_eq!(state(s), before);
@@ -147,7 +165,13 @@ fn refuse(s: &mut Sessions, r: &EditFilletRadiusRequest) -> String {
 }
 pub(super) fn history(path: &Path) -> Vec<SavedFillet> {
     let reading = read_extrude_source(path).expect("reading");
-    (0..reading.fillet_features.len())
+    (0..reading
+        .expression_slots
+        .iter()
+        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::FilletRadius)
+        .cloned()
+        .collect::<Vec<_>>()
+        .len())
         .map(|i| selected(&reading, i))
         .collect()
 }
@@ -298,18 +322,24 @@ fn gate(count: usize, name: &str) {
     let mut peers = source.clone();
     let mut accepted = vec![s.export_path().expect("initial")];
     let ph = root.path().join("height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        peers.as_os_str(),
-        "--feature".as_ref(),
-        base.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        opened.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "9.25".as_ref(),
-        "-o".as_ref(),
-        ph.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &base.to_string(),
+            "extrude_distance",
+            &"9.25",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            peers.as_os_str(),
+            "--expect-version".as_ref(),
+            opened.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            ph.as_os_str(),
+        ])
+    };
     apply_native(&mut s, base, 9.25);
     assert_eq!(sql(&s.export_path().expect("height")), sql(&ph));
     peers = ph;
@@ -360,8 +390,12 @@ fn gate(count: usize, name: &str) {
                 .into_iter()
                 .find(|f| f.feature == old.feature)
                 .expect("UUID");
-            if old.feature == r.feature {
-                assert_eq!(new.radius_mm, r.radius_mm, "selected Fillet");
+            if old.feature == r.changes[0].object {
+                assert_eq!(
+                    new.radius_mm,
+                    r.changes[0].expression.value(),
+                    "selected Fillet"
+                );
             } else {
                 assert_eq!(new.radius_mm, old.radius_mm, "other Fillet");
             }
@@ -428,7 +462,13 @@ fn gate(count: usize, name: &str) {
     assert!(refuse(&mut s, &bad).contains("too large"));
     let r = request(&s, 0, chosen.radius_mm + 0.125);
     let reading = read_extrude_source(&current).expect("reading");
-    let (form, _) = typed_radius(&current, &reading, &s, r.feature, &r.radius_mm.to_string());
+    let (form, _) = typed_radius(
+        &current,
+        &reading,
+        &s,
+        r.changes[0].object,
+        &r.changes[0].expression.value().to_string(),
+    );
     let draft = draft_state(&form);
     let disk = std::fs::read(&source).expect("disk");
     let (tx, rx) = mpsc::channel();

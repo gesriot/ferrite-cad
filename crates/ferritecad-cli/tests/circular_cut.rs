@@ -8,6 +8,9 @@
 //! exists to keep: the body is the one it always was, and the cut is a feature
 //! in its history rather than a replacement for what was there.
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
+
 use ferritecad_document::{CutExtent, ExtentVocabulary};
 use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
@@ -1096,26 +1099,25 @@ fn native_changing_the_part_changes_the_cut_and_not_the_other_way_round() {
     // The earlier feature is what the cut consumes, so changing its height
     // changes both. The existing height edit is the operation that does it.
     let catalog = inspect(&copy);
-    let feature = catalog["features"]
+    let feature = catalog["expression_slots"]
         .as_array()
-        .expect("features")
+        .expect("slots")
         .iter()
-        .find(|feature| feature["distance_mm"] == HEIGHT)
-        .expect("the part's own extrusion")["feature_id"]
+        .find(|s| s["slot"]["kind"] == "extrude_distance" && s["expression"]["value"] == HEIGHT)
+        .expect("base")["object"]
         .as_str()
-        .expect("UUID")
-        .to_owned();
+        .expect("UUID");
     let taller = f.root.path().join("taller.fcad");
-    let raised = cli()
-        .arg("edit-extrude")
-        .arg(&copy)
-        .args(["--feature", &feature])
-        .args(["--distance-mm", "16"])
-        .arg("-o")
-        .arg(&taller)
-        .arg("--json")
-        .output()
-        .expect("edit-extrude");
+    let input = f.root.path().join("height.json");
+    transaction::write(&input, feature, "extrude_distance", 16.0, "mm");
+    let raised = transaction::command(
+        &copy,
+        catalog["content_version"].as_str().expect("version"),
+        &input,
+        &taller,
+    )
+    .output()
+    .expect("edit");
     assert!(raised.status.success(), "{raised:?}");
 
     // The pocket is still 4 mm deep and the part is 16 mm tall, so the solid

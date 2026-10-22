@@ -303,7 +303,7 @@ enum AppEvent {
     },
     FilletRadiusEdited {
         generation: u64,
-        result: Result<ferritecad_jobs::EditedFilletRadius>,
+        result: Result<ferritecad_jobs::EditedDocument>,
     },
     Chamfered {
         generation: u64,
@@ -311,7 +311,7 @@ enum AppEvent {
     },
     ChamferDistanceEdited {
         generation: u64,
-        result: Result<ferritecad_jobs::EditedChamferDistance>,
+        result: Result<ferritecad_jobs::EditedDocument>,
     },
     Edited {
         generation: u64,
@@ -5651,13 +5651,14 @@ impl App {
         if !self.settled() || !self.sessions.takes_form_apply() {
             return;
         }
-        let Some((feature, distance_mm)) = self.edits.apply_request() else {
+        let Some((feature, distance_mm, expected)) = self.edits.apply_request() else {
             self.input.request_redraw();
             return;
         };
         let proxy = self.proxy.clone();
         self.sessions.begin_apply(|ticket, generation, cancel| {
             sessions::spawn_apply(
+                expected,
                 ticket,
                 feature,
                 distance_mm,
@@ -5802,7 +5803,7 @@ impl App {
     }
 
     /// Apply the saved partial Revolve angle to the accepted document, no dialog.
-    fn apply_angle(&mut self, request: ferritecad_jobs::EditRevolveAngleRequest) {
+    fn apply_angle(&mut self, request: ferritecad_jobs::EditRequest) {
         if !can_apply_angle(
             &self.creates,
             &self.loads,
@@ -5817,8 +5818,8 @@ impl App {
         self.sessions.begin_apply(|ticket, generation, cancel| {
             sessions::spawn_apply_angle(
                 ticket,
-                request.feature,
-                request.radians,
+                request.changes[0].object,
+                request.changes[0].expression.value(),
                 request.expected,
                 cancel.clone(),
                 move |result| {
@@ -5925,7 +5926,7 @@ impl App {
         self.input.request_redraw();
     }
 
-    fn apply_fillet_radius(&mut self, request: ferritecad_jobs::EditFilletRadiusRequest) {
+    fn apply_fillet_radius(&mut self, request: ferritecad_jobs::EditRequest) {
         if !can_apply_fillet_radius(
             &self.creates,
             &self.loads,
@@ -5940,8 +5941,8 @@ impl App {
         self.sessions.begin_apply(|ticket, generation, cancel| {
             sessions::spawn_apply_fillet_radius(
                 ticket,
-                request.feature,
-                request.radius_mm,
+                request.changes[0].object,
+                request.changes[0].expression.value(),
                 request.expected,
                 cancel.clone(),
                 move |result| {
@@ -5986,7 +5987,7 @@ impl App {
         self.input.request_redraw();
     }
 
-    fn apply_chamfer_distance(&mut self, request: ferritecad_jobs::EditChamferDistanceRequest) {
+    fn apply_chamfer_distance(&mut self, request: ferritecad_jobs::EditRequest) {
         if !can_apply_chamfer_distance(
             &self.creates,
             &self.loads,
@@ -6001,8 +6002,8 @@ impl App {
         self.sessions.begin_apply(|ticket, generation, cancel| {
             sessions::spawn_apply_chamfer_distance(
                 ticket,
-                request.feature,
-                request.distance_mm,
+                request.changes[0].object,
+                request.changes[0].expression.value(),
                 request.expected,
                 cancel.clone(),
                 move |result| {
@@ -6267,10 +6268,7 @@ impl App {
         self.input.request_redraw();
     }
 
-    fn ask_where_to_edit_revolve_angle(
-        &mut self,
-        mut request: ferritecad_jobs::EditRevolveAngleRequest,
-    ) {
+    fn ask_where_to_edit_revolve_angle(&mut self, mut request: ferritecad_jobs::EditRequest) {
         if self.edits.running() {
             return;
         }
@@ -6398,10 +6396,7 @@ impl App {
         self.input.request_redraw();
     }
 
-    fn ask_where_to_edit_fillet_radius(
-        &mut self,
-        mut request: ferritecad_jobs::EditFilletRadiusRequest,
-    ) {
+    fn ask_where_to_edit_fillet_radius(&mut self, mut request: ferritecad_jobs::EditRequest) {
         if self.sessions.dirty() {
             self.sessions.status = "Saving a radius copy is unavailable while the document has unsaved changes: Save or Undo them first.".to_owned();
             self.input.request_redraw();
@@ -6473,10 +6468,7 @@ impl App {
         self.input.request_redraw();
     }
 
-    fn ask_where_to_edit_chamfer_distance(
-        &mut self,
-        mut request: ferritecad_jobs::EditChamferDistanceRequest,
-    ) {
+    fn ask_where_to_edit_chamfer_distance(&mut self, mut request: ferritecad_jobs::EditRequest) {
         if refuse_unsaved_distance_copy(&mut self.sessions) {
             self.input.request_redraw();
             return;
@@ -20762,21 +20754,38 @@ mod tests {
 
         // Unsaved changes: the copy workflow goes, with the reason.
         let (tx, rx) = std::sync::mpsc::channel();
-        let feature = reading.features[0].feature;
+        let feature = reading
+            .expression_slots
+            .iter()
+            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+            .cloned()
+            .collect::<Vec<_>>()[0]
+            .object;
         let generation = sessions
             .begin_apply(|ticket, _, _| {
                 std::thread::spawn(move || {
-                    tx.send(ticket.edit_extrude_height(
-                        feature,
-                        25.0,
-                        &mut ferritecad_kernel::mock::MockKernel::new(),
-                        |_, _| {
-                            Err(ferritecad_types::CadError::unsupported(
-                                "no STEP imports in this model",
-                            ))
-                        },
-                        &OperationContext::default(),
-                    ))
+                    tx.send({
+                        let ticket = ticket;
+                        let expected = ticket.source().version();
+                        ticket.edit(
+                            vec![
+                                ferritecad_document::ExpressionChange::constant(
+                                    feature,
+                                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                                    25.0,
+                                )
+                                .expect("test value"),
+                            ],
+                            expected,
+                            &mut ferritecad_kernel::mock::MockKernel::new(),
+                            |_, _| {
+                                Err(ferritecad_types::CadError::unsupported(
+                                    "no STEP imports in this model",
+                                ))
+                            },
+                            &OperationContext::default(),
+                        )
+                    })
                     .expect("deliver");
                 })
             })

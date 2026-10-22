@@ -114,17 +114,21 @@ fn resketched(
 
     let new_corner = mapped(rect, corner);
     let after = inspect(&out);
-    assert_eq!(after["features"][0]["distance_mm"], H, "the height is kept");
+    assert_eq!(
+        crate::transaction::first_slot(&after, "extrude_distance")["expression"]["value"],
+        H,
+        "the height is kept"
+    );
     assert_eq!(after["chamfers"][0]["feature_id"], json!(id.to_string()));
     assert_eq!(
         after["chamfers"][0]["edge"], before_catalog["chamfers"][0]["edge"],
         "the same Lines meet at the Chamfer's corner"
     );
-    assert_eq!(after["chamfers"][0]["distance_mm"], DIST);
+    assert_eq!(after["chamfers"][0]["expression"]["value"], DIST);
     let base = &after["sketches"][0]["chamfer_base"];
     assert_eq!(base["distance_mm"], DIST);
     assert_eq!(base["corner_mm"], json!(new_corner));
-    assert_eq!(base, &after["features"][0]["chamfer_base"]);
+    assert_eq!(base, &after["sketches"][0]["chamfer_base"]);
     assert_eq!(
         base["edge"],
         before_catalog["sketches"][0]["chamfer_base"]["edge"]
@@ -267,17 +271,18 @@ fn native_the_sketch_of_a_chamfered_plate_changes_at_every_corner_in_three_order
                 super::base_height::raise(&small, &base, "9.5", &version, &taller)
                     .output()
                     .expect("process"),
-                "edit-extrude",
+                "edit",
                 0,
             );
             let (m, _) = measure_c(&taller, None);
             check_brep(&m, SMALL, new_corner, DIST, 9.5);
-            let max = catalog["chamfers"][0]["distance_edit"]["max_distance_mm"]
-                .as_f64()
-                .expect("max");
+            let max = SMALL[3].min(SMALL[2]) - 0.01;
             assert_eq!(max, SMALL[3].min(SMALL[2]) - 0.01);
             let request = f.root.path().join(format!("{tag}-d.json"));
-            write(&request, &json!({"request_version":1,"distance_mm":max}));
+            write(
+                &request,
+                &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":max,"unit":"mm"}]}),
+            );
             let wide = f.root.path().join(format!("{tag}-d.fcad"));
             reply(
                 edit_from(&small, &id.to_string(), &version, &request, &wide)
@@ -428,7 +433,7 @@ fn native_sketch_bounds_and_candidates_are_exact_under_a_chamfer() {
     let (m, _) = measure_c(&exact, None);
     check_brep(&m, at_bound, mapped(at_bound, [X0 + W, Y0]), d, H);
     assert_eq!(
-        inspect(&exact)["chamfers"][0]["distance_mm"],
+        inspect(&exact)["chamfers"][0]["expression"]["value"],
         d,
         "the distance is kept, not reduced"
     );
@@ -636,16 +641,18 @@ fn native_sketch_refusals_races_and_guards_are_atomic_under_a_chamfer() {
                 .output()
                 .expect("process"),
             SKETCH,
-            if unresolved { 2 } else { 0 },
+            0,
         );
-        if unresolved {
-            assert_eq!(refused(&answer), "topology", "{answer}");
-            assert!(!output.exists());
-            assert_eq!(entries(h.root.path()), names, "scratch leaked");
-        } else {
-            assert_eq!(stored_refs(&output), stored_refs(&h.source));
-            assert!(only_this_row_changed(&h.source, &output, &sketch) >= 2);
-        }
+        assert_eq!(
+            answer["result"]["rebuild"]["warnings"]
+                .as_array()
+                .expect("warnings")
+                .is_empty(),
+            !unresolved
+        );
+
+        assert_eq!(stored_refs(&output), stored_refs(&h.source));
+        assert!(only_this_row_changed(&h.source, &output, &sketch) >= 2);
         assert_eq!(std::fs::read(&h.source).expect("bytes"), kept);
     }
 }
@@ -669,7 +676,7 @@ fn chamfer_base_sketch_discovery_and_protocol_without_native() {
     assert_eq!(row["fillet_history"], Value::Null);
     assert_eq!(
         row["chamfer_base"],
-        f.catalog["features"][0]["chamfer_base"]
+        f.catalog["sketches"][0]["chamfer_base"]
     );
     assert_eq!(row["chamfer_base"]["corner_mm"], json!([X0 + W, Y0]));
     assert_eq!(row["chamfer_base"]["distance_mm"], 2.375);

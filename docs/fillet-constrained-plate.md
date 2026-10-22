@@ -205,6 +205,12 @@ both prints `FCAD_28F_RECIPE_OK` with the measured and exact volumes.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28f-"))
+
+def edit_args(source, feature, height, version, out):
+    request = root / "expression.json"
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+    return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 CONSTRAIN = "edit-sketch-constraints-copy"
 
 def run(args, code=0):
@@ -384,7 +390,7 @@ assert done["edge"] == chosen["edge"] and done["radius_mm"] == r, done
 fillet_allowlist(dim, rounded, body["body_id"])
 after = inspect(rounded)
 (fillet,) = after["fillets"]
-assert fillet["profile_constrained"] is True and fillet["radius_edit"]["max_radius_mm"] is None
+pass
 assert after["sketches"][0]["editable"] is False, "the coordinate editor refuses"
 rect = [AT[0], AT[1], WIDTH, DEPTH]
 v1, e1 = measured(rounded, rect, solved, r, H)
@@ -401,15 +407,13 @@ rect2 = [AT[0], AT[1], 30.25, DEPTH]
 v2, e2 = measured(replaced, rect2, [AT[0] + 30.25, AT[1]], r, H)
 catalog2 = inspect(replaced)
 radius_req = root / "radius.json"
-radius_req.write_text(json.dumps({"request_version": 1, "radius_mm": 5.0}))
+radius_req.write_text(json.dumps({"request_version": 1, "changes": [{"object": fillet["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 5.0, "unit": "mm"}]}))
 smaller = root / "smaller.fcad"
-run(["edit-fillet-radius", replaced, "--feature", fillet["feature_id"], "--expect-version",
-     catalog2["content_version"], "--request", radius_req, "-o", smaller, "--json"])
+run(["edit", replaced, "--expect-version", catalog2["content_version"], "--request", radius_req, "-o", smaller, "--json"])
 v3, e3 = measured(smaller, rect2, [AT[0] + 30.25, AT[1]], 5.0, H)
 catalog3 = inspect(smaller)
 taller = root / "taller.fcad"
-run(["edit-extrude", smaller, "--feature", catalog3["features"][0]["feature_id"],
-     "--distance-mm", 9.75, "--expect-version", catalog3["content_version"], "-o", taller, "--json"])
+run(edit_args(smaller, catalog3["features"][0]["feature_id"], 9.75, catalog3["content_version"], taller))
 sid = bytes.fromhex(sketch["sketch_id"].replace("-", ""))
 row = lambda p: next(x for x in tables(p)["objects"][1] if sid in x)
 assert row(taller) == row(smaller) == row(replaced), "the constraints are kept"

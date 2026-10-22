@@ -11,13 +11,11 @@ mod chamfer;
 mod checkpoint;
 mod circle;
 mod cut;
+mod edit;
 mod edit_annular;
-mod edit_chamfer_distance;
 mod edit_circle;
 mod edit_constraints;
 mod edit_cut;
-mod edit_fillet_radius;
-mod edit_revolve_angle;
 mod edit_sketch;
 mod export;
 mod export_fbx;
@@ -121,7 +119,7 @@ enum Command {
     CreateAnnularExtrude(annulus::AnnulusArgs),
     /// Change one constant Blind extrusion and save a new .fcad of the same model.
     /// Preserves identities; never overwrites source or output. Requires a kernel.
-    EditExtrude(EditExtrudeArgs),
+    Edit(edit::EditArgs),
     /// Change saved Line coordinates in a new identity-preserving FCAD copy.
     EditSketchCopy(edit_sketch::EditSketchArgs),
     /// Change a saved Circle's centre and radius in a new identity-preserving FCAD copy.
@@ -139,20 +137,17 @@ enum Command {
     EditCircularCut(edit_cut::EditCutArgs),
     /// Change the stated angle of a saved partial Revolve in a new
     /// identity-preserving FCAD copy. Profile, axis and direction are kept.
-    EditRevolveAngle(edit_revolve_angle::EditRevolveAngleArgs),
     /// Round one vertical edge of a saved rectangular plate to a constant
     /// radius, publishing a new FCAD copy whose Body ends in a named Fillet.
     FilletEdgeCopy(fillet::FilletArgs),
     /// Change the radius of the saved Fillet in a new identity-preserving
     /// FCAD copy. The edge, every UUID and every name are kept.
-    EditFilletRadius(edit_fillet_radius::EditFilletRadiusArgs),
     /// Cut one vertical edge of a saved rectangular plate away at one equal
     /// distance (millimetres along each of its two faces), publishing a new
     /// FCAD copy whose Body ends in a named Chamfer.
     ChamferEdgeCopy(chamfer::ChamferArgs),
     /// Change the distance of the saved Chamfer in a new identity-preserving
     /// FCAD copy. The edge, every UUID and every name are kept.
-    EditChamferDistance(edit_chamfer_distance::EditChamferDistanceArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes or a geometry kernel.
@@ -202,32 +197,10 @@ enum Command {
 }
 
 #[derive(Debug, Args)]
-struct EditExtrudeArgs {
-    /// Existing .fcad, read without modification.
-    source: PathBuf,
-    /// Exact feature UUID printed by inspect (never a name or index).
-    #[arg(long)]
-    feature: ferritecad_types::ObjectId,
-    /// New finite, positive distance in millimetres, regardless of display units.
-    #[arg(long, allow_hyphen_values = true)]
-    distance_mm: f64,
-    /// New .fcad path. Existing files are refused; there is no --force.
-    #[arg(short, long)]
-    output: PathBuf,
-    /// Optional complete content version printed by inspect; refuses stale input.
-    #[arg(long)]
-    expect_version: Option<ferritecad_types::ContentHash>,
-    /// Emit one JSON v1 result or execution error. Argument errors remain clap text.
-    /// Source and output paths must be UTF-8 in JSON mode.
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Debug, Args)]
 struct InspectArgs {
     /// Path to the document. Read without writes or a kernel.
     path: PathBuf,
-    /// Emit the JSON v1 extrusion-edit catalog, rather than the full text report.
+    /// Emit the JSON v1 expression slots and structural edit catalog, rather than the full text report.
     /// Argument errors and help remain clap text. Paths must be UTF-8 in JSON mode.
     #[arg(long)]
     json: bool,
@@ -399,11 +372,8 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::EditSketchCopy(args) => edit_sketch::run(args),
-        Command::EditRevolveAngle(args) => edit_revolve_angle::run(args),
         Command::FilletEdgeCopy(args) => fillet::run(args),
-        Command::EditFilletRadius(args) => edit_fillet_radius::run(args),
         Command::ChamferEdgeCopy(args) => chamfer::run(args),
-        Command::EditChamferDistance(args) => edit_chamfer_distance::run(args),
         Command::EditCircle(args) => edit_circle::run(args),
         Command::EditAnnular(args) => edit_annular::run(args),
         Command::CutCircularCopy(args) => cut::run(args),
@@ -418,11 +388,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             create_result(args).map(json::Created::from),
         )),
         Command::Create(args) => create(args),
-        Command::EditExtrude(args) if args.json => Ok(json::emit(
-            json::Operation::EditExtrude,
-            edit_extrude_result(args).map(json::Edited::from),
-        )),
-        Command::EditExtrude(args) => edit_extrude(args),
+        Command::Edit(args) => edit::run(args),
         Command::Inspect(args) if args.json => Ok(json::emit(
             json::Operation::Inspect,
             json::inspect(&args.path),
@@ -588,39 +554,4 @@ fn report(error: &CadError) -> std::io::Result<()> {
         source = cause.source();
     }
     Ok(())
-}
-
-fn edit_extrude(args: EditExtrudeArgs) -> Result<ExitCode> {
-    let edited = edit_extrude_result(args)?;
-    println!(
-        "saved {} ({}, feature {})",
-        edited.destination.display(),
-        edited.document_id,
-        edited.feature
-    );
-    Ok(ExitCode::SUCCESS)
-}
-
-/// Both output modes submit exactly the same request and publish exactly once.
-fn edit_extrude_result(args: EditExtrudeArgs) -> Result<ferritecad_jobs::EditedDocument> {
-    if args.json {
-        // Before opening a source or publishing: an unrepresentable output
-        // must not turn a successful edit into an apparent operation refusal.
-        json::require_utf8_path(&args.source)?;
-        json::require_utf8_path(&args.output)?;
-    }
-    let source = ferritecad_jobs::read_extrude_source(&args.source)?;
-    let mut expected = source.version;
-    if let Some(version) = args.expect_version {
-        expected.content = version;
-    }
-    let request = ferritecad_jobs::EditExtrudeRequest {
-        source: args.source,
-        expected,
-        feature: args.feature,
-        distance_mm: args.distance_mm,
-        destination: args.output,
-    };
-    let mut kernel = ferritecad_occt::OcctKernel::new()?;
-    ferritecad_jobs::edit_extrude_copy(&request, &mut kernel, &OperationContext::default())
 }

@@ -7,7 +7,7 @@
 use super::*;
 use ferritecad_document::{
     CircularCutEdit, CutBoundary, SavedCircularCut, SketchVertex, prepare_circular_cut,
-    prepare_cut_parameters, prepare_extrude_height, replace_sketch_coordinates,
+    prepare_cut_parameters, replace_sketch_coordinates,
 };
 use ferritecad_types::{ObjectId, StableEntityId};
 
@@ -297,12 +297,6 @@ fn polygon_discovery_refusals_and_writer_checks_without_kernel() {
             check_boundary(&path, s, &L);
             assert!(s["extent"].is_object() && s.get("depth_mm").is_none());
         }
-        let height = features
-            .iter()
-            .find(|f| f["base_height_edit_v3"].is_object())
-            .expect("base height")["base_height_edit_v3"]
-            .clone();
-        check_boundary(&path, &height, &L);
         let sketch = catalog["sketches"]
             .as_array()
             .expect("sketches")
@@ -482,8 +476,6 @@ fn polygon_discovery_refusals_and_writer_checks_without_kernel() {
     wound.reverse();
     assert!(replace_sketch_coordinates(&d, saved[0].profile_sketch, &vertices(&wound)).is_err());
     // A height edit re-checks the same rule and keeps the boundary.
-    let base = saved[0].base_feature;
-    prepare_extrude_height(&d, base, 13.).expect("taller");
     d.close().expect("close");
 
     // The writer's transaction repeats the rule against the document it
@@ -577,7 +569,7 @@ fn a_rectangle_keeps_every_older_block_and_gains_v3() {
     let catalog = inspect(&path);
     let (parts, reasons, histories) = old_rectangle::read(&catalog);
     // Two add blocks, two edit blocks per Cut, two height blocks.
-    assert_eq!(parts.len(), 2 + 2 * 3 + 2);
+    assert_eq!(parts.len(), 2 + 2 * 3);
     assert!(parts.iter().all(|p| *p == [[0., 0.], [SIZE[0], SIZE[1]]]));
     assert!(reasons.iter().all(|r| !r.contains("_v3")), "{reasons:?}");
     assert_eq!(histories, 2);
@@ -695,27 +687,26 @@ fn edit(
 
 fn height(source: &Path, destination: &Path, height: f64, code: i32) -> Value {
     let catalog = inspect(source);
-    let base = catalog["features"]
-        .as_array()
-        .expect("features")
-        .iter()
-        .find(|f| f["base_height_edit_v3"].is_object())
-        .expect("base")["feature_id"]
-        .as_str()
-        .expect("id")
-        .to_owned();
+    let d = Document::open_read_only(source).expect("document");
+    let object = d.objects().expect("objects").into_iter().find(|o|matches!(&o.payload,ferritecad_document::ObjectPayload::Extrude(e) if e.previous.is_none())).expect("base").id;
+    let request = tempfile::NamedTempFile::new().expect("request");
+    crate::transaction::write(
+        request.path(),
+        &object.to_string(),
+        "extrude_distance",
+        height,
+        "mm",
+    );
     reply(
-        cli()
-            .arg("edit-extrude")
-            .arg(source)
-            .args(["--feature", &base, "--expect-version"])
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .args(["--distance-mm", &height.to_string(), "-o"])
-            .arg(destination)
-            .arg("--json")
-            .output()
-            .expect("height"),
-        "edit-extrude",
+        crate::transaction::command(
+            source,
+            catalog["content_version"].as_str().expect("version"),
+            request.path(),
+            destination,
+        )
+        .output()
+        .expect("height"),
+        "edit",
         code,
     )
 }
@@ -936,14 +927,8 @@ fn native_l_profile_history_matrix() {
         sketch(&grown, &moved, &wider, 0);
         measured(&moved, &tools, &wider, 13.);
         let reopened = inspect(&moved);
-        let base = reopened["features"]
-            .as_array()
-            .expect("features")
-            .iter()
-            .find(|f| f["base_height_edit_v3"].is_object())
-            .expect("base")["base_height_edit_v3"]
-            .clone();
-        check_boundary(&moved, &base, &wider);
+        let base = &reopened["sketches"][0]["cut_history_v3"];
+        check_boundary(&moved, base, &wider);
         if n == 2 && artifact < 2 {
             for path in [&grown, &moved] {
                 if let Some(dir) = std::env::var_os("FCAD_POLYGON_CUT_ARTIFACTS") {

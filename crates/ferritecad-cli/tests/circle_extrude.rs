@@ -687,7 +687,7 @@ fn native_circle_height_copy_keeps_the_circle_and_every_identity() {
     };
     let taller = d.path().join("taller.fcad");
     let r = cli()
-        .arg("edit-extrude")
+        .arg("edit")
         .arg(&source)
         .arg("--feature")
         .arg(extrude.to_string())
@@ -697,7 +697,7 @@ fn native_circle_height_copy_keeps_the_circle_and_every_identity() {
         .arg(&taller)
         .arg("--json")
         .output()
-        .expect("edit-extrude");
+        .expect("edit");
     assert!(r.status.success(), "{r:?}");
 
     // The circle, its identity and every other stored fact are the copy's too.

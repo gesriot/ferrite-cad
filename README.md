@@ -76,7 +76,7 @@ Both profile classes also support **Feature: Revolve angle**, from 0.01° to
 the sector has two separately named end faces.
 [Partial Revolve contract and recipe](docs/partial-angle-revolve.md).
 A saved sector's angle is changed with **Edit Revolve angle** or
-`edit-revolve-angle` into a new copy. The copy keeps every object, Line and
+`edit` into a new copy. The copy keeps every object, Line and
 cap UUID, and the angle is the only thing that changes. A full turn does
 not become a sector. [Angle edit contract and recipe](docs/edit-revolve-angle.md).
 A saved sector's profile is edited like a full turn's, in the same **Edit
@@ -110,9 +110,9 @@ serves only the clean-copy workflow. [Session contract](docs/fillet-radius-sessi
 **Add fillet** adds a new Fillet inside the open document in the same way, including after
 unsaved base changes; **Confirm draft edge and radius** only prepares the clean Fillet copy.
 [Add Fillet session contract](docs/add-fillet-session.md).
-`edit-fillet-radius` still publishes a new copy: the same Fillet on the same
+`edit` still publishes a new copy: the same Fillet on the same
 edge, with every name kept. The plate's height can be changed under it with
-the ordinary **Edit extrusion** form or `edit-extrude`; the Fillet keeps its
+the ordinary **Edit extrusion** form or `edit`; the Fillet keeps its
 edge and radius. Its rectangle can be moved or resized with the ordinary
 **Edit Sketch** form (typed coordinates or dragged vertices) or
 `edit-sketch-copy`, as long as every Line keeps its side and the saved radius
@@ -130,9 +130,9 @@ at least 0.01 mm flat between their arcs, **whatever Fillets lie between them
 in the history** (the fourth closes the pair with the first); a radius is
 bounded by every neighbour, and on a dimensioned plate this is checked on the
 solved sides. Each earlier Fillet's cylinder keeps its origin in the final
-Body. The same **Edit Fillet radius** form or `edit-fillet-radius` then changes
+Body. The same **Edit Fillet radius** form or `edit` then changes
 the radius of any of the Fillets, named by its exact UUID, under the same pair
-rule, and the existing **Edit extrusion** form or `edit-extrude` changes the
+rule, and the existing **Edit extrusion** form or `edit` changes the
 plate's height under all of them, keeping each one's radius, corner and
 names, and the existing **Edit Sketch** form or `edit-sketch-copy` moves or
 resizes the plate's free rectangle, keeping the Fillets on the same named
@@ -160,9 +160,9 @@ document Undo/Redo, unsaved exports and Save/Save As share the existing session.
 including after unsaved base changes, on a free or closure-only plate only;
 **Confirm draft edge and distance** only records the form's request for the clean
 Chamfer copy. [Add Chamfer session contract](docs/add-chamfer-session.md).
-`edit-chamfer-distance` still publishes a new copy, every name kept. The
+`edit` still publishes a new copy, every name kept. The
 plate's height changes under the Chamfer through the existing **Edit extrusion**
-or `edit-extrude` (the Chamfer's corner and distance and all names are kept;
+or `edit` (the Chamfer's corner and distance and all names are kept;
 OCCT refuses a plate thinner than about 1e-5 mm). The four vertices of its base
 Sketch move in a new copy through the existing **Edit saved Sketch** or
 `edit-sketch-copy`: the plate may be made larger, smaller or moved, the Chamfer
@@ -271,14 +271,14 @@ rectangular base of a supported 1–16 circular Cut history. Hole centres, radii
 and depths stay fixed; every disk must clear the new boundaries.
 [Contract and runnable recipe](docs/edit-cut-base-sketch.md).
 
-`Edit extrusion` / `edit-extrude` can change that history's base thickness while
+`Edit extrusion` / `edit` can change that history's base thickness while
 keeping Blind depths fixed and Through all Cuts open. A thicker plate names every
 new Blind pocket floor;
 removing a saved floor or exceeding the new thickness is refused with UUIDs.
 [Height policy and executable recipe](docs/edit-cut-base-height.md).
 
 
-The opt-in `create --json`, `inspect --json`, `edit-extrude --json`,
+The opt-in `create --json`, `inspect --json`, `edit --json`,
 `export-stl --json`, `export-fbx --json`, `import-step --json` and
 `validate --json` commands expose a versioned contract
 for publishing a document,
@@ -1044,3 +1044,29 @@ new copy: choose **Edit Sketch …** or use `edit-sketch-copy` with the Sketch U
 content version and ordered curve coordinates discovered by `inspect --json`.
 Object, curve and reference identities remain unchanged. See the
 [bounded editing contract and runnable recipe](docs/edit-sketch-copy.md).
+
+### Numeric edits
+
+`inspect --json` lists every stored `expression_slots` entry: object UUID, slot,
+expression source and internal value, dimension, display value/unit, and refusal.
+Length values use millimetres internally; angles use radians and display degrees.
+Slots include Extrude distance (Blind or Symmetric), Fillet radius, Chamfer distance,
+partial Revolve angle, and Sketch constraint Distance, Radius, DirectedAngle, FixedX
+and FixedY (addressed by constraint UUID). Parameter-dependent objects are refused.
+
+Use the returned `content_version` with one ordered transaction:
+
+```json
+{"request_version":1,"changes":[{"object":"<object UUID>","slot":{"kind":"revolve_angle"},"value":90,"unit":"deg"}]}
+```
+
+```sh
+ferritecad edit source.fcad --expect-version HASH --request changes.json --output edited.fcad --json
+```
+
+The result contains `destination`, `document_id`, `content_version` and `rebuild`.
+All changes are validated together and rebuilt before publication. An edit refuses
+all newly failed or skipped features and every previously resolved topology reference
+that would be lost; existing failures do not prevent repair. The four numeric forms
+use this same transaction for Apply and Undo/Redo, including features in other bodies.
+Their local checks validate payload values; geometric fit is decided by Apply.

@@ -173,7 +173,16 @@ impl Window {
         let current = self.sessions.export_path().expect("shown");
         let reading = read_extrude_source(&current).expect("reading");
         assert!(self.edits.begin(&current, &reading));
-        self.edits.type_height(reading.features[0].feature, text);
+        self.edits.type_height(
+            reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+                .cloned()
+                .collect::<Vec<_>>()[0]
+                .object,
+            text,
+        );
     }
 }
 

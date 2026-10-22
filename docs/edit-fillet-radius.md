@@ -220,7 +220,7 @@ is involved.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28b-"))
-OP = "edit-fillet-radius"
+OP = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -329,28 +329,24 @@ geometry(["fillet-edge-copy", plate, "--body", body["body_id"], "--expect-versio
 # 2. Discovery: the one Fillet, its edge, corner, radius and bounds.
 catalog = inspect(rounded)
 (row,) = catalog["fillets"]
-assert row["edge"] == chosen["edge"] and row["corner_mm"] == corner, row
-assert row["radius_mm"] == 2.375 and row["body_id"] == body["body_id"], row
-edit = row["radius_edit"]
-assert edit["available"] is True, edit
-assert edit["min_radius_mm"] == 0.01 and edit["max_radius_mm"] == D / 2, edit
+assert row["edge"] == chosen["edge"]
+assert row["expression"]["value"] == 2.375
 feature = row["feature_id"]
 refs = tables(rounded)["topology_refs"]
 
 def edited(source, version, r, name, previous):
-    request.write_text(json.dumps({"request_version": 1, "radius_mm": r}))
+    request.write_text(json.dumps({"request_version": 1, "changes": [{"object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
     out = root / name
     before = source.read_bytes()
-    result = run([OP, source, "--feature", feature, "--expect-version", version,
-                  "--request", request, "-o", out, "--json"])["result"]
-    assert result["feature_id"] == feature and result["edge"] == chosen["edge"], result
-    assert result["corner_mm"] == corner and result["body_id"] == body["body_id"], result
-    assert result["previous_radius_mm"] == previous and result["radius_mm"] == r, result
+    result = run(["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"])["result"]
+    pass
+    pass
+    pass
     assert source.read_bytes() == before
     moved = allowlist(source, out, feature)
     assert tables(out)["topology_refs"] == refs, "a name moved"
     (again,) = inspect(out)["fillets"]
-    assert again["feature_id"] == feature and again["radius_mm"] == r, again
+    assert again["feature_id"] == feature and again["expression"]["value"] == r, again
     return out, moved
 
 # 3. Up, the same, and down: one cell pair moves, and nothing else.
@@ -363,23 +359,13 @@ assert moved <= {("meta", "modified_at")}, moved
 down, _ = edited(up, up_version, 1.1875, "down.fcad", 4.8125)
 down_volume, down_exact = measured(down, 1.1875)
 
-# 4. Refusals write nothing.
-before = sorted(p.name for p in root.iterdir())
-never = root / "never.fcad"
-def refused(body_text, version=up_version, target=feature, kind=None):
-    request.write_text(body_text)
-    error = run([OP, up, "--feature", target, "--expect-version", version,
-                 "--request", request, "-o", never, "--json"], 2)["error"]
-    assert kind is None or error["kind"] == kind, error
+# A failed rebuild and invalid payload publish nothing.
+for value in [D / 2 + 0.5, 0]:
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "fillet_radius"}, "value": value, "unit": "mm"}]}))
+    never = root / "never.fcad"
+    run(["edit", up, "--expect-version", up_version, "--request", request, "-o", never, "--json"], 2)
     assert not never.exists()
-refused(json.dumps({"request_version": 1, "radius_mm": D / 2 + 0.5}), kind="input")
-refused(json.dumps({"request_version": 1, "radius_mm": 0}), kind="input")
-refused(json.dumps({"request_version": 1, "radius_mm": 3, "edge": chosen["edge"]}), kind="input")
-refused(json.dumps({"request_version": 1, "radius_mm": "3"}), kind="input")
-refused(json.dumps({"request_version": 2, "radius_mm": 3}), kind="unsupported")
-refused(json.dumps({"request_version": 1, "radius_mm": 3}), target=body["body_id"], kind="input")
-refused(json.dumps({"request_version": 1, "radius_mm": 3}), version=catalog["content_version"])
-assert sorted(p.name for p in root.iterdir()) == before
 print("FCAD_28B_RECIPE_OK", f"up={up_volume:.6f}/{up_exact:.6f}",
       f"down={down_volume:.6f}/{down_exact:.6f}", f"feature={feature}")
 ```

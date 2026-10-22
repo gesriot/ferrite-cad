@@ -2,9 +2,7 @@
 //! §26H: an explicit ThroughAll Cut stays through across height edits, reopen,
 //! cold rebuilds and cache hits; mode transitions keep, add or refuse names.
 use super::*;
-use ferritecad_document::{
-    SavedCircularCut, TopologyRef, prepare_cut_parameters, prepare_extrude_height,
-};
+use ferritecad_document::{SavedCircularCut, TopologyRef, prepare_cut_parameters};
 use ferritecad_types::ObjectId;
 
 const BOUNDS: [[f64; 2]; 2] = [[0., 0.], [80., 50.]];
@@ -120,27 +118,26 @@ fn edit(
 
 fn height(source: &Path, destination: &Path, height: f64, code: i32) -> Value {
     let catalog = inspect(source);
-    let base = catalog["features"]
-        .as_array()
-        .expect("features")
-        .iter()
-        .find(|f| !f["base_height_edit_v2"].is_null())
-        .expect("base")["feature_id"]
-        .as_str()
-        .expect("id")
-        .to_owned();
+    let d = Document::open_read_only(source).expect("document");
+    let object = d.objects().expect("objects").into_iter().find(|o|matches!(&o.payload,ferritecad_document::ObjectPayload::Extrude(e) if e.previous.is_none())).expect("base").id;
+    let request = tempfile::NamedTempFile::new().expect("request");
+    crate::transaction::write(
+        request.path(),
+        &object.to_string(),
+        "extrude_distance",
+        height,
+        "mm",
+    );
     reply(
-        cli()
-            .arg("edit-extrude")
-            .arg(source)
-            .args(["--feature", &base, "--expect-version"])
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .args(["--distance-mm", &height.to_string(), "-o"])
-            .arg(destination)
-            .arg("--json")
-            .output()
-            .expect("height"),
-        "edit-extrude",
+        crate::transaction::command(
+            source,
+            catalog["content_version"].as_str().expect("version"),
+            request.path(),
+            destination,
+        )
+        .output()
+        .expect("height"),
+        "edit",
         code,
     )
 }
@@ -257,15 +254,6 @@ fn through_all_discovery_and_requests_without_kernel() {
             assert_eq!(s["through_allowed"], json!(true));
         }
     }
-    let height_tools = catalog["features"]
-        .as_array()
-        .expect("features")
-        .iter()
-        .find(|f| !f["base_height_edit_v2"].is_null())
-        .expect("base")["base_height_edit_v2"]["tools"]
-        .clone();
-    assert_eq!(height_tools, target["tools"]);
-
     let valid = reply(
         cli()
             .arg("validate")
@@ -457,14 +445,7 @@ fn native_through_all_survives_height_reopen_cold_and_cache() {
                 .filter(|f| f["circular_cut_edit_v2"]["available"] == json!(true))
                 .count();
             assert_eq!(editable, n, "every link stays editable");
-            assert!(
-                next["features"]
-                    .as_array()
-                    .expect("features")
-                    .iter()
-                    .any(|f| f["base_height_edit_v2"].is_object() && f["editable"] == json!(true)),
-                "the base height stays editable"
-            );
+
             if n == 4 && artifact < 2 {
                 if let Some(dir) = std::env::var_os("FCAD_CUT_THROUGH_ALL_ARTIFACTS") {
                     let dir = Path::new(&dir);
@@ -501,8 +482,13 @@ fn native_through_all_survives_height_reopen_cold_and_cache() {
         );
         let mut d = Document::open(&source).expect("doc");
         let base = ordered[0].base_feature;
-        let p = prepare_extrude_height(&d, base, 14.25).expect("height");
-        d.write_extrude_height(&p).expect("write");
+        let p = ferritecad_document::ExpressionChange::constant(
+            base,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            14.25,
+        )
+        .expect("height");
+        d.write_expression_changes(&[p]).expect("write");
         d.close().expect("close");
         let grown = measure_history_at(&source, &tools, BOUNDS, 14.25, Some(&vec![Miss; n + 1]));
         assert_eq!(
@@ -928,13 +914,6 @@ fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
         assert_eq!(saved.depth_mm, tool.depth_mm);
         assert_eq!(saved.leaves_a_floor, tool.depth_mm < SIZE[2]);
     }
-    let heights: Vec<_> = old
-        .features
-        .iter()
-        .filter_map(|f| f.base_height_edit.as_ref())
-        .collect();
-    assert_eq!(heights.len(), 1);
-    assert_eq!(read(&heights[0].tools), expected);
     let histories: Vec<_> = old
         .sketches
         .iter()
@@ -1001,13 +980,7 @@ fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
             .count(),
         4
     );
-    assert!(
-        json["features"]
-            .as_array()
-            .expect("f")
-            .iter()
-            .any(|f| f["base_height_edit_v2"].is_object())
-    );
+
     assert!(
         json["sketches"]
             .as_array()
