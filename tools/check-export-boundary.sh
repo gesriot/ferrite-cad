@@ -353,14 +353,6 @@ fi
 if ! grep -q 'pub enum ExportDefinitionIdentity {' "$MODEL"; then
     fail "the export model does not define ExportDefinitionIdentity"
 fi
-# Both enums keep their third state. Without it a legacy layout could only be
-# reported as an identity somebody invented or as an identity that got lost,
-# and §22B-1e3b's whole legacy policy is that it is neither.
-for enum in ExportOccurrence ExportDefinitionIdentity; do
-    if ! shipped "$MODEL" | awk "/pub enum ${enum} \{/,/^\}/" | grep -q '^    Unrecorded'; then
-        fail "${enum} has no Unrecorded state, so a legacy layout cannot be told apart"
-    fi
-done
 
 # ---------------------------------------------------- the identity channel
 #
@@ -444,15 +436,6 @@ if [ "$(shipped_count 'OccurrenceId::new(' "$SPINE" "${SCENE}/src/export.rs")" !
 fi
 if [ "$(shipped_count 'reopened.occurrences()' "$SPINE")" != "1" ]; then
     fail "${SPINE} does not read the stored placement identities exactly once"
-fi
-# The same for the definition half: read from the layout the payload was
-# stored at, once, and never inferred from the fact that a fresh reading shows
-# keys. Every reading shows keys; only some documents wrote them down.
-if [ "$(shipped_count 'reopened.definition_identities()' "$SPINE")" != "1" ]; then
-    fail "${SPINE} does not read the stored definition identity state exactly once"
-fi
-if [ "$(shipped_count 'StoredDefinitionIdentities::Recorded' "$SPINE")" != "1" ]; then
-    fail "${SPINE} decides that definitions are identified in more than one place"
 fi
 
 # Nothing in the export model may be serialised.

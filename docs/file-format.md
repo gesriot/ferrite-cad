@@ -13,7 +13,8 @@ opening a damaged document does not modify it.
 
 A `.fcad-cache` sidecar is tagged `FCAC`. It uses WAL and normal durability, and
 binds derived blobs to a document id, kernel build and input key. Unreadable or
-mismatched caches are discarded and recreated; a cache miss rebuilds geometry.
+mismatched caches are discarded and recreated. A cached entry whose bytes no
+longer match their hash is dropped; a miss rebuilds geometry.
 
 The document format is unstable. Change its schema and payloads directly and
 regenerate affected fixtures. No migration, layout version or capability contract

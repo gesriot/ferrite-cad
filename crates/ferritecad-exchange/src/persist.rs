@@ -23,32 +23,23 @@
 //! picking the nearest plausible definition — hands a caller the geometry of a
 //! part it did not ask for and says nothing about having done so.
 //!
-//! # What identifies a definition, what identifies a placement, and what each
-//! version changed
+//! # What identifies a definition and what identifies a placement
 //!
-//! A stored scene has to say which definition each placement refers to. Version
-//! 1 said it by position, because position was all it had. It therefore refused
-//! a file whose definitions came back in another order, and was right to: a
-//! reordered version 1 scene has changed everything it knew about itself.
-//!
-//! Version 2 stores the key the source file gave each definition. Identity now
-//! survives reordering, so a permutation binds, while a definition that has
-//! gone, one that is new, and two that claim one identity are all refused. All
-//! three versions run through one comparison and the whole of their difference
-//! is which identity a definition is given — see [`crate::project`].
+//! A stored scene says which definition each placement refers to by the key
+//! the source file gave that definition. Identity survives reordering, so a
+//! permutation binds, while a definition that has gone, one that is new, and
+//! two that claim one identity are all refused — see [`crate::project`].
 //!
 //! A key is local to its source. `step.product_definition#31` names something
 //! within one STEP file and nothing at all between two, so a durable reference
 //! has to carry the identity of the source alongside one.
 //!
-//! Version 3 gives every *placement* an [`OccurrenceId`] of its own. A key
-//! identifies a part; nothing in a source file identifies one of the places
-//! that part appears, and until now nothing in a document did either. Two
-//! placements of one definition share their key, their name, their solid count
-//! and often their transform, so what told them apart was the position they
-//! were stored at — and the §22B-1e1 and §22B-1e2a measurements recorded
-//! exactly what that costs downstream: inserting an unrelated sibling moved a
-//! reference from one part to another, silently.
+//! Every *placement* has an [`OccurrenceId`] of its own. A key identifies a
+//! part; nothing in a source file identifies one of the places that part
+//! appears. Two placements of one definition share their key, their name, their
+//! solid count and often their transform, so without a stored identity what
+//! told them apart would be the position they were stored at, and inserting an
+//! unrelated sibling would move a reference from one part to another, silently.
 //!
 //! The identity is minted once, by [`Scene::persist`], when a placement is
 //! first written down. Every later reading takes it from the payload and from
@@ -224,13 +215,12 @@ impl Scene {
     }
 }
 
-/// One stored placement of either keyed layout, reduced to what makes it a
-/// placement at all.
+/// One stored placement, reduced to what makes it a placement at all.
 ///
 /// Borrowed rather than owned, and deliberately without the occurrence
-/// identity: this is the vocabulary the two layouts share, and the identity is
-/// exactly what they do not. What is checked about the identity is checked by
-/// the layout that has one.
+/// identity: a binding compares what the source file said, and the identity is
+/// not something a source file says. [`PersistedScene::validate`] checks the
+/// identities separately.
 pub(crate) struct Placement<'a> {
     pub(crate) definition: &'a str,
     pub(crate) parent: Option<u32>,
@@ -240,13 +230,7 @@ pub(crate) struct Placement<'a> {
     pub(crate) colour: &'a [f64; 3],
 }
 
-/// Checks what makes a keyed scene a scene, at either layout that has keys.
-///
-/// Written once because it is one question. Version 2 and version 3 differ in
-/// whether a placement carries an identity of its own and in nothing else, so a
-/// second copy of these checks would be a second answer that could drift — and
-/// the drift would land on the older layout, which is the one nobody is
-/// looking at.
+/// Checks what makes a keyed scene a scene, apart from placement identities.
 pub(crate) fn validate_keyed<'a>(
     definitions: &[PersistedDefinition],
     instances: impl ExactSizeIterator<Item = Placement<'a>>,
@@ -305,10 +289,9 @@ pub(crate) fn validate_keyed<'a>(
 
 /// Reduces a stored keyed scene to what a comparison may look at.
 ///
-/// Shared for the same reason [`validate_keyed`] is, and it carries no
-/// occurrence identity for the same reason too: a binding compares what the
-/// source file said, and the identity is not something a source file says. It
-/// is attached afterwards, by the caller that already proved the two agree.
+/// It carries no occurrence identity: a binding compares what the source file
+/// said, and the identity is not something a source file says. It is attached
+/// afterwards, by the caller that already proved the two agree.
 pub(crate) fn project_keyed<'a>(
     unit: &str,
     schema: &str,
@@ -371,7 +354,7 @@ impl PersistedScene {
     /// placement identities are all different. A malformed one cannot reach
     /// here — [`OccurrenceId`] refuses anything that is not a UUIDv7 while the
     /// payload is still being decoded — and a missing one cannot either,
-    /// because at this layout the field is not optional. What is left is the
+    /// because the field is not optional. What is left is the
     /// one damaged state the types permit: two placements answering to one
     /// identity, which would make a reference to it resolve to whichever was
     /// looked at first.

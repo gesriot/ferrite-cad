@@ -240,8 +240,7 @@ def cells(path):
     return out
 
 def allowlist(source, copy, sketch):
-    """Only the Sketch row's payload/payload_hash/schema_version and the
-    sketch.constraints.v1 capability row may differ. The Revolve row, with
+    """Only the Sketch row's payload/payload_hash may differ. The Revolve row, with
     its axis_segment, and every saved face name are compared exactly."""
     sid = bytes.fromhex(sketch.replace("-", ""))
     a, b = cells(source), cells(copy)
@@ -252,15 +251,11 @@ def allowlist(source, copy, sketch):
             for r in rows:
                 d = dict(r)
                 if t == "objects" and d["id"] == sid:
-                    for k in ("payload", "payload_hash", "schema_version"):
+                    for k in ("payload", "payload_hash"):
                         d.pop(k)
-                if t == "capabilities" and d["name"] == "sketch.constraints.v1":
-                    continue
                 kept.append(sorted(d.items()))
             return sorted(kept, key=repr)
         assert strip(a[t]) == strip(b[t]), f"{t}: a cell outside the allowlist"
-    required = [dict(r) for r in b["capabilities"] if dict(r)["name"] == "sketch.constraints.v1"]
-    assert required and required[0]["required"] == 1, required
 
 def stl_facts(path):
     """Independent of the product: signed volume, and the radius and height

@@ -68,7 +68,7 @@ pub fn plate_manifest() -> Result<String> {
 
 /// Opens a private copy of the plate inside `directory`.
 ///
-/// A copy rather than the original: opening a document migrates it and sets
+/// A copy rather than the original: opening a document for writing sets
 /// persistent pragmas, and a test that dirtied the checkout would be found out
 /// by `git diff` long after the run that did it.
 pub fn open_plate(directory: &Path) -> Result<Document> {

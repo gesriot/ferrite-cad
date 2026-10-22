@@ -562,8 +562,8 @@ fn a_file_the_kernel_refuses_writes_nothing_at_all() {
         let bytes = corpus("damaged", name);
 
         // Settle the document first: creating and opening it applies the
-        // migration and the persistent pragmas, so anything that moves after
-        // this moved because of the import.
+        // schema and the persistent pragmas, so anything that moves after this
+        // moved because of the import.
         Document::create(&path)
             .expect("creates")
             .close()

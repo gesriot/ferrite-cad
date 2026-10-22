@@ -2139,7 +2139,7 @@ pub(crate) mod tests {
             }
             assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
         }
-        // Both copies store the intent at v3 with the capability, and no floor.
+        // Both copies store the intent, and no floor.
         for copy in [&ui, &peer] {
             let d = Document::open_read_only(copy).expect("copy");
             let cut = d

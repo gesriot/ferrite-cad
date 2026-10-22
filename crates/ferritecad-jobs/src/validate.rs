@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Internal document consistency, read once without migration or a kernel.
+//! Internal document consistency, read once without writes or a kernel.
 
 use std::path::Path;
 
@@ -17,8 +17,9 @@ pub struct ValidatedDocument {
 
 /// Validate one pinned, read-only snapshot and close SQLite before returning.
 ///
-/// The path is the entire request. Existing schema, WAL and reader guards apply;
-/// this operation cannot migrate, repair, rebuild or create a missing document.
+/// The path is the entire request. The application id, WAL and payload checks
+/// of a read-only open apply; this operation cannot repair, rebuild or create a
+/// missing document.
 /// A report is about stored consistency, not successful geometry or STEP import.
 pub fn validate_document(source: &Path) -> Result<ValidatedDocument> {
     validate_snapshot(Document::open_read_only(source)?)

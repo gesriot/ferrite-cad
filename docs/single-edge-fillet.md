@@ -370,8 +370,8 @@ def cells(path):
 
 def allowlist(source, copy, body):
     """Every source cell survives, except the Body's payload/payload_hash and
-    its old tip edge; the copy adds one object, two edges, seven names and
-    capabilities, and stamps modified_at. Nothing else moves."""
+    its old tip edge; the copy adds one object, two edges and seven names, and
+    stamps modified_at. Nothing else moves."""
     bid = bytes.fromhex(body.replace("-", ""))
     a, b = cells(source), cells(copy)
     assert a.keys() == b.keys()
@@ -391,12 +391,8 @@ def allowlist(source, copy, body):
         expected = {"objects": 1, "deps": 1, "topology_refs": 7}.get(t)
         if expected is not None:
             assert added == expected, (t, added)
-        elif t not in ("capabilities",):
+        else:
             assert added == 0, (t, added)
-    names = {r["name"] for r in b["capabilities"]} - {r["name"] for r in a["capabilities"]}
-    assert "feature.fillet.v1" in {r["name"] for r in b["capabilities"]}
-    assert names <= {"feature.fillet.v1", "topology.origin-face.v1",
-                     "feature.predecessor.v1"}, names
 
 def stl(path):
     data = path.read_bytes()

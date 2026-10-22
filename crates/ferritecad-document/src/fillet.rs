@@ -1321,8 +1321,8 @@ mod tests {
         (root, d, body)
     }
 
-    /// The stored payload round-trips, requires its capability, and refuses
-    /// a radius no fillet has and a field this reader would drop.
+    /// The stored payload round-trips and refuses a radius no fillet has and a
+    /// field this reader would drop.
     #[test]
     fn the_fillet_payload_round_trips_and_refuses_what_it_cannot_mean() {
         let [a, b] = [(); 2].map(|_| StableEntityId::new());

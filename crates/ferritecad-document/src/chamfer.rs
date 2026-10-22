@@ -1099,7 +1099,7 @@ mod tests {
         prepared.feature().id
     }
 
-    /// §29A: the stored payload round-trips under its own kind and capability,
+    /// §29A: the stored payload round-trips under its own kind,
     /// refuses a distance no chamfer has and a field this reader would drop,
     /// and an edge of a feature the Chamfer does not consume.
     #[test]

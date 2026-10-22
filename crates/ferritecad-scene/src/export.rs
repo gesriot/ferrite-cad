@@ -335,9 +335,8 @@ fn material_of(prepared: &PreparedDefinition, places: &[&PreparedNode]) -> Resul
 
 /// The load's identity for one placement, in the neutral terms a writer sees.
 ///
-/// A translation and nothing more. There is no arm here that invents a value,
-/// because the three states of the load's identity and the three states a
-/// writer is offered are the same three facts, deliberately.
+/// A translation and nothing more. There is no arm here that invents a value:
+/// every placement the load reports carries the identity the document stored.
 fn occurrence_of(identity: NodeIdentity) -> ExportOccurrence {
     match identity {
         NodeIdentity::Object(object) => ExportOccurrence::Object(object),
@@ -349,9 +348,7 @@ fn occurrence_of(identity: NodeIdentity) -> ExportOccurrence {
 /// writer sees.
 ///
 /// A translation and nothing more, for the same reason [`occurrence_of`] is
-/// one: the three states of the load's definition identity and the three a
-/// writer is offered are the same three facts, deliberately, and there is no
-/// arm here that invents a value.
+/// one: there is no arm here that invents a value.
 fn definition_identity_of(identity: &DefinitionIdentity) -> ExportDefinitionIdentity {
     match identity {
         DefinitionIdentity::Object(object) => ExportDefinitionIdentity::Object(*object),
@@ -362,7 +359,6 @@ fn definition_identity_of(identity: &DefinitionIdentity) -> ExportDefinitionIden
             source: *source,
             definition_key: definition_key.clone(),
         },
-        DefinitionIdentity::Unrecorded => ExportDefinitionIdentity::Unrecorded,
     }
 }
 

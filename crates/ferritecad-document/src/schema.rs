@@ -193,3 +193,108 @@ pub fn check_application_id(conn: &Connection, expected: i32, what: &str) -> Res
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferritecad_types::ObjectId;
+
+    fn fresh_document() -> Connection {
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        create_document(&mut conn).expect("the current schema applies");
+        conn
+    }
+
+    #[test]
+    fn application_ids_are_the_ascii_tags() {
+        assert_eq!(DOCUMENT_APPLICATION_ID.to_be_bytes(), *b"FCAD");
+        assert_eq!(CACHE_APPLICATION_ID.to_be_bytes(), *b"FCAC");
+    }
+
+    #[test]
+    fn a_created_document_carries_its_application_id() {
+        let conn = fresh_document();
+        check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")
+            .expect("a created document is ours");
+    }
+
+    #[test]
+    fn a_checkpoint_row_must_be_well_formed() {
+        let conn = fresh_document();
+        let insert = |name: &str, len: i64, image: &[u8]| {
+            conn.execute(
+                "INSERT INTO checkpoints (id, name, created_at, model, byte_len, image_hash, image)
+                 VALUES (?1, ?2, '2026-10-08T00:00:00.000Z', ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    ObjectId::new().to_bytes().as_slice(),
+                    name,
+                    [1u8; 32].as_slice(),
+                    len,
+                    [2u8; 32].as_slice(),
+                    image
+                ],
+            )
+        };
+        insert("A", 3, b"abc").expect("a well-formed row");
+        assert!(insert("", 3, b"abc").is_err(), "an empty name");
+        assert!(insert(&"x".repeat(81), 3, b"abc").is_err(), "81 characters");
+        assert!(insert("B", 4, b"abc").is_err(), "a length that disagrees");
+        assert!(insert("C", 0, b"").is_err(), "an empty image");
+    }
+
+    #[test]
+    fn a_source_must_agree_with_its_own_length() {
+        let conn = fresh_document();
+        let insert =
+            "INSERT INTO imported_sources (id, format, bytes, content_hash, byte_len, created_at)
+                      VALUES (?1, 'exchange.step', ?2, ?3, ?4, '2026-01-01T00:00:00.000Z')";
+        assert!(
+            conn.execute(
+                insert,
+                rusqlite::params![
+                    [1u8; 16].as_slice(),
+                    b"ISO-10303-21;".as_slice(),
+                    [2u8; 32].as_slice(),
+                    99i64
+                ],
+            )
+            .is_err(),
+            "a blob shorter than its declared length is corruption SQLite can catch"
+        );
+        assert!(
+            conn.execute(
+                insert,
+                rusqlite::params![
+                    [1u8; 16].as_slice(),
+                    b"ISO-10303-21;".as_slice(),
+                    [2u8; 31].as_slice(),
+                    13i64
+                ],
+            )
+            .is_err(),
+            "a 31-byte digest is not a BLAKE3-256 hash"
+        );
+    }
+
+    #[test]
+    fn a_foreign_sqlite_file_is_refused() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        conn.pragma_update(None, "application_id", 0x1234_5678i32)
+            .expect("pragma is writable");
+
+        let err = check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")
+            .expect_err("a foreign application id must be refused");
+        assert!(err.to_string().contains("not a FerriteCAD"));
+    }
+
+    #[test]
+    fn document_connection_enables_foreign_keys() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        configure_document_connection(&conn).expect("pragmas apply");
+
+        let enabled: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("pragma is readable");
+        assert_eq!(enabled, 1);
+    }
+}

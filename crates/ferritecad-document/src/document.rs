@@ -199,16 +199,12 @@ impl ReopenedStepImport {
     /// because a reference that resolves to something plausible is worse than
     /// one that does not resolve at all.
     ///
-    /// The three ways this fails are three different facts, and they are
-    /// reported as three different kinds so a caller can tell them apart
-    /// without reading prose:
+    /// The two ways this fails are two different facts, and they are reported
+    /// as two different kinds so a caller can tell them apart without reading
+    /// prose:
     ///
     /// * [`Input`][ferritecad_types::ErrorKind::Input] — the reference is about
-    ///   another source. It is not lost; it was never about this import.
-    /// * [`Unsupported`][ferritecad_types::ErrorKind::Unsupported] — the stored
-    ///   scene predates identities. The key is not missing; no key was ever
-    ///   recorded, and inventing one from a position would answer a question
-    ///   this document never agreed to.
+    ///   another source, or names more than one definition of this reading.
     /// * [`Topology`][ferritecad_types::ErrorKind::Topology] — the right
     ///   source, and nothing in it carries that identity any more. That is a
     ///   lost reference, which is the one case a user has to be told about by
@@ -2254,10 +2250,24 @@ fn read_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ObjectRec
 }
 
 fn read_meta(conn: &Connection) -> Result<DocumentMeta> {
-    let (id, length, angle, created_at, modified_at, generator) = conn.query_row(
-        "SELECT document_id, display_length_unit, display_angle_unit, created_at, modified_at, generator FROM meta WHERE id = 1",
-        [], |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
-    ).map_err(|e| CadError::io("reading document metadata", e))?;
+    let (id, length, angle, created_at, modified_at, generator) = conn
+        .query_row(
+            "SELECT document_id, display_length_unit, display_angle_unit,
+                    created_at, modified_at, generator
+             FROM meta WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .map_err(|e| CadError::io("reading document metadata", e))?;
     let display_length_unit = length.parse()?;
     let display_angle_unit = angle.parse()?;
     validate_display_units(display_length_unit, display_angle_unit)?;
@@ -2891,8 +2901,7 @@ mod constraint_write_tests {
         assert_eq!(plan.circle_roles(), Some((curves[0].id, curves[1].id)));
         d.write_sketch_constraints(&plan).expect("write");
 
-        // The stored sketch declares the vocabulary it now speaks, and nothing
-        // wider: the existing circle capability already covers a centre.
+        // The stored sketch is read back as written.
         let _stored = sketch_of(&d.object(id).expect("row").expect("present")).clone();
 
         // And it comes off again by its own UUID.

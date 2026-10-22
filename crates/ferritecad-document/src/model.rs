@@ -1621,8 +1621,7 @@ pub enum ObjectPayload {
 }
 
 impl ObjectPayload {
-    /// The discriminator to store, which for an unknown object is whatever the
-    /// writing build called it.
+    /// The discriminator to store.
     pub fn type_name(&self) -> &str {
         match self {
             Self::Parameter(_) => ObjectKind::Parameter.as_str(),

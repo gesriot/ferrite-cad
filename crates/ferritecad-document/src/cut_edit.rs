@@ -1818,8 +1818,8 @@ mod tests {
             "the copy validates"
         );
 
-        // Written down, the feature is a v2 payload declaring the capability a
-        // reader needs; the feature that was there is untouched at v1.
+        // Written down, the new feature is stored and the feature that was
+        // there is untouched.
         let objects = d.objects().expect("objects");
         let _written = objects
             .iter()

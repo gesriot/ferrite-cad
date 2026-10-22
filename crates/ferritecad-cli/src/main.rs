@@ -155,9 +155,9 @@ enum Command {
     EditChamferDistance(edit_chamfer_distance::EditChamferDistanceArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
-    /// Check stored consistency without writes, migration or a geometry kernel.
+    /// Check stored consistency without writes or a geometry kernel.
     Validate(ValidateArgs),
-    /// Print the dependency graph without migration or writes.
+    /// Print the dependency graph without writes.
     DumpGraph(DumpGraphArgs),
     /// Delete a document's regenerable cache sidecar.
     ClearCache(DocumentArgs),
@@ -203,7 +203,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct EditExtrudeArgs {
-    /// Existing .fcad, read without migration or modification.
+    /// Existing .fcad, read without modification.
     source: PathBuf,
     /// Exact feature UUID printed by inspect (never a name or index).
     #[arg(long)]
@@ -225,7 +225,7 @@ struct EditExtrudeArgs {
 
 #[derive(Debug, Args)]
 struct InspectArgs {
-    /// Path to the document. Read without migration, writes or a kernel.
+    /// Path to the document. Read without writes or a kernel.
     path: PathBuf,
     /// Emit the JSON v1 extrusion-edit catalog, rather than the full text report.
     /// Argument errors and help remain clap text. Paths must be UTF-8 in JSON mode.
@@ -235,7 +235,7 @@ struct InspectArgs {
 
 #[derive(Debug, Args)]
 struct ValidateArgs {
-    /// Existing current-schema document, opened read-only.
+    /// Existing document, opened read-only.
     path: PathBuf,
     /// Emit JSON v1 diagnostics. Paths must be UTF-8; help/usage remain text.
     #[arg(long)]
@@ -371,7 +371,7 @@ struct CreateArgs {
 
 #[derive(Debug, Args)]
 struct DumpGraphArgs {
-    /// Existing current-schema document, opened read-only.
+    /// Existing document, opened read-only.
     path: PathBuf,
 
     #[arg(long, value_enum, default_value_t = GraphFormat::Text)]
@@ -555,8 +555,7 @@ fn create_result(args: CreateArgs) -> Result<ferritecad_jobs::CreatedDocument> {
 }
 
 fn clear_cache(args: DocumentArgs) -> Result<ExitCode> {
-    // Read-only: deleting the sidecar is no reason to migrate the document
-    // (§30N); a schema v3 file must stay readable by the build that wrote it.
+    // Read-only: deleting the sidecar is no reason to write the document.
     let document = Document::open_read_only(&args.path)?;
     let cache = document.cache_path();
     document.close()?;

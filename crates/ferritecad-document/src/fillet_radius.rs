@@ -1977,8 +1977,7 @@ mod tests {
     }
 
     /// §28E: constraints on the rounded plate's base. Only the Sketch row's
-    /// schema version, payload and hash, and the constraint capability row,
-    /// move. The stored corner is reported as it is stored; the radius bound
+    /// payload and hash move. The stored corner is reported as it is stored; the radius bound
     /// is not read off the stored lengths in either direction; the height
     /// still edits and keeps the constraints; the coordinate editor refuses a
     /// constrained Sketch as it always has.
@@ -2462,9 +2461,8 @@ mod tests {
         assert_eq!(cells(&d), before);
     }
 
-    /// §28K: every cell but the base Sketch row's schema version, payload and
-    /// hash, the stamp and — once, when the Sketch first carries constraints —
-    /// the `sketch.constraints.v1` capability row, is the same.
+    /// §28K: every cell but the base Sketch row's payload and hash and the
+    /// stamp is the same.
     fn only_the_constraints_moved(
         before: &std::collections::BTreeMap<String, (Vec<String>, Rows)>,
         after: &std::collections::BTreeMap<String, (Vec<String>, Rows)>,
@@ -2500,8 +2498,8 @@ mod tests {
 
     /// §28K: under two Fillets, adjacent and opposite, in both windings, the
     /// constraint editor adds and removes Line constraints through the shipped
-    /// preparation and writer. Only the base Sketch row (its payload, hash and
-    /// schema version) and the one capability row move; both Fillet rows, the
+    /// preparation and writer. Only the base Sketch row (its payload and hash)
+    /// moves; both Fillet rows, the
     /// Extrude, every name and dependency stay; the closure links keep their
     /// UUIDs through a removal; the catalogue names both Fillets in history
     /// order and, once only the closure links remain, offers the Sketch's

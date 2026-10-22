@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! §30N: named checkpoints, stored in the document they belong to.
 //!
-//! A checkpoint is a row of the `checkpoints` table (schema v4): its identity,
+//! A checkpoint is a row of the `checkpoints` table: its identity,
 //! the name a person gave it, when it was made, and `image` — a complete
 //! document file holding the model of that moment, whose own catalog is empty.
 //! The image is made by the SQLite online backup every copy already uses and
@@ -144,8 +144,8 @@ fn companion(path: &Path, suffix: &str) -> std::path::PathBuf {
 
 impl Document {
     /// The checkpoints of this version, oldest first, without reading an image.
-    /// A schema v3 document has none. A row this build would not have written is
-    /// a refusal of the whole list, never a silently shorter one.
+    /// A row this build would not have written is a refusal of the whole list,
+    /// never a silently shorter one.
     pub fn checkpoints(&self) -> Result<Vec<CheckpointEntry>> {
         Ok(self.listed()?.into_iter().map(|(_, entry)| entry).collect())
     }
@@ -433,7 +433,7 @@ impl Document {
     /// Makes this document's catalog exactly `from`'s, row identities included:
     /// what Restore does to the model it brings back, so that the list a person
     /// keeps is never replaced by an older one. `from` is any readable version of
-    /// the same document; a schema v3 one has no checkpoints.
+    /// the same document.
     pub fn replace_checkpoints_from(&mut self, from: &Document) -> Result<()> {
         self.require_writable()?;
         if from.meta.document_id != self.meta.document_id {

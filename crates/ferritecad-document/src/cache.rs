@@ -43,8 +43,8 @@ pub struct CacheStore {
 }
 
 impl CacheStore {
-    /// Opens the sidecar for `document_id`, rebuilding it from scratch if what
-    /// is unreadable or belongs to a different document or kernel.
+    /// Opens the sidecar for `document_id`, rebuilding it from scratch if it is
+    /// unreadable or belongs to a different document or kernel.
     pub fn open(
         path: impl AsRef<Path>,
         document_id: DocumentId,
@@ -63,9 +63,11 @@ impl CacheStore {
         if !reusable {
             schema::create_cache(&mut conn)?;
             conn.execute(
-                "INSERT INTO cache_meta (id, document_id, kernel_id, kernel_version) VALUES (1, ?1, ?2, ?3)",
+                "INSERT INTO cache_meta (id, document_id, kernel_id, kernel_version)
+                 VALUES (1, ?1, ?2, ?3)",
                 params![document_id.to_bytes().as_slice(), kernel_id, kernel_version],
-            ).map_err(|e| CadError::io("binding cache to its document", e))?;
+            )
+            .map_err(|e| CadError::io("binding cache to its document", e))?;
         }
 
         Ok(Self { conn, path })
@@ -81,21 +83,6 @@ impl CacheStore {
     /// same object and input key, and byte-level de-duplication must not make
     /// one masquerade as the other.
     pub fn get(
-        &self,
-        object: ObjectId,
-        key: ContentHash,
-        kind: &str,
-    ) -> Result<Option<CacheEntry>> {
-        match self.read_entry(object, key, kind) {
-            Ok(entry) => Ok(entry),
-            Err(_) => {
-                let _ = self.conn.execute("DELETE FROM blobs", []);
-                Ok(None)
-            }
-        }
-    }
-
-    fn read_entry(
         &self,
         object: ObjectId,
         key: ContentHash,
@@ -138,9 +125,17 @@ impl CacheStore {
         }
 
         // The content is addressed by its own hash, so a mismatch means the
-        // sidecar is damaged. Report a miss and let the caller rebuild.
+        // sidecar is damaged. Drop the damaged blob, with its chunks and every
+        // entry that points at it, and report a miss: the caller rebuilds and
+        // stores the bytes again.
         if ContentHash::of_bytes(&bytes) != hash {
-            return Err(CadError::input("cached content does not match its hash"));
+            self.conn
+                .execute(
+                    "DELETE FROM blobs WHERE hash = ?1",
+                    params![hash.as_bytes().as_slice()],
+                )
+                .map_err(|e| CadError::io("discarding a damaged cache blob", e))?;
+            return Ok(None);
         }
 
         Ok(Some(CacheEntry {
@@ -247,14 +242,15 @@ fn matches(path: &Path, document_id: DocumentId, kernel_id: &str, kernel_version
     let check = || -> Result<bool> {
         let conn = Connection::open(path).map_err(|e| CadError::io("reading cache", e))?;
         schema::check_application_id(&conn, CACHE_APPLICATION_ID, "cache")?;
-        let integrity: String = conn
-            .query_row("PRAGMA quick_check", [], |row| row.get(0))
-            .map_err(|e| CadError::io("checking cache", e))?;
-        if integrity != "ok" {
-            return Ok(false);
-        }
-        conn.prepare("SELECT b.hash, b.byte_len, b.created_at, r.object_id, r.cache_key, r.kind, c.seq, c.data FROM blobs b JOIN blob_refs r ON b.hash=r.hash JOIN blob_chunks c ON b.hash=c.hash")
-            .map_err(|e| CadError::io("reading cache tables", e))?;
+        // Preparing a statement over every table and column checks the shape
+        // of the schema without reading any data.
+        conn.prepare(
+            "SELECT b.hash, b.byte_len, b.created_at, r.object_id, r.cache_key, r.kind,
+                    c.seq, c.data
+             FROM blobs b JOIN blob_refs r ON b.hash = r.hash
+                          JOIN blob_chunks c ON b.hash = c.hash",
+        )
+        .map_err(|e| CadError::io("reading cache tables", e))?;
         let (stored_id, stored_kernel, stored_version): (Vec<u8>, String, String) = conn
             .query_row(
                 "SELECT document_id, kernel_id, kernel_version FROM cache_meta WHERE id = 1",

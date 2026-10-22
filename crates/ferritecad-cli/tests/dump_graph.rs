@@ -228,7 +228,7 @@ fn clap_rejects_json_and_keeps_text_or_dot_help() {
     assert_eq!(help.status.code(), Some(0), "{help:?}");
     assert!(help.stderr.is_empty(), "{help:?}");
     let stdout = String::from_utf8_lossy(&help.stdout);
-    assert!(stdout.contains("without migration"), "{stdout}");
+    assert!(stdout.contains("without writes"), "{stdout}");
     assert!(stdout.contains("read-only"), "{stdout}");
     assert!(
         stdout.contains("- text: Indented evaluation order"),
