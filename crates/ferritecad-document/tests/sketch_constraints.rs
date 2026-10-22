@@ -10,6 +10,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "support/expression.rs"]
+mod expression;
+
 use ferritecad_document::{
     Access, DatumPlane, Dependency, DependencyRole, Document, ObjectPayload, Point2, Sketch,
     SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
@@ -116,13 +119,13 @@ fn corpus() -> Corpus {
         }),
         constrain(SketchConstraintRule::Fixed {
             point: at(&origin, SketchPointSelector::At),
-            x: 0.0,
-            y: 0.0,
+            x: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
         }),
         constrain(SketchConstraintRule::Distance {
             a: at(&bottom, SketchPointSelector::Start),
             b: at(&bottom, SketchPointSelector::End),
-            distance: 10.0,
+            distance: ferritecad_document::Expression::constant(10.0).expect("finite constant"),
         }),
         constrain(SketchConstraintRule::Horizontal {
             a: at(&bottom, SketchPointSelector::Start),
@@ -466,7 +469,7 @@ fn a_duplicate_constraint_id_is_refused() {
         rule: SketchConstraintRule::Distance {
             a: at(&bottom, SketchPointSelector::Start),
             b: at(&bottom, SketchPointSelector::End),
-            distance: 10.0,
+            distance: ferritecad_document::Expression::constant(10.0).expect("finite constant"),
         },
     };
     let error = refuse(Sketch {
@@ -533,18 +536,18 @@ fn a_non_finite_parameter_is_refused() {
         for rule in [
             SketchConstraintRule::Fixed {
                 point: at(&anchor, SketchPointSelector::At),
-                x: bad,
-                y: 0.0,
+                x: expression::unchecked(bad),
+                y: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
             },
             SketchConstraintRule::Fixed {
                 point: at(&anchor, SketchPointSelector::At),
-                x: 0.0,
-                y: bad,
+                x: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
+                y: expression::unchecked(bad),
             },
             SketchConstraintRule::Distance {
                 a: at(&anchor, SketchPointSelector::At),
                 b: at(&other, SketchPointSelector::At),
-                distance: bad,
+                distance: expression::unchecked(bad),
             },
         ] {
             let error = refuse(Sketch {
@@ -565,7 +568,7 @@ fn a_distance_that_is_not_positive_is_refused() {
         let rule = SketchConstraintRule::Distance {
             a: at(&anchor, SketchPointSelector::At),
             b: at(&other, SketchPointSelector::At),
-            distance: bad,
+            distance: expression::unchecked(bad),
         };
         let error = refuse(Sketch {
             plane: ObjectId::new(),
@@ -623,7 +626,7 @@ fn a_point_family_naming_one_point_twice_is_stored_for_the_solver_to_judge() {
     let rule = SketchConstraintRule::Distance {
         a: at(&anchor, SketchPointSelector::At),
         b: at(&anchor, SketchPointSelector::At),
-        distance: 5.0,
+        distance: ferritecad_document::Expression::constant(5.0).expect("finite constant"),
     };
     ObjectPayload::Sketch(Sketch {
         plane: ObjectId::new(),
@@ -651,15 +654,15 @@ fn circle_corpus() -> (SketchCurve, Vec<SketchConstraint>) {
             id: StableEntityId::new(),
             rule: SketchConstraintRule::Radius {
                 curve: circle.id,
-                radius: 6.75,
+                radius: ferritecad_document::Expression::constant(6.75).expect("finite constant"),
             },
         },
         SketchConstraint {
             id: StableEntityId::new(),
             rule: SketchConstraintRule::Fixed {
                 point: SketchPointRef::new(circle.id, SketchPointSelector::Center),
-                x: -3.5,
-                y: 4.25,
+                x: ferritecad_document::Expression::constant(-3.5).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(4.25).expect("finite constant"),
             },
         },
     ];
@@ -681,7 +684,7 @@ fn a_radius_naming_no_circle_is_refused_by_the_persistence_boundary() {
             id: StableEntityId::new(),
             rule: SketchConstraintRule::Radius {
                 curve: elsewhere,
-                radius: 4.0,
+                radius: ferritecad_document::Expression::constant(4.0).expect("finite constant"),
             },
         }],
     };
@@ -702,7 +705,7 @@ fn a_radius_naming_no_circle_is_refused_by_the_persistence_boundary() {
             id: StableEntityId::new(),
             rule: SketchConstraintRule::Radius {
                 curve: a_line.id,
-                radius: 4.0,
+                radius: ferritecad_document::Expression::constant(4.0).expect("finite constant"),
             },
         }],
     };
@@ -719,8 +722,8 @@ fn a_radius_naming_no_circle_is_refused_by_the_persistence_boundary() {
             id: StableEntityId::new(),
             rule: SketchConstraintRule::Fixed {
                 point: SketchPointRef::new(a_line.id, SketchPointSelector::Center),
-                x: 0.0,
-                y: 0.0,
+                x: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
             },
         }],
     };
@@ -738,7 +741,7 @@ fn a_radius_naming_no_circle_is_refused_by_the_persistence_boundary() {
                 id: StableEntityId::new(),
                 rule: SketchConstraintRule::Radius {
                     curve: circle.id,
-                    radius: bad,
+                    radius: expression::unchecked(bad),
                 },
             }],
         };
@@ -788,11 +791,11 @@ fn the_stored_bytes_change_when_a_constraint_changes() {
 
     // A different distance is a different sketch.
     let mut changed = base.clone();
-    changed.constraints[2].rule = match changed.constraints[2].rule {
+    changed.constraints[2].rule = match changed.constraints[2].rule.clone() {
         SketchConstraintRule::Distance { a, b, .. } => SketchConstraintRule::Distance {
             a,
             b,
-            distance: 12.0,
+            distance: ferritecad_document::Expression::constant(12.0).expect("finite constant"),
         },
         other => panic!("the corpus moved: {other:?}"),
     };
@@ -940,13 +943,13 @@ fn rule_from(family: usize, p: &[SketchPointRef]) -> SketchConstraintRule {
         0 => SketchConstraintRule::Coincident { a: p[0], b: p[1] },
         1 => SketchConstraintRule::Fixed {
             point: p[0],
-            x: 1.0,
-            y: 2.0,
+            x: ferritecad_document::Expression::constant(1.0).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(2.0).expect("finite constant"),
         },
         2 => SketchConstraintRule::Distance {
             a: p[0],
             b: p[1],
-            distance: 3.0,
+            distance: ferritecad_document::Expression::constant(3.0).expect("finite constant"),
         },
         3 => SketchConstraintRule::Horizontal { a: p[0], b: p[1] },
         4 => SketchConstraintRule::Vertical { a: p[0], b: p[1] },

@@ -835,13 +835,13 @@ impl Document {
             .constraints
             .iter()
             .filter(closure)
-            .map(|c| (c.id, c.rule))
+            .map(|c| (c.id, &c.rule))
             .collect();
         if let Some(lost) = stored
             .constraints
             .iter()
             .filter(closure)
-            .find(|c| kept.get(&c.id) != Some(&c.rule))
+            .find(|c| kept.get(&c.id).copied() != Some(&c.rule))
         {
             return Err(CadError::input(format!(
                 "constraint editing retains persisted closure, and this would drop {}",
@@ -2378,7 +2378,6 @@ mod constraint_write_tests {
                         },
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 ),
@@ -2474,7 +2473,7 @@ mod constraint_write_tests {
             .constraints
             .iter()
             .find(|c| matches!(c.rule, SketchConstraintRule::Coincident { .. }))
-            .copied()
+            .cloned()
             .expect("the closure the edit added");
 
         // Prepare an honest second edit, then forge its payload three ways.
@@ -2578,12 +2577,13 @@ mod constraint_write_tests {
         .expect("plan");
         d.write_sketch_constraints(&angled).expect("write");
         let stored = sketch_of(&d.object(id).expect("row").expect("present")).clone();
-        let angle = *stored
+        let angle = stored
             .constraints
             .iter()
             .find(|c| matches!(c.rule, SketchConstraintRule::DirectedAngle { .. }))
-            .expect("the stored angle");
-        let SketchConstraintRule::DirectedAngle { a, b, angle: value } = angle.rule else {
+            .expect("the stored angle")
+            .clone();
+        let SketchConstraintRule::DirectedAngle { a, b, angle: value } = angle.rule.clone() else {
             panic!("an angle")
         };
         let honest = prepare_sketch_constraints(
@@ -2611,7 +2611,7 @@ mod constraint_write_tests {
                 SketchConstraintRule::DirectedAngle {
                     a: b,
                     b: a,
-                    angle: -value,
+                    angle: crate::Expression::constant(-value.value()).expect("finite angle"),
                 },
             ),
             (
@@ -2627,7 +2627,9 @@ mod constraint_write_tests {
                 id: StableEntityId::new(),
                 rule,
             };
-            sketch_mut(&mut forged.object).constraints.push(extra);
+            sketch_mut(&mut forged.object)
+                .constraints
+                .push(extra.clone());
             forged.added.push(extra);
             assert!(
                 d.write_sketch_constraints(&forged).is_err(),
@@ -2642,7 +2644,7 @@ mod constraint_write_tests {
                 SketchConstraintRule::DirectedAngle {
                     a: SketchSegmentRef::new(a.to, a.from),
                     b,
-                    angle: value,
+                    angle: value.clone(),
                 },
             ),
             (
@@ -2650,7 +2652,8 @@ mod constraint_write_tests {
                 SketchConstraintRule::DirectedAngle {
                     a,
                     b,
-                    angle: value + 0.001,
+                    angle: crate::Expression::constant(value.value() + 0.001)
+                        .expect("finite angle"),
                 },
             ),
             (
@@ -2665,7 +2668,7 @@ mod constraint_write_tests {
             let mut forged = honest.clone();
             for c in &mut sketch_mut(&mut forged.object).constraints {
                 if c.id == angle.id {
-                    c.rule = rule;
+                    c.rule = rule.clone();
                 }
             }
             assert!(
@@ -2678,7 +2681,11 @@ mod constraint_write_tests {
         let mut forged = honest.clone();
         for c in &mut sketch_mut(&mut forged.object).constraints {
             if c.id == angle.id {
-                c.rule = SketchConstraintRule::DirectedAngle { a, b, angle: 4.0 };
+                c.rule = SketchConstraintRule::DirectedAngle {
+                    a,
+                    b,
+                    angle: crate::Expression::constant(4.0).expect("finite constant"),
+                };
             }
         }
         assert!(d.write_sketch_constraints(&forged).is_err());
@@ -2730,11 +2737,12 @@ mod constraint_write_tests {
         .expect("plan");
         d.write_sketch_constraints(&collinear).expect("write");
         let stored = sketch_of(&d.object(id).expect("row").expect("present")).clone();
-        let kept = *stored
+        let kept = stored
             .constraints
             .iter()
             .find(|c| matches!(c.rule, SketchConstraintRule::Collinear { .. }))
-            .expect("the stored collinearity");
+            .expect("the stored collinearity")
+            .clone();
         let honest = prepare_sketch_constraints(
             &d,
             id,
@@ -2768,7 +2776,7 @@ mod constraint_write_tests {
                 SketchConstraintRule::DirectedAngle {
                     a: whole(ids[0]),
                     b: whole(ids[2]),
-                    angle,
+                    angle: crate::Expression::constant(angle).expect("finite constant"),
                 },
             ),
             (
@@ -2784,7 +2792,9 @@ mod constraint_write_tests {
                 id: StableEntityId::new(),
                 rule,
             };
-            sketch_mut(&mut forged.object).constraints.push(extra);
+            sketch_mut(&mut forged.object)
+                .constraints
+                .push(extra.clone());
             forged.added.push(extra);
             assert!(
                 d.write_sketch_constraints(&forged).is_err(),
@@ -2793,7 +2803,7 @@ mod constraint_write_tests {
         }
 
         // The stored collinearity keeps its UUID and says something else.
-        let SketchConstraintRule::Collinear { a, b } = kept.rule else {
+        let SketchConstraintRule::Collinear { a, b } = kept.rule.clone() else {
             panic!("a collinearity")
         };
         for (name, rule) in [
@@ -2816,7 +2826,7 @@ mod constraint_write_tests {
             let mut forged = honest.clone();
             for c in &mut sketch_mut(&mut forged.object).constraints {
                 if c.id == kept.id {
-                    c.rule = rule;
+                    c.rule = rule.clone();
                 }
             }
             assert!(
@@ -2891,7 +2901,7 @@ mod constraint_write_tests {
         let [added] = plan.added.as_slice() else {
             panic!("one added constraint, got {:?}", plan.added)
         };
-        let SketchConstraintRule::Coincident { a, b } = added.rule else {
+        let SketchConstraintRule::Coincident { a, b } = added.rule.clone() else {
             panic!("a shared centre is a Coincident of two points")
         };
         assert_eq!(a.at, SketchPointSelector::Center);

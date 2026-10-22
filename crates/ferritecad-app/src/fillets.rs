@@ -187,7 +187,7 @@ impl Editor {
         self.radius = Some(RadiusDraft {
             source: path.to_path_buf(),
             version: source.version,
-            typed: choice.stored.radius_mm.to_string(),
+            typed: choice.stored.radius_mm.value().to_string(),
             choice: choice.clone(),
             applied: None,
             refusal: None,
@@ -947,7 +947,6 @@ pub(crate) mod tests {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;

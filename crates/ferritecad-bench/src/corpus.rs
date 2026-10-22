@@ -145,7 +145,9 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
                         profile: sketch_id,
                         axis: RevolveAxis::SketchY,
                         extent: RevolveExtent::Partial {
-                            degrees: RevolveAngle::new(180.0)?,
+                            angle: ferritecad_document::Expression::constant(f64::to_radians(
+                                180.0,
+                            ))?,
                         },
                         operation: SolidOperation::NewBody,
                         axis_segment: None,

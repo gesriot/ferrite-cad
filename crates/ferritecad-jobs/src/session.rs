@@ -982,7 +982,7 @@ impl StepTicket {
     pub fn edit_revolve_angle<K: GeometryKernel + ?Sized>(
         self,
         feature: ObjectId,
-        degrees: f64,
+        radians: f64,
         expected: DocumentVersion,
         kernel: &mut K,
         read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
@@ -999,7 +999,7 @@ impl StepTicket {
                         source: source.to_path_buf(),
                         expected,
                         feature,
-                        degrees,
+                        radians,
                         destination: destination.to_path_buf(),
                     },
                     kernel,

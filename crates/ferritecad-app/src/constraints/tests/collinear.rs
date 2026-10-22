@@ -508,7 +508,12 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
     assert_eq!(ui_sketch.curves, source_sketch.curves, "the guess was kept");
     assert_eq!(cli_sketch.curves, source_sketch.curves);
 
-    let rules = |s: &Sketch| s.constraints.iter().map(|c| c.rule).collect::<Vec<_>>();
+    let rules = |s: &Sketch| {
+        s.constraints
+            .iter()
+            .map(|c| c.rule.clone())
+            .collect::<Vec<_>>()
+    };
     assert_eq!(rules(&ui_sketch), rules(&cli_sketch));
     // Eight closure joints and the collinearity, last.
     assert_eq!(ui_sketch.constraints.len(), 9);

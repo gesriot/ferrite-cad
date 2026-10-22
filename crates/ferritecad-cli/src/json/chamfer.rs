@@ -152,7 +152,7 @@ impl ChamferFeatureDiscovery {
             },
             corner_mm: saved.map(|s| s.corner.corner_mm),
             adjacent_lengths_mm: saved.map(|s| s.corner.adjacent_lengths_mm),
-            distance_mm: choice.stored.distance_mm,
+            distance_mm: choice.stored.distance_mm.value(),
             distance_unit: "mm",
             profile_constrained: saved.map(|s| s.constrained),
             distance_edit: ChamferDistanceEditDiscovery {

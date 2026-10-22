@@ -549,7 +549,10 @@ fn chamfer_at(
     };
     assert_eq!(stored.previous, uuid(&base));
     assert_eq!(stored.edge.feature, uuid(&base));
-    assert_eq!(stored.distance_mm, d);
+    assert_eq!(
+        stored.distance_mm,
+        ferritecad_document::Expression::constant(d).expect("finite constant")
+    );
 
     let tip = objects
         .iter()
@@ -1636,14 +1639,14 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
     // A distance past the bound a writer never checked.
     let wide = forge("wide", &|d, id| {
         let mut c = chamfer_of(d, id);
-        c.distance_mm = 100.0;
+        c.distance_mm = ferritecad_document::Expression::constant(100.0).expect("finite constant");
         rewrite(d, id, ObjectPayload::Chamfer(c));
     });
     refused_everywhere("a distance past the bound", &wide, 6);
     // A distance below the minimum.
     let thin = forge("thin", &|d, id| {
         let mut c = chamfer_of(d, id);
-        c.distance_mm = 1e-9;
+        c.distance_mm = ferritecad_document::Expression::constant(1e-9).expect("finite constant");
         rewrite(d, id, ObjectPayload::Chamfer(c));
     });
     refused_everywhere("a distance below the minimum", &thin, 6);
@@ -1701,7 +1704,8 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
             .expect("chamfer");
         let twin = ObjectId::new();
         let mut other = c.clone();
-        other.distance_mm = 1.0;
+        other.distance_mm =
+            ferritecad_document::Expression::constant(1.0).expect("finite constant");
         d.write(|w| {
             w.put_object(
                 twin,

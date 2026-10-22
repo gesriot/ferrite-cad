@@ -124,7 +124,6 @@ pub(crate) fn write_round(
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;

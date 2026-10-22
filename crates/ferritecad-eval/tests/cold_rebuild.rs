@@ -97,7 +97,6 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -288,14 +287,13 @@ fn a_local_failure_preserves_previously_built_geometry() {
                     end_condition: EndCondition::ThroughAll,
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
             w.add_dependency(Dependency {
                 dependent: broken,
                 dependency: plate.extrude,
-                role: DependencyRole::TargetBody,
+                role: DependencyRole::Predecessor,
             })?;
             w.add_dependency(Dependency {
                 dependent: broken,
@@ -530,7 +528,6 @@ fn a_sketch_with_a_circle_is_unsupported_rather_than_approximated() {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
@@ -572,7 +569,6 @@ fn a_symmetric_extrusion_straddles_the_sketch_plane() {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
@@ -665,7 +661,7 @@ fn a_failed_cut_releases_its_tool_and_keeps_the_last_built_predecessor() {
                     profile: plate.sketch,
                     previous: Some(plate.extrude),
                     operation: SolidOperation::Cut,
-                    target_body: None,
+
                     end_condition: EndCondition::ThroughAll,
                     reversed: false,
                 }),
@@ -691,7 +687,8 @@ fn a_failed_cut_releases_its_tool_and_keeps_the_last_built_predecessor() {
                         feature: cut,
                         joint: ProfileJoint::new(plate.segments[0], plate.segments[1])?,
                     },
-                    radius_mm: 1.0,
+                    radius_mm: ferritecad_document::Expression::constant(1.0)
+                        .expect("finite constant"),
                 }),
             )?;
             w.add_dependency(Dependency {

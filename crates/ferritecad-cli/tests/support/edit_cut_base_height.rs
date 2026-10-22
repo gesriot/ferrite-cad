@@ -317,7 +317,7 @@ fn height_discovery_and_structural_refusals_without_kernel() {
                         };
                         e.operation = ferritecad_document::SolidOperation::NewBody;
                         e.previous = None;
-                        e.target_body = None;
+
                         let bytes = object.payload.to_storage_bytes().expect("payload");
                         sql.execute(
                             "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
@@ -331,11 +331,8 @@ fn height_discovery_and_structural_refusals_without_kernel() {
                         )
                         .expect("erase boolean payload");
                     }
-                    sql.execute(
-                        "DELETE FROM deps WHERE role IN ('predecessor','target_body')",
-                        [],
-                    )
-                    .expect("erase history edges");
+                    sql.execute("DELETE FROM deps WHERE role = 'predecessor'", [])
+                        .expect("erase history edges");
                 }
                 _ => unreachable!(),
             }

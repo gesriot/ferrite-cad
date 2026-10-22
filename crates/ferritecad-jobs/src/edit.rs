@@ -139,8 +139,8 @@ pub struct EditRevolveAngleRequest {
     pub source: PathBuf,
     pub expected: DocumentVersion,
     pub feature: ObjectId,
-    /// Degrees, exactly as given; the domain's `RevolveAngle` decides.
-    pub degrees: f64,
+    /// Radians, exactly as given; the domain's `RevolveAngle` decides.
+    pub radians: f64,
     pub destination: PathBuf,
 }
 
@@ -172,7 +172,7 @@ pub(crate) fn edit_revolve_angle_copy_with<K: GeometryKernel + ?Sized>(
         context,
         run,
         |source| {
-            ferritecad_document::prepare_revolve_angle(source, request.feature, request.degrees)
+            ferritecad_document::prepare_revolve_angle(source, request.feature, request.radians)
                 .map(CopyWrite::RevolveAngle)
         },
         |_, checked| Ok(checked.rebuild),

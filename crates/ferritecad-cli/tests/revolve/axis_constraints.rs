@@ -18,7 +18,6 @@ use super::constraints::{
 };
 use super::partial::{doc_sketch, pappus};
 use super::*;
-use ferritecad_document::RevolveAngle;
 
 /// A solid cylinder off the origin in Y, with fractional sizes. Line 3 is on
 /// the axis.
@@ -426,7 +425,8 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
     let sector_labels = write_solid_document(&solid_sector, &CYLINDER_T, Some(3));
     rewrite_revolve(&solid_sector, |r| {
         r.extent = RevolveExtent::Partial {
-            degrees: RevolveAngle::new(SHAFT_DEG).expect("angle"),
+            angle: ferritecad_document::Expression::constant(f64::to_radians(SHAFT_DEG))
+                .expect("angle"),
         }
     });
     for (path, kind, axis) in [

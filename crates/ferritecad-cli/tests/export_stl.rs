@@ -352,7 +352,7 @@ fn several_bodies_are_listed_rather_than_guessed_between() {
                     },
                     reversed: false,
                     operation: ferritecad_document::SolidOperation::NewBody,
-                    target_body: None,
+
                     previous: None,
                 }),
             )?;

@@ -143,7 +143,7 @@ pub fn revolve_choices(_document: &Document, objects: &[ObjectRecord]) -> Vec<Re
                 profile_sketch: revolve.profile,
                 plane: sketch.map(|s| s.plane),
                 axis: revolve.axis,
-                extent: revolve.extent,
+                extent: revolve.extent.clone(),
                 operation: revolve.operation,
                 segments,
                 profile_refusal,

@@ -192,7 +192,6 @@ impl Plate {
                         },
                         reversed: self.reversed,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;
@@ -1173,7 +1172,10 @@ fn fillet_at(f: &Fixture, corner: [f64; 2], r: f64, name: &str) -> (PathBuf, Mea
     };
     assert_eq!(stored.previous, base_id);
     assert_eq!(stored.edge.feature, base_id);
-    assert_eq!(stored.radius_mm, r);
+    assert_eq!(
+        stored.radius_mm,
+        ferritecad_document::Expression::constant(r).expect("finite constant")
+    );
     assert_eq!(
         json!(stored.edge.joint.segments().map(|s| s.to_string())),
         candidate["edge"]["joint"]
@@ -1749,7 +1751,8 @@ fn native_the_evaluator_refuses_a_saved_fillet_outside_the_class() {
         .expect("the opposite Line");
     let mut forged = Vec::new();
     let mut too_large = fillet.clone();
-    too_large.radius_mm = D / 2. + 0.5;
+    too_large.radius_mm =
+        ferritecad_document::Expression::constant(D / 2. + 0.5).expect("finite constant");
     forged.push(("a radius past the policy", too_large, "too large"));
     let mut apart = fillet.clone();
     apart.edge.joint = ferritecad_types::ProfileJoint::new(a, opposite).expect("joint");
@@ -5955,7 +5958,10 @@ mod sequential {
         };
         assert_eq!(stored.previous, first_id, "it rounds Fillet 1's result");
         assert_eq!(stored.edge.feature, base, "the producer is not substituted");
-        assert_eq!(stored.radius_mm, r2);
+        assert_eq!(
+            stored.radius_mm,
+            ferritecad_document::Expression::constant(r2).expect("finite constant")
+        );
 
         let ObjectPayload::Fillet(kept) = &objects
             .iter()
@@ -6648,7 +6654,7 @@ mod sequential {
             panic!("a Fillet");
         };
         let r2b = 1.8125;
-        p.radius_mm = r2b;
+        p.radius_mm = ferritecad_document::Expression::constant(r2b).expect("finite constant");
         rewrite(&two, ObjectPayload::Fillet(p));
         let (warm, events) = measure_two(&copy, Some(&cache));
         judge(&events, [(base.id, Hit), (one.id, Hit), (two.id, Miss)]);
@@ -6671,7 +6677,7 @@ mod sequential {
             panic!("a Fillet");
         };
         let r1b = 1.4375;
-        p.radius_mm = r1b;
+        p.radius_mm = ferritecad_document::Expression::constant(r1b).expect("finite constant");
         rewrite(&one, ObjectPayload::Fillet(p));
         let (warm, events) = measure_two(&copy, Some(&cache));
         judge(&events, [(base.id, Hit), (one.id, Miss), (two.id, Miss)]);
@@ -6772,7 +6778,8 @@ mod sequential {
         forged.push(("the same corner twice", same, "already rounded"));
         let mut touching = stored.clone();
         touching.edge.joint = adjacent_joint;
-        touching.radius_mm = 6.125;
+        touching.radius_mm =
+            ferritecad_document::Expression::constant(6.125).expect("finite constant");
         forged.push(("touching arcs", touching, "flat"));
         let mut producer = stored.clone();
         producer.edge.feature = one;

@@ -124,7 +124,10 @@ fn only_distance(before: &Path, after: &Path, distance_mm: f64) {
     drop(d);
     assert_eq!(stored.previous, chamfer.base_feature);
     assert_eq!(stored.edge, chamfer.edge);
-    assert_eq!(stored.distance_mm, distance_mm);
+    assert_eq!(
+        stored.distance_mm,
+        ferritecad_document::Expression::constant(distance_mm).expect("finite constant")
+    );
 }
 /// Cold, cached (miss) and warm (actual archive hits) rebuilds: every saved
 /// name resolves, the Body has 7 faces and the volume `(W·D − d²/2)·H`, and the

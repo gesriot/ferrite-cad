@@ -4,8 +4,8 @@
 //! the same on a solid profile closed on the axis along its stated Line.
 use super::*;
 use ferritecad_document::{
-    Body, DatumPlane, Dependency, DependencyRole, ObjectPayload, Point2, Revolve, RevolveAngle,
-    RevolveAxis, RevolveExtent, SketchCurve, SolidOperation,
+    Body, DatumPlane, Dependency, DependencyRole, ObjectPayload, Point2, Revolve, RevolveAxis,
+    RevolveExtent, SketchCurve, SolidOperation,
 };
 use ferritecad_types::Transform;
 
@@ -99,7 +99,7 @@ pub(crate) fn write_sector(
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::Partial {
-                    degrees: RevolveAngle::new(degrees)?,
+                    angle: ferritecad_document::Expression::constant(f64::to_radians(degrees))?,
                 },
                 operation: SolidOperation::NewBody,
                 axis_segment: axis.map(|i| labels[i]),
@@ -222,13 +222,13 @@ fn revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length() {
     let Some(SketchProfileUse::PartialRevolve {
         feature,
         axis_segment: None,
-        degrees,
+        radians: angle,
         ..
     }) = choice.profile_use
     else {
         panic!("a sector with a bore: {:?}", choice.profile_use)
     };
-    assert_eq!((feature, degrees.degrees()), (revolve, 137.5));
+    assert_eq!((feature, angle.radians().to_degrees()), (revolve, 137.5));
     let curves = choice.stored.as_ref().expect("stored").curves.clone();
     let mut e = Editor::default();
     assert!(e.begin(&path, &source, choice.sketch));
@@ -321,7 +321,7 @@ fn revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length() {
         .expect("stored")
         .constraints
         .iter()
-        .find(|c| matches!(c.rule, SketchConstraintRule::Distance { distance, .. } if distance == 5.375))
+        .find(|c| matches!(&c.rule, SketchConstraintRule::Distance { distance, .. } if distance.value() == 5.375))
         .expect("the wall height")
         .id;
     let mut e = Editor::default();
@@ -431,7 +431,7 @@ fn native_revolve_constraint_worker_and_cli_publish_the_same_solved_sector() {
         .expect("stored")
         .constraints
         .iter()
-        .find(|c| matches!(c.rule, SketchConstraintRule::Distance { distance, .. } if distance == 5.375))
+        .find(|c| matches!(&c.rule, SketchConstraintRule::Distance { distance, .. } if distance.value() == 5.375))
         .expect("the wall height")
         .id;
     assert!(e.begin(&ui.0, &second, id));
@@ -538,13 +538,16 @@ fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
     let Some(SketchProfileUse::PartialRevolve {
         feature,
         axis_segment: Some(stated),
-        degrees,
+        radians: angle,
         ..
     }) = choice.profile_use
     else {
         panic!("a solid sector: {:?}", choice.profile_use)
     };
-    assert_eq!((feature, stated, degrees.degrees()), (revolve, axis, 137.5));
+    assert_eq!(
+        (feature, stated, angle.radians().to_degrees()),
+        (revolve, axis, 137.5)
+    );
     let mut e = Editor::default();
     assert!(e.begin(&path, &source, choice.sketch));
     let ctx = egui::Context::default();
@@ -639,7 +642,7 @@ fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
         .constraints
         .iter()
         .find(
-            |c| matches!(c.rule, SketchConstraintRule::Distance { distance, .. } if distance == 8.),
+            |c| matches!(&c.rule, SketchConstraintRule::Distance { distance, .. } if distance.value() == 8.),
         )
         .expect("the base")
         .id;
@@ -758,7 +761,7 @@ fn native_axis_closed_worker_and_cli_publish_the_same_solved_shaft() {
         .constraints
         .iter()
         .find(
-            |c| matches!(c.rule, SketchConstraintRule::Distance { distance, .. } if distance == 8.),
+            |c| matches!(&c.rule, SketchConstraintRule::Distance { distance, .. } if distance.value() == 8.),
         )
         .expect("the base")
         .id;

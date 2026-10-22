@@ -100,7 +100,7 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
     if source
         .revolve_angles
         .iter()
-        .any(|c| c.feature == id && c.refusal.is_none() && c.degrees.is_some())
+        .any(|c| c.feature == id && c.refusal.is_none() && c.radians.is_some())
     {
         out.push(ModelEdit::RevolveAngle);
     }

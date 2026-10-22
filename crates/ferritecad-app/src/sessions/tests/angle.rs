@@ -13,7 +13,7 @@ fn start(
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_apply_angle(t, r.feature, r.degrees, r.expected, c.clone(), move |v| {
+            spawn_apply_angle(t, r.feature, r.radians, r.expected, c.clone(), move |v| {
                 tx.send(v).expect("deliver")
             })
         })
@@ -41,7 +41,10 @@ fn peer(source: &Path, r: &EditRevolveAngleRequest, root: &Path, out: &Path) {
     ));
     std::fs::write(
         &file,
-        format!(r#"{{"request_version":1,"angle_deg":{}}}"#, r.degrees),
+        format!(
+            r#"{{"request_version":1,"angle_deg":{}}}"#,
+            r.radians.to_degrees()
+        ),
     )
     .expect("request");
     cli(&[
@@ -69,7 +72,7 @@ fn request(s: &Sessions, degrees: f64) -> EditRevolveAngleRequest {
         source,
         expected: reading.version,
         feature: reading.revolve_angles[0].feature,
-        degrees,
+        radians: degrees.to_radians(),
         destination: PathBuf::new(),
     }
 }
@@ -690,7 +693,7 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
             source: profile.clone(),
             expected: angle_reading.version,
             feature: angle_reading.revolve_angles[0].feature,
-            degrees: 212.25,
+            radians: 212.25_f64.to_radians(),
             destination: PathBuf::new(),
         };
         let expected = root.path().join(format!("{name}-angle.fcad"));
@@ -741,7 +744,7 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
         source: radial_profile.clone(),
         expected: reading.version,
         feature: reading.revolve_angles[0].feature,
-        degrees: 198.125,
+        radians: 198.125_f64.to_radians(),
         destination: PathBuf::new(),
     };
     peer(&radial_profile, &r, root.path(), &branch);
@@ -789,7 +792,7 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
         source: cp.clone(),
         expected: reading.version,
         feature: reading.revolve_angles[0].feature,
-        degrees: 212.25,
+        radians: 212.25_f64.to_radians(),
         destination: PathBuf::new(),
     };
     let ca = root.path().join("constrained-angle.fcad");

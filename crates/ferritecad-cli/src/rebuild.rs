@@ -152,7 +152,7 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
                         line,
                         "solid, {} named faces; r{} mm at {} joint {a}|{b}",
                         names.named_face_count(),
-                        fillet.radius_mm,
+                        fillet.radius_mm.value(),
                         named(fillet.edge.feature)
                     )
                     .expect("writing to a String cannot fail");
@@ -165,7 +165,7 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
                         line,
                         "solid, {} named faces; d{} mm at {} joint {a}|{b}",
                         names.named_face_count(),
-                        chamfer.distance_mm,
+                        chamfer.distance_mm.value(),
                         named(chamfer.edge.feature)
                     )
                     .expect("writing to a String cannot fail");

@@ -19,7 +19,7 @@ pub struct EditRevolveAngleArgs {
     #[arg(long)]
     expect_version: ContentHash,
     /// Request v1: {"request_version":1,"angle_deg":N}, N from 0.01 to 359.99
-    /// degrees inclusive, stored exactly as given. A full turn is not an angle.
+    /// degrees inclusive, converted to radians for storage. A full turn is not an angle.
     #[arg(long)]
     request: PathBuf,
     /// New destination, never overwritten. No --force.
@@ -80,7 +80,7 @@ fn result(args: &EditRevolveAngleArgs) -> Result<EditedDocument> {
         source: args.source.clone(),
         expected,
         feature: args.feature,
-        degrees: input.angle_deg,
+        radians: input.angle_deg.to_radians(),
         destination: args.output.clone(),
     };
     let mut kernel = ferritecad_occt::OcctKernel::new()?;

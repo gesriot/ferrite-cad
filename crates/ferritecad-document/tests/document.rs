@@ -95,7 +95,6 @@ fn populate(document: &mut Document) -> Result<Plate> {
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -507,7 +506,6 @@ fn display_units_are_remembered_but_values_stay_internal() {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;

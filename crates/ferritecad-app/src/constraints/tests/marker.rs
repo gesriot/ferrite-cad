@@ -194,7 +194,7 @@ fn markers_document() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
             .filter(|&i| is_marker_kind(&s.constraints[i].rule))
             .collect();
         assert_eq!(at.len(), 7);
-        let mut rules: Vec<_> = at.iter().map(|&i| s.constraints[i]).collect();
+        let mut rules: Vec<_> = at.iter().map(|&i| s.constraints[i].clone()).collect();
         rules.rotate_left(1);
         for (i, rule) in at.into_iter().zip(rules) {
             s.constraints[i] = rule;
@@ -610,7 +610,7 @@ fn the_selected_rule_marks_exactly_the_references_it_stores_and_a_reversed_segme
             .constraints
             .iter()
             .find(|c| c.id == rule)
-            .map(|c| c.rule)
+            .map(|c| c.rule.clone())
             .expect("stored");
         let points = mark.refs.points();
         match (stored_rule, mark.refs) {

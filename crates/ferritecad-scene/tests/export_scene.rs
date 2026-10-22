@@ -368,7 +368,6 @@ fn several_bodies(path: &Path, count: usize) -> Vec<ObjectId> {
                         },
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;
@@ -1729,7 +1728,6 @@ fn one_export_solves_once_reads_each_source_once_and_meshes_each_definition_once
                         },
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;

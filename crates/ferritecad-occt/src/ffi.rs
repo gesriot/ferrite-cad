@@ -205,7 +205,7 @@ unsafe extern "C" {
         axis_segment: usize,
         axis_origin: *const f64,
         axis_direction: *const f64,
-        angle_degrees: f64,
+        angle_radians: f64,
         cancel: Option<CancelFn>,
         cancel_context: *mut c_void,
         out_shape: *mut u64,
@@ -769,7 +769,7 @@ impl Session {
         Ok(shape)
     }
 
-    /// §27D: turns the profile through `angle_degrees`, a sector with two
+    /// §27D: turns the profile through `angle_radians`, a sector with two
     /// end faces. Every other argument is [`Self::revolve_full_turn`]'s.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn revolve_partial(
@@ -779,7 +779,7 @@ impl Session {
         axis_segment: Option<usize>,
         axis_origin: [f64; 3],
         axis_direction: [f64; 3],
-        angle_degrees: f64,
+        angle_radians: f64,
         cancel: &CancelToken,
     ) -> Result<u64> {
         if segments.len() < 3 {
@@ -802,7 +802,7 @@ impl Session {
                 axis_segment.unwrap_or(NO_AXIS_SEGMENT),
                 axis_origin.as_ptr(),
                 axis_direction.as_ptr(),
-                angle_degrees,
+                angle_radians,
                 Some(cancel_trampoline),
                 context,
                 &mut shape,
@@ -1901,13 +1901,29 @@ mod tests {
             f64::NEG_INFINITY,
         ] {
             let error = session
-                .revolve_partial(&plane, &ring, None, origin, y, angle, &token)
+                .revolve_partial(
+                    &plane,
+                    &ring,
+                    None,
+                    origin,
+                    y,
+                    f64::to_radians(angle),
+                    &token,
+                )
                 .expect_err("not a sector");
             assert_eq!(error.kind(), ErrorKind::Input, "{angle}");
             assert!(error.to_string().contains("strictly between"), "{error}");
         }
         let sector = session
-            .revolve_partial(&plane, &ring, None, origin, y, 90.0, &token)
+            .revolve_partial(
+                &plane,
+                &ring,
+                None,
+                origin,
+                y,
+                std::f64::consts::FRAC_PI_2,
+                &token,
+            )
             .expect("a sector");
         let start = session.revolve_caps(sector, false).expect("start");
         let end = session.revolve_caps(sector, true).expect("end");
@@ -2060,7 +2076,7 @@ mod tests {
             at += found.expect("checked just above") + parameter.len();
         }
         // §27D: the sector's own entry point, with the angle in its own slot
-        // and in degrees; the full-turn signature above is unchanged.
+        // and in radians; the full-turn signature above is unchanged.
         let declared = header
             .split_once("FcOcctStatus fc_occt_revolve_partial(")
             .expect("the header declares fc_occt_revolve_partial")
@@ -2077,7 +2093,7 @@ mod tests {
             "size_t axis_segment",
             "const double *axis_origin",
             "const double *axis_direction",
-            "double angle_degrees",
+            "double angle_radians",
             "FcOcctCancelFn cancel",
             "void *cancel_context",
             "uint64_t *out_shape",

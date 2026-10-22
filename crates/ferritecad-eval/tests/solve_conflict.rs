@@ -102,8 +102,8 @@ fn plate_rules(edges: &[StableEntityId]) -> Vec<SketchConstraintRule> {
         },
         SketchConstraintRule::Fixed {
             point: at(edges[0], Start),
-            x: 0.0,
-            y: 0.0,
+            x: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
         },
         SketchConstraintRule::Horizontal {
             a: at(edges[0], Start),
@@ -124,12 +124,12 @@ fn plate_rules(edges: &[StableEntityId]) -> Vec<SketchConstraintRule> {
         SketchConstraintRule::Distance {
             a: at(edges[0], Start),
             b: at(edges[0], End),
-            distance: WIDTH,
+            distance: ferritecad_document::Expression::constant(WIDTH).expect("finite constant"),
         },
         SketchConstraintRule::Distance {
             a: at(edges[1], Start),
             b: at(edges[1], End),
-            distance: HEIGHT,
+            distance: ferritecad_document::Expression::constant(HEIGHT).expect("finite constant"),
         },
     ]
 }
@@ -138,7 +138,7 @@ fn width(edges: &[StableEntityId], distance: f64) -> SketchConstraintRule {
     SketchConstraintRule::Distance {
         a: at(edges[0], SketchPointSelector::Start),
         b: at(edges[0], SketchPointSelector::End),
-        distance,
+        distance: ferritecad_document::Expression::constant(distance).expect("finite constant"),
     }
 }
 
@@ -146,7 +146,7 @@ fn height(edges: &[StableEntityId], distance: f64) -> SketchConstraintRule {
     SketchConstraintRule::Distance {
         a: at(edges[1], SketchPointSelector::Start),
         b: at(edges[1], SketchPointSelector::End),
-        distance,
+        distance: ferritecad_document::Expression::constant(distance).expect("finite constant"),
     }
 }
 
@@ -215,7 +215,6 @@ fn write(
                         },
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;

@@ -56,7 +56,7 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
                     [5.0, 20.0],
                 ])
                 .expect("profile"),
-                angle: RevolveAngle::new(180.0).expect("angle"),
+                angle: RevolveAngle::new(std::f64::consts::PI).expect("angle"),
             }),
             _ => None,
         };
@@ -296,7 +296,7 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
             ),
             "revolve_angle" => ticket.edit_revolve_angle(
                 feature,
-                200.0,
+                200.0_f64.to_radians(),
                 expected,
                 &mut kernel,
                 no_imports,

@@ -153,72 +153,7 @@ impl DirectedLine {
     }
 }
 
-/// The counter-clockwise turn from the first vector of a directed angle to the
-/// second, held in radians and canonical in `(-π, π]` (§31F).
-///
-/// This is the unit boundary: degrees live in the UI and the CLI, radians in
-/// the document and the solver, and [`DirectedAngle::from_degrees`] and
-/// [`DirectedAngle::degrees`] are the only road between them. The input is one
-/// full circle, `[-180, 180]`, and everything outside it is refused rather
-/// than wrapped: `270` is not `-90`, because a policy chosen by floating-point
-/// arithmetic is no policy. Exactly `-180` is the same direction as `180` and
-/// is stored only as `+180`; `-0` is `0`. Private validated bits make exact
-/// `Eq` safe: NaN and the second zero are excluded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DirectedAngle(u64);
-impl DirectedAngle {
-    pub fn from_degrees(degrees: f64) -> Result<Self> {
-        if !degrees.is_finite() || !(-180. ..=180.).contains(&degrees) {
-            return Err(CadError::input(
-                "a directed angle is a counter-clockwise turn in degrees from -180 to 180 \
-                 (-180 is stored as 180); no other value is wrapped into that range",
-            ));
-        }
-        let radians = if degrees.abs() == 180. {
-            std::f64::consts::PI
-        } else if degrees == 0. {
-            0.
-        } else {
-            degrees * std::f64::consts::PI / 180.
-        };
-        if degrees != 0. && radians == 0. {
-            return Err(CadError::input(
-                "this nonzero directed angle is too small to represent in radians",
-            ));
-        }
-        Ok(Self(radians.to_bits()))
-    }
-    /// A stored value read back, which must already be canonical: radians in
-    /// `(-π, π]`. `-0` is `0`. Nothing is wrapped.
-    pub fn from_radians(radians: f64) -> Result<Self> {
-        if !radians.is_finite()
-            || radians <= -std::f64::consts::PI
-            || radians > std::f64::consts::PI
-        {
-            return Err(CadError::input(
-                "a stored directed angle is canonical in (-pi, pi] radians",
-            ));
-        }
-        Ok(Self((radians + 0.).to_bits()))
-    }
-    /// The stored value, radians in `(-π, π]`.
-    pub fn radians(self) -> f64 {
-        f64::from_bits(self.0)
-    }
-    /// The value for display and for the CLI, in degrees. Prefer the shorter
-    /// value rounded to `1e-9°` only if reading it back gives exactly the same
-    /// stored radians. A distinct small angle or near-half-turn must not be
-    /// reported as zero or the opposite direction.
-    pub fn degrees(self) -> f64 {
-        let degrees = self.radians() * 180. / std::f64::consts::PI;
-        let shorter = (degrees * 1e9).round() / 1e9 + 0.;
-        if shorter > -180. && Self::from_degrees(shorter).is_ok_and(|angle| angle == self) {
-            shorter
-        } else {
-            degrees
-        }
-    }
-}
+pub use ferritecad_types::DirectedAngle;
 
 /// One requested addition.
 ///
@@ -593,8 +528,8 @@ fn related(a: SketchSegmentRef, b: SketchSegmentRef) -> Option<(StableEntityId, 
     let (x, y) = (whole_line(a.from, a.to)?, whole_line(b.from, b.to)?);
     (x != y).then_some((x, y))
 }
-fn equal_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
-    let SketchConstraintRule::EqualLength { a, b } = rule else {
+fn equal_of(rule: &SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
+    let SketchConstraintRule::EqualLength { a, b } = *rule else {
         return None;
     };
     related(a, b)
@@ -604,8 +539,8 @@ fn equal_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityI
 /// are four answers to one question. The direction of a directed angle's
 /// vectors is read by nothing here: `related` names the Lines, not the way they
 /// point.
-fn relation_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
-    match rule {
+fn relation_of(rule: &SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
+    match *rule {
         SketchConstraintRule::Parallel { a, b }
         | SketchConstraintRule::Perpendicular { a, b }
         | SketchConstraintRule::DirectedAngle { a, b, .. }
@@ -613,24 +548,29 @@ fn relation_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEnti
         _ => None,
     }
 }
-fn line_of(rule: SketchConstraintRule) -> Option<(StableEntityId, LineConstraintKind)> {
-    if let SketchConstraintRule::Fixed { point, x, y } = rule {
+fn line_of(rule: &SketchConstraintRule) -> Option<(StableEntityId, LineConstraintKind)> {
+    if let SketchConstraintRule::Fixed {
+        point,
+        ref x,
+        ref y,
+    } = *rule
+    {
         return Some((
             point.curve,
             LineConstraintKind::Fixed {
                 at: LineEndpoint::of(point.at)?,
-                x: SketchCoordinateMm::new(x).ok()?,
-                y: SketchCoordinateMm::new(y).ok()?,
+                x: SketchCoordinateMm::new(x.value()).ok()?,
+                y: SketchCoordinateMm::new(y.value()).ok()?,
             },
         ));
     }
-    let (a, b, kind) = match rule {
+    let (a, b, kind) = match *rule {
         SketchConstraintRule::Horizontal { a, b } => (a, b, LineConstraintKind::Horizontal),
         SketchConstraintRule::Vertical { a, b } => (a, b, LineConstraintKind::Vertical),
-        SketchConstraintRule::Distance { a, b, distance } => (
+        SketchConstraintRule::Distance { a, b, ref distance } => (
             a,
             b,
-            LineConstraintKind::Distance(LineLengthMm::new(distance).ok()?),
+            LineConstraintKind::Distance(LineLengthMm::new(distance.value()).ok()?),
         ),
         _ => return None,
     };
@@ -698,7 +638,7 @@ fn center(curve: StableEntityId) -> SketchPointRef {
 /// and they belong to different curves. Every other `Coincident` — in
 /// particular the closure link between two Line endpoints — is not this, is not
 /// read as this, and stays exactly as protected as it was.
-fn concentric_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
+fn concentric_of(rule: &SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
     let SketchConstraintRule::Coincident { a, b } = rule else {
         return None;
     };
@@ -712,8 +652,8 @@ fn concentric_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEn
 /// A pinned centre takes the profile-wide [`Slot::Pin`], the same slot a pinned
 /// Line endpoint takes: a profile holds one pin whichever geometry carries it,
 /// and the two families never share a profile anyway.
-fn circle_slot_of(rule: SketchConstraintRule) -> Option<(Slot, StableEntityId)> {
-    match rule {
+fn circle_slot_of(rule: &SketchConstraintRule) -> Option<(Slot, StableEntityId)> {
+    match *rule {
         SketchConstraintRule::Radius { curve, .. } => Some((Slot::Radius(curve), curve)),
         SketchConstraintRule::Fixed { point, .. } if point.at == SketchPointSelector::Center => {
             Some((Slot::Pin, point.curve))
@@ -729,7 +669,7 @@ fn circle_slot_of(rule: SketchConstraintRule) -> Option<(Slot, StableEntityId)> 
 /// Written as its own reading rather than as [`circle_slot_of`] widened: that
 /// one answers for a profile with no second circle to name, and a `Coincident`
 /// there could only ever be a link this editor does not manage.
-fn annulus_slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
+fn annulus_slot_of(rule: &SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
     if let Some((a, b)) = concentric_of(rule) {
         return Some((concentric_slot(a, b), [a, b]));
     }
@@ -738,7 +678,7 @@ fn annulus_slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId;
 
 /// The slot a stored rule occupies and every Line it names, or `None` when the
 /// rule is not one this family manages.
-fn slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
+fn slot_of(rule: &SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
     if let Some((a, b)) = equal_of(rule) {
         return Some((equal_slot(a, b), [a, b]));
     }
@@ -754,7 +694,7 @@ fn slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
 pub(crate) fn first_outside_managed_lines(sketch: &Sketch) -> Option<&SketchConstraint> {
     let expected: BTreeSet<_> = closures(sketch).into_iter().collect();
     sketch.constraints.iter().find(|c| {
-        slot_of(c.rule).is_none()
+        slot_of(&c.rule).is_none()
             && !matches!(c.rule, SketchConstraintRule::Coincident { a, b }
                 if expected.contains(&unordered(a, b)))
     })
@@ -844,7 +784,7 @@ fn managed(sketch: &Sketch, family: Family) -> Result<()> {
         if !seen_ids.insert(c.id) {
             return Err(CadError::unsupported("duplicate constraint UUID"));
         }
-        if let Some((slot, curves)) = slot_of(c.rule) {
+        if let Some((slot, curves)) = slot_of(&c.rule) {
             if !curves.iter().all(|c| curve_ids.contains(c)) || !lines.insert(slot) {
                 return Err(CadError::unsupported(match slot {
                     Slot::Pin => "constraint edit supports at most one Fixed endpoint per profile",
@@ -894,7 +834,7 @@ fn managed_circles(sketch: &Sketch, family: Family) -> Result<()> {
         if !seen_ids.insert(c.id) {
             return Err(CadError::unsupported("duplicate constraint UUID"));
         }
-        let Some((slot, named)) = family_slot_of(family, c.rule) else {
+        let Some((slot, named)) = family_slot_of(family, &c.rule) else {
             return Err(CadError::unsupported(match family {
                 Family::Annulus => {
                     "constraint edit supports only a positive radius per Circle, one fixed centre \
@@ -922,7 +862,7 @@ fn managed_circles(sketch: &Sketch, family: Family) -> Result<()> {
 /// Which stored rules a family manages, decided once for every caller.
 fn family_slot_of(
     family: Family,
-    rule: SketchConstraintRule,
+    rule: &SketchConstraintRule,
 ) -> Option<(Slot, [StableEntityId; 2])> {
     match family {
         Family::Lines => slot_of(rule),
@@ -958,7 +898,7 @@ fn retained(
                     "constraint {id} does not belong to the selected Sketch"
                 ))
             })?;
-        if family_slot_of(family, c.rule).is_none() {
+        if family_slot_of(family, &c.rule).is_none() {
             return Err(CadError::input(
                 "only H/V, Line length, equal length, Parallel/Perpendicular/directed angle/Collinear, the Fixed endpoint, a circle radius, a fixed centre or a concentricity may be removed; Line closure links are retained",
             ));
@@ -968,11 +908,11 @@ fn retained(
         .constraints
         .iter()
         .filter(|c| !removals.contains(&c.id))
-        .copied()
+        .cloned()
         .collect();
     let mut lines: BTreeSet<_> = kept
         .iter()
-        .filter_map(|c| family_slot_of(family, c.rule).map(|(slot, _)| slot))
+        .filter_map(|c| family_slot_of(family, &c.rule).map(|(slot, _)| slot))
         .collect();
     for add in &edits.add {
         let (slot, curves) = requested(add)?;
@@ -1129,7 +1069,7 @@ pub fn prepare_sketch_constraints(
                     b: endpoints(sketch.curves[(i + 1) % sketch.curves.len()].id).0,
                 },
             };
-            kept.push(c);
+            kept.push(c.clone());
             added.push(c);
         }
     }
@@ -1147,7 +1087,7 @@ pub fn prepare_sketch_constraints(
                         b: center(b),
                     },
                 };
-                kept.push(c);
+                kept.push(c.clone());
                 added.push(c);
                 continue;
             }
@@ -1155,19 +1095,19 @@ pub fn prepare_sketch_constraints(
                 let rule = match kind {
                     CircleConstraintKind::Radius(radius) => SketchConstraintRule::Radius {
                         curve,
-                        radius: radius.get(),
+                        radius: crate::Expression::constant(radius.get())?,
                     },
                     CircleConstraintKind::FixedCenter { x, y } => SketchConstraintRule::Fixed {
                         point: SketchPointRef::new(curve, SketchPointSelector::Center),
-                        x: x.get(),
-                        y: y.get(),
+                        x: crate::Expression::constant(x.get())?,
+                        y: crate::Expression::constant(y.get())?,
                     },
                 };
                 let c = SketchConstraint {
                     id: StableEntityId::new(),
                     rule,
                 };
-                kept.push(c);
+                kept.push(c.clone());
                 added.push(c);
                 continue;
             }
@@ -1182,12 +1122,12 @@ pub fn prepare_sketch_constraints(
                     LineConstraintKind::Distance(length) => SketchConstraintRule::Distance {
                         a,
                         b,
-                        distance: length.get(),
+                        distance: crate::Expression::constant(length.get())?,
                     },
                     LineConstraintKind::Fixed { at, x, y } => SketchConstraintRule::Fixed {
                         point: SketchPointRef::new(curve, at.selector()),
-                        x: x.get(),
-                        y: y.get(),
+                        x: crate::Expression::constant(x.get())?,
+                        y: crate::Expression::constant(y.get())?,
                     },
                 }
             }
@@ -1208,7 +1148,7 @@ pub fn prepare_sketch_constraints(
                 SketchConstraintRule::DirectedAngle {
                     a: a.segment(),
                     b: b.segment(),
-                    angle: angle.radians(),
+                    angle: crate::Expression::constant(angle.radians())?,
                 }
             }
         };
@@ -1216,7 +1156,7 @@ pub fn prepare_sketch_constraints(
             id: StableEntityId::new(),
             rule,
         };
-        kept.push(c);
+        kept.push(c.clone());
         added.push(c);
     }
     sketch.constraints = kept;
@@ -1289,7 +1229,7 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedSketchConstraints
                     "removed constraint {id} is not in the stored Sketch"
                 ))
             })?;
-        if family_slot_of(family, c.rule).is_none() {
+        if family_slot_of(family, &c.rule).is_none() {
             return Err(CadError::input(format!(
                 "removed constraint {id} is a closure link, which constraint editing retains"
             )));
@@ -1309,7 +1249,7 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedSketchConstraints
         .iter()
         .filter(|c| !removed.contains(&c.id))
         .chain(prepared.added.iter())
-        .copied()
+        .cloned()
         .collect();
     if written.constraints != expected {
         return Err(CadError::input(

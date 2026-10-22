@@ -226,7 +226,6 @@ fn write_annular_document(
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -1456,7 +1455,6 @@ fn write_single_circle_document(path: &Path) {
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;

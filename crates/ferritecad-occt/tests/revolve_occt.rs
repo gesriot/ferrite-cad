@@ -518,7 +518,7 @@ fn native_axis_closed_requests_are_checked_not_trusted() {
 /// profile closes on it, and the angle in degrees.
 fn partial_request(points: &[[f64; 2]], degrees: f64) -> (RevolveRequest, Vec<StableEntityId>) {
     let (full, labels) = request(points).expect("request");
-    let turn = RevolveTurn::Partial(PartialTurn::new(degrees).expect("a sector"));
+    let turn = RevolveTurn::Partial(PartialTurn::new(degrees.to_radians()).expect("a sector"));
     let partial = RevolveRequest::new(full.profile().clone(), RevolveAxis::PlaneY, turn);
     let n = points.len();
     match (0..n).find(|&i| points[i][0] == 0. && points[(i + 1) % n][0] == 0.) {

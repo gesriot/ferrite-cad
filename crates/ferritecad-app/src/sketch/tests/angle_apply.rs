@@ -133,7 +133,7 @@ fn angle_apply_uses_current_fields_and_confirmation_is_only_draft_history() {
     type_angle(&ctx, w.form(), "212.25");
     press(&ctx, w.form(), "Apply angle");
     let r = w.form().take_apply_angle_request().expect("Apply");
-    assert_eq!(r.degrees, 212.25);
+    assert_eq!(r.radians.to_degrees(), 212.25);
     assert_eq!(r.expected, reading.version);
     assert_eq!(r.feature, reading.revolve_angles[0].feature);
     assert!(w.form().angle_undo.is_empty());
@@ -161,7 +161,8 @@ fn angle_apply_uses_current_fields_and_confirmation_is_only_draft_history() {
         w.form()
             .take_apply_angle_request()
             .expect("unconfirmed fields")
-            .degrees,
+            .radians
+            .to_degrees(),
         198.125
     );
     assert!(

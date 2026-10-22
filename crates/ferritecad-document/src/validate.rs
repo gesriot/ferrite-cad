@@ -313,29 +313,6 @@ fn check_semantic_references(
                 "extrude",
                 report,
             );
-            if let Some(body) = extrude.target_body {
-                require(
-                    body,
-                    DependencyRole::TargetBody,
-                    ObjectKind::Body,
-                    "extrude",
-                    report,
-                );
-            }
-            // What a feature consumes and which body owns it are two different
-            // facts, and only the first belongs to the feature. Saying both
-            // would be two answers to one question, and the second of them
-            // is what makes the graph impossible to order.
-            if extrude.previous.is_some() && extrude.target_body.is_some() {
-                report.error(
-                    "feature.two-inputs",
-                    Some(object.id),
-                    format!(
-                        "feature {} names both a predecessor and a target body; the body it                          belongs to is the body's own statement",
-                        object.id
-                    ),
-                );
-            }
             match (extrude.operation, extrude.previous) {
                 (SolidOperation::NewBody, Some(previous)) => report.error(
                     "feature.unused-predecessor",

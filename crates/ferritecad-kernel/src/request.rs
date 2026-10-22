@@ -110,12 +110,12 @@ pub enum RevolveTurn {
     /// start or end face.
     Full,
     /// A sector (§27D): a right-handed turn about the axis through this many
-    /// degrees, starting at the profile, with a start and an end face.
+    /// radians, starting at the profile, with a start and an end face.
     Partial(PartialTurn),
 }
 
-/// The degrees of a partial turn, as a kernel accepts them: finite and
-/// strictly between 0 and 360.
+/// The radians of a partial turn, as a kernel accepts them: finite and
+/// strictly between 0 and 2π.
 ///
 /// Only what a kernel must re-check to build one sector. Which angles a
 /// document may hold is the caller's policy, narrower than this; an adapter
@@ -124,17 +124,17 @@ pub enum RevolveTurn {
 pub struct PartialTurn(f64);
 
 impl PartialTurn {
-    pub fn new(degrees: f64) -> Result<Self> {
-        if degrees.is_finite() && degrees > 0.0 && degrees < 360.0 {
-            Ok(Self(degrees))
+    pub fn new(radians: f64) -> Result<Self> {
+        if radians.is_finite() && radians > 0.0 && radians < std::f64::consts::TAU {
+            Ok(Self(radians))
         } else {
             Err(CadError::input(format!(
-                "a partial turn needs a finite angle strictly between 0° and 360°, got {degrees}"
+                "a partial turn needs a finite angle strictly between 0 and tau radians, got {radians}"
             )))
         }
     }
 
-    pub fn degrees(self) -> f64 {
+    pub fn radians(self) -> f64 {
         self.0
     }
 }
@@ -229,7 +229,7 @@ impl RevolveRequest {
                 hasher
                     .field("turn")
                     .str("partial")
-                    .bytes(&turn.degrees().to_bits().to_le_bytes());
+                    .bytes(&turn.radians().to_bits().to_le_bytes());
             }
         }
         // Only when present, so a profile with a bore keeps the key it had.

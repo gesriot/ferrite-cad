@@ -19,3 +19,16 @@ longer match their hash is dropped; a miss rebuilds geometry.
 The document format is unstable. Change its schema and payloads directly and
 regenerate affected fixtures. No migration, layout version or capability contract
 is stored or negotiated.
+
+Editable model dimensions store `Expression { source, value }`: Extrude end
+conditions, parameters, Fillet `radius_mm`, Chamfer `distance_mm`, the `angle`
+of a partial Revolve, and sketch constraint `distance`, `radius`, `angle`, and
+Fixed `x`/`y`. Values use millimetres and radians. Writers currently use canonical
+numeric source text (`Expression::constant`); rebuilds consume the stored value
+without evaluating source text. Partial Revolve angles and their policy bounds
+use radians; UI and CLI degree input and display convert at their boundaries.
+
+Sketch curve coordinates, circle radii and arc angles remain `f64`: they describe
+solver state and the initial approximation, rather than editable dimensions.
+Extrude names its consumed feature through `previous`; it has no `target_body`
+field or dependency role.

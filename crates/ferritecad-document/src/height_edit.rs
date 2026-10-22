@@ -51,11 +51,7 @@ impl CutHistory {
 /// In particular a damaged history cannot become a standalone extrusion edit.
 pub(crate) fn has_history(document: &Document, objects: &[ObjectRecord]) -> Result<bool> {
     if objects.iter().any(|o| match &o.payload {
-        ObjectPayload::Extrude(e) => {
-            e.operation != SolidOperation::NewBody
-                || e.previous.is_some()
-                || e.target_body.is_some()
-        }
+        ObjectPayload::Extrude(e) => e.operation != SolidOperation::NewBody || e.previous.is_some(),
         ObjectPayload::Body(b) => b.tip_feature.is_some_and(|tip| {
             !objects.iter().any(|p| {
                 p.id == tip
@@ -67,12 +63,11 @@ pub(crate) fn has_history(document: &Document, objects: &[ObjectRecord]) -> Resu
     }) {
         return Ok(true);
     }
-    if document.dependencies()?.iter().any(|d| {
-        matches!(
-            d.role,
-            DependencyRole::Predecessor | DependencyRole::TargetBody
-        )
-    }) {
+    if document
+        .dependencies()?
+        .iter()
+        .any(|d| matches!(d.role, DependencyRole::Predecessor))
+    {
         return Ok(true);
     }
     Ok(document.topology_refs()?.iter().any(|r| {

@@ -336,12 +336,11 @@ FcOcctStatus fc_occt_revolve_faces(FcOcctSession *session, uint64_t shape,
  * and an end face.
  *
  * Every argument but the angle means exactly what it means for
- * fc_occt_revolve, and is checked the same way. `angle_degrees` is the turn in
- * degrees, right-handed about `axis_direction`, starting at the profile. It
- * must be finite and strictly between 0 and 360; anything else is refused and
- * never widened to a full turn or wrapped around. The conversion to radians
- * is `angle_degrees * (pi / 180)`, done once, here. Which angles a document
- * may hold is the caller's policy.
+ * fc_occt_revolve, and is checked the same way. `angle_radians` is the turn in
+ * radians, right-handed about `axis_direction`, starting at the profile. It
+ * must be finite and strictly between 0 and 2*pi; anything else is refused and
+ * never widened to a full turn or wrapped around. The angle is passed to the
+ * kernel unchanged. Which angles a document may hold is the caller's policy.
  *
  * On top of the checks fc_occt_revolve makes, the sweep's history of the
  * profile face (BRepSweep_Revol::FirstShape and LastShape) must name exactly
@@ -353,7 +352,7 @@ FcOcctStatus fc_occt_revolve_partial(
     FcOcctSession *session, const FcOcctPlane *plane,
     const FcOcctSegment *segments, size_t segment_count, size_t axis_segment,
     const double *axis_origin, const double *axis_direction,
-    double angle_degrees, FcOcctCancelFn cancel, void *cancel_context,
+    double angle_radians, FcOcctCancelFn cancel, void *cancel_context,
     uint64_t *out_shape, FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*

@@ -87,7 +87,6 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -239,14 +238,13 @@ fn a_feature_this_slice_cannot_build_fails_without_leaking() {
                     end_condition: EndCondition::ThroughAll,
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
             w.add_dependency(Dependency {
                 dependent: broken,
                 dependency: plate.extrude,
-                role: DependencyRole::TargetBody,
+                role: DependencyRole::Predecessor,
             })?;
             w.add_dependency(Dependency {
                 dependent: broken,

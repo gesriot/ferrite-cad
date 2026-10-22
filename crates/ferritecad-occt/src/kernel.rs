@@ -415,10 +415,10 @@ impl GeometryKernel for OcctKernel {
             }
         };
         // The angle is the request's: exactly one full turn, or a sector
-        // through its own degrees on the bridge's own entry point.
+        // through its own radians on the bridge's own entry point.
         let partial = match request.turn() {
             RevolveTurn::Full => None,
-            RevolveTurn::Partial(turn) => Some(turn.degrees()),
+            RevolveTurn::Partial(turn) => Some(turn.radians()),
             other => {
                 return Err(CadError::unsupported(format!(
                     "revolution angle {other:?} is not implemented"
@@ -459,13 +459,13 @@ impl GeometryKernel for OcctKernel {
                 axis_direction,
                 context.cancel(),
             )?,
-            Some(degrees) => self.session.revolve_partial(
+            Some(radians) => self.session.revolve_partial(
                 &plane_of(plane),
                 &segments,
                 axis_segment,
                 axis_origin,
                 axis_direction,
-                degrees,
+                radians,
                 context.cancel(),
             )?,
         };

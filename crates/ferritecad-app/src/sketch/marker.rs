@@ -151,7 +151,7 @@ pub(crate) fn saved(stored: &Sketch) -> Vec<Mark> {
         .constraints
         .iter()
         .filter_map(|k| {
-            let (kind, refs) = match k.rule {
+            let (kind, refs) = match k.rule.clone() {
                 SketchConstraintRule::Horizontal { a, b } if lines && line_of(&held, a, b) => {
                     (Kind::Horizontal, Refs::Line(a, b))
                 }
@@ -162,8 +162,8 @@ pub(crate) fn saved(stored: &Sketch) -> Vec<Mark> {
                     if lines
                         && LineEndpoint::of(point.at).is_some()
                         && held(point.curve)
-                        && SketchCoordinateMm::new(x).is_ok()
-                        && SketchCoordinateMm::new(y).is_ok() =>
+                        && SketchCoordinateMm::new(x.value()).is_ok()
+                        && SketchCoordinateMm::new(y.value()).is_ok() =>
                 {
                     (Kind::Fixed, Refs::Point(point))
                 }

@@ -384,7 +384,6 @@ mod tests {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
@@ -603,8 +602,8 @@ mod tests {
                                 s.curves[outer_at].id,
                                 crate::SketchPointSelector::At,
                             ),
-                            x: 0.,
-                            y: 0.,
+                            x: crate::Expression::constant(0.).expect("finite constant"),
+                            y: crate::Expression::constant(0.).expect("finite constant"),
                         },
                     }]
                 }

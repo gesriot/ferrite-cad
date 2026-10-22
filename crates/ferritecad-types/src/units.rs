@@ -196,6 +196,66 @@ impl Quantity {
     }
 }
 
+/// A counter-clockwise turn in canonical radians `(-π, π]`.
+/// Degree conversion belongs at UI/CLI boundaries. Inputs outside `[-180, 180]`
+/// are refused; either half-turn maps to π and either zero maps to +0.
+/// Validated bits exclude NaN and negative zero, allowing exact `Eq`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectedAngle(u64);
+impl DirectedAngle {
+    pub fn from_degrees(degrees: f64) -> crate::Result<Self> {
+        if !degrees.is_finite() || !(-180. ..=180.).contains(&degrees) {
+            return Err(CadError::input(
+                "a directed angle is a counter-clockwise turn in degrees from -180 to 180 \
+                 (-180 is stored as 180); no other value is wrapped into that range",
+            ));
+        }
+        let radians = if degrees.abs() == 180. {
+            std::f64::consts::PI
+        } else if degrees == 0. {
+            0.
+        } else {
+            degrees * std::f64::consts::PI / 180.
+        };
+        if degrees != 0. && radians == 0. {
+            return Err(CadError::input(
+                "this nonzero directed angle is too small to represent in radians",
+            ));
+        }
+        Ok(Self(radians.to_bits()))
+    }
+    /// A stored value read back, which must already be canonical: radians in
+    /// `(-π, π]`. `-0` is `0`. Nothing is wrapped.
+    pub fn from_radians(radians: f64) -> crate::Result<Self> {
+        if !radians.is_finite()
+            || radians <= -std::f64::consts::PI
+            || radians > std::f64::consts::PI
+        {
+            return Err(CadError::input(
+                "a stored directed angle is canonical in (-pi, pi] radians",
+            ));
+        }
+        Ok(Self((radians + 0.).to_bits()))
+    }
+    /// The stored value, radians in `(-π, π]`.
+    pub fn radians(self) -> f64 {
+        f64::from_bits(self.0)
+    }
+    /// The value for display and for the CLI, in degrees. Prefer the shorter
+    /// value rounded to `1e-9°` only if reading it back gives exactly the same
+    /// stored radians. A distinct small angle or near-half-turn must not be
+    /// reported as zero or the opposite direction.
+    pub fn degrees(self) -> f64 {
+        let degrees = self.radians() * 180. / std::f64::consts::PI;
+        let shorter = (degrees * 1e9).round() / 1e9 + 0.;
+        if shorter > -180. && Self::from_degrees(shorter).is_ok_and(|angle| angle == self) {
+            shorter
+        } else {
+            degrees
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

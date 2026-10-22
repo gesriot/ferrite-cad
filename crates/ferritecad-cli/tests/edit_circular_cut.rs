@@ -310,7 +310,6 @@ fn write_cut_document(path: &Path, depth: f64) {
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -406,7 +405,6 @@ fn stored(path: &Path) -> Stored {
                     feature.previous,
                     format!("{:?}", feature.operation),
                 ));
-                assert!(feature.target_body.is_none());
             }
             ObjectPayload::Sketch(sketch) => {
                 for curve in &sketch.curves {

@@ -1258,7 +1258,7 @@ pub(crate) fn spawn_apply_annulus(
 pub(crate) fn spawn_apply_angle(
     ticket: StepTicket,
     feature: ObjectId,
-    degrees: f64,
+    radians: f64,
     expected: ferritecad_document::DocumentVersion,
     cancel: CancelToken,
     deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
@@ -1269,7 +1269,7 @@ pub(crate) fn spawn_apply_angle(
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ticket.edit_revolve_angle(
                 feature,
-                degrees,
+                radians,
                 expected,
                 &mut kernel,
                 |kernel, source| kernel.import_step(source),
@@ -3968,14 +3968,17 @@ mod tests {
         sketch: &ferritecad_document::Sketch,
         curve: ferritecad_types::StableEntityId,
     ) -> Option<f64> {
-        sketch.constraints.iter().find_map(|c| match c.rule {
-            ferritecad_document::SketchConstraintRule::Distance { a, b, distance }
-                if a.curve == curve && b.curve == curve =>
-            {
-                Some(distance)
-            }
-            _ => None,
-        })
+        sketch
+            .constraints
+            .iter()
+            .find_map(|c| match c.rule.clone() {
+                ferritecad_document::SketchConstraintRule::Distance { a, b, distance }
+                    if a.curve == curve && b.curve == curve =>
+                {
+                    Some(distance.value())
+                }
+                _ => None,
+            })
     }
 
     /// §31F: a directed angle typed into the form, Applied into an unsaved

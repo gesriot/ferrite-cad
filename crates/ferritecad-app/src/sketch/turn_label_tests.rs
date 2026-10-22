@@ -53,7 +53,8 @@ fn angle_rule(a: DirectedLine, b: DirectedLine, angle: DirectedAngle) -> SketchC
         rule: SketchConstraintRule::DirectedAngle {
             a: segment(a),
             b: segment(b),
-            angle: angle.radians(),
+            angle: ferritecad_document::Expression::constant(angle.radians())
+                .expect("finite constant"),
         },
     }
 }
@@ -134,7 +135,7 @@ fn saved_angles_are_the_directed_angle_rules_between_two_lines_with_their_exact_
         rule: SketchConstraintRule::Distance {
             a: SketchPointRef::new(ids[0], SketchPointSelector::Start),
             b: SketchPointRef::new(ids[0], SketchPointSelector::End),
-            distance: 10.,
+            distance: ferritecad_document::Expression::constant(10.).expect("finite constant"),
         },
     };
     let parallel = SketchConstraint {
@@ -163,14 +164,25 @@ fn saved_angles_are_the_directed_angle_rules_between_two_lines_with_their_exact_
         vector(StableEntityId::new(), LineEndpoint::Start),
         degrees(30.),
     ));
-    for radians in [4.0, -std::f64::consts::PI, f64::NAN, f64::INFINITY] {
+    for radians in [4.0, -std::f64::consts::PI] {
         let mut bad = angle_rule(start(0), start(1), degrees(30.));
         if let SketchConstraintRule::DirectedAngle { angle, .. } = &mut bad.rule {
-            *angle = radians;
+            *angle = ferritecad_document::Expression::constant(radians).expect("finite constant");
         }
         broken.push(bad);
     }
-    s.constraints = [vec![length, late, parallel, early, half_turn, zero], broken].concat();
+    s.constraints = [
+        vec![
+            length,
+            late.clone(),
+            parallel,
+            early.clone(),
+            half_turn.clone(),
+            zero.clone(),
+        ],
+        broken,
+    ]
+    .concat();
 
     let found = saved_turns(&s);
     assert_eq!(
@@ -217,7 +229,7 @@ fn saved_angles_are_the_directed_angle_rules_between_two_lines_with_their_exact_
         rule: SketchConstraintRule::Distance {
             a: SketchPointRef::new(ids[1], SketchPointSelector::End),
             b: SketchPointRef::new(ids[1], SketchPointSelector::Start),
-            distance: 25.,
+            distance: ferritecad_document::Expression::constant(25.).expect("finite constant"),
         },
     });
     assert_eq!(saved(&s).len(), 2, "the lengths of Lines 1 and 2 only");

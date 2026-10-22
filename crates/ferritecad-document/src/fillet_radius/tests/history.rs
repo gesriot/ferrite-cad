@@ -407,7 +407,7 @@ fn a_duplicate_a_fifth_a_branch_and_a_foreign_predecessor_are_refused() {
         };
         crate::rectangle_corners(base, &sketch).expect("corners")[2].joint
     };
-    fourth.radius_mm = 1.0;
+    fourth.radius_mm = crate::Expression::constant(1.0).expect("finite constant");
     judge(&[], &fourth).expect("the fourth corner is in the class");
 
     // A corner rounded twice.

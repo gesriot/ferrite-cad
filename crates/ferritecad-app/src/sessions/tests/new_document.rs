@@ -116,7 +116,7 @@ fn variants() -> Vec<Variant> {
             name: "partial-revolve",
             content: NewDocument::SketchPartialRevolve {
                 profile: FullTurnRevolution::new(STEPPED.to_vec()).expect("revolve"),
-                angle: RevolveAngle::new(137.5).expect("angle"),
+                angle: RevolveAngle::new(f64::to_radians(137.5)).expect("angle"),
             },
             cli: vec!["create-sketch-revolve"],
             request: Some(concat!(

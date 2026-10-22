@@ -624,13 +624,19 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     assert_eq!(ui_sketch.curves, source_sketch.curves, "the guess was kept");
     assert_eq!(cli_sketch.curves, source_sketch.curves);
 
-    let rules = |s: &Sketch| s.constraints.iter().map(|c| c.rule).collect::<Vec<_>>();
+    let rules = |s: &Sketch| {
+        s.constraints
+            .iter()
+            .map(|c| c.rule.clone())
+            .collect::<Vec<_>>()
+    };
     assert_eq!(rules(&ui_sketch), rules(&cli_sketch), "the same five rules");
     assert_eq!(ui_sketch.constraints.len(), 5);
     for (x, y) in ui_sketch.constraints.iter().zip(&cli_sketch.constraints) {
         assert_ne!(x.id, y.id, "each publication minted its own UUID");
     }
-    let SketchConstraintRule::DirectedAngle { a, b, angle } = ui_sketch.constraints[4].rule else {
+    let SketchConstraintRule::DirectedAngle { a, b, angle } = ui_sketch.constraints[4].rule.clone()
+    else {
         panic!("the angle comes last")
     };
     assert_eq!(
@@ -643,7 +649,10 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
         ),
         "both directions as said"
     );
-    assert_eq!(angle, 110f64.to_radians());
+    assert_eq!(
+        angle,
+        ferritecad_document::Expression::constant(110f64.to_radians()).expect("finite constant")
+    );
 
     // Every SQL cell is literally the other file's, but the Sketch row's payload
     // and hash (where the new UUIDs live) and the modified timestamp; and the

@@ -85,31 +85,36 @@ pub(crate) fn saved(stored: &Sketch) -> Vec<Dimension> {
         .curves
         .iter()
         .filter_map(|c| {
-            stored.constraints.iter().find_map(|k| match k.rule {
-                SketchConstraintRule::Distance { a, b, distance }
-                    if lines
-                        && whole_line(a, b) == Some(c.id)
-                        && LineLengthMm::new(distance).is_ok() =>
-                {
-                    Some(Dimension {
-                        id: k.id,
-                        curve: c.id,
-                        kind: Kind::Length,
-                        target_mm: distance,
-                    })
-                }
-                SketchConstraintRule::Radius { curve, radius }
-                    if circle && curve == c.id && CircleRadiusMm::new(radius).is_ok() =>
-                {
-                    Some(Dimension {
-                        id: k.id,
-                        curve: c.id,
-                        kind: Kind::Radius,
-                        target_mm: radius,
-                    })
-                }
-                _ => None,
-            })
+            stored
+                .constraints
+                .iter()
+                .find_map(|k| match k.rule.clone() {
+                    SketchConstraintRule::Distance { a, b, distance }
+                        if lines
+                            && whole_line(a, b) == Some(c.id)
+                            && LineLengthMm::new(distance.value()).is_ok() =>
+                    {
+                        Some(Dimension {
+                            id: k.id,
+                            curve: c.id,
+                            kind: Kind::Length,
+                            target_mm: distance.value(),
+                        })
+                    }
+                    SketchConstraintRule::Radius { curve, radius }
+                        if circle
+                            && curve == c.id
+                            && CircleRadiusMm::new(radius.value()).is_ok() =>
+                    {
+                        Some(Dimension {
+                            id: k.id,
+                            curve: c.id,
+                            kind: Kind::Radius,
+                            target_mm: radius.value(),
+                        })
+                    }
+                    _ => None,
+                })
         })
         .collect()
 }
@@ -296,11 +301,11 @@ pub(crate) fn saved_turns(stored: &Sketch) -> Vec<Turn> {
         .constraints
         .iter()
         .filter_map(|k| {
-            let SketchConstraintRule::DirectedAngle { a, b, angle } = k.rule else {
+            let SketchConstraintRule::DirectedAngle { a, b, angle } = k.rule.clone() else {
                 return None;
             };
             let (a, b) = (directed(a)?, directed(b)?);
-            let angle = DirectedAngle::from_radians(angle).ok()?;
+            let angle = DirectedAngle::from_radians(angle.value()).ok()?;
             (a.curve() != b.curve() && held(a.curve()) && held(b.curve())).then_some(Turn {
                 id: k.id,
                 a,

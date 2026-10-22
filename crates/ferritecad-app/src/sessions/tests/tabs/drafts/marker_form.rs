@@ -51,8 +51,8 @@ fn open_marked(w: &mut Window, rules: Ids) -> Vec<StableEntityId> {
             rules.fixed,
             SketchConstraintRule::Fixed {
                 point: point(0, At::End),
-                x: 1.,
-                y: 2.,
+                x: ferritecad_document::Expression::constant(1.).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(2.).expect("finite constant"),
             },
         ),
         rule(

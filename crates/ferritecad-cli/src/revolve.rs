@@ -95,7 +95,7 @@ fn decode(bytes: &[u8]) -> Result<NewDocument> {
                 Extent::FullTurn {} => NewDocument::SketchRevolve(profile),
                 Extent::Angle { degrees } => NewDocument::SketchPartialRevolve {
                     profile,
-                    angle: RevolveAngle::new(degrees)?,
+                    angle: RevolveAngle::new(f64::to_radians(degrees))?,
                 },
             })
         }
