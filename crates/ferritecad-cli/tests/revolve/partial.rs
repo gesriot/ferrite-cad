@@ -707,7 +707,7 @@ fn partial_revolution_requests_refuse_every_other_turn_atomically() {
         &json!({"request_version":2,"points_mm":BUSHING,"axis":"sketch_y",
         "extent":{"kind":"angle","degrees":1e-3}}),
     );
-    assert!(text.contains("rad minimum"), "{text}");
+    assert!(text.contains("below the minimum"), "{text}");
     for (value, why) in [
         (
             json!({"request_version":2,"points_mm":BUSHING,"axis":"sketch_y","angle":"full_turn"}),

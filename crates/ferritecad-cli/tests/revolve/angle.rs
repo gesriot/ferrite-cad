@@ -355,7 +355,9 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
     }
     assert_eq!(artifact, 3);
     // Both ends of the accepted range, and a fraction with no finite
-    // decimal, are stored exactly and built as sectors.
+    // decimal, are stored exactly and built as sectors. 30° is stored as
+    // radians that convert straight back to 29.999999999999996°, and is
+    // reported as the 30 that was asked for.
     let input = d.path().join("edge.json");
     let source = d.path().join("edge.fcad");
     request_v2(&input, &BUSHING, angle(90.));
@@ -365,6 +367,7 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
         RevolveAngle::MIN_RADIANS.to_degrees(),
         RevolveAngle::MAX_RADIANS.to_degrees(),
         100. / 3.,
+        30.,
     ] {
         let request = d.path().join(format!("edge-{degrees}.json"));
         write_angle(&request, degrees);
@@ -568,7 +571,7 @@ fn revolve_angle_discovery_and_request_refusals_preserve_every_file() {
     for (degrees, message) in [
         (0., "not positive"),
         (-90., "not positive"),
-        (0.005, "rad minimum"),
+        (0.005, "below the minimum"),
         (359.995, "within"),
         (360., "state a full turn"),
         (400., "more than one turn"),

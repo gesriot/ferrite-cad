@@ -452,7 +452,7 @@ fn extrude_frame<'a>(
         .iter()
         .find(|o| {
             matches!(&o.payload, ObjectPayload::Extrude(e)
-        if e.profile == object.id && !e.reversed && e.operation == SolidOperation::NewBody)
+                if e.profile == object.id && !e.reversed && e.operation == SolidOperation::NewBody)
         })
         .ok_or_else(|| unsupported("sketch edit requires one forward Blind Extrude/NewBody"))?;
     let body = objects

@@ -213,7 +213,7 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
             match &r.extent {
                 ferritecad_document::RevolveExtent::FullTurn => "full turn".to_owned(),
                 ferritecad_document::RevolveExtent::Partial { angle } =>
-                    format!("{}°", angle.value().to_degrees()),
+                    format!("{}°", ferritecad_types::display_degrees(angle.value())),
                 other => format!("{other:?}"),
             },
             r.operation

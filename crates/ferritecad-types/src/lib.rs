@@ -27,4 +27,4 @@ pub use ids::{
 };
 pub use tolerance::Tolerance;
 pub use transform::{Point3, Transform, Vec3};
-pub use units::{Dimension, DirectedAngle, Quantity, Unit};
+pub use units::{Dimension, DirectedAngle, Quantity, Unit, display_degrees};

@@ -583,7 +583,7 @@ impl Editor {
             return false;
         };
         self.dismiss();
-        self.angle_edit = radians.to_degrees().to_string();
+        self.angle_edit = ferritecad_types::display_degrees(radians).to_string();
         self.angle_applied = Some(self.angle_edit.clone());
         self.editing_angle = Some((
             EditRevolveAngleRequest {
@@ -612,7 +612,7 @@ impl Editor {
     }
     fn apply_angle(&mut self) -> Result<()> {
         let request = self.angle_edit_request()?;
-        self.angle_edit = request.radians.to_degrees().to_string();
+        self.angle_edit = ferritecad_types::display_degrees(request.radians).to_string();
         let before = self
             .angle_applied
             .replace(self.angle_edit.clone())
@@ -877,7 +877,7 @@ impl Editor {
             SketchProfileUse::PartialRevolve { radians: angle, .. } => (
                 String::new(),
                 Feature::RevolveAngle,
-                angle.radians().to_degrees().to_string(),
+                ferritecad_types::display_degrees(angle.radians()).to_string(),
             ),
         };
         self.dismiss();
@@ -1587,7 +1587,7 @@ impl Editor {
             "Saved angle {}° · {} · profile, axis, direction and every UUID are retained",
             choice
                 .radians
-                .map(|d| d.to_degrees().to_string())
+                .map(|r| ferritecad_types::display_degrees(r).to_string())
                 .unwrap_or_default(),
             match choice.axis_segment {
                 Some(line) => format!("solid, closed on the axis along Line {line}"),
@@ -1605,8 +1605,8 @@ impl Editor {
                 );
                 ui.label(format!(
                     "° ({}–{}, a full turn is not an angle)",
-                    RevolveAngle::MIN_RADIANS.to_degrees(),
-                    RevolveAngle::MAX_RADIANS.to_degrees()
+                    ferritecad_types::display_degrees(RevolveAngle::MIN_RADIANS),
+                    ferritecad_types::display_degrees(RevolveAngle::MAX_RADIANS)
                 ));
                 ui.end_row();
             });
@@ -2264,8 +2264,8 @@ impl Editor {
                     ui.label(format!(
                         "Revolve: a sector from the profile, right-handed about the sketch Y axis \
                          through X = 0; {}° to {}°. For 360° choose Revolve 360°.",
-                        RevolveAngle::MIN_RADIANS.to_degrees(),
-                        RevolveAngle::MAX_RADIANS.to_degrees()
+                        ferritecad_types::display_degrees(RevolveAngle::MIN_RADIANS),
+                        ferritecad_types::display_degrees(RevolveAngle::MAX_RADIANS)
                     ));
                 }
             } else {

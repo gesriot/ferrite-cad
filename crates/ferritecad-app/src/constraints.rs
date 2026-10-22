@@ -35,7 +35,7 @@ fn revolve_owner(profile_use: SketchProfileUse) -> Option<String> {
             ..
         } => (
             feature,
-            format!("{}°", angle.radians().to_degrees()),
+            format!("{}°", ferritecad_types::display_degrees(angle.radians())),
             axis_segment,
         ),
         SketchProfileUse::BlindExtrude { .. } => return None,

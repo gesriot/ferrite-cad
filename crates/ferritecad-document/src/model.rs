@@ -699,55 +699,56 @@ pub enum RevolveExtent {
 /// decoder and the evaluator alike (§27D).
 ///
 /// A right-handed turn about the sketch's +Y axis, starting at the profile.
-/// Accepted from [`Self::MIN_RADIANS`] to [`Self::MAX_RADIANS`], inclusive.
-/// Full turns and sectors too thin to retain every face are refused.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(try_from = "f64", into = "f64")]
+/// Kept exactly as given: nothing is rounded, reduced modulo a turn or turned
+/// into another operation. Accepted from [`Self::MIN_RADIANS`] to
+/// [`Self::MAX_RADIANS`], both inclusive; 0, negative angles, angles closer
+/// than the minimum to 0 or to a full turn, exactly 2π, several turns, NaN
+/// and infinities are refused. The limits come from kernel and single-precision
+/// mesh checks, recorded in `docs/partial-angle-revolve.md`.
+///
+/// The refusals name no unit: the UI and the CLI take degrees, and each shows
+/// the accepted range in its own unit beside the value it took.
+#[derive(Debug, Clone, Copy)]
 pub struct RevolveAngle(f64);
 
 impl RevolveAngle {
-    /// The thinnest sector this build keeps, in radians.
+    /// The thinnest sector this build keeps (0.01°).
     pub const MIN_RADIANS: f64 = 0.000_174_532_925_199_432_96;
-    /// The widest partial sector this build keeps, in radians.
+    /// The widest partial sector: the minimum short of a full turn.
     pub const MAX_RADIANS: f64 = std::f64::consts::TAU - Self::MIN_RADIANS;
 
     pub fn new(radians: f64) -> Result<Self> {
         if !radians.is_finite() {
-            return Err(CadError::input(format!(
-                "the revolve angle {radians} is not a finite number of radians"
-            )));
+            return Err(CadError::input("the revolve angle is not a finite number"));
         }
         if radians <= 0.0 {
-            return Err(CadError::input(format!(
-                "the revolve angle {radians} rad is not positive: a partial revolve turns right-handed \
-                 about +Y through more than 0 rad, and a mirrored sweep is not supported"
-            )));
+            return Err(CadError::input(
+                "the revolve angle is not positive: a partial revolve turns right-handed about +Y, \
+                 and a mirrored sweep is not supported",
+            ));
         }
         if radians == std::f64::consts::TAU {
             return Err(CadError::input(
-                "the revolve angle tau is a full turn, which has no end faces: state a full turn \
+                "the revolve angle is a full turn, which has no end faces: state a full turn \
                  instead of a partial angle",
             ));
         }
         if radians > std::f64::consts::TAU {
-            return Err(CadError::input(format!(
-                "the revolve angle {radians} rad is more than one turn: a solid turns at most once"
-            )));
+            return Err(CadError::input(
+                "the revolve angle is more than one turn: a solid turns at most once",
+            ));
         }
         if radians < Self::MIN_RADIANS {
-            return Err(CadError::input(format!(
-                "the revolve angle {radians} rad is below the {} rad minimum: the sector would be too \
-                 thin to keep every face",
-                Self::MIN_RADIANS
-            )));
+            return Err(CadError::input(
+                "the revolve angle is below the minimum: the sector would be too thin to keep \
+                 every face",
+            ));
         }
         if radians > Self::MAX_RADIANS {
-            return Err(CadError::input(format!(
-                "the revolve angle {radians} rad is within {} rad of a full turn: a partial revolve \
-                 turns at most {} rad, and a full turn is stated as one",
-                std::f64::consts::TAU - Self::MAX_RADIANS,
-                Self::MAX_RADIANS
-            )));
+            return Err(CadError::input(
+                "the revolve angle is within the minimum sector of a full turn: a partial revolve \
+                 stops short of that, and a full turn is stated as one",
+            ));
         }
         Ok(Self(radians))
     }
@@ -764,19 +765,6 @@ impl PartialEq for RevolveAngle {
     }
 }
 impl Eq for RevolveAngle {}
-
-impl TryFrom<f64> for RevolveAngle {
-    type Error = CadError;
-    fn try_from(radians: f64) -> Result<Self> {
-        Self::new(radians)
-    }
-}
-
-impl From<RevolveAngle> for f64 {
-    fn from(angle: RevolveAngle) -> Self {
-        angle.0
-    }
-}
 
 /// Turns a sketch profile about an axis in its own plane.
 ///

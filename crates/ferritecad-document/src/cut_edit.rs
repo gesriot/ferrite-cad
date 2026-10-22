@@ -1595,10 +1595,8 @@ pub fn prepare_cut_parameters(
     let ObjectPayload::Extrude(extrude) = &mut cut.payload else {
         unreachable!("checked by saved_cut")
     };
-    // Exactly the end. The profile, the operation, the predecessor and the
-    // absence of a target body are the history, and this edit is not about it.
-    // The payload layout follows from what it now holds (v2 Blind, v3
-    // ThroughAll); the writer re-derives and records that, nothing else.
+    // Exactly the end. The profile, the operation and the predecessor are the
+    // history, and this edit is not about it.
     extrude.end_condition = edit.extent.end_condition()?;
 
     let added_references = match moved {
@@ -1783,7 +1781,6 @@ mod tests {
             panic!("a cut is an extrude-shaped feature")
         };
         assert_eq!(feature.previous, Some(prepared.previous()));
-
         assert_eq!(feature.operation, SolidOperation::Cut);
         assert!(prepared.added_dependencies.contains(&Dependency {
             dependent: prepared.feature().id,
@@ -2308,7 +2305,6 @@ mod tests {
         };
         assert_eq!(edited.operation, SolidOperation::Cut);
         assert_eq!(edited.previous, Some(saved.base_feature));
-
         assert_eq!(edited.profile, saved.tool_sketch);
         assert_eq!(d.topology_refs().expect("refs"), refs_before);
         assert_eq!(d.dependencies().expect("deps").len(), 6);

@@ -196,10 +196,17 @@ impl Quantity {
     }
 }
 
-/// A counter-clockwise turn in canonical radians `(-π, π]`.
-/// Degree conversion belongs at UI/CLI boundaries. Inputs outside `[-180, 180]`
-/// are refused; either half-turn maps to π and either zero maps to +0.
-/// Validated bits exclude NaN and negative zero, allowing exact `Eq`.
+/// The counter-clockwise turn from the first vector of a directed angle to the
+/// second, held in radians and canonical in `(-π, π]` (§31F).
+///
+/// This is the unit boundary: degrees live in the UI and the CLI, radians in
+/// the document and the solver, and [`DirectedAngle::from_degrees`] and
+/// [`DirectedAngle::degrees`] are the only road between them. The input is one
+/// full circle, `[-180, 180]`, and everything outside it is refused rather
+/// than wrapped: `270` is not `-90`, because a policy chosen by floating-point
+/// arithmetic is no policy. Exactly `-180` is the same direction as `180` and
+/// is stored only as `+180`; `-0` is `0`. Private validated bits make exact
+/// `Eq` safe: NaN and the second zero are excluded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirectedAngle(u64);
 impl DirectedAngle {
@@ -256,6 +263,22 @@ impl DirectedAngle {
     }
 }
 
+/// The degrees the UI and the CLI show for an angle they stored as
+/// `degrees.to_radians()`: the shortest decimal that converts back to exactly
+/// `radians`. A typed 30° is stored as radians that convert straight back to
+/// 29.999999999999996°; this shows 30, and taking 30 again stores the same
+/// radians.
+pub fn display_degrees(radians: f64) -> f64 {
+    let degrees = radians.to_degrees();
+    (0..=15)
+        .map(|places| {
+            let scale = 10_f64.powi(places);
+            (degrees * scale).round() / scale
+        })
+        .find(|shown| shown.to_radians() == radians)
+        .unwrap_or(degrees)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +312,17 @@ mod tests {
     fn non_finite_input_is_refused() {
         assert!(Quantity::new(f64::NAN, Unit::Millimeter).is_err());
         assert!(Quantity::new(f64::INFINITY, Unit::Millimeter).is_err());
+    }
+
+    #[test]
+    fn displayed_degrees_are_the_degrees_typed() {
+        // Every angle typed to two places, 0.01° to 359.99°: 30 is shown as 30.
+        for hundredths in 1..36_000 {
+            let typed = f64::from(hundredths) / 100.0;
+            assert_eq!(display_degrees(typed.to_radians()), typed, "{typed}");
+        }
+        let third = 100.0 / 3.0;
+        assert_eq!(display_degrees(f64::to_radians(third)), third);
     }
 
     #[test]

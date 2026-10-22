@@ -306,8 +306,12 @@ impl AngleEditDiscovery {
             available: choice.refusal.is_none() && document_refusal.is_none(),
             refusal: choice.refusal,
             document_refusal,
-            min_deg: ferritecad_document::RevolveAngle::MIN_RADIANS.to_degrees(),
-            max_deg: ferritecad_document::RevolveAngle::MAX_RADIANS.to_degrees(),
+            min_deg: ferritecad_types::display_degrees(
+                ferritecad_document::RevolveAngle::MIN_RADIANS,
+            ),
+            max_deg: ferritecad_types::display_degrees(
+                ferritecad_document::RevolveAngle::MAX_RADIANS,
+            ),
         }
     }
 }
@@ -349,7 +353,7 @@ impl RevolveDiscovery {
             },
             angle_deg: match r.extent {
                 ferritecad_document::RevolveExtent::Partial { angle } => {
-                    Some(angle.value().to_degrees())
+                    Some(ferritecad_types::display_degrees(angle.value()))
                 }
                 _ => None,
             },
@@ -522,7 +526,7 @@ impl ProfileFeature {
                 body_id: body,
                 axis: "sketch_y",
                 extent: "partial_turn",
-                angle_deg: angle.radians().to_degrees(),
+                angle_deg: ferritecad_types::display_degrees(angle.radians()),
                 axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
             },
             ferritecad_document::SketchProfileUse::PartialRevolve {
@@ -535,7 +539,7 @@ impl ProfileFeature {
                 body_id: body,
                 axis: "sketch_y",
                 extent: "partial_turn",
-                angle_deg: angle.radians().to_degrees(),
+                angle_deg: ferritecad_types::display_degrees(angle.radians()),
                 axis_curve_id: axis,
                 off_axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
             },
