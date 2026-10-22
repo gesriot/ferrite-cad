@@ -420,7 +420,9 @@ fn build_checked(
         NewDocument::SketchPartialRevolve { profile, angle } => populate_revolve(
             &mut document,
             profile,
-            RevolveExtent::Partial { degrees: *angle },
+            RevolveExtent::Partial {
+                angle: Expression::constant(angle.radians())?,
+            },
         )?,
     }
     check(&document)?;
@@ -540,7 +542,6 @@ fn populate_profile(
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -662,7 +663,7 @@ fn populate_revolve(
             &ObjectPayload::Revolve(Revolve {
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
-                extent,
+                extent: extent.clone(),
                 operation: SolidOperation::NewBody,
                 axis_segment,
             }),
@@ -794,7 +795,6 @@ fn populate_circle(
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -934,7 +934,6 @@ fn populate_annulus(
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;

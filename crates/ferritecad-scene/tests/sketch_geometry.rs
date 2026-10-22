@@ -127,8 +127,8 @@ fn frame(edges: &[StableEntityId]) -> Vec<SketchConstraintRule> {
         },
         SketchConstraintRule::Fixed {
             point: at(edges[0], Start),
-            x: 0.0,
-            y: 0.0,
+            x: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
         },
         SketchConstraintRule::Horizontal {
             a: at(edges[0], Start),
@@ -153,7 +153,7 @@ fn width_of(edges: &[StableEntityId], distance: f64) -> SketchConstraintRule {
     SketchConstraintRule::Distance {
         a: at(edges[0], SketchPointSelector::Start),
         b: at(edges[0], SketchPointSelector::End),
-        distance,
+        distance: ferritecad_document::Expression::constant(distance).expect("finite constant"),
     }
 }
 
@@ -263,7 +263,6 @@ fn write(path: &Path, placement: Transform, sketches: &[Spec<'_>]) {
                             },
                             reversed: false,
                             operation: SolidOperation::NewBody,
-                            target_body: None,
                             previous: None,
                         }),
                     )?;

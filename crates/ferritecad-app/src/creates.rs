@@ -1555,11 +1555,10 @@ pub(crate) mod tests {
                             other => format!("{other:?}"),
                         };
                         format!(
-                            "extrude of {} {end} reversed={} operation={:?} target={:?}",
+                            "extrude of {} {end} reversed={} operation={:?}",
                             name_of(extrude.profile),
                             extrude.reversed,
                             extrude.operation,
-                            extrude.target_body.map(name_of),
                         )
                     }
                     ObjectPayload::Body(body) => {

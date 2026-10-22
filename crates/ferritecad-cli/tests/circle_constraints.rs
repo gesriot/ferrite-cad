@@ -199,12 +199,12 @@ fn stored(path: &Path) -> Stored {
         .map(|c| {
             (
                 c.id,
-                match c.rule {
+                match c.rule.clone() {
                     ferritecad_document::SketchConstraintRule::Radius { radius, .. } => {
-                        format!("radius {radius}")
+                        format!("radius {}", radius.value())
                     }
                     ferritecad_document::SketchConstraintRule::Fixed { point, x, y } => {
-                        format!("fixed {} ({x}, {y})", point.at.as_str())
+                        format!("fixed {} ({}, {})", point.at.as_str(), x.value(), y.value())
                     }
                     ref other => format!("{other:?}"),
                 },
@@ -869,7 +869,6 @@ fn write_circle_document(
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;

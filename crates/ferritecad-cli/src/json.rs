@@ -218,7 +218,7 @@ impl FilletFeatureDiscovery {
                 joint: choice.stored.edge.joint.segments(),
             },
             corner_mm: saved.map(|s| s.corner.corner_mm),
-            radius_mm: choice.stored.radius_mm,
+            radius_mm: choice.stored.radius_mm.value(),
             profile_constrained: saved.is_some_and(|s| s.constrained),
             history_index: saved.map(|s| s.history_index),
             radius_edit: FilletRadiusEditDiscovery {
@@ -306,8 +306,12 @@ impl AngleEditDiscovery {
             available: choice.refusal.is_none() && document_refusal.is_none(),
             refusal: choice.refusal,
             document_refusal,
-            min_deg: ferritecad_document::RevolveAngle::MIN_DEGREES,
-            max_deg: ferritecad_document::RevolveAngle::MAX_DEGREES,
+            min_deg: ferritecad_types::display_degrees(
+                ferritecad_document::RevolveAngle::MIN_RADIANS,
+            ),
+            max_deg: ferritecad_types::display_degrees(
+                ferritecad_document::RevolveAngle::MAX_RADIANS,
+            ),
         }
     }
 }
@@ -348,7 +352,9 @@ impl RevolveDiscovery {
                 _ => "unknown",
             },
             angle_deg: match r.extent {
-                ferritecad_document::RevolveExtent::Partial { degrees } => Some(degrees.degrees()),
+                ferritecad_document::RevolveExtent::Partial { angle } => {
+                    Some(ferritecad_types::display_degrees(angle.value()))
+                }
                 _ => None,
             },
             operation: match r.operation {
@@ -514,26 +520,26 @@ impl ProfileFeature {
                 feature,
                 body,
                 axis_segment: None,
-                degrees,
+                radians: angle,
             } => Self::PartialTurnRevolve {
                 feature_id: feature,
                 body_id: body,
                 axis: "sketch_y",
                 extent: "partial_turn",
-                angle_deg: degrees.degrees(),
+                angle_deg: ferritecad_types::display_degrees(angle.radians()),
                 axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
             },
             ferritecad_document::SketchProfileUse::PartialRevolve {
                 feature,
                 body,
                 axis_segment: Some(axis),
-                degrees,
+                radians: angle,
             } => Self::PartialTurnRevolveAxisClosed {
                 feature_id: feature,
                 body_id: body,
                 axis: "sketch_y",
                 extent: "partial_turn",
-                angle_deg: degrees.degrees(),
+                angle_deg: ferritecad_types::display_degrees(angle.radians()),
                 axis_curve_id: axis,
                 off_axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
             },

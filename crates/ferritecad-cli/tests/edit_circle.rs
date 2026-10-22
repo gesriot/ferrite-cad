@@ -180,7 +180,6 @@ fn write_circle_document(path: &Path, center: [f64; 2], radius: f64, height: f64
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;

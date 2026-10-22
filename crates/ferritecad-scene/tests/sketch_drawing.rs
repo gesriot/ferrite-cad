@@ -140,7 +140,6 @@ fn write(path: &Path, placement: Transform, curves: Vec<SketchCurve>, extruded: 
                         },
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;

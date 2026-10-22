@@ -1,6 +1,9 @@
 # 4. A feature names the result it modifies; a body names its tip
 
 **Status:** accepted, and narrow — it decides one thing and leaves the rest open.
+[ADR 0006](0006-generic-modelling-core.md) D6 supersedes the sections on
+`target_body` and on the payload layout: the field, its `TargetBody` role,
+payload versions and capabilities no longer exist.
 
 ## The problem this had to solve
 

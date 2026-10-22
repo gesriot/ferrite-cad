@@ -625,7 +625,6 @@ pub fn prepare_circular_cut(
             operation: SolidOperation::Cut,
             // Not the body. See the module note: a feature names the result it
             // modifies, and the body names its tip.
-            target_body: None,
             previous: Some(target.tip_feature),
         }),
     };
@@ -1163,7 +1162,7 @@ fn read_history(
         if chain.len() == MAX_CIRCULAR_CUTS {
             return Err(unsupported("this editor supports at most 16 circular Cuts"));
         }
-        if cut.operation != SolidOperation::Cut || cut.target_body.is_some() || cut.reversed {
+        if cut.operation != SolidOperation::Cut || cut.reversed {
             return Err(unsupported(
                 "this slice edits forward Cut links with feature predecessors",
             ));
@@ -1180,7 +1179,6 @@ fn read_history(
     };
     if base_feature.operation != SolidOperation::NewBody
         || base_feature.previous.is_some()
-        || base_feature.target_body.is_some()
         || base_feature.reversed
     {
         return Err(unsupported(
@@ -1597,10 +1595,8 @@ pub fn prepare_cut_parameters(
     let ObjectPayload::Extrude(extrude) = &mut cut.payload else {
         unreachable!("checked by saved_cut")
     };
-    // Exactly the end. The profile, the operation, the predecessor and the
-    // absence of a target body are the history, and this edit is not about it.
-    // The payload layout follows from what it now holds (v2 Blind, v3
-    // ThroughAll); the writer re-derives and records that, nothing else.
+    // Exactly the end. The profile, the operation and the predecessor are the
+    // history, and this edit is not about it.
     extrude.end_condition = edit.extent.end_condition()?;
 
     let added_references = match moved {
@@ -1734,7 +1730,6 @@ mod tests {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
@@ -1786,7 +1781,6 @@ mod tests {
             panic!("a cut is an extrude-shaped feature")
         };
         assert_eq!(feature.previous, Some(prepared.previous()));
-        assert_eq!(feature.target_body, None, "a feature does not name a body");
         assert_eq!(feature.operation, SolidOperation::Cut);
         assert!(prepared.added_dependencies.contains(&Dependency {
             dependent: prepared.feature().id,
@@ -1836,91 +1830,6 @@ mod tests {
     }
 
     #[test]
-    fn naming_a_body_instead_of_a_predecessor_cannot_be_ordered_at_all() {
-        // The shape the old field would have forced. Written by hand because
-        // nothing in this build produces it, and kept as a test because it is
-        // the reason the new field exists.
-        let (_root, mut d, body) = plate(rectangle(), 10.);
-        let tip = match &d
-            .objects()
-            .expect("objects")
-            .iter()
-            .find(|o| o.id == body)
-            .expect("the body")
-            .payload
-        {
-            ObjectPayload::Body(b) => b.tip_feature.expect("a tip"),
-            _ => panic!("a body"),
-        };
-        let cut = ObjectId::new();
-        let sketch = d
-            .objects()
-            .expect("objects")
-            .iter()
-            .find_map(|o| match &o.payload {
-                ObjectPayload::Sketch(_) => Some(o.id),
-                _ => None,
-            })
-            .expect("a sketch");
-        d.write(|w| {
-            w.put_object(
-                cut,
-                None,
-                4,
-                Some("Cut"),
-                &ObjectPayload::Extrude(Extrude {
-                    profile: sketch,
-                    end_condition: EndCondition::Blind {
-                        distance: Expression::constant(4.)?,
-                    },
-                    reversed: false,
-                    operation: SolidOperation::Cut,
-                    target_body: Some(body),
-                    previous: None,
-                }),
-            )?;
-            w.add_dependency(Dependency {
-                dependent: cut,
-                dependency: sketch,
-                role: DependencyRole::Profile,
-            })?;
-            w.add_dependency(Dependency {
-                dependent: cut,
-                dependency: body,
-                role: DependencyRole::TargetBody,
-            })?;
-            w.put_object(
-                body,
-                None,
-                3,
-                Some("Body"),
-                &ObjectPayload::Body(Body {
-                    tip_feature: Some(cut),
-                }),
-            )?;
-            w.add_dependency(Dependency {
-                dependent: body,
-                dependency: cut,
-                role: DependencyRole::BodyTip,
-            })?;
-            w.remove_dependency(Dependency {
-                dependent: body,
-                dependency: tip,
-                role: DependencyRole::BodyTip,
-            })
-        })
-        .expect("writes the older shape");
-
-        let report = d.validate().expect("validate");
-        assert!(
-            !report.is_ok(),
-            "a feature-to-body edge closes the tip loop"
-        );
-        let said = format!("{:?}", report);
-        assert!(said.contains("cycle"), "{said}");
-    }
-
-    #[test]
     fn one_history_per_body_and_one_body_per_tip() {
         let (_root, mut d, body) = plate(rectangle(), 10.);
         let first = prepare_circular_cut(&d, body, &cut(4.)).expect("a cut");
@@ -1943,7 +1852,6 @@ mod tests {
                     },
                     reversed: false,
                     operation: SolidOperation::Cut,
-                    target_body: None,
                     previous: Some(first.previous()),
                 }),
             )?;
@@ -2397,7 +2305,6 @@ mod tests {
         };
         assert_eq!(edited.operation, SolidOperation::Cut);
         assert_eq!(edited.previous, Some(saved.base_feature));
-        assert!(edited.target_body.is_none());
         assert_eq!(edited.profile, saved.tool_sketch);
         assert_eq!(d.topology_refs().expect("refs"), refs_before);
         assert_eq!(d.dependencies().expect("deps").len(), 6);

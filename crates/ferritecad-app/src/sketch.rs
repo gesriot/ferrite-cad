@@ -579,18 +579,18 @@ impl Editor {
         else {
             return false;
         };
-        let Some(degrees) = choice.degrees else {
+        let Some(radians) = choice.radians else {
             return false;
         };
         self.dismiss();
-        self.angle_edit = degrees.to_string();
+        self.angle_edit = ferritecad_types::display_degrees(radians).to_string();
         self.angle_applied = Some(self.angle_edit.clone());
         self.editing_angle = Some((
             EditRevolveAngleRequest {
                 source: path.to_path_buf(),
                 expected: source.version,
                 feature: id,
-                degrees,
+                radians,
                 destination: PathBuf::new(),
             },
             choice.clone(),
@@ -605,12 +605,14 @@ impl Editor {
             .as_ref()
             .ok_or_else(|| CadError::input("no saved Revolve angle draft"))?;
         let mut request = basis.clone();
-        request.degrees = choice.validate_angle(number(&self.angle_edit)?)?.degrees();
+        request.radians = choice
+            .validate_angle(number(&self.angle_edit)?.to_radians())?
+            .radians();
         Ok(request)
     }
     fn apply_angle(&mut self) -> Result<()> {
         let request = self.angle_edit_request()?;
-        self.angle_edit = request.degrees.to_string();
+        self.angle_edit = ferritecad_types::display_degrees(request.radians).to_string();
         let before = self
             .angle_applied
             .replace(self.angle_edit.clone())
@@ -872,10 +874,10 @@ impl Editor {
             SketchProfileUse::FullTurnRevolve { .. } => {
                 (String::new(), Feature::Revolve, State::default().angle)
             }
-            SketchProfileUse::PartialRevolve { degrees, .. } => (
+            SketchProfileUse::PartialRevolve { radians: angle, .. } => (
                 String::new(),
                 Feature::RevolveAngle,
-                degrees.degrees().to_string(),
+                ferritecad_types::display_degrees(angle.radians()).to_string(),
             ),
         };
         self.dismiss();
@@ -1234,7 +1236,7 @@ impl Editor {
             // the document's. Parsed here and decided nothing else.
             Feature::RevolveAngle => Ok(NewDocument::SketchPartialRevolve {
                 profile: FullTurnRevolution::new(points)?,
-                angle: RevolveAngle::new(number(&draft.angle)?)?,
+                angle: RevolveAngle::new(number(&draft.angle)?.to_radians())?,
             }),
         }
     }
@@ -1583,7 +1585,10 @@ impl Editor {
         ));
         ui.small(format!(
             "Saved angle {}° · {} · profile, axis, direction and every UUID are retained",
-            choice.degrees.map(|d| d.to_string()).unwrap_or_default(),
+            choice
+                .radians
+                .map(|r| ferritecad_types::display_degrees(r).to_string())
+                .unwrap_or_default(),
             match choice.axis_segment {
                 Some(line) => format!("solid, closed on the axis along Line {line}"),
                 None => "with a bore".to_owned(),
@@ -1600,8 +1605,8 @@ impl Editor {
                 );
                 ui.label(format!(
                     "° ({}–{}, a full turn is not an angle)",
-                    RevolveAngle::MIN_DEGREES,
-                    RevolveAngle::MAX_DEGREES
+                    ferritecad_types::display_degrees(RevolveAngle::MIN_RADIANS),
+                    ferritecad_types::display_degrees(RevolveAngle::MAX_RADIANS)
                 ));
                 ui.end_row();
             });
@@ -1611,8 +1616,8 @@ impl Editor {
                 let differs = self
                     .editing_angle
                     .as_ref()
-                    .and_then(|(_, choice)| choice.degrees)
-                    != Some(request.degrees);
+                    .and_then(|(_, choice)| choice.radians)
+                    != Some(request.radians);
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
@@ -2259,8 +2264,8 @@ impl Editor {
                     ui.label(format!(
                         "Revolve: a sector from the profile, right-handed about the sketch Y axis \
                          through X = 0; {}° to {}°. For 360° choose Revolve 360°.",
-                        RevolveAngle::MIN_DEGREES,
-                        RevolveAngle::MAX_DEGREES
+                        ferritecad_types::display_degrees(RevolveAngle::MIN_RADIANS),
+                        ferritecad_types::display_degrees(RevolveAngle::MAX_RADIANS)
                     ));
                 }
             } else {
@@ -5078,7 +5083,7 @@ pub(crate) mod tests {
         }
         assert!(matches!(
             e.content(),
-            Ok(NewDocument::SketchPartialRevolve { angle, .. }) if angle.degrees() == 90.
+            Ok(NewDocument::SketchPartialRevolve { angle, .. }) if angle.radians().to_degrees() == 90.
         ));
         // Each value is one no other field of the draft shows, because the
         // field is found by the text it currently holds.
@@ -5117,7 +5122,7 @@ pub(crate) mod tests {
         replace_field(&ctx, e, "90", "137.5");
         assert!(matches!(
             e.content(),
-            Ok(NewDocument::SketchPartialRevolve { angle, .. }) if angle.degrees() == 137.5
+            Ok(NewDocument::SketchPartialRevolve { angle, .. }) if angle.radians().to_degrees() == 137.5
         ));
         // The other features keep their own forms, and the angle survives a
         // switch away and back.
@@ -5144,7 +5149,7 @@ pub(crate) mod tests {
         let Some(NewDocument::SketchPartialRevolve { profile, angle }) = e.take_request() else {
             panic!("one partial Revolve request")
         };
-        assert_eq!(angle.degrees(), 137.5);
+        assert_eq!(angle.radians().to_degrees(), 137.5);
         assert_eq!(
             profile
                 .points()
@@ -5826,14 +5831,14 @@ pub(crate) mod tests {
             panic!("one Revolve angle row");
         };
         assert_eq!(angle.refusal, None);
-        assert_eq!(angle.degrees, Some(137.5));
+        assert_eq!(angle.radians.map(f64::to_degrees), Some(137.5));
         let feature = angle.feature;
         // §27F: the sector's coordinates are a separate, available edit.
         let sketch = &reading.sketches[0];
         assert_eq!(sketch.refusal, None);
         assert!(matches!(
             sketch.profile_use,
-            Some(SketchProfileUse::PartialRevolve { degrees, .. }) if degrees.degrees() == 137.5
+            Some(SketchProfileUse::PartialRevolve { radians: angle, .. }) if angle.radians().to_degrees() == 137.5
         ));
 
         let mut e = Editor::default();
@@ -5908,7 +5913,7 @@ pub(crate) mod tests {
         click(&ctx, &mut e, text_at(&out, "Save edited Revolve copy…"));
         let request = e.take_angle_edit_request().expect("submit");
         assert_eq!(request.feature, feature);
-        assert_eq!(request.degrees, 220.0);
+        assert_eq!(request.radians, 220.0_f64.to_radians());
         assert_eq!(request.expected, reading.version);
         let kept = (e.angle_edit.clone(), e.angle_undo.clone());
 
@@ -6006,7 +6011,7 @@ pub(crate) mod tests {
             })
             .expect("Revolve");
         assert!(matches!(revolve.extent,
-            RevolveExtent::Partial { degrees } if degrees.degrees() == 220.0));
+            RevolveExtent::Partial { angle } if angle.value().to_degrees() == 220.0));
         a.close().expect("close");
         b.close().expect("close");
         let mut exported = Vec::new();

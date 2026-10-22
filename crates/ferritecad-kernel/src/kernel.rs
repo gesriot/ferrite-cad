@@ -510,7 +510,9 @@ mod tests {
             crate::RevolveRequest::new(
                 full.profile().clone(),
                 crate::RevolveAxis::PlaneY,
-                crate::RevolveTurn::Partial(crate::PartialTurn::new(degrees).expect("a sector")),
+                crate::RevolveTurn::Partial(
+                    crate::PartialTurn::new(f64::to_radians(degrees)).expect("a sector"),
+                ),
             )
         };
         let full_key = revolve_cache_key(&kernel, &full, &context);
@@ -523,11 +525,16 @@ mod tests {
         );
         assert_eq!(full_key, revolve_cache_key(&kernel, &full, &context));
         for bad in [0.0, -0.0, -1.0, 360.0, 400.0, f64::NAN, f64::INFINITY] {
-            assert!(crate::PartialTurn::new(bad).is_err(), "{bad}");
+            assert!(
+                crate::PartialTurn::new(f64::to_radians(bad)).is_err(),
+                "{bad}"
+            );
         }
         assert_eq!(
-            crate::PartialTurn::new(359.999).expect("inside").degrees(),
-            359.999
+            crate::PartialTurn::new(359.999_f64.to_radians())
+                .expect("inside")
+                .radians(),
+            359.999_f64.to_radians()
         );
     }
 

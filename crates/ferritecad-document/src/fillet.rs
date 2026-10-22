@@ -712,7 +712,7 @@ impl PreparedEdgeFillet {
     }
     pub fn radius_mm(&self) -> f64 {
         match &self.feature.payload {
-            ObjectPayload::Fillet(f) => f.radius_mm,
+            ObjectPayload::Fillet(f) => f.radius_mm.value(),
             _ => f64::NAN,
         }
     }
@@ -845,7 +845,7 @@ pub fn prepare_edge_fillet(
                 feature: target.base_feature,
                 joint: corner.joint,
             },
-            radius_mm: fillet.radius_mm,
+            radius_mm: crate::Expression::constant(fillet.radius_mm)?,
         }),
     };
     let mut moved = record.clone();
@@ -900,7 +900,7 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedEdgeFillet) -> Re
     };
     let stated = EdgeFillet {
         edge: fillet.edge,
-        radius_mm: fillet.radius_mm,
+        radius_mm: fillet.radius_mm.value(),
     };
     let mut checked = prepare_edge_fillet(document, prepared.body.id, &stated)?;
     let fresh = checked.feature.id;
@@ -1087,7 +1087,7 @@ pub fn evaluable_fillet(
     let plain = |f: &Fillet| Fillet {
         previous: base,
         edge: f.edge,
-        radius_mm: f.radius_mm,
+        radius_mm: f.radius_mm.clone(),
     };
     let corners: Vec<FilletCorner> = rounded
         .iter()
@@ -1098,9 +1098,9 @@ pub fn evaluable_fillet(
         check_pair_beside(
             (earlier[k].id, f.edge.joint),
             corner,
-            f.radius_mm,
+            f.radius_mm.value(),
             &own,
-            fillet.radius_mm,
+            fillet.radius_mm.value(),
         )
         .map_err(|e| CadError::input(format!("as the plate is built, {}", bare(&e))))?;
     }
@@ -1158,7 +1158,7 @@ fn plate_corner(
         // Built from the stored Lines themselves: exactly §28A's check.
         let corners = corners_of_lines(base.id, built)?;
         let corner = corner_for(&corners, fillet.edge)?;
-        corner.check_radius(fillet.radius_mm)?;
+        corner.check_radius(fillet.radius_mm.value())?;
         return Ok(corner);
     }
     solved_corner(sketch, built, base.id, fillet).map_err(|e| {
@@ -1214,7 +1214,7 @@ fn solved_corner(
     .map_err(|e| CadError::input(format!("moves a Line off its side: {}", bare(&e))))?;
     let corner = corner_for(&corners, fillet.edge)
         .map_err(|e| CadError::input(format!("no longer has the rounded corner: {}", bare(&e))))?;
-    corner.check_radius(fillet.radius_mm).map_err(|e| {
+    corner.check_radius(fillet.radius_mm.value()).map_err(|e| {
         CadError::input(format!(
             "has sides of {} and {} mm at the rounded corner, too short for the saved radius: {}",
             corner.adjacent_lengths_mm[0],
@@ -1291,7 +1291,6 @@ mod tests {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
@@ -1332,7 +1331,7 @@ mod tests {
                 feature: ObjectId::new(),
                 joint: ProfileJoint::new(b, a).expect("joint"),
             },
-            radius_mm: 2.375,
+            radius_mm: crate::Expression::constant(2.375).expect("finite constant"),
         };
         let payload = ObjectPayload::Fillet(fillet.clone());
         let bytes = payload.to_storage_bytes().expect("encode");
@@ -1341,8 +1340,12 @@ mod tests {
             payload
         );
         for radius in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            if !radius.is_finite() {
+                assert!(crate::Expression::constant(radius).is_err());
+                continue;
+            }
             let mut bad = fillet.clone();
-            bad.radius_mm = radius;
+            bad.radius_mm = crate::Expression::constant(radius).expect("finite constant");
             assert!(
                 ObjectPayload::Fillet(bad).to_storage_bytes().is_err(),
                 "{radius}"
@@ -1528,7 +1531,7 @@ mod tests {
         let mut forged = Vec::new();
         let mut p = honest.clone();
         if let ObjectPayload::Fillet(f) = &mut p.feature.payload {
-            f.radius_mm = 6.2;
+            f.radius_mm = crate::Expression::constant(6.2).expect("finite constant");
         }
         forged.push(p);
         let mut p = honest.clone();
@@ -1565,7 +1568,10 @@ mod tests {
         };
         assert_eq!(stored.previous, target.base_feature);
         assert_eq!(stored.edge, fillet.edge);
-        assert_eq!(stored.radius_mm, 2.375);
+        assert_eq!(
+            stored.radius_mm,
+            crate::Expression::constant(2.375).expect("finite constant")
+        );
         let tip = objects.iter().find(|o| o.id == body).expect("body");
         assert!(matches!(
             tip.payload,
@@ -1794,7 +1800,7 @@ mod tests {
             adjacent
         );
         let mut wide = stored.clone();
-        wide.radius_mm = 6.12;
+        wide.radius_mm = crate::Expression::constant(6.12).expect("finite constant");
         let e = evaluable_fillet(&objects, &wide, Some(&drawn)).expect_err("touching");
         assert_eq!(e.kind(), ErrorKind::Input);
         let mut same = stored.clone();

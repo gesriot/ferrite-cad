@@ -24,20 +24,20 @@ cap start
     exact
     1 face
     area 2400.000 mm^2   middle (30.000, 20.000, 0.000)
-side 01a15fdd-46ea-7cc3-bbf8-a5b479f99d9f
-    all derived from 01a15fdd-46ea-7cc3-bbf8-a5b479f99d9f
+side 01a16354-bf2b-7d23-ad3d-00e2df907161
+    all derived from 01a16354-bf2b-7d23-ad3d-00e2df907161
     1 face
     area 600.000 mm^2   middle (30.000, 0.000, 5.000)
-side 01a15fdd-46ea-7cc3-bbf8-a5cc80faa5ce
-    all derived from 01a15fdd-46ea-7cc3-bbf8-a5cc80faa5ce
+side 01a16354-bf2b-7d23-ad3d-00f9a70485c3
+    all derived from 01a16354-bf2b-7d23-ad3d-00f9a70485c3
     1 face
     area 400.000 mm^2   middle (60.000, 20.000, 5.000)
-side 01a15fdd-46ea-7cc3-bbf8-a5d2fd76c614
-    all derived from 01a15fdd-46ea-7cc3-bbf8-a5d2fd76c614
+side 01a16354-bf2b-7d23-ad3d-010dd15092a4
+    all derived from 01a16354-bf2b-7d23-ad3d-010dd15092a4
     1 face
     area 600.000 mm^2   middle (30.000, 40.000, 5.000)
-side 01a15fdd-46ea-7cc3-bbf8-a5e16d73ff01
-    all derived from 01a15fdd-46ea-7cc3-bbf8-a5e16d73ff01
+side 01a16354-bf2b-7d23-ad3d-01132e724ee0
+    all derived from 01a16354-bf2b-7d23-ad3d-01132e724ee0
     1 face
     area 400.000 mm^2   middle (0.000, 20.000, 5.000)
 

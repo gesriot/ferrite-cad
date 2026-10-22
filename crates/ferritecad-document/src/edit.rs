@@ -277,10 +277,7 @@ fn blind_literal_distance(object: &ObjectRecord) -> Result<f64> {
             object.payload.type_name()
         )));
     };
-    if extrude.operation != crate::SolidOperation::NewBody
-        || extrude.previous.is_some()
-        || extrude.target_body.is_some()
-    {
+    if extrude.operation != crate::SolidOperation::NewBody || extrude.previous.is_some() {
         return Err(CadError::unsupported(
             "only NewBody extrusion distances can be edited; editing a Cut is not implemented",
         ));
@@ -348,7 +345,6 @@ mod tests {
             },
             reversed: false,
             operation: SolidOperation::NewBody,
-            target_body: None,
             previous: None,
         })
     }
@@ -426,7 +422,6 @@ mod tests {
                         },
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;
@@ -450,7 +445,6 @@ mod tests {
                         end_condition: EndCondition::ThroughAll,
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;
@@ -673,7 +667,6 @@ mod tests {
                         },
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;

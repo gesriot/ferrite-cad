@@ -223,7 +223,7 @@ impl std::error::Error for SketchConflict {}
 /// The rule is carried whole rather than turned into a sentence: choosing
 /// anybody's words is the interface's job, and the document's own vocabulary
 /// is the smallest durable thing that can be explained later.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConflictingConstraint {
     id: StableEntityId,
     rule: SketchConstraintRule,
@@ -268,7 +268,7 @@ fn conflicting_constraints(
                 .find(|constraint| constraint.id == *id)
                 .map(|constraint| ConflictingConstraint {
                     id: *id,
-                    rule: constraint.rule,
+                    rule: constraint.rule.clone(),
                 })
                 .ok_or_else(|| {
                     CadError::constraint(format!(
@@ -504,10 +504,10 @@ impl Translation {
         // stays `a`, and a distance in millimetres stays a distance in
         // millimetres, because the two contracts were written to say the same
         // eight things in the same units.
-        Ok(match constraint.rule {
+        Ok(match constraint.rule.clone() {
             SketchConstraintRule::Radius { curve, radius } => solver::Constraint::Radius {
                 circle: self.circle(curve, constraint.id)?,
-                radius,
+                radius: radius.value(),
             },
             SketchConstraintRule::Coincident { a, b } => solver::Constraint::Coincident {
                 a: point(a)?,
@@ -515,13 +515,13 @@ impl Translation {
             },
             SketchConstraintRule::Fixed { point: at, x, y } => solver::Constraint::Fixed {
                 point: point(at)?,
-                x,
-                y,
+                x: x.value(),
+                y: y.value(),
             },
             SketchConstraintRule::Distance { a, b, distance } => solver::Constraint::Distance {
                 a: point(a)?,
                 b: point(b)?,
-                distance,
+                distance: distance.value(),
             },
             SketchConstraintRule::Horizontal { a, b } => solver::Constraint::Horizontal {
                 a: point(a)?,
@@ -550,7 +550,7 @@ impl Translation {
                 solver::Constraint::DirectedAngle {
                     a: segment(a)?,
                     b: segment(b)?,
-                    angle,
+                    angle: angle.value(),
                 }
             }
             // Stated as the two segments it names, in the order stored. The
@@ -1136,8 +1136,8 @@ mod tests {
             (
                 SketchConstraintRule::Fixed {
                     point: at(pin, At),
-                    x: 4.5,
-                    y: -6.25,
+                    x: ferritecad_document::Expression::constant(4.5).expect("finite constant"),
+                    y: ferritecad_document::Expression::constant(-6.25).expect("finite constant"),
                 },
                 Box::new(move |t: &Translation| solver::Constraint::Fixed {
                     point: named(t, at(pin, At)),
@@ -1149,7 +1149,8 @@ mod tests {
                 SketchConstraintRule::Distance {
                     a: at(a, Start),
                     b: at(a, End),
-                    distance: 62.5,
+                    distance: ferritecad_document::Expression::constant(62.5)
+                        .expect("finite constant"),
                 },
                 Box::new(move |t: &Translation| solver::Constraint::Distance {
                     a: named(t, at(a, Start)),
@@ -1212,7 +1213,7 @@ mod tests {
         assert_eq!(cases.len(), 8, "there are eight families and no more");
 
         for (family, expected) in cases {
-            let sketch = sketch(curves(), vec![rule(family)]);
+            let sketch = sketch(curves(), vec![rule(family.clone())]);
             let translation = Translation::read(&sketch).expect("translates");
             assert_eq!(
                 only_constraint(&translation),
@@ -1290,7 +1291,8 @@ mod tests {
                 vec![rule(SketchConstraintRule::DirectedAngle {
                     a: first,
                     b: second,
-                    angle,
+                    angle: ferritecad_document::Expression::constant(angle)
+                        .expect("finite constant"),
                 })],
             ))
             .expect("translates");
@@ -1377,8 +1379,8 @@ mod tests {
             vec![point(pin, (0.0, 0.0))],
             vec![rule(SketchConstraintRule::Fixed {
                 point: at(pin, SketchPointSelector::At),
-                x: 3.0,
-                y: 91.0,
+                x: ferritecad_document::Expression::constant(3.0).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(91.0).expect("finite constant"),
             })],
         );
         let translation = Translation::read(&sketch).expect("translates");
@@ -1396,7 +1398,8 @@ mod tests {
             vec![rule(SketchConstraintRule::Distance {
                 a: at(a, SketchPointSelector::Start),
                 b: at(a, SketchPointSelector::End),
-                distance: 61.75,
+                distance: ferritecad_document::Expression::constant(61.75)
+                    .expect("finite constant"),
             })],
         );
         let translation = Translation::read(&sketch).expect("translates");
@@ -1798,7 +1801,7 @@ mod tests {
         // is the whole of what may decide the answer.
         let neighbour = self::tests::sketch(
             sketch.curves.clone(),
-            vec![rule(sketch.constraints[0].rule)],
+            vec![rule(sketch.constraints[0].rule.clone())],
         );
         assert_eq!(
             sketch.constraints[0].rule, neighbour.constraints[0].rule,

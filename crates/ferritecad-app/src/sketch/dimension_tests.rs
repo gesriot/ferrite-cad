@@ -52,7 +52,7 @@ fn distance(
         rule: SketchConstraintRule::Distance {
             a: point(ends.0, curve),
             b: point(ends.1, curve),
-            distance: mm,
+            distance: ferritecad_document::Expression::constant(mm).expect("finite constant"),
         },
     }
 }
@@ -60,7 +60,10 @@ fn distance(
 fn radius(curve: StableEntityId, mm: f64) -> SketchConstraint {
     SketchConstraint {
         id: StableEntityId::new(),
-        rule: SketchConstraintRule::Radius { curve, radius: mm },
+        rule: SketchConstraintRule::Radius {
+            curve,
+            radius: ferritecad_document::Expression::constant(mm).expect("finite constant"),
+        },
     }
 }
 
@@ -137,7 +140,7 @@ fn saved_dimensions_are_the_whole_line_lengths_and_the_one_circle_radius_in_curv
         rule: SketchConstraintRule::Distance {
             a: point(SketchPointSelector::Start, ids[0]),
             b: point(SketchPointSelector::End, ids[2]),
-            distance: 5.,
+            distance: ferritecad_document::Expression::constant(5.).expect("finite constant"),
         },
     };
     let same_end = distance(
@@ -152,7 +155,14 @@ fn saved_dimensions_are_the_whole_line_lengths_and_the_one_circle_radius_in_curv
             b: point(SketchPointSelector::End, ids[0]),
         },
     };
-    square.constraints = vec![late, across, reversed, same_end, horizontal, first];
+    square.constraints = vec![
+        late.clone(),
+        across,
+        reversed.clone(),
+        same_end,
+        horizontal,
+        first.clone(),
+    ];
     let found = saved(&square);
     assert_eq!(
         found,
@@ -182,7 +192,7 @@ fn saved_dimensions_are_the_whole_line_lengths_and_the_one_circle_radius_in_curv
     assert_eq!(found[2].name(), "Line length 42.5 mm");
 
     // A number that is not a length is no dimension, however the document came by it.
-    for bad in [0., -3., f64::NAN, f64::INFINITY] {
+    for bad in [0., -3.] {
         let mut broken = square.clone();
         broken.constraints = vec![distance(ids[0], START_END, bad)];
         assert!(saved(&broken).is_empty(), "{bad}");
@@ -197,11 +207,11 @@ fn saved_dimensions_are_the_whole_line_lengths_and_the_one_circle_radius_in_curv
             id: StableEntityId::new(),
             rule: SketchConstraintRule::Fixed {
                 point: point(SketchPointSelector::Center, circle_id),
-                x: 0.,
-                y: 0.,
+                x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
             },
         },
-        rule,
+        rule.clone(),
     ];
     assert_eq!(
         saved(&round),
@@ -213,7 +223,7 @@ fn saved_dimensions_are_the_whole_line_lengths_and_the_one_circle_radius_in_curv
         }]
     );
     assert_eq!(saved(&round)[0].name(), "Radius 10 mm");
-    for bad in [0., -1., f64::NAN] {
+    for bad in [0., -1.] {
         round.constraints = vec![radius(circle_id, bad)];
         assert!(saved(&round).is_empty(), "{bad}");
     }

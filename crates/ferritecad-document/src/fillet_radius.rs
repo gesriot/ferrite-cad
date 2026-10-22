@@ -279,16 +279,16 @@ pub(crate) fn saved_fillets(
     // value, the rest being the solved plate's.
     for (k, f) in stored.iter().enumerate() {
         if constrained {
-            crate::fillet::check_radius_value(f.radius_mm)?;
+            crate::fillet::check_radius_value(f.radius_mm.value())?;
         } else {
-            found[k].check_radius(f.radius_mm)?;
+            found[k].check_radius(f.radius_mm.value())?;
             for j in 0..k {
                 crate::fillet::check_pair_beside(
                     (chain[j].id, stored[j].edge.joint),
                     &found[j],
-                    stored[j].radius_mm,
+                    stored[j].radius_mm.value(),
                     &found[k],
-                    f.radius_mm,
+                    f.radius_mm.value(),
                 )?;
             }
         }
@@ -309,7 +309,7 @@ pub(crate) fn saved_fillets(
                 &crate::ExistingFillet {
                     feature: chain[j].id,
                     edge: stored[j].edge,
-                    radius_mm: stored[j].radius_mm,
+                    radius_mm: stored[j].radius_mm.value(),
                     corner: found[j],
                 },
             ));
@@ -348,7 +348,7 @@ pub(crate) fn saved_fillets(
             corner: found[k],
             profile: target.profile,
             height_mm: target.height_mm,
-            radius_mm: stored[k].radius_mm,
+            radius_mm: stored[k].radius_mm.value(),
             constrained,
             history_index: k + 1,
             base_feature: target.base_feature,
@@ -361,7 +361,7 @@ pub(crate) fn saved_fillets(
                     history_index: j + 1,
                     edge: stored[j].edge,
                     corner: found[j],
-                    radius_mm: stored[j].radius_mm,
+                    radius_mm: stored[j].radius_mm.value(),
                     shared: crate::fillet::shared_side(&found[k], &found[j]),
                 })
                 .collect(),
@@ -467,7 +467,7 @@ impl PreparedFilletRadius {
     }
     pub fn radius_mm(&self) -> f64 {
         match &self.feature.payload {
-            ObjectPayload::Fillet(f) => f.radius_mm,
+            ObjectPayload::Fillet(f) => f.radius_mm.value(),
             _ => f64::NAN,
         }
     }
@@ -495,7 +495,7 @@ pub fn prepare_fillet_radius(
     let ObjectPayload::Fillet(fillet) = &mut record.payload else {
         unreachable!("checked Fillet")
     };
-    fillet.radius_mm = radius_mm;
+    fillet.radius_mm = crate::Expression::constant(radius_mm)?;
     Ok(PreparedFilletRadius {
         feature: record,
         saved,
@@ -516,7 +516,7 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedFilletRadius) -> 
             "prepared Fillet radius edit must carry a Fillet",
         ));
     };
-    let checked = prepare_fillet_radius(document, prepared.feature.id, fillet.radius_mm)?;
+    let checked = prepare_fillet_radius(document, prepared.feature.id, fillet.radius_mm.value())?;
     if checked != *prepared {
         return Err(CadError::input(
             "prepared Fillet radius edit does not describe the current document",
@@ -615,7 +615,6 @@ mod tests {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
@@ -764,7 +763,10 @@ mod tests {
             else {
                 panic!("a Fillet");
             };
-            assert_eq!(stored.radius_mm, radius);
+            assert_eq!(
+                stored.radius_mm,
+                crate::Expression::constant(radius).expect("finite constant")
+            );
             assert_eq!(stored.edge, saved.edge);
             assert_eq!(stored.previous, saved.previous);
             assert_eq!(d.topology_refs().expect("refs"), refs, "no name moved");
@@ -832,7 +834,7 @@ mod tests {
 
     fn radius_of(d: &Document, fillet: ObjectId) -> f64 {
         match &d.object(fillet).expect("read").expect("row").payload {
-            ObjectPayload::Fillet(f) => f.radius_mm,
+            ObjectPayload::Fillet(f) => f.radius_mm.value(),
             _ => panic!("a Fillet"),
         }
     }
@@ -978,7 +980,7 @@ mod tests {
                 if o.id == first
                     && let ObjectPayload::Fillet(f) = &mut o.payload
                 {
-                    f.radius_mm = r1;
+                    f.radius_mm = crate::Expression::constant(r1).expect("finite constant");
                 }
             }
             let verdict = crate::evaluable_fillet(&objects_at, &stored(second), Some(&lines));
@@ -1035,7 +1037,7 @@ mod tests {
                 if o.id == first
                     && let ObjectPayload::Fillet(f) = &mut o.payload
                 {
-                    f.radius_mm = r1;
+                    f.radius_mm = crate::Expression::constant(r1).expect("finite constant");
                 }
             }
             let verdict = crate::evaluable_fillet(&objects_at, &two, Some(&lines));
@@ -1107,8 +1109,14 @@ mod tests {
                     _ => false,
                 };
                 assert_eq!(moved, if same { vec![] } else { vec![base] });
-                assert_eq!(stored_fillet(&d, first).radius_mm, r1);
-                assert_eq!(stored_fillet(&d, second).radius_mm, r2);
+                assert_eq!(
+                    stored_fillet(&d, first).radius_mm,
+                    crate::Expression::constant(r1).expect("finite constant")
+                );
+                assert_eq!(
+                    stored_fillet(&d, second).radius_mm,
+                    crate::Expression::constant(r2).expect("finite constant")
+                );
                 assert_eq!(stored_fillet(&d, second).previous, first);
                 assert_eq!(d.topology_refs().expect("refs"), refs, "no name moved");
                 assert_eq!(d.dependencies().expect("deps"), deps);
@@ -1202,7 +1210,7 @@ mod tests {
         let mut forged = Vec::new();
         let mut p = honest.clone();
         if let ObjectPayload::Fillet(f) = &mut p.feature.payload {
-            f.radius_mm = 6.125;
+            f.radius_mm = crate::Expression::constant(6.125).expect("finite constant");
         }
         forged.push(("a radius past the pair bound", p));
         let mut p = honest.clone();
@@ -1244,7 +1252,7 @@ mod tests {
         let mut forged = Vec::new();
         let mut p = honest.clone();
         if let ObjectPayload::Fillet(f) = &mut p.feature.payload {
-            f.radius_mm = 6.2;
+            f.radius_mm = crate::Expression::constant(6.2).expect("finite constant");
         }
         forged.push(("an out-of-policy radius", p));
         let mut p = honest.clone();
@@ -1488,7 +1496,11 @@ mod tests {
             let stored = stored_fillet(&d, fillet);
             assert_eq!(stored.previous, base, "{step}");
             assert_eq!(stored.edge, context.edge, "{step}");
-            assert_eq!(stored.radius_mm, radius, "{step}");
+            assert_eq!(
+                stored.radius_mm,
+                crate::Expression::constant(radius).expect("finite constant"),
+                "{step}"
+            );
             assert_eq!(
                 d.topology_refs().expect("refs"),
                 refs,
@@ -1760,7 +1772,11 @@ mod tests {
             let stored = stored_fillet(&d, fillet);
             assert_eq!(stored.edge, context.edge, "{step}");
             assert_eq!(stored.previous, base, "{step}");
-            assert_eq!(stored.radius_mm, radius, "{step}");
+            assert_eq!(
+                stored.radius_mm,
+                crate::Expression::constant(radius).expect("finite constant"),
+                "{step}"
+            );
             assert_eq!(
                 d.topology_refs().expect("refs"),
                 refs,
@@ -2084,7 +2100,7 @@ mod tests {
         let ObjectPayload::Sketch(s) = &mut dropped.object.payload else {
             unreachable!()
         };
-        let link = s.constraints[0];
+        let link = s.constraints[0].clone();
         s.constraints.remove(0);
         dropped.removed = vec![link.id];
         let e = refuse(&mut d, &dropped, "closure");
@@ -2234,7 +2250,11 @@ mod tests {
                 before = after;
                 for (id, r, previous) in [(first, r1, base), (second, r2, first)] {
                     let stored = stored_fillet(&d, id);
-                    assert_eq!((stored.radius_mm, stored.previous), (r, previous), "{step}");
+                    assert_eq!(
+                        (stored.radius_mm.value(), stored.previous),
+                        (r, previous),
+                        "{step}"
+                    );
                 }
                 assert_eq!(d.topology_refs().expect("refs"), refs, "{step}: no name");
                 assert_eq!(d.dependencies().expect("deps"), deps, "{step}");
@@ -2388,7 +2408,10 @@ mod tests {
         assert!(error.to_string().contains("too large"), "{error}");
         assert_eq!(cells(&d), before, "stale wrote something");
         // Fillet 1 keeps its radius throughout.
-        assert_eq!(stored_fillet(&d, first).radius_mm, 2.375);
+        assert_eq!(
+            stored_fillet(&d, first).radius_mm,
+            crate::Expression::constant(2.375).expect("finite constant")
+        );
     }
 
     /// §28J: what the Sketch may carry under two Fillets. Only the Coincident
@@ -2573,7 +2596,7 @@ mod tests {
             let closures: Vec<_> = stored
                 .iter()
                 .filter(|c| matches!(c.rule, crate::SketchConstraintRule::Coincident { .. }))
-                .copied()
+                .cloned()
                 .collect();
             assert_eq!(closures.len(), 4);
             let user: Vec<_> = stored

@@ -351,12 +351,14 @@ pub fn revolve_request(feature: &Revolve, profile: Profile) -> Result<RevolveReq
             )));
         }
     };
-    let turn = match feature.extent {
+    let turn = match &feature.extent {
         RevolveExtent::FullTurn => ferritecad_kernel::RevolveTurn::Full,
-        // §27D: the stored, already-validated degrees, passed on unchanged.
-        RevolveExtent::Partial { degrees } => ferritecad_kernel::RevolveTurn::Partial(
-            ferritecad_kernel::PartialTurn::new(degrees.degrees())?,
-        ),
+        // The saved value is already in the kernel's internal units.
+        RevolveExtent::Partial { angle } => {
+            ferritecad_kernel::RevolveTurn::Partial(ferritecad_kernel::PartialTurn::new(
+                ferritecad_document::RevolveAngle::new(angle.value())?.radians(),
+            )?)
+        }
         other => {
             return Err(CadError::unsupported(format!(
                 "revolve extent {other:?} is not implemented"
@@ -396,12 +398,6 @@ pub fn extrude_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeReq
              only NewBody is supported",
             feature.operation
         )));
-    }
-    if feature.target_body.is_some() {
-        return Err(CadError::unsupported(
-            "an extrude targeting an existing body needs a boolean, which this slice does not \
-             implement",
-        ));
     }
 
     let extent = match &feature.end_condition {
@@ -576,7 +572,6 @@ mod tests {
             end_condition,
             reversed: false,
             operation: SolidOperation::NewBody,
-            target_body: None,
             previous: None,
         }
     }
@@ -1063,24 +1058,6 @@ mod tests {
             let err = extrude_request(&feature, profile).expect_err("booleans are not implemented");
             assert_eq!(err.kind(), ErrorKind::Unsupported);
         }
-    }
-
-    #[test]
-    fn a_target_body_is_unsupported() {
-        let profile = profile_from_sketch(
-            &sketch(square_curves()),
-            ObjectId::new(),
-            SketchPlane::world_xy(),
-        )
-        .expect("converts")
-        .profile;
-        let mut feature = extrude(EndCondition::Blind {
-            distance: Expression::constant(8.0).expect("finite"),
-        });
-        feature.target_body = Some(ObjectId::new());
-
-        let err = extrude_request(&feature, profile).expect_err("modifying a body needs booleans");
-        assert_eq!(err.kind(), ErrorKind::Unsupported);
     }
 
     #[test]

@@ -30,10 +30,14 @@ fn revolve_owner(profile_use: SketchProfileUse) -> Option<String> {
         } => (feature, "a full turn".to_owned(), axis_segment),
         SketchProfileUse::PartialRevolve {
             feature,
-            degrees,
+            radians: angle,
             axis_segment,
             ..
-        } => (feature, format!("{}°", degrees.degrees()), axis_segment),
+        } => (
+            feature,
+            format!("{}°", ferritecad_types::display_degrees(angle.radians())),
+            axis_segment,
+        ),
         SketchProfileUse::BlindExtrude { .. } => return None,
     };
     Some(match axis_segment {
@@ -304,7 +308,8 @@ impl Editor {
                 rule: SketchConstraintRule::Distance {
                     a: at(*curve, SketchPointSelector::Start),
                     b: at(*curve, SketchPointSelector::End),
-                    distance: *mm,
+                    distance: ferritecad_document::Expression::constant(*mm)
+                        .expect("finite constant"),
                 },
             };
             rules.push(rule.id);
@@ -360,7 +365,8 @@ impl Editor {
                 rule: SketchConstraintRule::DirectedAngle {
                     a: segment(*a),
                     b: segment(*b),
-                    angle: angle.radians(),
+                    angle: ferritecad_document::Expression::constant(angle.radians())
+                        .expect("finite constant"),
                 },
             };
             rules.push(rule.id);
@@ -1400,7 +1406,7 @@ impl Editor {
                         .max_height(150.)
                         .show(ui, |ui| {
                             for c in &stored.constraints {
-                                let (label, lines) = match c.rule {
+                                let (label, lines) = match c.rule.clone() {
                                     SketchConstraintRule::Horizontal { a, .. } => {
                                         ("Horizontal".to_owned(), Some(one_line(a.curve)))
                                     }
@@ -1408,10 +1414,10 @@ impl Editor {
                                         ("Vertical".to_owned(), Some(one_line(a.curve)))
                                     }
                                     SketchConstraintRule::Distance { a, distance, .. } => {
-                                        (format!("Line length {distance} mm"), Some(one_line(a.curve)))
+                                        (format!("Line length {} mm", distance.value()), Some(one_line(a.curve)))
                                     }
                                     SketchConstraintRule::Radius { curve, radius } => (
-                                        format!("Radius {radius} mm"),
+                                        format!("Radius {} mm", radius.value()),
                                         Some(format!("Circle {curve}")),
                                     ),
                                     // A shared centre is the one Coincident a
@@ -1432,11 +1438,11 @@ impl Editor {
                                     ),
                                     SketchConstraintRule::Fixed { point, x, y }
                                         if point.at == ferritecad_document::SketchPointSelector::Center => (
-                                        format!("Fixed centre ({x}, {y}) mm"),
+                                        format!("Fixed centre ({}, {}) mm", x.value(), y.value()),
                                         Some(format!("Circle {}", point.curve)),
                                     ),
                                     SketchConstraintRule::Fixed { point, x, y } => (
-                                        format!("Fixed point {} ({x}, {y}) mm", point.at.as_str()),
+                                        format!("Fixed point {} ({}, {}) mm", point.at.as_str(), x.value(), y.value()),
                                         Some(one_line(point.curve)),
                                     ),
                                     SketchConstraintRule::EqualLength { a, b } => (
@@ -1458,7 +1464,7 @@ impl Editor {
                                     SketchConstraintRule::DirectedAngle { a, b, angle } => (
                                         format!(
                                             "Directed angle {}°",
-                                            DirectedAngle::from_radians(angle)
+                                            DirectedAngle::from_radians(angle.value())
                                                 .map_or(f64::NAN, dimension::editable_degrees)
                                         ),
                                         Some(format!(
@@ -1940,16 +1946,19 @@ fn stored_line_length(
     sketch: &Sketch,
     curve: StableEntityId,
 ) -> Option<(StableEntityId, LineLengthMm)> {
-    sketch.constraints.iter().find_map(|c| match c.rule {
-        SketchConstraintRule::Distance { a, b, distance }
-            if a.curve == curve && b.curve == curve =>
-        {
-            LineLengthMm::new(distance)
-                .ok()
-                .map(|length| (c.id, length))
-        }
-        _ => None,
-    })
+    sketch
+        .constraints
+        .iter()
+        .find_map(|c| match c.rule.clone() {
+            SketchConstraintRule::Distance { a, b, distance }
+                if a.curve == curve && b.curve == curve =>
+            {
+                LineLengthMm::new(distance.value())
+                    .ok()
+                    .map(|length| (c.id, length))
+            }
+            _ => None,
+        })
 }
 
 fn line_distance_on(add: &AddSketchConstraint, curve: StableEntityId) -> bool {
@@ -2614,7 +2623,8 @@ pub(crate) mod tests {
         if let ferritecad_document::ObjectPayload::Sketch(sketch) = &mut object.payload {
             for c in &mut sketch.constraints {
                 if let SketchConstraintRule::Distance { a, b, distance } = &mut c.rule
-                    && *distance == 60.
+                    && *distance
+                        == ferritecad_document::Expression::constant(60.).expect("finite constant")
                 {
                     std::mem::swap(a, b);
                 }
@@ -5093,8 +5103,8 @@ pub(crate) mod tests {
                             curves[0].id,
                             ferritecad_document::SketchPointSelector::Start,
                         ),
-                        x: 10.,
-                        y: -5.,
+                        x: ferritecad_document::Expression::constant(10.).expect("finite constant"),
+                        y: ferritecad_document::Expression::constant(-5.).expect("finite constant"),
                     }
                 );
                 pin_id = Some(last.id);
@@ -5725,7 +5735,7 @@ pub(crate) mod tests {
                 assert_eq!(
                     s.constraints[4..7]
                         .iter()
-                        .map(|c| c.rule)
+                        .map(|c| c.rule.clone())
                         .collect::<Vec<_>>(),
                     vec![
                         SketchConstraintRule::Parallel {
@@ -6144,10 +6154,10 @@ pub(crate) mod tests {
         let (old_length, curve) = sketch
             .constraints
             .iter()
-            .find_map(|c| match c.rule {
-                SketchConstraintRule::Distance {
-                    a, distance: 60., ..
-                } => Some((c.id, a.curve)),
+            .find_map(|c| match c.rule.clone() {
+                SketchConstraintRule::Distance { a, distance, .. } if distance.value() == 60. => {
+                    Some((c.id, a.curve))
+                }
                 _ => None,
             })
             .expect("stored 60 mm");
@@ -6264,11 +6274,17 @@ pub(crate) mod tests {
                 assert_eq!(s.plane, t.plane);
                 assert_eq!(s.constraints.len(), u.constraints.len());
                 for (x, y) in s.constraints.iter().zip(&t.constraints) {
-                    match (x.rule, y.rule) {
+                    match (x.rule.clone(), y.rule.clone()) {
                         (
                             SketchConstraintRule::Distance { distance: a_mm, .. },
                             SketchConstraintRule::Distance { distance: b_mm, .. },
-                        ) if a_mm == 55. && b_mm == 55. => {
+                        ) if a_mm
+                            == ferritecad_document::Expression::constant(55.)
+                                .expect("finite constant")
+                            && b_mm
+                                == ferritecad_document::Expression::constant(55.)
+                                    .expect("finite constant") =>
+                        {
                             assert_ne!(x.id, y.id);
                             assert_ne!(x.id, old_length);
                             assert_ne!(y.id, old_length);

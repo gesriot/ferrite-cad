@@ -188,7 +188,10 @@ fn assert_allowlist(before: &Path, after: &Path, body: ObjectId, r: &EdgeFillet)
         "its predecessor is the old tip"
     );
     assert_eq!(f.edge, r.edge, "the requested edge");
-    assert_eq!(f.radius_mm, r.radius_mm);
+    assert_eq!(
+        f.radius_mm,
+        ferritecad_document::Expression::constant(r.radius_mm).expect("finite constant")
+    );
     for x in refs(before) {
         assert!(refs(after).contains(&x), "old ref {} changed", x.id);
     }

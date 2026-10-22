@@ -40,13 +40,13 @@ pub enum SketchProfileUse {
     },
     /// A partial turn about the sketch Y axis, NewBody (§27D); edited by
     /// §27F. The same profile policy as a full turn, against the class the
-    /// Revolve states; `degrees` is the saved angle, reported and kept, and
+    /// Revolve states; `radians` is the saved angle, reported and kept, and
     /// never part of a coordinate edit.
     PartialRevolve {
         feature: ObjectId,
         body: ObjectId,
         axis_segment: Option<StableEntityId>,
-        degrees: crate::RevolveAngle,
+        radians: crate::RevolveAngle,
     },
 }
 
@@ -448,8 +448,12 @@ fn extrude_frame<'a>(
             "sketch edit requires the untransformed XY plane",
         ));
     }
-    let extrude = objects.iter().find(|o| matches!(&o.payload, ObjectPayload::Extrude(e)
-        if e.profile == object.id && !e.reversed && e.operation == SolidOperation::NewBody && e.target_body.is_none()))
+    let extrude = objects
+        .iter()
+        .find(|o| {
+            matches!(&o.payload, ObjectPayload::Extrude(e)
+                if e.profile == object.id && !e.reversed && e.operation == SolidOperation::NewBody)
+        })
         .ok_or_else(|| unsupported("sketch edit requires one forward Blind Extrude/NewBody"))?;
     let body = objects
         .iter()
@@ -530,12 +534,12 @@ fn revolve_frame<'a>(
         (frame.feature.id, frame.body.id, frame.revolve.axis_segment);
     Ok((
         frame.sketch,
-        match frame.revolve.extent {
-            RevolveExtent::Partial { degrees } => SketchProfileUse::PartialRevolve {
+        match &frame.revolve.extent {
+            RevolveExtent::Partial { angle } => SketchProfileUse::PartialRevolve {
                 feature,
                 body,
                 axis_segment,
-                degrees,
+                radians: crate::RevolveAngle::new(angle.value())?,
             },
             _ => SketchProfileUse::FullTurnRevolve {
                 feature,

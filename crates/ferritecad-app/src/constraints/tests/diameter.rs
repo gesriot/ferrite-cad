@@ -68,7 +68,6 @@ pub(crate) fn write_round_profile(path: &Path, radii: &[f64]) -> Vec<StableEntit
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -774,8 +773,8 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
     let radii: std::collections::BTreeMap<_, _> = ui_sketch
         .constraints
         .iter()
-        .filter_map(|c| match c.rule {
-            SketchConstraintRule::Radius { curve, radius } => Some((curve, radius)),
+        .filter_map(|c| match c.rule.clone() {
+            SketchConstraintRule::Radius { curve, radius } => Some((curve, radius.value())),
             _ => None,
         })
         .collect();

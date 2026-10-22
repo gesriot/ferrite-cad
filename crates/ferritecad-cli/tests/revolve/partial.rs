@@ -151,6 +151,20 @@ pub(super) fn measure_partial(
 ) -> f64 {
     let d = Document::open_read_only(path).expect("reopen");
     assert!(d.validate().expect("validate").is_ok());
+    let objects = d.objects().expect("stored objects");
+    let saved = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::Revolve(revolve) => Some(&revolve.extent),
+            _ => None,
+        })
+        .expect("saved Revolve");
+    let ferritecad_document::RevolveExtent::Partial { angle } = saved else {
+        panic!("a sector")
+    };
+    assert_eq!(angle.value(), degrees.to_radians());
+    assert_eq!(angle.source, degrees.to_radians().to_string());
+
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
     let context = OperationContext::default();
     let built = if let Some(expected) = cache {
@@ -627,8 +641,8 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
     // Both ends of the accepted range are sectors, not a refusal and not a
     // full turn, and a fraction that has no finite decimal is kept exactly.
     for degrees in [
-        RevolveAngle::MIN_DEGREES,
-        RevolveAngle::MAX_DEGREES,
+        RevolveAngle::MIN_RADIANS.to_degrees(),
+        RevolveAngle::MAX_RADIANS.to_degrees(),
         100. / 3.,
     ] {
         let input = d.path().join(format!("edge-{degrees}.json"));
@@ -693,7 +707,7 @@ fn partial_revolution_requests_refuse_every_other_turn_atomically() {
         &json!({"request_version":2,"points_mm":BUSHING,"axis":"sketch_y",
         "extent":{"kind":"angle","degrees":1e-3}}),
     );
-    assert!(text.contains("0.01"), "{text}");
+    assert!(text.contains("below the minimum"), "{text}");
     for (value, why) in [
         (
             json!({"request_version":2,"points_mm":BUSHING,"axis":"sketch_y","angle":"full_turn"}),
@@ -781,7 +795,7 @@ fn native_partial_revolve_guards_delivery_and_cancellation() {
             &never,
             ferritecad_jobs::NewDocument::SketchPartialRevolve {
                 profile: FullTurnRevolution::new(CONE.to_vec()).expect("policy"),
-                angle: RevolveAngle::new(137.5).expect("angle"),
+                angle: RevolveAngle::new(f64::to_radians(137.5)).expect("angle"),
             },
             "test",
         ),

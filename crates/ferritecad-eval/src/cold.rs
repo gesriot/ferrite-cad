@@ -735,7 +735,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         &target_key,
                         fillet.edge.feature,
                         joint,
-                        fillet.radius_mm,
+                        fillet.radius_mm.value(),
                         &scoped,
                     );
                     let restored = match cache.as_deref_mut() {
@@ -794,7 +794,8 @@ fn run<K: GeometryKernel + ?Sized>(
                         if !track.contains(edge) {
                             track.push(*edge);
                         }
-                        let request = FilletRequest::new(target_shape, *edge, fillet.radius_mm)?;
+                        let request =
+                            FilletRequest::new(target_shape, *edge, fillet.radius_mm.value())?;
                         let result = kernel.fillet_edge(&request, &track, &scoped)?;
                         state.owned.push(result.shape);
                         context.check_cancelled()?;
@@ -860,7 +861,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         &target_key,
                         chamfer.edge.feature,
                         joint,
-                        chamfer.distance_mm,
+                        chamfer.distance_mm.value(),
                         &scoped,
                     );
                     let restored = match cache.as_deref_mut() {
@@ -898,7 +899,7 @@ fn run<K: GeometryKernel + ?Sized>(
                             track.push(*edge);
                         }
                         let request =
-                            ChamferRequest::new(target_shape, *edge, chamfer.distance_mm)?;
+                            ChamferRequest::new(target_shape, *edge, chamfer.distance_mm.value())?;
                         let result = kernel.chamfer_edge(&request, &track, &scoped)?;
                         state.owned.push(result.shape);
                         context.check_cancelled()?;

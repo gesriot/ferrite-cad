@@ -332,8 +332,8 @@ fn discovery_and_protected_floors_need_no_kernel() {
                 id: ferritecad_types::StableEntityId::new(),
                 rule: SketchConstraintRule::Fixed {
                     point: SketchPointRef::new(sketch.curves[0].id, selector),
-                    x: 0.,
-                    y: 0.,
+                    x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
+                    y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
                 },
             });
             d.write(|w| {

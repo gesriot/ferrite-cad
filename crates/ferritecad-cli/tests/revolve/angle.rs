@@ -194,11 +194,11 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
         assert_eq!(row["angle_edit"]["document_refusal"], Value::Null);
         assert_eq!(
             row["angle_edit"]["min_deg"],
-            json!(RevolveAngle::MIN_DEGREES)
+            json!(RevolveAngle::MIN_RADIANS.to_degrees())
         );
         assert_eq!(
             row["angle_edit"]["max_deg"],
-            json!(RevolveAngle::MAX_DEGREES)
+            json!(RevolveAngle::MAX_RADIANS.to_degrees())
         );
         let saved_refs = refs(&source);
         let first_payload = revolve_payload(&source);
@@ -355,16 +355,19 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
     }
     assert_eq!(artifact, 3);
     // Both ends of the accepted range, and a fraction with no finite
-    // decimal, are stored exactly and built as sectors.
+    // decimal, are stored exactly and built as sectors. 30° is stored as
+    // radians that convert straight back to 29.999999999999996°, and is
+    // reported as the 30 that was asked for.
     let input = d.path().join("edge.json");
     let source = d.path().join("edge.fcad");
     request_v2(&input, &BUSHING, angle(90.));
     reply(create(&input, &source).output().expect("create"), 0);
     let (feature, version, _) = target(&source);
     for degrees in [
-        RevolveAngle::MIN_DEGREES,
-        RevolveAngle::MAX_DEGREES,
+        RevolveAngle::MIN_RADIANS.to_degrees(),
+        RevolveAngle::MAX_RADIANS.to_degrees(),
         100. / 3.,
+        30.,
     ] {
         let request = d.path().join(format!("edge-{degrees}.json"));
         write_angle(&request, degrees);
@@ -396,7 +399,8 @@ pub(super) fn stub_sector(path: &Path, degrees: f64) -> ObjectId {
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::Partial {
-                    degrees: RevolveAngle::new(degrees).expect("angle"),
+                    angle: ferritecad_document::Expression::constant(f64::to_radians(degrees))
+                        .expect("angle"),
                 },
                 operation: SolidOperation::NewBody,
                 axis_segment: None,
@@ -567,7 +571,7 @@ fn revolve_angle_discovery_and_request_refusals_preserve_every_file() {
     for (degrees, message) in [
         (0., "not positive"),
         (-90., "not positive"),
-        (0.005, "below the 0.01° minimum"),
+        (0.005, "below the minimum"),
         (359.995, "within"),
         (360., "state a full turn"),
         (400., "more than one turn"),
@@ -835,7 +839,7 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
         source: source.clone(),
         expected: reading.version,
         feature: choice.feature,
-        degrees: 220.,
+        radians: 220_f64.to_radians(),
         destination: d.path().join(name),
     };
     // Existing failures may remain while an edit introduces no new unbuilt object.
@@ -940,8 +944,12 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
         let old = source.with_extension("old.fcad");
         std::fs::write(&old, &bytes).expect("old copy");
         let before = Document::open_read_only(&old).expect("old");
-        let prepared = ferritecad_document::prepare_revolve_angle(&before, choice.feature, 220.)
-            .expect("prepared");
+        let prepared = ferritecad_document::prepare_revolve_angle(
+            &before,
+            choice.feature,
+            220_f64.to_radians(),
+        )
+        .expect("prepared");
         before.close().expect("close");
         let mut changed = Document::open(&source).expect("changed");
         let error = changed

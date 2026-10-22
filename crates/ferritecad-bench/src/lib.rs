@@ -215,7 +215,7 @@ fn apply(
         ),
         "apply_angle" => ticket.edit_revolve_angle(
             case.revolve.expect("revolve"),
-            200.0,
+            200.0_f64.to_radians(),
             expected,
             kernel,
             |k, bytes| k.import_step(bytes),

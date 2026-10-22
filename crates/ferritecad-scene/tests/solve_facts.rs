@@ -112,8 +112,8 @@ fn frame(edges: &[StableEntityId]) -> Vec<SketchConstraintRule> {
         },
         SketchConstraintRule::Fixed {
             point: at(edges[0], Start),
-            x: 0.0,
-            y: 0.0,
+            x: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
         },
         SketchConstraintRule::Horizontal {
             a: at(edges[0], Start),
@@ -138,7 +138,7 @@ fn width_of(edges: &[StableEntityId]) -> SketchConstraintRule {
     SketchConstraintRule::Distance {
         a: at(edges[0], SketchPointSelector::Start),
         b: at(edges[0], SketchPointSelector::End),
-        distance: WIDTH,
+        distance: ferritecad_document::Expression::constant(WIDTH).expect("finite constant"),
     }
 }
 
@@ -209,7 +209,6 @@ fn write(
                         },
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;
@@ -360,10 +359,10 @@ fn every_repeated_constraint_arrives_with_the_rule_stored_under_its_identifier()
         a: at(edges[2], SketchPointSelector::Start),
         b: at(edges[2], SketchPointSelector::End),
     };
-    rules.push(level_again);
+    rules.push(level_again.clone());
     let constraints = named(rules);
-    let sized_twice = constraints[10];
-    let levelled_twice = constraints[11];
+    let sized_twice = constraints[10].clone();
+    let levelled_twice = constraints[11].clone();
     write(&path, vec![(Some("Profile"), curves, constraints)]);
 
     let loaded = load(&path);
@@ -385,7 +384,7 @@ fn every_repeated_constraint_arrives_with_the_rule_stored_under_its_identifier()
         facts
             .redundant()
             .iter()
-            .map(|constraint| (constraint.id(), *constraint.rule()))
+            .map(|constraint| (constraint.id(), constraint.rule().clone()))
             .collect::<Vec<_>>(),
         vec![
             (sized_twice.id, sized_twice.rule),
@@ -424,8 +423,8 @@ fn a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says() {
         a: at(edges[2], SketchPointSelector::Start),
         b: at(edges[2], SketchPointSelector::End),
     };
-    rules.push(level_again);
-    rules.push(level_again);
+    rules.push(level_again.clone());
+    rules.push(level_again.clone());
     let constraints = named(rules);
     let saying_the_same: Vec<StableEntityId> = constraints
         .iter()
@@ -454,7 +453,7 @@ fn a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says() {
         facts
             .redundant()
             .iter()
-            .map(|constraint| (constraint.id(), *constraint.rule()))
+            .map(|constraint| (constraint.id(), constraint.rule().clone()))
             .collect::<Vec<_>>(),
         vec![(named_by_the_solve[0], level_again)],
         "the account does not describe the constraint the solve actually named"
@@ -661,7 +660,7 @@ fn what_a_solve_found_out_is_no_part_of_the_picture() {
         two.sketch_solves[0]
             .redundant()
             .iter()
-            .map(|constraint| (constraint.id(), *constraint.rule()))
+            .map(|constraint| (constraint.id(), constraint.rule().clone()))
             .collect::<Vec<_>>(),
         vec![(
             two.sketch_solves[0].report().redundant()[0],
@@ -683,7 +682,7 @@ fn impossible_plate(path: &Path) -> (ObjectId, Vec<SketchConstraint>) {
     rules.push(SketchConstraintRule::Distance {
         a: at(edges[0], SketchPointSelector::Start),
         b: at(edges[0], SketchPointSelector::End),
-        distance: WIDTH + 15.0,
+        distance: ferritecad_document::Expression::constant(WIDTH + 15.0).expect("finite constant"),
     });
     let sketches = write(path, vec![(Some("Profile"), curves, named(rules))]);
 

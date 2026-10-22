@@ -315,7 +315,6 @@ pub fn write_plate(path: &Path) -> Result<()> {
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -581,7 +580,7 @@ pub fn write_fillet_chain(path: &Path, radius: f64) -> Result<FilletChain> {
                         feature: extrude,
                         joint,
                     },
-                    radius_mm: r,
+                    radius_mm: ferritecad_document::Expression::constant(r)?,
                 }),
             )?;
             w.add_dependency(Dependency {
@@ -699,8 +698,8 @@ pub fn write_constrained_fillet_chain(
     rules.extend([
         SketchConstraintRule::Fixed {
             point: start(0),
-            x: 0.0,
-            y: 0.0,
+            x: ferritecad_document::Expression::constant(0.0)?,
+            y: ferritecad_document::Expression::constant(0.0)?,
         },
         SketchConstraintRule::Horizontal {
             a: start(0),
@@ -721,12 +720,12 @@ pub fn write_constrained_fillet_chain(
         SketchConstraintRule::Distance {
             a: start(0),
             b: end(0),
-            distance: width,
+            distance: ferritecad_document::Expression::constant(width)?,
         },
         SketchConstraintRule::Distance {
             a: start(1),
             b: end(1),
-            distance: depth,
+            distance: ferritecad_document::Expression::constant(depth)?,
         },
     ]);
     sketch.constraints = rules

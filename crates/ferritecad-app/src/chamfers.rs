@@ -261,7 +261,7 @@ impl Editor {
         else {
             return false;
         };
-        let typed = choice.stored.distance_mm.to_string();
+        let typed = choice.stored.distance_mm.value().to_string();
         self.distance = Some(DistanceDraft {
             source: path.to_path_buf(),
             version: source.version,
@@ -342,7 +342,7 @@ impl Editor {
                     "Edit Chamfer distance {} — {} (d{} mm)…",
                     choice.name.as_deref().unwrap_or("Unnamed chamfer"),
                     choice.feature,
-                    choice.stored.distance_mm
+                    choice.stored.distance_mm.value()
                 )),
             );
             if response.clicked() {

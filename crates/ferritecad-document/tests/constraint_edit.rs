@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/expression.rs"]
+mod expression;
+
 use ferritecad_document::*;
 use ferritecad_types::{ErrorKind, ObjectId, StableEntityId, Transform};
 use rusqlite::{Connection, types::Value};
@@ -50,7 +53,6 @@ fn fixture() -> (tempfile::TempDir, Document, ObjectId) {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             ),
@@ -247,7 +249,7 @@ fn line_length_is_checked_and_replacement_preserves_other_constraints() {
         .expect("first length adds closure");
     assert_eq!(p.added.len(), 5);
     assert!(
-        matches!(p.added[4].rule, SketchConstraintRule::Distance { a, b, distance } if a.curve == curve && b.curve == curve && a.at == SketchPointSelector::Start && b.at == SketchPointSelector::End && distance == 60.)
+        matches!(&p.added[4].rule, SketchConstraintRule::Distance { a, b, distance } if a.curve == curve && b.curve == curve && a.at == SketchPointSelector::Start && b.at == SketchPointSelector::End && distance.value() == 60.)
     );
     d.write_sketch_constraints(&p).expect("length");
     let h = prepare_sketch_constraints(&d, id, &add(curve, LineConstraintKind::Horizontal))
@@ -291,7 +293,7 @@ fn line_length_is_checked_and_replacement_preserves_other_constraints() {
             .constraints
             .iter()
             .filter(|c| c.id != old)
-            .copied()
+            .cloned()
             .collect::<Vec<_>>()
     );
     assert!(
@@ -333,7 +335,7 @@ fn arbitrary_distance_and_duplicate_lengths_refuse_whole_document() {
         let ObjectPayload::Sketch(s) = &mut o.payload else {
             panic!("Sketch")
         };
-        let mut rule = s.constraints[4].rule;
+        let mut rule = s.constraints[4].rule.clone();
         if let SketchConstraintRule::Distance { a, b, .. } = &mut rule {
             if case == "cross-line" {
                 b.curve = s.curves[1].id;
@@ -342,11 +344,11 @@ fn arbitrary_distance_and_duplicate_lengths_refuse_whole_document() {
                 *b = *a;
             }
         }
-        s.constraints[4].rule = rule;
+        s.constraints[4].rule = rule.clone();
         if case == "duplicate" {
             s.constraints.push(SketchConstraint {
                 id: StableEntityId::new(),
-                rule,
+                rule: rule.clone(),
             });
         }
         if case == "missing-closure" {
@@ -408,11 +410,11 @@ fn a_fixed_endpoint_is_checked_replaced_and_removed_without_touching_other_ids()
             .all(|c| matches!(c.rule, SketchConstraintRule::Coincident { .. })),
         "closure precedes the pin"
     );
-    let SketchConstraintRule::Fixed { point, x, y } = p.added[4].rule else {
+    let SketchConstraintRule::Fixed { point, x, y } = &p.added[4].rule else {
         panic!("pin")
     };
     assert_eq!(
-        (point.curve, point.at, x, y),
+        (point.curve, point.at, x.value(), y.value()),
         (curve, SketchPointSelector::Start, -20., -10.)
     );
     d.write_sketch_constraints(&p).expect("write pin");
@@ -498,8 +500,8 @@ fn a_fixed_endpoint_is_checked_replaced_and_removed_without_touching_other_ids()
             id: moved,
             rule: SketchConstraintRule::Fixed {
                 point: SketchPointRef::new(other, SketchPointSelector::End),
-                x: 0.,
-                y: 0.,
+                x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
             },
         }
     );
@@ -542,8 +544,8 @@ fn several_pins_or_an_unrepresentable_pin_refuse_the_whole_document() {
                 id: StableEntityId::new(),
                 rule: SketchConstraintRule::Fixed {
                     point: SketchPointRef::new(s.curves[1].id, SketchPointSelector::End),
-                    x: 1.,
-                    y: 2.,
+                    x: ferritecad_document::Expression::constant(1.).expect("finite constant"),
+                    y: ferritecad_document::Expression::constant(2.).expect("finite constant"),
                 },
             }),
             "point-selector" => {
@@ -553,7 +555,7 @@ fn several_pins_or_an_unrepresentable_pin_refuse_the_whole_document() {
             }
             "non-finite" => {
                 if let SketchConstraintRule::Fixed { y, .. } = &mut s.constraints[4].rule {
-                    *y = f64::INFINITY;
+                    *y = expression::unchecked(f64::INFINITY);
                 }
             }
             _ => {

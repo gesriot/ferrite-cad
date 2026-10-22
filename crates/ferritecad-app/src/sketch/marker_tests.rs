@@ -112,8 +112,8 @@ fn saved_markers_are_the_seven_families_with_their_exact_references_in_rule_orde
         vec![
             rule(SketchConstraintRule::Fixed {
                 point: at(ids[0], At::End),
-                x: 1.,
-                y: 2.,
+                x: ferritecad_document::Expression::constant(1.).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(2.).expect("finite constant"),
             }),
             rule(SketchConstraintRule::Horizontal {
                 a: at(ids[0], At::End),
@@ -200,7 +200,7 @@ fn saved_markers_are_the_seven_families_with_their_exact_references_in_rule_orde
             rule(SketchConstraintRule::Distance {
                 a: at(ids[0], At::Start),
                 b: at(ids[0], At::End),
-                distance: 10.,
+                distance: ferritecad_document::Expression::constant(10.).expect("finite constant"),
             }),
             rule(SketchConstraintRule::Coincident {
                 a: at(ids[0], At::End),
@@ -232,22 +232,17 @@ fn saved_markers_are_the_seven_families_with_their_exact_references_in_rule_orde
             }),
             rule(SketchConstraintRule::Fixed {
                 point: at(ids[0], At::Center),
-                x: 0.,
-                y: 0.,
+                x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
             }),
             rule(SketchConstraintRule::Fixed {
                 point: at(foreign, At::Start),
-                x: 0.,
-                y: 0.,
-            }),
-            rule(SketchConstraintRule::Fixed {
-                point: at(ids[1], At::Start),
-                x: f64::NAN,
-                y: 0.,
+                x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
             }),
             rule(SketchConstraintRule::Radius {
                 curve: ids[0],
-                radius: 5.,
+                radius: ferritecad_document::Expression::constant(5.).expect("finite constant"),
             }),
         ]
     });
@@ -259,17 +254,17 @@ fn saved_markers_are_the_seven_families_with_their_exact_references_in_rule_orde
     circle.constraints = vec![
         rule(SketchConstraintRule::Radius {
             curve: c,
-            radius: 3.,
+            radius: ferritecad_document::Expression::constant(3.).expect("finite constant"),
         }),
         rule(SketchConstraintRule::Fixed {
             point: at(c, At::Center),
-            x: 0.,
-            y: 0.,
+            x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
         }),
         rule(SketchConstraintRule::Fixed {
             point: at(c, At::Start),
-            x: 0.,
-            y: 0.,
+            x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
         }),
     ];
     assert_eq!(
@@ -285,8 +280,8 @@ fn saved_markers_are_the_seven_families_with_their_exact_references_in_rule_orde
     let first = annulus.curves[0].id;
     annulus.constraints = vec![rule(SketchConstraintRule::Fixed {
         point: at(first, At::Center),
-        x: 0.,
-        y: 0.,
+        x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
+        y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
     })];
     assert_eq!(saved(&annulus), Vec::new());
     let mut mixed = sketch(
@@ -301,8 +296,8 @@ fn saved_markers_are_the_seven_families_with_their_exact_references_in_rule_orde
         }),
         rule(SketchConstraintRule::Fixed {
             point: at(k, At::Center),
-            x: 0.,
-            y: 0.,
+            x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
         }),
     ];
     assert_eq!(saved(&mixed), Vec::new());

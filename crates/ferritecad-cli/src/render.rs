@@ -207,6 +207,17 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
             e.operation,
             if e.reversed { ", reversed" } else { "" }
         ),
+        ObjectPayload::Revolve(r) => format!(
+            "profile {}, {}, {:?}",
+            r.profile,
+            match &r.extent {
+                ferritecad_document::RevolveExtent::FullTurn => "full turn".to_owned(),
+                ferritecad_document::RevolveExtent::Partial { angle } =>
+                    format!("{}°", ferritecad_types::display_degrees(angle.value())),
+                other => format!("{other:?}"),
+            },
+            r.operation
+        ),
         ObjectPayload::Body(b) => match b.tip_feature {
             Some(tip) => format!("tip feature {tip}"),
             None => "empty".to_owned(),

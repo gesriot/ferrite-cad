@@ -14,8 +14,6 @@ pub enum DependencyRole {
     Profile,
     /// The datum a sketch or feature is placed on.
     Plane,
-    /// The body a feature modifies.
-    TargetBody,
     /// The feature whose result this feature consumes.
     ///
     /// A feature that changes an existing solid reads the *result of another
@@ -40,7 +38,6 @@ impl DependencyRole {
         match self {
             Self::Profile => "profile",
             Self::Plane => "plane",
-            Self::TargetBody => "target_body",
             Self::Predecessor => "predecessor",
             Self::BodyTip => "body_tip",
             Self::Parameter => "parameter",
@@ -52,7 +49,6 @@ impl DependencyRole {
         match name {
             "profile" => Ok(Self::Profile),
             "plane" => Ok(Self::Plane),
-            "target_body" => Ok(Self::TargetBody),
             "predecessor" => Ok(Self::Predecessor),
             "body_tip" => Ok(Self::BodyTip),
             "parameter" => Ok(Self::Parameter),

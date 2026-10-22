@@ -393,7 +393,7 @@ fn assert_allowlist(before: &Path, after: &Path, body: ObjectId, added: ObjectId
         "its predecessor is the old tip"
     );
     // A Cut names the result it modifies; the Body names its tip (domain rule).
-    assert_eq!(cut.target_body, None);
+
     assert_eq!(cut.operation, ferritecad_document::SolidOperation::Cut);
     for r in refs(before) {
         assert!(refs(after).contains(&r), "old ref {} changed", r.id);

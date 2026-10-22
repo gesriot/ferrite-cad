@@ -1572,13 +1572,13 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     let saved = choice.vertices.clone().expect("editable");
     let Some(SketchProfileUse::PartialRevolve {
         axis_segment: Some(axis),
-        degrees,
+        radians: angle,
         ..
     }) = choice.profile_use
     else {
         panic!("a solid sector: {:?}", choice.profile_use)
     };
-    assert_eq!(degrees.degrees(), 220.);
+    assert_eq!(angle.radians().to_degrees(), 220.);
     assert_eq!(axis, saved[3].curve_id, "(0,15)→(0,0) lies on the axis");
 
     // Opened from its own row among the saved-object actions.
@@ -1784,7 +1784,9 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     let ObjectPayload::Revolve(r) = revolve(&a).payload else {
         panic!("a Revolve")
     };
-    assert!(matches!(r.extent, RevolveExtent::Partial { degrees } if degrees.degrees() == 220.));
+    assert!(
+        matches!(r.extent, RevolveExtent::Partial { angle } if angle.value().to_degrees() == 220.)
+    );
     original.close().expect("close");
     // A frustum R = 10, r = 5, h = 12.5, turned through 220°.
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");

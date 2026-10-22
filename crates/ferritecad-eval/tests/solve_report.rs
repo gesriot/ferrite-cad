@@ -239,8 +239,8 @@ fn frame(edges: &[StableEntityId]) -> Vec<SketchConstraintRule> {
         },
         SketchConstraintRule::Fixed {
             point: at(edges[0], Start),
-            x: 0.0,
-            y: 0.0,
+            x: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
         },
         SketchConstraintRule::Horizontal {
             a: at(edges[0], Start),
@@ -265,7 +265,7 @@ fn width_of(edges: &[StableEntityId]) -> SketchConstraintRule {
     SketchConstraintRule::Distance {
         a: at(edges[0], SketchPointSelector::Start),
         b: at(edges[0], SketchPointSelector::End),
-        distance: WIDTH,
+        distance: ferritecad_document::Expression::constant(WIDTH).expect("finite constant"),
     }
 }
 
@@ -273,7 +273,7 @@ fn height_of(edges: &[StableEntityId]) -> SketchConstraintRule {
     SketchConstraintRule::Distance {
         a: at(edges[1], SketchPointSelector::Start),
         b: at(edges[1], SketchPointSelector::End),
-        distance: HEIGHT,
+        distance: ferritecad_document::Expression::constant(HEIGHT).expect("finite constant"),
     }
 }
 
@@ -353,7 +353,6 @@ fn write(
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
@@ -375,7 +374,6 @@ fn write(
                         },
                         reversed: true,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;
@@ -973,7 +971,7 @@ fn a_conflicting_sketch_publishes_no_facts() {
     rules.push(SketchConstraintRule::Distance {
         a: at(edges[0], SketchPointSelector::Start),
         b: at(edges[0], SketchPointSelector::End),
-        distance: WIDTH + 15.0,
+        distance: ferritecad_document::Expression::constant(WIDTH + 15.0).expect("finite constant"),
     });
     let (document, _written) = write(&dir, curves, named(rules), false);
     let document = reopen(&document);

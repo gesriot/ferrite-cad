@@ -108,13 +108,13 @@ impl From<SketchConstraintRule> for Rule {
             },
             SketchConstraintRule::Fixed { point, x, y } => Self::Fixed {
                 point: point.into(),
-                x,
-                y,
+                x: x.value(),
+                y: y.value(),
             },
             SketchConstraintRule::Distance { a, b, distance } => Self::Distance {
                 a: a.into(),
                 b: b.into(),
-                distance,
+                distance: distance.value(),
             },
             SketchConstraintRule::EqualLength { a, b } => Self::EqualLength {
                 a: a.into(),
@@ -130,14 +130,14 @@ impl From<SketchConstraintRule> for Rule {
             },
             SketchConstraintRule::Radius { curve, radius } => Self::Radius {
                 curve_id: curve,
-                radius,
+                radius: radius.value(),
             },
             SketchConstraintRule::Collinear { a, b } => Self::Collinear {
                 a: a.into(),
                 b: b.into(),
             },
             SketchConstraintRule::DirectedAngle { a, b, angle } => {
-                match ferritecad_document::DirectedAngle::from_radians(angle) {
+                match ferritecad_document::DirectedAngle::from_radians(angle.value()) {
                     Ok(angle) => Self::DirectedAngle {
                         a: a.into(),
                         b: b.into(),
@@ -159,7 +159,7 @@ impl From<&SketchConstraint> for Constraint {
     fn from(c: &SketchConstraint) -> Self {
         Self {
             constraint_id: c.id,
-            rule: c.rule.into(),
+            rule: c.rule.clone().into(),
         }
     }
 }
@@ -346,7 +346,7 @@ impl From<&ferritecad_eval::SketchConflict> for Conflict {
                 .iter()
                 .map(|c| Constraint {
                     constraint_id: c.id(),
-                    rule: (*c.rule()).into(),
+                    rule: c.rule().clone().into(),
                 })
                 .collect(),
         }

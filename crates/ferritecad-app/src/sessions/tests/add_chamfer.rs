@@ -154,7 +154,10 @@ fn assert_allowlist(before: &Path, after: &Path, body: ObjectId, r: &EdgeChamfer
     );
     assert_eq!(c.previous, r.edge.feature, "the base Extrude");
     assert_eq!(c.edge, r.edge, "the requested edge");
-    assert_eq!(c.distance_mm, r.distance_mm);
+    assert_eq!(
+        c.distance_mm,
+        ferritecad_document::Expression::constant(r.distance_mm).expect("finite constant")
+    );
     for x in refs(before) {
         assert!(refs(after).contains(&x), "old ref {} changed", x.id);
     }

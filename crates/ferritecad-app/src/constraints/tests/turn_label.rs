@@ -81,7 +81,7 @@ fn rotate_angle_rules(document: &mut Document, sketch: ObjectId) {
                 )
             })
             .collect();
-        let mut rules: Vec<_> = at.iter().map(|&i| s.constraints[i]).collect();
+        let mut rules: Vec<_> = at.iter().map(|&i| s.constraints[i].clone()).collect();
         rules.rotate_left(1);
         for (i, rule) in at.into_iter().zip(rules) {
             s.constraints[i] = rule;

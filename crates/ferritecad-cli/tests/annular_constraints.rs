@@ -249,7 +249,6 @@ fn write_annular_document(
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -344,7 +343,7 @@ fn stored(path: &Path) -> Stored {
     let constraints = sketch
         .constraints
         .iter()
-        .map(|c| (c.id, rule_text(c.rule)))
+        .map(|c| (c.id, rule_text(c.rule.clone())))
         .collect();
     let refs = d.topology_refs().expect("refs");
     let count = objects.len();
@@ -363,9 +362,17 @@ fn stored(path: &Path) -> Stored {
 /// One stored rule in words, so a comparison reads as what it is.
 fn rule_text(rule: SketchConstraintRule) -> String {
     match rule {
-        SketchConstraintRule::Radius { curve, radius } => format!("radius {radius} of {curve}"),
+        SketchConstraintRule::Radius { curve, radius } => {
+            format!("radius {} of {curve}", radius.value())
+        }
         SketchConstraintRule::Fixed { point, x, y } => {
-            format!("fixed {} of {} ({x}, {y})", point.at.as_str(), point.curve)
+            format!(
+                "fixed {} of {} ({}, {})",
+                point.at.as_str(),
+                point.curve,
+                x.value(),
+                y.value()
+            )
         }
         SketchConstraintRule::Coincident { a, b }
             if a.at == SketchPointSelector::Center && b.at == SketchPointSelector::Center =>

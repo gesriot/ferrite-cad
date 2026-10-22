@@ -984,14 +984,14 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
 namespace {
 
 /// The one revolution both entry points share. `partial` is false for
-/// exactly one full turn, or true for a sector of `angle_degrees`, which the
-/// caller has already checked is finite and strictly inside (0, 360).
+/// exactly one full turn, or true for a sector of `angle_radians`, which the
+/// caller has already checked is finite and strictly inside (0, 2π).
 FcOcctStatus revolve_profile(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count, size_t axis_segment,
                              const double *axis_origin,
                              const double *axis_direction, bool partial,
-                             double angle_degrees, FcOcctCancelFn cancel,
+                             double angle_radians, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) {
     if (segment_count < 3) {
@@ -1140,10 +1140,10 @@ FcOcctStatus revolve_profile(FcOcctSession *session, const FcOcctPlane *plane,
     }
 
     // A full turn is exactly 2π: the angle is the contract's, not a caller's
-    // number that happens to be 2π. A sector converts its stated degrees once,
-    // here. std::acos(-1) rather than M_PI, which MSVC defines only on request.
+    // number that happens to be 2π. A sector already uses radians.
+    // std::acos(-1) rather than M_PI, which MSVC defines only on request.
     const double pi = std::acos(-1.0);
-    const double angle = partial ? angle_degrees * (pi / 180.0) : 2.0 * pi;
+    const double angle = partial ? angle_radians : 2.0 * pi;
     BRepPrimAPI_MakeRevol revol(face, gp_Ax1(axis_point, axis_dir), angle);
     Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
     revol.Build(indicator->Start());
@@ -1292,7 +1292,7 @@ FcOcctStatus fc_occt_revolve_partial(
     FcOcctSession *session, const FcOcctPlane *plane,
     const FcOcctSegment *segments, size_t segment_count, size_t axis_segment,
     const double *axis_origin, const double *axis_direction,
-    double angle_degrees, FcOcctCancelFn cancel, void *cancel_context,
+    double angle_radians, FcOcctCancelFn cancel, void *cancel_context,
     uint64_t *out_shape, FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr || plane == nullptr || segments == nullptr ||
@@ -1303,14 +1303,14 @@ FcOcctStatus fc_occt_revolve_partial(
     }
     // Only what building one sector needs; the caller's policy is narrower.
     // Never widened to a full turn and never wrapped around.
-    if (!std::isfinite(angle_degrees) || !(angle_degrees > 0.0) ||
-        !(angle_degrees < 360.0)) {
+    if (!std::isfinite(angle_radians) || !(angle_radians > 0.0) ||
+        !(angle_radians < 2.0 * std::acos(-1.0))) {
       write_error(out_error, "a partial revolution needs a finite angle strictly between 0 "
-                             "and 360 degrees");
+                             "and two pi radians");
       return FC_OCCT_INVALID_INPUT;
     }
     return revolve_profile(session, plane, segments, segment_count, axis_segment,
-                           axis_origin, axis_direction, true, angle_degrees, cancel,
+                           axis_origin, axis_direction, true, angle_radians, cancel,
                            cancel_context, out_shape, out_error);
   });
 }

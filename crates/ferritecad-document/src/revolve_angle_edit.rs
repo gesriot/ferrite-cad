@@ -17,8 +17,8 @@ pub struct RevolveAngleChoice {
     pub name: Option<String>,
     /// The Body whose tip this Revolve is, when the Revolve is editable.
     pub body: Option<ObjectId>,
-    /// The saved angle of a sector, in degrees; `None` for a full turn.
-    pub degrees: Option<f64>,
+    /// The saved angle of a sector, in radians; `None` for a full turn.
+    pub radians: Option<f64>,
     /// §27C: the saved Line on the axis of a solid sector; `None` for one
     /// with a bore. Kept by the edit.
     pub axis_segment: Option<StableEntityId>,
@@ -28,11 +28,11 @@ pub struct RevolveAngleChoice {
 impl RevolveAngleChoice {
     /// The document-domain check the form and the preparation share: this
     /// Revolve's own refusal first, then the one angle policy.
-    pub fn validate_angle(&self, degrees: f64) -> Result<RevolveAngle> {
+    pub fn validate_angle(&self, radians: f64) -> Result<RevolveAngle> {
         if let Some(refusal) = &self.refusal {
             return Err(CadError::unsupported(refusal.clone()));
         }
-        RevolveAngle::new(degrees)
+        RevolveAngle::new(radians)
     }
 }
 
@@ -51,8 +51,8 @@ pub fn revolve_angle_choices(
                 feature: object.id,
                 name: object.name.clone(),
                 body: found.as_ref().ok().copied(),
-                degrees: match revolve.extent {
-                    RevolveExtent::Partial { degrees } => Some(degrees.degrees()),
+                radians: match &revolve.extent {
+                    RevolveExtent::Partial { angle } => Some(angle.value()),
                     RevolveExtent::FullTurn => None,
                 },
                 axis_segment: revolve.axis_segment,
@@ -144,7 +144,7 @@ impl PreparedRevolveAngle {
 pub fn prepare_revolve_angle(
     document: &Document,
     feature: ObjectId,
-    degrees: f64,
+    radians: f64,
 ) -> Result<PreparedRevolveAngle> {
     let objects = document.objects()?;
     let mut record = objects
@@ -155,11 +155,13 @@ pub fn prepare_revolve_angle(
             CadError::input(format!("feature {feature} does not exist in this document"))
         })?;
     angle_frame(document, &objects, &record)?;
-    let angle = RevolveAngle::new(degrees)?;
+    let angle = RevolveAngle::new(radians)?;
     let ObjectPayload::Revolve(revolve) = &mut record.payload else {
         unreachable!("checked Revolve")
     };
-    revolve.extent = RevolveExtent::Partial { degrees: angle };
+    revolve.extent = RevolveExtent::Partial {
+        angle: crate::Expression::constant(angle.radians())?,
+    };
     Ok(PreparedRevolveAngle {
         feature: record,
         source_version: document.content_version()?,
@@ -179,12 +181,12 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedRevolveAngle) -> 
             "prepared Revolve angle edit must carry a Revolve",
         ));
     };
-    let RevolveExtent::Partial { degrees } = revolve.extent else {
+    let RevolveExtent::Partial { angle } = &revolve.extent else {
         return Err(CadError::input(
             "prepared Revolve angle edit must carry a partial angle",
         ));
     };
-    let checked = prepare_revolve_angle(document, prepared.feature.id, degrees.degrees())?;
+    let checked = prepare_revolve_angle(document, prepared.feature.id, angle.value())?;
     if checked != *prepared {
         return Err(CadError::input(
             "prepared Revolve angle edit does not describe the current document",
@@ -282,16 +284,16 @@ mod tests {
 
     fn quarter() -> RevolveExtent {
         RevolveExtent::Partial {
-            degrees: RevolveAngle::new(90.).expect("angle"),
+            angle: crate::Expression::constant(f64::to_radians(90.)).expect("angle"),
         }
     }
 
-    fn stored_degrees(d: &Document, revolve: ObjectId) -> f64 {
+    fn stored_radians(d: &Document, revolve: ObjectId) -> f64 {
         match d.object(revolve).expect("row").expect("Revolve").payload {
             ObjectPayload::Revolve(Revolve {
-                extent: RevolveExtent::Partial { degrees },
+                extent: RevolveExtent::Partial { angle },
                 ..
-            }) => degrees.degrees(),
+            }) => angle.value(),
             other => panic!("not a sector: {other:?}"),
         }
     }
@@ -305,7 +307,7 @@ mod tests {
             .try_into()
             .expect("one row");
         assert_eq!(choice.refusal, None);
-        assert_eq!(choice.degrees, Some(90.));
+        assert_eq!(choice.radians, Some(std::f64::consts::FRAC_PI_2));
         assert!(choice.body.is_some());
         for bad in [
             0.,
@@ -317,17 +319,23 @@ mod tests {
             f64::NAN,
             f64::INFINITY,
         ] {
-            assert!(choice.validate_angle(bad).is_err(), "{bad}");
-            assert!(prepare_revolve_angle(&d, revolve, bad).is_err(), "{bad}");
+            assert!(
+                choice.validate_angle(f64::to_radians(bad)).is_err(),
+                "{bad}"
+            );
+            assert!(
+                prepare_revolve_angle(&d, revolve, f64::to_radians(bad)).is_err(),
+                "{bad}"
+            );
         }
-        let prepared = prepare_revolve_angle(&d, revolve, 220.).expect("prepared");
+        let prepared = prepare_revolve_angle(&d, revolve, f64::to_radians(220.)).expect("prepared");
         let before = d.object(revolve).expect("row").expect("Revolve");
         let mut expected = before.payload.clone();
         let ObjectPayload::Revolve(r) = &mut expected else {
             panic!("a Revolve")
         };
         r.extent = RevolveExtent::Partial {
-            degrees: RevolveAngle::new(220.).expect("angle"),
+            angle: crate::Expression::constant(f64::to_radians(220.)).expect("angle"),
         };
         assert_eq!(
             prepared.feature().payload,
@@ -336,9 +344,10 @@ mod tests {
         );
         assert_eq!(prepared.feature().id, before.id);
         assert_eq!(prepared.feature().name, before.name);
-        let error = prepare_revolve_angle(&d, sketch, 220.).expect_err("a Sketch");
+        let error = prepare_revolve_angle(&d, sketch, f64::to_radians(220.)).expect_err("a Sketch");
         assert!(error.to_string().contains("not a Revolve"), "{error}");
-        let error = prepare_revolve_angle(&d, ObjectId::new(), 220.).expect_err("unknown");
+        let error =
+            prepare_revolve_angle(&d, ObjectId::new(), f64::to_radians(220.)).expect_err("unknown");
         assert!(error.to_string().contains("does not exist"), "{error}");
         d.close().expect("close");
 
@@ -347,14 +356,15 @@ mod tests {
         let [choice] = revolve_angle_choices(&full, &objects)
             .try_into()
             .expect("one row");
-        assert_eq!(choice.degrees, None);
+        assert_eq!(choice.radians, None);
         let refusal = choice.refusal.clone().expect("a full turn");
         assert!(
             refusal.contains("full-turn Revolve has no angle"),
             "{refusal}"
         );
-        assert!(choice.validate_angle(90.).is_err());
-        let error = prepare_revolve_angle(&full, revolve, 90.).expect_err("full turn");
+        assert!(choice.validate_angle(std::f64::consts::FRAC_PI_2).is_err());
+        let error =
+            prepare_revolve_angle(&full, revolve, f64::to_radians(90.)).expect_err("full turn");
         assert!(
             error.to_string().contains("full-turn Revolve has no angle"),
             "{error}"
@@ -378,8 +388,8 @@ mod tests {
         assert_eq!(choice.refusal, None);
         assert!(matches!(
             choice.profile_use,
-            Some(SketchProfileUse::PartialRevolve { feature, axis_segment: None, degrees, .. })
-                if feature == revolve && degrees.degrees() == 90.
+            Some(SketchProfileUse::PartialRevolve { feature, axis_segment: None, radians, .. })
+                if feature == revolve && radians.radians() == std::f64::consts::FRAC_PI_2
         ));
         let saved = choice.vertices.clone().expect("editable");
         let moved = |points: [[f64; 2]; 4]| -> Vec<SketchVertex> {
@@ -431,7 +441,7 @@ mod tests {
             d.object(revolve).expect("row").expect("Revolve"),
             revolve_row
         );
-        assert_eq!(stored_degrees(&d, revolve), 90.);
+        assert_eq!(stored_radians(&d, revolve), f64::to_radians(90.));
         d.close().expect("close");
     }
 
@@ -445,7 +455,8 @@ mod tests {
         let (mut d, revolve, sketch) = sector(&path, quarter());
 
         // Forged: a field other than the angle.
-        let mut forged = prepare_revolve_angle(&d, revolve, 220.).expect("prepared");
+        let mut forged =
+            prepare_revolve_angle(&d, revolve, f64::to_radians(220.)).expect("prepared");
         let ObjectPayload::Revolve(r) = &mut forged.feature.payload else {
             panic!("a Revolve")
         };
@@ -453,19 +464,21 @@ mod tests {
         let error = d.write_revolve_angle(&forged).expect_err("forged payload");
         assert!(error.to_string().contains("does not describe"), "{error}");
         // Forged: another row's identity under the same payload.
-        let mut forged = prepare_revolve_angle(&d, revolve, 220.).expect("prepared");
+        let mut forged =
+            prepare_revolve_angle(&d, revolve, f64::to_radians(220.)).expect("prepared");
         forged.feature.name = Some("Renamed".into());
         let error = d.write_revolve_angle(&forged).expect_err("forged row");
         assert!(error.to_string().contains("does not describe"), "{error}");
         // Forged: a version the document never had.
-        let mut forged = prepare_revolve_angle(&d, revolve, 220.).expect("prepared");
+        let mut forged =
+            prepare_revolve_angle(&d, revolve, f64::to_radians(220.)).expect("prepared");
         forged.source_version = ContentHash::of_bytes(b"another document");
         let error = d.write_revolve_angle(&forged).expect_err("forged version");
         assert!(error.to_string().contains("changed after"), "{error}");
-        assert_eq!(stored_degrees(&d, revolve), 90.);
+        assert_eq!(stored_radians(&d, revolve), f64::to_radians(90.));
 
         // Stale: the source changed after preparation.
-        let prepared = prepare_revolve_angle(&d, revolve, 220.).expect("prepared");
+        let prepared = prepare_revolve_angle(&d, revolve, f64::to_radians(220.)).expect("prepared");
         let profile = d.object(sketch).expect("row").expect("Sketch");
         d.write(|w| {
             w.put_object(
@@ -479,12 +492,12 @@ mod tests {
         .expect("change");
         let error = d.write_revolve_angle(&prepared).expect_err("stale");
         assert!(error.to_string().contains("changed after"), "{error}");
-        assert_eq!(stored_degrees(&d, revolve), 90.);
+        assert_eq!(stored_radians(&d, revolve), f64::to_radians(90.));
 
         // The honest preparation writes exactly the angle.
-        let prepared = prepare_revolve_angle(&d, revolve, 220.).expect("prepared");
+        let prepared = prepare_revolve_angle(&d, revolve, f64::to_radians(220.)).expect("prepared");
         d.write_revolve_angle(&prepared).expect("written");
-        assert_eq!(stored_degrees(&d, revolve), 220.);
+        assert_eq!(stored_radians(&d, revolve), f64::to_radians(220.));
         d.close().expect("close");
     }
 }

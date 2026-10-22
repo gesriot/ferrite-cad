@@ -362,7 +362,7 @@ impl SketchSegmentRef {
 /// here is that crate's types: a document that imported them would make its
 /// stored meaning depend on which solver was chosen, and which solver was
 /// chosen is the one thing a stored meaning has to outlive.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SketchConstraintRule {
@@ -374,14 +374,14 @@ pub enum SketchConstraintRule {
     /// A point is pinned where it is told.
     Fixed {
         point: SketchPointRef,
-        x: f64,
-        y: f64,
+        x: Expression,
+        y: Expression,
     },
     /// The distance between two points.
     Distance {
         a: SketchPointRef,
         b: SketchPointRef,
-        distance: f64,
+        distance: Expression,
     },
     /// Two points share a y coordinate.
     Horizontal {
@@ -415,7 +415,10 @@ pub enum SketchConstraintRule {
     /// the ordinary way, as a [`SketchPointRef`] with
     /// [`SketchPointSelector::Center`], so `Fixed` pins it with no second
     /// vocabulary.
-    Radius { curve: StableEntityId, radius: f64 },
+    Radius {
+        curve: StableEntityId,
+        radius: Expression,
+    },
     /// The vector `b.from -> b.to` is the vector `a.from -> a.to` turned
     /// counter-clockwise by `angle` radians in the sketch's local XY (§31F).
     ///
@@ -426,7 +429,7 @@ pub enum SketchConstraintRule {
     DirectedAngle {
         a: SketchSegmentRef,
         b: SketchSegmentRef,
-        angle: f64,
+        angle: Expression,
     },
     /// The two segments lie on the same infinite line (§31G).
     ///
@@ -490,21 +493,21 @@ impl SketchConstraintRule {
     }
 
     fn validate(&self) -> Result<()> {
-        match *self {
+        match self {
             Self::Fixed { x, y, .. } => {
-                normalize_f64(x)?;
-                normalize_f64(y)?;
+                normalize_f64(x.value())?;
+                normalize_f64(y.value())?;
             }
             Self::Distance { distance, .. } => {
-                validate_positive(distance, "constraint distance")?;
+                validate_positive(distance.value(), "constraint distance")?;
             }
             Self::Radius { radius, .. } => {
-                validate_positive(radius, "constraint radius")?;
+                validate_positive(radius.value(), "constraint radius")?;
             }
             // Canonical or refused: a stored `3π/2` would be read as `-π/2` by
             // arithmetic nobody chose, so the range is the persistence rule.
             Self::DirectedAngle { angle, .. } => {
-                let angle = normalize_f64(angle)?;
+                let angle = normalize_f64(angle.value())?;
                 if angle <= -std::f64::consts::PI || angle > std::f64::consts::PI {
                     return Err(CadError::input(format!(
                         "a directed angle is canonical in (-pi, pi] radians, found {angle}"
@@ -543,7 +546,7 @@ impl SketchConstraintRule {
 /// whichever constraint conflicts, and that report has to survive being handed
 /// back to a document that has since had constraints added to it, removed from
 /// it or reordered. An ordinal would not; this does.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SketchConstraint {
     pub id: StableEntityId,
     pub rule: SketchConstraintRule,
@@ -681,79 +684,76 @@ pub enum RevolveAxis {
 ///
 /// §27A: exactly one full turn, 2π, which closes on itself and has no end
 /// faces. §27D: a partial angle, a sector with a start and an end face. The
-/// two are different topology and never stand in for each other: 360° is not
+/// two are different topology and never stand in for each other: 2π is not
 /// a partial angle, and no partial angle is widened to a full turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RevolveExtent {
     FullTurn,
-    Partial { degrees: RevolveAngle },
+    Partial { angle: Expression },
 }
 
-/// The angle of a partial [`Revolve`], in degrees: the one domain policy for
+/// The angle of a partial [`Revolve`], in radians: the one domain policy for
 /// it, applied by the UI draft, the CLI request, the create job, the payload
 /// decoder and the evaluator alike (§27D).
 ///
 /// A right-handed turn about the sketch's +Y axis, starting at the profile.
-/// Stored exactly as given: nothing is rounded, reduced modulo 360 or turned
-/// into another operation. Accepted from [`Self::MIN_DEGREES`] to
-/// [`Self::MAX_DEGREES`], both inclusive; 0, negative angles, angles within
-/// 0.01° of 0 or of a full turn, exactly 360, several turns, NaN and
-/// infinities are refused. The limits come from kernel and single-precision
+/// Kept exactly as given: nothing is rounded, reduced modulo a turn or turned
+/// into another operation. Accepted from [`Self::MIN_RADIANS`] to
+/// [`Self::MAX_RADIANS`], both inclusive; 0, negative angles, angles closer
+/// than the minimum to 0 or to a full turn, exactly 2π, several turns, NaN
+/// and infinities are refused. The limits come from kernel and single-precision
 /// mesh checks, recorded in `docs/partial-angle-revolve.md`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(try_from = "f64", into = "f64")]
+///
+/// The refusals name no unit: the UI and the CLI take degrees, and each shows
+/// the accepted range in its own unit beside the value it took.
+#[derive(Debug, Clone, Copy)]
 pub struct RevolveAngle(f64);
 
 impl RevolveAngle {
-    /// The thinnest sector this build keeps, in degrees.
-    pub const MIN_DEGREES: f64 = 0.01;
-    /// The widest partial sector, in degrees: 0.01° short of a full turn.
-    pub const MAX_DEGREES: f64 = 359.99;
+    /// The thinnest sector this build keeps (0.01°).
+    pub const MIN_RADIANS: f64 = 0.000_174_532_925_199_432_96;
+    /// The widest partial sector: the minimum short of a full turn.
+    pub const MAX_RADIANS: f64 = std::f64::consts::TAU - Self::MIN_RADIANS;
 
-    pub fn new(degrees: f64) -> Result<Self> {
-        if !degrees.is_finite() {
-            return Err(CadError::input(format!(
-                "the revolve angle {degrees} is not a finite number of degrees"
-            )));
+    pub fn new(radians: f64) -> Result<Self> {
+        if !radians.is_finite() {
+            return Err(CadError::input("the revolve angle is not a finite number"));
         }
-        if degrees <= 0.0 {
-            return Err(CadError::input(format!(
-                "the revolve angle {degrees}° is not positive: a partial revolve turns right-handed \
-                 about +Y through more than 0°, and a mirrored sweep is not supported"
-            )));
-        }
-        if degrees == 360.0 {
+        if radians <= 0.0 {
             return Err(CadError::input(
-                "the revolve angle 360° is a full turn, which has no end faces: state a full turn \
+                "the revolve angle is not positive: a partial revolve turns right-handed about +Y, \
+                 and a mirrored sweep is not supported",
+            ));
+        }
+        if radians == std::f64::consts::TAU {
+            return Err(CadError::input(
+                "the revolve angle is a full turn, which has no end faces: state a full turn \
                  instead of a partial angle",
             ));
         }
-        if degrees > 360.0 {
-            return Err(CadError::input(format!(
-                "the revolve angle {degrees}° is more than one turn: a solid turns at most once"
-            )));
+        if radians > std::f64::consts::TAU {
+            return Err(CadError::input(
+                "the revolve angle is more than one turn: a solid turns at most once",
+            ));
         }
-        if degrees < Self::MIN_DEGREES {
-            return Err(CadError::input(format!(
-                "the revolve angle {degrees}° is below the {}° minimum: the sector would be too \
-                 thin to keep every face",
-                Self::MIN_DEGREES
-            )));
+        if radians < Self::MIN_RADIANS {
+            return Err(CadError::input(
+                "the revolve angle is below the minimum: the sector would be too thin to keep \
+                 every face",
+            ));
         }
-        if degrees > Self::MAX_DEGREES {
-            return Err(CadError::input(format!(
-                "the revolve angle {degrees}° is within {}° of a full turn: a partial revolve \
-                 turns at most {}°, and a full turn is stated as one",
-                360.0 - Self::MAX_DEGREES,
-                Self::MAX_DEGREES
-            )));
+        if radians > Self::MAX_RADIANS {
+            return Err(CadError::input(
+                "the revolve angle is within the minimum sector of a full turn: a partial revolve \
+                 stops short of that, and a full turn is stated as one",
+            ));
         }
-        Ok(Self(degrees))
+        Ok(Self(radians))
     }
 
-    pub fn degrees(self) -> f64 {
+    pub fn radians(self) -> f64 {
         self.0
     }
 }
@@ -765,19 +765,6 @@ impl PartialEq for RevolveAngle {
     }
 }
 impl Eq for RevolveAngle {}
-
-impl TryFrom<f64> for RevolveAngle {
-    type Error = CadError;
-    fn try_from(degrees: f64) -> Result<Self> {
-        Self::new(degrees)
-    }
-}
-
-impl From<RevolveAngle> for f64 {
-    fn from(angle: RevolveAngle) -> Self {
-        angle.0
-    }
-}
 
 /// Turns a sketch profile about an axis in its own plane.
 ///
@@ -810,17 +797,13 @@ impl Revolve {
         hasher.field("axis").str(match self.axis {
             RevolveAxis::SketchY => "sketch_y",
         });
-        match self.extent {
+        match &self.extent {
             RevolveExtent::FullTurn => {
                 hasher.field("extent").str("full_turn");
             }
-            // The degrees' own bits, so two sectors differ exactly when their
-            // stored angles do; a full turn feeds nothing new.
-            RevolveExtent::Partial { degrees } => {
-                hasher
-                    .field("extent")
-                    .str("partial")
-                    .bytes(&degrees.degrees().to_bits().to_le_bytes());
+            RevolveExtent::Partial { angle } => {
+                hasher.field("extent").str("partial");
+                angle.feed(&mut hasher);
             }
         }
         hasher.field("operation").str(match self.operation {
@@ -861,7 +844,7 @@ pub type FilletEdge = SweptEdge;
 /// along both adjacent faces (§29A).
 ///
 /// Modifies a result, so it names the feature it consumes (ADR 0004). The
-/// distance is one literal constant in millimetres and is **not** the width of
+/// distance is an expression in millimetres and is **not** the width of
 /// the slanted face, which is `distance_mm * sqrt(2)`. In this slice the edge
 /// is swept by the very feature the Chamfer consumes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -870,7 +853,7 @@ pub struct Chamfer {
     /// The feature whose result this cuts.
     pub previous: ObjectId,
     pub edge: SweptEdge,
-    pub distance_mm: f64,
+    pub distance_mm: Expression,
 }
 
 impl Chamfer {
@@ -887,9 +870,8 @@ impl Chamfer {
             .bytes(&self.edge.feature.to_bytes())
             .bytes(&one.to_bytes())
             .bytes(&other.to_bytes());
-        hasher
-            .field("distance_mm")
-            .bytes(&self.distance_mm.to_bits().to_le_bytes());
+        hasher.field("distance_mm");
+        self.distance_mm.feed(&mut hasher);
         hasher.finish()
     }
 }
@@ -898,14 +880,14 @@ impl Chamfer {
 ///
 /// Modifies a result, so it names the feature it consumes, exactly as a Cut
 /// does (ADR 0004): the Body names its tip and ownership is derived. The
-/// radius is one literal constant in millimetres.
+/// radius is an expression in millimetres.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fillet {
     /// The feature whose result this rounds.
     pub previous: ObjectId,
     pub edge: FilletEdge,
-    pub radius_mm: f64,
+    pub radius_mm: Expression,
 }
 
 impl Fillet {
@@ -922,15 +904,15 @@ impl Fillet {
             .bytes(&self.edge.feature.to_bytes())
             .bytes(&one.to_bytes())
             .bytes(&other.to_bytes());
-        hasher
-            .field("radius_mm")
-            .bytes(&self.radius_mm.to_bits().to_le_bytes());
+        hasher.field("radius_mm");
+        self.radius_mm.feed(&mut hasher);
         hasher.finish()
     }
 }
 
 /// Sweeps a sketch profile along the plane normal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Extrude {
     /// The sketch supplying the profile.
     pub profile: ObjectId,
@@ -938,16 +920,6 @@ pub struct Extrude {
     /// Runs against the plane normal when true.
     pub reversed: bool,
     pub operation: SolidOperation,
-    /// The body being modified; `None` for [`SolidOperation::NewBody`].
-    ///
-    /// Not what a feature of this build names. An edge from a feature to a body
-    /// closes the loop that body → tip → feature → body makes, and a graph with
-    /// that loop cannot be ordered at all. What a feature names instead is
-    /// [`previous`][Self::previous]; which body owns it is the body's own
-    /// statement. Kept because it is part of a stored layout and a document
-    /// that sets it must still be read back as it was written, not because
-    /// anything here writes it.
-    pub target_body: Option<ObjectId>,
     /// The feature whose result this one modifies.
     ///
     /// `None` exactly when [`operation`][Self::operation] is
@@ -962,7 +934,7 @@ pub struct Extrude {
 impl Extrude {
     /// The cache key for this feature's geometric result.
     ///
-    /// The caller adds the resolved inputs of `profile` and `target_body`; this
+    /// The caller adds the resolved inputs of `profile` and `previous`; this
     /// covers only what the feature itself contributes.
     pub fn cache_key(&self, tolerance: ferritecad_types::Tolerance) -> ContentHash {
         let mut hasher = CanonicalHasher::new("feature.extrude");
@@ -992,12 +964,6 @@ impl Extrude {
                 hasher.str("through_all");
             }
         }
-
-        hasher.field("target_body");
-        match &self.target_body {
-            Some(body) => hasher.bytes(&body.to_bytes()),
-            None => hasher.str("none"),
-        };
 
         // Which earlier result this one consumes is part of what it is. Two
         // cuts of one tool against two different solids are two features, and
@@ -1709,51 +1675,42 @@ impl ObjectPayload {
                     }
                     EndCondition::ThroughAll => {}
                 }
-                // A feature that changes an existing solid must say which
-                // result it changes, and say it once. `previous` names the
-                // feature whose result it consumes, which is what this build
-                // writes and the only form the evaluation graph can order;
-                // `target_body` names a body, which is the older spelling and
-                // is refused further up because a feature-to-body edge closes
-                // the loop a body's tip edge opens. Naming both would be two
-                // answers to one question.
-                match (
-                    extrude.operation,
-                    extrude.target_body.is_some(),
-                    extrude.previous.is_some(),
-                ) {
-                    (SolidOperation::NewBody, false, false) => Ok(()),
-                    (SolidOperation::NewBody, _, _) => Err(CadError::input(
-                        "a new-body extrude consumes no earlier result and targets no body",
+                match (extrude.operation, extrude.previous.is_some()) {
+                    (SolidOperation::NewBody, false) => Ok(()),
+                    (SolidOperation::NewBody, true) => Err(CadError::input(
+                        "a new-body extrude consumes no earlier result",
                     )),
-                    (_, true, true) => Err(CadError::input(
-                        "an additive, cut, or intersect extrude names the result it modifies \
-                         once, not both as a feature and as a body",
-                    )),
-                    (_, false, false) => Err(CadError::input(
+                    (_, false) => Err(CadError::input(
                         "an additive, cut, or intersect extrude must name the result it modifies",
                     )),
-                    (_, _, _) => Ok(()),
+                    (_, true) => Ok(()),
                 }
             }
+
             // The layout records any axis, extent and operation a later build
             // may write; this build stores and rebuilds only the §27A class,
             // and refuses to write anything else under its name.
-            Self::Revolve(revolve) => match (revolve.axis, revolve.extent, revolve.operation) {
-                (
-                    RevolveAxis::SketchY,
-                    RevolveExtent::FullTurn | RevolveExtent::Partial { .. },
-                    SolidOperation::NewBody,
-                ) => Ok(()),
-                _ => Err(CadError::unsupported(
-                    "this build writes only a NewBody Revolve about the sketch Y axis",
-                )),
-            },
+            Self::Revolve(revolve) => {
+                if let RevolveExtent::Partial { angle } = &revolve.extent {
+                    angle.validate()?;
+                    RevolveAngle::new(angle.value())?;
+                }
+                match (revolve.axis, &revolve.extent, revolve.operation) {
+                    (
+                        RevolveAxis::SketchY,
+                        RevolveExtent::FullTurn | RevolveExtent::Partial { .. },
+                        SolidOperation::NewBody,
+                    ) => Ok(()),
+                    _ => Err(CadError::unsupported(
+                        "this build writes only a NewBody Revolve about the sketch Y axis",
+                    )),
+                }
+            }
             // One finite positive radius. Whether it fits the edge is a
             // question about geometry, asked by the policy that knows the
             // part (`fillet::FilletCorner::check_radius`) and again by the evaluator.
             Self::Fillet(fillet) => {
-                let radius = normalize_f64(fillet.radius_mm)?;
+                let radius = normalize_f64(fillet.radius_mm.value())?;
                 if radius <= 0.0 {
                     return Err(CadError::input(format!(
                         "a fillet radius must be positive, found {radius} mm"
@@ -1766,7 +1723,7 @@ impl ObjectPayload {
             // asked again by the evaluator. The edge is the previous
             // feature's own.
             Self::Chamfer(chamfer) => {
-                let distance = normalize_f64(chamfer.distance_mm)?;
+                let distance = normalize_f64(chamfer.distance_mm.value())?;
                 if distance <= 0.0 {
                     return Err(CadError::input(format!(
                         "a chamfer distance must be positive, found {distance} mm"
@@ -1827,11 +1784,18 @@ mod tests {
             f64::INFINITY,
             f64::NEG_INFINITY,
         ] {
-            assert!(RevolveAngle::new(bad).is_err(), "{bad}");
+            assert!(RevolveAngle::new(f64::to_radians(bad)).is_err(), "{bad}");
         }
         for good in [0.01, 1.0, 90.0, 137.5, 100.0 / 3.0, 359.99] {
-            assert_eq!(RevolveAngle::new(good).expect("sector").degrees(), good);
+            assert_eq!(
+                RevolveAngle::new(f64::to_radians(good))
+                    .expect("sector")
+                    .radians(),
+                f64::to_radians(good)
+            );
         }
+        assert!(RevolveAngle::new(RevolveAngle::MIN_RADIANS.next_down()).is_err());
+        assert!(RevolveAngle::new(RevolveAngle::MAX_RADIANS.next_up()).is_err());
         let mut revolve = Revolve {
             profile: ObjectId::new(),
             axis: RevolveAxis::SketchY,
@@ -1842,7 +1806,7 @@ mod tests {
         let tolerance = Tolerance::default();
         let full = revolve.cache_key(tolerance);
         revolve.extent = RevolveExtent::Partial {
-            degrees: RevolveAngle::new(90.0).expect("sector"),
+            angle: crate::Expression::constant(f64::to_radians(90.0)).expect("sector"),
         };
         let quarter = revolve.cache_key(tolerance);
         assert_ne!(full, quarter);
@@ -1853,11 +1817,123 @@ mod tests {
             payload
         );
         revolve.extent = RevolveExtent::Partial {
-            degrees: RevolveAngle::new(90.000_000_001).expect("sector"),
+            angle: crate::Expression::constant(f64::to_radians(90.000_000_001)).expect("sector"),
         };
         assert_ne!(quarter, revolve.cache_key(tolerance));
         revolve.axis_segment = Some(StableEntityId::new());
         assert_ne!(quarter, revolve.cache_key(tolerance));
+    }
+
+    #[test]
+    fn dimensional_constraints_round_trip_expressions_in_internal_units() {
+        let point = SketchPointRef::new(StableEntityId::new(), SketchPointSelector::Start);
+        let other = SketchPointRef::new(point.curve, SketchPointSelector::End);
+        let segment = SketchSegmentRef::new(point, other);
+        let constant = |value| Expression::constant(value).expect("finite dimension");
+        for rule in [
+            SketchConstraintRule::Fixed {
+                point,
+                x: constant(-12.5),
+                y: constant(3.25),
+            },
+            SketchConstraintRule::Distance {
+                a: point,
+                b: other,
+                distance: constant(20.0),
+            },
+            SketchConstraintRule::Radius {
+                curve: point.curve,
+                radius: constant(4.5),
+            },
+            SketchConstraintRule::DirectedAngle {
+                a: segment,
+                b: segment,
+                angle: constant(std::f64::consts::FRAC_PI_2),
+            },
+        ] {
+            rule.validate().expect("valid rule");
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&rule, &mut bytes).expect("write rule");
+            let read: SketchConstraintRule =
+                ciborium::from_reader(bytes.as_slice()).expect("read rule");
+            assert_eq!(read, rule);
+            let values = match &read {
+                SketchConstraintRule::Fixed { x, y, .. } => vec![x, y],
+                SketchConstraintRule::Distance { distance, .. } => vec![distance],
+                SketchConstraintRule::Radius { radius, .. } => vec![radius],
+                SketchConstraintRule::DirectedAngle { angle, .. } => vec![angle],
+                _ => unreachable!("dimensional rules only"),
+            };
+            for expression in values {
+                assert_eq!(expression.source, expression.value().to_string());
+            }
+        }
+    }
+
+    #[test]
+    fn persistence_rejects_nonfinite_expression_values_in_every_dimension() {
+        let point = SketchPointRef::new(StableEntityId::new(), SketchPointSelector::Start);
+        let other = SketchPointRef::new(point.curve, SketchPointSelector::End);
+        let segment = SketchSegmentRef::new(point, other);
+        let edge = SweptEdge {
+            feature: ObjectId::new(),
+            joint: ProfileJoint::new(point.curve, StableEntityId::new()).expect("distinct lines"),
+        };
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let invalid = Expression {
+                source: "1".into(),
+                value,
+            };
+            for rule in [
+                SketchConstraintRule::Fixed {
+                    point,
+                    x: invalid.clone(),
+                    y: Expression::constant(0.0).expect("zero"),
+                },
+                SketchConstraintRule::Fixed {
+                    point,
+                    x: Expression::constant(0.0).expect("zero"),
+                    y: invalid.clone(),
+                },
+                SketchConstraintRule::Distance {
+                    a: point,
+                    b: other,
+                    distance: invalid.clone(),
+                },
+                SketchConstraintRule::Radius {
+                    curve: point.curve,
+                    radius: invalid.clone(),
+                },
+                SketchConstraintRule::DirectedAngle {
+                    a: segment,
+                    b: segment,
+                    angle: invalid.clone(),
+                },
+            ] {
+                assert!(rule.validate().is_err());
+            }
+            for payload in [
+                ObjectPayload::Fillet(Fillet {
+                    previous: edge.feature,
+                    edge,
+                    radius_mm: invalid.clone(),
+                }),
+                ObjectPayload::Chamfer(Chamfer {
+                    previous: edge.feature,
+                    edge,
+                    distance_mm: invalid.clone(),
+                }),
+                ObjectPayload::Revolve(Revolve {
+                    profile: ObjectId::new(),
+                    axis: RevolveAxis::SketchY,
+                    extent: RevolveExtent::Partial { angle: invalid },
+                    operation: SolidOperation::NewBody,
+                    axis_segment: None,
+                }),
+            ] {
+                assert!(payload.to_storage_bytes().is_err());
+            }
+        }
     }
 
     fn sample_extrude() -> Extrude {
@@ -1868,7 +1944,6 @@ mod tests {
             },
             reversed: false,
             operation: SolidOperation::NewBody,
-            target_body: None,
             previous: None,
         }
     }

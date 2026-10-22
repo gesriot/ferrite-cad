@@ -373,7 +373,7 @@ impl PreparedEdgeChamfer {
     }
     pub fn distance_mm(&self) -> f64 {
         match &self.feature.payload {
-            ObjectPayload::Chamfer(c) => c.distance_mm,
+            ObjectPayload::Chamfer(c) => c.distance_mm.value(),
             _ => f64::NAN,
         }
     }
@@ -439,7 +439,7 @@ pub fn prepare_edge_chamfer(
                 feature: target.base_feature,
                 joint: corner.joint,
             },
-            distance_mm: chamfer.distance_mm,
+            distance_mm: crate::Expression::constant(chamfer.distance_mm)?,
         }),
     };
     let mut moved = record.clone();
@@ -489,7 +489,7 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedEdgeChamfer) -> R
     };
     let stated = EdgeChamfer {
         edge: chamfer.edge,
-        distance_mm: chamfer.distance_mm,
+        distance_mm: chamfer.distance_mm.value(),
     };
     let mut checked = prepare_edge_chamfer(document, prepared.body.id, &stated)?;
     let fresh = checked.feature.id;
@@ -719,7 +719,7 @@ pub(crate) fn saved_chamfer_for_edit(
         profile: history.target.profile,
         height_mm: history.target.height_mm,
         edge: chamfer.edge,
-        distance_mm: chamfer.distance_mm,
+        distance_mm: chamfer.distance_mm.value(),
         corner,
         constrained,
     })
@@ -779,7 +779,7 @@ impl PreparedChamferDistance {
     }
     pub fn distance_mm(&self) -> f64 {
         match &self.feature.payload {
-            ObjectPayload::Chamfer(c) => c.distance_mm,
+            ObjectPayload::Chamfer(c) => c.distance_mm.value(),
             _ => f64::NAN,
         }
     }
@@ -807,7 +807,7 @@ pub fn prepare_chamfer_distance(
     let ObjectPayload::Chamfer(chamfer) = &mut record.payload else {
         unreachable!("checked Chamfer")
     };
-    chamfer.distance_mm = distance_mm;
+    chamfer.distance_mm = crate::Expression::constant(distance_mm)?;
     Ok(PreparedChamferDistance {
         feature: record,
         saved,
@@ -831,7 +831,8 @@ pub(crate) fn rederive_distance(
             "prepared Chamfer distance edit must carry a Chamfer",
         ));
     };
-    let checked = prepare_chamfer_distance(document, prepared.feature.id, chamfer.distance_mm)?;
+    let checked =
+        prepare_chamfer_distance(document, prepared.feature.id, chamfer.distance_mm.value())?;
     if checked != *prepared {
         return Err(CadError::input(
             "prepared Chamfer distance edit does not describe the current document",
@@ -969,12 +970,14 @@ pub fn evaluable_chamfer(
         ))
     })?;
     let corner = ChamferCorner::of(&found);
-    corner.check_distance(chamfer.distance_mm).map_err(|e| {
-        CadError::input(format!(
-            "Chamfer {chamfer_id} of {} mm does not fit the solved plate: {e}",
-            chamfer.distance_mm
-        ))
-    })?;
+    corner
+        .check_distance(chamfer.distance_mm.value())
+        .map_err(|e| {
+            CadError::input(format!(
+                "Chamfer {chamfer_id} of {} mm does not fit the solved plate: {e}",
+                chamfer.distance_mm.value()
+            ))
+        })?;
     Ok(corner)
 }
 
@@ -1045,7 +1048,6 @@ mod tests {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )?;
@@ -1112,7 +1114,7 @@ mod tests {
                 feature: base,
                 joint: ProfileJoint::new(a, b).expect("joint"),
             },
-            distance_mm: 2.5,
+            distance_mm: crate::Expression::constant(2.5).expect("finite constant"),
         };
         let payload = ObjectPayload::Chamfer(chamfer.clone());
         assert_eq!(payload.type_name(), "feature.chamfer");
@@ -1123,8 +1125,12 @@ mod tests {
             payload
         );
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            if !bad.is_finite() {
+                assert!(crate::Expression::constant(bad).is_err());
+                continue;
+            }
             let mut c = chamfer.clone();
-            c.distance_mm = bad;
+            c.distance_mm = crate::Expression::constant(bad).expect("finite constant");
             assert!(
                 ObjectPayload::Chamfer(c).to_storage_bytes().is_err(),
                 "{bad}"
@@ -1266,7 +1272,7 @@ mod tests {
         // Forged: a distance the policy refuses, and another feature's row.
         let mut forged = prepare_chamfer_distance(&d, id, 3.0).expect("prepared");
         if let ObjectPayload::Chamfer(c) = &mut forged.feature.payload {
-            c.distance_mm = 1.0e6;
+            c.distance_mm = crate::Expression::constant(1.0e6).expect("finite constant");
         }
         let before = d.content_version().expect("version");
         assert!(d.write_chamfer_distance(&forged).is_err());
@@ -1311,7 +1317,7 @@ mod tests {
         // A distance past the corner's bound.
         let mut forged = prepared.clone();
         if let ObjectPayload::Chamfer(c) = &mut forged.feature.payload {
-            c.distance_mm = 1.0e6;
+            c.distance_mm = crate::Expression::constant(1.0e6).expect("finite constant");
         }
         assert!(d.write_edge_chamfer(&forged).is_err());
         // Another corner than the one the names were minted for.
@@ -1575,10 +1581,10 @@ mod tests {
                     crate::SketchPointSelector::Start,
                 ),
                 b: crate::SketchPointRef::new(sketch.curves[1].id, crate::SketchPointSelector::End),
-                distance: 37.5,
+                distance: crate::Expression::constant(37.5).expect("finite constant"),
             },
         };
-        sketch.constraints.push(pin);
+        sketch.constraints.push(pin.clone());
         d.write(|w| {
             w.put_object(
                 record.id,
@@ -1619,7 +1625,7 @@ mod tests {
                         feature: base,
                         joint: target_of_saved(&d, id).edge.joint,
                     },
-                    radius_mm: 1.0,
+                    radius_mm: crate::Expression::constant(1.0).expect("finite constant"),
                 })
             } else {
                 ObjectPayload::Extrude(Extrude {
@@ -1629,7 +1635,6 @@ mod tests {
                     },
                     reversed: false,
                     operation: SolidOperation::Cut,
-                    target_body: None,
                     previous: Some(id),
                 })
             };
@@ -1686,7 +1691,6 @@ mod tests {
                     },
                     reversed: false,
                     operation: SolidOperation::NewBody,
-                    target_body: None,
                     previous: None,
                 }),
             )
@@ -1719,10 +1723,10 @@ mod tests {
             rule: SketchConstraintRule::Distance {
                 a: crate::SketchPointRef::new(first, crate::SketchPointSelector::Start),
                 b: crate::SketchPointRef::new(second, crate::SketchPointSelector::End),
-                distance: 37.5,
+                distance: crate::Expression::constant(37.5).expect("finite constant"),
             },
         };
-        sketch.constraints.push(pin);
+        sketch.constraints.push(pin.clone());
         d.write(|w| {
             w.put_object(
                 record.id,
@@ -1811,7 +1815,8 @@ mod tests {
             }
         }
         let mut too_much = chamfer.clone();
-        too_much.distance_mm = corner.max_distance_mm;
+        too_much.distance_mm =
+            crate::Expression::constant(corner.max_distance_mm).expect("finite constant");
         evaluable_chamfer(&objects, &too_much, Some(&built)).expect("at the bound");
         assert!(evaluable_chamfer(&objects, &too_much, Some(&thin)).is_err());
         assert!(evaluable_chamfer(&objects, &chamfer, None).is_err());
@@ -2200,9 +2205,9 @@ mod tests {
         let at = corner.max_distance_mm;
         assert_eq!(at, 12.0 - MIN_FLAT_MM);
         let mut edge = chamfer.clone();
-        edge.distance_mm = at;
+        edge.distance_mm = crate::Expression::constant(at).expect("finite constant");
         evaluable_chamfer(&objects, &edge, Some(&drawn([0.0, 0.0, 30.0, 12.0]))).expect("at");
-        edge.distance_mm = at.next_up();
+        edge.distance_mm = crate::Expression::constant(at.next_up()).expect("finite constant");
         let why = evaluable_chamfer(&objects, &edge, Some(&drawn([0.0, 0.0, 30.0, 12.0])))
             .expect_err("the next float")
             .to_string();

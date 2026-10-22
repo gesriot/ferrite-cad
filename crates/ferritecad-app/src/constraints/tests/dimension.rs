@@ -113,9 +113,19 @@ pub(super) fn rule_of(stored: &Sketch, mm: f64) -> StableEntityId {
     stored
         .constraints
         .iter()
-        .find_map(|c| match c.rule {
-            SketchConstraintRule::Distance { distance, .. } if distance == mm => Some(c.id),
-            SketchConstraintRule::Radius { radius, .. } if radius == mm => Some(c.id),
+        .find_map(|c| match c.rule.clone() {
+            SketchConstraintRule::Distance { distance, .. }
+                if distance
+                    == ferritecad_document::Expression::constant(mm).expect("finite constant") =>
+            {
+                Some(c.id)
+            }
+            SketchConstraintRule::Radius { radius, .. }
+                if radius
+                    == ferritecad_document::Expression::constant(mm).expect("finite constant") =>
+            {
+                Some(c.id)
+            }
             _ => None,
         })
         .unwrap_or_else(|| panic!("no stored rule of {mm} mm"))

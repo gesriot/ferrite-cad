@@ -2982,15 +2982,22 @@ fn solved_sketches<'a>(
 /// one thing worse than "no words for it" is a line of punctuation offered as
 /// though it were a sentence. Adding a family means adding an arm above.
 fn describe_constraint(rule: &SketchConstraintRule) -> String {
-    match *rule {
+    match rule.clone() {
         SketchConstraintRule::Coincident { a, b } => {
             format!("Coincident: {a} and {b} are the same point")
         }
         SketchConstraintRule::Fixed { point, x, y } => {
-            format!("Fixed: {point} is pinned at x {} mm, y {} mm", mm(x), mm(y))
+            format!(
+                "Fixed: {point} is pinned at x {} mm, y {} mm",
+                mm(x.value()),
+                mm(y.value())
+            )
         }
         SketchConstraintRule::Distance { a, b, distance } => {
-            format!("Distance: {a} and {b} are {} mm apart", mm(distance))
+            format!(
+                "Distance: {a} and {b} are {} mm apart",
+                mm(distance.value())
+            )
         }
         SketchConstraintRule::Horizontal { a, b } => {
             format!("Horizontal: {a} and {b} share a y coordinate")
@@ -3027,7 +3034,7 @@ fn describe_constraint(rule: &SketchConstraintRule) -> String {
                 "Directed angle: from {} to {} is {}° counter-clockwise",
                 segment(a),
                 segment(b),
-                ferritecad_document::DirectedAngle::from_radians(angle)
+                ferritecad_document::DirectedAngle::from_radians(angle.value())
                     .map_or(f64::NAN, ferritecad_document::DirectedAngle::degrees)
             )
         }
@@ -5811,7 +5818,7 @@ impl App {
             sessions::spawn_apply_angle(
                 ticket,
                 request.feature,
-                request.degrees,
+                request.radians,
                 request.expected,
                 cancel.clone(),
                 move |result| {
@@ -13029,7 +13036,6 @@ mod tests {
                             },
                             reversed: false,
                             operation: SolidOperation::NewBody,
-                            target_body: None,
                             previous: None,
                         }),
                     )?;
@@ -18261,8 +18267,8 @@ mod tests {
             },
             Rule::Fixed {
                 point: at(edges[0], Start),
-                x: 0.0,
-                y: 0.0,
+                x: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
+                y: ferritecad_document::Expression::constant(0.0).expect("finite constant"),
             },
             Rule::Horizontal {
                 a: at(edges[0], Start),
@@ -18296,7 +18302,8 @@ mod tests {
                 edges[0],
                 ferritecad_document::SketchPointSelector::End,
             ),
-            distance: SOLVE_WIDTH,
+            distance: ferritecad_document::Expression::constant(SOLVE_WIDTH)
+                .expect("finite constant"),
         }
     }
 
@@ -18378,7 +18385,6 @@ mod tests {
                             },
                             reversed: false,
                             operation: SolidOperation::NewBody,
-                            target_body: None,
                             previous: None,
                         }),
                     )?;
@@ -18594,8 +18600,8 @@ mod tests {
             (
                 Rule::Fixed {
                     point: point(first, At),
-                    x: -4.5,
-                    y: 12.0,
+                    x: ferritecad_document::Expression::constant(-4.5).expect("finite constant"),
+                    y: ferritecad_document::Expression::constant(12.0).expect("finite constant"),
                 },
                 format!("Fixed: {first}.at is pinned at x -4.5 mm, y 12 mm"),
             ),
@@ -18603,7 +18609,8 @@ mod tests {
                 Rule::Distance {
                     a: point(first, Start),
                     b: point(first, End),
-                    distance: 12.7,
+                    distance: ferritecad_document::Expression::constant(12.7)
+                        .expect("finite constant"),
                 },
                 format!("Distance: {first}.start and {first}.end are 12.7 mm apart"),
             ),
@@ -18716,9 +18723,12 @@ mod tests {
         let rule = |a: SketchSegmentRef, b: SketchSegmentRef, degrees: f64| Rule::DirectedAngle {
             a,
             b,
-            angle: DirectedAngle::from_degrees(degrees)
-                .expect("an angle")
-                .radians(),
+            angle: ferritecad_document::Expression::constant(
+                DirectedAngle::from_degrees(degrees)
+                    .expect("an angle")
+                    .radians(),
+            )
+            .expect("finite angle"),
         };
         let forward = |c| SketchSegmentRef::new(point(c, Start), point(c, End));
         let backward = |c| SketchSegmentRef::new(point(c, End), point(c, Start));
@@ -18844,7 +18854,8 @@ mod tests {
             let said = describe_constraint(&Rule::Distance {
                 a: point(first, Start),
                 b: point(first, End),
-                distance,
+                distance: ferritecad_document::Expression::constant(distance)
+                    .expect("finite constant"),
             });
             assert!(
                 said.contains(expected),
@@ -18854,8 +18865,8 @@ mod tests {
         // The other family that carries numbers, and both of its numbers.
         let pinned = describe_constraint(&Rule::Fixed {
             point: point(first, At),
-            x: 3.25,
-            y: -7.0,
+            x: ferritecad_document::Expression::constant(3.25).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(-7.0).expect("finite constant"),
         });
         assert!(
             pinned.contains("x 3.25 mm") && pinned.contains("y -7 mm"),

@@ -936,7 +936,8 @@ fn constraint_discovery_separates_document_and_feature_refusals() {
                 rule: ferritecad_document::SketchConstraintRule::Distance {
                     a: end_of(0),
                     b: end_of(2),
-                    distance: 30.,
+                    distance: ferritecad_document::Expression::constant(30.)
+                        .expect("finite constant"),
                 },
             });
             d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))

@@ -236,7 +236,6 @@ fn write_polygon_document(path: &Path, corners: &[[f64; 2]], height: f64) {
                 },
                 reversed: false,
                 operation: SolidOperation::NewBody,
-                target_body: None,
                 previous: None,
             }),
         )?;
@@ -321,10 +320,6 @@ fn stored(path: &Path) -> Stored {
                     feature.previous,
                     format!("{:?}", feature.operation),
                 ));
-                assert!(
-                    feature.target_body.is_none(),
-                    "this build names the feature it modifies, never a body"
-                );
             }
             ObjectPayload::Sketch(sketch) => {
                 sketches.insert(

@@ -169,7 +169,7 @@ impl SketchSolveFacts {
 /// The rule is carried whole rather than turned into a sentence: a scene has
 /// no business choosing anybody's words, and the document's own vocabulary is
 /// the smallest durable thing that can be explained later.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RedundantConstraint {
     /// The identifier the document stores this constraint under.
     id: StableEntityId,
@@ -220,7 +220,7 @@ fn redundant_constraints(
                 .find(|constraint| constraint.id == *id)
                 .map(|constraint| RedundantConstraint {
                     id: *id,
-                    rule: constraint.rule,
+                    rule: constraint.rule.clone(),
                 })
                 .ok_or_else(|| {
                     CadError::constraint(format!(
@@ -2814,7 +2814,6 @@ mod tests {
                             },
                             reversed: false,
                             operation: SolidOperation::NewBody,
-                            target_body: None,
                             previous: None,
                         }),
                     )?;
@@ -5143,7 +5142,6 @@ mod tests {
                         },
                         reversed: false,
                         operation: SolidOperation::NewBody,
-                        target_body: None,
                         previous: None,
                     }),
                 )?;
@@ -5884,7 +5882,7 @@ mod tests {
     fn each_reported_identifier_is_answered_with_the_rule_stored_under_it() {
         let mut sketch = constrained(Vec::new());
         let rule = level(&sketch);
-        let first = stored(rule);
+        let first = stored(rule.clone());
         let second = stored(rule);
         // A third that says something else, and that no report names: it is
         // here so that answering with a neighbour, or with everything the
@@ -5894,10 +5892,10 @@ mod tests {
                 sketch.curves[1].id,
                 ferritecad_document::SketchPointSelector::Start,
             ),
-            x: 1.0,
-            y: 2.0,
+            x: ferritecad_document::Expression::constant(1.0).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(2.0).expect("finite constant"),
         });
-        sketch.constraints = vec![first, third, second];
+        sketch.constraints = vec![first.clone(), third, second.clone()];
 
         // Two constraints that say exactly the same thing, stored under two
         // identifiers, reported in the order the document stores them. They
@@ -5930,10 +5928,10 @@ mod tests {
                 sketch.curves[1].id,
                 ferritecad_document::SketchPointSelector::End,
             ),
-            x: 3.0,
-            y: 4.0,
+            x: ferritecad_document::Expression::constant(3.0).expect("finite constant"),
+            y: ferritecad_document::Expression::constant(4.0).expect("finite constant"),
         });
-        sketch.constraints = vec![level, pinned];
+        sketch.constraints = vec![level, pinned.clone()];
 
         // The second constraint reported first. Answering by position would
         // hand back the first, which says something else entirely and would
