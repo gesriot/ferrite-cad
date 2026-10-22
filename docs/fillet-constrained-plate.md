@@ -238,13 +238,11 @@ def tables(path):
     db.close()
     return out
 
-FILLET_CAPABILITIES = {"feature.fillet.v1", "topology.origin-face.v1", "feature.predecessor.v1"}
 
 def fillet_allowlist(source, copy, body):
     """§28A's allowlist: every source cell survives except the Body row's
     payload/payload_hash and its old tip edge; the copy adds one object, two
-    edges, seven names, Fillet capabilities if missing, and stamps
-    modified_at. The Sketch row, constraints and all, is the same bytes."""
+    edges and seven names, and stamps modified_at. The Sketch row, constraints and all, is the same bytes."""
     bid = bytes.fromhex(body.replace("-", ""))
     a, b = tables(source), tables(copy)
     assert a.keys() == b.keys()
@@ -265,10 +263,6 @@ def fillet_allowlist(source, copy, body):
             lost = [r for r in arows if r not in brows]
             assert all(t == "deps" and bid in r for r in lost), (t, lost)
             assert len(brows) - len(kept) == (2 if t == "deps" else 7), t
-        elif t == "capabilities":
-            assert set(arows) <= set(brows), "a capability changed"
-            new = {r[0] for r in set(brows) - set(arows)}
-            assert new <= FILLET_CAPABILITIES, new
         elif t == "meta":
             for x, y in zip(arows, brows):
                 for c, u, v in zip(ac, x, y):

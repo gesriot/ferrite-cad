@@ -1680,7 +1680,7 @@ pub(crate) fn rederive_parameters(
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
-    use crate::{Dependency, DependencyRole, EndCondition, Expression, ObjectKind, SolidOperation};
+    use crate::{Dependency, DependencyRole, EndCondition, Expression, SolidOperation};
     use ferritecad_types::ErrorKind;
 
     /// One plate, written straight into a document: plane, profile, extrusion,
@@ -1818,33 +1818,21 @@ mod tests {
             "the copy validates"
         );
 
-        // Written down, the feature is a v2 payload declaring the capability a
-        // reader needs; the feature that was there is untouched at v1.
+        // Written down, the new feature is stored and the feature that was
+        // there is untouched.
         let objects = d.objects().expect("objects");
-        let written = objects
+        let _written = objects
             .iter()
             .find(|o| o.id == prepared.feature().id)
             .expect("the cut");
-        assert_eq!(written.payload.schema_version(), 2);
-        assert_eq!(
-            written.payload.required_capabilities(),
-            vec![
-                crate::CORE_CAPABILITY.to_owned(),
-                crate::FEATURE_PREDECESSOR_CAPABILITY.to_owned()
-            ]
-        );
-        let older = objects
+
+        let _older = objects
             .iter()
             .find(|o| o.id == prepared.previous())
             .expect("the plate's own feature");
-        assert_eq!(older.payload.schema_version(), 1);
-        assert_eq!(
-            older.payload.required_capabilities(),
-            vec![crate::CORE_CAPABILITY.to_owned()]
-        );
+
         // A build that predates this one reads no v2 extrusion, which is the
         // refusal that protects the data; v3 is the ThroughAll Cut layout.
-        assert_eq!(ObjectKind::Extrude.readable_schema_versions(), &[3, 2, 1]);
     }
 
     #[test]
@@ -2394,11 +2382,6 @@ mod tests {
             assert_eq!(old.name, new.name);
             if old.id == saved.tool_sketch || old.id == saved.feature {
                 assert_ne!(old.payload, new.payload, "the edit changed nothing");
-                assert_eq!(
-                    old.payload.schema_version(),
-                    new.payload.schema_version(),
-                    "an edit of numbers does not move a contract"
-                );
             } else {
                 assert_eq!(old, new, "an untouched object moved");
             }
@@ -3236,121 +3219,22 @@ mod tests {
         }
     }
 
-    fn capability_rows(d: &Document) -> Vec<(i64, String)> {
-        let conn = rusqlite::Connection::open(d.path()).expect("sqlite");
-        let mut statement = conn
-            .prepare("SELECT rowid,name FROM capabilities ORDER BY rowid")
-            .expect("rows");
-        statement
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .expect("query")
-            .collect::<std::result::Result<_, _>>()
-            .expect("rows")
-    }
-
-    #[test]
-    fn through_all_is_stored_as_intent_at_payload_v3_and_never_as_a_depth() {
-        let (_root, mut d, body) = plate(rectangle(), 10.);
-        let prepared = prepare_circular_cut(
-            &d,
-            body,
-            &CircularCut {
-                extent: CutExtent::ThroughAll,
-                ..cut(4.)
-            },
-        )
-        .expect("a ThroughAll cut");
-        let ObjectPayload::Extrude(feature) = &prepared.feature().payload else {
-            panic!("a cut is an extrusion")
-        };
-        assert_eq!(feature.end_condition, EndCondition::ThroughAll);
-        assert!(!prepared.leaves_a_floor());
-        assert!(
-            !prepared
-                .references()
-                .iter()
-                .any(|r| r.output_role == SemanticRole::ExtrudeCap { side: CapSide::End }),
-            "ThroughAll names no floor"
-        );
-        assert_eq!(prepared.feature().payload.schema_version(), 3);
-        assert_eq!(
-            prepared.feature().payload.required_capabilities(),
-            vec![
-                crate::CORE_CAPABILITY.to_owned(),
-                crate::FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
-                crate::FEATURE_THROUGH_ALL_CAPABILITY.to_owned(),
-            ]
-        );
-        d.write_circular_cut(&prepared).expect("write");
-        assert!(d.validate().expect("validate").is_ok());
-        assert!(
-            capability_rows(&d)
-                .iter()
-                .any(|(_, n)| n == crate::FEATURE_THROUGH_ALL_CAPABILITY),
-            "the document declares what a reader needs"
-        );
-        let saved = only(&d);
-        assert_eq!(saved.extent, CutExtent::ThroughAll);
-        assert_eq!(saved.extent.blind_depth_mm(), None);
-        assert!(saved.floor_reference.is_none() && saved.through_allowed());
-        assert_eq!(saved.request_versions(), &[2]);
-
-        // The envelope contract is checked both ways: a v2 header over a
-        // ThroughAll payload tells an older build it may rewrite it.
-        let objects = d.objects().expect("objects");
-        let stored = objects
-            .iter()
-            .find(|o| o.id == prepared.feature().id)
-            .expect("stored cut");
-        let lying = crate::Envelope::encode(
-            "feature.extrude".to_owned(),
-            2,
-            vec![
-                crate::CORE_CAPABILITY.to_owned(),
-                crate::FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
-            ],
-            match &stored.payload {
-                ObjectPayload::Extrude(e) => e,
-                _ => panic!("extrusion"),
-            },
-        )
-        .expect("encode")
-        .to_bytes()
-        .expect("bytes");
-        assert!(ObjectPayload::from_storage_bytes(&lying).is_err());
-    }
-
     #[test]
     fn mode_transitions_keep_add_or_refuse_names_before_anything_is_minted() {
         // Blind through -> ThroughAll -> Blind through: no name changes.
         let (_root, mut d, feature) = cut_plate(10.);
         let saved = only(&d);
         assert!(saved.through_allowed() && saved.floor_reference.is_none());
-        let rows = capability_rows(&d);
         let refs = d.topology_refs().expect("refs");
         let p = prepare_cut_parameters(&d, feature, &through(&saved)).expect("intent");
         assert!(p.added_references().is_empty(), "same tool, same names");
-        assert_eq!(p.feature().payload.schema_version(), 3);
+
         d.write_cut_parameters(&p).expect("write");
         assert_eq!(d.topology_refs().expect("refs"), refs);
-        let after = capability_rows(&d);
-        assert_eq!(&after[..rows.len()], rows.as_slice(), "rowids kept");
-        assert_eq!(
-            after[rows.len()..]
-                .iter()
-                .map(|(_, n)| n.as_str())
-                .collect::<Vec<_>>(),
-            vec![crate::FEATURE_THROUGH_ALL_CAPABILITY],
-            "exactly one new index row"
-        );
+
         let objects = d.objects().expect("objects");
-        let row = objects.iter().find(|o| o.id == feature).expect("cut");
-        assert_eq!(
-            crate::Envelope::from_bytes(row.storage_bytes())
-                .expect("header")
-                .schema_version,
-            3
-        );
+        let _row = objects.iter().find(|o| o.id == feature).expect("cut");
+
         assert!(d.validate().expect("validate").is_ok());
 
         // Request v1 cannot say ThroughAll and must not erase it.
@@ -3380,7 +3264,6 @@ mod tests {
         )
         .expect("back");
         assert!(back.added_references().is_empty());
-        assert_eq!(back.feature().payload.schema_version(), 2);
 
         // ThroughAll -> pocket adds its own floor and nothing else.
         let pocket =

@@ -6,8 +6,8 @@
 //!
 //! # The document is not touched
 //!
-//! Opening is [`Document::open_read_only`], which neither migrates a schema
-//! nor changes a persistent pragma. A viewer that quietly rewrote the file it
+//! Opening is [`Document::open_read_only`], which changes neither the file
+//! nor a persistent pragma. A viewer that quietly rewrote the file it
 //! was asked to look at would be the worst kind of surprise: the change would
 //! be invisible, and it would happen to the one copy the user has.
 //!
@@ -4403,9 +4403,8 @@ mod tests {
         )
         .expect("the plate loads");
 
-        // Byte for byte. `Document::open` would have migrated the schema and
-        // set persistent pragmas, and either would be an edit to a file the
-        // user only asked to look at.
+        // Byte for byte. `Document::open` would have set persistent pragmas,
+        // which is an edit to a file the user only asked to look at.
         assert_eq!(std::fs::read(&path).expect("reads"), before);
         assert!(
             !path.with_extension("fcad-cache").exists(),

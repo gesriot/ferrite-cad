@@ -109,29 +109,9 @@ Either winding, fractional sizes, any Y translation and any position of the
 axis Line in saved order are accepted. The profile policy and the angle
 policy are separate values; a request needs both.
 
-### Storage and capability
+### Storage
 
-* **Extent.** `RevolveExtent` gains `Partial { degrees }`. The degrees are
-  a validated `RevolveAngle`, checked again when a payload is decoded.
-* **The layout moves with the meaning**, one payload version per
-  combination, decided by what the Revolve holds:
-
-  | Payload | Extent | Axis Line | Required capabilities |
-  |---|---|---|---|
-  | v1 | full turn | none | core, `feature.revolve.v1` |
-  | v2 | full turn | stated | + `feature.revolve.axis-closed.v1` |
-  | v3 | partial | none | core, `feature.revolve.v1`, **`feature.revolve.partial.v1`** |
-  | v4 | partial | stated | core, `feature.revolve.v1`, `feature.revolve.axis-closed.v1`, **`feature.revolve.partial.v1`** |
-
-* **Full turns unchanged.** v1/v2 payloads stay byte-identical, with the
-  same capabilities, references and cache keys.
-* **Old builds.** A §27C build reads Revolve payloads v1–v2 only. It keeps a
-  v3/v4 object verbatim and opens the document read-only, because it does
-  not implement the new capability. It cannot read a sector as a full turn.
-  This is checked with the real §27C binary, not emulated.
-* **No SQL schema change.**
-* **Payload and header must agree.** A header version that disagrees with
-  what the payload holds is refused, as for v1/v2.
+See the [current document format](file-format.md).
 
 ### Topology outputs
 

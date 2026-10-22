@@ -28,26 +28,9 @@
 //! that importer sees them, then compares the whole scene it produced with the
 //! one stored, and only then lets a caller near the new handles.
 //!
-//! A stored scene records what identifies each definition in its source file,
-//! so re-attaching matches identities rather than positions: a file that comes
-//! back describing the same parts in another order binds, while one that has
-//! gained, lost or renamed a part does not. Scenes written before identities
-//! existed keep binding by position, which is the guarantee they were written
-//! under — see [`ferritecad_exchange::StoredScene`].
-//!
-//! [`ImportedDefinitionRef`] is what a lasting reference into an imported file
-//! looks like: the source and the key together, because a key alone identifies
-//! a part within one file and something else in the next. It resolves inside
-//! the source it names and nowhere else, and never falls back to a name, a
-//! position or a nearest match. A reference into a scene stored before
-//! identities existed is refused outright rather than answered from a position.
-//!
-//! # Forward compatibility
-//!
-//! Every object payload is a CBOR envelope carrying its type, schema version
-//! and required capabilities. An object of an unknown type is preserved
-//! byte-for-byte and written back unchanged, and a document requiring a
-//! capability this build does not implement opens read-only.
+//! Imported definitions bind by their source keys and placements retain their
+//! stored occurrence identities. Every object has one CBOR payload layout.
+//! Unknown types and corrupt payloads fail opening the document.
 
 mod annulus_edit;
 mod cache;
@@ -118,27 +101,17 @@ pub use document::{
     StepImportRequest, StepImporter, StoredStepImport, StoredTopologyRef, checkpoint_name,
 };
 pub use edit::{DocumentVersion, ExtrudeChoice, ExtrudeEditSource, editable_extrude};
-pub use envelope::{Envelope, UnknownObject};
+pub use envelope::Envelope;
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
-    Body, CORE_CAPABILITY, CapSide, Chamfer, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY,
-    EXTRUDE_CAP_VERTEX_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
-    Expression, Extrude, FEATURE_CHAMFER_CAPABILITY, FEATURE_FILLET_CAPABILITY,
-    FEATURE_FILLET_SEQUENTIAL_CAPABILITY, FEATURE_PREDECESSOR_CAPABILITY,
-    FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY, FEATURE_REVOLVE_CAPABILITY,
-    FEATURE_REVOLVE_PARTIAL_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY, Fillet, FilletEdge,
-    GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
-    ObjectKind, ObjectPayload, Parameter, Point2, Revolve, RevolveAngle, RevolveAxis,
-    RevolveExtent, SKETCH_ANGLE_CONSTRAINTS_CAPABILITY, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
-    SKETCH_COLLINEAR_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT,
-    SelectionRule, SemanticRole, Sketch, SketchConstraint, SketchConstraintRule, SketchCurve,
-    SketchGeometry, SketchPointRef, SketchPointSelector, SketchSegmentRef, SolidOperation,
-    SweptEdge, TOPOLOGY_CARRIED_FACE_CAPABILITY, TOPOLOGY_ORIGIN_FACE_CAPABILITY, TopologyRef,
+    Body, CapSide, Chamfer, DatumPlane, EndCondition, EntityKind, Expression, Extrude, Fillet,
+    FilletEdge, GeomSignature, ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectKind,
+    ObjectPayload, Parameter, Point2, Revolve, RevolveAngle, RevolveAxis, RevolveExtent,
+    STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch, SketchConstraint,
+    SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
+    SketchSegmentRef, SolidOperation, SweptEdge, TopologyRef,
 };
-pub use schema::{
-    CACHE_EXTENSION, DOCUMENT_EXTENSION, FORMAT_VERSION, MINIMUM_READER_VERSION,
-    SUPPORTED_CAPABILITIES,
-};
+pub use schema::{CACHE_EXTENSION, DOCUMENT_EXTENSION};
 pub use validate::{Diagnostic, Severity, ValidationReport};
 
 mod sketch_constraints;

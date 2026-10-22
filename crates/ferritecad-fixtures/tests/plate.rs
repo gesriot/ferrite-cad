@@ -220,3 +220,20 @@ fn faces(
     all.sort();
     all
 }
+
+#[test]
+#[ignore = "regenerates the committed plate and its geometry manifest"]
+fn regenerate_plate() {
+    let directory = tempfile::tempdir().expect("directory");
+    let path = directory.path().join("plate.fcad");
+    ferritecad_fixtures::write_plate(&path).expect("generate plate");
+    let document = ferritecad_document::Document::open(&path).expect("generated document");
+    let mut kernel = MockKernel::new();
+    let built =
+        rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("rebuild");
+    let manifest = render_manifest(&document, &built, &mut kernel).expect("manifest");
+    built.release_all(&mut kernel);
+    document.close().expect("close");
+    std::fs::copy(&path, ferritecad_fixtures::plate_source()).expect("write fixture");
+    std::fs::write(ferritecad_fixtures::plate_manifest_path(), manifest).expect("write manifest");
+}

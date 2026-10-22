@@ -420,7 +420,7 @@ fn only_a_chamfer_was_added(source: &Path, copy: &Path, body: ObjectId) {
                 }
                 assert_eq!(mine.len(), rows.len() + 1, "one new object");
             }
-            "deps" | "topology_refs" | "capabilities" => {
+            "deps" | "topology_refs" => {
                 for row in rows {
                     let kept = mine.iter().any(|m| m[1..] == row[1..]);
                     let is_old_tip = table == "deps" && row.contains(&selected);
@@ -446,21 +446,6 @@ fn only_a_chamfer_was_added(source: &Path, copy: &Path, body: ObjectId) {
             }
             _ => assert_eq!(rows, mine, "{table} changed"),
         }
-    }
-    let old = capability_names(source);
-    let new = capability_names(copy);
-    assert!(new.contains(&"feature.chamfer.v1".to_owned()));
-    for name in &new {
-        assert!(
-            old.contains(name)
-                || [
-                    "feature.chamfer.v1",
-                    "feature.predecessor.v1",
-                    "topology.origin-face.v1"
-                ]
-                .contains(&name.as_str()),
-            "capability {name} was added"
-        );
     }
 }
 
@@ -565,15 +550,7 @@ fn chamfer_at(
     assert_eq!(stored.previous, uuid(&base));
     assert_eq!(stored.edge.feature, uuid(&base));
     assert_eq!(stored.distance_mm, d);
-    assert_eq!(saved.payload.schema_version(), 1);
-    assert_eq!(
-        saved.payload.required_capabilities(),
-        [
-            "core.part.v1",
-            "feature.predecessor.v1",
-            "feature.chamfer.v1"
-        ]
-    );
+
     let tip = objects
         .iter()
         .find_map(|o| match &o.payload {

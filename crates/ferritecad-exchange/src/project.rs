@@ -1,48 +1,15 @@
 // SPDX-License-Identifier: MIT
 //! Comparing a stored scene with a freshly imported one.
 //!
-//! Both stored layouts are compared by the same code, because only one thing
-//! separates them and it is worth stating exactly: **what identifies a
-//! definition**. Version 1 had nothing to identify one by, so its identity is
-//! the position it was written at. Version 2 carries the key the file itself
-//! gave it. Everything else — that names, solid counts, the instance tree,
-//! placements and colours must all agree — is the same question in both.
-//!
-//! Saying it that way has a consequence worth having: a permutation of the
-//! definitions is refused under version 1 and accepted under version 2, and
-//! that falls out of the identity rather than being a rule written twice. A
-//! reordered version 1 scene really has changed, because position was all it
-//! ever had to go on.
+//! Definitions bind by source keys. Names, solid counts, instance hierarchy,
+//! placements and colours must agree before any fresh handles are exposed.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 use ferritecad_types::{CadError, Result, normalize_f64};
 
-use crate::{ColourSource, Definition, Scene};
-
-/// What tells one definition from another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Identify {
-    /// The key the source file gave it. Survives reordering.
-    Key,
-    /// Where it sits in the list, which is all a version 1 scene has.
-    Position,
-}
-
-impl Identify {
-    pub(crate) fn of(self, index: usize, definition: &Definition) -> String {
-        match self {
-            Self::Key => definition.key.clone(),
-            Self::Position => position(index),
-        }
-    }
-}
-
-/// The identity of the definition at `index` when position is all there is.
-pub(crate) fn position(index: usize) -> String {
-    format!("position {index}")
-}
+use crate::{ColourSource, Scene};
 
 /// One placement, reduced to what a comparison may look at.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,10 +36,10 @@ pub(crate) struct Projection {
 impl Scene {
     /// Reduces a live scene to what can be compared, refusing anything that
     /// could not be compared reliably.
-    pub(crate) fn project(&self, identify: Identify) -> Result<Projection> {
+    pub(crate) fn project(&self) -> Result<Projection> {
         let mut definitions = Vec::with_capacity(self.definitions.len());
         for (index, definition) in self.definitions.iter().enumerate() {
-            let identity = identify.of(index, definition);
+            let identity = definition.key.clone();
             if identity.is_empty() {
                 return Err(CadError::input(format!(
                     "definition {index} has no identity, and an unidentifiable \
@@ -87,7 +54,7 @@ impl Scene {
             let definition = self
                 .definitions
                 .get(instance.definition)
-                .map(|definition| identify.of(instance.definition, definition))
+                .map(|definition| definition.key.clone())
                 .ok_or_else(|| {
                     CadError::input(format!(
                         "instance {index} places definition {}, and there are {}",

@@ -120,21 +120,7 @@ fn chain(
             before,
             "source touched"
         );
-        only_a_fillet_was_added(
-            &source,
-            &out,
-            uuid(&json!(g.body_id())),
-            7 + k,
-            match k {
-                0 => &[
-                    "feature.fillet.v1",
-                    "topology.origin-face.v1",
-                    "feature.predecessor.v1",
-                ],
-                1 => &["feature.fillet.sequential.v1"],
-                _ => &[],
-            },
-        );
+        only_a_fillet_was_added(&source, &out, uuid(&json!(g.body_id())), 7 + k);
         steps.push(Step {
             corner: corners[at],
             radius: r,

@@ -34,8 +34,8 @@ pub(super) fn fixture(root: &Path, tools: &[CircularCut]) -> PathBuf {
         .expect("SQL")
         .execute_batch(
             "UPDATE objects SET rowid=-rowid,ordinal=100-ordinal,name='same';
-         UPDATE capabilities SET rowid=rowid+100;
-         INSERT INTO capabilities(rowid,name,required) VALUES(900,'optional.extension',0);
+
+
          CREATE TABLE extra_data(id INTEGER PRIMARY KEY,bytes BLOB);
          INSERT INTO extra_data VALUES(91,x'010203');",
         )
@@ -257,7 +257,7 @@ fn native_adds_sixteen_and_refuses_seventeenth() {
         only_the_cut_was_added(&source, &dest, tip(&d).0);
         let a = tables(&source);
         let b = tables(&dest);
-        for table in ["capabilities", "topology_refs"] {
+        for table in ["topology_refs"] {
             for row in &a[table].1 {
                 assert!(b[table].1.contains(row), "saved {table} rowid/cell changed");
             }

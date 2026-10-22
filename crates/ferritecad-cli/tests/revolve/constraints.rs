@@ -181,12 +181,6 @@ pub(super) fn check_constraint_cells(source: &Path, copy: &Path, sketch: ObjectI
         b.keys().collect::<Vec<_>>(),
         "tables"
     );
-    let capability = |r: &Vec<String>| {
-        r.contains(&format!(
-            "name=Text({:?})",
-            ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY
-        ))
-    };
     for (table, old) in &a {
         let new = &b[table];
         match table.as_str() {
@@ -199,8 +193,7 @@ pub(super) fn check_constraint_cells(source: &Path, copy: &Path, sketch: ObjectI
                                 .filter(|c| {
                                     !(r.contains(&id)
                                         && (c.starts_with("payload=")
-                                            || c.starts_with("payload_hash=")
-                                            || c.starts_with("schema_version=")))
+                                            || c.starts_with("payload_hash=")))
                                 })
                                 .cloned()
                                 .collect()
@@ -220,18 +213,7 @@ pub(super) fn check_constraint_cells(source: &Path, copy: &Path, sketch: ObjectI
                     "only the Sketch row"
                 );
             }
-            "capabilities" => {
-                let others = |rows: &Vec<Vec<String>>| -> Vec<Vec<String>> {
-                    rows.iter().filter(|r| !capability(r)).cloned().collect()
-                };
-                assert_eq!(others(old), others(new), "unrelated capabilities");
-                let row: Vec<_> = new.iter().filter(|r| capability(r)).collect();
-                assert_eq!(row.len(), 1, "{new:?}");
-                assert!(
-                    row[0].contains(&"required=Integer(1)".to_owned()),
-                    "{row:?}"
-                );
-            }
+
             _ => assert_eq!(old, new, "{table} changed"),
         }
     }
@@ -1209,10 +1191,7 @@ fn revolve_constraint_discovery_writer_and_refusals_without_solver() {
         5
     );
     assert_eq!(c["revolves"][0]["profile"]["available"], true);
-    assert!(
-        capability_rows(&written)
-            .contains(&ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY.to_owned())
-    );
+
     let constrained_sector = root.join("constrained-sector.fcad");
     std::fs::copy(&sector, &constrained_sector).expect("copy");
     let sector_labels = sketch_of(&sector)

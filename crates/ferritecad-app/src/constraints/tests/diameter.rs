@@ -584,7 +584,7 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
         return;
     }
     // The ring carries data this editor knows nothing about (an attached source
-    // claim, an unknown table and capability rows): it has to come through.
+    // claim and an extension table): it has to come through.
     let root = tempfile::tempdir().expect("dir");
     let source_path = root.path().join("round.fcad");
     let ids = write_round_profile(&source_path, &[4., 10.]);
@@ -789,13 +789,24 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
         crate::fillets::tests::tables(&source_path),
     );
     assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
+    for table in [
+        "meta",
+        "objects",
+        "imported_sources",
+        "imported_source_refs",
+        "extension",
+    ] {
+        assert!(
+            !a[table].1.is_empty(),
+            "{table} must participate in the comparison"
+        );
+    }
     let selected = rusqlite::types::Value::Blob(sketch.to_bytes().to_vec());
-    let (mut cells, mut differing) = (0, Vec::new());
+    let mut differing = Vec::new();
     for (table, (columns, rows)) in &a {
         assert_eq!(rows.len(), b[table].1.len(), "{table}");
         for (x, y) in rows.iter().zip(&b[table].1) {
             for (i, cell) in x.iter().enumerate() {
-                cells += 1;
                 if cell == &y[i] {
                     continue;
                 }
@@ -812,30 +823,18 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
             }
         }
     }
-    assert!(cells > 100, "{cells} cells is not a comparison");
     assert!(
         ["objects.payload", "objects.payload_hash"]
             .iter()
             .all(|c| differing.iter().any(|d| d == c)),
         "the minted UUIDs must have differed: {differing:?}"
     );
-    // And the copy differs from the source in the Sketch row (payload, hash,
-    // layout), the timestamp and the capability rows a circle constraint needs;
+    // And the copy differs from the source in the Sketch row (payload, hash)
+    // and the timestamp;
     // every other table, and every other object row, is the source's.
     for (table, (_, rows)) in &s {
         match table.as_str() {
             "meta" => {}
-            // The foreign capability rows stay; a constraint adds
-            // the circle vocabulary beside them.
-            "capabilities" => {
-                for row in rows {
-                    assert!(
-                        a[table].1.iter().any(|m| m[1..] == row[1..]),
-                        "capability row {row:?} lost"
-                    );
-                }
-                assert!(a[table].1.len() > rows.len());
-            }
             "objects" => {
                 let rest = |rows: &Rows| {
                     rows.iter()

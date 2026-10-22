@@ -113,7 +113,6 @@ impl ModelTree {
         {
             rows.push(row(object, (object.id, None, None), None, 0, match object.payload {
                 ObjectPayload::ImportedStep(_) => "Imported source; definitions and visibility remain in the viewport inspector",
-                ObjectPayload::Unknown(_) => "Unknown stored object; no editor in this build",
                 _ => "Stored object; references do not imply ownership",
             }));
         }

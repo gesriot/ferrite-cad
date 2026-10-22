@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use ferritecad_document::{Document, ObjectPayload};
-use ferritecad_exchange::{Stage, StoredScene};
+use ferritecad_exchange::Stage;
 
 const CLEAN: i32 = 0;
 const FAILED: i32 = 2;
@@ -278,9 +278,7 @@ fn the_complex_ap203_assembly_becomes_a_durable_document() {
             _ => None,
         })
         .expect("the document carries an imported STEP object");
-    let StoredScene::V3(scene) = &imported.scene else {
-        panic!("a new import must carry source definition keys and placement identities");
-    };
+    let scene = &imported.scene;
     assert!(
         imported.diagnostics_at_import.iter().any(|diagnostic| {
             diagnostic.stage == Stage::Load

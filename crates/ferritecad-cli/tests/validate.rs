@@ -13,7 +13,7 @@ use ferritecad_exchange::{Import, Scene};
 use ferritecad_jobs::validate_document;
 use ferritecad_kernel::KernelIdentity;
 use ferritecad_types::ObjectId;
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 
 #[path = "support/pipe.rs"]
@@ -193,14 +193,15 @@ fn refusal(path: &Path, kind: &str, reason: &str) {
 }
 fn unknown(path: &Path) -> ObjectId {
     let id = ObjectId::new();
-    let mut doc = Document::open(path).expect("fixture writer");
-    let bytes = Envelope::new("future.雪\"\n", 9, vec![], vec![1])
+    let bytes = Envelope::new("future.雪", vec![1])
         .to_bytes()
         .expect("envelope");
-    let payload = ObjectPayload::from_storage_bytes(&bytes).expect("unknown");
-    doc.write(|w| w.put_object(id, None, -3, Some("雪 \"quoted\"\nname"), &payload))
-        .expect("stored name");
-    doc.close().expect("close");
+    let connection = Connection::open(path).expect("SQL");
+    connection.execute(
+        "INSERT INTO objects(id,kind,ordinal,name,payload,payload_hash) VALUES(?1,?2,-3,?3,?4,?5)",
+        params![id.to_bytes().as_slice(), "future.雪", "unrecognised object", bytes,
+            ferritecad_types::ContentHash::of_bytes(&bytes).as_bytes().as_slice()],
+    ).expect("unrecognised object fixture");
     id
 }
 
@@ -212,19 +213,7 @@ fn validation_reports_match_shared_operation_without_writes() {
     std::fs::write(path.with_extension("fcad-cache"), b"foreign cache").expect("sidecar");
     assert_eq!(check_report(&path, 0)["diagnostics"], json!([]));
     let id = unknown(&path);
-    let warned = check_report(&path, 0);
-    assert_eq!(
-        (warned["errors"].as_u64(), warned["warnings"].as_u64()),
-        (Some(0), Some(1))
-    );
-    assert_eq!(warned["diagnostics"][0]["code"], "object.unknown-type");
-    assert_eq!(warned["diagnostics"][0]["object_id"], id.to_string());
-    assert!(
-        warned["diagnostics"][0]["message"]
-            .as_str()
-            .expect("message")
-            .contains("雪")
-    );
+    refusal(&path, "input", &id.to_string());
 
     let sample = root.path().join("sample.fcad");
     create(&sample, true);
@@ -238,31 +227,17 @@ fn validation_reports_match_shared_operation_without_writes() {
         .expect("Extrude")
         .id;
     doc.close().expect("close");
-    unknown(&sample); // Repeated diagnostic codes and reader order must survive.
-    unknown(&sample);
+    sql(&sample, "DELETE FROM deps WHERE role = 'profile';");
+    let invalid = check_report(&sample, 1);
+    assert!(invalid["diagnostics"].as_array().expect("findings").iter().any(|d|
+        d["code"] == "reference.missing-edge" && d["object_id"] == extrude.to_string()
+    ));
+    assert_eq!(invalid["warnings"], 0);
     sql(
         &sample,
-        "DELETE FROM deps WHERE role = 'profile'; UPDATE objects SET payload_hash = zeroblob(32) WHERE kind = 'feature.extrude';",
+        "UPDATE objects SET payload_hash = zeroblob(32) WHERE kind = 'feature.extrude';",
     );
-    let invalid = check_report(&sample, 1);
-    let findings = invalid["diagnostics"].as_array().expect("diagnostics");
-    for code in ["object.payload-hash-mismatch", "reference.missing-edge"] {
-        assert!(
-            findings.iter().any(|d| d["code"] == code
-                && d["object_id"] == extrude.to_string()
-                && d["severity"] == "error"),
-            "{invalid}"
-        );
-    }
-    assert_eq!(invalid["warnings"], 2);
-    assert_eq!(
-        findings
-            .iter()
-            .filter(|d| d["code"] == "object.unknown-type")
-            .count(),
-        2
-    );
-    assert!(invalid["errors"].as_u64().expect("errors") >= 2);
+    refusal(&sample, "input", &extrude.to_string());
 
     // Validation concerns persisted facts, so a compact stored import requires
     // no native reader. Damage the owned source bytes after valid storage.
@@ -316,33 +291,16 @@ fn validation_read_only_refusals_preserve_storage() {
     create(&path, true);
     let clean = std::fs::read(&path).expect("baseline");
     for (corrupt, kind, reason) in [
-        // Exact v2 schema: missing v3 import tables, not merely a changed tag.
-        (
-            "DROP TABLE imported_source_refs; DROP TABLE imported_sources; PRAGMA user_version = 2;",
-            "unsupported",
-            "needs migration",
-        ),
-        (
-            "UPDATE meta SET minimum_reader_version = 999",
-            "unsupported",
-            "needs a reader",
-        ),
-        (
-            "UPDATE meta SET format_version = 999",
-            "unsupported",
-            "document format",
-        ),
-        ("PRAGMA user_version = 999", "unsupported", "schema"),
         ("PRAGMA application_id = 42", "input", "application"),
         (
             "UPDATE objects SET payload = X'FF' WHERE kind = 'body'",
             "input",
-            "decoding object envelope",
+            "reading object",
         ),
         (
             "UPDATE objects SET kind = 'wrong-kind' WHERE kind = 'body'",
             "input",
-            "metadata disagrees",
+            "envelope type",
         ),
         (
             "UPDATE deps SET role = 'future-role'",

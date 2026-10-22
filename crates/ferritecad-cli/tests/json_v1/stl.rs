@@ -401,23 +401,17 @@ fn export_refusals_and_flag_shaped_values_preserve_files_without_a_kernel() {
         "input",
         root.path(),
     );
-    for sql in ["PRAGMA journal_mode=WAL;", "PRAGMA user_version=1;"] {
-        let restricted = root.path().join(if sql.contains("WAL") {
-            "wal.fcad"
-        } else {
-            "old.fcad"
-        });
-        create(&restricted, Some(["60", "40", "10"]));
-        rusqlite::Connection::open(&restricted)
-            .expect("fixture")
-            .execute_batch(sql)
-            .expect("read-only refusal");
-        refusal(
-            export(&restricted, &output, None, true).arg("--force"),
-            "unsupported",
-            root.path(),
-        );
-    }
+    let restricted = root.path().join("wal.fcad");
+    create(&restricted, Some(["60", "40", "10"]));
+    rusqlite::Connection::open(&restricted)
+        .expect("fixture")
+        .execute_batch("PRAGMA journal_mode=WAL;")
+        .expect("read-only refusal");
+    refusal(
+        export(&restricted, &output, None, true).arg("--force"),
+        "unsupported",
+        root.path(),
+    );
 }
 
 fn published(

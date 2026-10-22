@@ -15,13 +15,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ferritecad_document::{
     Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Envelope, Expression,
-    Extrude, IMPORTED_STEP_CAPABILITY, ImporterIdentity, ObjectPayload, Point2, Sketch,
-    SketchCurve, SketchGeometry, SolidOperation, StepImportRequest,
+    Extrude, ImporterIdentity, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry,
+    SolidOperation, StepImportRequest,
 };
 use ferritecad_exchange::{
-    ColourSource, Definition, Diagnostic, Import, Instance, KeyedInstance, KeyedScene,
-    LegacyDefinition, LegacyInstance, LegacyScene, PersistedScene, Scene, Severity, Stage,
-    StoredScene,
+    ColourSource, Definition, Diagnostic, Import, Instance, PersistedScene, Scene, Severity, Stage,
 };
 use ferritecad_export::{
     ExportColourOrigin, ExportDefinitionIdentity, ExportGeometry, ExportOccurrence,
@@ -2059,9 +2057,7 @@ fn the_identity_of_each_node_is_the_one_stored_for_that_place() {
         let ObjectPayload::ImportedStep(stored) = &record.payload else {
             panic!("the object under test is an imported STEP file");
         };
-        let StoredScene::V3(stored) = &stored.scene else {
-            panic!("a fresh import stores a current-layout scene");
-        };
+        let stored = &stored.scene;
         stored
             .instances
             .iter()
@@ -2181,191 +2177,6 @@ fn a_native_body_is_identified_by_its_object_and_not_by_a_fresh_uuid() {
 }
 
 #[test]
-fn a_document_written_before_placements_had_identities_says_so_and_still_exports() {
-    let directory = tempfile::tempdir().expect("a temporary directory is available");
-    let path = directory.path().join("legacy.fcad");
-    let mut kernel = MockKernel::new();
-    let object = ObjectId::new();
-    let mut document = Document::create(&path).expect("creates a document");
-    let scene = nested_assembly(&mut kernel);
-    store_import(
-        &mut document,
-        &mut kernel,
-        Stored {
-            object,
-            name: "Assembly",
-            source: SOURCE,
-            source_name: "03-nested-assembly.step",
-            scene,
-            diagnostics: Vec::new(),
-        },
-    );
-    document.close().expect("closes");
-
-    let current = export_nested(&path);
-    downgrade_to_version_2(&path, object);
-    let before = ferritecad_types::ContentHash::of_bytes(
-        &std::fs::read(&path).expect("snapshots the document"),
-    );
-    let after = export_nested(&path);
-
-    // Everything a user sees is unchanged.
-    assert_eq!(
-        described(&after),
-        described(&current),
-        "a version 2 document exports something other than what it always did"
-    );
-    // And the one thing it cannot answer is said rather than filled in.
-    assert_eq!(
-        occurrences(&after),
-        vec![ExportOccurrence::Unrecorded; 7],
-        "a document that never recorded placement identities was given some"
-    );
-
-    // Reading it did not rewrite it.
-    assert_eq!(
-        ferritecad_types::ContentHash::of_bytes(
-            &std::fs::read(&path).expect("re-reads the document")
-        ),
-        before,
-        "exporting a version 2 document rewrote it"
-    );
-}
-
-#[test]
-fn a_document_written_before_definitions_had_keys_says_so_and_still_exports() {
-    // Version 1 identified its definitions by position, so the keys a reading
-    // of it shows came out of the importer that has just run. They are still
-    // written to `FerriteCADDefinitionKey`, exactly as they always were; what
-    // must not happen is that they are presented as a durable identity the
-    // document confirmed, because nothing confirmed them.
-    let directory = tempfile::tempdir().expect("a temporary directory is available");
-    let path = directory.path().join("v1.fcad");
-    let mut kernel = MockKernel::new();
-    let object = ObjectId::new();
-    let mut document = Document::create(&path).expect("creates a document");
-    let scene = nested_assembly(&mut kernel);
-    store_import(
-        &mut document,
-        &mut kernel,
-        Stored {
-            object,
-            name: "Assembly",
-            source: SOURCE,
-            source_name: "03-nested-assembly.step",
-            scene,
-            diagnostics: Vec::new(),
-        },
-    );
-    document.close().expect("closes");
-
-    let current = export_nested(&path);
-    assert!(
-        current
-            .definitions()
-            .iter()
-            .all(|definition| definition.identity.is_recorded()),
-        "a current-layout document did not record its definition identities"
-    );
-
-    downgrade_to_version_1(&path, object);
-    let before = ferritecad_types::ContentHash::of_bytes(
-        &std::fs::read(&path).expect("snapshots the document"),
-    );
-    let after = export_nested(&path);
-
-    // Everything a user sees is unchanged, keys included.
-    assert_eq!(
-        described(&after),
-        described(&current),
-        "a version 1 document exports something other than what it always did"
-    );
-    // And both halves of the identity say what they are rather than being
-    // filled in from the fresh reading.
-    assert!(
-        after
-            .definitions()
-            .iter()
-            .all(|definition| definition.identity == ExportDefinitionIdentity::Unrecorded),
-        "a document that never recorded definition identities was given some"
-    );
-    assert_eq!(
-        occurrences(&after),
-        vec![ExportOccurrence::Unrecorded; 7],
-        "a document that never recorded placement identities was given some"
-    );
-    assert_eq!(
-        ferritecad_types::ContentHash::of_bytes(
-            &std::fs::read(&path).expect("re-reads the document")
-        ),
-        before,
-        "exporting a version 1 document rewrote it"
-    );
-}
-
-#[test]
-fn a_version_2_document_keeps_its_definition_identities_and_has_no_placement_ones() {
-    // The two halves are recorded by different layouts, and a document in
-    // between has one and not the other. Collapsing them into one question
-    // would either lose the definition identity version 2 really does have, or
-    // invent the placement identity it really does not.
-    let directory = tempfile::tempdir().expect("a temporary directory is available");
-    let path = directory.path().join("v2.fcad");
-    let mut kernel = MockKernel::new();
-    let object = ObjectId::new();
-    let mut document = Document::create(&path).expect("creates a document");
-    let scene = nested_assembly(&mut kernel);
-    store_import(
-        &mut document,
-        &mut kernel,
-        Stored {
-            object,
-            name: "Assembly",
-            source: SOURCE,
-            source_name: "03-nested-assembly.step",
-            scene,
-            diagnostics: Vec::new(),
-        },
-    );
-    document.close().expect("closes");
-
-    let current = export_nested(&path);
-    downgrade_to_version_2(&path, object);
-    let after = export_nested(&path);
-
-    assert_eq!(described(&after), described(&current));
-    assert!(
-        after
-            .definitions()
-            .iter()
-            .all(|definition| definition.identity.is_recorded()),
-        "a version 2 document lost the definition identities it did record"
-    );
-    for definition in after.definitions() {
-        let ExportSource::Imported {
-            source,
-            definition_key,
-        } = &definition.source
-        else {
-            panic!("this document holds no native body");
-        };
-        assert_eq!(
-            definition.identity,
-            ExportDefinitionIdentity::Source {
-                source: *source,
-                definition_key: definition_key.clone(),
-            },
-            "a definition identity names something other than its own source and key"
-        );
-    }
-    assert_eq!(
-        occurrences(&after),
-        vec![ExportOccurrence::Unrecorded; 7],
-        "a version 2 document was given placement identities it never recorded"
-    );
-}
-
-#[test]
 fn a_native_body_is_its_object_in_both_identity_domains() {
     let directory = tempfile::tempdir().expect("a temporary directory is available");
     let path = directory.path().join("body.fcad");
@@ -2466,166 +2277,6 @@ fn two_sources_that_gave_one_definition_the_same_key_keep_two_identities() {
 }
 
 #[test]
-fn a_definition_reached_through_a_legacy_object_as_well_is_not_identified() {
-    // One canonical definition, two imported objects storing the same bytes,
-    // and one of those objects written at a layout that recorded no definition
-    // keys. The sightings are merged the way every repeated fact in the load
-    // is, and the merge is a conjunction on purpose: an identity is either
-    // something every stored layout that holds this definition wrote down, or
-    // it is not something an export may promise. A disjunction here would
-    // promise a durable identity on the strength of a document that never
-    // recorded one.
-    let directory = tempfile::tempdir().expect("a temporary directory is available");
-    let path = directory.path().join("mixed.fcad");
-    let mut kernel = MockKernel::new();
-    let legacy = ObjectId::new();
-    {
-        let mut document = Document::create(&path).expect("creates a document");
-        for (object, name) in [(legacy, "left"), (ObjectId::new(), "right")] {
-            let scene = flat_assembly(&mut kernel);
-            store_import(
-                &mut document,
-                &mut kernel,
-                Stored {
-                    object,
-                    name,
-                    source: SOURCE,
-                    source_name: "flat.step",
-                    scene,
-                    diagnostics: Vec::new(),
-                },
-            );
-        }
-    }
-
-    let export = |path: &Path| -> ExportScene {
-        let mut kernel = MockKernel::new();
-        let scene = export_scene(
-            path,
-            &mut kernel,
-            |kernel, _| {
-                Ok(Import::Imported {
-                    scene: flat_assembly(kernel),
-                    diagnostics: Vec::new(),
-                })
-            },
-            &params(),
-            &OperationContext::default(),
-        )
-        .expect("exports");
-        assert_eq!(kernel.live_shape_count(), 0);
-        scene
-    };
-
-    let before = export(&path);
-    assert_eq!(before.definitions().len(), 2);
-    assert!(
-        before
-            .definitions()
-            .iter()
-            .all(|definition| definition.identity.is_recorded()),
-        "two current-layout objects did not record their definition identities"
-    );
-
-    downgrade_to_version_1(&path, legacy);
-    let after = export(&path);
-
-    assert_eq!(
-        described(&after),
-        described(&before),
-        "downgrading one object changed what the export describes"
-    );
-    assert_eq!(
-        after.definitions().len(),
-        2,
-        "the two objects stopped sharing definitions"
-    );
-    assert!(
-        after
-            .definitions()
-            .iter()
-            .all(|definition| definition.identity == ExportDefinitionIdentity::Unrecorded),
-        "a definition one of whose stored layouts recorded no key was still identified"
-    );
-    // And the placements of the object that is still at the current layout keep
-    // their own identities: the two halves are separate questions and one
-    // downgraded object does not answer the other.
-    assert_eq!(
-        occurrences(&after)
-            .iter()
-            .filter(|occurrence| occurrence.is_recorded())
-            .count(),
-        3,
-        "downgrading one object took the other object's placement identities"
-    );
-}
-
-/// Rewrites an imported object's stored scene as a version 1 build left it.
-///
-/// Version 1 named its definitions by position and stored no key at all, which
-/// is the layout that has no durable definition identity to hand on.
-fn downgrade_to_version_1(path: &Path, object: ObjectId) {
-    rewrite_stored_scene(path, object, 1, |scene| LegacyScene {
-        source_unit: scene.source_unit.clone(),
-        schema: scene.schema.clone(),
-        definitions: scene
-            .definitions
-            .iter()
-            .map(|definition| LegacyDefinition {
-                name: definition.name.clone(),
-                solids: definition.solids,
-            })
-            .collect(),
-        instances: scene
-            .instances
-            .iter()
-            .enumerate()
-            .map(|(index, instance)| LegacyInstance {
-                definition: u32::try_from(
-                    scene
-                        .definitions
-                        .iter()
-                        .position(|definition| definition.key == instance.definition)
-                        .unwrap_or_else(|| panic!("instance {index} names a stored definition")),
-                )
-                .expect("a handful of definitions"),
-                parent: instance.parent,
-                name: instance.name.clone(),
-                placement: instance.placement,
-                colour_source: instance.colour_source,
-                colour: instance.colour,
-            })
-            .collect(),
-    });
-}
-
-/// Rewrites an imported object's stored scene as a version 2 build left it.
-///
-/// There is no supported way to write one: a build that has placement
-/// identities must not produce a scene without them. This reaches past the
-/// writer for the one thing only a test needs — a document that predates the
-/// layout it is being read by.
-fn downgrade_to_version_2(path: &Path, object: ObjectId) {
-    rewrite_stored_scene(path, object, 2, |scene| KeyedScene {
-        source_unit: scene.source_unit.clone(),
-        schema: scene.schema.clone(),
-        definitions: scene.definitions.clone(),
-        instances: scene
-            .instances
-            .iter()
-            .map(|instance| KeyedInstance {
-                definition: instance.definition.clone(),
-                parent: instance.parent,
-                name: instance.name.clone(),
-                placement: instance.placement,
-                colour_source: instance.colour_source,
-                colour: instance.colour,
-            })
-            .collect(),
-    });
-}
-
-#[test]
 fn duplicate_placement_identities_are_refused_before_any_export() {
     // Two placements answering to one identity, however it got that way. A
     // swap between neighbours is not detectable — two identities the document
@@ -2667,7 +2318,7 @@ fn duplicate_placement_identities_are_refused_before_any_export() {
         );
         document.close().expect("closes");
 
-        rewrite_stored_scene(&path, object, 3, |scene| {
+        rewrite_stored_scene(&path, object, |scene| {
             let mut damaged = scene.clone();
             damage(&mut damaged);
             damaged
@@ -2688,7 +2339,10 @@ fn duplicate_placement_identities_are_refused_before_any_export() {
         )
         .expect_err(&format!("{what} should not have exported"));
         assert_eq!(error.kind(), ErrorKind::Input, "{what}: {error}");
-        assert!(error.to_string().contains("occurrence"), "{what}: {error}");
+        assert!(
+            format!("{error:?}").contains("occurrence"),
+            "{what}: {error}"
+        );
         assert_eq!(kernel.live_shape_count(), 0, "{what} leaked shapes");
     }
 }
@@ -2746,12 +2400,10 @@ fn an_occurrence_stolen_from_another_object_is_refused_before_rebuild() {
         let ObjectPayload::ImportedStep(imported) = record.payload else {
             panic!("an imported object");
         };
-        let StoredScene::V3(scene) = imported.scene else {
-            panic!("current layout");
-        };
+        let scene = imported.scene;
         scene.instances[0].occurrence
     };
-    rewrite_stored_scene(&path, second, 3, |scene| {
+    rewrite_stored_scene(&path, second, |scene| {
         let mut damaged = scene.clone();
         damaged.instances[0].occurrence = stolen;
         damaged.validate().expect("each object is internally valid");
@@ -3040,7 +2692,6 @@ fn nodes_keep_the_order_they_were_added_in() {
 fn rewrite_stored_scene<S: serde::Serialize>(
     path: &Path,
     object: ObjectId,
-    version: u32,
     rewrite: impl FnOnce(&PersistedScene) -> S,
 ) {
     #[derive(serde::Serialize)]
@@ -3059,13 +2710,9 @@ fn rewrite_stored_scene<S: serde::Serialize>(
     let ObjectPayload::ImportedStep(stored) = &record.payload else {
         panic!("the object under test is an imported STEP file");
     };
-    let StoredScene::V3(current) = &stored.scene else {
-        panic!("a fresh import stores a current-layout scene");
-    };
+    let current = &stored.scene;
     let envelope = Envelope::encode(
         "exchange.step.imported",
-        version,
-        vec![IMPORTED_STEP_CAPABILITY.to_owned()],
         &Payload {
             source: stored.source,
             source_hash: stored.source_hash,
@@ -3084,10 +2731,9 @@ fn rewrite_stored_scene<S: serde::Serialize>(
     let connection = rusqlite::Connection::open(path).expect("opens the document as SQL");
     connection
         .execute(
-            "UPDATE objects SET schema_version = ?1, payload = ?2, payload_hash = ?3 \
-             WHERE id = ?4",
+            "UPDATE objects SET payload = ?1, payload_hash = ?2 \
+             WHERE id = ?3",
             rusqlite::params![
-                version,
                 envelope.as_slice(),
                 ferritecad_types::ContentHash::of_bytes(&envelope)
                     .as_bytes()

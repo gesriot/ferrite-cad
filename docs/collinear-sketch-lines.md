@@ -144,17 +144,9 @@ Self-pair, чужая Line и занятый слот — тоже `input`, до
  "b": {"from": {"curve_id": "…", "at": "start"}, "to": {"curve_id": "…", "at": "end"}}}
 ```
 
-## Совместимость и capability
+## Storage
 
-Sketch с такой связью хранится как **payload v5** и требует `sketch.constraints.v1` +
-`sketch.constraints.collinear.v1` (она же в `SUPPORTED_CAPABILITIES`). v5 кумулятивен:
-читатель коллинеарности знает и словари угла и окружностей, а Sketch без Collinear
-остаётся v1/v2/v3/v4 (удаление последней связи возвращает прежний layout; строка
-`capabilities` в файле остаётся, как и у прежних слов). Сборка main (`bdf25e5`, читает
-`[4, 3, 2, 1]`) **сохраняет** v5 дословно и открывает документ read-only: она не
-читает связь как `Parallel` (измерено ниже). Версия SQLite-схемы **не**
-повышалась: механизма payload-версии и capability достаточно. v4-заголовок над payload с
-Collinear и v5-заголовок без неё отказываются при чтении и записи (тест).
+See the [current document format](file-format.md).
 
 ## Форма в окне
 

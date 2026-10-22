@@ -289,8 +289,8 @@ exporting one Body to binary STL or the whole scene to FBX. See the exact
 covers those seven commands plus polygon creation and saved Sketch coordinate editing;
 the other commands retain their existing text output.
 
-`validate` now opens read-only in both text and JSON modes. Old schemas, WAL and
-incompatible reader requirements are refused without migration. JSON `ok:true`
+`validate` opens read-only in both text and JSON modes. A WAL journal or an
+object this build cannot read is refused. JSON `ok:true`
 means the check ran; `valid:false` exits 1, while warnings may accompany exit 0.
 A valid document does not guarantee a successful rebuild or complete FBX.
 
@@ -974,8 +974,7 @@ recomputed:
 
 | Table | Holds |
 | --- | --- |
-| `meta` | format version, document UUID, display units, timestamps |
-| `capabilities` | what a reader must implement to write this document |
+| `meta` | document UUID, display units, timestamps |
 | `objects` | sketches, features, bodies, parameters, as CBOR envelopes |
 | `deps` | the dependency graph edges, with the role of each |
 | `topology_refs` | semantic names for produced geometry |
@@ -991,10 +990,11 @@ Three properties the format commits to:
   segment" – never by position in a traversal. An index-based reference is the
   thing that makes a parametric model silently point at the wrong face after an
   upstream edit.
-- **What is not understood is preserved, not dropped.** An object whose type
-  this build has never heard of is carried through save and reload byte for
-  byte, and a document requiring a capability this build lacks opens read-only
-  rather than being rewritten lossily.
+- **What is not understood is refused, not guessed at.** An object of an
+  unknown type or with an unreadable payload fails the whole open, naming the
+  object. The format is not yet stable: there are no migrations, and a
+  document written by another build may not open. See
+  [docs/file-format.md](docs/file-format.md).
 - **A refusal beats a wrong answer.** An unresolvable reference stops the
   rebuild and says so. It never picks a neighbouring face that happens to look
   plausible.

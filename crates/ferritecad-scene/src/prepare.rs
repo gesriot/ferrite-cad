@@ -28,10 +28,7 @@ use ferritecad_document::{
     Document, ImportedDefinitionRef, ObjectPayload, ObjectRecord, StepImporter,
 };
 use ferritecad_eval::{RebuildResult, rebuild_cold};
-use ferritecad_exchange::{
-    ColourSource, Diagnostic, Import, Scene, Severity, Stage, StoredDefinitionIdentities,
-    StoredOccurrences,
-};
+use ferritecad_exchange::{ColourSource, Diagnostic, Import, Scene, Severity, Stage};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, Mesh, OperationContext, ProgressSink, ShapeHandle,
     TessellationParams, TessellationRefusal,
@@ -55,25 +52,6 @@ pub(crate) struct Seen {
     pub(crate) solids: Option<u32>,
     pub(crate) source_unit: Option<String>,
     pub(crate) schema: Option<String>,
-    /// Whether the stored layout this sighting came from recorded the identity
-    /// of its definitions.
-    ///
-    /// A sighting, not a conclusion: one canonical definition may be reached
-    /// through two imported objects, and what they say about it is merged the
-    /// way every other repeated fact here is.
-    pub(crate) identified: Identified,
-}
-
-/// Whether one sighting of a definition came from a layout that recorded which
-/// key belongs to which definition.
-///
-/// [`Default`] is deliberately the weaker of the two: a sighting that says
-/// nothing must not be able to promote a definition to identified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Identified {
-    #[default]
-    No,
-    Yes,
 }
 
 /// What repeated sightings of one display fact add up to.
@@ -123,15 +101,6 @@ struct Growing {
     solids: Option<u32>,
     omission: Option<GeometryOmission>,
     structural: bool,
-    /// Whether every sighting of this definition so far came from a layout
-    /// that recorded definition identity.
-    ///
-    /// Merged by conjunction, so a definition reached through one legacy
-    /// object and one current one is reported unidentified. The rule is a
-    /// deliberate downgrade rather than an upgrade: an identity is either
-    /// something every document that holds this definition wrote down, or it
-    /// is not something this export may promise.
-    identified: bool,
     /// Whether this load has already said what this definition holds.
     ///
     /// Not the same as having been met. A definition met first as an assembly
@@ -166,11 +135,6 @@ pub(crate) struct PreparedDefinition {
 }
 
 /// What one definition durably is, in terms a document stores.
-///
-/// Three states for the same reason [`NodeIdentity`] has three. A definition
-/// whose document recorded its key and one whose document predates definition
-/// keys are different facts, and collapsing them would present the key this
-/// importer produced a moment ago as something the document agreed to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DefinitionIdentity {
     /// A native body, identified by the object that holds it.
@@ -181,9 +145,6 @@ pub(crate) enum DefinitionIdentity {
         source: ImportedSourceId,
         definition_key: String,
     },
-    /// The stored layout this definition was read through predates definition
-    /// identity.
-    Unrecorded,
 }
 
 /// Every definition of one load, one entry per portable identity.
@@ -219,7 +180,6 @@ impl Registry {
             entry.source_file.seen(seen.source_file);
             entry.source_unit.seen(seen.source_unit);
             entry.schema.seen(seen.schema);
-            entry.identified &= seen.identified == Identified::Yes;
             match (entry.solids, seen.solids) {
                 (Some(known), Some(now)) if known != now => {
                     // Not two definitions, and not a number to pick between:
@@ -246,7 +206,6 @@ impl Registry {
             solids: seen.solids,
             omission: None,
             structural: false,
-            identified: seen.identified == Identified::Yes,
             reported: false,
         };
         entry.name.seen(seen.name);
@@ -296,7 +255,7 @@ impl Registry {
         self.entries
             .into_iter()
             .map(|entry| PreparedDefinition {
-                identity: identity_of(&entry.item, entry.identified),
+                identity: identity_of(&entry.item),
                 item: entry.item,
                 name: entry.name.into_option(),
                 source_file: entry.source_file.into_option(),
@@ -315,13 +274,11 @@ impl Registry {
 /// A native body is the object that holds it and always has been: the object
 /// identifier is stored, is durable and is unique in the document. An imported
 /// definition is the source it belongs to together with the key that source
-/// gave it, and only when every stored layout this load reached it through
-/// actually wrote that key down. There is no arm here that produces an
+/// gave it, as the document stored them. There is no arm here that produces an
 /// identity from a position, a name or a fresh reading.
-fn identity_of(item: &SceneItem, identified: bool) -> DefinitionIdentity {
+fn identity_of(item: &SceneItem) -> DefinitionIdentity {
     match item {
         SceneItem::Body(object) => DefinitionIdentity::Object(*object),
-        SceneItem::Imported(_) if !identified => DefinitionIdentity::Unrecorded,
         SceneItem::Imported(reference) => DefinitionIdentity::Source {
             source: reference.source(),
             definition_key: reference.definition_key().to_owned(),
@@ -345,20 +302,12 @@ pub(crate) enum Geometry<'a> {
 }
 
 /// What one placement durably is, in terms a document stores.
-///
-/// Three states, and the third is not an absence to be filled in. A document
-/// written before placements carried identities has none, and the only honest
-/// thing to hand on is that fact: a value invented here would be indexed by
-/// whatever this load happened to traverse, and would look like an identity
-/// while behaving like a position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NodeIdentity {
     /// A native body, identified by the object that holds it.
     Object(ObjectId),
     /// One placement of an imported scene, read back from the stored payload.
     Occurrence(OccurrenceId),
-    /// The stored layout this placement came from predates placement identity.
-    Unrecorded,
 }
 
 /// One place a definition appears, exactly as the source recorded it.
@@ -448,8 +397,8 @@ where
     K: GeometryKernel + ?Sized,
     S: LoadSink,
 {
-    // Opening is read-only, which neither migrates a schema nor changes a
-    // persistent pragma. Anything that quietly rewrote the file it was asked
+    // Opening is read-only, which changes neither the file nor a persistent
+    // pragma. Anything that quietly rewrote the file it was asked
     // to look at would be the worst kind of surprise: the change would be
     // invisible, and it would happen to the one copy the user has.
     let document = Document::open_read_only(path)?;
@@ -536,10 +485,6 @@ where
                         SceneItem::Body(object.id),
                         Seen {
                             name: object.name.clone(),
-                            // The object that holds the body is the identity,
-                            // and the document has always stored it. There is
-                            // no older layout in which a body had no object.
-                            identified: Identified::Yes,
                             ..Seen::default()
                         },
                     )?;
@@ -643,7 +588,6 @@ where
                         kernel,
                         Reading {
                             source: reopened.source(),
-                            definitions: reopened.definition_identities(),
                             occurrences: reopened.occurrences(),
                             file: source_file,
                             omittable: &omittable,
@@ -671,15 +615,10 @@ where
 struct Reading<'a> {
     /// The bytes this reading was verified against.
     source: ImportedSourceId,
-    /// Whether the stored layout recorded which key belongs to which
-    /// definition, or whether the keys below came from the importer that has
-    /// just run and the document never confirmed them.
-    definitions: StoredDefinitionIdentities,
-    /// What the document stored as the durable identity of each placement, or
-    /// the fact that its layout stored none. Positionally aligned with
-    /// `scene.instances`, which the binding above has already required to be
-    /// the same instances in the same order.
-    occurrences: &'a StoredOccurrences,
+    /// What the document stored as the durable identity of each placement.
+    /// Positionally aligned with `scene.instances`, which the binding above
+    /// has already required to be the same instances in the same order.
+    occurrences: &'a [OccurrenceId],
     /// What to call the file it came from. A name to read, never a path to
     /// open: the bytes in the document are the source, and the place they were
     /// read from years ago may hold something else entirely by now.
@@ -798,21 +737,6 @@ where
             solids: Some(definition.solids),
             source_unit: Some(scene.source_unit.clone()),
             schema: Some(scene.schema.clone()),
-            // Read off the stored layout, not off the presence of a key: a
-            // legacy reading shows keys too, because the importer that has just
-            // run produced them, and treating those as identities is exactly
-            // the mistake this state exists to prevent.
-            identified: match from.definitions {
-                StoredDefinitionIdentities::Recorded => Identified::Yes,
-                StoredDefinitionIdentities::Unrecorded => Identified::No,
-                // A stored layout this build has not been measured against is
-                // not silently treated as having recorded identities.
-                _ => {
-                    return Err(CadError::unsupported(
-                        "this document records definition identity in a way this build does                          not know how to read",
-                    ));
-                }
-            },
         };
         let (registry_index, _) = registry.register(item, seen)?;
         registered.insert(instance.definition, registry_index);
@@ -863,13 +787,11 @@ where
         }
     }
 
-    // One identity per placement or none at all, checked before a single node
-    // is reported. Two lists of different lengths cannot be aligned, and the
+    // One identity per placement, checked before a single node is reported. Two lists of different lengths cannot be aligned, and the
     // failure of aligning them anyway is silent: every placement after the
     // first missing one would carry its neighbour's identity.
-    if let StoredOccurrences::Recorded(recorded) = from.occurrences
-        && recorded.len() != scene.instances.len()
-    {
+    let recorded = from.occurrences;
+    if recorded.len() != scene.instances.len() {
         return Err(CadError::input(format!(
             "the document stored {} placement identities for a scene of {} placements, so \
              they cannot be the identities of these placements",
@@ -888,29 +810,8 @@ where
         })?;
         // Read out of the stored payload, positionally, and derived from
         // nothing. There is no arm here that falls back to the index, the
-        // parent, the name or the key: a placement the document never gave an
-        // identity says so all the way to the export boundary.
-        let identity = match from.occurrences {
-            StoredOccurrences::Unrecorded => NodeIdentity::Unrecorded,
-            StoredOccurrences::Recorded(recorded) => {
-                NodeIdentity::Occurrence(*recorded.get(index).ok_or_else(|| {
-                    CadError::input(format!(
-                        "instance {index} has no stored placement identity among the {} this \
-                         document recorded",
-                        recorded.len()
-                    ))
-                })?)
-            }
-            // A stored layout this build has not been measured against is not
-            // silently treated as having no identity: that would turn a
-            // document that recorded one into one that appears not to have.
-            _ => {
-                return Err(CadError::unsupported(
-                    "this document records placement identity in a way this build does not \
-                     know how to read",
-                ));
-            }
-        };
+        // parent, the name or the key.
+        let identity = NodeIdentity::Occurrence(recorded[index]);
         sink.node(&PreparedNode {
             definition,
             parent: instance.parent.map(|parent| base + parent),

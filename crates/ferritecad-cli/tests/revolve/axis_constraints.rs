@@ -556,10 +556,7 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
     assert_eq!(row["profile_feature"], Value::Null);
     assert_eq!(row["constraint_edit"]["available"], true);
     assert_eq!(c["revolves"][0]["profile"]["available"], true);
-    assert!(
-        capability_rows(&written)
-            .contains(&ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY.to_owned())
-    );
+
     let constrained_sector = root.join("constrained-sector.fcad");
     std::fs::copy(&solid_sector, &constrained_sector).expect("copy");
     super::edit::rewrite_sketch(&constrained_sector, |s| {

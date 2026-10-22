@@ -261,16 +261,6 @@ mod tests {
     }
 
     #[test]
-    fn a_change_to_an_unknown_object_is_refused() {
-        let [known, unknown] = ids();
-        let err = dirty_set(&[known], &[], &[unknown])
-            .expect_err("a change we cannot place must not be dropped");
-
-        assert_eq!(err.kind(), ferritecad_types::ErrorKind::Input);
-        assert!(err.to_string().contains(&unknown.to_string()));
-    }
-
-    #[test]
     fn a_cycle_terminates_instead_of_looping() {
         // Propagation must not hang even on a graph that planning will reject;
         // the honest error belongs to the planner, not to an infinite loop.

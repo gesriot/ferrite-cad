@@ -3,29 +3,21 @@ use std::collections::BTreeSet;
 use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
-use ferritecad_exchange::{
-    Diagnostic as ImportDiagnostic, Import, Scene, StoredDefinitionIdentities, StoredOccurrences,
-    StoredScene,
-};
+use ferritecad_exchange::{Diagnostic as ImportDiagnostic, Import, Scene};
 use ferritecad_kernel::{KernelIdentity, ShapeHandle};
 use ferritecad_types::{
     CadError, CanonicalHasher, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId,
-    Result, StableEntityId, Unit,
+    OccurrenceId, Result, StableEntityId, Unit,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
 use crate::envelope::Envelope;
 use crate::graph::{Dependency, DependencyRole, evaluation_order};
 use crate::model::{
-    CORE_CAPABILITY, EXTRUDE_CAP_EDGE_CAPABILITY, EXTRUDE_CAP_VERTEX_CAPABILITY,
-    EXTRUDE_SWEEP_EDGE_CAPABILITY, EntityKind, ImportedDefinitionRef, ImportedStep,
-    ImporterIdentity, ObjectKind, ObjectPayload, STEP_SOURCE_FORMAT, SemanticRole, Sketch,
-    TopologyRef, TopologyRefPayload,
+    EntityKind, ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectPayload,
+    STEP_SOURCE_FORMAT, TopologyRef, TopologyRefPayload,
 };
-use crate::schema::{
-    self, CACHE_EXTENSION, DOCUMENT_APPLICATION_ID, FORMAT_VERSION, MINIMUM_READER_VERSION,
-    SUPPORTED_CAPABILITIES,
-};
+use crate::schema::{self, CACHE_EXTENSION, DOCUMENT_APPLICATION_ID};
 use crate::validate::ValidationReport;
 
 mod checkpoint;
@@ -60,8 +52,6 @@ impl Access {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentMeta {
     pub document_id: DocumentId,
-    pub format_version: u32,
-    pub minimum_reader_version: u32,
     /// Preferred unit for showing lengths. Stored values are millimetres.
     pub display_length_unit: Unit,
     /// Preferred unit for showing angles. Stored values are radians.
@@ -165,17 +155,6 @@ pub struct ReopenedStepImport {
     /// Kept so a reference can be checked against the source it names rather
     /// than resolved against whatever import happens to be at hand.
     source: ImportedSourceId,
-    /// The layout the stored scene was written at.
-    ///
-    /// Version 1 recorded no identities, so nothing it holds can answer a
-    /// durable reference; see [`Self::resolve`].
-    stored_version: u32,
-    /// Whether the stored layout recorded the identity of its definitions.
-    ///
-    /// The keys a reading shows always exist, because the importer that has
-    /// just run produced them. Whether the *document* ever wrote them down is
-    /// this, and a layout that did not is why [`Self::resolve`] refuses.
-    definitions: StoredDefinitionIdentities,
     /// The durable identity of each placement, taken from the stored payload
     /// after the fresh reading was proven to be the same scene.
     ///
@@ -183,7 +162,7 @@ pub struct ReopenedStepImport {
     /// again knows the geometry and knows nothing about which occurrence this
     /// document decided each place was, so a value taken from there would be
     /// this session's traversal wearing an identity's name.
-    occurrences: StoredOccurrences,
+    occurrences: Vec<OccurrenceId>,
     /// What the importer said when the file was first brought into this
     /// document. Historical; this build did not observe it.
     pub diagnostics_at_import: Vec<ImportDiagnostic>,
@@ -205,40 +184,8 @@ impl ReopenedStepImport {
         self.source
     }
 
-    /// The stored scene layout whose identity contract this reading was bound
-    /// under.
-    ///
-    /// Read-only because changing a legacy reading from v1 to v2 would make
-    /// [`Self::resolve`] answer from keys observed now even though the document
-    /// never recorded which key belonged to which definition.
-    pub fn stored_version(&self) -> u32 {
-        self.stored_version
-    }
-
-    /// Whether the stored layout recorded the identity of its definitions, or
-    /// the fact that it recorded none.
-    ///
-    /// Read-only for the same reason [`Self::stored_version`] is: a caller able
-    /// to replace it could make a legacy reading's fresh importer keys pass for
-    /// identities the document confirmed, which is the whole of what this
-    /// distinction prevents.
-    pub fn definition_identities(&self) -> StoredDefinitionIdentities {
-        self.definitions
-    }
-
-    /// The durable identity of every placement of this reading, in scene order,
-    /// or the fact that the stored layout recorded none.
-    ///
-    /// Positionally aligned with [`Self::scene`]'s instances, and that is sound
-    /// here and only here: this exists only after the binding above required
-    /// the fresh reading to hold the same instances, in the same order, with
-    /// the same parents, names, placements and colours as the stored scene. A
-    /// caller reading these off some other scene would be reading an index.
-    ///
-    /// Read-only for the same reason [`Self::source`] is. A caller able to
-    /// replace these could arrange for a placement to answer to an identity the
-    /// document never gave it, which is the whole of what this slice prevents.
-    pub fn occurrences(&self) -> &StoredOccurrences {
+    /// Returns the stored identity of each placement, aligned with the bound scene.
+    pub fn occurrences(&self) -> &[OccurrenceId] {
         &self.occurrences
     }
 
@@ -252,16 +199,12 @@ impl ReopenedStepImport {
     /// because a reference that resolves to something plausible is worse than
     /// one that does not resolve at all.
     ///
-    /// The three ways this fails are three different facts, and they are
-    /// reported as three different kinds so a caller can tell them apart
-    /// without reading prose:
+    /// The two ways this fails are two different facts, and they are reported
+    /// as two different kinds so a caller can tell them apart without reading
+    /// prose:
     ///
     /// * [`Input`][ferritecad_types::ErrorKind::Input] — the reference is about
-    ///   another source. It is not lost; it was never about this import.
-    /// * [`Unsupported`][ferritecad_types::ErrorKind::Unsupported] — the stored
-    ///   scene predates identities. The key is not missing; no key was ever
-    ///   recorded, and inventing one from a position would answer a question
-    ///   this document never agreed to.
+    ///   another source, or names more than one definition of this reading.
     /// * [`Topology`][ferritecad_types::ErrorKind::Topology] — the right
     ///   source, and nothing in it carries that identity any more. That is a
     ///   lost reference, which is the one case a user has to be told about by
@@ -272,15 +215,6 @@ impl ReopenedStepImport {
                 "{reference} cannot be resolved against source {}: a definition key \
                  identifies a part within one file, and the same key in another file \
                  is another part",
-                self.source
-            )));
-        }
-        if self.stored_version < 2 {
-            return Err(CadError::unsupported(format!(
-                "the scene stored for source {} was written before definitions carried \
-                 identities, so {reference} cannot be resolved. It is not lost; it was \
-                 never recorded. Importing the file again gives this document \
-                 identities it can answer for.",
                 self.source
             )));
         }
@@ -340,7 +274,7 @@ impl Document {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         )?;
         schema::configure_document_connection(&conn)?;
-        schema::migrate_document(&mut conn)?;
+        schema::create_document(&mut conn)?;
 
         let document_id = DocumentId::new();
         let generator = format!("FerriteCAD {}", env!("CARGO_PKG_VERSION"));
@@ -351,13 +285,11 @@ impl Document {
         tx.execute(
             &format!(
                 "INSERT INTO meta (
-                     id, format_version, minimum_reader_version, document_id,
+                     id, document_id,
                      display_length_unit, display_angle_unit, created_at, modified_at, generator
-                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, {NOW_UTC}, {NOW_UTC}, ?6)"
+                 ) VALUES (1, ?1, ?2, ?3, {NOW_UTC}, {NOW_UTC}, ?4)"
             ),
             params![
-                FORMAT_VERSION,
-                MINIMUM_READER_VERSION,
                 document_id.to_bytes().as_slice(),
                 display_length_unit.symbol(),
                 display_angle_unit.symbol(),
@@ -365,11 +297,6 @@ impl Document {
             ],
         )
         .map_err(|e| CadError::io("writing document metadata", e))?;
-        tx.execute(
-            "INSERT INTO capabilities (name, required) VALUES (?1, 1)",
-            params![CORE_CAPABILITY],
-        )
-        .map_err(|e| CadError::io("recording required capabilities", e))?;
         tx.commit()
             .map_err(|e| CadError::io("committing document initialisation", e))?;
 
@@ -382,43 +309,17 @@ impl Document {
         })
     }
 
-    /// Opens an existing document, migrating it if it predates this build.
-    ///
-    /// Opening never fails because of a capability this build lacks; it
-    /// downgrades to read-only instead, so a user can always look at their
-    /// model even when this build cannot safely rewrite it.
+    /// Opens an existing document after checking all object payloads.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let mut conn = open_connection(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        // Do not change journal mode or any other persistent pragma until we
-        // know this is our file. Opening a foreign SQLite database must be a
-        // read-only inspection from our application's point of view.
-        schema::check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")?;
+        let mut document = Self::open_read_only(path)?;
+        let conn = open_connection(&document.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         schema::configure_document_connection(&conn)?;
-        schema::migrate_document(&mut conn)?;
-
-        let meta = read_meta(&conn)?;
-        require_supported_format(&path, &meta)?;
-
-        let access = determine_access(&conn)?;
-        Ok(Self {
-            conn,
-            path,
-            meta,
-            access,
-        })
+        document.conn = conn;
+        document.access = Access::ReadWrite;
+        Ok(document)
     }
 
-    /// Opens an existing, current-schema document without modifying it.
-    ///
-    /// Unlike [`Self::open`], this path neither changes persistent pragmas nor
-    /// runs migrations. An older schema is refused with an actionable error:
-    /// silently migrating would violate the read-only contract, while reading
-    /// it as if the new columns already existed would be misleading. A file in
-    /// SQLite WAL mode is likewise refused before SQLite opens it: FerriteCAD
-    /// documents are single-file rollback-journal databases, and even a
-    /// read-only WAL connection may create or modify `-wal`/`-shm` files. Stale
-    /// WAL sidecars are refused even when the database header says DELETE.
+    /// Opens a document snapshot without changing the file or its sidecars.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         refuse_wal_journal(&path)?;
@@ -429,18 +330,19 @@ impl Document {
         conn.execute_batch("BEGIN")
             .map_err(|e| CadError::io("starting document snapshot", e))?;
         schema::check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")?;
-        schema::require_current_document_schema(&conn)?;
 
         let meta = read_meta(&conn)?;
-        require_supported_format(&path, &meta)?;
-        Ok(Self {
+        let document = Self {
             conn,
             path,
             meta,
             access: Access::ReadOnly {
                 reason: "it was explicitly opened without write access".to_owned(),
             },
-        })
+        };
+        document.objects()?;
+        document.topology_refs()?;
+        Ok(document)
     }
 
     pub fn path(&self) -> &Path {
@@ -455,13 +357,8 @@ impl Document {
         &self.access
     }
 
-    /// Whether a copy can be edited without discarding unsupported meaning.
-    /// Explicit read-only connection access is separate from format capability.
+    /// Checks whether a copy can be edited without unaccounted trigger effects.
     pub fn copy_access(&self) -> Result<Access> {
-        let access = determine_access(&self.conn)?;
-        if !access.is_writable() {
-            return Ok(access);
-        }
         // The bounded edit promises to change only its selected feature. A
         // stored trigger can change arbitrary other data during that write;
         // neither executing nor silently stripping it preserves that promise.
@@ -530,10 +427,10 @@ impl Document {
                 });
             }
         }
-        Ok(access)
+        Ok(Access::ReadWrite)
     }
 
-    /// A complete logical content version, including unknown tables/envelopes
+    /// A complete logical content version, including extension tables
     /// and imported BLOBs. Implicit row identities are included: they are SQL
     /// observable data, even when no declared column aliases them. No filesystem
     /// clock or SQLite page layout enters it. Tables that hide every rowid alias
@@ -557,15 +454,7 @@ impl Document {
         self.logical_content("document.model-content", true, false)
     }
 
-    /// §30N: the model content with the rows of the checkpoint catalog set aside
-    /// too, under its own domain tag: what a checkpoint of this version holds.
-    ///
-    /// Two versions that differ only in their checkpoints have the same value, so
-    /// a change to the catalog alone is known not to change what is drawn; and a
-    /// checkpoint's image has exactly the value of the version it was made from.
-    /// The catalog table is set aside whole (its schema entries too), so a schema
-    /// v3 document and its v4 migration draw the same model; `model_version`
-    /// still tells them apart, because saving one over the other changes the file.
+    /// Hashes model content with the checkpoint catalog excluded.
     pub fn model_without_checkpoints(&self) -> Result<ContentHash> {
         self.logical_content("document.model-without-checkpoints", true, true)
     }
@@ -579,7 +468,6 @@ impl Document {
         fn quoted(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
         }
-        let without_checkpoints = without_checkpoints && schema::has_checkpoint_table(&self.conn)?;
         let read = || -> Result<ContentHash> {
             let sql_error = |e| CadError::io("reading complete document version", e);
             let mut hash = CanonicalHasher::new(domain);
@@ -743,9 +631,7 @@ impl Document {
         self.write_transaction(edit, true)
     }
 
-    /// Change only a supported saved Sketch's coordinates. Its object set and
-    /// required capabilities cannot change, so preserve all metadata and stored
-    /// capability rows (including optional declarations and row identities).
+    /// Changes a supported saved Sketch's coordinates while preserving object identity and metadata.
     pub fn write_sketch_coordinates(
         &mut self,
         sketch: ObjectId,
@@ -755,7 +641,7 @@ impl Document {
         self.write_sketch_geometry(&selected)
     }
 
-    /// Re-derive a prepared coordinate payload inside the transaction that writes it.
+    /// Writes the prepared Sketch payload and its integrity hash.
     pub fn write_sketch_geometry(&mut self, prepared: &ObjectRecord) -> Result<()> {
         let bytes = prepared.payload.to_storage_bytes()?;
         let hash = ContentHash::of_bytes(&bytes);
@@ -897,8 +783,7 @@ impl Document {
         )
     }
 
-    /// Write a prepared H/V edit without replacing object ownership. Exactly the
-    /// selected payload/hash/header and its required constraint capability may change.
+    /// Writes prepared constraints while retaining persisted closure relationships.
     pub fn write_sketch_constraints(
         &mut self,
         prepared: &crate::PreparedSketchConstraints,
@@ -923,7 +808,6 @@ impl Document {
                 "constraint preparation must contain a Sketch",
             ));
         };
-        let version = sketch.schema_version();
         // What this write may not do is lose a relationship it did not remove.
         // The rule is stated as the thing it protects — every Coincident
         // closure link the stored sketch already holds is still here, under its
@@ -964,30 +848,33 @@ impl Document {
                 lost.id
             )));
         }
-        // Every capability the payload now declares, because a circle
-        // constraint declares one the Line families do not. Upserted one by
-        // one: the general index rebuild deletes optional rows and reissues
-        // rowids, and no other declaration changed.
-        let declared = sketch.required_capabilities();
         // §28E: the edit is derived again from the snapshot the write consumes
         // rather than trusted: the frame (a Fillet over the plate included),
         // the family, and the written list as exactly the stored one with these
         // removals and additions.
-        self.write_checked_transaction(|document| crate::sketch_constraints::rederive(document, prepared), |writer| {
-            let changed = writer.tx.execute(
-                "UPDATE objects SET schema_version=?1,payload=?2,payload_hash=?3 WHERE id=?4",
-                params![version,bytes,hash.as_bytes().as_slice(),selected.id.to_bytes().as_slice()],
-            ).map_err(|e| CadError::io("writing Sketch constraints",e))?;
-            if changed != 1 { return Err(CadError::input("selected Sketch disappeared before constraint write")); }
-            for name in &declared {
-                if name == crate::CORE_CAPABILITY { continue; }
-                writer.tx.execute(
-                    "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) DO UPDATE SET required=1 WHERE required<>1",
-                    params![name],
-                ).map_err(|e| CadError::io("recording Sketch constraint capability",e))?;
-            }
-            Ok(())
-        },false)
+        self.write_checked_transaction(
+            |document| crate::sketch_constraints::rederive(document, prepared),
+            |writer| {
+                let changed = writer
+                    .tx
+                    .execute(
+                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                        params![
+                            bytes,
+                            hash.as_bytes().as_slice(),
+                            selected.id.to_bytes().as_slice()
+                        ],
+                    )
+                    .map_err(|e| CadError::io("writing Sketch constraints", e))?;
+                if changed != 1 {
+                    return Err(CadError::input(
+                        "selected Sketch disappeared before constraint write",
+                    ));
+                }
+                Ok(())
+            },
+            false,
+        )
     }
 
     /// Writes one prepared circular cut: two new objects, the body's new tip,
@@ -1032,41 +919,53 @@ impl Document {
         let body_bytes = body.payload.to_storage_bytes()?;
         let body_hash = ContentHash::of_bytes(&body_bytes);
         let tool_curve = prepared.tool_curve();
-        self.write_checked_transaction(|document| crate::cut_edit::rederive(document, prepared), move |writer| {
-            require_fresh_cut_ids(writer.tx, std::iter::once(sketch.id.to_bytes())
-                .chain(std::iter::once(feature.id.to_bytes()))
-                .chain(std::iter::once(tool_curve.to_bytes()))
-                .chain(references.iter().map(|r| r.id.to_bytes())))?;
-            for new in [&sketch, &feature] {
-                writer.put_object(new.id, None, new.ordinal, Some(&new.name), &new.payload)?;
-            }
-            writer.tx.execute(
-                "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
-                params![body_bytes, body_hash.as_bytes().as_slice(), body.id.to_bytes().as_slice()],
-            ).map_err(|e| CadError::io("moving Body tip", e))?;
-            for dependency in removed { writer.remove_dependency(dependency)?; }
-            for dependency in added { writer.add_dependency(dependency)?; }
-            for reference in &references { writer.put_topology_ref(reference)?; }
-            // Add only contracts introduced by these new payloads/references.
-            // Keep optional rows, rowids, source claims and unrelated SQL intact.
-            let mut capabilities = BTreeSet::new();
-            for new in [&sketch, &feature] { capabilities.extend(new.payload.required_capabilities()); }
-            for reference in &references { capabilities.extend(required_capabilities_of(&reference.output_role)); }
-            for name in capabilities {
-                writer.tx.execute(
-                    "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) DO UPDATE SET required=1 WHERE required<>1",
-                    params![name],
-                ).map_err(|e| CadError::io("recording cut capability", e))?;
-            }
-            writer.tx.execute(&format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"), [])
-                .map_err(|e| CadError::io("stamping circular cut", e))?;
-            Ok(())
-        }, false)
+        self.write_checked_transaction(
+            |document| crate::cut_edit::rederive(document, prepared),
+            move |writer| {
+                require_fresh_cut_ids(
+                    writer.tx,
+                    std::iter::once(sketch.id.to_bytes())
+                        .chain(std::iter::once(feature.id.to_bytes()))
+                        .chain(std::iter::once(tool_curve.to_bytes()))
+                        .chain(references.iter().map(|r| r.id.to_bytes())),
+                )?;
+                for new in [&sketch, &feature] {
+                    writer.put_object(new.id, None, new.ordinal, Some(&new.name), &new.payload)?;
+                }
+                writer
+                    .tx
+                    .execute(
+                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                        params![
+                            body_bytes,
+                            body_hash.as_bytes().as_slice(),
+                            body.id.to_bytes().as_slice()
+                        ],
+                    )
+                    .map_err(|e| CadError::io("moving Body tip", e))?;
+                for dependency in removed {
+                    writer.remove_dependency(dependency)?;
+                }
+                for dependency in added {
+                    writer.add_dependency(dependency)?;
+                }
+                for reference in &references {
+                    writer.put_topology_ref(reference)?;
+                }
+                writer
+                    .tx
+                    .execute(
+                        &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
+                        [],
+                    )
+                    .map_err(|e| CadError::io("stamping circular cut", e))?;
+                Ok(())
+            },
+            false,
+        )
     }
 
-    /// Writes one prepared fillet (§28A): the new Fillet row, the Body's tip,
-    /// the predecessor and tip edges, the Fillet's own references and the
-    /// capabilities those new rows need. Nothing else.
+    /// Writes the Fillet, Body tip, dependencies and topology references together.
     pub fn write_edge_fillet(&mut self, prepared: &crate::PreparedEdgeFillet) -> Result<()> {
         self.write_edge_feature(
             "fillet",
@@ -1081,10 +980,7 @@ impl Document {
         )
     }
 
-    /// §29A: writes one prepared Chamfer — the same transaction a Fillet's is:
-    /// one new feature row, the Body's new tip, the dependency moves, the
-    /// names, the capabilities they need and the stamp. The guard re-derives
-    /// the whole prepared value from the document the write consumes.
+    /// Writes the Chamfer, Body tip, dependencies and topology references together.
     pub fn write_edge_chamfer(&mut self, prepared: &crate::PreparedEdgeChamfer) -> Result<()> {
         self.write_edge_feature(
             "chamfer",
@@ -1131,7 +1027,6 @@ impl Document {
         let references = references.to_vec();
         let body_bytes = body.payload.to_storage_bytes()?;
         let body_hash = ContentHash::of_bytes(&body_bytes);
-        let recording = format!("recording {what} capability");
         let stamping = format!("stamping {what}");
         self.write_checked_transaction(
             guard,
@@ -1168,21 +1063,6 @@ impl Document {
                 for reference in &references {
                     writer.put_topology_ref(reference)?;
                 }
-                let mut capabilities = BTreeSet::new();
-                capabilities.extend(feature.payload.required_capabilities());
-                for reference in &references {
-                    capabilities.extend(required_capabilities_of(&reference.output_role));
-                }
-                for name in capabilities {
-                    writer
-                        .tx
-                        .execute(
-                            "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) \
-                             DO UPDATE SET required=1 WHERE required<>1",
-                            params![name],
-                        )
-                        .map_err(|e| CadError::io(&recording, e))?;
-                }
                 writer
                     .tx
                     .execute(
@@ -1196,25 +1076,7 @@ impl Document {
         )
     }
 
-    /// Writes one prepared parameter edit of a saved circular cut: the tool
-    /// circle's new geometry, the cut's new depth, and the historical/final
-    /// floor names gained when a through hole becomes a pocket.
-    ///
-    /// One transaction, because half of it is not a document: a copy holding
-    /// the new tool but the old depth describes a part nobody asked for, and
-    /// one holding a floor's name but not the depth that makes a floor does
-    /// not rebuild at all.
-    ///
-    /// Two narrow `UPDATE`s rather than `put_object`, for the reason the
-    /// analytic sketch editors give: replacing an object also clears its source
-    /// claims and reissues its ownership, which a centre, a radius and a depth
-    /// have no business doing. What each row is allowed to change is stated
-    /// here and checked before the transaction opens: the payload and its hash,
-    /// and nothing else — not the kind, and for the tool Sketch not the schema
-    /// version or capabilities either. The one exception is the Cut's own end:
-    /// Blind is payload v2 and ThroughAll is v3 with `feature.through-all.v1`,
-    /// so a change of intent moves that row's `schema_version` column and, when
-    /// the document did not yet declare it, adds that one capability row.
+    /// Writes prepared cut parameters and any newly required floor references.
     pub fn write_cut_parameters(&mut self, prepared: &crate::PreparedCutParameters) -> Result<()> {
         // The rows the preparation read must still be the rows that are here.
         for (record, what) in [
@@ -1235,55 +1097,27 @@ impl Document {
             }
         }
 
-        // New numbers, not a new kind of object and not a new contract. A
-        // payload that declared something else would need capability rows this
-        // write does not add, so it is refused rather than written.
         let mut writes = Vec::new();
-        let mut declared = Vec::new();
-        for (record, what) in [
-            (prepared.tool_sketch(), "tool Sketch"),
-            (prepared.feature(), "Cut"),
-        ] {
+        for record in [prepared.tool_sketch(), prepared.feature()] {
             let stored = Envelope::from_bytes(record.storage_bytes())?;
-            let version = record.payload.schema_version();
-            let same_contract = version == stored.schema_version
-                && record.payload.required_capabilities() == stored.required_capabilities;
-            // Only a Cut, only between its two layouts, and only because its end
-            // changed: the payload decides its own layout and the writer's
-            // re-derivation has already proved the payload is the edit's.
-            let end_changed = matches!(
-                &record.payload,
-                ObjectPayload::Extrude(e) if e.previous.is_some()
-            ) && [2, 3].contains(&version)
-                && [2, 3].contains(&stored.schema_version);
-            if record.payload.type_name() != stored.type_name || !(same_contract || end_changed) {
-                return Err(CadError::input(format!(
-                    "a cut edit may change only the numbers of the saved {what}"
-                )));
-            }
-            if !same_contract {
-                declared.extend(record.payload.required_capabilities());
+            if record.payload.type_name() != stored.type_name {
+                return Err(CadError::input("a cut edit must retain each object's type"));
             }
             let bytes = record.payload.to_storage_bytes()?;
             let hash = ContentHash::of_bytes(&bytes);
-            writes.push((record.id, version, bytes, hash));
+            writes.push((record.id, bytes, hash));
         }
         let added = prepared.added_references().to_vec();
         self.write_checked_transaction(
             |document| crate::cut_edit::rederive_parameters(document, prepared),
             move |writer| {
                 require_fresh_cut_ids(writer.tx, added.iter().map(|r| r.id.to_bytes()))?;
-                for (id, version, bytes, hash) in &writes {
+                for (id, bytes, hash) in &writes {
                     let changed = writer
                         .tx
                         .execute(
-                            "UPDATE objects SET schema_version=?1,payload=?2,payload_hash=?3 WHERE id=?4",
-                            params![
-                                version,
-                                bytes,
-                                hash.as_bytes().as_slice(),
-                                id.to_bytes().as_slice()
-                            ],
+                            "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                            params![bytes, hash.as_bytes().as_slice(), id.to_bytes().as_slice()],
                         )
                         .map_err(|e| CadError::io("writing edited cut parameters", e))?;
                     if changed != 1 {
@@ -1297,24 +1131,6 @@ impl Document {
                 for reference in &added {
                     writer.put_topology_ref(reference)?;
                 }
-                // Upserted one by one, as the constraint writer does: an existing
-                // row keeps its rowid, and a ThroughAll -> Blind edit leaves the
-                // index row that access never reads in place of the envelopes.
-                for name in &declared {
-                    if name == crate::CORE_CAPABILITY {
-                        continue;
-                    }
-                    writer
-                        .tx
-                        .execute(
-                            "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) DO UPDATE SET required=1 WHERE required<>1",
-                            params![name],
-                        )
-                        .map_err(|e| CadError::io("recording cut end capability", e))?;
-                }
-                // Keep the ordinary edit timestamp, without rebuilding capability
-                // rows or reclaiming unrelated data. Both payload contracts are
-                // unchanged; core and (for two cuts) origin roles are already required.
                 writer
                     .tx
                     .execute(
@@ -1374,7 +1190,6 @@ impl Document {
                         )
                         .map_err(|e| CadError::io("stamping height edit", e))?;
                 } else {
-                    // Preserve the legacy standalone writer and capability policy.
                     writer.put_object(
                         record.id,
                         record.parent,
@@ -1389,9 +1204,7 @@ impl Document {
         )
     }
 
-    /// Write a prepared Revolve angle (§27E): only the selected row's payload
-    /// and hash, and the modification time. The object set, payload versions
-    /// and capabilities cannot change, so nothing else is rebuilt or touched.
+    /// Writes the prepared Revolve payload, integrity hash and modification time.
     pub fn write_revolve_angle(&mut self, prepared: &crate::PreparedRevolveAngle) -> Result<()> {
         let record = prepared.feature();
         let bytes = record.payload.to_storage_bytes()?;
@@ -1551,7 +1364,6 @@ impl Document {
             Ok(value) => {
                 if stamp {
                     reclaim_imported_sources(&tx)?;
-                    rebuild_capabilities(&tx)?;
                     tx.execute(
                         &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
                         [],
@@ -1575,7 +1387,7 @@ impl Document {
     pub fn object(&self, id: ObjectId) -> Result<Option<ObjectRecord>> {
         self.conn
             .query_row(
-                "SELECT id, kind, schema_version, parent_id, ordinal, name, payload, payload_hash
+                "SELECT id, kind, parent_id, ordinal, name, payload, payload_hash
                  FROM objects WHERE id = ?1",
                 params![id.to_bytes().as_slice()],
                 read_object_row,
@@ -1590,7 +1402,7 @@ impl Document {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, kind, schema_version, parent_id, ordinal, name, payload, payload_hash
+                "SELECT id, kind, parent_id, ordinal, name, payload, payload_hash
                  FROM objects ORDER BY parent_id, ordinal, id",
             )
             .map_err(|e| CadError::io("preparing object query", e))?;
@@ -1655,7 +1467,7 @@ impl Document {
                     row.get::<_, Vec<u8>>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, Vec<u8>>(4)?,
-                    row.get::<_, Option<Vec<u8>>>(5)?,
+                    row.get::<_, Vec<u8>>(5)?,
                 ))
             })
             .map_err(|e| CadError::io("reading topology references", e))?;
@@ -1665,40 +1477,20 @@ impl Document {
             let (id, owner, producer, kind, payload, payload_hash) =
                 row.map_err(|e| CadError::io("reading topology reference row", e))?;
             let id = StableEntityId::from_slice(&id)?;
-            if let Some(payload_hash) = payload_hash {
-                let payload_hash = ContentHash::from_slice(&payload_hash)?;
-                if ContentHash::of_bytes(&payload) != payload_hash {
-                    return Err(CadError::input(format!(
-                        "topology reference {id} does not match its stored hash"
-                    )));
-                }
-            }
-            let envelope = Envelope::from_bytes(&payload)?;
-            if envelope.type_name != "topology_ref" || envelope.schema_version != 1 {
-                return Err(CadError::unsupported(format!(
-                    "topology reference {id} has unsupported {} schema v{}",
-                    envelope.type_name, envelope.schema_version
+            let payload_hash = ContentHash::from_slice(&payload_hash)?;
+            if ContentHash::of_bytes(&payload) != payload_hash {
+                return Err(CadError::input(format!(
+                    "topology reference {id} does not match its stored hash"
                 )));
             }
-            // Every capability the payload declares must be one this build
-            // implements. A reference that asks for something newer is
-            // refused by name here and makes the whole document read-only in
-            // `determine_access`, instead of arriving as a role nothing can
-            // parse.
-            let unsupported: Vec<&str> = envelope
-                .required_capabilities
-                .iter()
-                .map(String::as_str)
-                .filter(|name| !SUPPORTED_CAPABILITIES.contains(name))
-                .collect();
-            if !unsupported.is_empty() {
-                return Err(CadError::unsupported(format!(
-                    "topology reference {id} requires unsupported capabilities: {}",
-                    unsupported.join(", ")
+            let envelope = Envelope::from_bytes(&payload)?;
+            if envelope.type_name != "topology_ref" {
+                return Err(CadError::input(format!(
+                    "topology reference {id} has type {}",
+                    envelope.type_name
                 )));
             }
             let decoded: TopologyRefPayload = envelope.decode()?;
-            require_role_capabilities(&envelope, &decoded.output_role)?;
             let reference = TopologyRef {
                 id,
                 owner: ObjectId::from_slice(&owner)?,
@@ -1756,7 +1548,7 @@ impl Document {
                 source_hash,
                 source_byte_len,
                 source_name,
-                scene: StoredScene::V3(persisted),
+                scene: persisted,
                 imported_by,
                 diagnostics_at_import,
             };
@@ -1846,12 +1638,9 @@ impl Document {
         // placements is only meaningful once the fresh reading has been proven
         // to be the same scene the payload describes.
         let occurrences = stored.imported.scene.occurrences();
-        let definitions = stored.imported.scene.definition_identities();
         Ok(ReopenedStepImport {
             scene,
             source: stored.imported.source,
-            stored_version: stored.imported.scene.version(),
-            definitions,
             occurrences,
             diagnostics_at_import: stored.imported.diagnostics_at_import,
             diagnostics_now,
@@ -1901,14 +1690,6 @@ impl Document {
     pub fn evaluation_order(&self) -> Result<Vec<ObjectId>> {
         let nodes: Vec<ObjectId> = self.objects()?.into_iter().map(|o| o.id).collect();
         evaluation_order(&nodes, &self.dependencies()?)
-    }
-
-    /// Refuse evaluation when the document declares a capability this build lacks.
-    pub fn require_supported_capabilities(&self) -> Result<()> {
-        match determine_access(&self.conn)? {
-            Access::ReadOnly { reason } => Err(CadError::unsupported(reason)),
-            _ => Ok(()),
-        }
     }
 
     /// Checks the stored document's integrity and semantic structure.
@@ -2106,19 +1887,12 @@ impl DocumentWriter<'_> {
         }
         let hash = self.write_object(id, parent, ordinal, name, payload)?;
 
-        if !matches!(payload, ObjectPayload::Unknown(_)) {
-            // Replacing an imported object with a known ordinary one also
-            // replaces its ownership contract. Leaving the old claim behind
-            // would keep a BLOB that no object can reach forever. An unknown
-            // payload is different: this build cannot prove it does not own
-            // the source, so forward-compatible preservation keeps its claim.
-            self.tx
-                .execute(
-                    "DELETE FROM imported_source_refs WHERE object_id = ?1",
-                    params![id.to_bytes().as_slice()],
-                )
-                .map_err(|e| CadError::io(format!("clearing source claims of object {id}"), e))?;
-        }
+        self.tx
+            .execute(
+                "DELETE FROM imported_source_refs WHERE object_id = ?1",
+                params![id.to_bytes().as_slice()],
+            )
+            .map_err(|e| CadError::io(format!("clearing source claims of object {id}"), e))?;
         Ok(hash)
     }
 
@@ -2135,11 +1909,10 @@ impl DocumentWriter<'_> {
 
         self.tx
             .execute(
-                "INSERT INTO objects (id, kind, schema_version, parent_id, ordinal, name, payload, payload_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO objects (id, kind, parent_id, ordinal, name, payload, payload_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(id) DO UPDATE SET
                      kind = excluded.kind,
-                     schema_version = excluded.schema_version,
                      parent_id = excluded.parent_id,
                      ordinal = excluded.ordinal,
                      name = excluded.name,
@@ -2148,7 +1921,6 @@ impl DocumentWriter<'_> {
                 params![
                     id.to_bytes().as_slice(),
                     payload.type_name(),
-                    payload.schema_version(),
                     parent.map(|p| p.to_bytes().to_vec()),
                     ordinal,
                     name,
@@ -2331,8 +2103,6 @@ impl DocumentWriter<'_> {
         reference.validate()?;
         let payload = Envelope::encode(
             "topology_ref",
-            1,
-            required_capabilities_of(&reference.output_role),
             &TopologyRefPayload {
                 output_role: reference.output_role.clone(),
                 selection: reference.selection.clone(),
@@ -2442,197 +2212,73 @@ fn refuse_wal_sidecars(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn require_supported_format(path: &Path, meta: &DocumentMeta) -> Result<()> {
-    if meta.format_version > FORMAT_VERSION {
-        return Err(CadError::unsupported(format!(
-            "{} uses document format v{}, this build writes v{}",
-            path.display(),
-            meta.format_version,
-            FORMAT_VERSION
-        )));
-    }
-    if meta.minimum_reader_version > FORMAT_VERSION {
-        return Err(CadError::unsupported(format!(
-            "{} needs a reader for format v{} or newer; this build writes v{}",
-            path.display(),
-            meta.minimum_reader_version,
-            FORMAT_VERSION
-        )));
-    }
-    Ok(())
-}
-
 fn read_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ObjectRecord>> {
     let id: Vec<u8> = row.get(0)?;
     let stored_kind: String = row.get(1)?;
-    let stored_schema_version: u32 = row.get(2)?;
-    let parent: Option<Vec<u8>> = row.get(3)?;
-    let ordinal: i64 = row.get(4)?;
-    let name: Option<String> = row.get(5)?;
-    let storage_bytes: Vec<u8> = row.get(6)?;
-    let payload_hash: Vec<u8> = row.get(7)?;
-
+    let parent: Option<Vec<u8>> = row.get(2)?;
+    let ordinal: i64 = row.get(3)?;
+    let name: Option<String> = row.get(4)?;
+    let storage_bytes: Vec<u8> = row.get(5)?;
+    let payload_hash: Vec<u8> = row.get(6)?;
     Ok((|| {
-        let payload = ObjectPayload::from_storage_bytes(&storage_bytes)?;
-        if payload.type_name() != stored_kind || payload.schema_version() != stored_schema_version {
+        let id = ObjectId::from_slice(&id)?;
+        let payload = ObjectPayload::from_storage_bytes(&storage_bytes).map_err(|e| {
+            CadError::input_because(format!("reading object {id} of type {stored_kind}"), e)
+        })?;
+        if payload.type_name() != stored_kind {
             return Err(CadError::input(format!(
-                "object metadata disagrees with its envelope: column is {} v{}, envelope is {} v{}",
-                stored_kind,
-                stored_schema_version,
-                payload.type_name(),
-                payload.schema_version()
+                "object {id} of type {stored_kind} has envelope type {}",
+                payload.type_name()
+            )));
+        }
+        let payload_hash = ContentHash::from_slice(&payload_hash)?;
+        if ContentHash::of_bytes(&storage_bytes) != payload_hash {
+            return Err(CadError::input(format!(
+                "object {id} of type {stored_kind} does not match its stored hash"
             )));
         }
         Ok(ObjectRecord {
-            id: ObjectId::from_slice(&id)?,
+            id,
             parent: parent.as_deref().map(ObjectId::from_slice).transpose()?,
             ordinal,
             name,
             payload,
-            payload_hash: ContentHash::from_slice(&payload_hash)?,
+            payload_hash,
             storage_bytes,
         })
     })())
 }
 
 fn read_meta(conn: &Connection) -> Result<DocumentMeta> {
-    conn.query_row(
-        "SELECT format_version, minimum_reader_version, document_id,
-                display_length_unit, display_angle_unit, created_at, modified_at, generator
-         FROM meta WHERE id = 1",
-        [],
-        |row| {
-            Ok((
-                row.get::<_, u32>(0)?,
-                row.get::<_, u32>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, String>(7)?,
-            ))
-        },
-    )
-    .map_err(|e| CadError::io("reading document metadata", e))
-    .and_then(
-        |(
-            format_version,
-            minimum_reader_version,
-            document_id,
-            length_unit,
-            angle_unit,
-            created_at,
-            modified_at,
-            generator,
-        )| {
-            let display_length_unit: Unit = length_unit.parse()?;
-            let display_angle_unit: Unit = angle_unit.parse()?;
-            validate_display_units(display_length_unit, display_angle_unit)?;
-            Ok(DocumentMeta {
-                document_id: DocumentId::from_slice(&document_id)?,
-                format_version,
-                minimum_reader_version,
-                display_length_unit,
-                display_angle_unit,
-                created_at,
-                modified_at,
-                generator,
-            })
-        },
-    )
-}
-
-/// What a reader must implement before it may read one stored role.
-///
-/// The core capability always, and the cap-edge one only for the role that
-/// needs it. A document that names no such edge therefore declares exactly
-/// what it declared before this build existed, and stays writable by a reader
-/// that predates it.
-fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
-    let mut names = vec![CORE_CAPABILITY.to_owned()];
-    if matches!(
-        role,
-        SemanticRole::OriginCap { .. } | SemanticRole::OriginSide { .. }
-    ) {
-        names.push(crate::TOPOLOGY_ORIGIN_FACE_CAPABILITY.to_owned());
-    }
-    if matches!(role, SemanticRole::ExtrudeCapEdge { .. }) {
-        names.push(EXTRUDE_CAP_EDGE_CAPABILITY.to_owned());
-    }
-    if matches!(role, SemanticRole::ExtrudeSweepEdge { .. }) {
-        names.push(EXTRUDE_SWEEP_EDGE_CAPABILITY.to_owned());
-    }
-    if matches!(role, SemanticRole::ExtrudeCapVertex { .. }) {
-        names.push(EXTRUDE_CAP_VERTEX_CAPABILITY.to_owned());
-    }
-    if matches!(
-        role,
-        SemanticRole::CarriedCap { .. } | SemanticRole::CarriedSide { .. }
-    ) {
-        names.push(crate::TOPOLOGY_CARRIED_FACE_CAPABILITY.to_owned());
-    }
-    if matches!(role, SemanticRole::RevolveFace { .. }) {
-        names.push(crate::FEATURE_REVOLVE_CAPABILITY.to_owned());
-    }
-    if matches!(role, SemanticRole::EdgeFilletFace { .. }) {
-        names.push(crate::FEATURE_FILLET_CAPABILITY.to_owned());
-    }
-    if matches!(role, SemanticRole::EdgeChamferFace { .. }) {
-        names.push(crate::FEATURE_CHAMFER_CAPABILITY.to_owned());
-    }
-    if matches!(role, SemanticRole::OriginFilletFace { .. }) {
-        names.push(crate::FEATURE_FILLET_CAPABILITY.to_owned());
-        names.push(crate::FEATURE_FILLET_SEQUENTIAL_CAPABILITY.to_owned());
-    }
-    if matches!(role, SemanticRole::RevolveCap { .. }) {
-        names.push(crate::FEATURE_REVOLVE_CAPABILITY.to_owned());
-        names.push(crate::FEATURE_REVOLVE_PARTIAL_CAPABILITY.to_owned());
-    }
-    names
-}
-
-/// Refuses a known role whose envelope omits part of its capability contract.
-///
-/// Checking only what an envelope *does* declare is not enough: a damaged or
-/// hand-edited cap-edge reference could otherwise omit its new capability and
-/// make an older reader believe the document was safe to rewrite. Extra
-/// supported capabilities remain conservative and are therefore allowed.
-fn require_role_capabilities(envelope: &Envelope, role: &SemanticRole) -> Result<()> {
-    let missing: Vec<String> = required_capabilities_of(role)
-        .into_iter()
-        .filter(|required| !envelope.required_capabilities.contains(required))
-        .collect();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(CadError::input(format!(
-            "{} schema v{} omits required capabilities: {}",
-            envelope.type_name,
-            envelope.schema_version,
-            missing.join(", ")
-        )))
-    }
-}
-
-/// Decides whether this build may write the document it just opened.
-fn determine_access(conn: &Connection) -> Result<Access> {
-    let mut missing: Vec<String> = declared_capabilities(conn)?
-        .into_iter()
-        .filter(|name| !SUPPORTED_CAPABILITIES.contains(&name.as_str()))
-        .collect();
-    missing.sort();
-
-    if missing.is_empty() {
-        Ok(Access::ReadWrite)
-    } else {
-        Ok(Access::ReadOnly {
-            reason: format!(
-                "it requires {}, which this build does not implement",
-                missing.join(", ")
-            ),
-        })
-    }
+    let (id, length, angle, created_at, modified_at, generator) = conn
+        .query_row(
+            "SELECT document_id, display_length_unit, display_angle_unit,
+                    created_at, modified_at, generator
+             FROM meta WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .map_err(|e| CadError::io("reading document metadata", e))?;
+    let display_length_unit = length.parse()?;
+    let display_angle_unit = angle.parse()?;
+    validate_display_units(display_length_unit, display_angle_unit)?;
+    Ok(DocumentMeta {
+        document_id: DocumentId::from_slice(&id)?,
+        display_length_unit,
+        display_angle_unit,
+        created_at,
+        modified_at,
+        generator,
+    })
 }
 
 fn validate_display_units(length: Unit, angle: Unit) -> Result<()> {
@@ -2647,63 +2293,6 @@ fn validate_display_units(length: Unit, angle: Unit) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-/// Returns the capability contract declared by the actual envelopes, not just
-/// the denormalised index table. A hand-edited or damaged `capabilities` table
-/// must never trick an older build into rewriting a future object.
-fn declared_capabilities(conn: &Connection) -> Result<BTreeSet<String>> {
-    let mut capabilities = BTreeSet::new();
-    for (table, context) in [
-        ("objects", "object"),
-        ("topology_refs", "topology reference"),
-    ] {
-        let mut stmt = conn
-            .prepare(&format!("SELECT payload FROM {table}"))
-            .map_err(|e| CadError::io(format!("preparing {context} capability query"), e))?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, Vec<u8>>(0))
-            .map_err(|e| CadError::io(format!("reading {context} capabilities"), e))?;
-        for row in rows {
-            let bytes = row.map_err(|e| CadError::io(format!("reading {context} payload"), e))?;
-            let envelope = Envelope::from_bytes(&bytes)?;
-            let all_supported = envelope
-                .required_capabilities
-                .iter()
-                .all(|name| SUPPORTED_CAPABILITIES.contains(&name.as_str()));
-            capabilities.extend(envelope.required_capabilities.iter().cloned());
-
-            // A future topology-reference role must still be allowed to open
-            // read-only without this build trying to decode it. A known,
-            // wholly supported payload has no such excuse: its declared
-            // capabilities must cover the role actually stored inside it.
-            if table == "topology_refs"
-                && envelope.type_name == "topology_ref"
-                && envelope.schema_version == 1
-                && all_supported
-            {
-                let decoded: TopologyRefPayload = envelope.decode()?;
-                require_role_capabilities(&envelope, &decoded.output_role)?;
-            }
-
-            // The same rule for the same reason, one table over. What a sketch
-            // envelope declares decides write access here, and what the payload
-            // holds decides it in `ObjectPayload::from_storage_bytes`; a header
-            // that disagreed with its payload would make those two answers
-            // differ, so the disagreement itself is the refusal.
-            if table == "objects"
-                && ObjectKind::parse(&envelope.type_name) == Some(ObjectKind::Sketch)
-                && ObjectKind::Sketch
-                    .readable_schema_versions()
-                    .contains(&envelope.schema_version)
-                && all_supported
-            {
-                let sketch: Sketch = envelope.decode()?;
-                sketch.require_declared_contract(&envelope)?;
-            }
-        }
-    }
-    Ok(capabilities)
 }
 
 /// Summarises diagnostics for an error message, keeping it to one line.
@@ -2725,11 +2314,6 @@ fn describe(diagnostics: &[ImportDiagnostic]) -> String {
 /// A source is only ever written together with the object that claims it, so
 /// this cannot collect something a caller was about to use.
 ///
-/// It runs on the successful path of every edit, and only there. An object with
-/// an unsupported capability makes the document read-only. A newer layout with
-/// a capability this build already knows may remain writable, but its explicit
-/// `imported_source_refs` row is preserved with the unknown envelope and keeps
-/// the source reachable even though this build cannot inspect its payload.
 fn reclaim_imported_sources(tx: &Transaction<'_>) -> Result<()> {
     tx.execute(
         "DELETE FROM imported_sources
@@ -2737,30 +2321,6 @@ fn reclaim_imported_sources(tx: &Transaction<'_>) -> Result<()> {
         [],
     )
     .map_err(|e| CadError::io("reclaiming unreferenced imported sources", e))?;
-    Ok(())
-}
-
-/// Rebuilds the denormalised capabilities index after a successful edit.
-///
-/// Removing an unknown object must remove its capability too; incrementally
-/// inserting rows only makes a document read-only forever after such removal.
-fn rebuild_capabilities(tx: &Transaction<'_>) -> Result<()> {
-    let capabilities = declared_capabilities(tx)?;
-    tx.execute("DELETE FROM capabilities", [])
-        .map_err(|e| CadError::io("clearing capability index", e))?;
-    tx.execute(
-        "INSERT INTO capabilities (name, required) VALUES (?1, 1)",
-        params![CORE_CAPABILITY],
-    )
-    .map_err(|e| CadError::io("recording core capability", e))?;
-    for capability in capabilities {
-        tx.execute(
-            "INSERT INTO capabilities (name, required) VALUES (?1, 1)
-             ON CONFLICT(name) DO NOTHING",
-            params![capability],
-        )
-        .map_err(|e| CadError::io("recording required capability", e))?;
-    }
     Ok(())
 }
 
@@ -3341,18 +2901,8 @@ mod constraint_write_tests {
         assert_eq!(plan.circle_roles(), Some((curves[0].id, curves[1].id)));
         d.write_sketch_constraints(&plan).expect("write");
 
-        // The stored sketch declares the vocabulary it now speaks, and nothing
-        // wider: the existing circle capability already covers a centre.
-        let stored = sketch_of(&d.object(id).expect("row").expect("present")).clone();
-        assert_eq!(stored.schema_version(), 3);
-        assert_eq!(
-            stored.required_capabilities(),
-            vec![
-                crate::CORE_CAPABILITY.to_owned(),
-                crate::SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
-                crate::SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY.to_owned(),
-            ]
-        );
+        // The stored sketch is read back as written.
+        let _stored = sketch_of(&d.object(id).expect("row").expect("present")).clone();
 
         // And it comes off again by its own UUID.
         let removal = prepare_sketch_constraints(
@@ -3367,7 +2917,7 @@ mod constraint_write_tests {
         d.write_sketch_constraints(&removal).expect("write");
         let bare = sketch_of(&d.object(id).expect("row").expect("present")).clone();
         assert!(bare.constraints.is_empty());
-        assert_eq!(bare.schema_version(), 1, "nothing left to declare");
+
         assert_eq!(bare.curves, curves, "the geometry is the saved guess");
     }
 }

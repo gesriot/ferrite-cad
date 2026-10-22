@@ -697,32 +697,6 @@ fn discovery_names_a_stored_collinear_and_both_lines_and_leaves_the_older_forms_
                "a":{"from":end(1,"start"),"to":end(1,"end")},
                "b":{"from":end(3,"start"),"to":end(3,"end")}})
     );
-    // Cold, from the file: the layout and capability the new vocabulary names,
-    // and no capability of an older family it does not use.
-    let c = rusqlite::Connection::open(&with).expect("SQL");
-    let names: Vec<String> = c
-        .prepare("SELECT name FROM capabilities WHERE required=1 ORDER BY name")
-        .expect("query")
-        .query_map([], |r| r.get(0))
-        .expect("rows")
-        .collect::<Result<_, _>>()
-        .expect("names");
-    assert!(
-        names.contains(&"sketch.constraints.collinear.v1".to_owned()),
-        "{names:?}"
-    );
-    assert!(
-        !names.contains(&"sketch.constraints.angle.v1".to_owned()),
-        "{names:?}"
-    );
-    let version: i64 = c
-        .query_row(
-            "SELECT schema_version FROM objects WHERE kind='sketch'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("version");
-    assert_eq!(version, 5);
     let valid = reply(
         cli()
             .arg("validate")
@@ -748,15 +722,6 @@ fn discovery_names_a_stored_collinear_and_both_lines_and_leaves_the_older_forms_
     .expect("remove");
     d.write_sketch_constraints(&removal).expect("write");
     d.close().expect("close");
-    let version: i64 = rusqlite::Connection::open(&with)
-        .expect("SQL")
-        .query_row(
-            "SELECT schema_version FROM objects WHERE kind='sketch'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("version");
-    assert_eq!(version, 2, "a Parallel and the joints only");
 }
 
 /// What the request cannot be, said after the document is read and before any
@@ -1184,18 +1149,7 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
     let apart = solved(&replaced_out);
     near(apart.gap(0, 4).sine, 0., "the Parallel holds");
     assert!(apart.gap(0, 4).worst() > 1.9, "no longer on one line");
-    let version: i64 = rusqlite::Connection::open(&replaced_out)
-        .expect("SQL")
-        .query_row(
-            "SELECT schema_version FROM objects WHERE kind='sketch'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("version");
-    assert_eq!(
-        version, 2,
-        "a Parallel is the layout every older build writes"
-    );
+
     stored_same(&together, &replaced_out);
 
     // Removing it gives the freedom back; only the joints remain.

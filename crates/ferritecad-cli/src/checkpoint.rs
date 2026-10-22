@@ -24,7 +24,7 @@ use crate::json;
 
 #[derive(Debug, Args)]
 pub struct ListCheckpointsArgs {
-    /// Existing .fcad, read without migration or modification.
+    /// Existing .fcad, read without modification.
     source: PathBuf,
     /// Emit one JSON v1 result. Argument errors remain clap text. Paths must be UTF-8.
     #[arg(long)]
@@ -33,7 +33,7 @@ pub struct ListCheckpointsArgs {
 
 #[derive(Debug, Args)]
 pub struct CreateCheckpointArgs {
-    /// Existing .fcad, read without migration or modification.
+    /// Existing .fcad, read without modification.
     source: PathBuf,
     /// The checkpoint's name: 1-80 characters after trimming, no control
     /// characters. Names need not be unique; the printed UUID is the identity.
@@ -54,7 +54,7 @@ pub struct CreateCheckpointArgs {
 
 #[derive(Debug, Args)]
 pub struct DeleteCheckpointArgs {
-    /// Existing .fcad, read without migration or modification.
+    /// Existing .fcad, read without modification.
     source: PathBuf,
     /// The checkpoint's UUID, as list-checkpoints prints it (never a name).
     #[arg(long)]
@@ -73,7 +73,7 @@ pub struct DeleteCheckpointArgs {
 
 #[derive(Debug, Args)]
 pub struct ExtractCheckpointArgs {
-    /// Existing .fcad, read without migration or modification.
+    /// Existing .fcad, read without modification.
     source: PathBuf,
     /// The checkpoint's UUID, as list-checkpoints prints it (never a name).
     #[arg(long)]

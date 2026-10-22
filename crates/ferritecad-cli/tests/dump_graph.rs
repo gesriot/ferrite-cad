@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::SystemTime;
 
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, params};
 
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_ferritecad"))
@@ -41,24 +41,10 @@ fn prepare(path: &Path, statements: &str) {
     connection.execute_batch(statements).expect("fixture sql");
 }
 
-fn schema_version(path: &Path) -> i64 {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .expect("read schema version");
-    connection
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("user_version")
-}
-
 fn sentinel(path: &Path, suffix: &str, bytes: &[u8]) {
     let mut name = path.as_os_str().to_os_string();
     name.push(suffix);
     std::fs::write(PathBuf::from(name), bytes).expect("private sentinel");
-}
-
-fn remove_sentinel(path: &Path, suffix: &str) {
-    let mut name = path.as_os_str().to_os_string();
-    name.push(suffix);
-    std::fs::remove_file(PathBuf::from(name)).expect("remove own sentinel");
 }
 
 /// File bytes and mtimes only. Directory mtime moves when the test itself
@@ -153,10 +139,9 @@ fn refused(root: &Path, path: &Path, kind: &str, reason: &str) {
         let storage_changed = files(root) != before;
         if output.status.code() != Some(2) || !output.stdout.is_empty() || storage_changed {
             panic!(
-                "dump-graph format={format:?} exit={:?} stdout_len={} storage_changed={storage_changed} user_version={} stderr={}",
+                "dump-graph format={format:?} exit={:?} stdout_len={} storage_changed={storage_changed} stderr={}",
                 output.status.code(),
                 output.stdout.len(),
-                schema_version_note(path),
                 String::from_utf8_lossy(&output.stderr)
             );
         }
@@ -169,57 +154,31 @@ fn refused(root: &Path, path: &Path, kind: &str, reason: &str) {
     assert!(stderr.contains(reason), "{stderr}");
 }
 
-fn schema_version_note(path: &Path) -> String {
-    match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-        Ok(connection) => connection
-            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-            .map_or_else(|error| error.to_string(), |version| version.to_string()),
-        Err(error) => error.to_string(),
-    }
-}
-
 #[test]
 fn current_sample_text_and_dot_leave_the_directory_unchanged() {
     let root = tempfile::tempdir().expect("directory");
     let path = root.path().join("plate.fcad");
     create_sample(&path);
-    assert_eq!(schema_version(&path), 4);
     sentinel(&path, "-cache", b"foreign cache");
     sentinel(&path, "-other", b"private sentinel");
     let (first_text, first_dot) = rendered(root.path(), &path);
     let (second_text, second_dot) = rendered(root.path(), &path);
     assert_eq!(first_text, second_text);
     assert_eq!(first_dot, second_dot);
-    assert_eq!(schema_version(&path), 4);
 }
 
 #[test]
-fn legacy_schema_wal_and_reader_floor_are_refused() {
+fn wal_connections_and_sidecars_are_refused() {
     let root = tempfile::tempdir().expect("directory");
     let path = root.path().join("plate.fcad");
     create_sample(&path);
     let current = std::fs::read(&path).expect("current bytes");
-    prepare(
-        &path,
-        "DROP TABLE imported_source_refs; DROP TABLE imported_sources; PRAGMA user_version = 2;",
-    );
-    assert_eq!(schema_version(&path), 2, "fixture must be exact schema v2");
-    sentinel(&path, "-other", b"keep other");
-    refused(root.path(), &path, "unsupported", "needs migration");
-    assert_eq!(schema_version(&path), 2, "dump-graph migrated schema v2");
-
     prepare(&path, "PRAGMA journal_mode = WAL;");
     sentinel(&path, "-wal", b"sentinel wal");
     sentinel(&path, "-shm", b"sentinel shm");
     refused(root.path(), &path, "unsupported", "journalling");
-
     std::fs::write(&path, &current).expect("restore DELETE header");
     refused(root.path(), &path, "unsupported", "WAL sidecar");
-
-    remove_sentinel(&path, "-wal");
-    remove_sentinel(&path, "-shm");
-    prepare(&path, "UPDATE meta SET minimum_reader_version = 999");
-    refused(root.path(), &path, "unsupported", "needs a reader");
 }
 
 #[test]
@@ -269,7 +228,7 @@ fn clap_rejects_json_and_keeps_text_or_dot_help() {
     assert_eq!(help.status.code(), Some(0), "{help:?}");
     assert!(help.stderr.is_empty(), "{help:?}");
     let stdout = String::from_utf8_lossy(&help.stdout);
-    assert!(stdout.contains("without migration"), "{stdout}");
+    assert!(stdout.contains("without writes"), "{stdout}");
     assert!(stdout.contains("read-only"), "{stdout}");
     assert!(
         stdout.contains("- text: Indented evaluation order"),
@@ -397,43 +356,21 @@ fn replace_with_planes(
             if foreign_keys { "ON" } else { "OFF" },
         )
         .expect("foreign keys");
-    let template: (String, i64, Option<Vec<u8>>, Vec<u8>, Vec<u8>) = connection
+    let template: (String, Option<Vec<u8>>, Vec<u8>, Vec<u8>) = connection
         .query_row(
-            "SELECT kind, schema_version, parent_id, payload, payload_hash
-             FROM objects WHERE kind = 'datum.plane'",
+            "SELECT kind, parent_id, payload, payload_hash FROM objects WHERE kind = 'datum.plane'",
             [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .expect("datum plane template");
     connection
         .execute_batch("DELETE FROM topology_refs; DELETE FROM deps; DELETE FROM objects;")
         .expect("clear sample graph");
     for (id, name, ordinal) in rows {
-        connection
-            .execute(
-                "INSERT INTO objects
-                    (id, kind, schema_version, parent_id, ordinal, name, payload, payload_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    id.as_slice(),
-                    &template.0,
-                    template.1,
-                    &template.2,
-                    ordinal,
-                    name,
-                    &template.3,
-                    &template.4
-                ],
-            )
-            .expect("insert object");
+        connection.execute(
+            "INSERT INTO objects (id, kind, parent_id, ordinal, name, payload, payload_hash) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![id.as_slice(), &template.0, &template.1, ordinal, name, &template.2, &template.3],
+        ).expect("insert object");
     }
     for (dependent, dependency, role) in edges {
         connection
@@ -568,7 +505,6 @@ fn text_keeps_evaluation_order_and_every_stored_need() {
     dot.push_str("}\n");
 
     assert_dump_bytes(root.path(), &path, text.as_bytes(), dot.as_bytes());
-    assert_eq!(schema_version(&path), 4);
 }
 
 #[test]
@@ -576,7 +512,6 @@ fn empty_document_text_is_empty_and_dot_is_only_the_header() {
     let root = tempfile::tempdir().expect("directory");
     let path = root.path().join("empty.fcad");
     create_empty(&path);
-    assert_eq!(schema_version(&path), 4);
     let dot =
         "digraph features {\n  rankdir=LR;\n  node [shape=box, fontname=\"sans-serif\"];\n}\n";
     assert_dump_bytes(root.path(), &path, b"", dot.as_bytes());

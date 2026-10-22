@@ -1100,9 +1100,9 @@ fn native_annulus_height_copy_keeps_both_circles_and_every_identity() {
                     assert_eq!(a.len(), b.len());
                     if a[0] == id {
                         edited += 1;
-                        assert_eq!(&a[..6], &b[..6], "Extrude metadata changed");
-                        assert_ne!(a[6], b[6], "height payload did not change");
-                        assert_ne!(a[7], b[7], "payload hash did not change");
+                        assert_eq!(&a[..5], &b[..5], "Extrude metadata changed");
+                        assert_ne!(a[5], b[5], "height payload did not change");
+                        assert_ne!(a[6], b[6], "payload hash did not change");
                     } else {
                         assert_eq!(a, b, "an unedited object changed");
                     }
@@ -1114,7 +1114,7 @@ fn native_annulus_height_copy_keeps_both_circles_and_every_identity() {
                 for (a, b) in rows.iter().zip(&sql_after[table]) {
                     assert_eq!(a.len(), b.len());
                     for (i, cell) in a.iter().enumerate() {
-                        if i != 7 {
+                        if i != 5 {
                             assert_eq!(cell, &b[i], "meta cell {i}");
                         }
                     }

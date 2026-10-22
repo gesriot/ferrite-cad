@@ -184,18 +184,14 @@ def tables(path):
     return out
 
 def allowlist(source, copy, row_id):
-    """Only the Sketch row's schema version, payload and hash, the stamp and the
-    one sketch.constraints capability row may differ; every other cell stays."""
+    """Only the Sketch row's payload and hash and the stamp may differ; every
+    other cell stays."""
     rid = bytes.fromhex(row_id.replace("-", ""))
     a, b = tables(source), tables(copy)
     assert a.keys() == b.keys()
     for t in a:
         (ac, arows), (bc, brows) = a[t], b[t]
         assert ac == bc, t
-        if t == "capabilities":
-            assert all(r in brows for r in arows), "a capability changed"
-            assert all("sketch.constraints.v1" in repr(r) for r in brows if r not in arows)
-            continue
         assert len(arows) == len(brows), t
         if t == "objects":
             key = ac.index("id")
@@ -205,7 +201,7 @@ def allowlist(source, copy, row_id):
             for c, u, v in zip(ac, x, y):
                 if u == v:
                     continue
-                ok = (t == "objects" and c in ("schema_version", "payload", "payload_hash")
+                ok = (t == "objects" and c in ("payload", "payload_hash")
                       and x[ac.index("id")] == rid) or (t == "meta" and c == "modified_at")
                 assert ok, f"{t}.{c} moved"
 

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use ferritecad_document::{Document, ImportedStep};
-use ferritecad_exchange::{Diagnostic, Severity, Stage, StoredScene};
+use ferritecad_exchange::{Diagnostic, Severity, Stage};
 use ferritecad_kernel::GeometryKernel;
 use ferritecad_occt::OcctKernel;
 use ferritecad_types::{ContentHash, DocumentId, ErrorKind, ObjectId};
@@ -268,11 +268,7 @@ fn native_json_step_import_publication_rejection_and_delivery() {
             stored.diagnostics_at_import,
             text_stored.diagnostics_at_import
         );
-        let (StoredScene::V3(scene), StoredScene::V3(mut peer_scene)) =
-            (&stored.scene, text_stored.scene)
-        else {
-            panic!("V3")
-        };
+        let (scene, mut peer_scene) = (&stored.scene, text_stored.scene);
         assert_eq!(scene.instances.len(), peer_scene.instances.len());
         for (a, b) in scene.instances.iter().zip(&mut peer_scene.instances) {
             assert_ne!(a.occurrence, b.occurrence);

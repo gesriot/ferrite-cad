@@ -484,30 +484,6 @@ fn closed_through_t_junctions(m: &Mesh) {
     );
 }
 
-pub(super) fn payload_version(path: &Path) -> i64 {
-    let sql =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .expect("SQL");
-    sql.query_row(
-        "SELECT schema_version FROM objects WHERE kind='feature.revolve'",
-        [],
-        |r| r.get(0),
-    )
-    .expect("version")
-}
-
-pub(super) fn expected_capabilities(solid: bool) -> Vec<String> {
-    let mut names = vec![
-        "core.part.v1",
-        "feature.revolve.partial.v1",
-        "feature.revolve.v1",
-    ];
-    if solid {
-        names.insert(1, "feature.revolve.axis-closed.v1");
-    }
-    names.into_iter().map(str::to_owned).collect()
-}
-
 #[test]
 fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
     if !native() {
@@ -589,8 +565,6 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                     }
                 );
                 assert_eq!(use_["axis_curve_id"], json!(axis_id));
-                assert_eq!(capability_rows(&out), expected_capabilities(solid));
-                assert_eq!(payload_version(&out), if solid { 4 } else { 3 });
 
                 let cold = measure_partial(&out, &p, degrees, full, None);
                 assert_eq!(
@@ -902,129 +876,6 @@ fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
             assert_eq!(std::fs::read(&source).expect("source"), before);
         }
         assert_eq!(c["edit_extrude"]["available"], false);
-    }
-}
-
-/// A sector document written without a kernel: the layout and the
-/// capabilities move with the meaning, a header that disagrees with the
-/// payload is refused, and discovery reports the angle.
-#[test]
-fn partial_revolution_payload_capabilities_and_discovery_without_kernel() {
-    let d = tempfile::tempdir().expect("dir");
-    for (points, solid) in [(BUSHING.to_vec(), false), (CYLINDER.to_vec(), true)] {
-        let path = d.path().join(format!("sector-{solid}.fcad"));
-        let (revolve, labels) = write_revolve_document(&path, &points);
-        let axis = axis_line(&points).map(|i| labels[i]);
-        let sketch = doc_sketch(&path);
-        {
-            let mut doc = Document::open(&path).expect("open");
-            doc.write(|w| {
-                w.put_object(
-                    revolve,
-                    None,
-                    2,
-                    Some("Revolve1"),
-                    &ObjectPayload::Revolve(Revolve {
-                        profile: sketch,
-                        axis: RevolveAxis::SketchY,
-                        extent: RevolveExtent::Partial {
-                            degrees: RevolveAngle::new(137.5).expect("angle"),
-                        },
-                        operation: SolidOperation::NewBody,
-                        axis_segment: axis,
-                    }),
-                )?;
-                for side in [CapSide::Start, CapSide::End] {
-                    w.put_topology_ref(&TopologyRef {
-                        id: StableEntityId::new(),
-                        owner: revolve,
-                        producer_feature: revolve,
-                        expected_kind: EntityKind::Face,
-                        output_role: SemanticRole::RevolveCap { side },
-                        selection: SelectionRule::Exact,
-                        fallback_signature: None,
-                    })?;
-                }
-                Ok(())
-            })
-            .expect("sector");
-            doc.close().expect("close");
-        }
-        assert_eq!(payload_version(&path), if solid { 4 } else { 3 });
-        assert_eq!(capability_rows(&path), expected_capabilities(solid));
-        let doc = Document::open_read_only(&path).expect("open");
-        let record = doc.object(revolve).expect("row").expect("revolve");
-        let ObjectPayload::Revolve(stored) = &record.payload else {
-            panic!("a Revolve")
-        };
-        assert_eq!(
-            stored.extent,
-            RevolveExtent::Partial {
-                degrees: RevolveAngle::new(137.5).expect("angle")
-            }
-        );
-        // The cache key moves with the angle and never equals a full turn's.
-        let tolerance = ferritecad_types::Tolerance::default();
-        let key = stored.cache_key(tolerance);
-        let mut other = stored.clone();
-        other.extent = RevolveExtent::Partial {
-            degrees: RevolveAngle::new(137.25).expect("angle"),
-        };
-        assert_ne!(key, other.cache_key(tolerance));
-        other.extent = RevolveExtent::FullTurn;
-        assert_ne!(key, other.cache_key(tolerance));
-        doc.close().expect("close");
-        let c = inspect(&path);
-        assert_eq!(c["revolves"][0]["extent"], "partial_turn");
-        assert_eq!(c["revolves"][0]["angle_deg"], 137.5);
-        assert_eq!(c["sketches"][0]["editable"], true);
-        assert_eq!(
-            c["sketches"][0]["profile_feature"]["kind"],
-            if solid {
-                "partial_turn_revolve_axis_closed"
-            } else {
-                "partial_turn_revolve"
-            }
-        );
-        assert_eq!(c["sketches"][0]["profile_feature"]["angle_deg"], 137.5);
-        // A header claiming the full-turn layout over a sector is refused: it
-        // would hide the angle from a build that reads that layout.
-        {
-            let full_turn_layout = if solid { 2 } else { 1 };
-            let raw = rusqlite::Connection::open(&path).expect("SQL");
-            let bytes: Vec<u8> = raw
-                .query_row(
-                    "SELECT payload FROM objects WHERE kind='feature.revolve'",
-                    [],
-                    |r| r.get(0),
-                )
-                .expect("payload");
-            let mut envelope = ferritecad_document::Envelope::from_bytes(&bytes).expect("envelope");
-            envelope.schema_version = full_turn_layout;
-            envelope
-                .required_capabilities
-                .retain(|c| c != "feature.revolve.partial.v1");
-            let bytes = envelope.to_bytes().expect("bytes");
-            raw.execute(
-                "UPDATE objects SET payload=?1,payload_hash=?2,schema_version=?3 \
-                 WHERE kind='feature.revolve'",
-                rusqlite::params![
-                    bytes,
-                    ferritecad_types::ContentHash::of_bytes(&bytes)
-                        .as_bytes()
-                        .as_slice(),
-                    full_turn_layout
-                ],
-            )
-            .expect("forge");
-        }
-        let doc = Document::open_read_only(&path).expect("open");
-        let error = doc.objects().expect_err("a full-turn header over a sector");
-        assert!(
-            error.to_string().contains("does not match what it holds"),
-            "{error}"
-        );
-        doc.close().expect("close");
     }
 }
 

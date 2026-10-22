@@ -5119,25 +5119,13 @@ pub(crate) mod tests {
                             .expect("same row");
                         for col in 0..row.len() {
                             if row[1] == rusqlite::types::Value::Blob(id.to_bytes().to_vec())
-                                && [3, 7, 8].contains(&col)
+                                && [6, 7].contains(&col)
                             {
                                 continue;
                             }
                             assert_eq!(row[col], actual[col], "object cell {col}");
                         }
                     }
-                } else if table == "capabilities" {
-                    assert_eq!(
-                        after[table]
-                            .iter()
-                            .filter(|r| r[1]
-                                != rusqlite::types::Value::Text(
-                                    ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY.into()
-                                ))
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                        *rows
-                    );
                 } else {
                     assert_eq!(
                         &after[table], rows,
@@ -5457,25 +5445,13 @@ pub(crate) mod tests {
                             .expect("same row");
                         for col in 0..row.len() {
                             if row[1] == rusqlite::types::Value::Blob(id.to_bytes().to_vec())
-                                && [3, 7, 8].contains(&col)
+                                && [6, 7].contains(&col)
                             {
                                 continue;
                             }
                             assert_eq!(row[col], actual[col], "object cell {col}");
                         }
                     }
-                } else if table == "capabilities" {
-                    assert_eq!(
-                        after[table]
-                            .iter()
-                            .filter(|r| r[1]
-                                != rusqlite::types::Value::Text(
-                                    ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY.into()
-                                ))
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                        *rows
-                    );
                 } else {
                     assert_eq!(
                         &after[table], rows,
@@ -5787,25 +5763,13 @@ pub(crate) mod tests {
                             .expect("same row");
                         for col in 0..row.len() {
                             if row[1] == rusqlite::types::Value::Blob(id.to_bytes().to_vec())
-                                && [3, 7, 8].contains(&col)
+                                && [6, 7].contains(&col)
                             {
                                 continue;
                             }
                             assert_eq!(row[col], actual[col], "object cell {col}");
                         }
                     }
-                } else if table == "capabilities" {
-                    assert_eq!(
-                        after[table]
-                            .iter()
-                            .filter(|r| r[1]
-                                != rusqlite::types::Value::Text(
-                                    ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY.into()
-                                ))
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                        *rows
-                    );
                 } else {
                     assert_eq!(
                         &after[table], rows,
@@ -6089,25 +6053,13 @@ pub(crate) mod tests {
                             .expect("same row");
                         for col in 0..row.len() {
                             if row[1] == rusqlite::types::Value::Blob(id.to_bytes().to_vec())
-                                && [3, 7, 8].contains(&col)
+                                && [6, 7].contains(&col)
                             {
                                 continue;
                             }
                             assert_eq!(row[col], actual[col], "object cell {col}");
                         }
                     }
-                } else if table == "capabilities" {
-                    assert_eq!(
-                        after[table]
-                            .iter()
-                            .filter(|r| r[1]
-                                != rusqlite::types::Value::Text(
-                                    ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY.into()
-                                ))
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                        *rows
-                    );
                 } else {
                     assert_eq!(
                         &after[table], rows,
@@ -6364,7 +6316,7 @@ pub(crate) mod tests {
                             .expect("same row");
                         for col in 0..row.len() {
                             if row[1] == rusqlite::types::Value::Blob(id.to_bytes().to_vec())
-                                && [3, 7, 8].contains(&col)
+                                && [6, 7].contains(&col)
                             {
                                 continue;
                             }

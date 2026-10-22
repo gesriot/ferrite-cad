@@ -250,7 +250,7 @@ fn published_facts_are_the_one_read_and_exact_stored_projection() {
         stored.imported.diagnostics_at_import,
         result.read.diagnostics
     );
-    assert_eq!(stored.imported.scene, StoredScene::V3(result.scene));
+    assert_eq!(stored.imported.scene, result.scene);
     assert_eq!(files(dir.path()), BTreeSet::from([source, destination]));
 }
 

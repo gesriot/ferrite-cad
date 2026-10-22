@@ -8,50 +8,6 @@ pub const DOCUMENT_EXTENSION: &str = "fcad";
 /// Extension of the regenerable cache sidecar.
 pub const CACHE_EXTENSION: &str = "fcad-cache";
 
-/// Version of the document *format* this build writes, recorded in `meta`.
-///
-/// Distinct from the SQL schema version in `PRAGMA user_version`, and the two
-/// have been apart since schema v2. The SQL version counts migrations and moves
-/// whenever a table or column is added; this one describes what a reader must
-/// understand to make sense of the contents, and moves only when that changes.
-/// Adding a storage table does not by itself change it: SQL compatibility is
-/// enforced independently (a schema-v2 binary refuses schema v3), while a
-/// capability declaration is the finer-grained instrument for readers that do
-/// understand the container schema but not a particular object's meaning.
-pub const FORMAT_VERSION: u32 = 1;
-
-/// The oldest reader able to make sense of what this build writes.
-///
-/// Written into `meta` so a future reader can refuse a document instead of
-/// misreading it. It only moves when a change is not backward compatible.
-pub const MINIMUM_READER_VERSION: u32 = 1;
-
-/// Capabilities this build implements.
-///
-/// A document that requires anything outside this list opens read-only: it is
-/// better to refuse to write than to drop what we did not understand.
-pub const SUPPORTED_CAPABILITIES: &[&str] = &[
-    "core.part.v1",
-    "exchange.step.imported.v1",
-    "sketch.constraints.v1",
-    "sketch.constraints.circle.v1",
-    "sketch.constraints.angle.v1",
-    "sketch.constraints.collinear.v1",
-    "feature.predecessor.v1",
-    "feature.through-all.v1",
-    "feature.revolve.v1",
-    "feature.revolve.axis-closed.v1",
-    "feature.revolve.partial.v1",
-    "feature.fillet.v1",
-    "feature.fillet.sequential.v1",
-    "feature.chamfer.v1",
-    "topology.extrude-cap-edge.v1",
-    "topology.extrude-sweep-edge.v1",
-    "topology.extrude-cap-vertex.v1",
-    "topology.carried-face.v1",
-    "topology.origin-face.v1",
-];
-
 /// `PRAGMA application_id` for a document: the ASCII bytes `FCAD`.
 ///
 /// Set so `file(1)` and recovery tools can tell a FerriteCAD document from any
@@ -61,18 +17,10 @@ pub const DOCUMENT_APPLICATION_ID: i32 = i32::from_be_bytes(*b"FCAD");
 /// `PRAGMA application_id` for a cache sidecar: the ASCII bytes `FCAC`.
 pub const CACHE_APPLICATION_ID: i32 = i32::from_be_bytes(*b"FCAC");
 
-/// Schema of the source of truth.
-///
-/// `STRICT` is used throughout so SQLite enforces column types instead of
-/// silently coercing them, and every identifier column checks its own length —
-/// a 15-byte UUID is a corrupt document, not a value to work around.
-const MIGRATIONS: &[&str] = &[
-    // v1
-    r#"
+/// Current document schema. Identifiers and hashes have fixed lengths.
+const DOCUMENT_SCHEMA: &str = r#"
 CREATE TABLE meta (
     id                     INTEGER PRIMARY KEY CHECK (id = 1),
-    format_version         INTEGER NOT NULL,
-    minimum_reader_version INTEGER NOT NULL,
     document_id            BLOB    NOT NULL CHECK (length(document_id) = 16),
     display_length_unit    TEXT    NOT NULL,
     display_angle_unit     TEXT    NOT NULL,
@@ -81,21 +29,9 @@ CREATE TABLE meta (
     generator              TEXT    NOT NULL
 ) STRICT;
 
--- Denormalised index of capabilities a reader must implement to write this
--- document. It is rebuilt after every successful edit; opening verifies the
--- envelope declarations too, because a hand-edited index is not authoritative.
-CREATE TABLE capabilities (
-    name     TEXT    PRIMARY KEY NOT NULL,
-    required INTEGER NOT NULL CHECK (required IN (0, 1))
-) STRICT;
-
--- Features, sketches, bodies, parameters and datums. `payload` is a CBOR
--- envelope; for an object type this build does not know, it is stored and
--- returned unchanged.
 CREATE TABLE objects (
     id             BLOB    PRIMARY KEY NOT NULL CHECK (length(id) = 16),
     kind           TEXT    NOT NULL,
-    schema_version INTEGER NOT NULL,
     parent_id      BLOB    REFERENCES objects(id) ON DELETE CASCADE,
     ordinal        INTEGER NOT NULL DEFAULT 0,
     name           TEXT,
@@ -106,8 +42,6 @@ CREATE TABLE objects (
 CREATE INDEX objects_by_parent ON objects(parent_id, ordinal);
 CREATE INDEX objects_by_kind ON objects(kind);
 
--- Directed edges of the feature DAG. RESTRICT on the dependency side stops a
--- delete from silently orphaning a dependent feature.
 CREATE TABLE deps (
     dependent_id  BLOB NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
     dependency_id BLOB NOT NULL REFERENCES objects(id) ON DELETE RESTRICT,
@@ -117,62 +51,31 @@ CREATE TABLE deps (
 
 CREATE INDEX deps_by_dependency ON deps(dependency_id);
 
--- Stable semantic names for produced geometry. The binding of a name to a
--- concrete kernel sub-shape is cache and lives in the sidecar; what is stored
--- here is the intent that survives a rebuild.
 CREATE TABLE topology_refs (
     id                BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 16),
     owner_id          BLOB NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
     producer_feature  BLOB NOT NULL REFERENCES objects(id) ON DELETE RESTRICT,
     expected_kind     TEXT NOT NULL,
-    payload           BLOB NOT NULL
+    payload           BLOB NOT NULL,
+    payload_hash      BLOB NOT NULL CHECK (length(payload_hash) = 32)
 ) STRICT;
 
 CREATE INDEX topology_refs_by_owner ON topology_refs(owner_id);
 CREATE INDEX topology_refs_by_producer ON topology_refs(producer_feature);
-"#,
-    // v2: topology payloads are source-of-truth data as well. New rows carry
-    // a BLAKE3 integrity hash; v1 rows retain NULL because SQLite cannot
-    // calculate BLAKE3 during a migration. They remain readable and gain a
-    // hash the next time their reference is explicitly rewritten.
-    r#"
-ALTER TABLE topology_refs
-    ADD COLUMN payload_hash BLOB CHECK (payload_hash IS NULL OR length(payload_hash) = 32);
-"#,
-    // v3: the exact bytes of an imported file. They are source of truth in the
-    // same sense the feature graph is — the scene stored beside them is one
-    // reading, and a reading can be redone in a new kernel session, but only
-    // while the bytes are still here. They are deliberately not in an object
-    // payload: a payload is decoded to be understood, and multi-megabyte
-    // source data has no business being decoded to answer a question about a
-    // document's structure.
-    r#"
+
+
 CREATE TABLE imported_sources (
     id           BLOB    PRIMARY KEY NOT NULL CHECK (length(id) = 16),
-    -- A project-owned tag rather than a media type: what this names is how
-    -- FerriteCAD reads the bytes, which is a narrower claim than what the
-    -- bytes are, and one this project is entitled to make.
     format       TEXT    NOT NULL,
     bytes        BLOB    NOT NULL,
-    -- BLAKE3-256, the same digest as objects.payload_hash and
-    -- topology_refs.payload_hash. Checked on every read, before the bytes
-    -- reach anything that would interpret them.
     content_hash BLOB    NOT NULL CHECK (length(content_hash) = 32),
     byte_len     INTEGER NOT NULL CHECK (byte_len >= 0),
     created_at   TEXT    NOT NULL,
-    -- A length that disagrees with the blob is corruption SQLite can catch
-    -- without help, so it does.
     CHECK (length(bytes) = byte_len)
 ) STRICT;
 
--- One file, one row, however many objects were imported from it. A source is
--- immutable, so identical content is the same source rather than a copy.
 CREATE UNIQUE INDEX imported_sources_by_content ON imported_sources(format, content_hash);
 
--- What makes a source reachable, as a row rather than a field inside a CBOR
--- payload. SQLite can enforce a row: deleting an object drops its claim on the
--- bytes even when this build cannot decode that object, and an object this
--- build has never heard of keeps its source alive for the build that can.
 CREATE TABLE imported_source_refs (
     object_id BLOB NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
     source_id BLOB NOT NULL REFERENCES imported_sources(id) ON DELETE RESTRICT,
@@ -180,82 +83,25 @@ CREATE TABLE imported_source_refs (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX imported_source_refs_by_source ON imported_source_refs(source_id);
-"#,
-    // v4 (§30N): named checkpoints. Each row is a whole model the user chose to
-    // keep, as a complete document file whose own `checkpoints` table is empty,
-    // so a checkpoint never contains checkpoints. The catalog belongs to the
-    // working document: rows are only inserted and deleted, never updated. No
-    // foreign key: an image is opaque bytes here and names nothing in this file.
-    // The image is the last column so that listing never reads it.
-    r#"
+
+
 CREATE TABLE checkpoints (
     id         BLOB    PRIMARY KEY NOT NULL CHECK (length(id) = 16),
     name       TEXT    NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
     created_at TEXT    NOT NULL,
-    -- `Document::model_without_checkpoints` of the image.
     model      BLOB    NOT NULL CHECK (length(model) = 32),
     byte_len   INTEGER NOT NULL CHECK (byte_len > 0),
-    -- BLAKE3-256 of `image`, checked before the bytes are used.
     image_hash BLOB    NOT NULL CHECK (length(image_hash) = 32),
     image      BLOB    NOT NULL,
     CHECK (length(image) = byte_len)
 ) STRICT;
-"#,
-];
+"#;
 
-/// The oldest schema the read-only path reads as it is (§30N).
-///
-/// v4 only adds the `checkpoints` table, and its absence means exactly what an
-/// empty one means, so a v3 document is read without migrating it. Anything
-/// older still needs a migration that only a writer may perform.
-const READABLE_WITHOUT_MIGRATION: u32 = 3;
-
-/// The schema that added the `checkpoints` table.
-const CHECKPOINTS_SINCE: u32 = 4;
-
-/// Whether this document's schema has the checkpoint catalog (v4 and later).
-/// Decided by the schema version, not by a table's name: in an older document a
-/// table called `checkpoints` is somebody else's and is kept like any unknown one.
-pub(crate) fn has_checkpoint_table(conn: &Connection) -> Result<bool> {
-    Ok(schema_version(conn)? >= CHECKPOINTS_SINCE)
-}
-
-/// Refuses a document whose SQL schema cannot be read without changing it.
-///
-/// The ordinary open path migrates older schemas. A caller that promised to
-/// leave the source file untouched needs the opposite contract: fail before a
-/// query depends on a column that an unapplied migration would have created.
-/// Schemas from [`READABLE_WITHOUT_MIGRATION`] on are read as they are; a query
-/// about a later table asks whether it exists first.
-pub(crate) fn require_current_document_schema(conn: &Connection) -> Result<()> {
-    let current = schema_version(conn)?;
-    let target = MIGRATIONS.len() as u32;
-
-    if current < READABLE_WITHOUT_MIGRATION {
-        return Err(CadError::unsupported(format!(
-            "this document uses schema v{current} and needs migration to v{target}; it was opened \
-             read-only and will not be changed"
-        )));
-    }
-    if current > target {
-        return Err(CadError::unsupported(format!(
-            "this document was written by a newer FerriteCAD (schema v{current}, this build \
-             understands up to v{target})"
-        )));
-    }
-    Ok(())
-}
-
-/// Schema of the cache sidecar. Nothing here may affect a rebuild's result.
-const CACHE_MIGRATIONS: &[&str] = &[
-    // v1
-    r#"
--- Binds the sidecar to exactly one document. A sidecar whose document_id or
--- format_version does not match is discarded, never repaired.
+/// Current schema for regenerable derived data.
+const CACHE_SCHEMA: &str = r#"
 CREATE TABLE cache_meta (
     id             INTEGER PRIMARY KEY CHECK (id = 1),
     document_id    BLOB    NOT NULL CHECK (length(document_id) = 16),
-    format_version INTEGER NOT NULL,
     kernel_id      TEXT    NOT NULL,
     kernel_version TEXT    NOT NULL
 ) STRICT;
@@ -273,9 +119,6 @@ CREATE TABLE blob_chunks (
     PRIMARY KEY (hash, seq)
 ) STRICT;
 
--- Maps (object, cache key, representation kind) to content. `kind` belongs to
--- the reference rather than the content-addressed blob: byte-identical B-Rep
--- and tessellation payloads are still different representations.
 CREATE TABLE blob_refs (
     object_id BLOB NOT NULL CHECK (length(object_id) = 16),
     cache_key BLOB NOT NULL CHECK (length(cache_key) = 32),
@@ -285,38 +128,7 @@ CREATE TABLE blob_refs (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX blob_refs_by_hash ON blob_refs(hash);
-"#,
-    // v2: cache data is regenerable, so recreate the reference layout instead
-    // of attempting a lossy migration from the old blob-level `kind` field.
-    r#"
-DROP TABLE blob_refs;
-DROP TABLE blob_chunks;
-DROP TABLE blobs;
-
-CREATE TABLE blobs (
-    hash       BLOB    PRIMARY KEY NOT NULL CHECK (length(hash) = 32),
-    byte_len   INTEGER NOT NULL,
-    created_at TEXT    NOT NULL
-) STRICT;
-
-CREATE TABLE blob_chunks (
-    hash BLOB    NOT NULL REFERENCES blobs(hash) ON DELETE CASCADE,
-    seq  INTEGER NOT NULL,
-    data BLOB    NOT NULL,
-    PRIMARY KEY (hash, seq)
-) STRICT;
-
-CREATE TABLE blob_refs (
-    object_id BLOB NOT NULL CHECK (length(object_id) = 16),
-    cache_key BLOB NOT NULL CHECK (length(cache_key) = 32),
-    kind      TEXT NOT NULL,
-    hash      BLOB NOT NULL REFERENCES blobs(hash) ON DELETE CASCADE,
-    PRIMARY KEY (object_id, cache_key, kind)
-) STRICT, WITHOUT ROWID;
-
-CREATE INDEX blob_refs_by_hash ON blob_refs(hash);
-"#,
-];
+"#;
 
 /// Applies the pragmas a document connection must always run with.
 ///
@@ -348,21 +160,24 @@ pub fn configure_cache_connection(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Brings a document database up to [`FORMAT_VERSION`].
-pub fn migrate_document(conn: &mut Connection) -> Result<()> {
-    migrate(conn, MIGRATIONS, DOCUMENT_APPLICATION_ID, "document")
+pub(crate) fn create_document(conn: &mut Connection) -> Result<()> {
+    create(conn, DOCUMENT_SCHEMA, DOCUMENT_APPLICATION_ID, "document")
 }
 
-/// Brings a cache sidecar up to its current schema.
-pub fn migrate_cache(conn: &mut Connection) -> Result<()> {
-    migrate(conn, CACHE_MIGRATIONS, CACHE_APPLICATION_ID, "cache")
+pub(crate) fn create_cache(conn: &mut Connection) -> Result<()> {
+    create(conn, CACHE_SCHEMA, CACHE_APPLICATION_ID, "cache")
 }
 
-/// Reads the schema version recorded in `PRAGMA user_version`.
-pub fn schema_version(conn: &Connection) -> Result<u32> {
-    conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .map_err(|e| CadError::io("reading schema version", e))
-        .map(|v| v as u32)
+fn create(conn: &mut Connection, sql: &str, application_id: i32, what: &str) -> Result<()> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| CadError::io(format!("starting {what} creation"), e))?;
+    tx.execute_batch(sql)
+        .map_err(|e| CadError::io(format!("creating {what} tables"), e))?;
+    tx.pragma_update(None, "application_id", application_id)
+        .map_err(|e| CadError::io(format!("stamping {what} application id"), e))?;
+    tx.commit()
+        .map_err(|e| CadError::io(format!("committing {what} creation"), e))
 }
 
 /// Confirms the file is one of ours before any other interpretation of it.
@@ -379,54 +194,16 @@ pub fn check_application_id(conn: &Connection, expected: i32, what: &str) -> Res
     Ok(())
 }
 
-/// Applies every migration past the recorded version, one transaction each.
-///
-/// A partially applied migration is the one failure mode that cannot be
-/// recovered from by retrying, so the version bump shares a transaction with
-/// the statements it describes.
-fn migrate(
-    conn: &mut Connection,
-    migrations: &[&str],
-    application_id: i32,
-    what: &str,
-) -> Result<()> {
-    let current = schema_version(conn)?;
-    let target = migrations.len() as u32;
-
-    if current > target {
-        return Err(CadError::unsupported(format!(
-            "this {what} was written by a newer FerriteCAD (schema v{current}, this build \
-             understands up to v{target})"
-        )));
-    }
-
-    if current == 0 {
-        conn.pragma_update(None, "application_id", application_id)
-            .map_err(|e| CadError::io(format!("stamping {what} application id"), e))?;
-    } else {
-        check_application_id(conn, application_id, what)?;
-    }
-
-    for (index, statements) in migrations.iter().enumerate().skip(current as usize) {
-        let version = index as u32 + 1;
-        let tx = conn
-            .transaction()
-            .map_err(|e| CadError::io(format!("starting {what} migration v{version}"), e))?;
-        tx.execute_batch(statements)
-            .map_err(|e| CadError::io(format!("applying {what} migration v{version}"), e))?;
-        tx.pragma_update(None, "user_version", i64::from(version))
-            .map_err(|e| CadError::io(format!("recording {what} schema v{version}"), e))?;
-        tx.commit()
-            .map_err(|e| CadError::io(format!("committing {what} migration v{version}"), e))?;
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ferritecad_types::ObjectId;
+
+    fn fresh_document() -> Connection {
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        create_document(&mut conn).expect("the current schema applies");
+        conn
+    }
 
     #[test]
     fn application_ids_are_the_ascii_tags() {
@@ -435,115 +212,15 @@ mod tests {
     }
 
     #[test]
-    fn migration_is_idempotent() {
-        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
-        migrate_document(&mut conn).expect("fresh database migrates");
-        assert_eq!(schema_version(&conn).expect("version readable"), 4);
-
-        migrate_document(&mut conn).expect("re-running applies nothing");
-        assert_eq!(schema_version(&conn).expect("version readable"), 4);
-    }
-
-    /// Brings a database up to `version` and no further, as an older build
-    /// would have left it.
-    fn migrate_to(conn: &mut Connection, version: usize) {
-        conn.pragma_update(None, "application_id", DOCUMENT_APPLICATION_ID)
-            .expect("pragma is writable");
-        for statements in &MIGRATIONS[..version] {
-            conn.execute_batch(statements).expect("migration applies");
-        }
-        conn.pragma_update(None, "user_version", version as i64)
-            .expect("pragma is writable");
-    }
-
-    #[test]
-    fn a_schema_v2_document_reaches_v3_with_everything_it_had() {
-        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
-        migrate_to(&mut conn, 2);
-
-        let object = [7u8; 16];
-        let reference = [9u8; 16];
-        conn.execute(
-            "INSERT INTO objects (id, kind, schema_version, ordinal, name, payload, payload_hash)
-             VALUES (?1, 'sketch', 1, 0, 'Profile', ?2, ?3)",
-            rusqlite::params![
-                object.as_slice(),
-                b"payload".as_slice(),
-                [1u8; 32].as_slice()
-            ],
-        )
-        .expect("v2 accepts an object");
-        conn.execute(
-            "INSERT INTO topology_refs (id, owner_id, producer_feature, expected_kind, payload)
-             VALUES (?1, ?2, ?2, 'face', ?3)",
-            rusqlite::params![
-                reference.as_slice(),
-                object.as_slice(),
-                b"reference".as_slice()
-            ],
-        )
-        .expect("v2 accepts a topology reference");
-
-        migrate_document(&mut conn).expect("v2 migrates to the current schema");
-        assert_eq!(schema_version(&conn).expect("version readable"), 4);
-
-        let (name, payload): (String, Vec<u8>) = conn
-            .query_row(
-                "SELECT name, payload FROM objects WHERE id = ?1",
-                rusqlite::params![object.as_slice()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("the object survived");
-        assert_eq!(name, "Profile");
-        assert_eq!(payload, b"payload");
-
-        let stored: Vec<u8> = conn
-            .query_row(
-                "SELECT payload FROM topology_refs WHERE id = ?1",
-                rusqlite::params![reference.as_slice()],
-                |row| row.get(0),
-            )
-            .expect("the topology reference survived");
-        assert_eq!(stored, b"reference");
-
-        // And the new table is there and empty, rather than absent or guessed at.
-        let sources: i64 = conn
-            .query_row("SELECT count(*) FROM imported_sources", [], |row| {
-                row.get(0)
-            })
-            .expect("imported_sources exists");
-        assert_eq!(sources, 0);
-    }
-
-    #[test]
-    fn a_schema_v3_document_is_read_as_it_is_and_reaches_v4_with_an_empty_catalog() {
-        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
-        migrate_to(&mut conn, 3);
-        assert!(!has_checkpoint_table(&conn).expect("schema readable"));
-        require_current_document_schema(&conn).expect("v3 is read without migration");
-        assert_eq!(schema_version(&conn).expect("version readable"), 3);
-
-        let mut older = Connection::open_in_memory().expect("in-memory sqlite always opens");
-        migrate_to(&mut older, 2);
-        let refused = require_current_document_schema(&older).expect_err("v2 needs a migration");
-        assert!(
-            refused.to_string().contains("needs migration to v4"),
-            "{refused}"
-        );
-
-        migrate_document(&mut conn).expect("v3 migrates to v4");
-        assert_eq!(schema_version(&conn).expect("version readable"), 4);
-        assert!(has_checkpoint_table(&conn).expect("schema readable"));
-        let rows: i64 = conn
-            .query_row("SELECT count(*) FROM checkpoints", [], |row| row.get(0))
-            .expect("the catalog exists");
-        assert_eq!(rows, 0, "a migrated document has no checkpoints");
+    fn a_created_document_carries_its_application_id() {
+        let conn = fresh_document();
+        check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")
+            .expect("a created document is ours");
     }
 
     #[test]
     fn a_checkpoint_row_must_be_well_formed() {
-        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
-        migrate_document(&mut conn).expect("fresh database migrates");
+        let conn = fresh_document();
         let insert = |name: &str, len: i64, image: &[u8]| {
             conn.execute(
                 "INSERT INTO checkpoints (id, name, created_at, model, byte_len, image_hash, image)
@@ -567,9 +244,7 @@ mod tests {
 
     #[test]
     fn a_source_must_agree_with_its_own_length() {
-        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
-        migrate_document(&mut conn).expect("fresh database migrates");
-
+        let conn = fresh_document();
         let insert =
             "INSERT INTO imported_sources (id, format, bytes, content_hash, byte_len, created_at)
                       VALUES (?1, 'exchange.step', ?2, ?3, ?4, '2026-01-01T00:00:00.000Z')";
@@ -602,26 +277,13 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_schema_is_refused_rather_than_guessed_at() {
-        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
-        migrate_document(&mut conn).expect("fresh database migrates");
-        conn.pragma_update(None, "user_version", 99i64)
-            .expect("pragma is writable");
-
-        let err = migrate_document(&mut conn).expect_err("a future schema must be refused");
-        assert_eq!(err.kind(), ferritecad_types::ErrorKind::Unsupported);
-    }
-
-    #[test]
     fn a_foreign_sqlite_file_is_refused() {
-        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        let conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
         conn.pragma_update(None, "application_id", 0x1234_5678i32)
             .expect("pragma is writable");
-        conn.pragma_update(None, "user_version", 1i64)
-            .expect("pragma is writable");
 
-        let err =
-            migrate_document(&mut conn).expect_err("a foreign application id must be refused");
+        let err = check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")
+            .expect_err("a foreign application id must be refused");
         assert!(err.to_string().contains("not a FerriteCAD"));
     }
 

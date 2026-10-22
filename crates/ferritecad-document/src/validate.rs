@@ -10,13 +10,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ferritecad_exchange::StoredScene;
 use ferritecad_types::{ContentHash, ObjectId, Result};
 
 use crate::document::Document;
 use crate::graph::{DependencyRole, evaluation_order};
 use crate::model::{ObjectKind, ObjectPayload, SolidOperation};
-use crate::schema::FORMAT_VERSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -78,32 +76,10 @@ impl ValidationReport {
             object,
         });
     }
-
-    fn warn(&mut self, code: &'static str, object: Option<ObjectId>, message: String) {
-        self.diagnostics.push(Diagnostic {
-            severity: Severity::Warning,
-            code,
-            message,
-            object,
-        });
-    }
 }
 
 pub(crate) fn validate(document: &Document) -> Result<ValidationReport> {
     let mut report = ValidationReport::default();
-    let meta = document.meta();
-
-    if meta.format_version > FORMAT_VERSION {
-        report.error(
-            "meta.format-too-new",
-            None,
-            format!(
-                "document claims format v{}, this build writes v{FORMAT_VERSION}",
-                meta.format_version
-            ),
-        );
-    }
-
     let objects = document.objects()?;
     check_occurrence_ownership(&objects, &mut report);
     let by_id: BTreeMap<ObjectId, &crate::document::ObjectRecord> =
@@ -209,9 +185,7 @@ fn check_occurrence_ownership(
         let ObjectPayload::ImportedStep(imported) = &object.payload else {
             continue;
         };
-        let StoredScene::V3(scene) = &imported.scene else {
-            continue;
-        };
+        let scene = &imported.scene;
         for instance in &scene.instances {
             if let Some(owner) = owners.insert(instance.occurrence, object.id)
                 && owner != object.id
@@ -241,18 +215,6 @@ fn check_payload_integrity(object: &crate::document::ObjectRecord, report: &mut 
             format!(
                 "object {} does not match its stored hash; the file may be corrupt",
                 object.id
-            ),
-        );
-    }
-
-    if let ObjectPayload::Unknown(unknown) = &object.payload {
-        report.warn(
-            "object.unknown-type",
-            Some(object.id),
-            format!(
-                "object {} has type {:?} at schema v{}, which this build preserves but cannot \
-                 interpret",
-                object.id, unknown.type_name, unknown.schema_version
             ),
         );
     }

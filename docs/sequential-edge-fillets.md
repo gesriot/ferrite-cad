@@ -205,7 +205,6 @@ measured mesh and exact volumes.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28g-"))
-SEQUENTIAL = "feature.fillet.sequential.v1"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -240,8 +239,7 @@ def tables(path):
 def second_allowlist(source, copy, body):
     """§28G's allowlist: every source cell survives except the Body row's
     payload/payload_hash and its old tip edge; the copy adds one object, two
-    edges, eight names, at most the sequential capability, and stamps
-    modified_at. Fillet 1's row is the same bytes."""
+    edges and eight names, and stamps modified_at. Fillet 1's row is the same bytes."""
     bid = bytes.fromhex(body.replace("-", ""))
     a, b = tables(source), tables(copy)
     assert a.keys() == b.keys()
@@ -261,9 +259,6 @@ def second_allowlist(source, copy, body):
             lost = [r for r in arows if r not in brows]
             assert all(t == "deps" and bid in r for r in lost), (t, lost)
             assert len(brows) - len(kept) == (2 if t == "deps" else 8), t
-        elif t == "capabilities":
-            assert set(arows) <= set(brows), "a capability changed"
-            assert {r[0] for r in set(brows) - set(arows)} == {SEQUENTIAL}
         elif t == "meta":
             for x, y in zip(arows, brows):
                 assert all(u == v or c == "modified_at" for c, u, v in zip(ac, x, y)), "meta"

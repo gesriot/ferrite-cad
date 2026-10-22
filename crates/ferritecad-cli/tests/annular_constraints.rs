@@ -314,7 +314,6 @@ struct Stored {
     constraints: Vec<(ferritecad_types::StableEntityId, String)>,
     refs: Vec<ferritecad_document::TopologyRef>,
     objects: usize,
-    schema_version: u32,
 }
 fn stored(path: &Path) -> Stored {
     let d = Document::open_read_only(path).expect("reopen");
@@ -349,7 +348,6 @@ fn stored(path: &Path) -> Stored {
         .collect();
     let refs = d.topology_refs().expect("refs");
     let count = objects.len();
-    let schema_version = sketch.schema_version();
     let stored_order = sketch.curves.iter().map(|c| c.id).collect();
     d.close().expect("close");
     Stored {
@@ -360,7 +358,6 @@ fn stored(path: &Path) -> Stored {
         constraints,
         refs,
         objects: count,
-        schema_version,
     }
 }
 /// One stored rule in words, so a comparison reads as what it is.
@@ -750,31 +747,7 @@ fn only_the_constraint_payload_changed(
     for (table, (columns, rows)) in &before {
         let (mine_columns, mine) = &after[table];
         assert_eq!(columns, mine_columns, "{table} columns");
-        if table == "capabilities" {
-            for row in rows {
-                assert!(
-                    mine.iter().any(|m| m[1..] == row[1..]),
-                    "capability row {row:?} disappeared"
-                );
-            }
-            let declared: Vec<String> = mine
-                .iter()
-                .filter_map(|m| match &m[1] {
-                    rusqlite::types::Value::Text(name) => Some(name.clone()),
-                    _ => None,
-                })
-                .collect();
-            for required in [
-                ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY,
-                ferritecad_document::SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
-            ] {
-                assert!(
-                    declared.iter().any(|name| name == required),
-                    "the copy stores a circle constraint without declaring {required}: {declared:?}"
-                );
-            }
-            continue;
-        }
+
         assert_eq!(rows.len(), mine.len(), "{table} row count");
         for (a, b) in rows.iter().zip(mine) {
             for (i, cell) in a.iter().enumerate() {
@@ -784,8 +757,7 @@ fn only_the_constraint_payload_changed(
                 let column = columns[i].as_str();
                 let allowed = match table.as_str() {
                     "objects" => {
-                        a.contains(&selected)
-                            && matches!(column, "payload" | "payload_hash" | "schema_version")
+                        a.contains(&selected) && matches!(column, "payload" | "payload_hash")
                     }
                     "meta" => column == "modified_at",
                     _ => false,
@@ -976,7 +948,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     let f = Fixture::annulus();
     let before = std::fs::read(&f.source).expect("source bytes");
     let saved = stored(&f.source);
-    assert_eq!(saved.schema_version, 1, "an unconstrained Sketch is v1");
+
     let boundary = f.boundary().to_owned();
     let bore = f.bore().to_owned();
     let boundary_id: ferritecad_types::StableEntityId = boundary.parse().expect("UUID");
@@ -1026,7 +998,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
 
     // The stored sketch is still the starting guess, and both roles are intact.
     let kept = stored(&sized);
-    assert_eq!(kept.schema_version, 3, "a circle constraint is a v3 sketch");
+
     assert_eq!(kept.stored_order, saved.stored_order, "curve order moved");
     assert_eq!(
         kept.circles, saved.circles,

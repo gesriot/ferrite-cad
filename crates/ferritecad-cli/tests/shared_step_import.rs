@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
 use ferritecad_document::Document;
-use ferritecad_exchange::{Import, StoredScene};
+use ferritecad_exchange::Import;
 use ferritecad_jobs::{Existing, ImportStepRequest, StepImportOutcome, import_step_document};
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, ExtrudeResult, GeometryKernel,
@@ -224,10 +224,7 @@ fn native_shared_step_import_owns_geometry_and_matches_cli() {
             .expect("test fixture operation")
             .expect("test fixture operation");
         assert_eq!(job_stored.source, bytes);
-        assert_eq!(
-            job_stored.imported.scene,
-            StoredScene::V3(result.scene.clone())
-        );
+        assert_eq!(job_stored.imported.scene, result.scene.clone());
         assert_eq!(job_stored.imported.source, result.source);
         assert_eq!(
             job_stored.imported.diagnostics_at_import,
@@ -266,9 +263,7 @@ fn native_shared_step_import_owns_geometry_and_matches_cli() {
             stored.imported.diagnostics_at_import,
             result.read.diagnostics
         );
-        let StoredScene::V3(mut scene) = stored.imported.scene else {
-            panic!("V3")
-        };
+        let mut scene = stored.imported.scene;
         let ids: BTreeSet<_> = scene.instances.iter().map(|i| i.occurrence).collect();
         let job_ids: BTreeSet<_> = result
             .scene

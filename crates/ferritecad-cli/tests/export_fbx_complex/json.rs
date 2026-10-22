@@ -326,7 +326,7 @@ fn json_fbx_refusals_preserve_files_and_protocol_in_native_and_stub_builds() {
         refuses(command(&source, &alias).arg("--force"), "input");
         std::fs::remove_file(alias).expect("private alias");
     }
-    for case in ["missing", "broken", "wal", "old", "future"] {
+    for case in ["missing", "broken", "wal"] {
         let bad = root.path().join(format!("{case}.fcad"));
         if case == "broken" {
             std::fs::write(&bad, b"broken document").expect("broken");
@@ -338,8 +338,6 @@ fn json_fbx_refusals_preserve_files_and_protocol_in_native_and_stub_builds() {
             let conn = rusqlite::Connection::open(&bad).expect("fixture SQL");
             conn.execute_batch(match case {
                 "wal" => "PRAGMA journal_mode = WAL;",
-                "old" => "PRAGMA user_version = 1;",
-                "future" => "UPDATE meta SET minimum_reader_version = 999;",
                 _ => unreachable!(),
             })
             .expect("restricted fixture");

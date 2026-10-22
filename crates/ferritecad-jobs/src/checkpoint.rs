@@ -33,8 +33,8 @@ pub struct CheckpointListing {
     pub entries: Vec<CheckpointEntry>,
 }
 
-/// Lists the checkpoints of `source` without writing anything, migrating
-/// nothing and reading no image. Schema v3 documents have none.
+/// Lists the checkpoints of `source` without writing anything or reading an
+/// image.
 pub fn list_checkpoints(source: &Path) -> Result<CheckpointListing> {
     let document = Document::open_read_only(source)?;
     let listing = CheckpointListing {
@@ -191,7 +191,7 @@ fn image_scratch(destination: &Path) -> Result<(Temporary, Temporary)> {
 }
 
 /// A new file: the source with a checkpoint of its current model added. The
-/// copy is migrated to schema v4 when the source is older; the source is not.
+/// source is not changed.
 pub fn create_checkpoint_copy(
     request: &CreateCheckpointRequest,
     context: &OperationContext,

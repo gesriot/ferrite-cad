@@ -305,7 +305,6 @@ struct Stored {
     refs: Vec<ferritecad_document::TopologyRef>,
     dependencies: Vec<ferritecad_document::Dependency>,
     objects: usize,
-    extrude_schema: BTreeMap<ferritecad_types::ObjectId, u32>,
 }
 fn stored(path: &Path) -> Stored {
     let d = Document::open_read_only(path).expect("reopen");
@@ -314,7 +313,6 @@ fn stored(path: &Path) -> Stored {
     let mut sketches = BTreeMap::new();
     let mut body = None;
     let mut tip = None;
-    let mut extrude_schema = BTreeMap::new();
     for object in &objects {
         match &object.payload {
             ObjectPayload::Extrude(feature) => {
@@ -323,7 +321,6 @@ fn stored(path: &Path) -> Stored {
                     feature.previous,
                     format!("{:?}", feature.operation),
                 ));
-                extrude_schema.insert(object.id, feature.schema_version());
                 assert!(
                     feature.target_body.is_none(),
                     "this build names the feature it modifies, never a body"
@@ -354,7 +351,6 @@ fn stored(path: &Path) -> Stored {
         refs,
         dependencies,
         objects: count,
-        extrude_schema,
     }
 }
 
@@ -717,7 +713,7 @@ fn only_the_cut_was_added(source: &Path, copy: &Path, body: ferritecad_types::Ob
                     "a cut adds a sketch and a feature"
                 );
             }
-            "deps" | "topology_refs" | "capabilities" => {
+            "deps" | "topology_refs" => {
                 for row in rows {
                     // The body's old tip edge is the one row a cut replaces:
                     // the body tips at the new feature now, and leaving the old
@@ -884,10 +880,7 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
         saved.features[0].1, None,
         "the first feature consumes nothing"
     );
-    assert_eq!(
-        saved.extrude_schema[&saved.features[0].0], 1,
-        "a feature that starts a body is the v1 feature it always was"
-    );
+
     let plate_feature = saved.features[0].0;
 
     for (name, depth, walls, refs) in [("holed", HEIGHT, 7u64, 10usize), ("pocket", 4.0, 8, 11)] {
@@ -932,14 +925,7 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
             .collect();
         assert_eq!(history[&plate_feature], (None, "NewBody".to_owned()));
         assert_eq!(history[&cut], (Some(plate_feature), "Cut".to_owned()));
-        assert_eq!(
-            now.extrude_schema[&plate_feature], 1,
-            "the feature that was there is stored exactly as it was"
-        );
-        assert_eq!(
-            now.extrude_schema[&cut], 2,
-            "a feature that names a predecessor is a v2 feature"
-        );
+
         // The part's own drawing is untouched; the tool has its own sketch.
         for (id, curves) in &saved.sketches {
             assert_eq!(

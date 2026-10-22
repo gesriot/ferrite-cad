@@ -527,13 +527,6 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
             let sql = rusqlite::Connection::open(&source).expect("SQL");
             sql.execute("UPDATE objects SET name='same',ordinal=100-ordinal", [])
                 .expect("reorder");
-            sql.execute("UPDATE capabilities SET rowid=rowid+100", [])
-                .expect("rowids");
-            sql.execute(
-                "INSERT INTO capabilities(rowid,name,required) VALUES(900,'optional.extension',0)",
-                [],
-            )
-            .expect("optional");
             sql.execute_batch("CREATE TABLE extra_data(id INTEGER PRIMARY KEY, bytes BLOB); INSERT INTO extra_data VALUES(91,x'010203');").expect("extra");
             drop(sql);
             let original = std::fs::read(&source).expect("bytes");
@@ -557,13 +550,6 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
             only_the_cut_was_added(&source, &copy, body);
             let a = tables(&source);
             let b = tables(&copy);
-            for row in &a["capabilities"].1 {
-                assert!(
-                    b["capabilities"].1.contains(row),
-                    "optional rows and rowids survive"
-                );
-            }
-            assert_eq!(b["capabilities"].1.len(), a["capabilities"].1.len() + 1);
             let named = 8 + tools
                 .iter()
                 .filter(|t| t.extent.blind_depth_mm().expect("blind") < SIZE[2])

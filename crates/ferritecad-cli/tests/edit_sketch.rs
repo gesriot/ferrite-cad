@@ -274,7 +274,7 @@ fn native_edit_sketch_process_identity_geometry_and_delivery() {
         0,
     );
     let raw = rusqlite::Connection::open(&f.source).expect("SQL");
-    raw.execute_batch("CREATE TABLE extension(value BLOB); INSERT INTO extension(rowid,value) VALUES(73,X'00FF'); UPDATE capabilities SET rowid=rowid+100; INSERT INTO capabilities(rowid,name,required) VALUES(999,'future.optional',0);").expect("extra data");
+    raw.execute_batch("CREATE TABLE extension(value BLOB); INSERT INTO extension(rowid,value) VALUES(73,X'00FF');").expect("extra data");
     // A coordinate edit must also preserve source claims associated with the
     // selected object, even when they are not needed to rebuild this polygon.
     let stored = b"preserve attached sketch source";
@@ -485,26 +485,7 @@ fn check_copy(source: &Path, out: &Path, count: usize) {
     }
     a.close().expect("close");
     b.close().expect("close");
-    for path in [source, out] {
-        let db =
-            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .expect("capabilities");
-        let rows: Vec<(i64, String, i64)> = db
-            .prepare("SELECT rowid,name,required FROM capabilities ORDER BY rowid")
-            .expect("query")
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .expect("rows")
-            .collect::<rusqlite::Result<_>>()
-            .expect("values");
-        assert_eq!(
-            rows,
-            vec![
-                (101, "core.part.v1".into(), 1),
-                (999, "future.optional".into(), 0)
-            ],
-            "capability rows and identities must survive"
-        );
-    }
+
     let sql = rusqlite::Connection::open(out).expect("SQL");
     let extra: (i64, Vec<u8>) = sql
         .query_row("SELECT rowid,value FROM extension", [], |r| {

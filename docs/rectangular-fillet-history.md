@@ -190,7 +190,6 @@ volumes at each step.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28l-"))
-SEQUENTIAL = "feature.fillet.sequential.v1"
 MIN_RADIUS = 0.01
 
 def run(args, code=0):
@@ -227,11 +226,10 @@ def tables(path):
     db.close()
     return out
 
-def added_fillet(source, copy, body, names, new_capabilities):
+def added_fillet(source, copy, body, names):
     """§28L's allowlist for the k-th Fillet: every source cell survives except
     the Body row's payload/payload_hash and its old tip edge; the copy adds one
-    object, two edges, `names` names and at most the capabilities a Fillet of
-    its place newly needs (none from the third on), and stamps modified_at."""
+    object, two edges and `names` names, and stamps modified_at."""
     bid = bytes.fromhex(body.replace("-", ""))
     a, b = tables(source), tables(copy)
     assert a.keys() == b.keys()
@@ -251,16 +249,13 @@ def added_fillet(source, copy, body, names, new_capabilities):
             lost = [r for r in arows if r not in brows]
             assert all(t == "deps" and bid in r for r in lost), (t, lost)
             assert len(brows) - len(kept) == (2 if t == "deps" else names), t
-        elif t == "capabilities":
-            assert set(arows) <= set(brows), "a capability changed"
-            assert {r[0] for r in set(brows) - set(arows)} <= new_capabilities, "a new capability"
         elif t == "meta":
             for x, y in zip(arows, brows):
                 assert all(u == v or c == "modified_at" for c, u, v in zip(ac, x, y)), "meta"
         else:
             assert arows == brows, t
 
-def only_row(source, copy, row_id, columns=("payload", "payload_hash"), capability=None):
+def only_row(source, copy, row_id, columns=("payload", "payload_hash")):
     """One row's payload and hash (and the stamp) may differ; nothing else."""
     rid = bytes.fromhex(row_id.replace("-", ""))
     a, b = tables(source), tables(copy)
@@ -268,10 +263,6 @@ def only_row(source, copy, row_id, columns=("payload", "payload_hash"), capabili
     for t in a:
         (ac, arows), (bc, brows) = a[t], b[t]
         assert ac == bc, t
-        if t == "capabilities" and capability:
-            assert all(r in brows for r in arows), "a capability changed"
-            assert all(capability in repr(r) for r in brows if r not in arows)
-            continue
         assert len(arows) == len(brows), t
         if t == "objects":
             k = ac.index("id")
@@ -345,7 +336,7 @@ def request(name, value):
     path.write_text(json.dumps(value))
     return path
 
-def fillet(source, corner, radius, out, names, new_capabilities, code=0):
+def fillet(source, corner, radius, out, names, code=0):
     catalog = inspect(source)
     body = catalog["bodies"][0]
     chosen = next(c for c in body["fillet_edge"]["target"]["candidates"]
@@ -361,7 +352,7 @@ def fillet(source, corner, radius, out, names, new_capabilities, code=0):
         assert not out.exists(), "a refusal published something"
         return reply["error"]
     done = geometry(args, out)["result"]
-    added_fillet(source, out, body["body_id"], names, new_capabilities)
+    added_fillet(source, out, body["body_id"], names)
     return done
 
 def rounded_row(path, index):
@@ -376,9 +367,7 @@ geometry(["create-sketch-extrude", request("create.json", {"request_version": 1,
 docs, ids = [plate], []
 for k, (index, radius) in enumerate(zip(ORDER, RADII)):
     out = root / f"fillet-{k + 1}.fcad"
-    caps = [{"feature.fillet.v1", "topology.origin-face.v1", "feature.predecessor.v1"},
-            {SEQUENTIAL}, set(), set()][k]
-    done = fillet(docs[-1], TEMPLATE[index], radius, out, 7 + k, caps)
+    done = fillet(docs[-1], TEMPLATE[index], radius, out, 7 + k)
     ids.append(done["feature_id"])
     assert done["previous_feature_id"] == (ids[k - 1] if k else done["edge"]["feature_id"]), done
     assert len(done["references"]) == 7 + k, done
@@ -468,8 +457,7 @@ dims = [{"curve_id": LINES[i], "rule": "horizontal" if i % 2 == 0 else "vertical
     {"curve_id": LINES[1], "rule": "distance", "distance_mm": 12.5}]
 dimensioned, result = constrain(four, [], dims, "dimensioned.fcad")
 assert result["solve"]["degrees_of_freedom"] == 0, result
-only_row(four, dimensioned, sketch["sketch_id"], ("schema_version", "payload", "payload_hash"),
-         "sketch.constraints.v1")
+only_row(four, dimensioned, sketch["sketch_id"])
 assert tables(dimensioned)["topology_refs"] == refs
 after = inspect(dimensioned)
 assert after["sketches"][0]["editable"] is False, "a dimensioned plate: the constraint editor"

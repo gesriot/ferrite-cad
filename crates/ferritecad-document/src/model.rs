@@ -6,9 +6,7 @@
 //! to a geometry kernel, a face index or a traversal order, because none of
 //! those survive a rebuild.
 
-use ferritecad_exchange::{
-    Diagnostic as ImportDiagnostic, KeyedScene, LegacyScene, PersistedScene, StoredScene,
-};
+use ferritecad_exchange::{Diagnostic as ImportDiagnostic, PersistedScene};
 use ferritecad_kernel::KernelIdentity;
 use ferritecad_types::{
     CadError, CanonicalHasher, ContentHash, Dimension, ImportedSourceId, ObjectId, Point3,
@@ -17,255 +15,7 @@ use ferritecad_types::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::envelope::{Envelope, UnknownObject};
-
-/// The capability every object this build writes depends on.
-pub const CORE_CAPABILITY: &str = "core.part.v1";
-
-/// What a document needs a reader to implement before it may name the edge an
-/// extrusion left where one of its caps meets the face swept from a profile
-/// segment.
-///
-/// A capability rather than a new payload version, and the difference is not a
-/// matter of taste. The stored bytes are laid out exactly as before: a
-/// `topology_ref` payload is still a role, a rule and an optional signature,
-/// and a version says the layout changed. What changed is the vocabulary of
-/// roles, which is precisely what a capability is for — a reader that does not
-/// know this role can still read every other reference in the document, and
-/// the envelope tells it so by name instead of failing to parse a tag it has
-/// never seen.
-///
-/// Declared only on the references that use the role. A document written
-/// before this build, and one written by it that names no such edge, requires
-/// nothing new and stays writable by a reader that lacks this.
-pub const EXTRUDE_CAP_EDGE_CAPABILITY: &str = "topology.extrude-cap-edge.v1";
-
-/// The capability a stored [`SemanticRole::ExtrudeSweepEdge`] depends on.
-///
-/// Its own name rather than a widening of the cap-edge one. A reader that
-/// understands cap edges does not thereby understand sweep edges, and telling
-/// it otherwise would let it rewrite a document containing references whose
-/// meaning it cannot reproduce. The payload layout is again unchanged, so this
-/// is once more a vocabulary change and not a version bump.
-pub const EXTRUDE_SWEEP_EDGE_CAPABILITY: &str = "topology.extrude-sweep-edge.v1";
-
-/// The capability a stored [`SemanticRole::ExtrudeCapVertex`] depends on.
-///
-/// Again its own name. A reader that understands the edge running along a
-/// corner does not thereby understand the point where that corner meets a cap:
-/// the two roles select different geometry from the same pair of segments, and
-/// a reader told it understood both would rewrite references whose meaning it
-/// cannot reproduce. The envelope layout is unchanged once more, so this is a
-/// vocabulary change and not a version bump.
-pub const EXTRUDE_CAP_VERTEX_CAPABILITY: &str = "topology.extrude-cap-vertex.v1";
-
-/// What a reader must implement before it may rewrite a sketch that carries
-/// constraints.
-///
-/// Its own name beside [`CORE_CAPABILITY`] rather than a widening of it,
-/// because the two answer different questions. A build that predates this one
-/// can read every curve of such a sketch perfectly well; what it cannot do is
-/// keep the relationships between them, and a rewrite that dropped those would
-/// turn a constrained drawing back into loose coordinates that merely happen to
-/// sit where the solver last left them. The capability is what makes that
-/// build stop instead.
-///
-/// Declared only by a sketch that actually holds a constraint. An unconstrained
-/// sketch declares exactly what it declared before this build existed, stays at
-/// layout v1, and stays writable by a reader that lacks this.
-pub const SKETCH_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.v1";
-
-/// The capability a sketch depends on once a constraint speaks about a circle.
-///
-/// # Why a second name and a third layout, rather than more words under the first
-///
-/// `sketch.constraints.v1` announces a vocabulary: the eight families whose
-/// references are points and segments of lines. A build that implements it can
-/// read every one of them and rewrite the sketch without losing anything.
-/// Adding `Radius`, and a point selector that means the centre of a circle,
-/// widens that vocabulary — and a build written against v1 has no way to know
-/// it was widened. Left under the same name, such a build would see a
-/// capability it implements, decode what it recognised, and write the sketch
-/// back with the constraint it did not recognise quietly gone.
-///
-/// So the layout moves as well as the name. A sketch holding a circle
-/// constraint is stored at payload v3, which is not in
-/// [`ObjectKind::readable_schema_versions`] for any build that predates this
-/// one: that build preserves the object verbatim and opens the document
-/// read-only, which is the refusal that actually protects the data. The
-/// capability is what makes the *reason* legible — in the `capabilities` table,
-/// in negotiation at open time, and to a person reading either — rather than
-/// leaving a v3 sketch announcing only what a v2 one did.
-///
-/// Declared only by a sketch that actually holds such a constraint. A sketch of
-/// lines and their relationships is still a v2 sketch requiring
-/// [`SKETCH_CONSTRAINTS_CAPABILITY`] alone, and an unconstrained sketch is
-/// still a v1 sketch that any build can rewrite.
-pub const SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.circle.v1";
-
-/// The capability a sketch depends on once a constraint is a directed angle
-/// between two vectors (§31F).
-///
-/// A directed angle has a sign and a direction, which none of the eight older
-/// families has: `Parallel` scores a cross product and so accepts both ways
-/// round. A build that predates it cannot honour `+30°` as anything but a
-/// relationship it does not know, and must not rewrite a sketch that holds one
-/// as though it were a `Parallel` or a `Perpendicular`. So the layout moves with
-/// the meaning, as it did for circles: a sketch holding such a constraint is
-/// stored at payload v4, which is not in `ObjectKind::readable_schema_versions`
-/// of any earlier build; that build keeps the object verbatim and opens the
-/// document read-only. This capability is what makes the reason legible.
-///
-/// v4 is cumulative: a reader that implements the angle vocabulary implements
-/// the circle one too, so a sketch that held both would need nothing more
-/// declared. No supported profile mixes Lines and circles, so none does.
-///
-/// Declared only by a sketch that actually holds one. A profile of Lines and
-/// their other relationships is still v2 and an unconstrained one still v1.
-pub const SKETCH_ANGLE_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.angle.v1";
-
-/// The capability a sketch depends on once a constraint says two Lines lie on
-/// one infinite line (§31G).
-///
-/// An older build must not read a collinearity as one of the families it knows.
-/// `Parallel` scores a cross product and so accepts two parallel Lines on
-/// different lines; reading a collinear pair as `Parallel` would silently drop
-/// the offset it holds. So the layout moves with the meaning, as it did for
-/// circles and angles: a sketch holding such a constraint is stored
-/// at payload v5, which is not in `ObjectKind::readable_schema_versions` of any
-/// earlier build; that build keeps the object verbatim and opens the document
-/// read-only. This capability is what makes the reason legible.
-///
-/// v5 is cumulative: a reader that implements the collinear vocabulary
-/// implements the angle and circle ones too. Declared only by a sketch that
-/// actually holds one.
-pub const SKETCH_COLLINEAR_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.collinear.v1";
-
-/// The capability a reference to a face carried through a boolean depends on.
-///
-/// `CarriedCap` and `CarriedSide` are roles a build written before booleans
-/// cannot decode, and a topology reference is decoded to be resolved. Declaring
-/// the capability is what turns that into a read-only document with a stated
-/// reason rather than a failed read of one row.
-pub const TOPOLOGY_CARRIED_FACE_CAPABILITY: &str = "topology.carried-face.v1";
-
-/// Explicit original feature identity on a face carried through a history.
-/// Legacy carried roles keep their immediate-predecessor meaning.
-pub const TOPOLOGY_ORIGIN_FACE_CAPABILITY: &str = "topology.origin-face.v1";
-
-/// The capability a feature that consumes another feature's result depends on.
-///
-/// # Why a new name and a new layout, rather than an optional field
-///
-/// `previous` is `Option<ObjectId>` and serialises away when it is `None`, so a
-/// build written before it existed decodes a feature that has one, ignores the
-/// field, and — the moment it writes that object back — produces a feature that
-/// starts a body of its own out of nowhere. The history would still look
-/// plausible and the solid would be wrong.
-///
-/// So the layout moves with the meaning. A feature holding a predecessor is
-/// stored at payload v2, which is not in
-/// [`ObjectKind::readable_schema_versions`] for any build that predates this
-/// one: that build preserves the object verbatim and opens the document
-/// read-only, which is the refusal that actually protects the data. The
-/// capability is what makes the *reason* legible — in the `capabilities` table,
-/// at open-time negotiation, and to a person reading either.
-///
-/// Declared only by a feature that actually holds one. An extrusion that starts
-/// a body is still a v1 feature any build can rewrite.
-pub const FEATURE_PREDECESSOR_CAPABILITY: &str = "feature.predecessor.v1";
-
-/// The capability a Cut that runs through everything its body holds depends on.
-///
-/// `EndCondition::ThroughAll` has been a word in the v1 layout since the first
-/// extrusion, but no build before this one gave it a meaning for a Cut: those
-/// builds decode it and then refuse to rebuild, or would rewrite the history
-/// around it as if the number they could not find were missing. So the layout
-/// moves with the meaning, exactly as it did for `previous`: a Cut holding
-/// ThroughAll is stored at payload v3, which a build predating this one does
-/// not list in [`ObjectKind::readable_schema_versions`]. That build keeps the
-/// object verbatim and opens the document read-only; this capability is what
-/// makes the reason legible.
-///
-/// Declared only by a feature that actually holds it. A Blind Cut is still a
-/// v2 feature and a NewBody extrusion is still v1.
-pub const FEATURE_THROUGH_ALL_CAPABILITY: &str = "feature.through-all.v1";
-
-/// The capability a full-turn [`Revolve`] and every name it raises depend on.
-///
-/// Its own capability rather than a wider Extrude one: a build that knows
-/// Extrude does not know what turning a profile about an axis means, and must
-/// keep such a document verbatim and read-only instead of rewriting it.
-pub const FEATURE_REVOLVE_CAPABILITY: &str = "feature.revolve.v1";
-
-/// The capability a [`Revolve`] of a profile closed on its axis depends on
-/// (§27C): a solid part whose one saved axis Line raises no face.
-///
-/// The layout moves with the meaning, exactly as for `previous` and
-/// ThroughAll. Such a Revolve names its axis Line in `axis_segment` and is
-/// stored at payload v2, which a §27A/§27B build does not read: it keeps the
-/// object verbatim and opens the document read-only, rather than treating the
-/// axis Line as a Line that failed to raise a face. A Revolve with a bore is
-/// still the v1 feature any §27A build can rewrite.
-pub const FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY: &str = "feature.revolve.axis-closed.v1";
-
-/// The capability a [`Revolve`] through a partial angle depends on (§27D): a
-/// sector of a turned part, with two end faces named by their own role.
-///
-/// A §27C build reads Revolve payloads v1 and v2 only. It keeps a sector
-/// (payload v3 or v4) verbatim and opens the document read-only, rather than
-/// reading its angle as a full turn. Full-turn Revolves keep their layouts
-/// and never declare this.
-pub const FEATURE_REVOLVE_PARTIAL_CAPABILITY: &str = "feature.revolve.partial.v1";
-
-/// The capability a [`Fillet`] and every name it raises depend on (§28A).
-///
-/// A new kind of feature, so its own capability rather than an extension of
-/// Extrude's: a build that predates it keeps a `feature.fillet` object
-/// verbatim, cannot build a Body whose tip it is, and must open the document
-/// read-only instead of rewriting it. That is a real refusal of a real older
-/// reader, which is what earns the name.
-pub const FEATURE_FILLET_CAPABILITY: &str = "feature.fillet.v1";
-
-/// The capability a [`Chamfer`] and the name it raises depend on (§29A).
-///
-/// A new kind of feature, so its own capability: a build that predates it keeps
-/// a `feature.chamfer` object verbatim, cannot build a Body whose tip it is, and
-/// opens the document read-only instead of showing a plate without its Chamfer.
-pub const FEATURE_CHAMFER_CAPABILITY: &str = "feature.chamfer.v1";
-
-/// The capability a [`Fillet`] built on another Fillet depends on (§28G), and
-/// the name that carries the earlier Fillet's face into it
-/// ([`SemanticRole::OriginFilletFace`]).
-///
-/// Such a Fillet names its corner by the plate that swept it while rounding
-/// the result of the Fillet before it, so `edge.feature` is no longer its
-/// `previous`. A §28A build reads that as a Fillet of the wrong feature. It
-/// reads Fillet payload v1 only, keeps a v2 row verbatim and opens the
-/// document read-only rather than rebuild half of the history.
-pub const FEATURE_FILLET_SEQUENTIAL_CAPABILITY: &str = "feature.fillet.sequential.v1";
-
-/// The capability an [`ImportedStep`] object depends on.
-///
-/// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
-/// SQL schema v3 but not this object reaches the right conclusion on its own:
-/// it opens the document read-only and preserves the object it cannot read,
-/// rather than rewriting a document whose source-of-truth bytes it has no idea
-/// are there. A pre-v3 binary is stricter still and refuses the newer SQL
-/// schema before it reaches capability negotiation.
-///
-/// # Still the only one, at payload layout 3
-///
-/// Placement identity arrived as a payload version rather than as a second
-/// capability beside this, and the two are not interchangeable. A capability
-/// says a reader must understand a vocabulary whose bytes are laid out as
-/// before; scene layout 3 adds a field to every stored placement, so a reader
-/// that has not heard of it cannot decode the payload at all. That reader is
-/// already stopped, by the layout, through
-/// [`ObjectKind::readable_schema_versions`] — the object is preserved verbatim
-/// and never rewritten. A capability naming the same fact would add a name and
-/// no refusal.
-pub const IMPORTED_STEP_CAPABILITY: &str = "exchange.step.imported.v1";
+use crate::envelope::Envelope;
 
 /// The `format` tag written to `imported_sources` for STEP bytes.
 pub const STEP_SOURCE_FORMAT: &str = "exchange.step";
@@ -319,183 +69,6 @@ impl ObjectKind {
             "feature.fillet" => Some(Self::Fillet),
             "feature.chamfer" => Some(Self::Chamfer),
             _ => None,
-        }
-    }
-
-    /// The capabilities a reader must implement to rewrite an object of this
-    /// type, at one particular payload layout, without losing what it means.
-    ///
-    /// Taken with the layout rather than with the type alone because for a
-    /// sketch the two really do differ: v1 holds curves, which any build can
-    /// keep, and v2 holds the relationships between them, which only a build
-    /// that knows [`SKETCH_CONSTRAINTS_CAPABILITY`] can. Deciding it from the
-    /// header keeps the answer available before anything is decoded, which is
-    /// what capability negotiation at open time needs.
-    pub fn required_capabilities(self, schema_version: u32) -> Vec<String> {
-        match (self, schema_version) {
-            (Self::ImportedStep, _) => vec![IMPORTED_STEP_CAPABILITY.to_owned()],
-            (Self::Revolve, 2) => vec![
-                CORE_CAPABILITY.to_owned(),
-                FEATURE_REVOLVE_CAPABILITY.to_owned(),
-                FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY.to_owned(),
-            ],
-            (Self::Revolve, 3) => vec![
-                CORE_CAPABILITY.to_owned(),
-                FEATURE_REVOLVE_CAPABILITY.to_owned(),
-                FEATURE_REVOLVE_PARTIAL_CAPABILITY.to_owned(),
-            ],
-            (Self::Revolve, 4) => vec![
-                CORE_CAPABILITY.to_owned(),
-                FEATURE_REVOLVE_CAPABILITY.to_owned(),
-                FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY.to_owned(),
-                FEATURE_REVOLVE_PARTIAL_CAPABILITY.to_owned(),
-            ],
-            (Self::Revolve, _) => vec![
-                CORE_CAPABILITY.to_owned(),
-                FEATURE_REVOLVE_CAPABILITY.to_owned(),
-            ],
-            (Self::Sketch, 2) => vec![
-                CORE_CAPABILITY.to_owned(),
-                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
-            ],
-            (Self::Sketch, 3) => vec![
-                CORE_CAPABILITY.to_owned(),
-                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
-                SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY.to_owned(),
-            ],
-            (Self::Sketch, 4) => vec![
-                CORE_CAPABILITY.to_owned(),
-                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
-                SKETCH_ANGLE_CONSTRAINTS_CAPABILITY.to_owned(),
-            ],
-            (Self::Sketch, 5) => vec![
-                CORE_CAPABILITY.to_owned(),
-                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
-                SKETCH_COLLINEAR_CONSTRAINTS_CAPABILITY.to_owned(),
-            ],
-            (Self::Extrude, 2) => vec![
-                CORE_CAPABILITY.to_owned(),
-                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
-            ],
-            (Self::Extrude, 3) => vec![
-                CORE_CAPABILITY.to_owned(),
-                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
-                FEATURE_THROUGH_ALL_CAPABILITY.to_owned(),
-            ],
-            (Self::Fillet, 2) => vec![
-                CORE_CAPABILITY.to_owned(),
-                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
-                FEATURE_FILLET_CAPABILITY.to_owned(),
-                FEATURE_FILLET_SEQUENTIAL_CAPABILITY.to_owned(),
-            ],
-            // Every Fillet consumes a predecessor, so it declares that
-            // contract as well as its own.
-            (Self::Fillet, _) => vec![
-                CORE_CAPABILITY.to_owned(),
-                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
-                FEATURE_FILLET_CAPABILITY.to_owned(),
-            ],
-            (Self::Chamfer, _) => vec![
-                CORE_CAPABILITY.to_owned(),
-                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
-                FEATURE_CHAMFER_CAPABILITY.to_owned(),
-            ],
-            _ => vec![CORE_CAPABILITY.to_owned()],
-        }
-    }
-
-    /// Every capability this type may require at any layout this build reads.
-    ///
-    /// A payload naming something outside this set is one whose contract this
-    /// build cannot honour whatever its version says, and is preserved verbatim
-    /// rather than decoded. That is how a future constraint family arrives: it
-    /// comes under a capability of its own, and this build keeps its bytes
-    /// instead of reading a vocabulary it only half understands.
-    pub fn known_capabilities(self) -> &'static [&'static str] {
-        match self {
-            Self::ImportedStep => &[IMPORTED_STEP_CAPABILITY],
-            Self::Revolve => &[
-                CORE_CAPABILITY,
-                FEATURE_REVOLVE_CAPABILITY,
-                FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
-                FEATURE_REVOLVE_PARTIAL_CAPABILITY,
-            ],
-            Self::Sketch => &[
-                CORE_CAPABILITY,
-                SKETCH_CONSTRAINTS_CAPABILITY,
-                SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
-                SKETCH_ANGLE_CONSTRAINTS_CAPABILITY,
-                SKETCH_COLLINEAR_CONSTRAINTS_CAPABILITY,
-            ],
-            Self::Extrude => &[
-                CORE_CAPABILITY,
-                FEATURE_PREDECESSOR_CAPABILITY,
-                FEATURE_THROUGH_ALL_CAPABILITY,
-            ],
-            Self::Fillet => &[
-                CORE_CAPABILITY,
-                FEATURE_PREDECESSOR_CAPABILITY,
-                FEATURE_FILLET_CAPABILITY,
-                FEATURE_FILLET_SEQUENTIAL_CAPABILITY,
-            ],
-            Self::Chamfer => &[
-                CORE_CAPABILITY,
-                FEATURE_PREDECESSOR_CAPABILITY,
-                FEATURE_CHAMFER_CAPABILITY,
-            ],
-            _ => &[CORE_CAPABILITY],
-        }
-    }
-
-    /// Newest layout version of this object type's payload.
-    ///
-    /// What an object is *stored* at is decided by what it holds, not by this:
-    /// see [`ObjectPayload::schema_version`].
-    pub fn schema_version(self) -> u32 {
-        match self {
-            // v2 gave every definition the identity its source file wrote
-            // down, and made instances name theirs by it rather than by
-            // position. v3 gave every *placement* a durable identity of its
-            // own, which no source file records and which nothing else in a
-            // scene can stand in for. v1 and v2 objects are still read and
-            // still written back as themselves; see [`ImportedStep::scene`].
-            Self::ImportedStep => 3,
-            // v2 added the constraint list. v3 added the vocabulary that
-            // speaks about circles. v4 added the directed angle between two
-            // vectors (§31F). v5 added the collinearity of two Lines (§31G).
-            // v1-v4 sketches are still read and still written as themselves,
-            // because what a sketch is stored at is decided by what it holds;
-            // see [`Sketch::schema_version`].
-            Self::Sketch => 5,
-            // v2 added the feature a feature consumes; v3 gave a Cut the
-            // ThroughAll intent. v1 and v2 extrusions are still read and still
-            // written as themselves, because what a feature is stored at is
-            // decided by what it holds; see [`Extrude::schema_version`].
-            Self::Extrude => 3,
-            // v2 names the Line a solid part closes on (§27C); v3 and v4 are
-            // the same two classes turned through a partial angle (§27D). A
-            // full turn with a bore is still stored at v1; see
-            // [`Revolve::schema_version`].
-            Self::Revolve => 4,
-            // v2 is a Fillet built on a Fillet (§28G); a first Fillet is
-            // still stored at v1. See [`Fillet::schema_version`].
-            Self::Fillet => 2,
-            _ => 1,
-        }
-    }
-
-    /// Payload layouts of this type that this build can still read.
-    ///
-    /// Newest first. A layout listed here is one whose meaning is fully
-    /// recoverable; anything else is preserved verbatim and not interpreted.
-    pub fn readable_schema_versions(self) -> &'static [u32] {
-        match self {
-            Self::ImportedStep => &[3, 2, 1],
-            Self::Sketch => &[5, 4, 3, 2, 1],
-            Self::Extrude => &[3, 2, 1],
-            Self::Revolve => &[4, 3, 2, 1],
-            Self::Fillet => &[2, 1],
-            _ => &[1],
         }
     }
 
@@ -668,7 +241,6 @@ impl SketchGeometry {
 pub struct SketchCurve {
     pub id: StableEntityId,
     /// Construction geometry guides the sketch but produces no edges.
-    #[serde(default)]
     pub construction: bool,
     pub geometry: SketchGeometry,
 }
@@ -905,32 +477,6 @@ impl SketchConstraintRule {
         }
     }
 
-    /// Whether this rule needs the circle vocabulary to be understood.
-    ///
-    /// A build that has not heard of circles in sketches can read and rewrite
-    /// everything else; this is the line between the two, and it is drawn in
-    /// one place so that the stored layout, the declared capability and the
-    /// validation cannot disagree about where it is.
-    pub fn needs_circle_vocabulary(&self) -> bool {
-        matches!(self, Self::Radius { .. })
-            || self
-                .points()
-                .iter()
-                .any(|point| point.at == SketchPointSelector::Center)
-    }
-
-    /// Whether this rule needs the directed-angle vocabulary (§31F) to be
-    /// understood. The same single place as [`Self::needs_circle_vocabulary`].
-    pub fn needs_angle_vocabulary(&self) -> bool {
-        matches!(self, Self::DirectedAngle { .. })
-    }
-
-    /// Whether this rule needs the collinear vocabulary (§31G) to be
-    /// understood. The same single place as [`Self::needs_circle_vocabulary`].
-    pub fn needs_collinear_vocabulary(&self) -> bool {
-        matches!(self, Self::Collinear { .. })
-    }
-
     /// The segments this rule names, which is none for the point families.
     fn segments(&self) -> Vec<SketchSegmentRef> {
         match *self {
@@ -1013,79 +559,10 @@ pub struct Sketch {
     /// document should give back what it was given. No answer depends on that
     /// order: a diagnosis names a [`SketchConstraint::id`].
     ///
-    /// Skipped when empty, so a sketch that has no constraints is byte for byte
-    /// the sketch this build wrote before constraints existed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<SketchConstraint>,
 }
 
 impl Sketch {
-    /// The layout this sketch has to be stored at.
-    ///
-    /// Decided by what it holds, not by what this build is capable of writing.
-    /// A sketch with no constraints is a v1 sketch however new the build is,
-    /// and stamping v2 on it would tell every older reader to keep its hands
-    /// off a document it can handle perfectly well. The same rule puts the
-    /// circle vocabulary at v3 only when a constraint actually uses it: a
-    /// profile of lines and their relationships stays a v2 sketch that a build
-    /// predating this one still rewrites safely.
-    pub fn schema_version(&self) -> u32 {
-        if self.constraints.is_empty() {
-            1
-        } else if self
-            .constraints
-            .iter()
-            .any(|c| c.rule.needs_collinear_vocabulary())
-        {
-            5
-        } else if self
-            .constraints
-            .iter()
-            .any(|c| c.rule.needs_angle_vocabulary())
-        {
-            4
-        } else if self
-            .constraints
-            .iter()
-            .any(|c| c.rule.needs_circle_vocabulary())
-        {
-            3
-        } else {
-            2
-        }
-    }
-
-    /// What a reader must implement to rewrite this sketch. See
-    /// [`SKETCH_CONSTRAINTS_CAPABILITY`].
-    pub fn required_capabilities(&self) -> Vec<String> {
-        ObjectKind::Sketch.required_capabilities(self.schema_version())
-    }
-
-    /// Refuses an envelope whose header does not describe the payload inside
-    /// it.
-    ///
-    /// Both directions, and both matter. A v1 header over a payload that
-    /// carries constraints is the dangerous one: it tells an older build the
-    /// document is safe to rewrite, and that build drops the constraints
-    /// without ever knowing they were there. A header that declares the
-    /// capability over a payload with no constraints is the other half of the
-    /// same dishonesty, and locks readers out of a document for nothing.
-    pub(crate) fn require_declared_contract(&self, envelope: &Envelope) -> Result<()> {
-        let version = self.schema_version();
-        let capabilities = self.required_capabilities();
-        if envelope.schema_version == version && envelope.required_capabilities == capabilities {
-            return Ok(());
-        }
-        Err(CadError::input(format!(
-            "a sketch holding {} constraint(s) belongs at schema v{version} requiring {}, but \
-             its envelope says schema v{} requiring {}",
-            self.constraints.len(),
-            capabilities.join(", "),
-            envelope.schema_version,
-            envelope.required_capabilities.join(", "),
-        )))
-    }
-
     /// Everything the persistence boundary has to be sure of about a sketch.
     ///
     /// One implementation, called from [`ObjectPayload::validate`], which is
@@ -1319,33 +796,15 @@ pub struct Revolve {
     /// §27C: the saved profile Line that lies on the axis, for a solid part
     /// closed on it. That Line raises no face; every other Line raises one.
     ///
-    /// `None` for a profile strictly off the axis (a part with a bore), which
-    /// is the §27A layout, unchanged and byte-identical. Present only at
-    /// payload v2; see [`FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY`]. Stated
-    /// rather than inferred: every reader checks it against the class the
-    /// profile policy derives from the saved coordinates, and refuses when
-    /// the two disagree.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub axis_segment: Option<StableEntityId>,
 }
 
 impl Revolve {
-    /// The layout this feature has to be stored at: decided by what it holds.
-    pub fn schema_version(&self) -> u32 {
-        match (self.extent, self.axis_segment.is_some()) {
-            (RevolveExtent::FullTurn, false) => 1,
-            (RevolveExtent::FullTurn, true) => 2,
-            (RevolveExtent::Partial { .. }, false) => 3,
-            (RevolveExtent::Partial { .. }, true) => 4,
-        }
-    }
-
     /// The cache key for this feature's own contribution; the caller adds the
     /// resolved profile and the kernel identity.
     pub fn cache_key(&self, tolerance: ferritecad_types::Tolerance) -> ContentHash {
         let mut hasher = CanonicalHasher::new("feature.revolve");
-        // The stored layout, so a Revolve with a bore keeps the key it had.
-        hasher.algorithm_version(self.schema_version());
+        hasher.algorithm_version(1);
         tolerance.feed(&mut hasher);
         hasher.field("profile").bytes(&self.profile.to_bytes());
         hasher.field("axis").str(match self.axis {
@@ -1450,21 +909,6 @@ pub struct Fillet {
 }
 
 impl Fillet {
-    /// The layout this feature has to be stored at, decided by what it holds.
-    ///
-    /// A Fillet that rounds its own predecessor's edge is the §28A v1 feature.
-    /// One whose edge was swept by an earlier feature than the one it rounds
-    /// (§28G/§28L: the second, third or fourth Fillet, rounding the previous
-    /// Fillet's result at a corner of the plate) is v2: a v1 reader would take that edge as belonging to
-    /// the feature it rounds.
-    pub fn schema_version(&self) -> u32 {
-        if self.edge.feature == self.previous {
-            1
-        } else {
-            2
-        }
-    }
-
     /// The cache key for this feature's own statement; the caller adds the
     /// predecessor's key and the kernel identity.
     pub fn cache_key(&self, tolerance: ferritecad_types::Tolerance) -> ContentHash {
@@ -1492,7 +936,6 @@ pub struct Extrude {
     pub profile: ObjectId,
     pub end_condition: EndCondition,
     /// Runs against the plane normal when true.
-    #[serde(default)]
     pub reversed: bool,
     pub operation: SolidOperation,
     /// The body being modified; `None` for [`SolidOperation::NewBody`].
@@ -1513,42 +956,17 @@ pub struct Extrude {
     /// It names a **feature**, never a body, which is what keeps the evaluation
     /// graph acyclic by construction — see
     /// [`DependencyRole::Predecessor`][crate::DependencyRole::Predecessor].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<ObjectId>,
 }
 
 impl Extrude {
-    /// The layout this feature has to be stored at.
-    ///
-    /// Decided by what it holds, exactly as a sketch's is. An extrusion that
-    /// starts a body is the v1 feature it always was, whatever this build is
-    /// capable of writing; a feature that names a predecessor is v2, because a
-    /// build that has not heard of `previous` would decode it, drop the field
-    /// and write back a feature that starts a second body out of nowhere.
-    ///
-    /// A Cut that runs through everything is v3 for the same reason: a build
-    /// that reads v2 knows `previous` but not what ThroughAll means for a Cut.
-    pub fn schema_version(&self) -> u32 {
-        match (&self.previous, &self.end_condition) {
-            (Some(_), EndCondition::ThroughAll) => 3,
-            (Some(_), _) => 2,
-            (None, _) => 1,
-        }
-    }
-
-    /// What a reader must implement to rewrite this feature. See
-    /// [`FEATURE_PREDECESSOR_CAPABILITY`].
-    pub fn required_capabilities(&self) -> Vec<String> {
-        ObjectKind::Extrude.required_capabilities(self.schema_version())
-    }
-
     /// The cache key for this feature's geometric result.
     ///
     /// The caller adds the resolved inputs of `profile` and `target_body`; this
     /// covers only what the feature itself contributes.
     pub fn cache_key(&self, tolerance: ferritecad_types::Tolerance) -> ContentHash {
         let mut hasher = CanonicalHasher::new("feature.extrude");
-        hasher.algorithm_version(ObjectKind::Extrude.schema_version());
+        hasher.algorithm_version(1);
         tolerance.feed(&mut hasher);
 
         hasher.field("profile").bytes(&self.profile.to_bytes());
@@ -2145,7 +1563,7 @@ impl TryFrom<RawImportedDefinitionRef> for ImportedDefinitionRef {
 /// row proves its own bytes are intact, and this object proves the intact bytes
 /// are the ones *it* was built from. A source row swapped underneath an object
 /// would satisfy the first and fail the second.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportedStep {
     /// The row holding the exact bytes. Immutable: importing different bytes
     /// mints a new source rather than editing this one.
@@ -2158,12 +1576,7 @@ pub struct ImportedStep {
     pub source_name: Option<String>,
     /// The handle-free projection of the scene that import produced.
     ///
-    /// Stored at whichever layout it was written with. A document written
-    /// before definitions had identities keeps binding by position and keeps
-    /// working; what it cannot do is answer a durable reference, because
-    /// inventing a key from a position would produce something that looks like
-    /// an identity and behaves like an index.
-    pub scene: StoredScene,
+    pub scene: PersistedScene,
     pub imported_by: ImporterIdentity,
     /// What the importer reported *then*.
     ///
@@ -2172,49 +1585,6 @@ pub struct ImportedStep {
     /// different kernel build; presenting either as the other would claim an
     /// observation nobody made.
     pub diagnostics_at_import: Vec<ImportDiagnostic>,
-}
-
-/// The stored form of an imported object, at one scene layout.
-///
-/// Generic over the scene because the two layouts differ in that field and
-/// nothing else: two near-identical structs would be two things obliged to
-/// agree about source hashes, lengths and provenance forever after.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct StoredImport<S> {
-    source: ImportedSourceId,
-    source_hash: ContentHash,
-    source_byte_len: u64,
-    #[serde(default)]
-    source_name: Option<String>,
-    scene: S,
-    imported_by: ImporterIdentity,
-    diagnostics_at_import: Vec<ImportDiagnostic>,
-}
-
-impl<S> StoredImport<S> {
-    fn around(imported: &ImportedStep, scene: S) -> Self {
-        Self {
-            source: imported.source,
-            source_hash: imported.source_hash,
-            source_byte_len: imported.source_byte_len,
-            source_name: imported.source_name.clone(),
-            scene,
-            imported_by: imported.imported_by.clone(),
-            diagnostics_at_import: imported.diagnostics_at_import.clone(),
-        }
-    }
-
-    fn into_imported(self, scene: StoredScene) -> ImportedStep {
-        ImportedStep {
-            source: self.source,
-            source_hash: self.source_hash,
-            source_byte_len: self.source_byte_len,
-            source_name: self.source_name,
-            scene,
-            imported_by: self.imported_by,
-            diagnostics_at_import: self.diagnostics_at_import,
-        }
-    }
 }
 
 impl ImportedStep {
@@ -2248,13 +1618,10 @@ pub enum ObjectPayload {
     Chamfer(Chamfer),
     /// A STEP file and the scene one reading of it produced.
     ImportedStep(ImportedStep),
-    /// An object of a type this build does not implement, preserved verbatim.
-    Unknown(UnknownObject),
 }
 
 impl ObjectPayload {
-    /// The discriminator to store, which for an unknown object is whatever the
-    /// writing build called it.
+    /// The discriminator to store.
     pub fn type_name(&self) -> &str {
         match self {
             Self::Parameter(_) => ObjectKind::Parameter.as_str(),
@@ -2266,7 +1633,6 @@ impl ObjectPayload {
             Self::Fillet(_) => ObjectKind::Fillet.as_str(),
             Self::Chamfer(_) => ObjectKind::Chamfer.as_str(),
             Self::ImportedStep(_) => ObjectKind::ImportedStep.as_str(),
-            Self::Unknown(unknown) => &unknown.type_name,
         }
     }
 
@@ -2274,192 +1640,43 @@ impl ObjectPayload {
         ObjectKind::parse(self.type_name())
     }
 
-    pub fn schema_version(&self) -> u32 {
-        match self {
-            Self::Unknown(unknown) => unknown.schema_version,
-            // An imported scene is stored at the layout it holds. A version 1
-            // scene rewritten under a version 2 header would claim identities
-            // it does not have, and the next reader would believe the header.
-            Self::ImportedStep(imported) => imported.scene.version(),
-            // Same rule, same reason: see [`Sketch::schema_version`].
-            Self::Sketch(sketch) => sketch.schema_version(),
-            Self::Extrude(extrude) => extrude.schema_version(),
-            Self::Revolve(revolve) => revolve.schema_version(),
-            Self::Fillet(fillet) => fillet.schema_version(),
-            known => known
-                .kind()
-                .map(ObjectKind::schema_version)
-                .unwrap_or_default(),
-        }
-    }
-
-    /// The capabilities a reader needs to modify this object.
-    pub fn required_capabilities(&self) -> Vec<String> {
-        match self {
-            Self::Unknown(unknown) => unknown.required_capabilities.clone(),
-            known => {
-                let version = known.schema_version();
-                known
-                    .kind()
-                    .map(|kind| kind.required_capabilities(version))
-                    .unwrap_or_else(|| vec![CORE_CAPABILITY.to_owned()])
-            }
-        }
-    }
-
-    /// Produces the bytes to store.
-    ///
-    /// An unknown object returns the bytes it arrived with, untouched.
+    /// Encodes the current payload for storage.
     pub fn to_storage_bytes(&self) -> Result<Vec<u8>> {
         self.validate()?;
-        let capabilities = self.required_capabilities();
-        let version = self.schema_version();
-        let name = self.type_name().to_owned();
-
+        let name = self.type_name();
         let envelope = match self {
-            Self::Parameter(v) => Envelope::encode(name, version, capabilities, v)?,
-            Self::DatumPlane(v) => Envelope::encode(name, version, capabilities, v)?,
-            Self::Sketch(v) => Envelope::encode(name, version, capabilities, v)?,
-            Self::Body(v) => Envelope::encode(name, version, capabilities, v)?,
-            Self::Extrude(v) => Envelope::encode(name, version, capabilities, v)?,
-            Self::Revolve(v) => Envelope::encode(name, version, capabilities, v)?,
-            Self::Fillet(v) => Envelope::encode(name, version, capabilities, v)?,
-            Self::Chamfer(v) => Envelope::encode(name, version, capabilities, v)?,
-            // Written back at the layout it was read at. A version 1 scene
-            // has no keys and a version 2 scene has no placement identities,
-            // and inventing either while writing would turn a document that
-            // honestly lacks them into one that claims them — with values
-            // indexed by the traversal that happened to be running.
-            Self::ImportedStep(v) => match &v.scene {
-                StoredScene::V1(scene) => Envelope::encode(
-                    name,
-                    version,
-                    capabilities,
-                    &StoredImport::around(v, scene.clone()),
-                )?,
-                StoredScene::V2(scene) => Envelope::encode(
-                    name,
-                    version,
-                    capabilities,
-                    &StoredImport::around(v, scene.clone()),
-                )?,
-                StoredScene::V3(scene) => Envelope::encode(
-                    name,
-                    version,
-                    capabilities,
-                    &StoredImport::around(v, scene.clone()),
-                )?,
-                _ => {
-                    return Err(CadError::unsupported(format!(
-                        "this build cannot write a v{} imported scene",
-                        v.scene.version()
-                    )));
-                }
-            },
-            Self::Unknown(unknown) => return Ok(unknown.raw_envelope().to_vec()),
+            Self::Parameter(v) => Envelope::encode(name, v)?,
+            Self::DatumPlane(v) => Envelope::encode(name, v)?,
+            Self::Sketch(v) => Envelope::encode(name, v)?,
+            Self::Body(v) => Envelope::encode(name, v)?,
+            Self::Extrude(v) => Envelope::encode(name, v)?,
+            Self::Revolve(v) => Envelope::encode(name, v)?,
+            Self::Fillet(v) => Envelope::encode(name, v)?,
+            Self::Chamfer(v) => Envelope::encode(name, v)?,
+            Self::ImportedStep(v) => Envelope::encode(name, v)?,
         };
         envelope.to_bytes()
     }
 
-    /// Interprets stored bytes, falling back to verbatim preservation.
+    /// Decodes a supported object; an unknown type or invalid payload is an error.
     pub fn from_storage_bytes(bytes: &[u8]) -> Result<Self> {
         let envelope = Envelope::from_bytes(bytes)?;
-
-        let Some(kind) = ObjectKind::parse(&envelope.type_name) else {
-            return Ok(Self::Unknown(UnknownObject::new(envelope, bytes.to_vec())));
-        };
-
-        // A payload whose layout this build does not read, or which names a
-        // capability outside this type's vocabulary, is not something to guess
-        // at. Keeping it verbatim is also what carries a constraint family this
-        // build has never heard of: a future one arrives under a capability of
-        // its own, lands here, and is written back exactly as it came.
-        if !kind
-            .readable_schema_versions()
-            .contains(&envelope.schema_version)
-            || !envelope
-                .required_capabilities
-                .iter()
-                .all(|name| kind.known_capabilities().contains(&name.as_str()))
-        {
-            return Ok(Self::Unknown(UnknownObject::new(envelope, bytes.to_vec())));
-        }
-
+        let kind = ObjectKind::parse(&envelope.type_name).ok_or_else(|| {
+            CadError::input(format!("unknown object type {}", envelope.type_name))
+        })?;
         let payload = match kind {
             ObjectKind::Parameter => Self::Parameter(envelope.decode()?),
             ObjectKind::DatumPlane => Self::DatumPlane(envelope.decode()?),
             ObjectKind::Sketch => Self::Sketch(envelope.decode()?),
             ObjectKind::Body => Self::Body(envelope.decode()?),
             ObjectKind::Extrude => Self::Extrude(envelope.decode()?),
-            ObjectKind::Revolve => {
-                let revolve: Revolve = envelope.decode()?;
-                // The header and the content must say the same thing: a v1
-                // header over an axis Line would hide it from a §27A build.
-                if revolve.schema_version() != envelope.schema_version {
-                    return Err(CadError::input(format!(
-                        "Revolve payload v{} does not match what it holds (v{})",
-                        envelope.schema_version,
-                        revolve.schema_version()
-                    )));
-                }
-                Self::Revolve(revolve)
-            }
+            ObjectKind::Revolve => Self::Revolve(envelope.decode()?),
             ObjectKind::Fillet => Self::Fillet(envelope.decode()?),
             ObjectKind::Chamfer => Self::Chamfer(envelope.decode()?),
-            ObjectKind::ImportedStep => Self::ImportedStep(match envelope.schema_version {
-                1 => {
-                    let stored: StoredImport<LegacyScene> = envelope.decode()?;
-                    let scene = StoredScene::V1(stored.scene.clone());
-                    stored.into_imported(scene)
-                }
-                2 => {
-                    let stored: StoredImport<KeyedScene> = envelope.decode()?;
-                    let scene = StoredScene::V2(stored.scene.clone());
-                    stored.into_imported(scene)
-                }
-                // Named layouts and no fall-through. A wildcard here would
-                // decode an unreadable future layout as the newest one this
-                // build knows, and the check above — which sends anything not
-                // in `readable_schema_versions` to `Unknown` — would have been
-                // the only thing standing in the way.
-                _ => {
-                    let stored: StoredImport<PersistedScene> = envelope.decode()?;
-                    let scene = StoredScene::V3(stored.scene.clone());
-                    stored.into_imported(scene)
-                }
-            }),
+            ObjectKind::ImportedStep => Self::ImportedStep(envelope.decode()?),
         };
-        payload.require_declared_contract(&envelope)?;
         payload.validate()?;
         Ok(payload)
-    }
-
-    /// Refuses a decoded payload whose envelope header misdescribes it.
-    ///
-    /// The header is what capability negotiation reads at open time, before
-    /// anything is decoded, so a header that disagrees with its payload makes
-    /// two readers of the same file reach two different conclusions about what
-    /// they may do to it. Checked in both directions: under-declaring hands an
-    /// older build permission to discard meaning it cannot see, over-declaring
-    /// locks readers out of a document that has nothing they cannot handle.
-    fn require_declared_contract(&self, envelope: &Envelope) -> Result<()> {
-        if let Self::Sketch(sketch) = self {
-            return sketch.require_declared_contract(envelope);
-        }
-        if envelope.schema_version == self.schema_version()
-            && envelope.required_capabilities == self.required_capabilities()
-        {
-            return Ok(());
-        }
-        Err(CadError::input(format!(
-            "a {} payload belongs at schema v{} requiring {}, but its envelope says schema v{} \
-             requiring {}",
-            self.type_name(),
-            self.schema_version(),
-            self.required_capabilities().join(", "),
-            envelope.schema_version,
-            envelope.required_capabilities.join(", "),
-        )))
     }
 
     /// Enforces numeric and local semantic invariants at the persistence
@@ -2563,7 +1780,6 @@ impl ObjectPayload {
                 Ok(())
             }
             Self::ImportedStep(imported) => imported.validate(),
-            Self::Unknown(_) => Ok(()),
         }
     }
 
@@ -2597,10 +1813,8 @@ mod tests {
     use super::*;
     use ferritecad_types::Tolerance;
 
-    /// §27D: one validated angle, its own payload layouts and capabilities,
-    /// and a cache key that moves with the angle while a full turn keeps its.
     #[test]
-    fn a_partial_angle_is_a_validated_extent_with_its_own_layout() {
+    fn a_partial_angle_validates_its_value_and_keys_geometry() {
         for bad in [
             0.0,
             -0.0,
@@ -2616,7 +1830,7 @@ mod tests {
             assert!(RevolveAngle::new(bad).is_err(), "{bad}");
         }
         for good in [0.01, 1.0, 90.0, 137.5, 100.0 / 3.0, 359.99] {
-            assert_eq!(RevolveAngle::new(good).expect("a sector").degrees(), good);
+            assert_eq!(RevolveAngle::new(good).expect("sector").degrees(), good);
         }
         let mut revolve = Revolve {
             profile: ObjectId::new(),
@@ -2627,106 +1841,23 @@ mod tests {
         };
         let tolerance = Tolerance::default();
         let full = revolve.cache_key(tolerance);
-        assert_eq!(revolve.schema_version(), 1);
         revolve.extent = RevolveExtent::Partial {
-            degrees: RevolveAngle::new(90.0).expect("a sector"),
+            degrees: RevolveAngle::new(90.0).expect("sector"),
         };
-        assert_eq!(revolve.schema_version(), 3);
         let quarter = revolve.cache_key(tolerance);
-        assert_ne!(quarter, full);
-        revolve.extent = RevolveExtent::Partial {
-            degrees: RevolveAngle::new(90.000_000_001).expect("a sector"),
-        };
-        assert_ne!(revolve.cache_key(tolerance), quarter);
-        revolve.axis_segment = Some(StableEntityId::new());
-        assert_eq!(revolve.schema_version(), 4);
-        assert_eq!(
-            ObjectKind::Revolve.required_capabilities(3),
-            [
-                CORE_CAPABILITY,
-                FEATURE_REVOLVE_CAPABILITY,
-                FEATURE_REVOLVE_PARTIAL_CAPABILITY
-            ]
-        );
-        assert_eq!(
-            ObjectKind::Revolve.required_capabilities(4),
-            [
-                CORE_CAPABILITY,
-                FEATURE_REVOLVE_CAPABILITY,
-                FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
-                FEATURE_REVOLVE_PARTIAL_CAPABILITY
-            ]
-        );
-        // Full turns still declare exactly what they did.
-        assert_eq!(
-            ObjectKind::Revolve.required_capabilities(1),
-            [CORE_CAPABILITY, FEATURE_REVOLVE_CAPABILITY]
-        );
-        assert_eq!(
-            ObjectKind::Revolve.readable_schema_versions(),
-            &[4, 3, 2, 1]
-        );
+        assert_ne!(full, quarter);
         let payload = ObjectPayload::Revolve(revolve.clone());
-        let bytes = payload.to_storage_bytes().expect("encodes");
+        let bytes = payload.to_storage_bytes().expect("encode");
         assert_eq!(
-            ObjectPayload::from_storage_bytes(&bytes).expect("decodes"),
+            ObjectPayload::from_storage_bytes(&bytes).expect("decode"),
             payload
         );
-        // A stored angle outside the policy is refused when read, never
-        // repaired into a sector or widened into a full turn.
-        #[derive(Serialize)]
-        struct Forged {
-            profile: ObjectId,
-            axis: RevolveAxis,
-            extent: BTreeMap<&'static str, BTreeMap<&'static str, f64>>,
-            operation: SolidOperation,
-        }
-        for degrees in [360.0, 0.0, 720.0] {
-            let forged = Envelope::encode(
-                "feature.revolve",
-                3,
-                ObjectKind::Revolve.required_capabilities(3),
-                &Forged {
-                    profile: revolve.profile,
-                    axis: RevolveAxis::SketchY,
-                    extent: BTreeMap::from([("partial", BTreeMap::from([("degrees", degrees)]))]),
-                    operation: SolidOperation::NewBody,
-                },
-            )
-            .expect("forged")
-            .to_bytes()
-            .expect("bytes");
-            assert!(
-                ObjectPayload::from_storage_bytes(&forged).is_err(),
-                "{degrees}"
-            );
-        }
-        // The two end faces are two meanings, and neither is an Extrude cap:
-        // one reference identity throughout, so only the role differs.
-        let id = StableEntityId::new();
-        let meaning = |role: SemanticRole| {
-            TopologyRef {
-                id,
-                owner: revolve.profile,
-                producer_feature: revolve.profile,
-                expected_kind: EntityKind::Face,
-                output_role: role,
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            }
-            .meaning_hash()
+        revolve.extent = RevolveExtent::Partial {
+            degrees: RevolveAngle::new(90.000_000_001).expect("sector"),
         };
-        let start = meaning(SemanticRole::RevolveCap {
-            side: CapSide::Start,
-        });
-        let end = meaning(SemanticRole::RevolveCap { side: CapSide::End });
-        assert_ne!(start, end);
-        assert_ne!(
-            start,
-            meaning(SemanticRole::ExtrudeCap {
-                side: CapSide::Start
-            })
-        );
+        assert_ne!(quarter, revolve.cache_key(tolerance));
+        revolve.axis_segment = Some(StableEntityId::new());
+        assert_ne!(quarter, revolve.cache_key(tolerance));
     }
 
     fn sample_extrude() -> Extrude {
@@ -2774,42 +1905,6 @@ mod tests {
             let read = ObjectPayload::from_storage_bytes(&bytes).expect("decodes");
             assert_eq!(read, payload, "{} did not round trip", payload.type_name());
         }
-    }
-
-    #[test]
-    fn an_unknown_type_survives_a_load_and_save_cycle_byte_for_byte() {
-        let original = Envelope::new(
-            "feature.loft",
-            1,
-            vec!["future.loft.v1".to_owned()],
-            vec![0x83, 0x01, 0x02, 0x03],
-        )
-        .to_bytes()
-        .expect("serialises");
-
-        let payload = ObjectPayload::from_storage_bytes(&original).expect("header is readable");
-        assert!(matches!(payload, ObjectPayload::Unknown(_)));
-        assert_eq!(payload.type_name(), "feature.loft");
-        assert_eq!(payload.required_capabilities(), vec!["future.loft.v1"]);
-
-        let written = payload.to_storage_bytes().expect("writes back");
-        assert_eq!(written, original);
-    }
-
-    #[test]
-    fn a_known_type_from_a_newer_layout_is_preserved_not_guessed_at() {
-        let future = Envelope::new(
-            ObjectKind::Extrude.as_str(),
-            ObjectKind::Extrude.schema_version() + 1,
-            vec![CORE_CAPABILITY.to_owned()],
-            vec![0xf6],
-        )
-        .to_bytes()
-        .expect("serialises");
-
-        let payload = ObjectPayload::from_storage_bytes(&future).expect("header is readable");
-        assert!(matches!(payload, ObjectPayload::Unknown(_)));
-        assert_eq!(payload.to_storage_bytes().expect("writes back"), future);
     }
 
     #[test]

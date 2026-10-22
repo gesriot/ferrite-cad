@@ -28,13 +28,6 @@ fn content_of(path: &Path) -> String {
     content
 }
 
-fn schema(path: &Path) -> i64 {
-    rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .expect("opens")
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("reads")
-}
-
 fn run(args: &[&str], paths: &[&Path]) -> Output {
     let mut command = cli();
     command.args(args);
@@ -49,7 +42,6 @@ fn list_create_extract_and_delete_never_write_their_source() {
     let dir = tempfile::tempdir().expect("dir");
     let old = dir.path().join("old.fcad");
     std::fs::copy(plate_source(), &old).expect("the committed plate");
-    assert_eq!(schema(&old), 3);
     let original = std::fs::read(&old).expect("bytes");
     let version = content_of(&old);
 
@@ -94,12 +86,6 @@ fn list_create_extract_and_delete_never_write_their_source() {
         value["result"]["content_version"],
         content_of(&with_a).as_str()
     );
-    assert_eq!(
-        schema(&with_a),
-        4,
-        "the copy is migrated, the source is not"
-    );
-    assert_eq!(schema(&old), 3);
 
     let listed = json(&run(&["list-checkpoints", "--json"], &[&with_a]));
     let rows = listed["result"]["checkpoints"].as_array().expect("rows");
