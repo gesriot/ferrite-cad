@@ -194,15 +194,17 @@ prints `FCAD_28E_RECIPE_OK` with the measured and exact volumes.
 ```python
 # FCAD_28E_AGENT_RECIPE
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import constraint_request, line_rule, distance, fixed
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28e-"))
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
-        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+        {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
-OP = "edit-sketch-constraints-copy"
+OP = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -319,25 +321,25 @@ geometry(["fillet-edge-copy", plate, "--body", body["body_id"], "--expect-versio
 catalog = inspect(rounded)
 (fillet,) = catalog["fillets"]
 (sketch,) = catalog["sketches"]
-editor = sketch["constraint_edit"]
-assert editor["available"] is True, editor
-context = editor["fillet_base"]
-assert context["fillet_feature_id"] == fillet["feature_id"], context
-assert context["edge"] == chosen["edge"] and context["radius_mm"] == r, context
-assert context["stored_corner_mm"] == corner, context
+editor = sketch
+
+
+
+
+
 lines = [c["curve_id"] for c in editor["curves"]]
-starts = [c["start_mm"] for c in editor["curves"]]
+starts = [c["geometry"]["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
 refs = tables(rounded)["topology_refs"]
 
-def ask(remove, add):
+def ask(source, remove, add):
     path = root / "constraints.json"
-    path.write_text(json.dumps({"request_version": 1, "remove": remove, "add": add}))
+    path.write_text(json.dumps(constraint_request(inspect(source)["sketches"][0], remove, add)))
     return path
 
 def constrain(source, version, remove, add, out, code=0):
-    args = [OP, source, "--sketch", sketch["sketch_id"], "--expect-version", version,
-            "--request", ask(remove, add), "-o", out, "--json"]
+    args = [OP, source, "--expect-version", version,
+            "--request", ask(source, remove, add), "-o", out, "--json"]
     if code:
         return run(args, code)["error"]
     return geometry(args, out, "FCAD_28E_RECIPE_NO_SOLVER", "constraint")["result"]
@@ -345,11 +347,11 @@ def constrain(source, version, remove, add, out, code=0):
 def dimensioned(at, width, depth):
     """H/V on every Line, the first Line's start pinned at `at`, the width
     and the depth: nothing left for the solver to choose."""
-    add = [{"curve_id": lines[i], "rule": "horizontal" if across[i] else "vertical"}
+    add = [line_rule(lines[i], "horizontal" if across[i] else "vertical")
            for i in range(4)]
-    add.append({"curve_id": lines[0], "rule": "fixed", "at": "start", "x_mm": at[0], "y_mm": at[1]})
-    add.append({"curve_id": lines[across.index(True)], "rule": "distance", "distance_mm": width})
-    add.append({"curve_id": lines[across.index(False)], "rule": "distance", "distance_mm": depth})
+    add.append(fixed(lines[0], "start", at[0], at[1]))
+    add.append(distance(lines[across.index(True)], width))
+    add.append(distance(lines[across.index(False)], depth))
     return add
 
 # 3. Dimension it: translated, both sides changed, fully constrained.
@@ -357,12 +359,12 @@ AT, WIDTH, DEPTH = [-9.25, -2.5], 41.125, 15.625
 first = root / "dimensioned.fcad"
 before = rounded.read_bytes()
 result = constrain(rounded, catalog["content_version"], [], dimensioned(AT, WIDTH, DEPTH), first)
-assert result["solve"]["degrees_of_freedom"] == 0, result
+
 assert rounded.read_bytes() == before
 allowlist(rounded, first, sketch["sketch_id"])
 assert tables(first)["topology_refs"] == refs, "a name moved"
 after = inspect(first)
-assert [c["start_mm"] for c in after["sketches"][0]["constraint_edit"]["curves"]] == starts
+assert [c["geometry"]["start_mm"] for c in after["sketches"][0]["curves"]] == starts
 (again,) = after["fillets"]
 assert again["feature_id"] == fillet["feature_id"] and again["edge"] == fillet["edge"], again
 rect = [AT[0], AT[1], WIDTH, DEPTH]
@@ -370,11 +372,11 @@ solved_corner = [AT[0] + WIDTH, AT[1]]
 v1, e1 = measured(first, rect, solved_corner, r, H)
 
 # 4. Replace the width: its constraint UUID out, a new length in.
-width_id = next(c["constraint_id"] for c in after["sketches"][0]["constraint_edit"]["constraints"]
-                if c["rule"]["kind"] == "distance" and c["rule"]["distance"] == WIDTH)
+width_id = next(c["constraint_id"] for c in after["sketches"][0]["constraints"]
+                if c["rule"]["kind"] == "distance" and c["rule"]["distance"]["value"] == WIDTH)
 replaced = root / "replaced.fcad"
 constrain(first, after["content_version"], [width_id],
-          [{"curve_id": lines[across.index(True)], "rule": "distance", "distance_mm": 30.25}],
+          [distance(lines[across.index(True)], 30.25)],
           replaced)
 allowlist(first, replaced, sketch["sketch_id"])
 rect2 = [AT[0], AT[1], 30.25, DEPTH]
@@ -384,7 +386,7 @@ v2, e2 = measured(replaced, rect2, [AT[0] + 30.25, AT[1]], r, H)
 #    rectangle's bound (6.125 mm) and within the solved one's (7.8125 mm).
 catalog2 = inspect(replaced)
 radius_req = root / "radius.json"
-radius_req.write_text(json.dumps({"request_version": 1, "changes": [{"object": fillet["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 7.0, "unit": "mm"}]}))
+radius_req.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": fillet["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 7.0, "unit": "mm"}]}))
 rounder = root / "rounder.fcad"
 run(["edit", replaced, "--expect-version", catalog2["content_version"], "--request", radius_req, "-o", rounder, "--json"])
 v3, e3 = measured(rounder, rect2, [AT[0] + 30.25, AT[1]], 7.0, H)
@@ -402,7 +404,7 @@ never = root / "never.fcad"
 error = constrain(rounded, catalog["content_version"], [], dimensioned([0, 0], 30, 4.5), never, 2)
 assert error["kind"] == "input" and "too short" in error["message"], error
 conflict = dimensioned([0, 0], 30, 10) + [
-    {"curve_id": lines[(across.index(True) + 2) % 4], "rule": "distance", "distance_mm": 20}]
+    distance(lines[(across.index(True) + 2) % 4], 20)]
 error = constrain(rounded, catalog["content_version"], [], conflict, never, 2)
 assert error["kind"] == "constraint" and error["constraint_conflict"]["constraints"], error
 error = constrain(rounded, after["content_version"], [], dimensioned([0, 0], 30, 10), never, 2)

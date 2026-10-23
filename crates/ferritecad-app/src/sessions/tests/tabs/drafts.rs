@@ -1783,6 +1783,7 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
     let (b_peer_stl, b_peer_fbx) = peer_bytes(&b_peer, work.path(), "b");
     assert_eq!((&b_stl, &b_fbx), (&b_peer_stl, &b_peer_fbx), "B unsaved");
     assert!(w.save(SaveTarget::InPlace).published);
+    let drafted_vertices = crate::transaction_tests::vertices(&vertices);
     w.sessions.stop_all();
     w.tabs.stop_all();
 
@@ -1811,10 +1812,7 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
         (b_stl.clone(), b_fbx.clone())
     );
     let area = {
-        let p: Vec<[f64; 2]> = crate::transaction_tests::vertices(&vertices)
-            .iter()
-            .map(|v| v.start_mm)
-            .collect();
+        let p: Vec<[f64; 2]> = drafted_vertices.iter().map(|v| v.start_mm).collect();
         (0..p.len())
             .map(|i| {
                 let (s, e) = (p[i], p[(i + 1) % p.len()]);

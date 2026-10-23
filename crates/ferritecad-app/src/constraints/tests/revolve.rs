@@ -409,7 +409,7 @@ fn native_revolve_constraint_worker_and_cli_publish_the_same_solved_sector() {
         frame(&ctx, &mut e, vec![]);
     }
     dimension_sector(&ctx, &mut e);
-    let kept = history_state(&e);
+    let _kept = history_state(&e);
     click(&ctx, &mut e, "Save constraints copy…");
     let request = e.take_request().expect("widget request");
     assert_eq!(
@@ -767,7 +767,7 @@ fn native_axis_closed_worker_and_cli_publish_the_same_solved_shaft() {
         frame(&ctx, &mut e, vec![]);
     }
     dimension_shaft(&ctx, &mut e);
-    let kept = history_state(&e);
+    let _kept = history_state(&e);
     click(&ctx, &mut e, "Save constraints copy…");
     let request = e.take_request().expect("widget request");
     assert_eq!(
@@ -952,7 +952,7 @@ fn publish_both(
         Document::open_read_only(&ui).expect("UI"),
         Document::open_read_only(&cli).expect("CLI"),
     );
-    assert_eq!(x.meta(), y.meta());
+    crate::transaction_tests::assert_meta(x.meta(), y.meta());
     assert_eq!(
         x.topology_refs().expect("refs"),
         y.topology_refs().expect("refs")
@@ -963,20 +963,10 @@ fn publish_both(
             (ObjectPayload::Sketch(s), ObjectPayload::Sketch(t)) => {
                 assert_eq!((&s.plane, &s.curves), (&t.plane, &t.curves));
                 assert_eq!(s.constraints.len(), t.constraints.len());
-                let known: Vec<_> = {
-                    let d = Document::open_read_only(source).expect("source");
-                    let ids = match d.object(id).expect("read").expect("sketch").payload {
-                        ObjectPayload::Sketch(s) => s.constraints.iter().map(|c| c.id).collect(),
-                        _ => vec![],
-                    };
-                    d.close().expect("close");
-                    ids
-                };
-                for (p, q) in s.constraints.iter().zip(&t.constraints) {
-                    assert_eq!(p.rule, q.rule);
-                    // Kept constraints keep their UUIDs; only new ones differ.
-                    assert_eq!(p.id == q.id, known.contains(&p.id), "{p:?} / {q:?}");
-                }
+                assert_eq!(
+                    s.constraints, t.constraints,
+                    "request UUIDs and rules are preserved"
+                );
             }
             _ => assert_eq!(old, new),
         }

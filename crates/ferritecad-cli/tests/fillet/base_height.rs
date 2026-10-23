@@ -484,7 +484,7 @@ fn native_after_a_height_edit_every_other_editor_still_names_the_chamfer() {
     let f = Fixture::drawn(Plate::new(CCW));
     let (copy, id, _) = chamfer_at(&f, &f.source, [X0, Y0 + D], 2.0, "src");
     let (edited, _) = heightened_plain(&f, &copy, 7.25, "edited");
-    let (base, version, catalog) = base_and_version(&edited);
+    let (base, version, _catalog) = base_and_version(&edited);
     // §29C/§29D: the Sketch's coordinates and its Line constraints are both
     // editable under the Chamfer.
 

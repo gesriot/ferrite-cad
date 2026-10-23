@@ -199,18 +199,9 @@ mod old_rectangle {
         pub saved: Option<Part>,
     }
     #[derive(Deserialize)]
-    pub struct History {
-        pub tools: Vec<serde_json::Value>,
-    }
-    #[derive(Deserialize)]
     pub struct Feature {
         pub circular_cut_edit: Edit,
         pub circular_cut_edit_v2: Edit,
-    }
-    #[derive(Deserialize)]
-    pub struct Sketch {
-        pub cut_history: Option<History>,
-        pub cut_history_v2: Option<History>,
     }
     #[derive(Deserialize)]
     pub struct Body {
@@ -221,11 +212,10 @@ mod old_rectangle {
     pub struct Inspection {
         pub features: Vec<Feature>,
         pub bodies: Vec<Body>,
-        pub sketches: Vec<Sketch>,
     }
 
     /// Every rectangle this consumer would believe, and every reason given.
-    pub fn read(value: &serde_json::Value) -> (Vec<[[f64; 2]; 2]>, Vec<String>, usize) {
+    pub fn read(value: &serde_json::Value) -> (Vec<[[f64; 2]; 2]>, Vec<String>) {
         let old: Inspection = serde_json::from_value(value.clone()).expect("old DTO reads");
         let mut parts = Vec::new();
         let mut reasons = Vec::new();
@@ -241,13 +231,7 @@ mod old_rectangle {
                 reasons.extend(edit.refusal.clone());
             }
         }
-        let histories = old
-            .sketches
-            .iter()
-            .flat_map(|s| [&s.cut_history, &s.cut_history_v2])
-            .filter(|h| h.as_ref().is_some_and(|h| !h.tools.is_empty()))
-            .count();
-        (parts, reasons, histories)
+        (parts, reasons)
     }
 }
 
@@ -309,12 +293,11 @@ fn polygon_discovery_refusals_and_writer_checks_without_kernel() {
         // An old rectangle consumer is told nothing it could take as a
         // rectangle: every block that meant one is unavailable, with a reason
         // that names the block that can say it.
-        let (parts, reasons, histories) = old_rectangle::read(&catalog);
+        let (parts, reasons) = old_rectangle::read(&catalog);
         assert!(
             parts.is_empty(),
             "a bounding box posed as the part: {parts:?}"
         );
-        assert_eq!(histories, 0);
         // Both add blocks (unless the 16-link limit speaks first) and both
         // edit blocks of every link point at `_v3`; the base's own refusal
         // is the NewBody one it always was.
@@ -466,12 +449,11 @@ fn a_rectangle_keeps_every_older_block_and_gains_v3() {
     let tools = super::history::tools(3);
     let path = super::history::fixture(root.path(), &tools);
     let catalog = inspect(&path);
-    let (parts, reasons, histories) = old_rectangle::read(&catalog);
+    let (parts, reasons) = old_rectangle::read(&catalog);
     // Two add blocks, two edit blocks per Cut, two height blocks.
     assert_eq!(parts.len(), 2 + 2 * 3);
     assert!(parts.iter().all(|p| *p == [[0., 0.], [SIZE[0], SIZE[1]]]));
     assert!(reasons.iter().all(|r| !r.contains("_v3")), "{reasons:?}");
-    assert_eq!(histories, 2);
     let rectangle = [[0., 0.], [SIZE[0], 0.], [SIZE[0], SIZE[1]], [0., SIZE[1]]];
     check_boundary(
         &path,
@@ -499,7 +481,7 @@ fn a_rectangle_keeps_every_older_block_and_gains_v3() {
         &[[0., 0.], [SIZE[0], 0.5], [SIZE[0], SIZE[1]], [0., SIZE[1]]],
         &self::tools(1),
     );
-    let (parts, _, _) = old_rectangle::read(&inspect(&skew));
+    let (parts, _) = old_rectangle::read(&inspect(&skew));
     assert!(
         parts.is_empty(),
         "a sloped quadrilateral is not a rectangle"
@@ -812,7 +794,12 @@ fn native_l_profile_history_matrix() {
         sketch(&grown, &moved, &wider, 0);
         measured(&moved, &tools, &wider, 13.);
         let reopened = inspect(&moved);
-        let base = &reopened["sketches"][0]["cut_history_v3"];
+        let base = &reopened["features"]
+            .as_array()
+            .expect("features")
+            .iter()
+            .find(|f| f["circular_cut_edit_v3"]["saved"].is_object())
+            .expect("Cut")["circular_cut_edit_v3"]["saved"];
         check_boundary(&moved, base, &wider);
         if n == 2 && artifact < 2 {
             for path in [&grown, &moved] {
@@ -836,10 +823,10 @@ fn native_l_profile_history_matrix() {
             }
         }
         if n == 16 {
-            // A far wall: the right side at 56 misses link 11 (slot 9) only.
+            // A far wall tangent to link 11 (slot 9) is refused by the evaluator.
             let mut near = L;
-            near[1][0] = 56.;
-            near[2][0] = 56.;
+            near[1][0] = tools[11].center_mm[0] + tools[11].radius_mm;
+            near[2][0] = near[1][0];
             let out = sketch(&source, &never, &near, 2);
             let message = out["error"]["message"].as_str().expect("message");
             assert!(

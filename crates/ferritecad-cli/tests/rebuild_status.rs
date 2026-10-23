@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{Document, ObjectPayload};
 use serde_json::{Value, json};
 use std::process::{Command, Output};
@@ -77,24 +79,24 @@ fn incomplete_rebuild_and_export_report_statuses_and_edit_refusals_are_structure
     let request = root.path().join("shrink.json");
     std::fs::write(
         &request,
-        json!({ "request_version": 1, "remove": [], "add": [
-        {"rule":"horizontal", "curve_id": curves[0]}, {"rule":"vertical", "curve_id":curves[1]},
-        {"rule":"horizontal", "curve_id": curves[2]}, {"rule":"vertical", "curve_id":curves[3]},
-        {"rule":"fixed", "curve_id":curves[0], "at":"start", "x_mm":0.0, "y_mm":0.0},
-        {"rule":"distance", "curve_id":curves[0], "distance_mm":4.0},
-        {"rule":"distance", "curve_id":curves[1], "distance_mm":4.0}
-    ] })
+        transaction::constraints(&json!({"sketch_id":chain.sketch,"constraints":[],"curves":sketch.curves.iter().map(|c| match c.geometry {ferritecad_document::SketchGeometry::Line{start,end} => json!({"curve_id":c.id,"geometry":{"kind":"line","start_mm":[start.x,start.y],"end_mm":[end.x,end.y]}}), _ => unreachable!()}).collect::<Vec<_>>()}), &[], &[
+            transaction::line_rule(&json!(curves[0]), "horizontal"),
+            transaction::line_rule(&json!(curves[1]), "vertical"),
+            transaction::line_rule(&json!(curves[2]), "horizontal"),
+            transaction::line_rule(&json!(curves[3]), "vertical"),
+            transaction::fixed(&json!(curves[0]), "start", 0., 0.),
+            transaction::distance(&json!(curves[0]), 4.),
+            transaction::distance(&json!(curves[1]), 4.),
+        ])
         .to_string(),
     )
     .expect("request");
     let destination = root.path().join("refused.fcad");
     let refused = reply(
         cli()
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&healthy)
             .args([
-                "--sketch",
-                &chain.sketch.to_string(),
                 "--expect-version",
                 &version.to_string(),
                 "--json",

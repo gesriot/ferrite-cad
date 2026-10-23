@@ -180,9 +180,27 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                 Some(SketchProfileUse::BlindExtrude { height_mm, .. }) => Some(height_mm),
                 _ => None,
             };
-            let vertices: Option<Vec<_>> = sketch.curves.iter().enumerate().map(|(i,c)| match c.geometry {
-                SketchGeometry::Line {start,end} if !c.construction && matches!(sketch.curves[(i+1)%sketch.curves.len()].geometry, SketchGeometry::Line {start:next,..} if next == end) => Some(SketchVertex {curve_id:c.id,start_mm:[start.x,start.y]}), _=>None,
-            }).collect::<Option<Vec<_>>>().filter(|v| !v.is_empty());
+            let vertices: Option<Vec<_>> = sketch
+                .curves
+                .iter()
+                .enumerate()
+                .map(|(i, curve)| {
+                    let next = &sketch.curves[(i + 1) % sketch.curves.len()];
+                    match curve.geometry {
+                        SketchGeometry::Line { start, end }
+                            if !curve.construction
+                                && matches!(next.geometry, SketchGeometry::Line { start, .. } if start == end) =>
+                        {
+                            Some(SketchVertex {
+                                curve_id: curve.id,
+                                start_mm: [start.x, start.y],
+                            })
+                        }
+                        _ => None,
+                    }
+                })
+                .collect::<Option<Vec<_>>>()
+                .filter(|vertices| !vertices.is_empty());
             let base = result.facts.objects.iter().find_map(|o| match &o.payload {
                 ObjectPayload::Extrude(e) if e.profile == object.id => Some(o.id),
                 _ => None,

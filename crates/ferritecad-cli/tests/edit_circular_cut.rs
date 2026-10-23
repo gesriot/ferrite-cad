@@ -929,17 +929,21 @@ fn cut_edit_discovery_and_protocol_without_native() {
         json!(s.circles.keys().next().expect("a circle").to_string())
     );
 
-    // §26F admits the original base coordinates. Other profile editors and
-    // the circular tool's coordinate editor keep refusing this history.
-    for sketch in f.catalog["sketches"].as_array().expect("sketches") {
-        assert_eq!(
-            sketch["editable"],
-            sketch["sketch_id"] == saved["profile_sketch_id"]
-        );
-        assert_eq!(sketch["circle_edit"]["available"], json!(false));
-        assert_eq!(sketch["annulus_edit"]["available"], json!(false));
-        assert_eq!(sketch["constraint_edit"]["available"], json!(false));
-    }
+    // Both the part and tool expose their exact saved geometry for a transaction.
+    let sketches = f.catalog["sketches"].as_array().expect("sketches");
+    assert_eq!(sketches.len(), 2);
+    let base = sketches
+        .iter()
+        .find(|s| s["sketch_id"] == saved["profile_sketch_id"])
+        .expect("base");
+    assert_eq!(base["curves"].as_array().expect("base Lines").len(), 4);
+    let tool = sketches
+        .iter()
+        .find(|s| s["sketch_id"] == saved["tool_sketch_id"])
+        .expect("tool");
+    assert_eq!(tool["curves"].as_array().expect("tool Circle").len(), 1);
+    assert_eq!(tool["curves"][0]["curve_id"], saved["tool_curve_id"]);
+    assert_eq!(tool["curves"][0]["geometry"]["kind"], "circle");
     // Adding a second cut is available; both history links then become editable.
     assert_eq!(f.catalog["bodies"][0]["cut_edit"]["available"], json!(true));
 

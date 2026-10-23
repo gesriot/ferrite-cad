@@ -436,7 +436,7 @@ fn discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone() 
         json!({"kind":"directed_angle",
                "a":{"from":end(0,"end"),"to":end(0,"start")},
                "b":{"from":end(1,"start"),"to":end(1,"end")},
-               "angle_deg":-30.0}),
+               "angle":{"value":-30.0,"unit":"deg"}}),
         "both directions as said, the value in degrees as typed"
     );
     // The older relation keeps exactly the shape it always had.
@@ -780,8 +780,11 @@ fn native_directed_angle_across_the_half_turn_tilts_a_quadrilateral_either_way()
             // from this profile: whatever the solver says, it is never a
             // published profile whose measured turn is anything but 0.
             if outcome.status.code() == Some(0) {
-                let v: Value = serde_json::from_slice(&outcome.stdout).expect("JSON");
-                assert_eq!(v["result"]["constraints"][4]["rule"]["angle"]["value"], 0.0);
+                let _v: Value = serde_json::from_slice(&outcome.stdout).expect("JSON");
+                assert_eq!(
+                    inspect(&out)["sketches"][0]["constraints"][4]["rule"]["angle"]["value"],
+                    0.0
+                );
                 let solved = solved(&out);
                 near(solved.turn(0, 2), 0., "0°");
             } else {
@@ -790,12 +793,13 @@ fn native_directed_angle_across_the_half_turn_tilts_a_quadrilateral_either_way()
             }
             continue;
         }
-        let result = reply(outcome, OP, 0)["result"].clone();
+        let _result = reply(outcome, OP, 0)["result"].clone();
         assert_eq!(
-            result["constraints"][4]["rule"]["angle"]["value"], published,
+            inspect(&out)["sketches"][0]["constraints"][4]["rule"]["angle"]["value"],
+            published,
             "{name}: the opposite is stored and reported only as +180"
         );
-        assert_eq!(result["solve"]["degrees_of_freedom"], 7, "{name}");
+        assert_eq!(transaction::solve(&out)["degrees_of_freedom"], 7, "{name}");
         let solved = solved(&out);
         assert_eq!((solved.dof, solved.redundant), (7, 0), "{name}");
         let measured = solved.turn(0, 2);
@@ -932,7 +936,7 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
     // Replacing the middle corner: the exact UUID off and a new angle on, in one
     // request. Every other UUID, rule and order survives; the shape follows.
     let replaced_out = s.root.path().join("rect-60.fcad");
-    let replaced = reply(
+    let _replaced = reply(
         s.command(
             &rect,
             &rect_catalog,
@@ -961,7 +965,17 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
         json!(
             [
                 kept,
-                replaced["constraints"].as_array().expect("new").clone()
+                after["sketches"][0]["constraints"]
+                    .as_array()
+                    .expect("constraints")
+                    .iter()
+                    .filter(|c| !rect_catalog["sketches"][0]["constraints"]
+                        .as_array()
+                        .expect("old constraints")
+                        .iter()
+                        .any(|old| old["constraint_id"] == c["constraint_id"]))
+                    .cloned()
+                    .collect()
             ]
             .concat()
         ),
@@ -977,7 +991,7 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
     // Removing every angle by UUID gives the freedom back, and only the joints
     // remain.
     let free_out = s.root.path().join("rect-free.fcad");
-    let freed = reply(
+    let _freed = reply(
         s.command(&rect, &rect_catalog, &angle_ids, &[], &free_out)
             .output()
             .expect("remove"),

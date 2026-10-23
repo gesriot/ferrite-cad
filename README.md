@@ -12,7 +12,7 @@ FerriteCAD is moving from narrow feature slices to a generic modelling core
 ([ADR 0006](docs/decisions/0006-generic-modelling-core.md)); the limitations
 described below are temporary.
 
-## Numeric edits
+## Model edits
 
 `inspect --json` lists every stored `expression_slots` entry: object UUID, slot,
 expression source and internal value, dimension, display value/unit, and refusal.
@@ -24,7 +24,7 @@ and FixedY (addressed by constraint UUID). Parameter-dependent objects are refus
 Use the returned `content_version` with one ordered transaction:
 
 ```json
-{"request_version":1,"changes":[{"object":"<object UUID>","slot":{"kind":"revolve_angle"},"value":90,"unit":"deg"}]}
+{"request_version":1,"changes":[{"kind":"set_expression","object":"<object UUID>","slot":{"kind":"revolve_angle"},"value":90,"unit":"deg"}]}
 ```
 
 ```sh
@@ -34,9 +34,11 @@ ferritecad edit source.fcad --expect-version HASH --request changes.json --outpu
 The result contains `destination`, `document_id`, `content_version` and `rebuild`.
 All changes are validated together and rebuilt before publication. An edit refuses
 all newly failed or skipped features and every previously resolved topology reference
-that would be lost; existing failures do not prevent repair. The four numeric forms
+that would be lost; existing failures do not prevent repair. Numeric forms, Edit Sketch, circle and annulus forms, and constraints
 use this same transaction for Apply and Undo/Redo, including features in other bodies.
 Their local checks validate payload values; geometric fit is decided by Apply.
+The ordered changes may also set same-kind curve geometry, add a full constraint
+with its UUID, or remove one by UUID. See [the request format](docs/edit-transactions.md).
 
 Create your own XY Line polygon with **Create sketch + Extrude…**, or run
 `ferritecad create-sketch-extrude request.json -o new.fcad --json`.
@@ -49,14 +51,14 @@ stays a circle: the document stores a centre and a radius, and the solid has one
 cylindrical face rather than a ring of flat ones, whatever the exported mesh
 approximates it with. [Contract and recipe](docs/circle-sketch-extrude.md).
 A saved circle's centre and radius can then be changed in a new copy through
-**Edit circle …** or `edit-circle`: the circle keeps its identity, the extrusion
+**Edit circle …** or `edit`: the circle keeps its identity, the extrusion
 keeps its height, and everything else in the document is carried over unchanged.
-[Contract and recipe](docs/edit-circle-copy.md).
+[Contract and recipe](docs/edit-transactions.md).
 A hollow circular part uses **Profile: Circle with hole** or
 `create-annular-extrude`; [creation contract](docs/annular-sketch-extrude.md).
 Its shared centre and both radii can be changed through **Edit annulus …** or
-`edit-annular`, preserving both circle identities and the height in a new copy.
-[Editing contract and recipe](docs/edit-annular-copy.md).
+`edit`, preserving both circle identities and the height in a new copy.
+[Editing contract and recipe](docs/edit-transactions.md).
 A saved, unconstrained rectangular plate can receive up to 16 separate circular holes or pockets
 through **Cut circle into Body…** or `cut-circular-copy`. Both save a new copy
 with the original features and a real Cut in the body's history. The tool starts
@@ -81,7 +83,9 @@ through after the base height changes, where a Blind depth stays absolute.
 [Contract, compatibility and recipe](docs/circular-cut-through-all.md).
 The part under those Cuts may be any simple, unconstrained Line polygon of
 3–256 sides, concave L-shapes and sloped walls included: a tool must clear the
-real outline, not its bounding box, and editing the base checks every tool.
+real outline, not its bounding box, for structural Cut commands. General edits may also create an open slot; tangent
+rims are refused at rebuild. Structural Cut commands remain unavailable while the
+tool is outside or constrained. Use `edit` or Undo to restore their supported geometry.
 [Polygon contract and recipe](docs/polygon-cut-history.md).
 A simple Line polygon drawn entirely at X > 0 can instead be turned one full
 turn about the sketch Y axis: **Feature: Revolve 360°** in the same sketch
@@ -89,7 +93,7 @@ window, or `create-sketch-revolve`. The new Body is a real revolution and each
 Line names its own face. Crossing the axis is not supported.
 [Contract and recipe](docs/full-turn-revolve.md).
 Such a part's profile coordinates can be changed later in the ordinary
-**Edit Sketch** window or with `edit-sketch-copy`, saving a new copy that keeps
+**Edit Sketch** window or with `edit`, saving a new copy that keeps
 every Line, face name and UUID; the axis and the full turn stay as saved.
 [Profile edit contract and recipe](docs/edit-revolve-profile.md).
 A solid cylinder, cone or stepped shaft is made the same way by putting exactly
@@ -104,16 +108,16 @@ the sector has two separately named end faces.
 A saved sector's angle is changed with **Edit Revolve angle** or
 `edit` into a new copy. The copy keeps every object, Line and
 cap UUID, and the angle is the only thing that changes. A full turn does
-not become a sector. See [numeric edits](#numeric-edits) for the `revolve_angle` slot.
+not become a sector. See [numeric edits](#model-edits) for the `revolve_angle` slot.
 A saved sector's profile is edited like a full turn's, in the same **Edit
-Sketch** editor (drag or exact X/Y) or with `edit-sketch-copy`. The saved
+Sketch** editor (drag or exact X/Y) or with `edit`. The saved
 angle, axis and every Line and cap UUID are kept; a part with a bore stays
 one and the axis Line stays on the axis.
 [Sector profile edit contract and recipe](docs/edit-partial-revolve-profile.md).
 The Line profile of a full turn or a sector with a bore also takes the
 existing **Edit constraints** dimensions — H/V, Line length, one Fixed
 endpoint, equal length, Parallel, Perpendicular — through the same editor or
-`edit-sketch-constraints-copy`. The Body turns the solved profile, keeps its
+`edit`. The Body turns the solved profile, keeps its
 angle, axis and every face and cap UUID, and a solution that reaches the
 axis is refused. [Revolve constraint contract and recipe](docs/revolve-profile-constraints.md).
 A solid cylinder, cone, stepped shaft or solid sector takes the same
@@ -141,10 +145,9 @@ edge, with every name kept. The plate's height can be changed under it with
 the ordinary **Edit extrusion** form or `edit`; the Fillet keeps its
 edge and radius. Its rectangle can be moved or resized with the ordinary
 **Edit Sketch** form (typed coordinates or dragged vertices) or
-`edit-sketch-copy`, as long as every Line keeps its side and the saved radius
-still fits; the Fillet rounds the same corner, now where it moved. Its
+`edit`, when the rebuilt rectangle and radius satisfy the Fillet policy; the Fillet rounds the same corner, now where it moved. Its
 rectangle's Lines can also be dimensioned with the ordinary **Edit
-constraints** form or `edit-sketch-constraints-copy` (H/V, lengths, one fixed
+constraints** form or `edit` (H/V, lengths, one fixed
 point, equal length, Parallel/Perpendicular): the part is built from the
 solved sketch, and the new copy is saved only if the solved plate still has
 room for the radius at the same corner. The same **Fillet edge of …** form or
@@ -160,11 +163,11 @@ Body. The same **Edit Fillet radius** form or `edit` then changes
 the radius of any of the Fillets, named by its exact UUID, under the same pair
 rule, and the existing **Edit extrusion** form or `edit` changes the
 plate's height under all of them, keeping each one's radius, corner and
-names, and the existing **Edit Sketch** form or `edit-sketch-copy` moves or
+names, and the existing **Edit Sketch** form or `edit` moves or
 resizes the plate's free rectangle, keeping the Fillets on the same named
 corners and judging every radius and every flat between adjacent arcs on the
 new sides, and the existing **Edit constraints** form or
-`edit-sketch-constraints-copy` adds, replaces or removes its Line constraints,
+`edit` adds, replaces or removes its Line constraints,
 the solved rectangle being the new plate with every radius and every flat
 judged on the solved Lines at every rebuild. A document with three or four
 Fillets is read by the previous build as a typed refusal, never a partial
@@ -191,11 +194,11 @@ plate's height changes under the Chamfer through the existing **Edit extrusion**
 or `edit` (the Chamfer's corner and distance and all names are kept;
 OCCT refuses a plate thinner than about 1e-5 mm). The four vertices of its base
 Sketch move in a new copy through the existing **Edit saved Sketch** or
-`edit-sketch-copy`: the plate may be made larger, smaller or moved, the Chamfer
+`edit`: the plate may be made larger, smaller or moved, the Chamfer
 stays on the same vertex (by its two Line UUIDs) with the same distance, which
 must still fit the new adjacent sides (exact at the bound, never reduced). The
 plate under one Chamfer can also be dimensioned with the existing constraint
-editor (**Edit constraints** / `edit-sketch-constraints-copy`): PlaneGCS decides
+editor (**Edit constraints** / `edit`): PlaneGCS decides
 the rectangle, the Chamfer stays on the same corner with the same distance, and the
 distance must fit the SOLVED adjacent sides (checked at every rebuild; the stored
 coordinates stay the solver's starting guess). Every
@@ -224,9 +227,9 @@ An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to
 exact document millimetres; [step rules](docs/sketch-snap-step.md). X/Y fields
 and Snap Off keep full precision.
 Saved Line coordinates can be edited in a new copy through **Edit Sketch …** or
-`edit-sketch-copy`; [the identity-preserving contract](docs/edit-sketch-copy.md)
-keeps segment IDs/order and winding. **Edit H/V …** and
-`edit-sketch-constraints-copy` persist Horizontal/Vertical constraints in a new
+`edit`; [the identity-preserving contract](docs/edit-transactions.md)
+keeps segment IDs and order. **Edit H/V …** and
+`edit` persist Horizontal/Vertical constraints in a new
 copy; [constraint contract and agent recipe](docs/sketch-constraints-copy.md).
 The same operation persists one [length per Line](docs/line-length-constraints.md),
 [one pinned endpoint per profile at explicit X/Y mm](docs/fixed-sketch-vertex.md)
@@ -292,7 +295,7 @@ What the window can do, what the command line can do, and which library actually
 owns the work — including recipes with expected exit codes — is documented in
 [`docs/cli-capabilities.md`](docs/cli-capabilities.md).
 
-The same `Edit Sketch` / `edit-sketch-copy` can also resize or shift the original
+The same `Edit Sketch` / `edit` can also resize or shift the original
 rectangular base of a supported 1–16 circular Cut history. Hole centres, radii
 and depths stay fixed; every disk must clear the new boundaries.
 [Contract and runnable recipe](docs/edit-cut-base-sketch.md).
@@ -1066,7 +1069,7 @@ exception and, by project policy, will be linked dynamically only; see
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
 Saved Line sketches from this route or the sample plate can also be edited in a
-new copy: choose **Edit Sketch …** or use `edit-sketch-copy` with the Sketch UUID,
+new copy: choose **Edit Sketch …** or use `edit` with the Sketch UUID,
 content version and ordered curve coordinates discovered by `inspect --json`.
 Object, curve and reference identities remain unchanged. See the
-[bounded editing contract and runnable recipe](docs/edit-sketch-copy.md).
+[bounded editing contract and runnable recipe](docs/edit-transactions.md).

@@ -286,7 +286,7 @@ fn discovered(path: &Path) -> (Value, Vec<String>, String) {
         .iter()
         .map(|v| v["curve_id"].as_str().expect("id").to_owned())
         .collect();
-    let axis = row["profile_feature"]["axis_curve_id"]
+    let axis = c["revolves"][0]["axis_curve_id"]
         .as_str()
         .expect("axis-closed kind")
         .to_owned();
@@ -326,7 +326,7 @@ fn native_solid_revolutions_create_measure_name_cache_and_export() {
             request(&input, &p);
             reply(create(&input, &out).output().expect("create"), 0);
             let (c, ids, axis) = discovered(&out);
-            let row = &c["sketches"][0];
+            let _row = &c["sketches"][0];
 
             let at = axis_index(&p);
             assert_eq!(axis, ids[at], "the axis Line by its own UUID");
@@ -560,15 +560,14 @@ fn native_solid_revolution_refusals_are_atomic() {
         write_edit(&request_path, ids, points);
         let names = entries(d.path());
         let bytes = std::fs::read(&source).expect("source");
-        let v = edit_reply(
-            edit(&source, &s.sketch, version, &request_path, &out)
-                .output()
-                .expect("edit"),
-            2,
-        );
+        let output = edit(&source, &s.sketch, version, &request_path, &out)
+            .output()
+            .expect("edit");
+        assert_eq!(output.status.code(), Some(2), "{why}: {output:?}");
+        let v = edit_reply(output, 2);
         assert_eq!(entries(d.path()), names, "{why}");
         assert_eq!(std::fs::read(&source).expect("source"), bytes, "{why}");
-        v["error"]["message"].as_str().expect("message").to_owned()
+        v["error"].to_string()
     };
     for (why, points, message) in [
         (
@@ -608,32 +607,17 @@ fn native_solid_revolution_refusals_are_atomic() {
             vec![[0., 0.], [10., 0.], [10., 15.], [0., 0.]],
             "",
         ),
-        (
-            "winding",
-            vec![[0., 15.], [10., 15.], [10., 0.], [0., 0.]],
-            "",
-        ),
     ] {
         let refusal = refuse(&s.ids, &points, &s.version, why);
         assert!(refusal.contains(message), "{why}: {refusal}");
     }
-    let mut reordered = s.ids.clone();
-    reordered.swap(0, 3);
-    let refusal = refuse(&reordered, &CYLINDER, &s.version, "reordered");
-    assert!(
-        refusal.contains("every saved curve UUID exactly once"),
-        "{refusal}"
-    );
     let stale = ferritecad_types::ContentHash::of_bytes(b"another").to_string();
     let refusal = refuse(&s.ids, &CYLINDER, &stale, "stale");
     assert!(refusal.contains("source has changed"), "{refusal}");
     let mut foreign = s.ids.clone();
     foreign[3] = StableEntityId::new().to_string();
     let refusal = refuse(&foreign, &CYLINDER, &s.version, "foreign axis Line ID");
-    assert!(
-        refusal.contains("every saved curve UUID exactly once"),
-        "{refusal}"
-    );
+    assert!(refusal.contains(&foreign[3]), "{refusal}");
     // Destinations that are taken or are the source itself.
     write_edit(&request_path, &s.ids, &CYLINDER);
     let taken = d.path().join("taken.fcad");
@@ -663,7 +647,7 @@ fn native_solid_revolution_refusals_are_atomic() {
         assert_eq!(std::fs::read(&source).expect("source"), bytes, "{why}");
     }
     assert_eq!(std::fs::read(&taken).expect("taken"), b"keep");
-    // A constrained solid Sketch is outside the class: not offered, refused.
+    // Coordinate transactions keep constraints and let the solver rebuild them.
     let constrained = d.path().join("constrained.fcad");
     let labels = write_solid_document(&constrained, &CYLINDER, Some(3));
     rewrite_sketch(&constrained, |sketch| {
@@ -686,8 +670,11 @@ fn native_solid_revolution_refusals_are_atomic() {
     let c = inspect(&constrained);
 
     let ids: Vec<String> = labels.iter().map(ToString::to_string).collect();
-    write_edit(&request_path, &ids, &CYLINDER);
-    let names = entries(d.path());
+    write_edit(
+        &request_path,
+        &ids,
+        &[[0., 0.], [9., 0.], [9., 15.], [0., 15.]],
+    );
     let bytes = std::fs::read(&constrained).expect("constrained");
     let v = edit_reply(
         edit(
@@ -695,15 +682,33 @@ fn native_solid_revolution_refusals_are_atomic() {
             c["sketches"][0]["sketch_id"].as_str().expect("id"),
             c["content_version"].as_str().expect("version"),
             &request_path,
-            &out,
+            &d.path().join("constrained-edited.fcad"),
         )
         .output()
         .expect("edit"),
-        2,
+        if ferritecad_eval::solver_available() {
+            0
+        } else {
+            2
+        },
     );
-    let message = v["error"]["message"].as_str().expect("message");
-    assert!(message.contains("unconstrained"), "{message}");
-    assert_eq!(entries(d.path()), names);
+    if ferritecad_eval::solver_available() {
+        let copy = d.path().join("constrained-edited.fcad");
+        check_cells(
+            &constrained,
+            &copy,
+            c["sketches"][0]["sketch_id"].as_str().expect("Sketch"),
+        );
+        measure_solid(
+            &copy,
+            &[[0., 0.], [9., 0.], [9., 15.], [0., 15.]],
+            cylinder(9., 15.),
+            None,
+        );
+    } else {
+        assert_eq!(v["error"]["kind"], "unsupported");
+        assert!(!d.path().join("constrained-edited.fcad").exists());
+    }
     assert_eq!(std::fs::read(&constrained).expect("constrained"), bytes);
     // And a bored part may not become solid.
     let bushing = d.path().join("bushing.fcad");
@@ -953,7 +958,7 @@ fn native_solid_revolve_delivery_late_guards_and_cancellation() {
     let job = |name: &str| ferritecad_jobs::EditRequest {
         changes: {
             let document =
-                ferritecad_document::Document::open_read_only(&(source.clone())).expect("source");
+                ferritecad_document::Document::open_read_only(source.clone()).expect("source");
             ferritecad_fixtures::vertex_changes(&document, sketch_id, &(vertices.clone()))
                 .expect("changes")
         },

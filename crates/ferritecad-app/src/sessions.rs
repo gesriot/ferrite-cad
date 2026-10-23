@@ -2265,7 +2265,7 @@ mod tests {
             .fold(f64::MIN, f64::max);
         ferritecad_jobs::EditRequest {
             changes: crate::transaction_tests::vertex_changes(
-                &(path.to_path_buf()),
+                path,
                 choice.sketch,
                 &(vertices
                     .into_iter()
@@ -3144,7 +3144,7 @@ mod tests {
     /// What the document refuses it refuses whole: the form keeps its draft, the
     /// session keeps its version, history and checkpoint, and no file is left.
     #[test]
-    fn native_a_refused_vertex_edit_changes_nothing_and_a_constrained_plate_offers_none() {
+    fn native_a_refused_vertex_edit_changes_nothing_and_constrained_lines_remain_drawable() {
         if !native() {
             return;
         }
@@ -3175,42 +3175,16 @@ mod tests {
         let accepted = sessions.export_path().expect("accepted");
         let reading = crate::sketch_facts::read(&accepted).expect("reading");
 
-        // Through the form: the shortened plate is refused where it is typed, and the
-        // typed number stays; nothing is asked of the session.
+        // The form accepts the payload and the session rebuild refuses the Chamfer.
         let mut form = crate::sketch::Editor::default();
         form.set_session(true, true, true);
         assert!(form.begin_edit(&accepted, &reading, sketch));
         let ctx = egui::Context::default();
         crate::sketch::tests::replace_in_form(&ctx, &mut form, "33", "-4.4");
-        assert!(
-            !crate::sketch::tests::offers_apply(&ctx, &mut form),
-            "Apply was offered for a draft the Chamfer does not fit"
-        );
-        assert!(form.take_apply_request().is_none());
-        assert!(form.active(), "the refused draft was discarded");
-
-        // Past the form (a request the form would not make): the worker refuses it.
-        let mut forged = ferritecad_jobs::EditRequest {
-            changes: crate::transaction_tests::vertex_changes(
-                &(accepted.clone()),
-                sketch,
-                &(reading.sketches[0].vertices.clone().expect("vertices")),
-            ),
-            source: accepted.clone(),
-            expected: reading.version,
-            destination: PathBuf::new(),
-        };
-        let mut vertices = crate::transaction_tests::vertices(&forged);
-        for vertex in &mut vertices {
-            if vertex.start_mm[0] == 33. {
-                vertex.start_mm[0] = -4.4;
-            }
-        }
-        forged.changes = crate::transaction_tests::vertex_changes(
-            &forged.source,
-            crate::transaction_tests::sketch(&forged),
-            &vertices,
-        );
+        assert!(crate::sketch::tests::offers_apply(&ctx, &mut form));
+        crate::sketch::tests::click_label(&ctx, &mut form, "Apply vertices");
+        let forged = form.take_apply_request().expect("form transaction");
+        assert!(form.active());
         let before = (sessions.dirty(), sessions.can_undo(), sessions.can_redo());
         let files = private_files(&sessions);
         let (tx, rx) = mpsc::channel();
@@ -3242,8 +3216,7 @@ mod tests {
         assert_eq!(sessions.export_path().expect("accepted"), accepted);
         drop(root);
 
-        // A dimensioned plate offers no vertex form at all (its Lines are the
-        // solver's); the height still applies and the constraints stay.
+        // Constraints do not hide drawable saved Lines; the rebuild solves them.
         if ferritecad_sketch_solver::is_available() {
             let (root, constrained, _) = constrained_chamfer_plate();
             let reading = crate::sketch_facts::read(&constrained).expect("reading");
@@ -3253,8 +3226,8 @@ mod tests {
                 .sketches
                 .iter()
                 .any(|choice| form.begin_edit(&constrained, &reading, choice.sketch));
-            assert!(!editable, "a dimensioned plate offered a vertex form");
-            assert!(!form.active());
+            assert!(editable, "a dimensioned plate must keep its vertex form");
+            assert!(form.active());
             drop(root);
         }
     }

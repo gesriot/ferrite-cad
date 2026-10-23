@@ -163,7 +163,11 @@ fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
         let document = Document::open_read_only(&source).expect("saved");
         let reading = ExtrudeEditSource::read(&document).expect("reading");
         let expected_readers = readers(&source);
-        assert!(expected_readers.values().any(|v| *v));
+        assert_eq!(
+            expected_readers.values().any(|v| *v),
+            !kind.ends_with("chamfer"),
+            "{kind}: {expected_readers:?}"
+        );
         let references = document.topology_refs().expect("names");
         let bytes = std::fs::read(&source).expect("source");
         for (index, slot) in reading.expression_slots.iter().enumerate() {

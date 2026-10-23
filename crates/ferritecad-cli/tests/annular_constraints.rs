@@ -23,8 +23,6 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
-#[path = "support/pipe.rs"]
-mod pipe;
 
 const OP: &str = "edit";
 const LINEAR_MM: f64 = 0.05;
@@ -937,7 +935,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     let concentric = id_of(&|r: &Value| r["kind"] == "coincident");
     let widened = f.root.path().join("widened.fcad");
     f.ask(&[json!(bore_radius)], &[radius_add(&bore, 3.5)]);
-    let again = reply(
+    let _again = reply(
         f.edit_from(&sized, &catalog, &widened)
             .output()
             .expect("process"),
@@ -1031,7 +1029,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         .collect();
     let plain = f.root.path().join("plain.fcad");
     f.ask(&ids, &[]);
-    let gone = reply(
+    let _gone = reply(
         f.edit_from(&freed, &catalog, &plain)
             .output()
             .expect("process"),
@@ -1112,7 +1110,7 @@ fn native_stored_order_does_not_decide_the_roles() {
             center_add(&bore, -3.5, 4.25),
         ],
     );
-    let published = reply(f.edit(&sized).output().expect("process"), OP, 0);
+    let _published = reply(f.edit(&sized).output().expect("process"), OP, 0);
     assert_eq!(transaction::solve(&sized)["degrees_of_freedom"], 0);
     let kept = stored(&sized);
     assert_eq!(kept.stored_order, saved.stored_order);
@@ -1261,7 +1259,7 @@ fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
                 center_add(&boundary, -3.5, 4.25),
             ],
         );
-        let v = reply(f.edit(&sized).output().expect("process"), OP, 0);
+        let _v = reply(f.edit(&sized).output().expect("process"), OP, 0);
         assert_eq!(transaction::solve(&sized)["degrees_of_freedom"], 0);
         // The response keeps calling them radii, with the fields it always had.
         let listed = inspect(&sized);
@@ -1353,7 +1351,7 @@ fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
             std::slice::from_ref(&bore_radius),
             &[diameter_add(&bore, 5.5)],
         );
-        let v = reply(
+        let _v = reply(
             f.edit_from(&sized, &catalog, &replaced)
                 .output()
                 .expect("process"),

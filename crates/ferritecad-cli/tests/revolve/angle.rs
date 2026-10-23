@@ -185,7 +185,7 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
         ("cone", CONE_SHIFTED.to_vec()),
     ] {
         let full = pappus(&points);
-        let solid = axis_line(&points).is_some();
+        let _solid = axis_line(&points).is_some();
         let input = d.path().join(format!("{name}.json"));
         let source = d.path().join(format!("{name}-137.5.fcad"));
         request_v2(&input, &points, angle(137.5));
@@ -235,7 +235,7 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
 
             // §27F: the sector's profile is editable, and reports the angle
             // this copy now has.
-            let sketch = &c["sketches"][0];
+            let _sketch = &c["sketches"][0];
 
             // Every archive the chain has built so far, under this copy's
             // name. The key moves with the angle, so a new angle is a Miss and

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#![allow(clippy::panic)]
 use ferritecad_document::*;
 use ferritecad_jobs::{EditRequest, edit_copy};
 use ferritecad_kernel::OperationContext;
@@ -106,6 +107,63 @@ fn ordered_geometry_and_constraints_validate_the_final_payload_atomically() {
     ] {
         assert!(document.write_changes(&changes).is_err());
         assert_eq!(document.content_version().expect("version"), before);
+    }
+}
+
+#[test]
+fn a_construction_line_at_the_vertex_does_not_join_the_moved_boundary() {
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("source.fcad");
+    ferritecad_fixtures::write_plate(&path).expect("plate");
+    let document = Document::open_read_only(&path).expect("document");
+    let (id, mut sketch) = stored_sketch(&document);
+    let axis = construction_axis(&sketch);
+    sketch.curves.push(axis.clone());
+    let changes = move_sketch_vertices(
+        id,
+        &sketch,
+        &[SketchVertex {
+            curve_id: sketch.curves[0].id,
+            start_mm: [-2., 3.],
+        }],
+    )
+    .expect("ignore the construction line ending at this vertex");
+    assert_eq!(changes.len(), 2);
+    for change in &changes {
+        let EditChange::SetCurveGeometry {
+            curve, geometry, ..
+        } = change
+        else {
+            panic!("geometry")
+        };
+        assert_ne!(*curve, axis.id);
+        let SketchGeometry::Line { start, end } = geometry else {
+            panic!("line")
+        };
+        if *curve == sketch.curves[0].id {
+            assert_eq!(*start, Point2 { x: -2., y: 3. });
+        } else {
+            assert_eq!(*curve, sketch.curves[3].id);
+            assert_eq!(*end, Point2 { x: -2., y: 3. });
+        }
+    }
+    assert_eq!(sketch.curves[4], axis);
+}
+
+fn construction_axis(sketch: &Sketch) -> SketchCurve {
+    let SketchGeometry::Line { start, .. } = sketch.curves[0].geometry else {
+        panic!("line")
+    };
+    SketchCurve {
+        id: StableEntityId::new(),
+        construction: true,
+        geometry: SketchGeometry::Line {
+            start: Point2 {
+                x: start.x,
+                y: start.y - 10.,
+            },
+            end: start,
+        },
     }
 }
 
@@ -224,7 +282,7 @@ fn circle_geometry_and_constraint_changes_share_rebuild_stale_and_cancel_gates()
             ),
             "keep",
         ),
-        || ferritecad_occt::OcctKernel::new(),
+        ferritecad_occt::OcctKernel::new,
         &context,
     )
     .expect("create");
@@ -372,7 +430,7 @@ fn solved_annulus_cannot_exchange_boundary_and_bore_in_the_evaluator() {
             ),
             "keep",
         ),
-        || ferritecad_occt::OcctKernel::new(),
+        ferritecad_occt::OcctKernel::new,
         &context,
     )
     .expect("create");
@@ -459,7 +517,7 @@ fn moving_a_revolve_profile_across_its_axis_is_refused_by_rebuild() {
             ),
             "keep",
         ),
-        || ferritecad_occt::OcctKernel::new(),
+        ferritecad_occt::OcctKernel::new,
         &context,
     )
     .expect("create");

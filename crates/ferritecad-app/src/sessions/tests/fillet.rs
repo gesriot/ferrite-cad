@@ -849,3 +849,92 @@ fn mixed_radius_apply_uses_occt_without_solver() {
     }
     gate(4, "fillet-mixed");
 }
+
+#[test]
+fn native_vertex_form_moves_a_filleted_side_and_keeps_refusals_atomic() {
+    if !native() {
+        return;
+    }
+    let (_root, source, reading) = fixture(1);
+    let fillet = selected(&reading, 0);
+    let original = std::fs::read(&source).expect("source");
+    let mut session = Sessions::default();
+    session.adopt(crate::sessions::test_open::open(&source).expect("open"));
+    let (mut form, edit) =
+        crate::sketch::tests::typed_apply(&source, &reading, fillet.profile, "33", "31");
+    assert!(
+        matches!(apply(&mut session, &edit), Edited::Show(_)),
+        "{}",
+        session.status
+    );
+    form.finish_session_change();
+    let accepted = session.export_path().expect("accepted");
+    let accepted_cells = sql(&accepted);
+    cold(&accepted, 35.5, 12.25, 6.75);
+    move_native(&mut session, true);
+    assert!(!session.dirty());
+    assert_eq!(sql(&session.export_path().expect("undo")), sql(&source));
+    move_native(&mut session, false);
+    assert_eq!(sql(&session.export_path().expect("redo")), accepted_cells);
+    assert_eq!(std::fs::read(&source).expect("source"), original);
+    saved(&mut session, SaveTarget::InPlace);
+    let reopened = crate::sessions::test_open::open(&source).expect("reopen");
+    assert_eq!(sql(reopened.current().path()), accepted_cells);
+    cold(reopened.current().path(), 35.5, 12.25, 6.75);
+    drop(reopened);
+
+    for whole_side in [false, true] {
+        let path = session.export_path().expect("accepted");
+        let reading = crate::sketch_facts::read(&path).expect("reading");
+        let mut form = crate::sketch::Editor::default();
+        form.set_session(true, true, false);
+        assert!(form.begin_edit(&path, &reading, fillet.profile));
+        let ctx = egui::Context::default();
+        let to = if whole_side { "-4" } else { "30" };
+        if whole_side {
+            crate::sketch::tests::replace_in_form(&ctx, &mut form, "31", to);
+        } else {
+            crate::sketch::tests::replace_one_in_form(&ctx, &mut form, "31", to);
+        }
+        assert!(crate::sketch::tests::offers_apply(&ctx, &mut form));
+        crate::sketch::tests::click_label(&ctx, &mut form, "Apply vertices");
+        let request = form.take_apply_request().expect("Apply");
+        let before = state(&session);
+        assert_eq!(apply(&mut session, &request), Edited::Failed);
+        assert!(
+            session.status.contains(&fillet.feature.to_string()),
+            "{}",
+            session.status
+        );
+        assert_eq!(state(&session), before);
+        assert_eq!(
+            sql(&session.export_path().expect("accepted")),
+            accepted_cells
+        );
+        assert_eq!(sql(&source), accepted_cells);
+        assert!(form.active());
+    }
+
+    // A single vertex of an ordinary plate is accepted by the same form and worker.
+    let (_root, plain, reading) = crate::fillets::tests::plate();
+    let sketch = reading.sketches[0].sketch;
+    let mut session = Sessions::default();
+    session.adopt(crate::sessions::test_open::open(&plain).expect("plain"));
+    let mut form = crate::sketch::Editor::default();
+    form.set_session(true, true, false);
+    assert!(form.begin_edit(&plain, &reading, sketch));
+    let ctx = egui::Context::default();
+    crate::sketch::tests::replace_one_in_form(&ctx, &mut form, "33", "31");
+    crate::sketch::tests::click_label(&ctx, &mut form, "Apply vertices");
+    let request = form.take_apply_request().expect("Apply");
+    assert!(
+        matches!(apply(&mut session, &request), Edited::Show(_)),
+        "{}",
+        session.status
+    );
+    let changed = session.export_path().expect("changed");
+    let geometry = crate::sketch_facts::read(&changed).expect("new geometry");
+    let vertices = geometry.sketches[0].vertices.as_ref().expect("vertices");
+    assert_eq!(vertices.iter().filter(|v| v.start_mm[0] == 31.).count(), 1);
+    assert_eq!(vertices.iter().filter(|v| v.start_mm[0] == 33.).count(), 1);
+}

@@ -1052,24 +1052,15 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
         );
         keep(&fbx, &format!("cut-{name}-cli.fbx"));
 
-        // §26F admits only the original Line base; analytic and constraint
-        // editors keep their four-object boundary.
         let after = inspect(&copy);
-        for sketch in after["sketches"].as_array().expect("sketches") {
-            assert_eq!(
-                sketch["editable"],
-                sketch["sketch_id"] == f.catalog["sketches"][0]["sketch_id"]
-            );
-        }
-        assert!(
-            after["sketches"]
-                .as_array()
-                .expect("sketches")
+        let sketches = after["sketches"].as_array().expect("sketches");
+        assert_eq!(sketches.len(), 2);
+        assert_eq!(
+            sketches
                 .iter()
-                .all(|s| s["circle_edit"]["available"] == false
-                    && s["constraint_edit"]["available"] == false),
-            "a document with a cut is not one the profile editors accept: {:?}",
-            after["sketches"]
+                .map(|s| s["curves"].as_array().expect("curves").len())
+                .sum::<usize>(),
+            5
         );
         assert_eq!(after["bodies"][0]["cut_edit"]["available"], true);
     }

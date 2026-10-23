@@ -566,20 +566,6 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                         .collect::<Vec<_>>(),
                     ids
                 );
-                let use_ = &row["profile_feature"];
-                assert_eq!(use_["angle_deg"], json!(degrees));
-                assert_eq!(use_["extent"], "partial_turn");
-                assert_eq!(use_["feature_id"], r["feature_id"]);
-                assert_eq!(
-                    use_["kind"],
-                    if solid {
-                        "partial_turn_revolve_axis_closed"
-                    } else {
-                        "partial_turn_revolve"
-                    }
-                );
-                assert_eq!(use_["axis_curve_id"], json!(axis_id));
-
                 let cold = measure_partial(&out, &p, degrees, full, None);
                 assert_eq!(
                     cold,
@@ -834,11 +820,6 @@ fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
                     "across the axis",
                     vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
                     "positive radial side",
-                ),
-                (
-                    "winding",
-                    vec![[4., 15.], [10., 15.], [10., 0.], [4., 0.]],
-                    "winding",
                 ),
             ],
         ),

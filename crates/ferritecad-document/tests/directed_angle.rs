@@ -232,14 +232,15 @@ fn directed_angle_replacement_preserves_directions_and_other_constraint_ids() {
         .id;
     let kept = stored(&d, id);
     // Two different Lines, both of this Sketch.
-    for (name, add) in [(
-        "a foreign Line",
-        angle(
-            forward(2),
-            vector(StableEntityId::new(), LineEndpoint::Start),
-            30.,
-        ),
-    )] {
+    {
+        let (name, add) = (
+            "a foreign Line",
+            angle(
+                forward(2),
+                vector(StableEntityId::new(), LineEndpoint::Start),
+                30.,
+            ),
+        );
         refusal(&d, id, &edits(vec![], vec![add]));
         assert_eq!(stored(&d, id), kept, "{name}");
     }

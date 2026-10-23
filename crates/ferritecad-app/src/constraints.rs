@@ -3947,7 +3947,7 @@ pub(crate) mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("worker response");
         assert_eq!(
-            crate::transaction_tests::solve(&result.as_ref().expect("published"))
+            crate::transaction_tests::solve(result.as_ref().expect("published"))
                 .as_ref()
                 .expect("solve")
                 .degrees_of_freedom(),
@@ -3996,8 +3996,7 @@ pub(crate) mod tests {
                 assert_eq!(s.curves, choice.stored.as_ref().expect("stored").curves);
                 assert_eq!(s.constraints.len(), 2);
                 for (x, y) in s.constraints.iter_mut().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id, "only newly minted UUIDs differ");
-                    x.id = y.id;
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                 }
                 assert_eq!(s, t);
             } else {
@@ -4059,9 +4058,7 @@ pub(crate) mod tests {
                 assert_eq!(s.constraints.len(), constraints);
                 assert_eq!(t.constraints.len(), constraints);
                 for (x, y) in s.constraints.iter_mut().zip(&t.constraints) {
-                    if x.id != y.id {
-                        x.id = y.id;
-                    }
+                    if x.id != y.id {}
                 }
                 assert_eq!(s, t);
             } else {
@@ -4161,7 +4158,7 @@ pub(crate) mod tests {
                 .recv_timeout(std::time::Duration::from_secs(60))
                 .expect("worker response");
             assert_eq!(
-                crate::transaction_tests::solve(&result.as_ref().expect("published"))
+                crate::transaction_tests::solve(result.as_ref().expect("published"))
                     .as_ref()
                     .map(|s| s.degrees_of_freedom()),
                 dof
@@ -4871,7 +4868,7 @@ pub(crate) mod tests {
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("worker reply");
-        let solved = crate::transaction_tests::solve(&result.as_ref().expect("published"))
+        let solved = crate::transaction_tests::solve(result.as_ref().expect("published"))
             .clone()
             .expect("a Line profile keeps its closure, so there is always a solve");
         assert_eq!(
@@ -4924,7 +4921,7 @@ pub(crate) mod tests {
                 assert_eq!(s.curves, curves, "the solve did not write itself back");
                 assert_eq!(s.constraints.len(), 11);
                 for (x, y) in s.constraints.iter().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id, "only genuinely new UUIDs differ");
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                     assert_eq!(x.rule, y.rule);
                 }
                 let last = s.constraints.last().expect("pin");
@@ -5186,7 +5183,7 @@ pub(crate) mod tests {
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("worker reply");
-        let solved = crate::transaction_tests::solve(&result.as_ref().expect("published"))
+        let solved = crate::transaction_tests::solve(result.as_ref().expect("published"))
             .clone()
             .expect("a Line profile keeps its closure, so there is always a solve");
         assert_eq!(
@@ -5248,7 +5245,7 @@ pub(crate) mod tests {
                 assert_eq!(s.curves, curves, "the solve did not write itself back");
                 assert_eq!(s.constraints.len(), 11);
                 for (x, y) in s.constraints.iter().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id, "only genuinely new UUIDs differ");
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                     assert_eq!(x.rule, y.rule);
                 }
                 assert_eq!(
@@ -5501,7 +5498,7 @@ pub(crate) mod tests {
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("worker reply");
-        let solved = crate::transaction_tests::solve(&result.as_ref().expect("published"))
+        let solved = crate::transaction_tests::solve(result.as_ref().expect("published"))
             .clone()
             .expect("a Line profile keeps its closure, so there is always a solve");
         assert_eq!(
@@ -5574,7 +5571,7 @@ pub(crate) mod tests {
                 assert_eq!(s.curves, curves, "the solve did not write itself back");
                 assert_eq!(s.constraints.len(), 9);
                 for (x, y) in s.constraints.iter().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id, "only genuinely new UUIDs differ");
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                     assert_eq!(x.rule, y.rule);
                 }
                 assert_eq!(
@@ -5885,7 +5882,7 @@ pub(crate) mod tests {
                 assert_eq!(s.plane, t.plane);
                 assert_eq!(s.constraints.len(), if lengths { 10 } else { 5 });
                 for (x, y) in s.constraints.iter().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id);
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                     assert_eq!(x.rule, y.rule);
                 }
             } else {
@@ -6137,7 +6134,7 @@ pub(crate) mod tests {
                                 == ferritecad_document::Expression::constant(55.)
                                     .expect("finite constant") =>
                         {
-                            assert_ne!(x.id, y.id);
+                            assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                             assert_ne!(x.id, old_length);
                             assert_ne!(y.id, old_length);
                             new_ui = Some(x.id);
@@ -6267,7 +6264,7 @@ pub(crate) mod tests {
         );
         assert!((volume6.abs() / 6. - 16500.).abs() < 0.02);
         assert_eq!(std::fs::read(&ui).expect("source"), original_constrained);
-        assert_ne!(new_ui.expect("UI length"), new_cli.expect("CLI length"));
+        assert_eq!(new_ui.expect("UI length"), new_cli.expect("CLI length"));
     }
 
     /// §28E, native with PlaneGCS: the widgets' request on the rounded plate
@@ -6344,7 +6341,7 @@ pub(crate) mod tests {
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
         assert_eq!(
-            crate::transaction_tests::solve(&result.as_ref().expect("published"))
+            crate::transaction_tests::solve(result.as_ref().expect("published"))
                 .as_ref()
                 .expect("solve")
                 .degrees_of_freedom(),
@@ -6468,7 +6465,7 @@ pub(crate) mod tests {
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
         assert_eq!(
-            crate::transaction_tests::solve(&result.as_ref().expect("published"))
+            crate::transaction_tests::solve(result.as_ref().expect("published"))
                 .as_ref()
                 .expect("solve")
                 .degrees_of_freedom(),
@@ -6588,7 +6585,7 @@ pub(crate) mod tests {
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
         assert_eq!(
-            crate::transaction_tests::solve(&result.as_ref().expect("published"))
+            crate::transaction_tests::solve(result.as_ref().expect("published"))
                 .as_ref()
                 .expect("solve")
                 .degrees_of_freedom(),

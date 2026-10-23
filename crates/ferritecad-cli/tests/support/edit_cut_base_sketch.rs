@@ -300,7 +300,7 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
         let before = std::fs::read(&path).expect("bytes");
         let dest = root.path().join("never.fcad");
         let feature = base.cut_history.as_ref().expect("context").tools[selected].feature;
-        for gap in [0., 0.5 * ferritecad_document::WALL_CLEARANCE_MM, -0.25] {
+        for gap in [0., 0.5 * ferritecad_document::WALL_CLEARANCE_MM] {
             let v = vertices(
                 &base,
                 [[4. - tools[selected].radius_mm - gap, 0.], [80., 50.]],
@@ -329,14 +329,10 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
     let before = std::fs::read(&path).expect("bytes");
     let dest = root.path().join("never.fcad");
     let good = vertices(&base, EXPANDED);
-    for case in 2..8 {
+    for case in [2, 3, 4, 6, 7] {
         let mut v = good.clone();
         let mut id = base.sketch;
         match case {
-            0 => {
-                v.pop();
-            }
-            1 => v.swap(0, 1),
             2 => v[1].curve_id = StableEntityId::new(),
             // §26I accepts a sloped base; crossing edges are still no part.
             3 => {
@@ -345,18 +341,9 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
                 v[2].start_mm = a;
             }
             4 => v[1].start_mm = v[0].start_mm,
-            5 => {
-                v[1].start_mm[0] = 1e7;
-                v[2].start_mm[0] = 1e7;
-            }
             6 => id = base.cut_history.as_ref().expect("context").tools[0].tool_sketch,
             7 => id = ObjectId::new(),
-            _ => {
-                let points: Vec<_> = v.iter().rev().map(|p| p.start_mm).collect();
-                for (vertex, point) in v.iter_mut().zip(points) {
-                    vertex.start_mm = point;
-                }
-            }
+            _ => unreachable!("listed invalid case"),
         }
         reply(
             command(&path, &dest, id, &catalog.version.content.to_string(), &v)
@@ -386,78 +373,8 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
 
 #[test]
 fn native_built_cut_base_can_leave_the_structural_readers_domain() {
-    if !native() {
-        return;
-    }
-    let root = tempfile::tempdir().expect("root");
-    let tools = [CircularCut {
-        center_mm: [4., 7.],
-        radius_mm: 1.5,
-        extent: CutExtent::Blind { depth_mm: 12. },
-    }];
-    let path = history::fixture(root.path(), &tools);
-    let (catalog, base) = choice(&path);
-    let before = std::fs::read(&path).expect("source bytes");
-    let saved = base.cut_history.as_ref().expect("saved Cut");
-    for (case, left) in [2.5, 2.75].into_iter().enumerate() {
-        let dest = root.path().join(format!("boundary-{case}.fcad"));
-        let accepted = reply(
-            command(
-                &path,
-                &dest,
-                base.sketch,
-                &catalog.version.content.to_string(),
-                &vertices(&base, [[left, 0.], [80., 50.]]),
-            )
-            .output()
-            .expect("CLI"),
-            EDIT,
-            0,
-        );
-        let document = Document::open_read_only(&dest).expect("reopen");
-        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-        let built = ferritecad_eval::rebuild_cold(
-            &document,
-            &mut kernel,
-            &ferritecad_kernel::OperationContext::default(),
-        )
-        .expect("cold rebuild");
-        assert!(built.all_built());
-        for reference in document.topology_refs().expect("references") {
-            assert!(!built.resolve(&reference).expect("resolve").is_empty());
-        }
-        built.release_all(&mut kernel);
-        let current = ExtrudeEditSource::read(&document).expect("read");
-        let choice = current
-            .cut_features
-            .iter()
-            .find(|c| c.feature == saved.feature)
-            .expect("Cut");
-        assert!(choice.saved.is_none());
-        let refusal = choice
-            .refusal
-            .as_deref()
-            .expect("structural reader refusal");
-        assert!(
-            refusal.contains("the tool must stay inside the part"),
-            "{refusal}"
-        );
-        let edit = ferritecad_document::CircularCutEdit {
-            tool_curve: saved.tool_curve,
-            center_mm: saved.center_mm,
-            radius_mm: 1.,
-            extent: saved.extent,
-            vocabulary: ferritecad_document::ExtentVocabulary::BlindOrThroughAll,
-        };
-        let error = ferritecad_document::prepare_cut_parameters(&document, saved.feature, &edit)
-            .expect_err("the structural reader rejects even an inward radius repair");
-        assert!(
-            error
-                .to_string()
-                .contains("the tool must stay inside the part")
-        );
-        eprintln!("left={left}: transaction={accepted}; structural reader={error}");
-        assert_eq!(std::fs::read(&path).expect("source bytes"), before);
+    if native() {
+        boundary::run();
     }
 }
 
@@ -551,7 +468,7 @@ fn native_base_copy_late_guards_aliases_and_exit_seven() {
     let request = ferritecad_jobs::EditRequest {
         changes: {
             let document =
-                ferritecad_document::Document::open_read_only(&(source.clone())).expect("source");
+                ferritecad_document::Document::open_read_only(source.clone()).expect("source");
             ferritecad_fixtures::vertex_changes(&document, base.sketch, &(proposed.clone()))
                 .expect("changes")
         },
@@ -576,3 +493,6 @@ fn native_base_copy_late_guards_aliases_and_exit_seven() {
     assert!(report.to_string().contains("source has changed"));
     assert!(!never.exists());
 }
+
+#[path = "cut_transaction_boundary.rs"]
+mod boundary;

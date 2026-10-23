@@ -665,7 +665,7 @@ fn solved_rectangle(path: &Path) -> ferritecad_jobs::EditRequest {
     ));
     ferritecad_jobs::EditRequest {
         changes: crate::transaction_tests::constraint_changes(
-            &(path.to_path_buf()),
+            path,
             profile,
             &(SketchConstraintEdits {
                 remove: Vec::new(),

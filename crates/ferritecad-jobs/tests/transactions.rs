@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#![allow(clippy::panic)]
 use ferritecad_document::{Document, EditChange, ExpressionSlot};
 use ferritecad_jobs::{EditRequest, edit_copy};
 use ferritecad_kernel::OperationContext;

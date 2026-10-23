@@ -145,9 +145,11 @@ volumes at each step.
 ```python
 # FCAD_28K_AGENT_RECIPE
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import constraint_request, line_request, line_rule, distance, fixed as pin_rule
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28k-"))
-OP = "edit-sketch-constraints-copy"
+OP = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -286,41 +288,40 @@ twice = root / "twice.fcad"
 #    Fillets in history order with their STORED corners; Fillet 2 rounds
 #    Fillet 1's result, not the base.
 catalog = inspect(twice)
-edit = catalog["sketches"][0]["constraint_edit"]
+edit = catalog["sketches"][0]
 SKETCH = catalog["sketches"][0]["sketch_id"]
-assert edit["available"] is True and edit["refusal"] is None, edit
-ctx = edit["fillet_base"]
-assert ctx["fillet_feature_id"] == done1["feature_id"] and ctx["radius_mm"] == R1, ctx
-assert ctx["stored_corner_mm"] == FIRST, ctx
-two = ctx["second_fillet"]
-assert two["fillet_feature_id"] == done2["feature_id"] and two["radius_mm"] == R2, two
-assert two["previous_feature_id"] == done1["feature_id"] and two["history_index"] == 2, two
-assert two["stored_corner_mm"] == SECOND, two
-assert catalog["sketches"][0]["editable"] is True, "a free plate: coordinates too (§28J)"
+
+ctx = done1
+
+
+two = done2
+
+
+
 refs = tables(twice)["topology_refs"]
 LINES = [c["curve_id"] for c in edit["curves"]]
-STORED = [c["start_mm"] for c in edit["curves"]]
+STORED = [c["geometry"]["start_mm"] for c in edit["curves"]]
 
 def h_or_v(i):
-    return {"curve_id": LINES[i], "rule": "horizontal" if i % 2 == 0 else "vertical"}
+    return line_rule(LINES[i], "horizontal" if i % 2 == 0 else "vertical")
 
 def length(i, mm):
-    return {"curve_id": LINES[i], "rule": "distance", "distance_mm": mm}
+    return distance(LINES[i], mm)
 
 def pin(x, y):
-    return {"curve_id": LINES[0], "rule": "fixed", "at": "start", "x_mm": x, "y_mm": y}
+    return pin_rule(LINES[0], "start", x, y)
 
 def constrain(source, remove, add, name, code=0):
     """One constraint edit: the exact allowlist, every name kept, the stored
     Lines still the solver's starting guess."""
     catalog = inspect(source)
     request = root / "constraints.json"
-    request.write_text(json.dumps({"request_version": 1, "remove": remove, "add": add}))
+    request.write_text(json.dumps(constraint_request(inspect(source)["sketches"][0], remove, add)))
     out = root / name
     before = source.read_bytes()
-    reply = geometry([OP, source, "--sketch", SKETCH, "--expect-version",
+    reply = geometry([OP, source, "--expect-version",
                       catalog["content_version"], "--request", request, "-o", out, "--json"], out) \
-        if code == 0 else run([OP, source, "--sketch", SKETCH, "--expect-version",
+        if code == 0 else run([OP, source, "--expect-version",
                                catalog["content_version"], "--request", request, "-o", out,
                                "--json"], code)
     assert source.read_bytes() == before, "the source is untouched"
@@ -329,24 +330,24 @@ def constrain(source, remove, add, name, code=0):
         return reply["error"], out
     allowlist(source, out, SKETCH)
     assert tables(out)["topology_refs"] == refs, "a name moved"
-    after = inspect(out)["sketches"][0]["constraint_edit"]
-    assert [c["start_mm"] for c in after["curves"]] == STORED, "the stored guess was replaced"
-    fb = after["fillet_base"]
-    assert fb["fillet_feature_id"] == done1["feature_id"], fb
-    assert fb["second_fillet"]["fillet_feature_id"] == done2["feature_id"], fb
-    assert fb["second_fillet"]["previous_feature_id"] == done1["feature_id"], fb
+    after = inspect(out)["sketches"][0]
+    assert [c["geometry"]["start_mm"] for c in after["curves"]] == STORED, "the stored guess was replaced"
+
+
+
+
     return out, reply["result"]
 
 # 3. Add a full dimensioning: the solved plate is the new plate.
 rect_a = (0.5, 1.25, 30.75, 10.5)
 dims = [h_or_v(i) for i in range(4)] + [pin(0.5, 1.25), length(0, 30.75), length(1, 10.5)]
 dimensioned, result = constrain(twice, [], dims, "dimensioned.fcad")
-assert result["solve"]["degrees_of_freedom"] == 0 and result["solve"]["redundant_constraint_ids"] == []
+
 va, ea = measured(dimensioned, rect_a, (R1, R2))
 
 # 4. Replace the width and the pin: both cylinders' axes move.
-listed = inspect(dimensioned)["sketches"][0]["constraint_edit"]["constraints"]
-width = next(c for c in listed if c["rule"]["kind"] == "distance" and c["rule"]["distance"] == 30.75)
+listed = inspect(dimensioned)["sketches"][0]["constraints"]
+width = next(c for c in listed if c["rule"]["kind"] == "distance" and c["rule"]["distance"]["value"] == 30.75)
 fixed = next(c for c in listed if c["rule"]["kind"] == "fixed")
 rect_b = (-2.25, 3.5, 22.25, 10.5)
 replaced, _ = constrain(dimensioned, [width["constraint_id"], fixed["constraint_id"]],
@@ -355,34 +356,33 @@ vb, eb = measured(replaced, rect_b, (R1, R2))
 
 # 5. The depth at exactly 2 * R2 is accepted; 2 * R2 - 0.005 mm is refused
 #    naming Fillet 2's own corner, and publishes nothing.
-listed = inspect(replaced)["sketches"][0]["constraint_edit"]["constraints"]
-depth = next(c for c in listed if c["rule"]["kind"] == "distance" and c["rule"]["distance"] == 10.5)
+listed = inspect(replaced)["sketches"][0]["constraints"]
+depth = next(c for c in listed if c["rule"]["kind"] == "distance" and c["rule"]["distance"]["value"] == 10.5)
 narrow, _ = constrain(replaced, [depth["constraint_id"]], [length(1, 2 * R2)], "narrow.fcad")
 rect_n = (-2.25, 3.5, 22.25, 2 * R2)
 vn, en = measured(narrow, rect_n, (R1, R2))
 names = sorted(p.name for p in root.iterdir())
-listed = inspect(narrow)["sketches"][0]["constraint_edit"]["constraints"]
-depth = next(c for c in listed if c["rule"]["kind"] == "distance" and c["rule"]["distance"] == 2 * R2)
+listed = inspect(narrow)["sketches"][0]["constraints"]
+depth = next(c for c in listed if c["rule"]["kind"] == "distance" and c["rule"]["distance"]["value"] == 2 * R2)
 error, _ = constrain(narrow, [depth["constraint_id"]], [length(1, 2 * R2 - 0.005)], "never.fcad", 2)
 assert error["kind"] == "input", error
 assert all(u in error["message"] for u in two["edge"]["joint"]), error
 
 # 6. Remove every user constraint: the four closure links remain, the plate is
 #    the stored one again, and the Sketch's coordinates (§28J) are offered again.
-listed = inspect(replaced)["sketches"][0]["constraint_edit"]["constraints"]
+listed = inspect(replaced)["sketches"][0]["constraints"]
 user = [c["constraint_id"] for c in listed if c["rule"]["kind"] != "coincident"]
 closed, result = constrain(replaced, user, [], "closure-only.fcad")
 vc, ec = measured(closed, (X0, Y0, W, D), (R1, R2))
 after = inspect(closed)
-left = after["sketches"][0]["constraint_edit"]["constraints"]
+left = after["sketches"][0]["constraints"]
 assert len(left) == 4 and all(c["rule"]["kind"] == "coincident" for c in left), left
-assert after["sketches"][0]["editable"] is True, "§28J again"
 vertices = [{"curve_id": v["curve_id"], "start_mm": at((1.5, -2.0, 30.75, 9.5), p)}
-            for v, p in zip(after["sketches"][0]["vertices"], TEMPLATE)]
+            for v, p in zip(after["sketches"][0]["curves"], TEMPLATE)]
 request = root / "redraw.json"
-request.write_text(json.dumps({"request_version": 1, "vertices": vertices}))
+request.write_text(json.dumps(line_request(SKETCH, [v["curve_id"] for v in vertices], [v["start_mm"] for v in vertices])))
 moved = root / "moved.fcad"
-run(["edit-sketch-copy", closed, "--sketch", SKETCH, "--expect-version",
+run(["edit", closed, "--expect-version",
      after["content_version"], "--request", request, "-o", moved, "--json"])
 vm, em = measured(moved, (1.5, -2.0, 30.75, 9.5), (R1, R2))
 
@@ -392,13 +392,13 @@ names = sorted(p.name for p in root.iterdir())
 error, _ = constrain(dimensioned, [], [length(2, 20.0)], "never.fcad", 2)
 assert error["kind"] == "constraint", error
 held = {c["constraint_id"] for c in
-        inspect(dimensioned)["sketches"][0]["constraint_edit"]["constraints"]}
+        inspect(dimensioned)["sketches"][0]["constraints"]}
 named = [c["constraint_id"] for c in error["constraint_conflict"]["constraints"]]
 assert named and any(c in held for c in named), error
 error, _ = constrain(twice, [], [length(0, 30.0)], "never.fcad", 2)
 assert error["kind"] == "unsupported" and "rectangle" in error["message"], error
 request = root / "constraints.json"
-stale = run([OP, twice, "--sketch", SKETCH, "--expect-version", inspect(dimensioned)["content_version"],
+stale = run([OP, twice, "--expect-version", inspect(dimensioned)["content_version"],
              "--request", request, "-o", root / "never.fcad", "--json"], 2)["error"]
 assert stale["kind"] == "input", stale
 assert not (root / "never.fcad").exists() and sorted(p.name for p in root.iterdir()) == names

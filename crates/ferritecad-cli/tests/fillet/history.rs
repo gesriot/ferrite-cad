@@ -137,16 +137,6 @@ fn chain(
                     .is_null()
             );
         }
-        let base = after["sketches"]
-            .as_array()
-            .expect("features")
-            .iter()
-            .find(|f| !f["fillet_history"].is_null())
-            .expect("the base Extrude row");
-
-        assert_eq!(base["fillet_base"].is_object(), k < 2, "{base}");
-        let row = &after["bodies"][0]["fillet_edge"];
-
         let checked = cli()
             .arg("validate")
             .arg(&out)
@@ -820,10 +810,6 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
     let refs = stored_refs(&source);
     let before = std::fs::read(&source).expect("bytes");
     let base = g.base_id().to_owned();
-    assert!(
-        g.sketch_row()["fillet_base"].is_null(),
-        "no older projection of four"
-    );
 
     // The height.
     let raised = g.root.path().join("raised.fcad");
@@ -851,14 +837,14 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
     let h = fixture_at(&source);
     h.ask_rect(rectangle);
     let moved = h.root.path().join("moved.fcad");
-    let v = reply(
+    let _v = reply(
         h.redraw(&source, h.version(), &moved)
             .output()
             .expect("process"),
         "edit",
         0,
     );
-    assert_eq!(v["result"]["sketch_id"], h.sketch_id());
+
     assert_eq!(only_this_row_changed(&source, &moved, h.sketch_id()), 2);
     assert_eq!(stored_refs(&moved), refs);
     let at = |c: [f64; 2]| mapped(rectangle, c);
@@ -938,8 +924,12 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
         "edit",
         0,
     );
-    assert_eq!(v["result"]["sketch_id"], c.plate_sketch_id(), "{v}");
-    assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 0, "{v}");
+
+    assert_eq!(
+        crate::transaction::solve(&dimensioned_copy)["degrees_of_freedom"],
+        0,
+        "{v}"
+    );
     only_this_sketch_changed(&source, &dimensioned_copy, c.plate_sketch_id());
     assert_eq!(stored_refs(&dimensioned_copy), refs);
     let (starts, dof) = solved(&dimensioned_copy);
@@ -969,8 +959,6 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
     // constraint editor.
     let d = fixture_at(&dimensioned_copy);
 
-    assert!(d.constraint_row()["fillet_base"].is_null());
-
     // Removing every user constraint leaves the closure and returns the
     // coordinate editor.
     let user: Vec<Value> = d.constraint_row()["constraints"]
@@ -983,7 +971,7 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
     d.ask_constraints(&user, &[]);
     let freed = d.root.path().join("freed.fcad");
     reply(d.constrain(&freed).output().expect("process"), "edit", 0);
-    let f = fixture_at(&freed);
+    let _f = fixture_at(&freed);
 
     verify(&freed, &steps, RECT, H, "edits-freed");
 }
@@ -1041,7 +1029,7 @@ fn native_the_solved_plate_decides_every_radius_of_four() {
         .as_array()
         .expect("constraints")
         .iter()
-        .find(|c| c["rule"]["kind"] == "distance" && c["rule"]["distance"] == 20.0)
+        .find(|c| c["rule"]["kind"] == "distance" && c["rule"]["distance"]["value"] == 20.0)
         .expect("the depth")["constraint_id"]
         .clone();
     h.ask_constraints(
@@ -1107,19 +1095,28 @@ fn native_the_solved_plate_decides_every_radius_of_four() {
     let curves = &g.constraint_row()["curves"];
     g.ask_constraints(
         &[],
-        &[json!({"rule": "equal_length",
-                 "a_curve_id": curves[0]["curve_id"],
-                 "b_curve_id": curves[opposite]["curve_id"]})],
+        &[crate::transaction::relation(
+            &curves[0]["curve_id"],
+            &curves[opposite]["curve_id"],
+            "equal_length",
+        )],
     );
     let said = g.root.path().join("redundant.fcad");
     let v = reply(g.constrain(&said).output().expect("process"), "edit", 0);
-    let equality = v["result"]["added_constraints"][0]["constraint_id"].clone();
+    let request: Value =
+        serde_json::from_slice(&std::fs::read(&g.request).expect("request")).expect("JSON");
+    let equality = request["changes"]
+        .as_array()
+        .expect("changes")
+        .last()
+        .expect("equality")["constraint"]["id"]
+        .clone();
     assert_eq!(
-        v["result"]["solve"]["redundant_constraint_ids"],
+        crate::transaction::solve(&said)["redundant_constraint_ids"],
         json!([equality]),
         "{v}"
     );
-    assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 0);
+    assert_eq!(crate::transaction::solve(&said)["degrees_of_freedom"], 0);
 }
 
 /// Rounds drawn corner `at` of the plate in `f` with `r`, written without a
@@ -1174,7 +1171,6 @@ fn history_discovery_and_protocol_without_native() {
     let f = Fixture::drawn(Plate::new(corners));
     assert_eq!(f.catalog["fillets"], json!([]));
 
-    assert!(f.catalog["sketches"][0]["fillet_base"].is_null());
     let mut ids: Vec<ObjectId> = Vec::new();
     for n in 1..=4usize {
         ids.push(round_without_kernel(
@@ -1192,42 +1188,20 @@ fn history_discovery_and_protocol_without_native() {
             assert!(slot["refusal"].is_null());
             assert_eq!(slot["expression"]["value"], radii[i]);
         }
-        // Every surface that names the history.
-        let projections = |v: &Value| {
-            (
-                v["fillet_base"].is_object(),
-                v["fillet_base"]["second_fillet"].is_object(),
-                v["fillet_history"]["count"].as_u64(),
-            )
-        };
-        let want = (n <= 2, n == 2, Some(n as u64));
-
-        assert_eq!(projections(&c["sketches"][0]), want, "{}", c["sketches"][0]);
-        assert_eq!(projections(&c["sketches"][0]), want, "{}", c["sketches"][0]);
-        let history = &c["sketches"][0]["fillet_history"]["fillets"];
+        // The saved feature rows retain the exact predecessor, edge and radius.
         let base = &c["features"][0]["feature_id"];
-        for (i, e) in history.as_array().expect("history").iter().enumerate() {
-            assert_eq!(e["fillet_feature_id"], json!(ids[i].to_string()));
-            assert_eq!(e["history_index"], i + 1);
+        for (i, e) in fillets.iter().enumerate() {
+            assert_eq!(e["feature_id"], json!(ids[i]));
             assert_eq!(
                 e["previous_feature_id"],
                 if i == 0 {
                     base.clone()
                 } else {
-                    json!(ids[i - 1].to_string())
-                },
-                "each rounds the result of the one before"
+                    json!(ids[i - 1])
+                }
             );
-            assert_eq!(e["edge"]["feature_id"], *base, "the edge is the plate's");
-            assert_eq!(e["corner_mm"], json!(corners[order[i]]));
-            assert_eq!(e["radius_mm"], radii[i]);
-        }
-        // The older projections agree with the history where they exist.
-        if n <= 2 {
-            assert_eq!(
-                c["sketches"][0]["fillet_base"]["fillet_feature_id"],
-                json!(ids[0].to_string())
-            );
+            assert_eq!(e["edge"]["feature_id"], *base);
+            assert_eq!(e["expression"]["value"], radii[i]);
         }
         // The candidates, and the refusal when none is left.
         let row = &c["bodies"][0]["fillet_edge"];

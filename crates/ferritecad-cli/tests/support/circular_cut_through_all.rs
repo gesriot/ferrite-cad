@@ -732,14 +732,6 @@ mod old_v1 {
         pub circular_cut_edit: CircularCutEdit,
     }
     #[derive(Deserialize)]
-    pub struct History {
-        pub tools: Vec<Tool>,
-    }
-    #[derive(Deserialize)]
-    pub struct Sketch {
-        pub cut_history: Option<History>,
-    }
-    #[derive(Deserialize)]
     pub struct Body {
         pub cut_edit: CutEdit,
     }
@@ -747,7 +739,6 @@ mod old_v1 {
     pub struct Inspection {
         pub features: Vec<Feature>,
         pub bodies: Vec<Body>,
-        pub sketches: Vec<Sketch>,
     }
 }
 
@@ -899,13 +890,6 @@ fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
         assert_eq!(saved.depth_mm, tool.depth_mm);
         assert_eq!(saved.leaves_a_floor, tool.depth_mm < SIZE[2]);
     }
-    let histories: Vec<_> = old
-        .sketches
-        .iter()
-        .filter_map(|s| s.cut_history.as_ref())
-        .collect();
-    assert_eq!(histories.len(), 1);
-    assert_eq!(read(&histories[0].tools), expected);
     // The v1 blocks carry nothing new, and `_v2` says the same thing explicitly.
     let v1_tool = &json["bodies"][0]["cut_edit"]["target"]["tools"][0];
     assert!(v1_tool.get("extent").is_none() && v1_tool["depth_mm"].is_f64());
@@ -952,7 +936,6 @@ fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
                 .contains("circular_cut_edit_v2")
         );
     }
-    assert!(old.sketches.iter().all(|s| s.cut_history.is_none()));
     // The new form describes the same history and every operation on it.
     assert_eq!(json["bodies"][0]["cut_edit_v2"]["available"], json!(true));
     assert_eq!(
@@ -963,13 +946,5 @@ fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
             .filter(|f| f["circular_cut_edit_v2"]["available"] == json!(true))
             .count(),
         4
-    );
-
-    assert!(
-        json["sketches"]
-            .as_array()
-            .expect("s")
-            .iter()
-            .any(|s| s["cut_history_v2"].is_object())
     );
 }

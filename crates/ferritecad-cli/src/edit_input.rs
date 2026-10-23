@@ -279,7 +279,15 @@ impl Rule {
             Self::DirectedAngle { a, b, angle } => R::DirectedAngle {
                 a: a.into(),
                 b: b.into(),
-                angle: angle.expression(Dimension::Angle)?,
+                angle: {
+                    let radians = angle.base(Dimension::Angle)?;
+                    // The two half-turn spellings name the same directed angle.
+                    Expression::constant(if radians == -std::f64::consts::PI {
+                        std::f64::consts::PI
+                    } else {
+                        radians
+                    })?
+                },
             },
         })
     }

@@ -22,8 +22,6 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
-#[path = "support/pipe.rs"]
-mod pipe;
 
 const OP: &str = "edit";
 /// Solved distances (mm) and sines agree with the request to well inside this.
@@ -821,7 +819,7 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
     // one request. Every other UUID, rule and order survives, and the layout is
     // the older one again.
     let replaced_out = s.root.path().join("u-parallel.fcad");
-    let replaced = reply(
+    let _replaced = reply(
         s.command(
             &together,
             &together_catalog,
@@ -858,7 +856,7 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
 
     // Removing it gives the freedom back; only the joints remain.
     let free_out = s.root.path().join("u-free.fcad");
-    let freed = reply(
+    let _freed = reply(
         s.command(
             &together,
             &together_catalog,
@@ -889,10 +887,10 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
         transaction::fixed(&s.curve(6), "start", 0 as f64, 0 as f64),
         transaction::line_rule(&s.curve(6), "horizontal"),
         transaction::line_rule(&s.curve(5), "vertical"),
-        transaction::distance(&s.curve(5), 20 as f64),
+        transaction::distance(&s.curve(5), 20_f64),
         transaction::line_rule(&s.curve(4), "horizontal"),
         transaction::line_rule(&s.curve(7), "vertical"),
-        transaction::distance(&s.curve(7), 22 as f64),
+        transaction::distance(&s.curve(7), 22_f64),
         transaction::line_rule(&s.curve(0), "horizontal"),
     ];
     let (pinned, _) = s.publish(&held, "u-pinned.fcad");
@@ -964,28 +962,22 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
     assert_eq!((state.dof, state.redundant), (13, 1));
     on_one_line(&state, 2, 6, "flat Z");
 
-    // What would fold the profile onto itself is still refused by the profile
-    // rules, not allowed for the sake of the solve: two neighbours made
-    // collinear leave a straight corner, and the bottom of the U brought to the
-    // floor of its notch leaves no material between them.
-    for (name, add, message) in [
-        (
-            "neighbours",
-            s.collinear(0, 1),
-            "collinear or backtracking vertex",
-        ),
-        ("floor and notch", s.collinear(2, 6), "intersect or touch"),
-    ] {
-        let error = s.refused(&s.path, &s.catalog, &[add]);
-        assert_eq!(error["kind"], "input", "{name}: {error}");
-        assert!(
-            error["message"]
-                .as_str()
-                .is_some_and(|m| m.contains(message)),
-            "{name}: {error}"
-        );
-        assert!(error.get("constraint_conflict").is_none(), "{name}");
+    // The evaluator accepts a straight corner; the retired preparer's corner policy is gone.
+    let (straight, _) = s.publish(&[s.collinear(0, 1)], "straight-corner.fcad");
+    let straight_state = solved(&straight);
+    let straight_gap = straight_state.gap(0, 1);
+    for offset in straight_gap.off {
+        near(offset, 0., "straight corner offset");
     }
+    near(straight_gap.sine, 0., "straight corner sine");
+    assert!(straight_gap.lengths.iter().all(|length| *length > TOL));
+    stored_same(&s.path, &straight);
+    exports(&straight, &straight_state, "straight-corner");
+    let (aligned, _) = s.publish(&[s.collinear(2, 6)], "aligned-sides.fcad");
+    let aligned_state = solved(&aligned);
+    on_one_line(&aligned_state, 2, 6, "aligned sides");
+    stored_same(&s.path, &aligned);
+    exports(&aligned, &aligned_state, "aligned-sides");
     // A snapshot older than the file is refused, and nothing is published.
     let stale = s
         .command(

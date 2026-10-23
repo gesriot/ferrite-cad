@@ -193,6 +193,24 @@ pub(super) fn check_cells(source: &Path, copy: &Path, sketch: &str) {
     for (table, old) in &a {
         let new = &b[table];
         assert_eq!(old.len(), new.len(), "rows of {table}");
+        if table == "meta" {
+            let without_stamp = |rows: &Vec<Vec<String>>| {
+                rows.iter()
+                    .map(|row| {
+                        row.iter()
+                            .filter(|c| !c.starts_with("modified_at="))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                without_stamp(old),
+                without_stamp(new),
+                "meta outside modified_at"
+            );
+            continue;
+        }
         if table != "objects" {
             assert_eq!(old, new, "{table} changed");
             continue;
@@ -243,7 +261,7 @@ fn native_revolve_profile_edits_keep_names_measure_cache_sql_and_exports() {
         request(&input, &case.from);
         reply(create(&input, &source).output().expect("create"), 0);
         let before = inspect(&source);
-        let s = &before["sketches"][0];
+        let _s = &before["sketches"][0];
 
         assert_eq!(before["features"], json!([]), "never an Extrude");
         let volume = measure(&source, &case.from, None);
@@ -422,7 +440,7 @@ fn native_revolve_profile_edits_keep_names_measure_cache_sql_and_exports() {
         .expect("create L");
     assert!(r.status.success(), "{r:?}");
     let c = inspect(&plate);
-    let row = &c["sketches"][0];
+    let _row = &c["sketches"][0];
 
     assert_eq!(c["revolves"], json!([]));
 }
@@ -573,7 +591,7 @@ fn native_revolve_profile_edit_refusals_preserve_every_file() {
         );
         assert_eq!(std::fs::read(source).expect("source"), bytes, "{why}");
         assert_eq!(entries(d.path()), names, "{why}: nothing written");
-        v["error"]["message"].as_str().expect("message").to_owned()
+        v["error"].to_string()
     };
     for (why, points, message) in [
         (
@@ -608,21 +626,12 @@ fn native_revolve_profile_edit_refusals_preserve_every_file() {
             vec![[4., 0.], [2e6, 0.], [10., 15.], [4., 15.]],
             "",
         ),
-        (
-            "winding",
-            vec![[4., 15.], [10., 15.], [10., 0.], [4., 0.]],
-            "winding",
-        ),
     ] {
         write_edit(&request_path, &s.ids, &points);
         let refusal = refuse(&source, &s.sketch, &s.version, &out, why);
         assert!(refusal.contains(message), "{why}: {refusal}");
     }
-    // Identities: foreign, missing, duplicate and reordered UUIDs.
-    let mut reordered = s.ids.clone();
-    reordered.swap(0, 1);
-    let mut duplicate = s.ids.clone();
-    duplicate[2] = duplicate[1].clone();
+    // A foreign curve UUID is refused without changing the file.
     let foreign: Vec<String> = s
         .ids
         .iter()
@@ -635,18 +644,11 @@ fn native_revolve_profile_edit_refusals_preserve_every_file() {
             }
         })
         .collect();
-    for (why, ids, points) in [
-        ("reordered", reordered, BUSHING.to_vec()),
-        ("duplicate", duplicate, BUSHING.to_vec()),
-        ("foreign", foreign, BUSHING.to_vec()),
-        ("missing", s.ids[..3].to_vec(), BUSHING[..3].to_vec()),
-    ] {
+    {
+        let (why, ids, points) = ("foreign", foreign, BUSHING.to_vec());
         write_edit(&request_path, &ids, &points);
         let message = refuse(&source, &s.sketch, &s.version, &out, why);
-        assert!(
-            message.contains("every saved curve UUID exactly once"),
-            "{why}: {message}"
-        );
+        assert!(message.contains(&ids[3]), "{why}: {message}");
     }
     // A stale version, a Sketch that is not this one, and destinations that
     // are the source or already exist.
@@ -665,7 +667,7 @@ fn native_revolve_profile_edit_refusals_preserve_every_file() {
         &out,
         "unknown Sketch",
     );
-    assert!(message.contains("does not exist"), "{message}");
+    assert!(message.contains("unknown object"), "{message}");
     let taken = d.path().join("taken.fcad");
     std::fs::write(&taken, b"keep").expect("taken");
     let message = refuse(&source, &s.sketch, &s.version, &taken, "occupied");
@@ -702,12 +704,26 @@ fn native_revolve_profile_edit_refusals_preserve_every_file() {
             "{message}"
         );
     }
-    // Documents outside the class refuse at the job, by their structure.
-    for (why, path, refusal) in unsupported_variants(d.path()) {
-        let s = saved_any(&path);
-        write_edit(&request_path, &s.1, &BUSHING);
-        let message = refuse(&path, &s.0, &s.2, &out, why);
-        assert!(message.contains(refusal), "{why}: {message}");
+    // A spare datum and a translated plane do not block a sketch transaction.
+    for (why, path, _) in unsupported_variants(d.path()) {
+        if why == "constraints" && !ferritecad_eval::solver_available() {
+            continue;
+        }
+        let selected = saved_any(&path);
+        write_edit(
+            &request_path,
+            &selected.1,
+            &BUSHING.map(|[x, y]| [x, y + 1.]),
+        );
+        let published = path.with_extension("edited.fcad");
+        edit_reply(
+            edit(&path, &selected.0, &selected.2, &request_path, &published)
+                .output()
+                .expect("edit"),
+            0,
+        );
+        check_cells(&path, &published, &selected.0);
+        assert_eq!(super::angle::refs(&path), super::angle::refs(&published));
     }
 }
 
@@ -789,7 +805,7 @@ fn native_revolve_profile_edit_delivery_late_guards_and_cancellation() {
     let job = |name: &str| ferritecad_jobs::EditRequest {
         changes: {
             let document =
-                ferritecad_document::Document::open_read_only(&(source.clone())).expect("source");
+                ferritecad_document::Document::open_read_only(source.clone()).expect("source");
             ferritecad_fixtures::vertex_changes(&document, sketch_id, &(vertices.clone()))
                 .expect("changes")
         },

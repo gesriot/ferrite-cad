@@ -722,40 +722,6 @@ impl StepTicket {
         )
     }
 
-    /// Moves the vertices of one saved Line Sketch: the reused `edit-sketch-copy`
-    /// operation, reading the current version and writing the next, so the result
-    /// is what the command line makes from the same document.
-    ///
-    /// `expected` is the version the form that asked for this was opened from. If
-    /// the session has moved on since (an Apply, an Undo, a Redo), the request is
-    /// about a picture that is no longer the document and is refused, so an old
-    /// form can never be applied to a newer version.
-    #[allow(clippy::too_many_arguments)]
-    /// Adds and removes constraints of one saved Sketch: the reused
-    /// `edit-sketch-constraints-copy` operation, reading the current version and
-    /// writing the next, so the result is what the command line makes from the same
-    /// document (the solver decides the shape; stored coordinates stay the
-    /// solver's starting approximation).
-    ///
-    /// `expected` is the version the form that asked for this was opened on; a
-    /// request about any other version is refused, as for the vertex edit. An
-    /// edit that leaves the model as it was is not a step (`changes_model`); a
-    /// replaced constraint is a different UUID and so is a step even when the
-    /// solved drawing is the same.
-    #[allow(clippy::too_many_arguments)]
-    /// Moves and resizes one saved analytic circle: the reused `edit-circle`
-    /// copy operation, reading the current version and writing the next, so the
-    /// result is what the command line's `edit-circle` makes from the same
-    /// document. The height is not part of the request.
-    ///
-    /// `expected` is the version the form that asked for this was opened on; a
-    /// request about any other version is refused, as for the other forms. A
-    /// request that leaves the model as it was is not a step (`changes_model`).
-    #[allow(clippy::too_many_arguments)]
-    /// Moves and resizes the two circles of one saved annular profile: the reused
-    /// `edit-annular` copy operation, each circle named by its own UUID in the
-    /// role it already holds. Version rule and no-op rule as for the circle.
-    #[allow(clippy::too_many_arguments)]
     /// Changes one existing Cut by its saved feature/tool identities, using the
     /// current accepted snapshot and the CLI's existing copy operation. New floor
     /// refs belong to the produced version; Undo/Redo never regenerates them.

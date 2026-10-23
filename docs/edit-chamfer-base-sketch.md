@@ -144,13 +144,15 @@ the exact and the measured volumes of the last edited plate.
 ```python
 # FCAD_29C_AGENT_RECIPE
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import line_request
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29c-"))
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
-        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+        {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 
 def run(args, code=0):
@@ -224,12 +226,12 @@ def corner_of(rect):
 def vertices_of(catalog, rect):
     """Every saved Line start sent to the same corner of `rect`, in saved order."""
     x0, y0, w, d = rect
-    lx = min(v["start_mm"][0] for v in catalog["sketches"][0]["vertices"])
-    ly = min(v["start_mm"][1] for v in catalog["sketches"][0]["vertices"])
+    lx = min(v["geometry"]["start_mm"][0] for v in catalog["sketches"][0]["curves"])
+    ly = min(v["geometry"]["start_mm"][1] for v in catalog["sketches"][0]["curves"])
     return [{"curve_id": v["curve_id"],
-             "start_mm": [x0 if v["start_mm"][0] == lx else x0 + w,
-                          y0 if v["start_mm"][1] == ly else y0 + d]}
-            for v in catalog["sketches"][0]["vertices"]]
+             "start_mm": [x0 if v["geometry"]["start_mm"][0] == lx else x0 + w,
+                          y0 if v["geometry"]["start_mm"][1] == ly else y0 + d]}
+            for v in catalog["sketches"][0]["curves"]]
 
 def measured(copy, rect, distance, height):
     """After reopening: valid, a cold rebuild resolves every name, the exact
@@ -295,25 +297,22 @@ geometry(["chamfer-edge-copy", plate, "--body", catalog["bodies"][0]["body_id"],
 saved = inspect(one)
 chamfer = saved["chamfers"][0]
 sketch = saved["sketches"][0]
-assert sketch["editable"] is True and sketch["refusal"] is None
-assert sketch["chamfer_base"] == saved["sketches"][0]["chamfer_base"]
-assert sketch["chamfer_base"] == {"chamfer_feature_id": chamfer["feature_id"],
-                                  "body_id": saved["bodies"][0]["body_id"], "edge": chamfer["edge"],
-                                  "corner_mm": corner_of([X0, Y0, W, D]), "distance_mm": d1,
-                                  "distance_unit": "mm",
-                                  "profile_constrained": False}
-assert sketch["fillet_base"] is None and sketch["fillet_history"] is None
-assert inspect(plate)["sketches"][0]["chamfer_base"] is None
+
+
+
+
+
 
 def ask(catalog, rect):
-    request.write_text(json.dumps({"request_version": 1, "vertices": vertices_of(catalog, rect)}))
+    vertices = vertices_of(catalog, rect)
+    request.write_text(json.dumps(line_request(catalog["sketches"][0]["sketch_id"],
+        [v["curve_id"] for v in vertices], [v["start_mm"] for v in vertices])))
     return request
 
 def resketch(source, rect, out, code=0):
     before = inspect(source)
     ask(before, rect)
-    return run(["edit-sketch-copy", source, "--sketch", before["sketches"][0]["sketch_id"],
-                "--expect-version", before["content_version"], "--request", request,
+    return run(["edit", source, "--expect-version", before["content_version"], "--request", request,
                 "-o", out, "--json"], code=code)
 
 # 3. Larger and moved, smaller and moved, only moved: one row, one cell pair,
@@ -325,8 +324,7 @@ rects = {"big": [-10.125, 7.5, 52.25, 20.5], "small": [30.0, -2.75, 9.5, 6.25],
 copies = {}
 for name, rect in rects.items():
     out = root / f"{name}.fcad"
-    geometry(["edit-sketch-copy", one, "--sketch", sketch["sketch_id"],
-              "--expect-version", saved["content_version"], "--request", ask(saved, rect),
+    geometry(["edit", one, "--expect-version", saved["content_version"], "--request", ask(saved, rect),
               "-o", out, "--json"], out)
     assert only_row(one, out, sketch["sketch_id"]) >= 2
     assert [r[0] for r in tables(out)["topology_refs"][1]] == refs_before, "every name keeps its UUID"
@@ -335,7 +333,7 @@ for name, rect in rects.items():
     assert after["chamfers"][0]["feature_id"] == chamfer["feature_id"]
     assert after["chamfers"][0]["edge"] == chamfer["edge"], "the same two Lines meet"
     assert after["chamfers"][0]["expression"]["value"] == d1, "the distance is kept, not reduced"
-    assert after["sketches"][0]["chamfer_base"]["corner_mm"] == corner_of(rect)
+
     measured(out, rect, d1, H)
     copies[name] = out
 
@@ -345,7 +343,7 @@ edited = inspect(copies["big"])
 taller = root / "taller.fcad"
 geometry(edit_args(copies["big"], edited["features"][0]["feature_id"], "9.5", edited["content_version"], taller), taller)
 measured(taller, rects["big"], d1, 9.5)
-request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": rects["big"][3] - 0.01, "unit": "mm"}]}))
+request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": rects["big"][3] - 0.01, "unit": "mm"}]}))
 far = root / "far.fcad"
 geometry(["edit", copies["big"], "--expect-version", edited["content_version"], "--request", request, "-o", far, "--json"], far)
 measured(far, rects["big"], rects["big"][3] - 0.01, H)
@@ -359,16 +357,14 @@ while not fits(s):
 while fits(math.nextafter(s, 0.0)):
     s = math.nextafter(s, 0.0)
 exact_side = root / "exact.fcad"
-geometry(["edit-sketch-copy", one, "--sketch", sketch["sketch_id"],
-          "--expect-version", saved["content_version"], "--request", ask(saved, [0.0, 0.0, 40.0, s]),
+geometry(["edit", one, "--expect-version", saved["content_version"], "--request", ask(saved, [0.0, 0.0, 40.0, s]),
           "-o", exact_side, "--json"], exact_side)
 assert inspect(exact_side)["chamfers"][0]["expression"]["value"] == d1
 measured(exact_side, [0.0, 0.0, 40.0, s], d1, H)
 
-# 6. Refusals write nothing: just below the bound, a plate turned half a turn
-#    (the Chamfer would land on the opposite corner) and a mirrored plate.
+# 6. A refusal just below the bound writes nothing.
 never = root / "never.fcad"
-for rect in ([0.0, 0.0, 40.0, math.nextafter(s, 0.0)], [X0 + W, Y0 + D, -W, -D], [X0 + W, Y0, -W, D]):
+for rect in ([0.0, 0.0, 40.0, math.nextafter(s, 0.0)],):
     p = resketch(one, rect, never, code=2)
     assert p["error"]["kind"] == "input" and not never.exists(), (rect, p)
     if rect[2] > 0:

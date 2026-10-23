@@ -623,7 +623,7 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
         let dof = result.as_ref().ok().map(|r| {
-            crate::transaction_tests::solve(&r)
+            crate::transaction_tests::solve(r)
                 .as_ref()
                 .expect("solve")
                 .degrees_of_freedom()

@@ -26,7 +26,10 @@ pub fn move_sketch_vertices(
         let incoming: Vec<_> = sketch
             .curves
             .iter()
-            .filter(|c| matches!(c.geometry, SketchGeometry::Line { end, .. } if end == start))
+            .filter(|c| {
+                !c.construction
+                    && matches!(c.geometry, SketchGeometry::Line { end, .. } if end == start)
+            })
             .collect();
         let [before] = incoming.as_slice() else {
             return Err(CadError::input(format!(

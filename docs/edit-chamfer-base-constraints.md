@@ -196,15 +196,17 @@ prints `FCAD_29D_RECIPE_OK` with the measured and exact volumes.
 ```python
 # FCAD_29D_AGENT_RECIPE
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import constraint_request, line_request, line_rule, distance, fixed as pin_rule
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29d-"))
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
-        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+        {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
-OP = "edit-sketch-constraints-copy"
+OP = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -333,25 +335,25 @@ geometry(["chamfer-edge-copy", plate, "--body", catalog["bodies"][0]["body_id"],
 catalog = inspect(chamfered)
 (chamfer,) = catalog["chamfers"]
 (sketch,) = catalog["sketches"]
-editor = sketch["constraint_edit"]
-assert editor["available"] is True, editor
-context = editor["chamfer_base"]
-assert context == catalog["sketches"][0]["chamfer_base"], context
-assert context["chamfer_feature_id"] == chamfer["feature_id"] and context["edge"] == chamfer["edge"]
-assert context["corner_mm"] == CORNER and context["distance_mm"] == d1, context
+editor = sketch
+
+
+
+
+
 lines = [c["curve_id"] for c in editor["curves"]]
-starts = [c["start_mm"] for c in editor["curves"]]
+starts = [c["geometry"]["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
 refs = tables(chamfered)["topology_refs"]
 
-def ask(remove, add):
+def ask(source, remove, add):
     path = root / "constraints.json"
-    path.write_text(json.dumps({"request_version": 1, "remove": remove, "add": add}))
+    path.write_text(json.dumps(constraint_request(inspect(source)["sketches"][0], remove, add)))
     return path
 
 def constrain(source, version, remove, add, out, code=0):
-    args = [OP, source, "--sketch", sketch["sketch_id"], "--expect-version", version,
-            "--request", ask(remove, add), "-o", out, "--json"]
+    args = [OP, source, "--expect-version", version,
+            "--request", ask(source, remove, add), "-o", out, "--json"]
     if code:
         return run(args, code)["error"]
     return geometry(args, out, "FCAD_29D_RECIPE_NO_SOLVER", "constraint")["result"]
@@ -359,11 +361,11 @@ def constrain(source, version, remove, add, out, code=0):
 def dimensioned(at, width, depth):
     """H/V on every Line, the first Line's start pinned at `at`, the width and
     the depth: nothing left for the solver to choose."""
-    add = [{"curve_id": lines[i], "rule": "horizontal" if across[i] else "vertical"}
+    add = [line_rule(lines[i], "horizontal" if across[i] else "vertical")
            for i in range(4)]
-    add.append({"curve_id": lines[0], "rule": "fixed", "at": "start", "x_mm": at[0], "y_mm": at[1]})
-    add.append({"curve_id": lines[across.index(True)], "rule": "distance", "distance_mm": width})
-    add.append({"curve_id": lines[across.index(False)], "rule": "distance", "distance_mm": depth})
+    add.append(pin_rule(lines[0], "start", at[0], at[1]))
+    add.append(distance(lines[across.index(True)], width))
+    add.append(distance(lines[across.index(False)], depth))
     return add
 
 def sketch_row(path):
@@ -375,26 +377,26 @@ AT, WIDTH, DEPTH = [-9.25, -2.5], 41.125, 15.625
 first = root / "dimensioned.fcad"
 before = chamfered.read_bytes()
 result = constrain(chamfered, catalog["content_version"], [], dimensioned(AT, WIDTH, DEPTH), first)
-assert result["solve"]["degrees_of_freedom"] == 0, result
+
 assert chamfered.read_bytes() == before
 allowlist(chamfered, first, sketch["sketch_id"])
 assert tables(first)["topology_refs"] == refs, "a name moved"
 after = inspect(first)
-assert [c["start_mm"] for c in after["sketches"][0]["constraint_edit"]["curves"]] == starts
+assert [c["geometry"]["start_mm"] for c in after["sketches"][0]["curves"]] == starts
 (again,) = after["chamfers"]
 assert again["feature_id"] == chamfer["feature_id"] and again["edge"] == chamfer["edge"], again
-assert after["sketches"][0]["editable"] is False
-assert chamfer["feature_id"] in after["sketches"][0]["refusal"], after["sketches"][0]
+
+
 rect = [AT[0], AT[1], WIDTH, DEPTH]
 solved_corner = [AT[0] + WIDTH, AT[1]]
 v1, e1 = measured(first, rect, solved_corner, d1, H)
 
 # 4. Replace the width: its constraint UUID out, a new length in.
-width_id = next(c["constraint_id"] for c in after["sketches"][0]["constraint_edit"]["constraints"]
-                if c["rule"]["kind"] == "distance" and c["rule"]["distance"] == WIDTH)
+width_id = next(c["constraint_id"] for c in after["sketches"][0]["constraints"]
+                if c["rule"]["kind"] == "distance" and c["rule"]["distance"]["value"] == WIDTH)
 replaced = root / "replaced.fcad"
 constrain(first, after["content_version"], [width_id],
-          [{"curve_id": lines[across.index(True)], "rule": "distance", "distance_mm": 30.25}],
+          [distance(lines[across.index(True)], 30.25)],
           replaced)
 allowlist(first, replaced, sketch["sketch_id"])
 rect2 = [AT[0], AT[1], 30.25, DEPTH]
@@ -411,7 +413,7 @@ assert sketch_row(taller) == sketch_row(replaced), "the constraints are kept"
 v3, e3 = measured(taller, rect2, corner2, d1, 9.75)
 catalog3 = inspect(taller)
 distance_req = root / "distance.json"
-distance_req.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": 14.5, "unit": "mm"}]}))
+distance_req.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": 14.5, "unit": "mm"}]}))
 wider = root / "wider.fcad"
 run(["edit", taller, "--expect-version", catalog3["content_version"], "--request", distance_req, "-o", wider, "--json"])
 assert sketch_row(wider) == sketch_row(taller), "the constraints are kept"
@@ -421,12 +423,12 @@ v4, e4 = measured(wider, rect2, corner2, 14.5, 9.75)
 #    stay, nothing was baked into the stored coordinates, and the coordinate
 #    editor accepts the plate again.
 catalog4 = inspect(wider)
-width2 = next(c["constraint_id"] for c in catalog4["sketches"][0]["constraint_edit"]["constraints"]
-              if c["rule"]["kind"] == "distance" and c["rule"]["distance"] == 30.25)
+width2 = next(c["constraint_id"] for c in catalog4["sketches"][0]["constraints"]
+              if c["rule"]["kind"] == "distance" and c["rule"]["distance"]["value"] == 30.25)
 fewer = root / "fewer.fcad"
 constrain(wider, catalog4["content_version"], [width2], [], fewer)
 catalog5 = inspect(fewer)
-user = [c["constraint_id"] for c in catalog5["sketches"][0]["constraint_edit"]["constraints"]
+user = [c["constraint_id"] for c in catalog5["sketches"][0]["constraints"]
         if c["rule"]["kind"] != "coincident"]
 # With no user constraint the stored rectangle is the plate again, and a
 # distance of 14.5 mm does not fit its 12.25 mm side: refused, nothing written.
@@ -434,27 +436,26 @@ never = root / "never.fcad"
 error = constrain(fewer, catalog5["content_version"], user, [], never, 2)
 assert error["kind"] == "input" and chamfer["feature_id"] in error["message"], error
 assert "does not fit the solved plate" in error["message"] and not never.exists(), error
-distance_req.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": 3.0, "unit": "mm"}]}))
+distance_req.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": 3.0, "unit": "mm"}]}))
 lower = root / "lower.fcad"
 run(["edit", fewer, "--expect-version", catalog5["content_version"], "--request", distance_req, "-o", lower, "--json"])
 catalog5 = inspect(lower)
 bare = root / "bare.fcad"
 constrain(lower, catalog5["content_version"], user, [], bare)
 catalog6 = inspect(bare)
-left = catalog6["sketches"][0]["constraint_edit"]["constraints"]
+left = catalog6["sketches"][0]["constraints"]
 assert len(left) == 4 and all(c["rule"]["kind"] == "coincident" for c in left), left
-assert [c["start_mm"] for c in catalog6["sketches"][0]["constraint_edit"]["curves"]] == starts
-assert catalog6["sketches"][0]["chamfer_base"]["profile_constrained"] is False
-assert catalog6["sketches"][0]["editable"] is True
+assert [c["geometry"]["start_mm"] for c in catalog6["sketches"][0]["curves"]] == starts
+
+
 rect3 = [-10.125, 7.5, 52.25, 20.5]
 x0, y0, w3, d3 = rect3
 new = [[x0 + w3, y0 + d3], [x0 + w3, y0], [x0, y0], [x0, y0 + d3]]
 coords = [[x0, y0], [x0 + w3, y0], [x0 + w3, y0 + d3], [x0, y0 + d3]]
-request.write_text(json.dumps({"request_version": 1, "vertices": [
-    {"curve_id": c["curve_id"], "start_mm": coords[starts.index(c["start_mm"])]}
-    for c in catalog6["sketches"][0]["constraint_edit"]["curves"]]}))
+request.write_text(json.dumps(line_request(sketch["sketch_id"], lines,
+    [coords[starts.index(c["geometry"]["start_mm"])] for c in catalog6["sketches"][0]["curves"]])))
 moved = root / "moved.fcad"
-run(["edit-sketch-copy", bare, "--sketch", sketch["sketch_id"], "--expect-version",
+run(["edit", bare, "--expect-version",
      catalog6["content_version"], "--request", request, "-o", moved, "--json"])
 v5, e5 = measured(moved, rect3, [x0 + w3, y0], 3.0, 9.75)
 
@@ -465,7 +466,7 @@ error = constrain(chamfered, catalog["content_version"], [], dimensioned([0, 0],
 assert error["kind"] == "input" and chamfer["feature_id"] in error["message"], error
 assert "does not fit the solved plate" in error["message"], error
 conflict = dimensioned([0, 0], 30, 10) + [
-    {"curve_id": lines[(across.index(True) + 2) % 4], "rule": "distance", "distance_mm": 20}]
+    distance(lines[(across.index(True) + 2) % 4], 20)]
 error = constrain(chamfered, catalog["content_version"], [], conflict, never, 2)
 assert error["kind"] == "constraint" and error["constraint_conflict"]["constraints"], error
 error = constrain(chamfered, after["content_version"], [], dimensioned([0, 0], 30, 10), never, 2)

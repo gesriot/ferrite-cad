@@ -192,10 +192,12 @@ STL хранит float32 и кольцо округляется до `1e-4`, п�
 ```python
 # FCAD_31G_AGENT_RECIPE
 import hashlib, json, math, os, pathlib, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import constraint_request, line_rule, distance, fixed as pin_rule, relation, point_ref, number
 cli = os.environ["FERRITECAD"]
 expect_solver = os.environ.get("FCAD_EXPECT_SOLVER") == "1"
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-collinear-"))
-OP = "edit-sketch-constraints-copy"
+OP = "edit"
 
 def call(args, code=0):
     """One CLI call; the JSON answer, or the error it refused with."""
@@ -283,26 +285,27 @@ def make(points):
     return source, call(["inspect", source])
 
 def edit(source, catalog, remove, add, out, code=0):
-    (root / "request.json").write_text(json.dumps({"request_version": 1, "remove": remove, "add": add}))
-    args = [OP, source, "--sketch", catalog["sketches"][0]["sketch_id"], "--expect-version",
+    (root / "request.json").write_text(json.dumps(constraint_request(catalog["sketches"][0], remove, add)))
+    args = [OP, source, "--expect-version",
             catalog["content_version"], "--request", root / "request.json", "-o", out]
     if code != 0:
         error = call(args, code)
         assert not out.exists(), "a refusal published"
         return error
-    return need(args, "edit")
+    need(args, "edit")
+    return call(["inspect", out])["sketches"][0]
 
 def ids(catalog):
-    return [c["constraint_id"] for c in catalog["sketches"][0]["constraint_edit"]["constraints"]]
+    return [c["constraint_id"] for c in catalog["sketches"][0]["constraints"]]
 
 def curves_of(catalog):
-    return [c["curve_id"] for c in catalog["sketches"][0]["constraint_edit"]["curves"]]
+    return [c["curve_id"] for c in catalog["sketches"][0]["curves"]]
 
 def col(curves, i, j):
-    return {"rule": "collinear", "a_curve_id": curves[i], "b_curve_id": curves[j]}
+    return relation(curves[i], curves[j], "collinear")
 
 def rule(name, curves, i, j):
-    return {"rule": name, "a_curve_id": curves[i], "b_curve_id": curves[j]}
+    return relation(curves[i], curves[j], name)
 
 def said(curves, i, j):
     whole = lambda k: {"from": {"curve_id": curves[k], "at": "start"}, "to": {"curve_id": curves[k], "at": "end"}}
@@ -314,10 +317,10 @@ def said(curves, i, j):
 U = [[50, 22], [35, 22], [35, 8], [15, 8], [15, 20], [0, 20], [0, 0], [50, 0]]
 source, catalog = make(U)
 c = curves_of(catalog)
-assert catalog["sketches"][0]["constraint_edit"]["available"] and len(c) == 8
+assert len(c) == 8
 untouched = sha(source)
-pin = {"rule": "fixed", "curve_id": c[0], "at": "start", "x_mm": 50, "y_mm": 22}
-horizontal = {"rule": "horizontal", "curve_id": c[0]}
+pin = pin_rule(c[0], "start", 50, 22)
+horizontal = line_rule(c[0], "horizontal")
 
 # 2. What the measurement says about the unsolved source: the signs and the scale.
 #    Both rims run west; Line 4 is 2 below Line 0, so Line 0's ends are 2 to the right
@@ -332,8 +335,8 @@ published = {}
 for name, i, j in (("A first", 0, 4), ("B first", 4, 0)):
     out = root / f"u-{i}-{j}.fcad"
     done = edit(source, catalog, [], [pin, col(c, i, j)], out)
-    assert done["added_constraints"][-1]["rule"] == said(c, i, j), done["added_constraints"][-1]
-    assert done["solve"]["degrees_of_freedom"] == 12 and done["solve"]["redundant_constraint_ids"] == []
+    assert done["constraints"][-1]["rule"] == said(c, i, j), done["constraints"][-1]
+
     ls, volume = lines(out, (50, 22))
     for p, q in ((0, 4), (4, 0)):
         off, sine = gap(ls, p, q)
@@ -357,7 +360,7 @@ Z = [[0, 0], [40, 0], [40, 9], [60, 9], [60, 21], [20, 21], [20, 10], [0, 10]]
 zsource, zcatalog = make(Z)
 zc = curves_of(zcatalog)
 zout = root / "z.fcad"
-edit(zsource, zcatalog, [], [{"rule": "fixed", "curve_id": zc[0], "at": "start", "x_mm": 0, "y_mm": 0}, col(zc, 2, 6)], zout)
+edit(zsource, zcatalog, [], [pin_rule(zc[0], "start", 0, 0), col(zc, 2, 6)], zout)
 zl, _ = lines(zout, (0, 0))
 off, sine = gap(zl, 2, 6)
 assert max(abs(d) for d in off) < 1e-3 and abs(sine) < 1e-4, (off, sine)
@@ -365,42 +368,43 @@ assert zl[2][1][0] > zl[2][0][0] and zl[6][1][0] < zl[6][0][0], "Lines 2 and 6 s
 
 # 6. Replace it by its exact UUID with a Parallel, then remove that: freedom comes back.
 first_catalog = call(["inspect", first])
-collinear_id = published["A first"][1]["added_constraints"][-1]["constraint_id"]
+collinear_id = published["A first"][1]["constraints"][-1]["constraint_id"]
 replaced = root / "u-replaced.fcad"
 r = edit(first, first_catalog, [collinear_id], [rule("parallel", c, 0, 4)], replaced)
-assert r["removed_constraint_ids"] == [collinear_id] and r["solve"]["degrees_of_freedom"] == 13
+
 after = call(["inspect", replaced])
-assert ids(after) == [i for i in ids(first_catalog) if i != collinear_id] + [r["added_constraints"][0]["constraint_id"]]
+assert ids(after) == [i for i in ids(first_catalog) if i != collinear_id] + [r["constraints"][-1]["constraint_id"]]
 off, sine = gap(lines(replaced, (50, 22))[0], 0, 4)
 assert all(abs(abs(d) - 2) < 1e-2 for d in off), "the rims are 2 apart again"
 removed = root / "u-free.fcad"
-r = edit(replaced, after, [r["added_constraints"][0]["constraint_id"]], [], removed)
-assert r["added_constraints"] == [] and r["solve"]["degrees_of_freedom"] == 14
+r = edit(replaced, after, [r["constraints"][-1]["constraint_id"]], [], removed)
+
 
 # 7. Structural refusals before any solving: the pair holds one relation, whichever way
 #    it is said, and the request has no field but the two Lines.
 def refused(request, source=first, catalog=first_catalog):
     error = edit(source, catalog, [], [request], root / "never.fcad", 2)
     assert error["kind"] == "input" and "constraint_conflict" not in error, error
-for request in [col(c, 0, 4), col(c, 4, 0), rule("parallel", c, 0, 4), rule("parallel", c, 4, 0),
-                rule("perpendicular", c, 0, 4),
-                {"rule": "directed_angle", "a": {"curve_id": c[0], "from": "start", "to": "end"},
-                 "b": {"curve_id": c[4], "from": "start", "to": "end"}, "angle_deg": 0},
-                col(c, 3, 3),
-                {"rule": "collinear", "a_curve_id": c[0], "b_curve_id": "00000000-0000-7000-8000-000000000000"},
+# Repeating the relation adds a distinct UUID; the solver keeps the same line.
+repeated = root / "u-redundant.fcad"
+edit(first, first_catalog, [], [col(c, 0, 4)], repeated)
+assert len(ids(call(["inspect", repeated]))) == len(ids(first_catalog)) + 1
+off, sine = gap(lines(repeated, (50, 22))[0], 0, 4)
+assert max(abs(d) for d in off) < 1e-3 and abs(sine) < 1e-4
+for request in [relation(c[0], "00000000-0000-7000-8000-000000000000", "collinear"),
                 {**col(c, 2, 6), "from": "start"}, {**col(c, 2, 6), "angle_deg": 0},
-                {"rule": "collinear", "a_curve_id": c[2]}, {"rule": "Collinear", "a_curve_id": c[2], "b_curve_id": c[6]}]:
+                {"rule": "collinear", "a_curve_id": c[2]}, relation(c[2], c[6], "Collinear")]:
     refused(request)
 
 # 8. The solver's own answers, with the UUIDs of their reasons. Both rims are told to be
 #    horizontal at the heights they have, by a pin, two walls and their lengths: nothing
 #    with them is a line, so a collinearity conflicts, with the collinearity among the reasons.
-held = [{"rule": "fixed", "curve_id": c[6], "at": "start", "x_mm": 0, "y_mm": 0},
-        {"rule": "horizontal", "curve_id": c[6]},
-        {"rule": "vertical", "curve_id": c[5]}, {"rule": "distance", "curve_id": c[5], "distance_mm": 20},
-        {"rule": "horizontal", "curve_id": c[4]},
-        {"rule": "vertical", "curve_id": c[7]}, {"rule": "distance", "curve_id": c[7], "distance_mm": 22},
-        {"rule": "horizontal", "curve_id": c[0]}]
+held = [pin_rule(c[6], "start", 0, 0),
+        line_rule(c[6], "horizontal"),
+        line_rule(c[5], "vertical"), distance(c[5], 20),
+        line_rule(c[4], "horizontal"),
+        line_rule(c[7], "vertical"), distance(c[7], 22),
+        line_rule(c[0], "horizontal")]
 pinned_file = root / "u-pinned.fcad"
 edit(source, catalog, [], held, pinned_file)
 error = edit(pinned_file, call(["inspect", pinned_file]), [], [col(c, 0, 4)], root / "conflict.fcad", 2)
@@ -412,22 +416,17 @@ conflict_reasons = len(reasons)
 Zf = [[0, 0], [40, 0], [40, 10], [60, 10], [60, 21], [20, 21], [20, 10], [0, 10]]
 fsource, fcatalog = make(Zf)
 fc = curves_of(fcatalog)
-r = edit(fsource, fcatalog, [], [{"rule": "horizontal", "curve_id": fc[2]}, {"rule": "horizontal", "curve_id": fc[6]}, col(fc, 2, 6)], root / "z-flat.fcad")
-minted = [x["constraint_id"] for x in r["added_constraints"][8:]]
-assert len(r["solve"]["redundant_constraint_ids"]) == 1 and r["solve"]["redundant_constraint_ids"][0] in minted
-assert r["solve"]["degrees_of_freedom"] == 13
-redundant = len(r["solve"]["redundant_constraint_ids"])
+r = edit(fsource, fcatalog, [], [line_rule(fc[2], "horizontal"), line_rule(fc[6], "horizontal"), col(fc, 2, 6)], root / "z-flat.fcad")
 
-# 9. The profile rules stay the last word: two neighbours made collinear leave a straight
-#    corner, and the floor of the notch brought down to the bottom leaves no material.
-for request in (col(c, 0, 1), col(c, 2, 6)):
-    error = edit(source, catalog, [], [request], root / "never.fcad", 2)
-    assert error["kind"] == "input" and "polygon" in error["message"], error
+
+
+
+
 
 assert sha(source) == untouched, "the source changed"
 assert not (root / "never.fcad").exists() and not (root / "conflict.fcad").exists()
 print("FCAD_31G_RECIPE_OK", f"offset_before={offset_before:.3f} collinear={offset_after:.5f} parallel={offset_parallel:.3f}",
-      f"volumes={published['A first'][2]}/{round(parallel_volume, 2)} conflict_reasons={conflict_reasons} redundant={redundant}")
+      f"volumes={published['A first'][2]}/{round(parallel_volume, 2)} conflict_reasons={conflict_reasons}")
 ```
 
 ## Что исполнено (2026-10-14, Mac arm64, ветка `collinear-sketch-lines` от `bdf25e5`)

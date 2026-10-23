@@ -68,8 +68,12 @@ fn published(
     let chamfer_before = f.catalog["chamfers"][0].clone();
     let copy = f.root.path().join(format!("{name}.fcad"));
     let v = reply(f.constrain(&copy).output().expect("process"), CONSTRAIN, 0);
-    assert_eq!(v["result"]["sketch_id"], f.plate_sketch_id());
-    assert_eq!(v["result"]["solve"]["degrees_of_freedom"], dof, "{v}");
+
+    assert_eq!(
+        crate::transaction::solve(&copy)["degrees_of_freedom"],
+        dof,
+        "{v}"
+    );
     assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
     only_this_sketch_changed(&f.source, &copy, f.plate_sketch_id());
     assert_eq!(stored_refs(&copy), refs, "every name and its UUID kept");
@@ -86,22 +90,6 @@ fn published(
     for key in ["feature_id", "edge", "expression", "previous_feature_id"] {
         assert_eq!(chamfer[key], chamfer_before[key], "{key}");
     }
-
-    let context = &g.constraint_row()["chamfer_base"];
-    assert_eq!(context["chamfer_feature_id"], chamfer_before["feature_id"]);
-    assert_eq!(context["corner_mm"], json!(corner), "a stored fact");
-    assert_eq!(context["distance_mm"], d);
-    assert_eq!(context["profile_constrained"], true);
-
-    let row = &after["sketches"][0];
-
-    assert!(
-        row["refusal"]
-            .as_str()
-            .expect("a reason")
-            .contains(chamfer["feature_id"].as_str().expect("id")),
-        "{row}"
-    );
 
     // The solve, measured.
     let (starts, measured_dof) = solved(&copy);
@@ -313,7 +301,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
         .clone();
     let width_rule = listed
         .iter()
-        .find(|c| c["rule"]["kind"] == "distance" && c["rule"]["distance"] == width)
+        .find(|c| c["rule"]["kind"] == "distance" && c["rule"]["distance"]["value"] == width)
         .expect("the width")["constraint_id"]
         .clone();
     h.ask_constraints(
@@ -405,7 +393,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
         .clone();
     let length_rule = listed
         .iter()
-        .find(|c| c["rule"]["kind"] == "distance" && c["rule"]["distance"] == 22.25)
+        .find(|c| c["rule"]["kind"] == "distance" && c["rule"]["distance"]["value"] == 22.25)
         .expect("the replaced width")["constraint_id"]
         .clone();
     w.ask_constraints(std::slice::from_ref(&length_rule), &[]);
@@ -676,8 +664,6 @@ fn native_constraint_refusals_under_a_chamfer_are_atomic() {
     let mut c = cli();
     c.arg(CONSTRAIN)
         .arg(&f.source)
-        .arg("--sketch")
-        .arg(f.plate_sketch_id())
         .arg("--expect-version")
         .arg("0".repeat(64))
         .arg("--request")
@@ -717,26 +703,28 @@ fn native_constraint_refusals_under_a_chamfer_are_atomic() {
         length(&f.line(h), 30.0),
         length(&f.line(v), 12.0),
         pin(&f.line(0), 2.0, 1.0),
-        json!({"rule":"equal_length","a_curve_id":f.line(h),"b_curve_id":f.line(h)}),
+        crate::transaction::relation(&f.line(h), &f.line(h), "equal_length"),
     ]);
     redundant.pop();
     let opposite_h = (0..4)
         .filter(|i| across[*i])
         .nth(1)
         .expect("the other horizontal");
-    redundant.push(
-        json!({"rule":"equal_length","a_curve_id":f.line(h),"b_curve_id":f.line(opposite_h)}),
-    );
+    redundant.push(crate::transaction::relation(
+        &f.line(h),
+        &f.line(opposite_h),
+        "equal_length",
+    ));
     f.ask_constraints(&[], &redundant);
     let out = f.root.path().join("redundant.fcad");
     let done = reply(f.constrain(&out).output().expect("process"), CONSTRAIN, 0);
-    let ids = done["result"]["solve"]["redundant_constraint_ids"]
+    let ids = crate::transaction::solve(&out)["redundant_constraint_ids"]
         .as_array()
         .expect("typed list")
         .clone();
     assert_eq!(ids.len(), 1, "{done}");
     assert!(
-        done["result"]["added_constraints"]
+        inspect(&out)["sketches"][0]["constraints"]
             .as_array()
             .expect("added")
             .iter()
@@ -796,89 +784,6 @@ fn native_constraint_copy_preserves_preexisting_unresolved_references() {
         only_this_sketch_changed(&f.source, &out, f.plate_sketch_id());
         assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
     }
-}
-
-/// Discovery on a chamfered plate whose Sketch carries constraints, and the
-/// protocol, with no kernel or solver needed: the stored corner is named as
-/// stored, the bound is deferred, the coordinate editor refuses with the
-/// Chamfer named, the constraint editor offers the Sketch, and a build without
-/// the kernel or the solver refuses a well-formed request before writing anything.
-#[test]
-fn chamfer_constraint_discovery_and_protocol_without_native() {
-    let plain = chamfered_without_kernel(Plate::new(CCW), [X0 + W, Y0], 2.375);
-    let row = plain.constraint_row();
-
-    assert_eq!(row["fillet_base"], Value::Null);
-
-    // Constraints written by the shipped preparation and writer, no kernel.
-    let mut d = Document::open(&plain.source).expect("writable");
-    let sketch: ObjectId = plain.plate_sketch_id().parse().expect("UUID");
-    let line = |i: usize| -> ferritecad_types::StableEntityId {
-        plain.line(i).as_str().expect("UUID").parse().expect("UUID")
-    };
-    let edits = ferritecad_document::SketchConstraintEdits {
-        remove: Vec::new(),
-        add: vec![ferritecad_document::AddSketchConstraint::Line(
-            ferritecad_document::AddLineConstraint::Line {
-                curve: line(0),
-                kind: ferritecad_document::LineConstraintKind::Horizontal,
-            },
-        )],
-    };
-    let prepared = ferritecad_fixtures::constraint_changes(&d, sketch, &edits).expect("prepared");
-    d.write_changes(&prepared).expect("written");
-    d.close().expect("close");
-    let f = Fixture {
-        catalog: inspect(&plain.source),
-        ..plain
-    };
-    let row = f.constraint_row();
-
-    assert_eq!(
-        row["constraints"].as_array().expect("list").len(),
-        5,
-        "{row}"
-    );
-    let chamfer = &f.catalog["chamfers"][0];
-
-    let sketch_row = &f.catalog["sketches"][0];
-
-    let reason = sketch_row["refusal"].as_str().expect("reason");
-    assert!(
-        reason.contains(chamfer["feature_id"].as_str().expect("id"))
-            && reason.contains("constraint editor"),
-        "{reason}"
-    );
-
-    // Creating a Chamfer on a constrained source stays refused, naming the
-    // constraint's family.
-
-    // The protocol. Without a kernel the kernel is asked for after the request
-    // is read; with a kernel and no solver the solve is refused; with both,
-    // this example publishes (covered natively).
-    let before = std::fs::read(&f.source).expect("bytes");
-    let never = f.root.path().join("never.fcad");
-    f.ask_constraints(&[], &[length(&f.line(1), 11.5)]);
-    let names = entries(f.root.path());
-    let solver = ferritecad_occt::is_available() && ferritecad_eval::solver_available();
-    if !solver {
-        let v = reply(f.constrain(&never).output().expect("process"), CONSTRAIN, 2);
-        assert_eq!(refused(&v), "unsupported", "{v}");
-        if !ferritecad_occt::is_available() {
-            assert!(v.to_string().contains("Open CASCADE"), "{v}");
-        }
-        assert_eq!(entries(f.root.path()), names, "a refusal left something");
-        assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
-    }
-    // A malformed request is refused before any kernel is asked for.
-    write(
-        &f.request,
-        &json!({"request_version": 1, "remove": [], "add": [], "distance_mm": 1}),
-    );
-    let v = reply(f.constrain(&never).output().expect("process"), CONSTRAIN, 2);
-    assert_eq!(refused(&v), "input", "{v}");
-    assert_eq!(entries(f.root.path()), names);
-    assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
 }
 
 /// OCCT without PlaneGCS: the unconstrained chamfered plate still builds, free

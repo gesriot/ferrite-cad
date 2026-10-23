@@ -824,10 +824,8 @@ fn assert_circle_canvas_result(
     let Request::Circle(request) = request else {
         panic!("a circle request");
     };
-    let (centre, radius) = (
-        crate::transaction_tests::circle(&request).center_mm,
-        crate::transaction_tests::circle(&request).radius_mm,
-    );
+    let curves = requested_circles(&request, before);
+    let (centre, radius) = (curves[0].1, curves[0].2);
     eprintln!("{name} centre={centre:?} radius={radius} height=15.25");
     // An offset, fractional centre and radius, as the pointer made them.
     assert!(centre[0] != 12.5 && centre[1] != -7.25 && centre.iter().all(|c| c.fract() != 0.));
@@ -860,7 +858,15 @@ fn assert_annulus_canvas_result(
     let Request::Annulus(request) = request else {
         panic!("an annulus request");
     };
-    let edit = crate::transaction_tests::annulus(&request);
+    let mut curves = requested_circles(&request, before);
+    curves.sort_by(|a, b| b.2.total_cmp(&a.2));
+    let edit = crate::transaction_tests::AnnulusValues {
+        outer_curve_id: curves[0].0,
+        inner_curve_id: curves[1].0,
+        center_mm: curves[0].1,
+        outer_radius_mm: curves[0].2,
+        inner_radius_mm: curves[1].2,
+    };
     eprintln!(
         "{name} centre={:?} outer={} bore={} height=15.25",
         edit.center_mm, edit.outer_radius_mm, edit.inner_radius_mm
@@ -1105,7 +1111,7 @@ fn without_a_kernel_a_circle_apply_is_refused_and_the_document_stays_clean() {
 /// removing it through the session offers the editor again: availability follows
 /// the accepted version, not the form that was open.
 #[test]
-fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circle_editor() {
+fn native_constraints_applied_and_removed_through_the_session_keep_the_circle_editor_available() {
     if !native() {
         return;
     }
@@ -1138,18 +1144,16 @@ fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circl
     apply_constraints_native(&mut sessions, &constraints);
     let constrained =
         crate::sketch_facts::read(&sessions.export_path().expect("accepted")).expect("reading");
-    let refusal = constrained.circle_sketches[0]
-        .refusal
-        .as_deref()
-        .expect("the Circle editor is withdrawn once the profile is constrained");
-    assert!(refusal.contains("constrain"), "{refusal}");
+    assert!(constrained.circle_sketches[0].refusal.is_none());
+    let accepted = sessions.export_path().expect("accepted");
     let mut form = crate::sketch::Editor::default();
-    assert!(
-        !form.begin_circle_edit(&source, &constrained, constrained.circle_sketches[0].sketch),
-        "the withdrawn editor opened"
-    );
+    assert!(form.begin_circle_edit(
+        &accepted,
+        &constrained,
+        constrained.circle_sketches[0].sketch
+    ));
 
-    // Removing both constraints through the session offers it again.
+    // The same transaction path removes the constraints while keeping the editor available.
     let ids: Vec<_> = stored_constraints(&sessions.export_path().expect("accepted"))
         .iter()
         .map(|c| c.id)
@@ -1159,14 +1163,14 @@ fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circl
         &mut sessions,
         &ferritecad_jobs::EditRequest {
             changes: crate::transaction_tests::constraint_changes(
-                &(source.clone()),
+                &accepted,
                 sketch,
                 &(ferritecad_document::SketchConstraintEdits {
                     remove: ids,
                     add: Vec::new(),
                 }),
             ),
-            source: source.clone(),
+            source: accepted.clone(),
             expected: constrained.version,
             destination: PathBuf::new(),
         },
@@ -1174,5 +1178,35 @@ fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circl
     let restored =
         crate::sketch_facts::read(&sessions.export_path().expect("accepted")).expect("reading");
     assert!(restored.circle_sketches[0].refusal.is_none());
-    assert!(form.begin_circle_edit(&source, &restored, restored.circle_sketches[0].sketch));
+    form.dismiss();
+    assert!(form.begin_circle_edit(
+        &sessions.export_path().expect("accepted"),
+        &restored,
+        restored.circle_sketches[0].sketch
+    ));
+}
+
+fn requested_circles(
+    request: &ferritecad_jobs::EditRequest,
+    before: &[(ferritecad_types::StableEntityId, [f64; 2], f64)],
+) -> Vec<(ferritecad_types::StableEntityId, [f64; 2], f64)> {
+    before
+        .iter()
+        .map(|&(id, center, radius)| {
+            let value = request
+                .changes
+                .iter()
+                .rev()
+                .find_map(|change| match change {
+                    ferritecad_document::EditChange::SetCurveGeometry {
+                        curve,
+                        geometry: ferritecad_document::SketchGeometry::Circle { center, radius },
+                        ..
+                    } if *curve == id => Some(([center.x, center.y], *radius)),
+                    _ => None,
+                })
+                .unwrap_or((center, radius));
+            (id, value.0, value.1)
+        })
+        .collect()
 }

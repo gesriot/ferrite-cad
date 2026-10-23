@@ -51,7 +51,9 @@ pub use chamfer::{
     SavedChamfer, SavedChamferTarget, chamfer_choices, check_distance_value, evaluable_chamfer,
     max_distance_of, prepare_edge_chamfer, saved_chamfer,
 };
-pub use cut_boundary::{BoundaryOrientation, BoundarySegment, CutBoundary, DiskClearance};
+pub use cut_boundary::{
+    BoundaryOrientation, BoundarySegment, CutBoundary, DiskClearance, circle_clearances,
+};
 pub use cut_edit::{
     CircularCut, CircularCutEdit, CutChoice, CutExtent, CutParameterChoice, ExtentVocabulary,
     MAX_CIRCULAR_CUTS, NewObject, PreparedCircularCut, PreparedCutParameters, SavedCircularCut,

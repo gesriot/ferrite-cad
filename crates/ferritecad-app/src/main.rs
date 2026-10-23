@@ -49,8 +49,6 @@ mod sketch;
 mod sketch_facts;
 mod sketch_transactions;
 mod tabs;
-#[cfg(test)]
-mod transaction_tests;
 mod workspace;
 
 use std::ffi::{OsStr, OsString};
@@ -7301,6 +7299,9 @@ fn named_view(key: &Key) -> Option<StandardView> {
         .iter()
         .find_map(|(view, _, shortcut)| (*shortcut == text.as_str()).then_some(*view))
 }
+
+#[cfg(test)]
+mod transaction_tests;
 
 #[cfg(test)]
 #[allow(clippy::panic, reason = "a gate that cannot fail is not a gate")]

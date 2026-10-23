@@ -123,7 +123,8 @@ fn collinear_replacement_keeps_the_other_constraint_ids() {
         .id;
     let kept = stored(&d, id);
     // Two different Lines, both of this Sketch.
-    for (name, add) in [("a foreign Line", collinear(c[1], StableEntityId::new()))] {
+    {
+        let (name, add) = ("a foreign Line", collinear(c[1], StableEntityId::new()));
         refusal(&d, id, &edits(vec![], vec![add]));
         assert_eq!(stored(&d, id), kept, "{name}");
     }

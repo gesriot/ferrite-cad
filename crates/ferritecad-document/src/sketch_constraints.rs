@@ -812,6 +812,17 @@ pub fn sketch_constraint_changes(
     Ok(changes)
 }
 
+fn family_slot_of(
+    family: Family,
+    rule: &SketchConstraintRule,
+) -> Option<(Slot, [StableEntityId; 2])> {
+    match family {
+        Family::Lines => slot_of(rule),
+        Family::Circle => circle_slot_of(rule).map(|(slot, curve)| (slot, [curve, curve])),
+        Family::Annulus => annulus_slot_of(rule),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -864,16 +875,5 @@ mod tests {
                 "diameter {bad:e} was accepted"
             );
         }
-    }
-}
-
-fn family_slot_of(
-    family: Family,
-    rule: &SketchConstraintRule,
-) -> Option<(Slot, [StableEntityId; 2])> {
-    match family {
-        Family::Lines => slot_of(rule),
-        Family::Circle => circle_slot_of(rule).map(|(slot, curve)| (slot, [curve, curve])),
-        Family::Annulus => annulus_slot_of(rule),
     }
 }

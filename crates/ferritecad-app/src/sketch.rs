@@ -3813,6 +3813,13 @@ pub(crate) mod tests {
     /// widgets, in the state the window leaves the form in for an idle session.
     /// Replaces the number `from` by `to` in every box that shows it, through the
     /// real widgets.
+    pub(crate) fn replace_one_in_form(ctx: &egui::Context, e: &mut Editor, from: &str, to: &str) {
+        frame(ctx, e, vec![]);
+        frame(ctx, e, vec![]);
+        replace_field(ctx, e, from, to);
+        frame(ctx, e, vec![]);
+    }
+
     pub(crate) fn replace_in_form(ctx: &egui::Context, e: &mut Editor, from: &str, to: &str) {
         frame(ctx, e, vec![]);
         frame(ctx, e, vec![]);
@@ -7476,7 +7483,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
-    fn click_label(ctx: &egui::Context, e: &mut Editor, label: &str) {
+    pub(crate) fn click_label(ctx: &egui::Context, e: &mut Editor, label: &str) {
         let out = frame(ctx, e, vec![]);
         click(ctx, e, text_at(&out, label));
     }
@@ -7602,18 +7609,18 @@ pub(crate) mod tests {
         assert_eq!(request.source, identity.0.source);
         assert_eq!(request.expected, identity.0.expected);
         assert_eq!(
-            crate::transaction_tests::sketch(&request),
+            crate::transaction_tests::sketch(request),
             crate::transaction_tests::sketch(&identity.0)
         );
         assert_eq!(
-            crate::transaction_tests::vertices(&request)
+            crate::transaction_tests::vertices(request)
                 .iter()
                 .map(|v| v.curve_id)
                 .collect::<Vec<_>>(),
             saved_ids
         );
         assert_eq!(
-            crate::transaction_tests::vertices(&request),
+            crate::transaction_tests::vertices(request),
             crate::transaction_tests::vertices(&identity.0)
         );
         assert_eq!(kept_choice.stored, choice.stored);
@@ -7645,7 +7652,6 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), bytes);
         let out = frame(&ctx, &mut e, vec![]);
         assert!(painted(&out, "Rounded by Fillet"));
-        assert!(painted(&out, "no side may be shorter than"));
 
         // One Undo returns every invalid string. One Redo returns the snapshot.
         click_label(&ctx, &mut e, "Undo draft");

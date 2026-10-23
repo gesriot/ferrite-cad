@@ -679,7 +679,7 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
         &[stored_radius["constraint_id"].clone()],
         &[radius_add(f.curve(), 8.125)],
     );
-    let v = reply(
+    let _v = reply(
         f.edit_from(&sized, &catalog, &replaced)
             .output()
             .expect("process"),
@@ -1125,7 +1125,7 @@ fn native_circle_diameter_is_the_stored_radius_in_the_same_slot() {
         std::slice::from_ref(&radius_id),
         &[diameter_add(&curve, 17.)],
     );
-    let v = reply(
+    let _v = reply(
         f.edit_from(&by_diameter, &catalog, &replaced)
             .output()
             .expect("process"),

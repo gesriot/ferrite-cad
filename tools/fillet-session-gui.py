@@ -110,27 +110,29 @@ def main():
         base = first["edge"]["feature_id"]
         current = peer_root / "height.fcad"
         request = peer_root / "height.json"
-        request.write_text(json.dumps({"request_version": 1, "changes": [{"object": base, "slot": {"kind": "extrude_distance"}, "value": 9.25, "unit": "mm"}]}))
+        request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": base, "slot": {"kind": "extrude_distance"}, "value": 9.25, "unit": "mm"}]}))
         run("edit", source, "--expect-version", catalog["content_version"], "--request", request,
             "-o", current, "--json")
         catalog = inspect(current)
-        sketch = next(s for s in catalog["sketches"] if s["editable"] and s.get("vertices"))
-        vertices = sketch["vertices"]
-        for v in vertices:
-            if v["start_mm"][0] == -4.5:
-                v["start_mm"][0] = -5.75
+        from edit_requests import line_request
+        sketch = next(s for s in catalog["sketches"] if all(c["geometry"]["kind"] == "line" for c in s["curves"]))
+        curves = sketch["curves"]
+        points = [c["geometry"]["start_mm"][:] for c in curves]
+        for p in points:
+            if p[0] == -4.5:
+                p[0] = -5.75
         request = peer_root / "vertices.json"
-        request.write_text(json.dumps({"request_version": 1, "vertices": vertices}))
+        request.write_text(json.dumps(line_request(sketch["sketch_id"], [c["curve_id"] for c in curves], points)))
         out = peer_root / "vertices.fcad"
-        run("edit-sketch-copy", current, "--sketch", sketch["sketch_id"], "--expect-version",
-            catalog["content_version"], "--request", request, "-o", out, "--json")
+        run("edit", current, "--expect-version", catalog["content_version"],
+            "--request", request, "-o", out, "--json")
         current = out
 
         def radius_edit(current, index, radius, name):
             catalog = inspect(current)
             chosen = ordered_fillets(catalog)[index - 1]
             request = peer_root / f"{name}.json"
-            request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chosen["feature_id"], "slot": {"kind": "fillet_radius"}, "value": radius, "unit": "mm"}]}))
+            request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": chosen["feature_id"], "slot": {"kind": "fillet_radius"}, "value": radius, "unit": "mm"}]}))
             out = peer_root / f"{name}.fcad"
             run("edit", current, "--expect-version",
                 catalog["content_version"], "--request", request, "-o", out, "--json")

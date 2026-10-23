@@ -146,7 +146,7 @@ struct Slot {
 }
 
 /// One saved Revolve, as the pinned reading found it. Its profile's
-/// coordinates are edited through `edit-sketch-copy` (§27B); whether that is
+/// coordinates are edited through `edit` (§27B); whether that is
 /// allowed is the Sketch row's `editable`, not `profile.available`. Its angle
 /// is addressed by the `revolve_angle` expression slot.
 #[derive(Serialize)]
