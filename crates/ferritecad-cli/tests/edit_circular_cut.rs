@@ -889,7 +889,8 @@ fn cut_edit_discovery_and_protocol_without_native() {
     );
     assert!(base["circular_cut_edit"]["saved"].is_null());
     assert!(
-        transaction::slot(&f.catalog, &f.cut()["feature_id"], "extrude_distance")["refusal"].is_null(),
+        transaction::slot(&f.catalog, &f.cut()["feature_id"], "extrude_distance")["refusal"]
+            .is_null(),
         "edit also owns the Cut depth"
     );
 
