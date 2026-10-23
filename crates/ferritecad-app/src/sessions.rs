@@ -2178,11 +2178,12 @@ mod tests {
         // The window opens another document: the old session is dropped, at once.
         let other = f.root.path().join("other.fcad");
         std::fs::copy(&f.file, &other).expect("copy");
-        let started = std::time::Instant::now();
-        sessions.adopt(
+        let opened =
             crate::sessions::test_open::open_in(f.private.path(), &other, HistoryLimits::default())
-                .expect("another document"),
-        );
+                .expect("another document");
+        // Time the handoff, not the independent document's disk work.
+        let started = std::time::Instant::now();
+        sessions.adopt(opened);
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
         assert!(
             working.is_file(),
