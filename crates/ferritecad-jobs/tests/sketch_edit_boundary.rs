@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MIT
-use ferritecad_document::{Document, Expression, ObjectPayload, SketchGeometry};
-use ferritecad_eval::{RebuildStatus, rebuild_cold};
+use ferritecad_document::{
+    Document, EditChange, ExpressionSlot, ObjectPayload, SketchGeometry, SketchVertex,
+    move_sketch_vertices,
+};
+use ferritecad_eval::{RebuildRefusal, rebuild_cold};
+use ferritecad_jobs::{DocumentSession, EditRequest, edit_copy};
 use ferritecad_kernel::OperationContext;
 
 #[test]
-fn fillet_rebuild_distinguishes_vertex_distortion_from_rectangle_resize() {
+fn a_side_and_radius_are_one_transaction_while_one_vertex_is_refused() {
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
     }
@@ -15,97 +19,140 @@ fn fillet_rebuild_distinguishes_vertex_distortion_from_rectangle_resize() {
     let context = OperationContext::default();
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
     let original = Document::open_read_only(&source).expect("source");
-    let baseline = rebuild_cold(&original, &mut kernel, &context).expect("baseline");
-    assert!(baseline.all_built(), "{:?}", baseline.report());
-    baseline.release_all(&mut kernel);
-
+    let reading = ferritecad_jobs::read_extrude_source(&source).expect("reading");
+    let profile = original
+        .object(chain.sketch)
+        .expect("read")
+        .expect("sketch");
+    let ObjectPayload::Sketch(sketch) = profile.payload else {
+        unreachable!("fixture sketch")
+    };
     for (both_vertices, radius, refusal) in [
         (false, 8.0, Some("not an axis-aligned rectangle")),
         (false, 2.0, Some("not an axis-aligned rectangle")),
         (true, 8.0, Some("too large")),
         (true, 2.0, None),
     ] {
-        let path = root
-            .path()
-            .join(format!("candidate-{both_vertices}-{radius}.fcad"));
-        std::fs::copy(&source, &path).expect("candidate copy");
-        let mut document = Document::open(&path).expect("candidate");
-        let mut profile = document
-            .object(chain.sketch)
-            .expect("read")
-            .expect("sketch");
-        let ObjectPayload::Sketch(sketch) = &mut profile.payload else {
-            unreachable!("fixture sketch")
-        };
-        for curve in &mut sketch.curves {
-            let SketchGeometry::Line { start, end } = &mut curve.geometry else {
-                unreachable!("fixture rectangle")
-            };
-            for point in [start, end] {
-                if point.x == 60.0 && (both_vertices || point.y == 0.0) {
-                    point.x = 10.0;
+        let moves: Vec<_> = sketch
+            .curves
+            .iter()
+            .filter_map(|c| match c.geometry {
+                SketchGeometry::Line { start, .. }
+                    if start.x == 60.0 && (both_vertices || start.y == 0.0) =>
+                {
+                    Some(SketchVertex {
+                        curve_id: c.id,
+                        start_mm: [10.0, start.y],
+                    })
                 }
-            }
-        }
-        let mut rounded = document.object(chain.first).expect("read").expect("fillet");
-        let ObjectPayload::Fillet(fillet) = &mut rounded.payload else {
-            unreachable!("fixture fillet")
-        };
-        fillet.radius_mm = Expression::constant(radius).expect("radius");
-        // Isolate the rebuild decision from every edit preparation check.
-        document
-            .write(|writer| {
-                for object in [&profile, &rounded] {
-                    writer.put_object(
-                        object.id,
-                        object.parent,
-                        object.ordinal,
-                        object.name.as_deref(),
-                        &object.payload,
-                    )?;
-                }
-                Ok(())
+                _ => None,
             })
-            .expect("valid payloads in one transaction");
-        document.close().expect("close");
-        let reopened = Document::open_read_only(&path).expect("reopen");
-        let built = rebuild_cold(&reopened, &mut kernel, &context).expect("cold rebuild");
-        assert!(matches!(
-            built.status(chain.sketch),
-            Some(RebuildStatus::Built)
-        ));
-        assert!(matches!(
-            built.status(chain.extrude),
-            Some(RebuildStatus::Built)
-        ));
-        if let Some(reason) = refusal {
-            let report = built.report();
-            let failure = report
-                .failed
-                .iter()
-                .find(|f| f.id == chain.first)
-                .expect("Fillet failure");
-            assert!(failure.message.contains(reason), "{}", failure.message);
-            assert!(matches!(
-                built.status(chain.second),
-                Some(RebuildStatus::Skipped { cause }) if *cause == chain.first
-            ));
-            eprintln!(
-                "both_vertices={both_vertices}, radius={radius}: {}",
-                failure.message
+            .collect();
+        let mut changes =
+            move_sketch_vertices(chain.sketch, &sketch, &moves).expect("endpoint moves");
+        assert_eq!(
+            changes.len(),
+            if both_vertices { 3 } else { 2 },
+            "each changed Line occurs once"
+        );
+        if radius != 8.0 {
+            changes.push(
+                EditChange::constant(chain.first, ExpressionSlot::FilletRadius, radius)
+                    .expect("radius"),
             );
-        } else {
-            assert!(built.all_built(), "{:?}", built.report());
-            for reference in original.topology_refs().expect("saved names") {
+        }
+        let request = EditRequest {
+            source: source.clone(),
+            expected: reading.version,
+            changes: changes.clone(),
+            destination: root
+                .path()
+                .join(format!("candidate-{both_vertices}-{radius}.fcad")),
+        };
+        let copy = edit_copy(&request, &mut kernel, &context);
+        let mut session = DocumentSession::open(&source).expect("session");
+        session
+            .current()
+            .load_scene(
+                &mut kernel,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &context,
+            )
+            .expect("baseline");
+        let snapshot = std::fs::read(session.current().path()).expect("snapshot");
+        let step = session.begin_step().edit(
+            changes,
+            session.current().version(),
+            &mut kernel,
+            |k, b| k.import_step(b),
+            &context,
+        );
+        if let Some(reason) = refusal {
+            for error in [
+                copy.expect_err("copy refusal"),
+                step.expect_err("session refusal"),
+            ] {
+                assert!(error.to_string().contains("Fillet1"), "{error}");
+                assert!(error.to_string().contains("Fillet2"), "{error}");
+                let report = &RebuildRefusal::from_error(&error)
+                    .expect("rebuild refusal")
+                    .report;
                 assert!(
-                    !built
-                        .resolve(&reference)
-                        .expect("same name resolves")
-                        .is_empty()
+                    report
+                        .failed
+                        .iter()
+                        .any(|f| f.id == chain.first && f.message.contains(reason)),
+                    "{error}"
+                );
+                assert!(
+                    report
+                        .skipped
+                        .iter()
+                        .any(|f| f.id == chain.second && f.cause == chain.first),
+                    "{error}"
                 );
             }
+            assert!(!request.destination.exists());
+            assert_eq!(
+                std::fs::read(session.current().path()).expect("snapshot"),
+                snapshot
+            );
+        } else {
+            assert!(copy.expect("copy accepted").rebuild.all_built());
+            session
+                .commit_step(step.expect("step accepted"))
+                .expect("commit");
+            let mut volumes = Vec::new();
+            for path in [&request.destination, session.current().path()] {
+                let reopened = Document::open_read_only(path).expect("reopen");
+                let built = rebuild_cold(&reopened, &mut kernel, &context).expect("cold rebuild");
+                assert!(built.all_built(), "{:?}", built.report());
+                for reference in original.topology_refs().expect("saved names") {
+                    assert!(
+                        !built
+                            .resolve(&reference)
+                            .expect("same name resolves")
+                            .is_empty()
+                    );
+                }
+                volumes.push(
+                    kernel
+                        .shape_stats(built.shape(chain.body).expect("body"))
+                        .expect("volume")
+                        .1,
+                );
+                built.release_all(&mut kernel);
+            }
+            assert!((volumes[0] - volumes[1]).abs() < 1e-7);
+            let accepted = session.current().version();
+            let undo = session.begin_undo().expect("undo");
+            session.commit_move(undo).expect("commit undo");
+            assert_eq!(session.current().version(), reading.version);
+            let redo = session.begin_redo().expect("redo");
+            session.commit_move(redo).expect("commit redo");
+            assert_eq!(session.current().version(), accepted);
         }
-        built.release_all(&mut kernel);
+        assert_eq!(std::fs::read(&source).expect("unchanged source"), before);
     }
-    assert_eq!(std::fs::read(&source).expect("unchanged source"), before);
 }

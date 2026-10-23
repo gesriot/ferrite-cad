@@ -1680,7 +1680,7 @@ pub(crate) fn navigated_circle_apply(
     reading: &ExtrudeEditSource,
     sketch: ferritecad_types::ObjectId,
     navigated: impl FnOnce(),
-) -> (Editor, EditCircleRequest) {
+) -> (Editor, EditRequest) {
     let mut e = Editor::default();
     e.set_session(true, false, true);
     e.set_analytic_apply(true);
@@ -1701,17 +1701,26 @@ pub(crate) fn navigated_circle_apply(
     let request = e.take_apply_circle_request().expect("Apply circle asked");
     let n = |s: &str| s.parse::<f64>().expect("a number");
     assert_eq!(
-        (request.edit.center_mm, request.edit.radius_mm),
+        (
+            crate::transaction_tests::circle(&request).center_mm,
+            crate::transaction_tests::circle(&request).radius_mm
+        ),
         ([n(&typed.centre[0]), n(&typed.centre[1])], n(&typed.outer)),
         "the request is not what the canvas wrote"
     );
     // The numbers are the drag in points over the navigated scale, not the opening one.
     let per_mm = f64::from(scale);
     let close = |a: f64, b: f64| (a - b).abs() < 1e-3;
-    assert!(close(request.edit.center_mm[0], 12.5 - 31.25 / per_mm));
-    assert!(close(request.edit.center_mm[1], -7.25 - 18.75 / per_mm));
     assert!(close(
-        request.edit.radius_mm,
+        crate::transaction_tests::circle(&request).center_mm[0],
+        12.5 - 31.25 / per_mm
+    ));
+    assert!(close(
+        crate::transaction_tests::circle(&request).center_mm[1],
+        -7.25 - 18.75 / per_mm
+    ));
+    assert!(close(
+        crate::transaction_tests::circle(&request).radius_mm,
         (10.5 - 12.5 / per_mm).hypot(9.75 / per_mm)
     ));
     (e, request)
@@ -1723,7 +1732,7 @@ pub(crate) fn navigated_annulus_apply(
     reading: &ExtrudeEditSource,
     sketch: ferritecad_types::ObjectId,
     navigated: impl FnOnce(),
-) -> (Editor, EditAnnulusRequest) {
+) -> (Editor, EditRequest) {
     let mut e = Editor::default();
     e.set_session(true, false, true);
     e.set_analytic_apply(true);
@@ -1746,9 +1755,9 @@ pub(crate) fn navigated_annulus_apply(
     let n = |s: &str| s.parse::<f64>().expect("a number");
     assert_eq!(
         (
-            request.edit.center_mm,
-            request.edit.outer_radius_mm,
-            request.edit.inner_radius_mm
+            crate::transaction_tests::annulus(&request).center_mm,
+            crate::transaction_tests::annulus(&request).outer_radius_mm,
+            crate::transaction_tests::annulus(&request).inner_radius_mm
         ),
         (
             [n(&typed.centre[0]), n(&typed.centre[1])],
@@ -1759,14 +1768,20 @@ pub(crate) fn navigated_annulus_apply(
     );
     let per_mm = f64::from(scale);
     let close = |a: f64, b: f64| (a - b).abs() < 1e-3;
-    assert!(close(request.edit.center_mm[0], 12.5 - 31.25 / per_mm));
-    assert!(close(request.edit.center_mm[1], -7.25 - 18.75 / per_mm));
     assert!(close(
-        request.edit.outer_radius_mm,
+        crate::transaction_tests::annulus(&request).center_mm[0],
+        12.5 - 31.25 / per_mm
+    ));
+    assert!(close(
+        crate::transaction_tests::annulus(&request).center_mm[1],
+        -7.25 - 18.75 / per_mm
+    ));
+    assert!(close(
+        crate::transaction_tests::annulus(&request).outer_radius_mm,
         (10.5 - 12.5 / per_mm).hypot(9.75 / per_mm)
     ));
     assert!(close(
-        request.edit.inner_radius_mm,
+        crate::transaction_tests::annulus(&request).inner_radius_mm,
         (-7.25 / per_mm).hypot(4.75 - 4.5 / per_mm)
     ));
     (e, request)

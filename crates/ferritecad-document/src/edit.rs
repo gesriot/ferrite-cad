@@ -11,13 +11,10 @@ pub struct DocumentVersion {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtrudeEditSource {
+    pub objects: Vec<ObjectRecord>,
     pub model_tree: crate::ModelTree,
     pub version: DocumentVersion,
     pub expression_slots: Vec<crate::ExpressionSlotValue>,
-    pub sketches: Vec<crate::SketchChoice>,
-    pub constraint_sketches: Vec<crate::ConstraintSketchChoice>,
-    pub circle_sketches: Vec<crate::CircleChoice>,
-    pub annulus_sketches: Vec<crate::AnnulusChoice>,
     pub cut_bodies: Vec<crate::CutChoice>,
     pub cut_features: Vec<crate::CutParameterChoice>,
     pub revolves: Vec<crate::RevolveChoice>,
@@ -29,22 +26,16 @@ pub struct ExtrudeEditSource {
 impl ExtrudeEditSource {
     pub fn read(document: &Document) -> Result<Self> {
         let objects = document.objects()?;
-        let crate::cut_edit::CutCatalog {
-            bodies,
-            features,
-            sketches,
-        } = crate::cut_edit::cut_catalog(document, &objects);
+        let crate::cut_edit::CutCatalog { bodies, features } =
+            crate::cut_edit::cut_catalog(document, &objects);
         Ok(Self {
             model_tree: crate::ModelTree::from_dependencies(&objects, document.dependencies()),
+            objects: objects.clone(),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,
             },
             expression_slots: document.expression_slots()?,
-            sketches,
-            constraint_sketches: crate::constraint_sketch_choices(document, &objects),
-            circle_sketches: crate::circle_choices(document, &objects),
-            annulus_sketches: crate::annulus_choices(document, &objects),
             cut_bodies: bodies,
             cut_features: features,
             revolves: crate::revolve_choices(document, &objects),

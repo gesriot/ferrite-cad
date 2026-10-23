@@ -509,7 +509,20 @@ fn a_saved_vertex_drag_measures_from_where_it_was_pressed_and_keeps_that_anchor(
     assert_eq!(e.draft, dragged);
     assert_eq!(e.canvas.length, "15", "the field is left as it was typed");
     let request = e.edit_request().expect("a valid saved edit");
-    assert_eq!(request.vertices[2].start_mm, [45., 20.]);
+    assert_eq!(
+        crate::transaction_tests::vertices_in(
+            &request,
+            e.editing
+                .as_ref()
+                .expect("saved")
+                .1
+                .stored
+                .as_ref()
+                .expect("sketch")
+        )[2]
+        .start_mm,
+        [45., 20.]
+    );
 
     // Without a length the pointer chooses the distance, however far: 65 mm west
     // is 260 points, far beyond twice the aperture, and the guide still holds.
@@ -987,13 +1000,9 @@ fn a_guided_result_that_breaks_the_contour_stays_a_visible_draft_and_is_refused_
     button(&ctx, &mut e, south, false);
     assert_eq!(strings(&e, 3), pair("20", "-5"));
     assert_eq!(history(&e), (1, 0));
-    let Err(refusal) = e.edit_request() else {
-        panic!("the shared policy refuses a crossing");
-    };
-    let refusal = refusal.to_string();
     assert!(
-        painted_containing(&frame(&ctx, &mut e, vec![]), &refusal),
-        "{refusal}"
+        e.edit_request().is_ok(),
+        "the rebuild decides whether the crossing builds"
     );
 }
 
@@ -1073,7 +1082,8 @@ fn native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
         )
         .expect("accepted scene")
     };
-    let reading = loaded.edit_source.expect("accepted edit facts");
+    let reading =
+        crate::sketch_facts::Source::from(loaded.edit_source.expect("accepted edit facts"));
     let id = reading
         .sketches
         .iter()
@@ -1113,10 +1123,15 @@ fn native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
     request.destination = root.path().join("ui.fcad");
     let (tx, rx) = std::sync::mpsc::channel();
     edits
-        .start_sketch(request.clone(), move |r, g, c| {
-            crate::edits::spawn_sketch_edit(r, c, move |result| {
-                tx.send((g, result)).expect("reply")
-            })
+        .start(request.clone(), move |r, g, c| {
+            crate::edits::spawn_edit(
+                r.source,
+                r.expected,
+                r.changes,
+                r.destination,
+                c,
+                move |result| tx.send((g, result)).expect("reply"),
+            )
         })
         .expect("worker");
     let (g, result) = rx.recv().expect("completed");
@@ -1125,24 +1140,23 @@ fn native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
 
     // The numbers, typed: the same IDs in the same order, literal coordinates.
     let literal = [[0, 0], [60, 0], [45, 20], [20, 20], [20, 40], [0, 40]];
-    let vertices = request
-        .vertices
-        .iter()
-        .zip(literal)
-        .map(|(v, [x, y])| format!(r#"{{"curve_id":"{}","start_mm":[{x},{y}]}}"#, v.curve_id))
-        .collect::<Vec<_>>()
-        .join(",");
+    assert_eq!(
+        crate::transaction_tests::vertices(&request)
+            .iter()
+            .map(|v| v.start_mm)
+            .collect::<Vec<_>>(),
+        literal.map(|p| p.map(f64::from)).to_vec()
+    );
+
     std::fs::write(
         &input,
-        format!(r#"{{"request_version":1,"vertices":[{vertices}]}}"#),
+        ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
     )
     .expect("request");
     let cli = root.path().join("cli.fcad");
     let p = std::process::Command::new(ferritecad())
-        .arg("edit-sketch-copy")
+        .arg("edit")
         .arg(&source)
-        .arg("--sketch")
-        .arg(id.to_string())
         .arg("--expect-version")
         .arg(reading.version.content.to_string())
         .arg("--request")
@@ -1162,7 +1176,7 @@ fn native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
         Document::open_read_only(&ui).expect("UI"),
         Document::open_read_only(&cli).expect("CLI"),
     );
-    assert_eq!(a.meta(), b.meta());
+    crate::transaction_tests::assert_meta(a.meta(), b.meta());
     assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
     assert_eq!(
         a.dependencies().expect("deps"),

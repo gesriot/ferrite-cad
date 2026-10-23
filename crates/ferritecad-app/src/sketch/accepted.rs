@@ -15,9 +15,9 @@ use super::{
     navigation::{self, MAX_SCALE, MIN_SCALE, Navigation, Surface, View},
     paint_grid, pointer_over,
 };
+use crate::sketch_facts::{ConstraintSketchChoice, Source as ExtrudeEditSource};
 use ferritecad_document::{
-    ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource, LineEndpoint, Sketch,
-    SketchGeometry, SketchPointSelector,
+    DocumentVersion, LineEndpoint, Sketch, SketchGeometry, SketchPointSelector,
 };
 use ferritecad_scene::SketchPresentation;
 use ferritecad_types::StableEntityId;

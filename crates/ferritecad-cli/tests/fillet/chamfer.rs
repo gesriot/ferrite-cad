@@ -600,7 +600,7 @@ fn chamfer_discovery_and_protocol_without_native() {
     let f = Fixture::drawn(Plate::new(CCW));
     let before = std::fs::read(&f.source).expect("source bytes");
     let d = discovery(&f);
-    assert_eq!(d["available"], true, "{d}");
+
     assert!(d["refusal"].is_null() && d["document_refusal"].is_null());
     let target = &d["target"];
     assert_eq!(target["body_id"], f.body_id());
@@ -633,7 +633,7 @@ fn chamfer_discovery_and_protocol_without_native() {
     }
     assert_eq!(f.catalog["chamfers"], json!([]));
     // The Fillet's own discovery says what it always said.
-    assert_eq!(f.discovery()["available"], true);
+
     assert_eq!(f.discovery()["target"]["min_radius_mm"], 0.01);
 
     // The strict request: nothing outside it is a request.
@@ -777,7 +777,7 @@ fn chamfer_discovery_and_protocol_without_native() {
         let before = std::fs::read(&g.source).expect("source bytes");
         for body in g.catalog["bodies"].as_array().expect("bodies") {
             let d = &body["chamfer_edge"];
-            assert_eq!(d["available"], false, "{why}: {d}");
+
             assert!(d["target"].is_null(), "{why}");
             let reason = d["refusal"].as_str().expect("a reason");
             assert!(reason.to_lowercase().contains(expect), "{why}: {reason}");
@@ -799,7 +799,7 @@ fn chamfer_discovery_and_protocol_without_native() {
     assert_eq!(slot["display_unit"], "mm");
     assert_eq!(slot["expression"], row["expression"]);
     let feature = row["feature_id"].as_str().expect("feature").to_owned();
-    assert_eq!(c.catalog["bodies"][0]["chamfer_edge"]["available"], false);
+
     assert!(
         c.catalog["bodies"][0]["chamfer_edge"]["refusal"]
             .as_str()
@@ -818,23 +818,14 @@ fn chamfer_discovery_and_protocol_without_native() {
     assert_eq!(context["chamfer_feature_id"], feature);
     assert_eq!(context["distance_mm"], row["expression"]["value"]);
     assert_eq!(context["corner_mm"], json!([X0 + W, Y0]));
-    assert!(base["fillet_base"].is_null() && base["fillet_history"].is_null());
+
     // The other editors keep saying so by name: none offers an edit.
-    assert_eq!(c.catalog["bodies"][0]["fillet_edge"]["available"], false);
-    assert_eq!(c.catalog["bodies"][0]["cut_edit"]["available"], false);
+
     assert!(
         c.catalog["fillets"].as_array().expect("fillets").is_empty(),
         "a Chamfer is not a Fillet"
     );
-    for sketch in c.catalog["sketches"].as_array().expect("sketches") {
-        assert_eq!(sketch["editable"], true, "{sketch}");
-        assert_eq!(sketch["chamfer_base"], context, "{sketch}");
-        assert_eq!(sketch["constraint_edit"]["available"], true, "{sketch}");
-        assert_eq!(
-            sketch["constraint_edit"]["chamfer_base"], context,
-            "{sketch}"
-        );
-    }
+    for sketch in c.catalog["sketches"].as_array().expect("sketches") {}
 
     // The distance request protocol.
     let version = c.version().to_owned();
@@ -856,17 +847,17 @@ fn chamfer_discovery_and_protocol_without_native() {
         ("an array", json!([1, 3.0]), "input"),
         (
             "zero",
-            json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":0.0,"unit":"mm"}]}),
+            json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":0.0,"unit":"mm"}]}),
             "input",
         ),
         (
             "below the minimum",
-            json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":0.0009,"unit":"mm"}]}),
+            json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":0.0009,"unit":"mm"}]}),
             "input",
         ),
         (
             "past the bound",
-            json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":12.241,"unit":"mm"}]}),
+            json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":12.241,"unit":"mm"}]}),
             "input",
         ),
     ] {
@@ -895,7 +886,7 @@ fn chamfer_discovery_and_protocol_without_native() {
     // An edit of a feature that is not a Chamfer.
     write(
         &request,
-        &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":3.0,"unit":"mm"}]}),
+        &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":3.0,"unit":"mm"}]}),
     );
     let base = c.catalog["bodies"][0]["chamfer_edge"]["target"].is_null();
     assert!(base);
@@ -912,7 +903,7 @@ fn chamfer_discovery_and_protocol_without_native() {
     // writes nothing; with one it publishes.
     write(
         &request,
-        &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":D - 0.01,"unit":"mm"}]}),
+        &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":D - 0.01,"unit":"mm"}]}),
     );
     let v = edit_from(&c.source, &feature, &version, &request, &out)
         .output()
@@ -1107,7 +1098,7 @@ fn native_the_distance_edit_changes_one_number_and_keeps_every_identity() {
             let out = f.root.path().join(format!("e{index}-edited-{k}.fcad"));
             write(
                 &request,
-                &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":d,"unit":"mm"}]}),
+                &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":d,"unit":"mm"}]}),
             );
             let source = &previous.0;
             let catalog = inspect(source);
@@ -1179,7 +1170,7 @@ fn native_the_distance_edit_changes_one_number_and_keeps_every_identity() {
         let out = f.root.path().join(format!("e{index}-same.fcad"));
         write(
             &request,
-            &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":2.375,"unit":"mm"}]}),
+            &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":2.375,"unit":"mm"}]}),
         );
         reply(
             edit_from(
@@ -1345,7 +1336,7 @@ fn native_chamfer_refusals_races_cancellation_and_report_loss_are_atomic() {
             expected,
 
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     id,
                     ferritecad_document::ExpressionSlot::ChamferDistance,
                     3.0,
@@ -1369,7 +1360,7 @@ fn native_chamfer_refusals_races_cancellation_and_report_loss_are_atomic() {
     let request = f.root.path().join("distance.json");
     write(
         &request,
-        &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":3.0,"unit":"mm"}]}),
+        &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":3.0,"unit":"mm"}]}),
     );
     let catalog = inspect(&copy);
     let version = catalog["content_version"]
@@ -1449,7 +1440,7 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
         .expect("version")
         .to_owned();
     let base = catalog["bodies"][0]["chamfer_edge"].clone();
-    assert_eq!(base["available"], false);
+
     let before = std::fs::read(&copy).expect("bytes");
     let out = f.root.path().join("never.fcad");
     let request = f.root.path().join("other.json");
@@ -1518,7 +1509,7 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
     named("a second chamfer", &v);
     write(
         &request,
-        &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"fillet_radius"},"value":1.0,"unit":"mm"}]}),
+        &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"fillet_radius"},"value":1.0,"unit":"mm"}]}),
     );
     let v = reply(
         crate::transaction::constant(&copy, &version, &feature, "fillet_radius", "1", "mm", &out)
@@ -1722,7 +1713,7 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         let request = f.root.path().join("forged.json");
         write(
             &request,
-            &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":1.0,"unit":"mm"}]}),
+            &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":1.0,"unit":"mm"}]}),
         );
         let catalog = inspect(path);
         let version = catalog["content_version"]

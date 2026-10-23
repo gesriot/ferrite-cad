@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! §31F: a directed angle between two saved Lines, through the shipped
-//! command `edit-sketch-constraints-copy`.
+//! command `edit`.
 //!
 //! Every angle asserted on a solved profile is measured here, from the solved
 //! points of the published file after it was reopened and rebuilt cold, with
@@ -10,6 +10,8 @@
 //! other way round, and a quadrilateral whose top edge tilts either way off
 //! antiparallel.
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{CacheStore, Document, ObjectPayload, SketchGeometry};
 use ferritecad_eval::{CacheOutcome, rebuild_cached, rebuild_cold};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
@@ -21,7 +23,7 @@ use std::{
 #[path = "support/pipe.rs"]
 mod pipe;
 
-const OP: &str = "edit-sketch-constraints-copy";
+const OP: &str = "edit";
 /// Solved and measured angles agree to well inside this, in degrees.
 const DEGREES: f64 = 1e-6;
 
@@ -143,11 +145,11 @@ impl Source {
         Self::new(&[[0., 0.], [60., 0.], [60., 30.], [0., 30.]])
     }
     fn curve(&self, i: usize) -> Value {
-        self.catalog["sketches"][0]["constraint_edit"]["curves"][i]["curve_id"].clone()
+        self.catalog["sketches"][0]["curves"][i]["curve_id"].clone()
     }
     /// One vector of a request: Line `i` read `from` -> `to`.
     fn vector(&self, i: usize, from: &str, to: &str) -> Value {
-        json!({"curve_id": self.curve(i), "from": from, "to": to})
+        json!({"from":transaction::point_ref(&self.curve(i),from),"to":transaction::point_ref(&self.curve(i),to)})
     }
     /// A request that adds `add` and removes `remove`, from `catalog`'s snapshot of `from`.
     fn command(
@@ -160,34 +162,27 @@ impl Source {
     ) -> Command {
         write(
             &self.request,
-            &json!({"request_version":1,"remove":remove,"add":add}),
+            &transaction::constraints(&catalog["sketches"][0], remove, add),
         );
-        let mut c = cli();
-        c.arg(OP)
-            .arg(from)
-            .arg("--sketch")
-            .arg(catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
-            .arg("--expect-version")
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(&self.request)
-            .arg("-o")
-            .arg(out)
-            .arg("--json");
-        c
+        transaction::command(
+            from,
+            catalog["content_version"].as_str().expect("version"),
+            &self.request,
+            out,
+        )
     }
     /// Publishes `add` onto the source and answers the result.
     fn publish(&self, add: &[Value], name: &str) -> (PathBuf, Value) {
         let out = self.root.path().join(name);
-        let result = reply(
+        reply(
             self.command(&self.path, &self.catalog, &[], add, &out)
                 .output()
                 .expect("publish"),
             OP,
             0,
-        )["result"]
-            .clone();
-        (out, result)
+        );
+        let facts = facts(&out);
+        (out, facts)
     }
     fn refused(&self, from: &Path, catalog: &Value, add: &[Value]) -> Value {
         let out = self.root.path().join("never.fcad");
@@ -206,7 +201,7 @@ impl Source {
 }
 
 fn angle(a: Value, b: Value, degrees: f64) -> Value {
-    json!({"rule":"directed_angle","a":a,"b":b,"angle_deg":degrees})
+    json!({"kind":"directed_angle","a":a,"b":b,"angle":transaction::number(degrees,"deg")})
 }
 /// The counter-clockwise turn from `u` to `v`, in degrees.
 fn turn(u: [f64; 2], v: [f64; 2]) -> f64 {
@@ -359,236 +354,12 @@ fn exports(path: &Path, solved: &Solved, tag: &str) {
 }
 
 fn constraint_ids(catalog: &Value) -> Vec<Value> {
-    catalog["sketches"][0]["constraint_edit"]["constraints"]
+    catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("constraints")
         .iter()
         .map(|c| c["constraint_id"].clone())
         .collect()
-}
-
-/// Every refusal the request can make on its own: strict JSON, before any
-/// document, kernel or solver is asked anything.
-#[test]
-fn a_directed_angle_request_is_strict_and_refuses_before_anything_is_published() {
-    let s = Source::sample();
-    let before = std::fs::read(&s.path).expect("source");
-    let ok = |i: usize, from: &str, to: &str| s.vector(i, from, to);
-    let good = angle(ok(0, "start", "end"), ok(1, "start", "end"), 30.);
-    let mut bad: Vec<(&str, Value)> = vec![
-        (
-            "radians underflow",
-            angle(
-                ok(0, "start", "end"),
-                ok(1, "start", "end"),
-                f64::from_bits(1),
-            ),
-        ),
-        (
-            "negative radians underflow",
-            angle(
-                ok(0, "start", "end"),
-                ok(1, "start", "end"),
-                -f64::from_bits(1),
-            ),
-        ),
-        // The direction and the angle are part of the request, never a default.
-        (
-            "no a",
-            json!({"rule":"directed_angle","b":ok(1,"start","end"),"angle_deg":30}),
-        ),
-        (
-            "no b",
-            json!({"rule":"directed_angle","a":ok(0,"start","end"),"angle_deg":30}),
-        ),
-        (
-            "no angle",
-            json!({"rule":"directed_angle","a":ok(0,"start","end"),"b":ok(1,"start","end")}),
-        ),
-        (
-            "no from",
-            angle(
-                json!({"curve_id":s.curve(0),"to":"end"}),
-                ok(1, "start", "end"),
-                30.,
-            ),
-        ),
-        (
-            "no to",
-            angle(
-                json!({"curve_id":s.curve(0),"from":"start"}),
-                ok(1, "start", "end"),
-                30.,
-            ),
-        ),
-        (
-            "no curve",
-            angle(
-                json!({"from":"start","to":"end"}),
-                ok(1, "start", "end"),
-                30.,
-            ),
-        ),
-        // Nothing extra, at any level.
-        (
-            "extra on the rule",
-            json!({"rule":"directed_angle","a":ok(0,"start","end"),"b":ok(1,"start","end"),"angle_deg":30,"extra":1}),
-        ),
-        (
-            "extra on a side",
-            angle(
-                json!({"curve_id":s.curve(0),"from":"start","to":"end","at":"start"}),
-                ok(1, "start", "end"),
-                30.,
-            ),
-        ),
-        (
-            "the old curve fields",
-            json!({"rule":"directed_angle","a_curve_id":s.curve(0),"b_curve_id":s.curve(1),"angle_deg":30}),
-        ),
-        (
-            "radians",
-            json!({"rule":"directed_angle","a":ok(0,"start","end"),"b":ok(1,"start","end"),"angle_rad":0.5}),
-        ),
-        (
-            "both units",
-            json!({"rule":"directed_angle","a":ok(0,"start","end"),"b":ok(1,"start","end"),"angle_deg":30,"angle_rad":0.5}),
-        ),
-        // Only the two ends of a Line, and two different ones.
-        (
-            "centre",
-            angle(ok(0, "center", "end"), ok(1, "start", "end"), 30.),
-        ),
-        (
-            "same end",
-            angle(ok(0, "start", "start"), ok(1, "start", "end"), 30.),
-        ),
-        (
-            "same end, B",
-            angle(ok(0, "start", "end"), ok(1, "end", "end"), 30.),
-        ),
-        (
-            "upper case",
-            angle(ok(0, "Start", "End"), ok(1, "start", "end"), 30.),
-        ),
-        (
-            "not a UUID",
-            angle(
-                json!({"curve_id":"nope","from":"start","to":"end"}),
-                ok(1, "start", "end"),
-                30.,
-            ),
-        ),
-        // Only a number in the one full circle.
-        (
-            "a string",
-            json!({"rule":"directed_angle","a":ok(0,"start","end"),"b":ok(1,"start","end"),"angle_deg":"30"}),
-        ),
-        (
-            "null",
-            json!({"rule":"directed_angle","a":ok(0,"start","end"),"b":ok(1,"start","end"),"angle_deg":null}),
-        ),
-        (
-            "a bool",
-            json!({"rule":"directed_angle","a":ok(0,"start","end"),"b":ok(1,"start","end"),"angle_deg":true}),
-        ),
-        (
-            "a list",
-            json!({"rule":"directed_angle","a":[s.curve(0),"start","end"],"b":ok(1,"start","end"),"angle_deg":30}),
-        ),
-        (
-            "the rule as a list",
-            json!([
-                "directed_angle",
-                ok(0, "start", "end"),
-                ok(1, "start", "end"),
-                30
-            ]),
-        ),
-    ];
-    for degrees in [
-        180.000001,
-        -180.000001,
-        181.,
-        270.,
-        360.,
-        -270.,
-        720.,
-        1e300,
-    ] {
-        bad.push((
-            "out of range",
-            angle(ok(0, "start", "end"), ok(1, "start", "end"), degrees),
-        ));
-    }
-    for (name, addition) in &bad {
-        write(
-            &s.request,
-            &json!({"request_version":1,"remove":[],"add":[addition]}),
-        );
-        let out = s.root.path().join("never.fcad");
-        let v = reply(
-            s.command(
-                &s.path,
-                &s.catalog,
-                &[],
-                std::slice::from_ref(addition),
-                &out,
-            )
-            .stderr(pipe::closed_pipe())
-            .output()
-            .expect("refusal"),
-            OP,
-            2,
-        );
-        assert_eq!(v["error"]["kind"], "input", "{name}: {v}");
-        assert!(v["error"].get("constraint_conflict").is_none(), "{name}");
-        assert!(!out.exists(), "{name} published");
-    }
-    // Numbers JSON cannot carry, and a repeated key: the text is refused whole.
-    let valid = serde_json::to_string(&json!({"request_version":1,"remove":[],"add":[good]}))
-        .expect("encode");
-    for (name, text) in [
-        (
-            "NaN",
-            valid.replace("\"angle_deg\":30.0", "\"angle_deg\":NaN"),
-        ),
-        (
-            "Infinity",
-            valid.replace("\"angle_deg\":30.0", "\"angle_deg\":Infinity"),
-        ),
-        (
-            "1e999",
-            valid.replace("\"angle_deg\":30.0", "\"angle_deg\":1e999"),
-        ),
-        (
-            "duplicate",
-            valid.replace("\"angle_deg\":30.0", "\"angle_deg\":30,\"angle_deg\":40"),
-        ),
-        (
-            "escaped duplicate",
-            valid.replace("\"rule\"", "\"ru\\u006ce\":\"x\",\"rule\""),
-        ),
-    ] {
-        assert_ne!(text, valid, "{name} did not change the request");
-        std::fs::write(&s.request, &text).expect("request");
-        let mut c = cli();
-        c.arg(OP)
-            .arg(&s.path)
-            .arg("--sketch")
-            .arg(s.catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
-            .arg("--expect-version")
-            .arg(s.catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(&s.request)
-            .arg("-o")
-            .arg(s.root.path().join("never.fcad"))
-            .arg("--json");
-        let v = reply(c.output().expect("refusal"), OP, 2);
-        assert_eq!(v["error"]["kind"], "input", "{name}: {v}");
-    }
-    assert!(!s.root.path().join("never.fcad").exists());
-    assert_eq!(std::fs::read(&s.path).expect("source"), before);
 }
 
 /// Discovery: a stored angle is reported with its directions and its degrees,
@@ -599,16 +370,15 @@ fn a_directed_angle_request_is_strict_and_refuses_before_anything_is_published()
 fn discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone() {
     use ferritecad_document::{
         AddLineConstraint, AddSketchConstraint, DirectedAngle, DirectedLine, LineEndpoint,
-        LineRelation, SketchConstraintEdits, prepare_sketch_constraints,
+        LineRelation, SketchConstraintEdits,
     };
     let s = Source::sample();
-    let ids: Vec<ferritecad_types::StableEntityId> =
-        s.catalog["sketches"][0]["constraint_edit"]["curves"]
-            .as_array()
-            .expect("curves")
-            .iter()
-            .map(|c| c["curve_id"].as_str().expect("id").parse().expect("UUID"))
-            .collect();
+    let ids: Vec<ferritecad_types::StableEntityId> = s.catalog["sketches"][0]["curves"]
+        .as_array()
+        .expect("curves")
+        .iter()
+        .map(|c| c["curve_id"].as_str().expect("id").parse().expect("UUID"))
+        .collect();
     let with = s.root.path().join("stored.fcad");
     std::fs::copy(&s.path, &with).expect("copy");
     let mut d = Document::open(&with).expect("open");
@@ -622,7 +392,7 @@ fn discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone() 
     let line = |i: usize, from: LineEndpoint| {
         DirectedLine::new(ids[i], from, from.other()).expect("a vector")
     };
-    let prepared = prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &d,
         sketch,
         &SketchConstraintEdits {
@@ -642,13 +412,16 @@ fn discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone() 
         },
     )
     .expect("prepared");
-    let (angle_id, parallel_id) = (prepared.added[4].id, prepared.added[5].id);
-    d.write_sketch_constraints(&prepared).expect("written");
+    let (angle_id, parallel_id) = (
+        ferritecad_fixtures::added_constraints(&prepared)[4].id,
+        ferritecad_fixtures::added_constraints(&prepared)[5].id,
+    );
+    d.write_changes(&prepared).expect("written");
     d.close().expect("close");
 
     let found = inspect(&with);
-    let edit = &found["sketches"][0]["constraint_edit"];
-    assert_eq!(edit["available"], true, "{edit}");
+    let edit = &found["sketches"][0];
+
     let rules: Vec<_> = edit["constraints"].as_array().expect("constraints").clone();
     let by_id = |id: &ferritecad_types::StableEntityId| {
         rules
@@ -691,7 +464,7 @@ fn discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone() 
     for degrees in [1e-10, -1e-10, 12.345678901234, -179.9999999999] {
         let requested = DirectedAngle::from_degrees(degrees).expect("precise angle");
         let mut d = Document::open(&with).expect("reopen");
-        let replacement = prepare_sketch_constraints(
+        let replacement = ferritecad_fixtures::constraint_changes(
             &d,
             sketch,
             &SketchConstraintEdits {
@@ -706,17 +479,16 @@ fn discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone() 
             },
         )
         .expect("replace");
-        current = replacement.added[0].id;
-        d.write_sketch_constraints(&replacement)
-            .expect("write precise angle");
+        current = ferritecad_fixtures::added_constraints(&replacement)[0].id;
+        d.write_changes(&replacement).expect("write precise angle");
         d.close().expect("close");
         let read = inspect(&with);
-        let reported = read["sketches"][0]["constraint_edit"]["constraints"]
+        let reported = read["sketches"][0]["constraints"]
             .as_array()
             .expect("constraints")
             .iter()
             .find(|c| c["constraint_id"] == json!(current))
-            .expect("angle")["rule"]["angle_deg"]
+            .expect("angle")["rule"]["angle"]["value"]
             .as_f64()
             .expect("numeric angle");
         assert!(reported > -180. && reported <= 180., "{reported}");
@@ -725,135 +497,6 @@ fn discovery_reports_a_stored_directed_angle_and_leaves_the_older_forms_alone() 
             "inspect reported {reported} for {degrees}"
         );
     }
-}
-
-/// The refusals that happen before the solver is asked: the pair slot (every
-/// way of saying one relation) and the Lines of this Sketch, with an angle
-/// stored through the document. The command rebuilds the source first, so a
-/// stored angle needs the solver even for a request that is refused.
-#[test]
-fn the_pair_slot_and_the_lines_of_the_sketch_are_checked_before_the_solver() {
-    if !have(true, true) {
-        return;
-    }
-    use ferritecad_document::{
-        AddLineConstraint, AddSketchConstraint, DirectedAngle, DirectedLine, LineEndpoint,
-        SketchConstraintEdits, prepare_sketch_constraints,
-    };
-    let s = Source::slanted();
-    let ids: Vec<ferritecad_types::StableEntityId> = (0..4)
-        .map(|i| s.curve(i).as_str().expect("id").parse().expect("UUID"))
-        .collect();
-    let with = s.root.path().join("stored.fcad");
-    std::fs::copy(&s.path, &with).expect("copy");
-    let mut d = Document::open(&with).expect("open");
-    let sketch = d
-        .objects()
-        .expect("objects")
-        .iter()
-        .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
-        .expect("sketch")
-        .id;
-    let v =
-        |i: usize, from: LineEndpoint| DirectedLine::new(ids[i], from, from.other()).expect("v");
-    let prepared = prepare_sketch_constraints(
-        &d,
-        sketch,
-        &SketchConstraintEdits {
-            remove: vec![],
-            add: vec![AddSketchConstraint::Line(
-                AddLineConstraint::DirectedAngle {
-                    a: v(0, LineEndpoint::Start),
-                    b: v(1, LineEndpoint::Start),
-                    angle: DirectedAngle::from_degrees(90.).expect("angle"),
-                },
-            )],
-        },
-    )
-    .expect("prepared");
-    d.write_sketch_constraints(&prepared).expect("written");
-    d.close().expect("close");
-    let catalog = inspect(&with);
-    let side = |i: usize, f: &str, t: &str| s.vector(i, f, t);
-    for (name, add) in [
-        (
-            "the same relation again",
-            angle(side(0, "start", "end"), side(1, "start", "end"), 90.),
-        ),
-        (
-            "swapped and negated",
-            angle(side(1, "start", "end"), side(0, "start", "end"), -90.),
-        ),
-        (
-            "A turned, +180",
-            angle(side(0, "end", "start"), side(1, "start", "end"), -90.),
-        ),
-        (
-            "B turned, +180",
-            angle(side(0, "start", "end"), side(1, "end", "start"), -90.),
-        ),
-        (
-            "both turned",
-            angle(side(0, "end", "start"), side(1, "end", "start"), 90.),
-        ),
-        (
-            "another value",
-            angle(side(0, "start", "end"), side(1, "start", "end"), 45.),
-        ),
-        (
-            "a Parallel",
-            json!({"rule":"parallel","a_curve_id":s.curve(0),"b_curve_id":s.curve(1)}),
-        ),
-        (
-            "a Perpendicular, swapped",
-            json!({"rule":"perpendicular","a_curve_id":s.curve(1),"b_curve_id":s.curve(0)}),
-        ),
-        (
-            "one Line twice",
-            angle(side(2, "start", "end"), side(2, "end", "start"), 90.),
-        ),
-        (
-            "a Line of no Sketch of this document",
-            angle(
-                side(2, "start", "end"),
-                json!({"curve_id": ferritecad_types::StableEntityId::new().to_string(), "from":"start","to":"end"}),
-                90.,
-            ),
-        ),
-    ] {
-        let error = s.refused(&with, &catalog, std::slice::from_ref(&add));
-        assert_eq!(error["kind"], "input", "{name}: {error}");
-        assert!(error.get("constraint_conflict").is_none(), "{name}");
-    }
-    // An equal length on the angled pair is a different property of it: its own
-    // slot, accepted, beside the angle.
-    let (equal, result) = {
-        let out = s.root.path().join("equal.fcad");
-        let result = reply(
-            s.command(
-                &with,
-                &catalog,
-                &[],
-                &[json!({"rule":"equal_length","a_curve_id":s.curve(0),"b_curve_id":s.curve(1)})],
-                &out,
-            )
-            .output()
-            .expect("equal length"),
-            OP,
-            0,
-        )["result"]
-            .clone();
-        (out, result)
-    };
-    assert_eq!(
-        result["added_constraints"][0]["rule"]["kind"],
-        "equal_length"
-    );
-    assert_eq!(
-        constraint_ids(&inspect(&equal)).len(),
-        constraint_ids(&catalog).len() + 1,
-        "one more constraint, and the angle is still there"
-    );
 }
 
 /// OCCT without a solver: a document that holds an angle is neither recomputed
@@ -868,7 +511,7 @@ fn without_a_solver_an_angled_document_is_not_solved_and_the_unconstrained_route
     }
     use ferritecad_document::{
         AddLineConstraint, AddSketchConstraint, DirectedAngle, DirectedLine, LineEndpoint,
-        SketchConstraintEdits, prepare_sketch_constraints,
+        SketchConstraintEdits,
     };
     let s = Source::slanted();
     // The unconstrained route: a cold rebuild, validation and an export.
@@ -910,7 +553,7 @@ fn without_a_solver_an_angled_document_is_not_solved_and_the_unconstrained_route
         .collect();
     let v =
         |i: usize| DirectedLine::new(ids[i], LineEndpoint::Start, LineEndpoint::End).expect("v");
-    let prepared = prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &d,
         sketch,
         &SketchConstraintEdits {
@@ -925,7 +568,7 @@ fn without_a_solver_an_angled_document_is_not_solved_and_the_unconstrained_route
         },
     )
     .expect("prepared");
-    d.write_sketch_constraints(&prepared).expect("written");
+    d.write_changes(&prepared).expect("written");
     d.close().expect("close");
     // Nothing solves it and nothing is published as if it had been.
     let stl = s.root.path().join("angled.stl");
@@ -1018,7 +661,7 @@ fn native_directed_angle_signs_directions_and_equivalent_spellings_on_a_dart() {
     let stored = corners(&{
         // The stored dart is its own guess: corner 1 -> 2 turns -53°.
         let one = s.publish(
-            &[json!({"rule":"horizontal","curve_id":s.curve(0)})],
+            &[transaction::line_rule(&s.curve(0), "horizontal")],
             "free.fcad",
         );
         solved(&one.0)
@@ -1039,17 +682,17 @@ fn native_directed_angle_signs_directions_and_equivalent_spellings_on_a_dart() {
             &[angle(a.clone(), b.clone(), *degrees)],
             &format!("dart-{i}.fcad"),
         );
-        let added = result["added_constraints"].as_array().expect("added");
+        let added = result["constraints"].as_array().expect("added");
         assert_eq!(added.len(), 5, "four joints and the angle");
         // Published exactly as said: both directions and the typed value.
         let rule = &added[4]["rule"];
-        let end = |v: &Value, key: &str| json!({"curve_id": v["curve_id"], "at": v[key]});
+        let end = |v: &Value, key: &str| json!({"curve_id": v[key]["curve"], "at": v[key]["at"]});
         assert_eq!(
             *rule,
             json!({"kind":"directed_angle",
                    "a":{"from":end(a,"from"),"to":end(a,"to")},
                    "b":{"from":end(b,"from"),"to":end(b,"to")},
-                   "angle_deg":*degrees}),
+                   "angle":{"value":*degrees,"unit":"deg"}}),
             "{name}"
         );
         assert_eq!(result["solve"]["degrees_of_freedom"], 7, "{name}");
@@ -1064,9 +707,9 @@ fn native_directed_angle_signs_directions_and_equivalent_spellings_on_a_dart() {
         // file: from vector A to vector B, with their stated directions.
         let dir = |v: &Value| {
             let i = (0..4)
-                .find(|&i| s.curve(i) == v["curve_id"])
+                .find(|&i| s.curve(i) == v["from"]["curve"])
                 .expect("a Line");
-            solved.dir(i, v["from"] == "start")
+            solved.dir(i, v["from"]["at"] == "start")
         };
         near(turn(dir(a), dir(b)), *degrees, name);
         // And the same relation read in stored order, the one fact all five say.
@@ -1089,7 +732,7 @@ fn native_directed_angle_signs_directions_and_equivalent_spellings_on_a_dart() {
         &[angle(side(1, st, e), side(2, st, e), 50.)],
         "dart-mirror.fcad",
     );
-    assert_eq!(result["added_constraints"][4]["rule"]["angle_deg"], 50.0);
+    assert_eq!(result["constraints"][4]["rule"]["angle"]["value"], 50.0);
     let mirror = solved(&path);
     near(mirror.turn(1, 2), 50., "+50°");
     let c = corners(&mirror);
@@ -1138,10 +781,7 @@ fn native_directed_angle_across_the_half_turn_tilts_a_quadrilateral_either_way()
             // published profile whose measured turn is anything but 0.
             if outcome.status.code() == Some(0) {
                 let v: Value = serde_json::from_slice(&outcome.stdout).expect("JSON");
-                assert_eq!(
-                    v["result"]["added_constraints"][4]["rule"]["angle_deg"],
-                    0.0
-                );
+                assert_eq!(v["result"]["constraints"][4]["rule"]["angle"]["value"], 0.0);
                 let solved = solved(&out);
                 near(solved.turn(0, 2), 0., "0°");
             } else {
@@ -1152,7 +792,7 @@ fn native_directed_angle_across_the_half_turn_tilts_a_quadrilateral_either_way()
         }
         let result = reply(outcome, OP, 0)["result"].clone();
         assert_eq!(
-            result["added_constraints"][4]["rule"]["angle_deg"], published,
+            result["constraints"][4]["rule"]["angle"]["value"], published,
             "{name}: the opposite is stored and reported only as +180"
         );
         assert_eq!(result["solve"]["degrees_of_freedom"], 7, "{name}");
@@ -1210,7 +850,7 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
     let (rect, built) = s.publish(&three, "rect.fcad");
     assert_eq!(built["solve"]["degrees_of_freedom"], 5);
     assert_eq!(built["solve"]["redundant_constraint_ids"], json!([]));
-    let kinds: Vec<_> = built["added_constraints"]
+    let kinds: Vec<_> = built["constraints"]
         .as_array()
         .expect("added")
         .iter()
@@ -1237,7 +877,7 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
     exports(&rect, &grid, "rect");
     let rect_catalog = inspect(&rect);
     let rect_ids = constraint_ids(&rect_catalog);
-    let angle_ids: Vec<Value> = built["added_constraints"].as_array().expect("angles")[4..]
+    let angle_ids: Vec<Value> = built["constraints"].as_array().expect("angles")[4..]
         .iter()
         .map(|c| c["constraint_id"].clone())
         .collect();
@@ -1254,7 +894,7 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
     let said = repeated["solve"]["redundant_constraint_ids"]
         .as_array()
         .expect("ids");
-    let minted: Vec<Value> = repeated["added_constraints"].as_array().expect("angles")[4..]
+    let minted: Vec<Value> = repeated["constraints"].as_array().expect("angles")[4..]
         .iter()
         .map(|c| c["constraint_id"].clone())
         .collect();
@@ -1284,7 +924,7 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
         assert!(c["constraint_id"].is_string(), "{c}");
         assert_eq!(c["rule"]["kind"], "directed_angle", "{c}");
         assert!(
-            c["rule"]["angle_deg"] == 90.0 || c["rule"]["angle_deg"] == -90.0,
+            c["rule"]["angle"]["value"] == 90.0 || c["rule"]["angle"]["value"] == -90.0,
             "{c}"
         );
     }
@@ -1306,10 +946,10 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
         0,
     )["result"]
         .clone();
-    assert_eq!(replaced["removed_constraint_ids"], json!([angle_ids[1]]));
-    assert_eq!(replaced["solve"]["degrees_of_freedom"], 5);
+
+    assert_eq!(transaction::solve(&replaced_out)["degrees_of_freedom"], 5);
     let after = inspect(&replaced_out);
-    let kept: Vec<_> = rect_catalog["sketches"][0]["constraint_edit"]["constraints"]
+    let kept: Vec<_> = rect_catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("constraints")
         .iter()
@@ -1317,14 +957,11 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
         .cloned()
         .collect();
     assert_eq!(
-        after["sketches"][0]["constraint_edit"]["constraints"],
+        after["sketches"][0]["constraints"],
         json!(
             [
                 kept,
-                replaced["added_constraints"]
-                    .as_array()
-                    .expect("new")
-                    .clone()
+                replaced["constraints"].as_array().expect("new").clone()
             ]
             .concat()
         ),
@@ -1348,8 +985,8 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
         0,
     )["result"]
         .clone();
-    assert_eq!(freed["added_constraints"], json!([]));
-    assert_eq!(freed["solve"]["degrees_of_freedom"], 8);
+
+    assert_eq!(transaction::solve(&free_out)["degrees_of_freedom"], 8);
     assert_eq!(
         constraint_ids(&inspect(&free_out)),
         rect_ids[..4].to_vec(),
@@ -1394,7 +1031,7 @@ fn native_directed_angle_replace_remove_diagnose_and_publish_atomically() {
         let listed = inspect(&out);
         assert_eq!(constraint_ids(&listed).len(), 5, "published once, whole");
         assert_eq!(
-            listed["sketches"][0]["constraint_edit"]["constraints"][4]["rule"]["angle_deg"],
+            listed["sketches"][0]["constraints"][4]["rule"]["angle"]["value"],
             90.0
         );
         assert_eq!(solved(&out).dof, 7);
@@ -1473,4 +1110,9 @@ fn native_directed_angle_cache_keys_follow_the_solved_profile() {
             "{again} vs {independent}"
         );
     }
+}
+
+fn facts(path: &Path) -> Value {
+    let listed = inspect(path);
+    json!({"constraints":listed["sketches"][0]["constraints"],"solve":transaction::solve(path)})
 }

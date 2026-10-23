@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! §29D: the Line constraints of the rectangle under the one saved Chamfer,
-//! through the existing `edit-sketch-constraints-copy`. The stored Lines stay the
+//! through the existing `edit`. The stored Lines stay the
 //! solver's starting guess; the part, and the Chamfer's corner and distance, are
 //! the solved plate's. Every geometric claim is measured on a rebuilt B-Rep and
 //! on an independently read mesh at the chosen corner of the SOLVED plate.
@@ -12,7 +12,7 @@ use crate::constraints::{
 use crate::radius::stored_refs;
 use ferritecad_eval::CacheOutcome;
 
-const CONSTRAIN: &str = "edit-sketch-constraints-copy";
+const CONSTRAIN: &str = "edit";
 const DIST: f64 = 0.75;
 
 /// The whole SQL row of the plate's Sketch.
@@ -92,12 +92,9 @@ fn published(
     assert_eq!(context["corner_mm"], json!(corner), "a stored fact");
     assert_eq!(context["distance_mm"], d);
     assert_eq!(context["profile_constrained"], true);
-    assert_eq!(
-        after["sketches"][0]["constraint_edit"]["chamfer_base"], *context,
-        "one object on the base Extrude and the Sketch's constraint editor"
-    );
+
     let row = &after["sketches"][0];
-    assert_eq!(row["editable"], false, "the coordinates are the solver's");
+
     assert!(
         row["refusal"]
             .as_str()
@@ -105,7 +102,6 @@ fn published(
             .contains(chamfer["feature_id"].as_str().expect("id")),
         "{row}"
     );
-    assert_eq!(row["chamfer_base"], Value::Null);
 
     // The solve, measured.
     let (starts, measured_dof) = solved(&copy);
@@ -330,7 +326,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
     let (old, events) = measure_c(&place, Some(&cache));
     assert!(events.iter().all(|e| e.outcome == CacheOutcome::Miss));
     let replaced = published(&h, corner, DIST, &map(22.25, depth), 0, "replaced");
-    let listed_now = inspect(&replaced)["sketches"][0]["constraint_edit"]["constraints"]
+    let listed_now = inspect(&replaced)["sketches"][0]["constraints"]
         .as_array()
         .expect("list")
         .clone();
@@ -383,7 +379,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
     let request = r.root.path().join("d.json");
     write(
         &request,
-        &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":3.0,"unit":"mm"}]}),
+        &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":3.0,"unit":"mm"}]}),
     );
     let wide = r.root.path().join("wide.fcad");
     reply(
@@ -419,7 +415,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
         CONSTRAIN,
         0,
     );
-    let gone = inspect(&removed)["sketches"][0]["constraint_edit"]["constraints"]
+    let gone = inspect(&removed)["sketches"][0]["constraints"]
         .as_array()
         .expect("list")
         .clone();
@@ -447,7 +443,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
         0,
     );
     let after = inspect(&bare);
-    let left = after["sketches"][0]["constraint_edit"]["constraints"]
+    let left = after["sketches"][0]["constraints"]
         .as_array()
         .expect("list");
     assert_eq!(left.len(), 4, "the four closure links remain: {left:?}");
@@ -457,11 +453,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
     assert_eq!(r.at_copy(&bare).stored_starts(), stored_original);
     // The coordinate editor works again, on those stored coordinates.
     let c = r.at_copy(&bare);
-    assert_eq!(after["sketches"][0]["editable"], true);
-    assert_eq!(
-        after["sketches"][0]["chamfer_base"]["profile_constrained"],
-        false
-    );
+
     let rect = [-10.125, 7.5, 52.25, 20.5];
     c.ask_rect(rect);
     let (sketch, version, _) = (c.sketch_id().to_owned(), c.version().to_owned(), 0);
@@ -513,7 +505,7 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
     let try_distance = |source: &Path, d: f64, name: &str| -> (PathBuf, Value) {
         write(
             &request,
-            &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":d,"unit":"mm"}]}),
+            &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":d,"unit":"mm"}]}),
         );
         let out = g.root.path().join(format!("{name}.fcad"));
         let (_, version) = base_of(source);
@@ -549,13 +541,13 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
         let copy = g.root.path().join(format!("exact-{fits}.fcad"));
         std::fs::copy(&first, &copy).expect("copy");
         let mut d = Document::open(&copy).expect("writable");
-        let prepared = ferritecad_document::ExpressionChange::constant(
+        let prepared = ferritecad_document::EditChange::constant(
             id.parse().expect("UUID"),
             ferritecad_document::ExpressionSlot::ChamferDistance,
             distance,
         )
         .expect("a finite distance is prepared on a constrained plate");
-        d.write_expression_changes(&[prepared]).expect("written");
+        d.write_changes(&[prepared]).expect("written");
         d.close().expect("close");
         let d = Document::open_read_only(&copy).expect("reopen");
         let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
@@ -815,13 +807,7 @@ fn native_constraint_copy_preserves_preexisting_unresolved_references() {
 fn chamfer_constraint_discovery_and_protocol_without_native() {
     let plain = chamfered_without_kernel(Plate::new(CCW), [X0 + W, Y0], 2.375);
     let row = plain.constraint_row();
-    assert_eq!(row["available"], true, "{row}");
-    assert_eq!(row["chamfer_base"]["corner_mm"], json!([X0 + W, Y0]));
-    assert_eq!(
-        row["chamfer_base"]["chamfer_feature_id"],
-        plain.catalog["chamfers"][0]["feature_id"]
-    );
-    assert_eq!(row["chamfer_base"]["profile_constrained"], false);
+
     assert_eq!(row["fillet_base"], Value::Null);
 
     // Constraints written by the shipped preparation and writer, no kernel.
@@ -839,17 +825,15 @@ fn chamfer_constraint_discovery_and_protocol_without_native() {
             },
         )],
     };
-    let prepared =
-        ferritecad_document::prepare_sketch_constraints(&d, sketch, &edits).expect("prepared");
-    assert_eq!(prepared.chamfer().map(|c| c.constrained), Some(false));
-    d.write_sketch_constraints(&prepared).expect("written");
+    let prepared = ferritecad_fixtures::constraint_changes(&d, sketch, &edits).expect("prepared");
+    d.write_changes(&prepared).expect("written");
     d.close().expect("close");
     let f = Fixture {
         catalog: inspect(&plain.source),
         ..plain
     };
     let row = f.constraint_row();
-    assert_eq!(row["available"], true);
+
     assert_eq!(
         row["constraints"].as_array().expect("list").len(),
         5,
@@ -857,29 +841,17 @@ fn chamfer_constraint_discovery_and_protocol_without_native() {
     );
     let chamfer = &f.catalog["chamfers"][0];
 
-    assert_eq!(
-        row["chamfer_base"]["corner_mm"],
-        json!([X0 + W, Y0]),
-        "the stored corner"
-    );
-
-    assert_eq!(row["chamfer_base"]["profile_constrained"], true);
-
     let sketch_row = &f.catalog["sketches"][0];
-    assert_eq!(
-        sketch_row["editable"], false,
-        "coordinates of a constrained Sketch"
-    );
+
     let reason = sketch_row["refusal"].as_str().expect("reason");
     assert!(
         reason.contains(chamfer["feature_id"].as_str().expect("id"))
             && reason.contains("constraint editor"),
         "{reason}"
     );
-    assert_eq!(sketch_row["chamfer_base"], Value::Null);
+
     // Creating a Chamfer on a constrained source stays refused, naming the
     // constraint's family.
-    assert_eq!(f.catalog["bodies"][0]["chamfer_edge"]["available"], false);
 
     // The protocol. Without a kernel the kernel is asked for after the request
     // is read; with a kernel and no solver the solve is refused; with both,

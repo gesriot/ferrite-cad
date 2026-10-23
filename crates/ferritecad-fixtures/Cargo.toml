@@ -17,6 +17,7 @@ ferritecad-document.workspace = true
 ferritecad-eval.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"

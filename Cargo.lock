@@ -816,6 +816,7 @@ dependencies = [
  "ferritecad-eval",
  "ferritecad-kernel",
  "ferritecad-types",
+ "serde_json",
  "tempfile",
 ]
 

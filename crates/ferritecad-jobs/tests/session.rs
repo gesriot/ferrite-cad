@@ -91,7 +91,7 @@ fn apply(
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     millimetres,
@@ -210,7 +210,7 @@ fn editing_back_to_the_saved_value_is_clean_and_a_no_op_is_not_a_step() {
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     f.feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     f.height,
@@ -339,7 +339,7 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     f.feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     22.0,
@@ -371,7 +371,7 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     f.feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     23.0,
@@ -510,13 +510,21 @@ fn a_reader_holding_a_version_keeps_it_through_eviction_and_undo() {
 /// The saved Sketch's vertices with the right-hand side moved by `by` millimetres:
 /// a wider plate, offset and fractional, the same Lines.
 fn widened(path: &Path, by: f64) -> (ObjectId, Vec<ferritecad_document::SketchVertex>) {
-    let reading = read_extrude_source(path).expect("reading");
-    let sketch = reading
-        .sketches
+    let d = ferritecad_document::Document::open_read_only(path).expect("document");
+    let (sketch, saved) = ferritecad_fixtures::sketch(&d).expect("sketch");
+    let vertices = saved
+        .curves
         .iter()
-        .find(|s| s.refusal.is_none())
-        .expect("an editable Sketch");
-    let vertices = sketch.vertices.clone().expect("vertices");
+        .map(|c| {
+            let ferritecad_document::SketchGeometry::Line { start, .. } = c.geometry else {
+                unreachable!("fixture lines")
+            };
+            ferritecad_document::SketchVertex {
+                curve_id: c.id,
+                start_mm: [start.x, start.y],
+            }
+        })
+        .collect::<Vec<_>>();
     let right = vertices
         .iter()
         .map(|v| v.start_mm[0])
@@ -530,17 +538,11 @@ fn widened(path: &Path, by: f64) -> (ObjectId, Vec<ferritecad_document::SketchVe
             v
         })
         .collect();
-    (sketch.sketch, moved)
+    (sketch, moved)
 }
 
 fn width_of(path: &Path) -> f64 {
-    let reading = read_extrude_source(path).expect("reading");
-    let vertices = reading
-        .sketches
-        .iter()
-        .find(|s| s.refusal.is_none())
-        .and_then(|s| s.vertices.clone())
-        .expect("vertices");
+    let (_, vertices) = widened(path, 0.);
     let xs = vertices.iter().map(|v| v.start_mm[0]);
     xs.clone().fold(f64::MIN, f64::max) - xs.fold(f64::MAX, f64::min)
 }
@@ -551,9 +553,13 @@ fn apply_vertices(
     vertices: Vec<ferritecad_document::SketchVertex>,
     expected: ferritecad_document::DocumentVersion,
 ) -> Result<StepCommit, CadError> {
-    let step = support::viewed(session.begin_step()).edit_sketch_vertices(
+    let changes = ferritecad_fixtures::vertex_changes(
+        &ferritecad_document::Document::open_read_only(session.current().path())?,
         sketch,
-        vertices,
+        &vertices,
+    )?;
+    let step = support::viewed(session.begin_step()).edit(
+        changes,
         expected,
         &mut MockKernel::new(),
         |_, _| {
@@ -600,12 +606,16 @@ fn a_vertex_edit_is_a_session_step_that_reaches_the_command_lines_result() {
         std::fs::copy(c.path(), &one).expect("copy");
         c.version()
     };
-    ferritecad_jobs::edit_sketch_copy(
-        &ferritecad_jobs::EditSketchRequest {
+    ferritecad_jobs::edit_copy(
+        &ferritecad_jobs::EditRequest {
             source: one.clone(),
             expected: ticket_source,
-            sketch,
-            vertices,
+            changes: ferritecad_fixtures::vertex_changes(
+                &ferritecad_document::Document::open_read_only(&one).expect("document"),
+                sketch,
+                &vertices,
+            )
+            .expect("changes"),
             destination: peer.clone(),
         },
         &mut MockKernel::new(),
@@ -684,9 +694,9 @@ fn a_vertex_edit_made_from_an_older_version_is_refused_and_changes_nothing() {
         StepCommit::NoChange
     );
     assert_eq!(session.undo_depth(), depth);
-    // A request the document refuses (a collapsed plate) is refused whole.
+    // Nonfinite input is refused before the mock kernel is asked.
     let current = session.current();
-    let (sketch, collapsed) = widened(current.path(), -1000.0);
+    let (sketch, collapsed) = widened(current.path(), f64::NAN);
     let expected = current.version();
     drop(current);
     assert!(apply_vertices(&mut session, sketch, collapsed, expected).is_err());
@@ -700,7 +710,7 @@ fn a_vertex_edit_made_from_an_older_version_is_refused_and_changes_nothing() {
 fn constrained() -> (Fixture, ObjectId, Vec<ferritecad_types::StableEntityId>) {
     use ferritecad_document::{
         AddLineConstraint, AddSketchConstraint, Document, LineConstraintKind, LineLengthMm,
-        SketchConstraintEdits, prepare_sketch_constraints,
+        SketchConstraintEdits,
     };
     let mut f = fixture();
     let root = tempfile::tempdir().expect("directory");
@@ -719,13 +729,12 @@ fn constrained() -> (Fixture, ObjectId, Vec<ferritecad_types::StableEntityId>) {
     )
     .expect("a plate");
     let mut document = Document::open(&file).expect("document");
-    let source = ferritecad_document::ExtrudeEditSource::read(&document).expect("catalog");
-    let choice = &source.constraint_sketches[0];
-    let curves = &choice.stored.as_ref().expect("stored").curves;
+    let (sketch, saved) = ferritecad_fixtures::sketch(&document).expect("sketch");
+    let curves = &saved.curves;
     let line = |curve, kind| AddSketchConstraint::Line(AddLineConstraint::Line { curve, kind });
-    let prepared = prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
-        choice.sketch,
+        sketch,
         &SketchConstraintEdits {
             remove: vec![],
             add: vec![
@@ -744,18 +753,9 @@ fn constrained() -> (Fixture, ObjectId, Vec<ferritecad_types::StableEntityId>) {
     )
     .expect("prepare");
     document
-        .write_sketch_constraints(&prepared)
+        .write_changes(&prepared)
         .expect("write constraints");
-    let sketch = choice.sketch;
-    assert!(
-        choice
-            .stored
-            .as_ref()
-            .expect("stored")
-            .constraints
-            .is_empty(),
-        "the sample plate starts without constraints"
-    );
+    assert!(saved.constraints.is_empty());
     document.close().expect("close");
     let reading = read_extrude_source(&file).expect("reading");
     let ids = stored_ids(&file);
@@ -771,12 +771,10 @@ fn constrained() -> (Fixture, ObjectId, Vec<ferritecad_types::StableEntityId>) {
 }
 
 fn stored_ids(path: &Path) -> Vec<ferritecad_types::StableEntityId> {
-    read_extrude_source(path)
-        .expect("reading")
-        .constraint_sketches[0]
-        .stored
-        .as_ref()
-        .expect("stored")
+    let d = ferritecad_document::Document::open_read_only(path).expect("document");
+    ferritecad_fixtures::sketch(&d)
+        .expect("sketch")
+        .1
         .constraints
         .iter()
         .filter(|c| {
@@ -795,9 +793,13 @@ fn apply_constraints(
     edits: ferritecad_document::SketchConstraintEdits,
     expected: ferritecad_document::DocumentVersion,
 ) -> Result<StepCommit, CadError> {
-    let step = support::viewed(session.begin_step()).edit_sketch_constraints(
+    let changes = ferritecad_fixtures::constraint_changes(
+        &ferritecad_document::Document::open_read_only(session.current().path())?,
         sketch,
-        edits,
+        &edits,
+    )?;
+    let step = support::viewed(session.begin_step()).edit(
+        changes,
         expected,
         &mut MockKernel::new(),
         |_, _| {
@@ -851,15 +853,17 @@ fn a_constraint_edit_is_a_session_step_beside_height_with_undo_and_redo() {
         std::fs::copy(c.path(), &one).expect("copy");
         c.version()
     };
-    ferritecad_jobs::edit_sketch_constraints_copy(
-        &ferritecad_jobs::EditSketchConstraintsRequest {
-            source: one,
+    ferritecad_jobs::edit_copy(
+        &ferritecad_jobs::EditRequest {
+            source: one.clone(),
             expected: version,
-            sketch,
-            edits: SketchConstraintEdits {
-                remove: vec![ids[2], ids[3]],
-                add: vec![],
-            },
+            changes: ids[2..]
+                .iter()
+                .map(|id| ferritecad_document::EditChange::RemoveConstraint {
+                    sketch,
+                    constraint: *id,
+                })
+                .collect(),
             destination: peer.clone(),
         },
         &mut MockKernel::new(),
@@ -934,15 +938,15 @@ fn a_constraint_edit_from_an_older_version_or_without_edits_changes_nothing() {
     assert_eq!(files(session.private_directory()), listing);
 
     let expected = session.current().version();
-    // An empty draft is refused by the model's own rule, as the command line does.
-    assert!(
+    assert_eq!(
         apply_constraints(
             &mut session,
             sketch,
             SketchConstraintEdits::default(),
             expected
         )
-        .is_err()
+        .expect("empty transaction"),
+        StepCommit::NoChange
     );
     assert_eq!(session.undo_depth(), depth);
 

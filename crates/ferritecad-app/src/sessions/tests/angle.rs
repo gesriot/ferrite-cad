@@ -40,22 +40,30 @@ fn peer(source: &Path, r: &EditRequest, root: &Path, out: &Path) {
         &file,
         format!(
             r#"{{"request_version":1,"angle_deg":{}}}"#,
-            r.changes[0].expression.value().to_degrees()
+            r.changes[0]
+                .expression()
+                .expect("numeric form contains an expression change")
+                .value()
+                .to_degrees()
         ),
     )
     .expect("request");
     {
         let request = crate::edits::tests::expression_request(
-            &r.changes[0].object.to_string(),
+            &r.changes[0].object().to_string(),
             "revolve_angle",
-            &r.changes[0].expression.value().to_string(),
+            &r.changes[0]
+                .expression()
+                .expect("numeric form contains an expression change")
+                .value()
+                .to_string(),
             "rad",
         );
         cli(&[
             "edit".as_ref(),
             source.as_os_str(),
             "--expect-version".as_ref(),
-            read_extrude_source(source)
+            crate::sketch_facts::read(source)
                 .expect("reading")
                 .version
                 .content
@@ -70,13 +78,13 @@ fn peer(source: &Path, r: &EditRequest, root: &Path, out: &Path) {
 }
 fn request(s: &Sessions, degrees: f64) -> EditRequest {
     let source = s.export_path().expect("accepted");
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     EditRequest {
         source,
         expected: reading.version,
 
         changes: vec![
-            ferritecad_document::ExpressionChange::constant(
+            ferritecad_document::EditChange::constant(
                 ferritecad_fixtures::expression_slot(
                     &reading,
                     ferritecad_document::ExpressionSlot::RevolveAngle,
@@ -245,12 +253,12 @@ fn create(root: &Path, axis: bool) -> PathBuf {
     ]);
     path
 }
-fn constraint_request(path: &Path) -> ferritecad_jobs::EditSketchConstraintsRequest {
+fn constraint_request(path: &Path) -> ferritecad_jobs::EditRequest {
     use ferritecad_document::{
         AddLineConstraint, AddSketchConstraint, LineConstraintKind as L, LineEndpoint,
         LineLengthMm, SketchConstraintEdits, SketchCoordinateMm,
     };
-    let reading = read_extrude_source(path).expect("reading");
+    let reading = crate::sketch_facts::read(path).expect("reading");
     let choice = &reading.constraint_sketches[0];
     let curves = &choice.stored.as_ref().expect("Sketch").curves;
     let on = |i: usize, kind| {
@@ -275,14 +283,17 @@ fn constraint_request(path: &Path) -> ferritecad_jobs::EditSketchConstraintsRequ
         on(0, L::Distance(LineLengthMm::new(6.).expect("length"))),
         on(1, L::Distance(LineLengthMm::new(13.75).expect("height"))),
     ];
-    ferritecad_jobs::EditSketchConstraintsRequest {
+    ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::constraint_changes(
+            &(path.to_path_buf()),
+            choice.sketch,
+            &(SketchConstraintEdits {
+                remove: vec![],
+                add,
+            }),
+        ),
         source: path.to_path_buf(),
         expected: reading.version,
-        sketch: choice.sketch,
-        edits: SketchConstraintEdits {
-            remove: vec![],
-            add,
-        },
         destination: PathBuf::new(),
     }
 }
@@ -307,7 +318,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         crate::sessions::test_open::open_in(private.path(), &source, HistoryLimits::default())
             .expect("session"),
     );
-    let opened = read_extrude_source(&source).expect("reading");
+    let opened = crate::sketch_facts::read(&source).expect("reading");
     let original_refs = Document::open_read_only(&source)
         .expect("doc")
         .topology_refs()
@@ -316,7 +327,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         .sketches
         .iter()
         .find_map(|s| match s.profile_use {
-            Some(ferritecad_document::SketchProfileUse::PartialRevolve {
+            Some(crate::sketch_facts::SketchProfileUse::PartialRevolve {
                 axis_segment, ..
             }) => Some(axis_segment),
             _ => None,
@@ -327,11 +338,14 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     let mut vertices = opened.sketches[0].vertices.clone().expect("vertices");
     vertices[1].start_mm[0] = 8.75;
     vertices[2].start_mm[0] = 8.75;
-    let v = ferritecad_jobs::EditSketchRequest {
+    let v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(s.export_path().expect("current")),
+            opened.sketches[0].sketch,
+            &(vertices),
+        ),
         source: s.export_path().expect("current"),
         expected: opened.version,
-        sketch: opened.sketches[0].sketch,
-        vertices,
         destination: PathBuf::new(),
     };
     apply_sketch_native(&mut s, v.clone());
@@ -351,20 +365,20 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         same_model_with_explicit_new_ids(
             &s.export_path().expect("constraints"),
             &cp,
-            v.sketch,
+            crate::transaction_tests::sketch(&v),
             &old_ids,
             "constraints cells",
         );
         peer_before = cp;
         height = 13.75;
-        let read = read_extrude_source(&s.export_path().expect("current")).expect("reading");
+        let read = crate::sketch_facts::read(&s.export_path().expect("current")).expect("reading");
         assert_eq!(
             read.constraint_sketches[0]
                 .stored
                 .as_ref()
                 .expect("stored")
                 .curves,
-            read_extrude_source(&profile)
+            crate::sketch_facts::read(&profile)
                 .expect("profile")
                 .constraint_sketches[0]
                 .stored
@@ -376,7 +390,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     }
     let before_angle = s.export_path().expect("before angle");
     let before_cells = cells(&before_angle);
-    let current = read_extrude_source(&before_angle).expect("reading");
+    let current = crate::sketch_facts::read(&before_angle).expect("reading");
     let (mut form, r) = typed_angle(&before_angle, &current, &s, "212.25");
     assert_eq!(r.expected, current.version);
     assert!(s.dirty());
@@ -397,7 +411,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         same_model_with_explicit_new_ids(
             &applied,
             &independent_peer,
-            v.sketch,
+            crate::transaction_tests::sketch(&v),
             &old_ids,
             "independent chain",
         );
@@ -412,12 +426,12 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         original_refs
     );
     assert_eq!(
-        read_extrude_source(&applied)
+        crate::sketch_facts::read(&applied)
             .expect("reading")
             .constraint_sketches
             .iter()
             .find_map(|s| match s.profile_use {
-                Some(ferritecad_document::SketchProfileUse::PartialRevolve {
+                Some(crate::sketch_facts::SketchProfileUse::PartialRevolve {
                     axis_segment,
                     ..
                 }) => Some(axis_segment),
@@ -511,7 +525,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     assert!(noop.exists());
     assert_eq!(cells(&noop), cells(&s.export_path().expect("current")));
     // Produced edit cancelled, ignored as stale answer, or GPU/scene preparation refused.
-    let reading = read_extrude_source(&s.export_path().expect("current")).expect("reading");
+    let reading = crate::sketch_facts::read(&s.export_path().expect("current")).expect("reading");
     let (retained_form, r) =
         typed_angle(&s.export_path().expect("current"), &reading, &s, "198.125");
     let draft = crate::sketch::tests::angle_apply::draft_state(&retained_form);
@@ -586,7 +600,7 @@ fn stub_angle_apply_refuses_without_publication() {
         crate::sessions::test_open::open_in(root.path(), &source, HistoryLimits::default())
             .expect("session"),
     );
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     let (_form, r) = typed_angle(&source, &reading, &s, "212.25");
     let (g, rx) = start(&mut s, &r);
     let error = rx.recv().expect("answer").expect_err("typed refusal");
@@ -608,7 +622,7 @@ fn mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained() {
     let root = tempfile::tempdir().expect("root");
     let source = create(root.path(), false);
     // Store constraints through the document API without asking the absent solver to solve.
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     let id = reading.constraint_sketches[0].sketch;
     let mut d = Document::open(&source).expect("document");
     let o = d.object(id).expect("row").expect("Sketch");
@@ -705,27 +719,30 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
     let mut radial_profile = PathBuf::new();
     for (name, axis) in [("radial", false), ("axis", true)] {
         let source = directory.join("source").join(format!("{name}.fcad"));
-        let reading = read_extrude_source(&source).expect("source");
+        let reading = crate::sketch_facts::read(&source).expect("source");
         let choice = &reading.sketches[0];
         let mut vertices = choice.vertices.clone().expect("vertices");
         vertices[1].start_mm[0] = 8.75;
         vertices[2].start_mm[0] = 8.75;
-        let r = ferritecad_jobs::EditSketchRequest {
+        let r = ferritecad_jobs::EditRequest {
+            changes: crate::transaction_tests::vertex_changes(
+                &(source.clone()),
+                choice.sketch,
+                &(vertices),
+            ),
             source: source.clone(),
             expected: reading.version,
-            sketch: choice.sketch,
-            vertices,
             destination: PathBuf::new(),
         };
         let profile = root.path().join(format!("{name}-profile.fcad"));
         sketch_peer(&source, &r, root.path(), &profile);
-        let angle_reading = read_extrude_source(&profile).expect("profile");
+        let angle_reading = crate::sketch_facts::read(&profile).expect("profile");
         let a = EditRequest {
             source: profile.clone(),
             expected: angle_reading.version,
 
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     ferritecad_fixtures::expression_slot(
                         &angle_reading,
                         ferritecad_document::ExpressionSlot::RevolveAngle,
@@ -780,14 +797,14 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
     );
     let (stl, _) = peer_bytes(&radial_profile, root.path(), "undo");
     assert_eq!(bytes("radial-undo.stl"), stl);
-    let reading = read_extrude_source(&radial_profile).expect("profile");
+    let reading = crate::sketch_facts::read(&radial_profile).expect("profile");
     let branch = root.path().join("branch.fcad");
     let r = EditRequest {
         source: radial_profile.clone(),
         expected: reading.version,
 
         changes: vec![
-            ferritecad_document::ExpressionChange::constant(
+            ferritecad_document::EditChange::constant(
                 ferritecad_fixtures::expression_slot(
                     &reading,
                     ferritecad_document::ExpressionSlot::RevolveAngle,
@@ -815,7 +832,7 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
         SketchConstraintRule,
     };
     let source = directory.join("source/constrained.fcad");
-    let reading = read_extrude_source(&source).expect("constrained");
+    let reading = crate::sketch_facts::read(&source).expect("constrained");
     let choice = &reading.constraint_sketches[0];
     let stored = choice.stored.as_ref().expect("stored");
     let curve = stored.curves[1].id;
@@ -825,28 +842,31 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
         .find(|c| matches!(c.rule, SketchConstraintRule::Distance { a, .. } if a.curve==curve))
         .expect("height")
         .id;
-    let r = ferritecad_jobs::EditSketchConstraintsRequest {
+    let r = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::constraint_changes(
+            &(source.clone()),
+            choice.sketch,
+            &(ferritecad_document::SketchConstraintEdits {
+                remove: vec![old],
+                add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
+                    curve,
+                    kind: LineConstraintKind::Distance(LineLengthMm::new(13.75).expect("height")),
+                })],
+            }),
+        ),
         source: source.clone(),
         expected: reading.version,
-        sketch: choice.sketch,
-        edits: ferritecad_document::SketchConstraintEdits {
-            remove: vec![old],
-            add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
-                curve,
-                kind: LineConstraintKind::Distance(LineLengthMm::new(13.75).expect("height")),
-            })],
-        },
         destination: PathBuf::new(),
     };
     let cp = root.path().join("constrained.fcad");
     constraint_peer(&source, &r, root.path(), &cp);
-    let reading = read_extrude_source(&cp).expect("constraint peer");
+    let reading = crate::sketch_facts::read(&cp).expect("constraint peer");
     let a = EditRequest {
         source: cp.clone(),
         expected: reading.version,
 
         changes: vec![
-            ferritecad_document::ExpressionChange::constant(
+            ferritecad_document::EditChange::constant(
                 ferritecad_fixtures::expression_slot(
                     &reading,
                     ferritecad_document::ExpressionSlot::RevolveAngle,
@@ -871,7 +891,7 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
         "GUI constraint/angle cells",
     );
     assert_eq!(pairs.len(), 1, "only replacement length gets a new UUID");
-    let after = read_extrude_source(&saved).expect("saved");
+    let after = crate::sketch_facts::read(&saved).expect("saved");
     assert_eq!(
         after.constraint_sketches[0]
             .stored

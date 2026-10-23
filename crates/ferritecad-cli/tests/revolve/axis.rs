@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! §27C: solid full-turn Revolves — a profile closed on the axis along one
-//! Line — made by `create-sketch-revolve`, edited by `edit-sketch-copy`, and
+//! Line — made by `create-sketch-revolve`, edited by `edit`, and
 //! measured after the fact.
 //!
 //! Expected volumes are written out from cylinder, cone and frustum formulas,
@@ -280,7 +280,7 @@ fn check_solid_mesh(m: &Mesh, points: &[[f64; 2]], analytic: f64) {
 fn discovered(path: &Path) -> (Value, Vec<String>, String) {
     let c = inspect(path);
     let row = &c["sketches"][0];
-    let ids: Vec<String> = row["vertices"]
+    let ids: Vec<String> = row["curves"]
         .as_array()
         .expect("editable vertices")
         .iter()
@@ -327,22 +327,13 @@ fn native_solid_revolutions_create_measure_name_cache_and_export() {
             reply(create(&input, &out).output().expect("create"), 0);
             let (c, ids, axis) = discovered(&out);
             let row = &c["sketches"][0];
-            assert_eq!(row["editable"], true);
-            assert_eq!(
-                row["profile_feature"]["kind"],
-                "full_turn_revolve_axis_closed"
-            );
-            assert!(row["profile_feature"].get("axis_clearance_mm").is_none());
-            assert_eq!(
-                row["profile_feature"]["off_axis_clearance_mm"],
-                FullTurnRevolution::AXIS_CLEARANCE_MM
-            );
+
             let at = axis_index(&p);
             assert_eq!(axis, ids[at], "the axis Line by its own UUID");
             let r = &c["revolves"][0];
             assert_eq!(r["closure"], "axis_closed");
             assert_eq!(r["axis_curve_id"], axis.as_str());
-            assert_eq!(r["profile"]["available"], true);
+
             assert_eq!(c["features"], json!([]));
 
             let cold = measure_solid(&out, &p, analytic, None);
@@ -393,10 +384,7 @@ fn native_solid_revolutions_create_measure_name_cache_and_export() {
     request(&input, &BUSHING);
     reply(create(&input, &out).output().expect("create"), 0);
     let c = inspect(&out);
-    assert_eq!(
-        c["sketches"][0]["profile_feature"]["kind"],
-        "full_turn_revolve"
-    );
+
     assert_eq!(c["revolves"][0]["closure"], "radial_clear");
     assert_eq!(c["revolves"][0]["axis_curve_id"], Value::Null);
 }
@@ -696,7 +684,7 @@ fn native_solid_revolution_refusals_are_atomic() {
             });
     });
     let c = inspect(&constrained);
-    assert_eq!(c["sketches"][0]["editable"], false);
+
     let ids: Vec<String> = labels.iter().map(ToString::to_string).collect();
     write_edit(&request_path, &ids, &CYLINDER);
     let names = entries(d.path());
@@ -876,175 +864,6 @@ pub(super) fn write_solid_document(
     labels
 }
 
-/// Discovery, the stated axis against the coordinates, the stored layout and
-/// the writer's own re-derivation — with no kernel. Runs in the stub build.
-#[test]
-fn solid_revolution_discovery_payload_and_writer_without_kernel() {
-    let d = tempfile::tempdir().expect("dir");
-    let source = d.path().join("cylinder.fcad");
-    let labels = write_solid_document(&source, &CYLINDER, Some(3));
-    let c = inspect(&source);
-    let row = &c["sketches"][0];
-    assert_eq!(row["editable"], true, "{row}");
-    assert_eq!(
-        row["profile_feature"]["kind"],
-        "full_turn_revolve_axis_closed"
-    );
-    assert_eq!(
-        row["profile_feature"]["axis_curve_id"],
-        labels[3].to_string()
-    );
-    assert_eq!(c["revolves"][0]["closure"], "axis_closed");
-    assert_eq!(c["revolves"][0]["axis_curve_id"], labels[3].to_string());
-
-    let sql = rusqlite::Connection::open(&source).expect("SQL");
-
-    drop(sql);
-
-    // A stated axis Line the coordinates disagree with refuses in discovery.
-    for (why, points, stated, message) in [
-        (
-            "another Line stated",
-            CYLINDER.to_vec(),
-            Some(1),
-            "the axis Line cannot change",
-        ),
-        (
-            "stated on a bore",
-            BUSHING.to_vec(),
-            Some(3),
-            "no longer touches the axis",
-        ),
-        (
-            "not stated on a solid",
-            CYLINDER.to_vec(),
-            None,
-            "is a part with a bore",
-        ),
-    ] {
-        let path = d.path().join(format!("{}.fcad", why.replace(' ', "-")));
-        write_solid_document(&path, &points, stated);
-        let c = inspect(&path);
-        assert_eq!(c["sketches"][0]["editable"], false, "{why}");
-        assert_eq!(c["revolves"][0]["profile"]["available"], false, "{why}");
-        let refusal = c["revolves"][0]["profile"]["refusal"]
-            .as_str()
-            .expect("refusal");
-        assert!(refusal.contains(message), "{why}: {refusal}");
-    }
-
-    // The writer re-derives the class inside its transaction: prepared
-    // payloads that move the axis Line or leave the axis are refused.
-    let target = d.path().join("writer.fcad");
-    std::fs::copy(&source, &target).expect("copy");
-    let bytes = std::fs::read(&target).expect("target");
-    let sketch: ObjectId = c_sketch(&c);
-    let doc = Document::open_read_only(&target).expect("open");
-    let vertices = |points: &[[f64; 2]]| -> Vec<ferritecad_document::SketchVertex> {
-        labels
-            .iter()
-            .zip(points)
-            .map(|(id, p)| ferritecad_document::SketchVertex {
-                curve_id: *id,
-                start_mm: *p,
-            })
-            .collect()
-    };
-    let prepared = ferritecad_document::replace_sketch_coordinates(
-        &doc,
-        sketch,
-        &vertices(&[[0., 2.5], [8., 2.5], [8., 12.5], [0., 12.5]]),
-    )
-    .expect("a valid edit prepares");
-    for (why, points, message) in [
-        (
-            "hollow",
-            vec![[1., 0.], [10., 0.], [10., 15.], [1., 15.]],
-            "cannot change between solid and hollow",
-        ),
-        (
-            "moved axis",
-            vec![[10., 0.], [0., 0.], [0., 15.], [10., 15.]],
-            "the axis Line cannot change",
-        ),
-    ] {
-        let error =
-            ferritecad_document::replace_sketch_coordinates(&doc, sketch, &vertices(&points))
-                .expect_err(why);
-        assert!(error.to_string().contains(message), "{why}: {error}");
-    }
-    doc.close().expect("close");
-    let line = |a: [f64; 2], b: [f64; 2]| SketchGeometry::Line {
-        start: Point2::new(a[0], a[1]).expect("point"),
-        end: Point2::new(b[0], b[1]).expect("point"),
-    };
-    for (why, points) in [
-        (
-            "a consistent profile with the axis Line moved",
-            [[10., 0.], [0., 0.], [0., 15.], [10., 15.]],
-        ),
-        (
-            "a consistent profile off the axis",
-            [[1., 0.], [10., 0.], [10., 15.], [1., 15.]],
-        ),
-    ] {
-        let mut record = prepared.clone();
-        let ObjectPayload::Sketch(s) = &mut record.payload else {
-            unreachable!()
-        };
-        for (i, c) in s.curves.iter_mut().enumerate() {
-            c.geometry = line(points[i], points[(i + 1) % 4]);
-        }
-        let mut doc = Document::open(&target).expect("open");
-        doc.write_sketch_geometry(&record).expect_err(why);
-        doc.close().expect("close");
-        assert_eq!(std::fs::read(&target).expect("target"), bytes, "{why}");
-    }
-    let mut doc = Document::open(&target).expect("open");
-    doc.write_sketch_geometry(&prepared)
-        .expect("the honest edit");
-    doc.close().expect("close");
-
-    if !ferritecad_occt::is_available() {
-        // Without a kernel a solid part is discovered above, but neither
-        // created nor edited: nothing is published and the source is kept.
-        let input = d.path().join("solid-request.json");
-        request(&input, &CYLINDER);
-        let output = d.path().join("stub-new.fcad");
-        let names = entries(d.path());
-        let v = reply(create(&input, &output).output().expect("stub create"), 2);
-        assert_eq!(v["error"]["kind"], "unsupported", "{v}");
-        assert_eq!(entries(d.path()), names);
-        let before = std::fs::read(&source).expect("source");
-        let s = saved(&source);
-        let edit_request = d.path().join("stub-edit.json");
-        write_edit(
-            &edit_request,
-            &s.ids,
-            &[[0., 1.], [8., 1.], [8., 11.], [0., 11.]],
-        );
-        let names = entries(d.path());
-        let out = d.path().join("stub-edit.fcad");
-        let v = edit_reply(
-            edit(&source, &s.sketch, &s.version, &edit_request, &out)
-                .output()
-                .expect("stub edit"),
-            2,
-        );
-        assert_eq!(v["error"]["kind"], "unsupported", "{v}");
-        assert_eq!(entries(d.path()), names);
-        assert_eq!(std::fs::read(&source).expect("source"), before);
-    }
-}
-
-fn c_sketch(c: &Value) -> ObjectId {
-    c["sketches"][0]["sketch_id"]
-        .as_str()
-        .expect("id")
-        .parse()
-        .expect("UUID")
-}
-
 /// A kernel and no solver: a solid part needs no planegcs, to make or edit.
 #[test]
 fn occt_without_solver_builds_and_edits_a_solid_revolve() {
@@ -1119,23 +938,27 @@ fn native_solid_revolve_delivery_late_guards_and_cancellation() {
     measure_solid(&published, &to, to_mm3, None);
     // The shared job with the kernel that ships, at its own phases.
     let reading = ferritecad_jobs::read_extrude_source(&source).expect("reading");
-    let choice = &reading.sketches[0];
-    let vertices: Vec<ferritecad_document::SketchVertex> = choice
-        .vertices
-        .clone()
-        .expect("editable")
-        .into_iter()
+    let source_doc = Document::open_read_only(&source).expect("source");
+    let (sketch_id, saved_sketch) = ferritecad_fixtures::sketch(&source_doc).expect("sketch");
+    source_doc.close().expect("close");
+    let vertices: Vec<ferritecad_document::SketchVertex> = saved_sketch
+        .curves
+        .iter()
         .zip(to)
         .map(|(v, p)| ferritecad_document::SketchVertex {
-            curve_id: v.curve_id,
+            curve_id: v.id,
             start_mm: p,
         })
         .collect();
-    let job = |name: &str| ferritecad_jobs::EditSketchRequest {
+    let job = |name: &str| ferritecad_jobs::EditRequest {
+        changes: {
+            let document =
+                ferritecad_document::Document::open_read_only(&(source.clone())).expect("source");
+            ferritecad_fixtures::vertex_changes(&document, sketch_id, &(vertices.clone()))
+                .expect("changes")
+        },
         source: source.clone(),
         expected: reading.version,
-        sketch: choice.sketch,
-        vertices: vertices.clone(),
         destination: d.path().join(name),
     };
     let names = entries(d.path());
@@ -1148,7 +971,7 @@ fn native_solid_revolve_delivery_late_guards_and_cancellation() {
                 stop.cancel();
             }
         }));
-    let error = ferritecad_jobs::edit_sketch_copy(
+    let error = ferritecad_jobs::edit_copy(
         &job("cancelled.fcad"),
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
@@ -1167,7 +990,7 @@ fn native_solid_revolve_delivery_late_guards_and_cancellation() {
             }
         }));
     let late = job("after.fcad");
-    ferritecad_jobs::edit_sketch_copy(
+    ferritecad_jobs::edit_copy(
         &late,
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,

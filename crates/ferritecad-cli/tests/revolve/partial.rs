@@ -538,7 +538,7 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                 assert_eq!(r["angle_deg"], json!(degrees));
                 assert_eq!(r["axis"], "sketch_y");
                 assert_eq!(r["operation"], "new_body");
-                assert_eq!(r["profile"]["available"], true);
+
                 assert_eq!(
                     r["closure"],
                     if solid { "axis_closed" } else { "radial_clear" }
@@ -555,10 +555,10 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                 // §27F replaces §27D's refusal: the sector's profile is
                 // editable, as a kind of its own that states the angle.
                 let row = &c["sketches"][0];
-                assert_eq!(row["editable"], true, "{row}");
+
                 assert_eq!(row["refusal"], Value::Null);
                 assert_eq!(
-                    row["vertices"]
+                    row["curves"]
                         .as_array()
                         .expect("vertices")
                         .iter()
@@ -866,10 +866,10 @@ fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
         let before = std::fs::read(&source).expect("source");
         let c = inspect(&source);
         let row = &c["sketches"][0];
-        assert_eq!(row["editable"], true, "{row}");
+
         let sketch = row["sketch_id"].as_str().expect("id").to_owned();
         let version = c["content_version"].as_str().expect("version").to_owned();
-        let ids: Vec<String> = row["vertices"]
+        let ids: Vec<String> = row["curves"]
             .as_array()
             .expect("vertices")
             .iter()

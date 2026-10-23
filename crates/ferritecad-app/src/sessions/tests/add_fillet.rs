@@ -78,7 +78,7 @@ fn peer_add(source: &Path, body: ObjectId, fillet: &EdgeFillet, out: &Path) {
         "--body".as_ref(),
         body.to_string().as_ref(),
         "--expect-version".as_ref(),
-        read_extrude_source(source)
+        crate::sketch_facts::read(source)
             .expect("reading")
             .version
             .content
@@ -259,26 +259,35 @@ fn gate(name: &str) {
         "height",
     );
     let current = s.export_path().expect("current");
-    let reading = read_extrude_source(&current).expect("reading");
-    let mut v = ferritecad_jobs::EditSketchRequest {
+    let reading = crate::sketch_facts::read(&current).expect("reading");
+    let mut v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(current),
+            target.profile,
+            &(reading
+                .sketches
+                .iter()
+                .find(|c| c.sketch == target.profile)
+                .expect("base")
+                .vertices
+                .clone()
+                .expect("vertices")),
+        ),
         source: current,
         expected: reading.version,
-        sketch: target.profile,
-        vertices: reading
-            .sketches
-            .iter()
-            .find(|c| c.sketch == target.profile)
-            .expect("base")
-            .vertices
-            .clone()
-            .expect("vertices"),
         destination: PathBuf::new(),
     };
-    for p in &mut v.vertices {
+    let mut vertices = crate::transaction_tests::vertices(&v);
+    for p in &mut vertices {
         if p.start_mm[0] == -4.5 {
             p.start_mm[0] = -5.75;
         }
     }
+    v.changes = crate::transaction_tests::vertex_changes(
+        &v.source,
+        crate::transaction_tests::sketch(&v),
+        &vertices,
+    );
     let mut peer_before = root.path().join("peer-vertices.fcad");
     sketch_peer(&ph, &v, root.path(), &peer_before);
     apply_sketch_native(&mut s, v);
@@ -296,7 +305,7 @@ fn gate(name: &str) {
     // Four Adds through the form's own widgets, without confirming the draft.
     for (step, (at, radius)) in ADDS.into_iter().enumerate() {
         let current = s.export_path().expect("current");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let (mut form, r) = typed_add(&current, &reading, &s, at, radius);
         assert_eq!(r.body, body, "the Body is its saved UUID");
         assert_eq!(r.expected, reading.version, "the accepted version");
@@ -348,7 +357,7 @@ fn gate(name: &str) {
     }
     // A fifth: no free corner is left, so a request at a rounded one is refused.
     let current = s.export_path().expect("four");
-    let full = read_extrude_source(&current).expect("reading");
+    let full = crate::sketch_facts::read(&current).expect("reading");
     assert!(
         full.fillet_bodies[0].target.is_none() || full.fillet_bodies[0].refusal.is_some(),
         "a fifth Fillet is offered"
@@ -371,11 +380,12 @@ fn gate(name: &str) {
     );
 
     // The newest Fillet is edited at once through §30G's own form and worker.
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let (mut form, r) = typed_radius(&current, &reading, &s, added[3], "4.5");
     let mut theirs = r.clone();
-    theirs.changes[0].object =
-        ObjectId::from_bytes(map[&r.changes[0].object.to_bytes()]).expect("id");
+    if let ferritecad_document::EditChange::SetExpression { object, .. } = &mut theirs.changes[0] {
+        *object = ObjectId::from_bytes(map[&r.changes[0].object().to_bytes()]).expect("id");
+    }
     let edited_peer = root.path().join("peer-edit.fcad");
     radius_peer(&peer_before, &theirs, &edited_peer);
     assert!(
@@ -461,7 +471,7 @@ fn gate(name: &str) {
         super::fillet::sql(&current),
         super::fillet::sql(&accepted[3])
     );
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let (form, fresh) = typed_add(&current, &reading, &s, [-5.75, 3.25], "2.75");
     let draft = add_draft_state(&form);
     let mut r = fresh.clone();
@@ -637,7 +647,7 @@ fn native_add_on_unsaved_constraints_is_measured_on_solved_lines() {
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     apply_constraints_native(&mut s, &solved_rectangle(&source, &reading, 10.));
     let current = s.export_path().expect("constraints");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let tgt = reading.fillet_bodies[0]
         .target
         .as_ref()
@@ -695,9 +705,9 @@ fn native_add_on_unsaved_constraints_is_measured_on_solved_lines() {
 /// (33, 15.5), its length `depth` and the second's 41 mm.
 fn solved_rectangle(
     source: &Path,
-    reading: &ferritecad_document::ExtrudeEditSource,
+    reading: &crate::sketch_facts::Source,
     depth: f64,
-) -> ferritecad_jobs::EditSketchConstraintsRequest {
+) -> ferritecad_jobs::EditRequest {
     use ferritecad_document::{
         AddLineConstraint, AddSketchConstraint, LineConstraintKind, LineEndpoint, LineLengthMm,
         SketchConstraintEdits, SketchCoordinateMm,
@@ -742,14 +752,17 @@ fn solved_rectangle(
         lines[1],
         LineConstraintKind::Distance(LineLengthMm::new(41.).expect("width")),
     ));
-    ferritecad_jobs::EditSketchConstraintsRequest {
+    ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::constraint_changes(
+            &(source.to_path_buf()),
+            target.profile,
+            &(SketchConstraintEdits {
+                remove: Vec::new(),
+                add,
+            }),
+        ),
         source: source.to_path_buf(),
         expected: reading.version,
-        sketch: target.profile,
-        edits: SketchConstraintEdits {
-            remove: Vec::new(),
-            add,
-        },
         destination: PathBuf::new(),
     }
 }
@@ -786,9 +799,13 @@ fn mixed_add_fillet_uses_occt_without_solver() {
     let (_root, source, reading) = fixture(0);
     let r = solved_rectangle(&source, &reading, 10.);
     let mut d = Document::open(&source).expect("document");
-    let prepared = ferritecad_document::prepare_sketch_constraints(&d, r.sketch, &r.edits)
-        .expect("prepared constraints");
-    d.write_sketch_constraints(&prepared).expect("written");
+    let prepared = ferritecad_fixtures::constraint_changes(
+        &d,
+        crate::transaction_tests::sketch(&r),
+        &crate::transaction_tests::constraints(&r),
+    )
+    .expect("prepared constraints");
+    d.write_changes(&prepared).expect("written");
     d.close().expect("close");
     let original = std::fs::read(&source).expect("source");
     let private = tempfile::tempdir().expect("private");
@@ -822,7 +839,7 @@ const WINDOW_OUTPUTS: [&str; 8] = [
 ];
 
 fn fillet_of(at: [f64; 2], radius: &str, path: &Path) -> EdgeFillet {
-    let reading = read_extrude_source(path).expect("reading");
+    let reading = crate::sketch_facts::read(path).expect("reading");
     let target = reading.fillet_bodies[0].target.clone().expect("target");
     let corner = target
         .corners
@@ -865,7 +882,7 @@ fn compare_gui(root: &Path) {
         "Save As wrote the previous file"
     );
     let tmp = tempfile::tempdir().expect("peer root");
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     let target = reading.fillet_bodies[0].target.clone().expect("target");
     let body = target.body;
     let height = tmp.path().join("height.fcad");
@@ -887,7 +904,7 @@ fn compare_gui(root: &Path) {
             height.as_os_str(),
         ])
     };
-    let reading = read_extrude_source(&height).expect("height reading");
+    let reading = crate::sketch_facts::read(&height).expect("height reading");
     let mut vertices = reading
         .sketches
         .iter()
@@ -901,11 +918,14 @@ fn compare_gui(root: &Path) {
             p.start_mm[0] = -5.75;
         }
     }
-    let v = ferritecad_jobs::EditSketchRequest {
+    let v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(height.clone()),
+            target.profile,
+            &(vertices),
+        ),
         source: height.clone(),
         expected: reading.version,
-        sketch: target.profile,
-        vertices,
         destination: PathBuf::new(),
     };
     let base = tmp.path().join("base.fcad");
@@ -917,10 +937,10 @@ fn compare_gui(root: &Path) {
         &a,
         &ferritecad_jobs::EditRequest {
             source: a.clone(),
-            expected: read_extrude_source(&a).expect("a").version,
+            expected: crate::sketch_facts::read(&a).expect("a").version,
 
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     history(&a)[0].feature,
                     ferritecad_document::ExpressionSlot::FilletRadius,
                     WINDOW_A_RADIUS.parse().expect("radius"),
@@ -1071,7 +1091,9 @@ fn compare_with_controls(root: &Path) {
     control(root, "new ref owner", "a new ref pairs", &|r| {
         let saved = r.join("saved.fcad");
         let source = r.join("source/plate.fcad");
-        let base = read_extrude_source(&source).expect("reading").fillet_bodies[0]
+        let base = crate::sketch_facts::read(&source)
+            .expect("reading")
+            .fillet_bodies[0]
             .target
             .clone()
             .expect("target")
@@ -1110,37 +1132,46 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     apply_native(&mut s, target.base_feature, 9.25);
     let current = s.export_path().expect("current");
-    let reading = read_extrude_source(&current).expect("reading");
-    let mut v = ferritecad_jobs::EditSketchRequest {
+    let reading = crate::sketch_facts::read(&current).expect("reading");
+    let mut v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(current),
+            target.profile,
+            &(reading
+                .sketches
+                .iter()
+                .find(|c| c.sketch == target.profile)
+                .expect("base")
+                .vertices
+                .clone()
+                .expect("vertices")),
+        ),
         source: current,
         expected: reading.version,
-        sketch: target.profile,
-        vertices: reading
-            .sketches
-            .iter()
-            .find(|c| c.sketch == target.profile)
-            .expect("base")
-            .vertices
-            .clone()
-            .expect("vertices"),
         destination: PathBuf::new(),
     };
-    for p in &mut v.vertices {
+    let mut vertices = crate::transaction_tests::vertices(&v);
+    for p in &mut vertices {
         if p.start_mm[0] == -4.5 {
             p.start_mm[0] = -5.75;
         }
     }
+    v.changes = crate::transaction_tests::vertex_changes(
+        &v.source,
+        crate::transaction_tests::sketch(&v),
+        &vertices,
+    );
     apply_sketch_native(&mut s, v);
     let adds = |s: &mut Sessions, (at, radius): ([f64; 2], &str)| {
         let current = s.export_path().expect("current");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let (mut form, r) = typed_add(&current, &reading, s, at, radius);
         assert!(matches!(add(s, &r), Edited::Show(_)), "{}", s.status);
         form.finish_session_change();
     };
     adds(&mut s, WINDOW_A);
     let current = s.export_path().expect("A");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let (mut form, r) = typed_radius(
         &current,
         &reading,

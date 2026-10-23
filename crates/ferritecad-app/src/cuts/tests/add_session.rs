@@ -344,7 +344,7 @@ fn add_cut_dirty_discovery_refusals_keep_text_status_dismissal_and_unsupported_b
     let mut s = opened(&path);
     dirty(&mut s, selected(&reading, 0).base_feature);
     let current = s.export_path().expect("current");
-    let reading = ferritecad_jobs::read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let choice = &reading.cut_bodies[0];
     let label = format!(
         "Cut circle into {} — {}…",
@@ -465,7 +465,7 @@ fn add_cut_dirty_discovery_refusals_keep_text_status_dismissal_and_unsupported_b
         .expect("base");
     let first = &base.vertices.as_ref().expect("vertices")[0];
     let mut d = Document::open(&pathc).expect("document");
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &d,
         base.sketch,
         &ferritecad_document::SketchConstraintEdits {
@@ -479,9 +479,9 @@ fn add_cut_dirty_discovery_refusals_keep_text_status_dismissal_and_unsupported_b
         },
     )
     .expect("constraint");
-    d.write_sketch_constraints(&prepared).expect("write");
+    d.write_changes(&prepared).expect("write");
     d.close().expect("close");
-    let constrained = ferritecad_jobs::read_extrude_source(&pathc).expect("reading");
+    let constrained = crate::sketch_facts::read(&pathc).expect("reading");
     assert!(
         constrained.cut_bodies[0].refusal.is_some(),
         "a constrained base is not a Cut base"

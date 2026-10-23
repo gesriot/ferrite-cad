@@ -268,7 +268,7 @@ fn orphan(f: &Fixture, store: &RecoveryStore, millimetres: f64) -> (RecordId, Do
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     f.feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     millimetres,
@@ -446,7 +446,7 @@ fn recovery_child_entry() {
                 crate::sessions::test_open::open_in(&private, &file, HistoryLimits::default())
                     .expect("open"),
             );
-            let opened = read_extrude_source(&file).expect("reading");
+            let opened = crate::sketch_facts::read(&file).expect("reading");
             let feature = ferritecad_fixtures::expression_slot(
                 &opened,
                 ferritecad_document::ExpressionSlot::ExtrudeDistance,
@@ -455,29 +455,32 @@ fn recovery_child_entry() {
             // Height (OCCT), constraints (PlaneGCS), Add Fillet (OCCT), Undo, Redo.
             apply_native(&mut s, feature, 21.5);
             let current = s.export_path().expect("current");
-            let reading = read_extrude_source(&current).expect("reading");
+            let reading = crate::sketch_facts::read(&current).expect("reading");
             let choice = &reading.constraint_sketches[0];
             let curve = choice.stored.as_ref().expect("stored").curves[0].id;
             apply_constraints_native(
                 &mut s,
-                &ferritecad_jobs::EditSketchConstraintsRequest {
+                &ferritecad_jobs::EditRequest {
+                    changes: crate::transaction_tests::constraint_changes(
+                        &(current.clone()),
+                        choice.sketch,
+                        &(ferritecad_document::SketchConstraintEdits {
+                            remove: Vec::new(),
+                            add: vec![ferritecad_document::AddSketchConstraint::Line(
+                                ferritecad_document::AddLineConstraint::Line {
+                                    curve,
+                                    kind: ferritecad_document::LineConstraintKind::Horizontal,
+                                },
+                            )],
+                        }),
+                    ),
                     source: current.clone(),
                     expected: reading.version,
-                    sketch: choice.sketch,
-                    edits: ferritecad_document::SketchConstraintEdits {
-                        remove: Vec::new(),
-                        add: vec![ferritecad_document::AddSketchConstraint::Line(
-                            ferritecad_document::AddLineConstraint::Line {
-                                curve,
-                                kind: ferritecad_document::LineConstraintKind::Horizontal,
-                            },
-                        )],
-                    },
                     destination: PathBuf::new(),
                 },
             );
             let current = s.export_path().expect("current");
-            let reading = read_extrude_source(&current).expect("reading");
+            let reading = crate::sketch_facts::read(&current).expect("reading");
             let target = reading.fillet_bodies[0].target.clone().expect("target");
             let edited = super::add_fillet::add(
                 &mut s,
@@ -519,17 +522,20 @@ fn recovery_child_entry() {
                 ),
             );
             let current = s.export_path().expect("current");
-            let reading = read_extrude_source(&current).expect("reading");
+            let reading = crate::sketch_facts::read(&current).expect("reading");
             let sketch = &reading.sketches[0];
             let mut vertices = sketch.vertices.clone().expect("an editable polygon");
             vertices[2].start_mm = [62.0, 21.0];
             apply_sketch_native(
                 &mut s,
-                ferritecad_jobs::EditSketchRequest {
+                ferritecad_jobs::EditRequest {
+                    changes: crate::transaction_tests::vertex_changes(
+                        &(current),
+                        sketch.sketch,
+                        &(vertices),
+                    ),
                     source: current,
                     expected: reading.version,
-                    sketch: sketch.sketch,
-                    vertices,
                     destination: PathBuf::new(),
                 },
             );
@@ -758,7 +764,7 @@ fn compare_gui(root: &Path) {
 
     let work = tempfile::tempdir().expect("work");
     let source = root.join("inputs/plate.fcad");
-    let opened = read_extrude_source(&source).expect("reading");
+    let opened = crate::sketch_facts::read(&source).expect("reading");
     let peer = work.path().join("peer.fcad");
     {
         let request = crate::edits::tests::expression_request(
@@ -957,7 +963,7 @@ fn native_recovery_window_scenario_on_session_files_passes_the_comparator_and_it
             .expect("open"),
     );
     let feature = ferritecad_fixtures::expression_slot(
-        &read_extrude_source(&plate).expect("reading"),
+        &crate::sketch_facts::read(&plate).expect("reading"),
         ferritecad_document::ExpressionSlot::ExtrudeDistance,
     )
     .object;

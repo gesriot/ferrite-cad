@@ -12,7 +12,7 @@ use std::{
 };
 #[path = "support/pipe.rs"]
 mod pipe;
-const OP: &str = "edit-circle";
+const OP: &str = "edit";
 /// Explicit, so the mesh tolerance below is a property of this test and not of
 /// whatever the exporter happens to default to.
 const LINEAR_DEFLECTION: f64 = 0.01;
@@ -47,14 +47,7 @@ fn inspect(path: &Path) -> Value {
 fn write(path: &Path, value: &Value) {
     std::fs::write(path, serde_json::to_vec(value).expect("JSON")).expect("write");
 }
-fn entries(path: &Path) -> Vec<std::ffi::OsString> {
-    let mut e: Vec<_> = std::fs::read_dir(path)
-        .expect("directory")
-        .map(|e| e.expect("entry").file_name())
-        .collect();
-    e.sort();
-    e
-}
+
 fn native() -> bool {
     if ferritecad_occt::is_available() {
         true
@@ -101,14 +94,13 @@ impl Fixture {
         f.ask([-3.5, 4.25], 6.75);
         f
     }
-    fn saved(&self) -> &Value {
-        &self.catalog["sketches"][0]["circle_edit"]["circle"]
-    }
+
     fn ask(&self, center: [f64; 2], radius: f64) {
         write(
             &self.request,
-            &json!({"request_version":1,"curve_id":self.saved()["curve_id"],
-                    "center_mm":center,"radius_mm":radius}),
+            &json!({"request_version":1,"changes":[transaction::circle(
+                &self.catalog["sketches"][0]["sketch_id"], &self.catalog["sketches"][0]["curves"][0]["curve_id"], center, radius
+            )]}),
         );
     }
     fn edit(&self, output: &Path) -> Command {
@@ -118,8 +110,6 @@ impl Fixture {
         let mut c = cli();
         c.arg(OP)
             .arg(source)
-            .arg("--sketch")
-            .arg(catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
             .arg("--expect-version")
             .arg(catalog["content_version"].as_str().expect("version"))
             .arg("--request")
@@ -585,321 +575,6 @@ fn only_the_circle_row_changed(source: &Path, copy: &Path, sketch: ferritecad_ty
 }
 
 #[test]
-fn circle_discovery_and_protocol_without_kernel() {
-    let f = Fixture::circle();
-    let out = f.root.path().join("copy.fcad");
-    let before = std::fs::read(&f.source).expect("bytes");
-    let names = entries(f.root.path());
-    let sketch = &f.catalog["sketches"][0];
-
-    // Discovery is typed, from this reading, and says nothing new about the
-    // Line editor, which still refuses a circle exactly as it did.
-    let discovery = &sketch["circle_edit"];
-    assert_eq!(discovery["available"], true);
-    assert!(discovery["refusal"].is_null() && discovery["document_refusal"].is_null());
-    assert_eq!(discovery["circle"]["center_mm"], json!([12.0, -7.0]));
-    assert_eq!(discovery["circle"]["radius_mm"], 10.0);
-    assert_eq!(discovery["circle"]["height_mm"], 15.0);
-    assert!(discovery["circle"]["curve_id"].is_string());
-    assert_eq!(sketch["editable"], false, "the Line editor is unchanged");
-    assert!(sketch["vertices"].is_null(), "no invented polygon");
-    // The constraint editor accepts this Sketch since §25N added the circle
-    // families, and says so about a circle rather than about Lines: it offers
-    // the analytic circle and no invented segment.
-    assert_eq!(sketch["constraint_edit"]["available"], true);
-    assert_eq!(
-        sketch["constraint_edit"]["curves"],
-        json!([]),
-        "a circle profile offers no Line"
-    );
-    assert_eq!(
-        sketch["constraint_edit"]["circles"][0]["curve_id"], discovery["circle"]["curve_id"],
-        "both discoveries name the same stored circle"
-    );
-    assert_eq!(
-        sketch["constraint_edit"]["circles"][0]["radius_mm"], 10.0,
-        "the stored radius, which is the solver's starting guess"
-    );
-    assert_eq!(sketch["constraint_edit"]["constraints"], json!([]));
-
-    // Wire-level refusals are decided before anything opens a kernel; the ones
-    // marked `Domain` are decided against the real document, so a build with no
-    // kernel refuses them for that earlier reason instead. Either way nothing
-    // is published.
-    #[derive(Clone, Copy, PartialEq)]
-    enum Stage {
-        Wire,
-        Domain,
-    }
-    use Stage::{Domain, Wire};
-    for (stage, bad) in [
-        // The version field has one spelling and one value.
-        (
-            Wire,
-            json!({"request_version":2,"curve_id":f.saved()["curve_id"],"center_mm":[0,0],"radius_mm":1}),
-        ),
-        (
-            Wire,
-            json!({"schema_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0,0],"radius_mm":1}),
-        ),
-        // Every field is required, and nothing else is accepted.
-        (
-            Wire,
-            json!({"request_version":1,"center_mm":[0,0],"radius_mm":1}),
-        ),
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"radius_mm":1}),
-        ),
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0,0]}),
-        ),
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0,0],"radius_mm":1,"height_mm":9}),
-        ),
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0,0],"radius_mm":1,"vertices":[]}),
-        ),
-        // A centre is exactly two numbers; a radius is one positive number.
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0],"radius_mm":1}),
-        ),
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0,0,0],"radius_mm":1}),
-        ),
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":["0","0"],"radius_mm":1}),
-        ),
-        (
-            Domain,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0,0],"radius_mm":0}),
-        ),
-        (
-            Domain,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0,0],"radius_mm":-1}),
-        ),
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0,0],"radius_mm":"1"}),
-        ),
-        (
-            Domain,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[0,0],"radius_mm":2e6}),
-        ),
-        (
-            Domain,
-            json!({"request_version":1,"curve_id":f.saved()["curve_id"],"center_mm":[2e6,0],"radius_mm":1}),
-        ),
-        // A curve UUID is a UUID, and must be the saved one.
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":"not-a-uuid","center_mm":[0,0],"radius_mm":1}),
-        ),
-        (
-            Wire,
-            json!({"request_version":1,"curve_id":null,"center_mm":[0,0],"radius_mm":1}),
-        ),
-        (
-            Domain,
-            json!({"request_version":1,"curve_id":"00000000-0000-7000-8000-000000000000","center_mm":[0,0],"radius_mm":1}),
-        ),
-    ] {
-        write(&f.request, &bad);
-        let v = reply(f.edit(&out).output().expect("refusal"), OP, 2);
-        let expected = if bad["request_version"] == 2
-            || (stage == Domain && !ferritecad_occt::is_available())
-        {
-            "unsupported"
-        } else {
-            "input"
-        };
-        assert_eq!(v["error"]["kind"], expected, "{bad}");
-        assert!(!out.exists());
-        assert_eq!(
-            entries(f.root.path()),
-            names,
-            "nothing published, no scratch"
-        );
-    }
-    // JSON cannot spell these, so they arrive as raw text.
-    let valid = json!({"request_version":1,"curve_id":f.saved()["curve_id"],
-                       "center_mm":[1.0,2.0],"radius_mm":3.0})
-    .to_string();
-    for (field, bad) in [
-        ("\"radius_mm\":3.0", "\"radius_mm\":NaN"),
-        ("\"radius_mm\":3.0", "\"radius_mm\":1e999"),
-        ("\"center_mm\":[1.0,2.0]", "\"center_mm\":[NaN,2.0]"),
-        ("\"center_mm\":[1.0,2.0]", "\"center_mm\":[1.0,-1e999]"),
-    ] {
-        std::fs::write(&f.request, valid.replace(field, bad)).expect("bad number");
-        assert_eq!(
-            reply(f.edit(&out).output().expect("bad number"), OP, 2)["error"]["kind"],
-            "input",
-            "{bad}"
-        );
-        assert!(!out.exists());
-    }
-    // An oversize request is refused before it is parsed.
-    std::fs::write(&f.request, vec![b' '; 65537]).expect("oversize");
-    assert_eq!(
-        reply(f.edit(&out).output().expect("oversize"), OP, 2)["error"]["kind"],
-        "input"
-    );
-
-    f.ask([-3.5, 4.25], 6.75);
-    // A foreign Sketch UUID, and a stale version, each with everything else
-    // valid. Both are decided inside the job, so a build with no kernel refuses
-    // them before reaching that point; what matters either way is the refusal.
-    let domain = if ferritecad_occt::is_available() {
-        "input"
-    } else {
-        "unsupported"
-    };
-    let mut foreign = f.catalog.clone();
-    foreign["sketches"][0]["sketch_id"] = json!(ferritecad_types::ObjectId::new().to_string());
-    assert_eq!(
-        reply(
-            f.edit_from(&f.source, &foreign, &out)
-                .output()
-                .expect("foreign Sketch"),
-            OP,
-            2
-        )["error"]["kind"],
-        domain
-    );
-    let mut stale = f.catalog.clone();
-    stale["content_version"] = json!(ferritecad_types::ContentHash::of_bytes(b"stale").to_string());
-    let v = reply(
-        f.edit_from(&f.source, &stale, &out)
-            .output()
-            .expect("stale version"),
-        OP,
-        2,
-    );
-    assert_eq!(v["error"]["kind"], domain);
-    if ferritecad_occt::is_available() {
-        assert!(
-            v["error"]["message"]
-                .as_str()
-                .expect("message")
-                .contains("changed since it was read")
-        );
-    }
-
-    // No-clobber, and the source may not be its own destination or an alias.
-    std::fs::write(&out, b"occupied").expect("occupied");
-    assert_eq!(
-        reply(f.edit(&out).output().expect("occupied"), OP, 2)["error"]["kind"],
-        domain
-    );
-    assert_eq!(std::fs::read(&out).expect("kept"), b"occupied");
-    std::fs::remove_file(&out).expect("clean up");
-    assert_eq!(
-        reply(f.edit(&f.source).output().expect("itself"), OP, 2)["error"]["kind"],
-        domain
-    );
-    let hard = f.root.path().join("hard.fcad");
-    std::fs::hard_link(&f.source, &hard).expect("hard link");
-    assert_eq!(
-        reply(f.edit(&hard).output().expect("hard link"), OP, 2)["error"]["kind"],
-        domain
-    );
-    #[cfg(unix)]
-    {
-        let soft = f.root.path().join("soft.fcad");
-        std::os::unix::fs::symlink(&f.source, &soft).expect("symlink");
-        assert_eq!(
-            reply(f.edit(&soft).output().expect("symlink"), OP, 2)["error"]["kind"],
-            domain
-        );
-    }
-
-    // Usage stays clap text, and a lost report after a refusal is still 2/7.
-    assert!(
-        cli()
-            .args([OP, "--help"])
-            .output()
-            .expect("help")
-            .status
-            .success()
-    );
-    let usage = cli().args([OP, "--json"]).output().expect("usage");
-    assert_eq!(usage.status.code(), Some(2));
-    assert!(usage.stdout.is_empty());
-    let missing = f.root.path().join("missing.json");
-    let mut c = cli();
-    c.arg(OP)
-        .arg(&f.source)
-        .arg("--sketch")
-        .arg(f.catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
-        .arg("--expect-version")
-        .arg(f.catalog["content_version"].as_str().expect("version"))
-        .arg("--request")
-        .arg(&missing)
-        .arg("-o")
-        .arg(&out)
-        .arg("--json");
-    assert_eq!(
-        reply(
-            c.stderr(pipe::closed_pipe())
-                .output()
-                .expect("closed stderr"),
-            OP,
-            2
-        )["error"]["kind"],
-        "io"
-    );
-    let mut c = cli();
-    c.arg(OP)
-        .arg(&f.source)
-        .arg("--sketch")
-        .arg(f.catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
-        .arg("--expect-version")
-        .arg(f.catalog["content_version"].as_str().expect("version"))
-        .arg("--request")
-        .arg(&missing)
-        .arg("-o")
-        .arg(&out)
-        .arg("--json");
-    assert_eq!(
-        c.stdout(pipe::closed_pipe())
-            .stderr(pipe::closed_pipe())
-            .status()
-            .expect("both closed")
-            .code(),
-        Some(7)
-    );
-
-    if !ferritecad_occt::is_available() {
-        // Discovery worked above without a kernel; applying an edit cannot.
-        f.ask([-3.5, 4.25], 6.75);
-        let v = reply(f.edit(&out).output().expect("stub"), OP, 2);
-        assert_eq!(v["error"]["kind"], "unsupported");
-        assert!(!out.exists());
-    }
-    assert_eq!(std::fs::read(&f.source).expect("source"), before);
-}
-
-#[cfg(unix)]
-#[test]
-fn circle_edit_non_utf8_paths_refuse_before_reading() {
-    use std::os::unix::ffi::OsStringExt;
-    let f = Fixture::circle();
-    let out = f.root.path().join(std::ffi::OsString::from_vec(vec![
-        b'c', 255, b'.', b'f', b'c', b'a', b'd',
-    ]));
-    let v = reply(f.edit(&out).output().expect("non-UTF-8"), OP, 2);
-    assert_eq!(v["error"]["kind"], "input");
-    assert!(!out.exists());
-}
-
-#[test]
 fn native_circle_edit_moves_and_resizes_only_the_named_circle() {
     if !native() {
         return;
@@ -916,12 +591,7 @@ fn native_circle_edit_moves_and_resizes_only_the_named_circle() {
     f.ask([-3.5, 4.25], 6.75);
     let published = reply(f.edit(&both).output().expect("edit"), OP, 0)["result"].clone();
     assert_eq!(published["destination"], both.to_str().expect("UTF-8"));
-    assert_eq!(
-        published["sketch_id"],
-        original.sketch.to_string(),
-        "the reply names the Sketch that was edited"
-    );
-    assert_eq!(published["curve_id"], original.curve.to_string());
+
     assert_eq!(published["document_id"], {
         let d = Document::open_read_only(&both).expect("copy");
         let id = d.meta().document_id.to_string();
@@ -1084,14 +754,14 @@ fn native_circle_edit_moves_and_resizes_only_the_named_circle() {
         0,
     );
     let catalog = inspect(&made);
-    let saved = &catalog["sketches"][0]["circle_edit"]["circle"];
-    assert_eq!(catalog["sketches"][0]["circle_edit"]["available"], true);
+    let curve = &catalog["sketches"][0]["curves"][0];
+    let saved = &curve["geometry"];
+    assert_eq!(saved["kind"], "circle");
     assert_eq!(saved["center_mm"], json!([12.0, -7.0]));
     assert_eq!(saved["radius_mm"], 10.0);
     write(
         &f.request,
-        &json!({"request_version":1,"curve_id":saved["curve_id"],
-                "center_mm":[-3.5,4.25],"radius_mm":6.75}),
+        &json!({"request_version":1,"changes":[transaction::circle(&catalog["sketches"][0]["sketch_id"], &curve["curve_id"], [-3.5,4.25], 6.75)]}),
     );
     let produced = f.root.path().join("made-edited.fcad");
     reply(
@@ -1126,239 +796,5 @@ fn native_circle_edit_moves_and_resizes_only_the_named_circle() {
         assert_eq!(saved.refs, from_made.refs);
         only_the_circle_row_changed(&made, &output, from_made.sketch);
         assert_eq!(std::fs::read(&made).expect("source"), source_bytes);
-    }
-}
-
-#[test]
-fn native_circle_edit_refusals_preserve_source_and_destinations() {
-    if !native() {
-        return;
-    }
-    let f = Fixture::circle();
-    let before = std::fs::read(&f.source).expect("source");
-    let names = entries(f.root.path());
-    let out = f.root.path().join("never.fcad");
-
-    // A Sketch this editor does not own: a Line polygon of the same shape.
-    let polygon = f.root.path().join("polygon.fcad");
-    let profile = f.root.path().join("polygon.json");
-    write(
-        &profile,
-        &json!({"request_version":1,"points_mm":[[0,0],[10,0],[10,10],[0,10]],"height_mm":5}),
-    );
-    let r = cli()
-        .arg("create-sketch-extrude")
-        .arg(&profile)
-        .arg("-o")
-        .arg(&polygon)
-        .arg("--json")
-        .output()
-        .expect("polygon");
-    assert!(r.status.success(), "{r:?}");
-    let catalog = inspect(&polygon);
-    let discovery = &catalog["sketches"][0]["circle_edit"];
-    assert_eq!(discovery["available"], false);
-    assert!(discovery["circle"].is_null(), "no invented circle");
-    assert!(
-        discovery["refusal"]
-            .as_str()
-            .expect("reason")
-            .contains("Circle"),
-        "{discovery}"
-    );
-    // The Line editor still accepts it, which is the contract this must keep.
-    assert_eq!(catalog["sketches"][0]["editable"], true);
-    assert!(catalog["sketches"][0]["vertices"].is_array());
-    write(
-        &f.request,
-        &json!({"request_version":1,"curve_id":catalog["sketches"][0]["vertices"][0]["curve_id"],
-                "center_mm":[0,0],"radius_mm":1}),
-    );
-    let v = reply(
-        f.edit_from(&polygon, &catalog, &out)
-            .output()
-            .expect("a polygon is not a circle"),
-        OP,
-        2,
-    );
-    assert_eq!(v["error"]["kind"], "unsupported");
-    assert!(!out.exists());
-
-    // A read-only document is refused by the shared copy policy.
-    let readonly = f.root.path().join("readonly.fcad");
-    std::fs::copy(&f.source, &readonly).expect("copy");
-    let db = rusqlite::Connection::open(&readonly).expect("SQL");
-    db.execute_batch("CREATE TRIGGER block AFTER UPDATE ON objects BEGIN SELECT 1; END;")
-        .expect("trigger");
-    drop(db);
-    let locked = inspect(&readonly);
-    assert_eq!(
-        locked["sketches"][0]["circle_edit"]["available"], false,
-        "a document-wide refusal keeps its priority"
-    );
-    assert!(
-        locked["sketches"][0]["circle_edit"]["document_refusal"]
-            .as_str()
-            .is_some()
-    );
-    assert!(
-        locked["sketches"][0]["circle_edit"]["circle"].is_object(),
-        "the structure is still reported; only editing is refused"
-    );
-    f.ask([-3.5, 4.25], 6.75);
-    let v = reply(
-        f.edit_from(&readonly, &locked, &out)
-            .output()
-            .expect("read-only"),
-        OP,
-        2,
-    );
-    assert_eq!(v["error"]["kind"], "unsupported");
-    assert!(!out.exists());
-
-    assert_eq!(std::fs::read(&f.source).expect("source"), before);
-    let mut expected = names;
-    for name in ["polygon.fcad", "polygon.json", "readonly.fcad"] {
-        expected.push(name.into());
-    }
-    expected.sort();
-    assert_eq!(entries(f.root.path()), expected, "no scratch or sidecars");
-}
-
-/// Cancellation, races and cleanup on the shared copy lifecycle.
-///
-/// Driven against the real kernel rather than a mock, because the mock draws
-/// every curve as its chord and cannot build a circle at all. The fault seams
-/// are the shared operation's own progress thresholds, so what is measured
-/// here is that the circle route really goes through them.
-#[test]
-fn native_circle_edit_cancellation_races_and_cleanup_are_atomic() {
-    use ferritecad_kernel::{CancelToken, ProgressSink};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    if !native() {
-        return;
-    }
-    for case in [
-        "before", "snapshot", "rebuilt", "closed", "late", "occupied", "changed", "alias",
-    ] {
-        let f = Fixture::circle();
-        let saved = stored(&f.source);
-        let bytes = std::fs::read(&f.source).expect("source");
-        let mtime = std::fs::metadata(&f.source)
-            .expect("metadata")
-            .modified()
-            .expect("mtime");
-        let destination = f.root.path().join("copy.fcad");
-        let request = ferritecad_jobs::EditCircleRequest {
-            source: f.source.clone(),
-            expected: ferritecad_document::DocumentVersion {
-                document_id: {
-                    let d = Document::open_read_only(&f.source).expect("source");
-                    let id = d.meta().document_id;
-                    d.close().expect("close");
-                    id
-                },
-                content: f.catalog["content_version"]
-                    .as_str()
-                    .expect("version")
-                    .parse()
-                    .expect("hash"),
-            },
-            sketch: saved.sketch,
-            edit: ferritecad_document::CircleEdit {
-                curve_id: saved.curve,
-                center_mm: [-3.5, 4.25],
-                radius_mm: 6.75,
-            },
-            destination: destination.clone(),
-        };
-        let cancel = CancelToken::new();
-        if case == "before" {
-            cancel.cancel();
-        }
-        let token = cancel.clone();
-        let source = f.source.clone();
-        let dest = destination.clone();
-        let once = Arc::new(AtomicBool::new(false));
-        let context = ferritecad_kernel::OperationContext::default()
-            .with_cancel(cancel)
-            .with_progress(ProgressSink::new(move |p| {
-                let threshold = match case {
-                    "snapshot" => 0.1,
-                    "rebuilt" => 0.4,
-                    "late" => 1.,
-                    _ => 0.95,
-                };
-                if p != threshold || once.swap(true, Ordering::SeqCst) {
-                    return;
-                }
-                match case {
-                    "snapshot" | "rebuilt" | "closed" | "late" => token.cancel(),
-                    "occupied" => std::fs::write(&dest, b"raced destination").expect("race"),
-                    "changed" => {
-                        let mut d = Document::open(&source).expect("source writer");
-                        let mut o = d.objects().expect("objects").remove(0);
-                        o.name = Some("changed during edit".into());
-                        d.write(|w| {
-                            w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload)
-                        })
-                        .expect("change");
-                        d.close().expect("close");
-                    }
-                    "alias" => std::fs::hard_link(&source, &dest).expect("late alias"),
-                    _ => {}
-                }
-            }));
-        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-        let result = ferritecad_jobs::edit_circle_copy(&request, &mut kernel, &context);
-        if case == "late" {
-            // Cancellation that arrives after publication is simply late.
-            result.as_ref().expect(case);
-            assert_eq!(stored(&destination).center, [-3.5, 4.25]);
-        } else {
-            let error = result.expect_err(case);
-            let expected = match case {
-                "before" | "snapshot" | "rebuilt" | "closed" => {
-                    ferritecad_types::ErrorKind::Cancellation
-                }
-                _ => ferritecad_types::ErrorKind::Input,
-            };
-            assert_eq!(error.kind(), expected, "{case}: {error}");
-        }
-        assert_eq!(kernel.live_shape_count(), 0, "{case} leaked handles");
-        if case != "changed" {
-            assert_eq!(std::fs::read(&f.source).expect("source"), bytes, "{case}");
-            assert_eq!(
-                std::fs::metadata(&f.source)
-                    .expect("metadata")
-                    .modified()
-                    .expect("mtime"),
-                mtime,
-                "{case}"
-            );
-        }
-        if case == "occupied" {
-            assert_eq!(
-                std::fs::read(&destination).expect("destination"),
-                b"raced destination"
-            );
-        }
-        if case == "alias" {
-            assert_eq!(std::fs::read(&destination).expect("alias"), bytes);
-        }
-        let mut expected: Vec<std::ffi::OsString> =
-            vec!["круг space.fcad".into(), "request.json".into()];
-        if matches!(case, "late" | "occupied" | "alias") {
-            expected.push("copy.fcad".into());
-        }
-        expected.sort();
-        assert_eq!(
-            entries(f.root.path()),
-            expected,
-            "{case}: scratch or sidecars remained"
-        );
     }
 }

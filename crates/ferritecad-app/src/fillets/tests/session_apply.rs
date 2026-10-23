@@ -21,21 +21,52 @@ pub(crate) fn fixture(count: usize) -> (tempfile::TempDir, PathBuf, ExtrudeEditS
     )
     .expect("reordered fixture");
     drop(db);
-    let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let reading = crate::sketch_facts::read(&path).expect("reading");
     (root, path, reading)
 }
-pub(crate) fn selected(
-    reading: &ExtrudeEditSource,
-    index: usize,
-) -> ferritecad_document::SavedFillet {
-    reading
-        .sketches
+pub(crate) struct Selected {
+    pub feature: ferritecad_types::ObjectId,
+    pub body: ferritecad_types::ObjectId,
+    pub base_feature: ferritecad_types::ObjectId,
+    pub profile: ferritecad_types::ObjectId,
+    pub joint: ferritecad_types::ProfileJoint,
+}
+pub(crate) fn selected(reading: &ExtrudeEditSource, index: usize) -> Selected {
+    use ferritecad_document::ObjectPayload;
+    let objects = &reading.objects;
+    let (base, profile) = objects
         .iter()
-        .flat_map(|s| &s.fillets)
-        .chain(reading.constraint_sketches.iter().flat_map(|s| &s.fillets))
-        .find(|s| s.history_index == index + 1)
-        .expect("history UUID")
-        .clone()
+        .find_map(|o| match &o.payload {
+            ObjectPayload::Extrude(e) => Some((o.id, e.profile)),
+            _ => None,
+        })
+        .expect("base");
+    let body = objects
+        .iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+        .expect("body")
+        .id;
+    let mut previous = base;
+    for i in 0..=index {
+        let (id, f) = objects
+            .iter()
+            .find_map(|o| match &o.payload {
+                ObjectPayload::Fillet(f) if f.previous == previous => Some((o.id, f)),
+                _ => None,
+            })
+            .expect("fillet in history");
+        if i == index {
+            return Selected {
+                feature: id,
+                body,
+                base_feature: base,
+                profile,
+                joint: f.edge.joint,
+            };
+        }
+        previous = id;
+    }
+    unreachable!("inclusive history index")
 }
 
 fn ready(c: &creates::Creates, s: &sessions::Sessions) -> bool {
@@ -77,7 +108,7 @@ pub(crate) fn typed_radius(
         .fillets
         .take_apply_request()
         .expect("changed widget request");
-    assert_eq!(r.changes[0].object, feature);
+    assert_eq!(r.changes[0].object(), feature);
     assert_eq!(r.expected, reading.version);
     (c.sketch, r)
 }
@@ -100,7 +131,13 @@ fn radius_current_text_confirmation_noop_clean_copy_and_add_exclusion() {
     let s = opened(&path);
     let chosen = selected(&reading, 0);
     let (form, r) = typed_radius(&path, &reading, &s, chosen.feature, "3.12500");
-    assert_eq!(r.changes[0].expression.value(), 3.125);
+    assert_eq!(
+        r.changes[0]
+            .expression()
+            .expect("numeric form contains an expression change")
+            .value(),
+        3.125
+    );
     let mut c = creates::Creates::default();
     c.sketch = form;
     let e = &mut c.sketch.fillets;
@@ -114,7 +151,8 @@ fn radius_current_text_confirmation_noop_clean_copy_and_add_exclusion() {
     click(&ctx, e, "Save radius copy…");
     assert_eq!(
         e.take_radius_request().expect("clean copy").changes[0]
-            .expression
+            .expression()
+            .expect("expression")
             .value(),
         3.125
     );
@@ -127,7 +165,8 @@ fn radius_current_text_confirmation_noop_clean_copy_and_add_exclusion() {
     click(&ctx, e, "Save radius copy…");
     assert_eq!(
         e.take_radius_request().expect("no-op copy").changes[0]
-            .expression
+            .expression()
+            .expect("expression")
             .value(),
         2.375
     );
@@ -249,7 +288,7 @@ fn radius_dirty_discovery_refusal_retains_text_and_acceptance_closes_form() {
     s.finish_scene(g, Ok(()));
     assert!(s.dirty());
     let current = s.export_path().expect("current");
-    let reading = ferritecad_jobs::read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let mut c = creates::Creates::default();
     tell(&mut c, &s);
     let ctx = egui::Context::default();

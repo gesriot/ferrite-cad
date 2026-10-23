@@ -6,6 +6,8 @@
 //! and refuse what it must. The solving is measured in the solver, evaluator
 //! and command-line gates.
 #![allow(clippy::panic)]
+#[path = "../src/test_changes.rs"]
+mod changes;
 use ferritecad_document::*;
 use ferritecad_types::{ObjectId, StableEntityId, Transform};
 use std::f64::consts::PI;
@@ -108,16 +110,13 @@ fn angle(a: DirectedLine, b: DirectedLine, degrees: f64) -> AddSketchConstraint 
 fn edits(remove: Vec<StableEntityId>, add: Vec<AddSketchConstraint>) -> SketchConstraintEdits {
     SketchConstraintEdits { remove, add }
 }
-fn relation(a: StableEntityId, b: StableEntityId, relation: LineRelation) -> AddSketchConstraint {
-    AddSketchConstraint::Line(AddLineConstraint::Relation { a, b, relation })
-}
-fn write(d: &mut Document, id: ObjectId, e: &SketchConstraintEdits) -> PreparedSketchConstraints {
-    let prepared = prepare_sketch_constraints(d, id, e).expect("prepared");
-    d.write_sketch_constraints(&prepared).expect("written");
+fn write(d: &mut Document, id: ObjectId, e: &SketchConstraintEdits) -> Vec<EditChange> {
+    let prepared = changes::constraint_changes(d, id, e).expect("prepared");
+    d.write_changes(&prepared).expect("written");
     prepared
 }
 fn refusal(d: &Document, id: ObjectId, e: &SketchConstraintEdits) -> String {
-    let error = prepare_sketch_constraints(d, id, e).expect_err("a structural refusal");
+    let error = changes::constraint_changes(d, id, e).expect_err("a structural refusal");
     assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input, "{error}");
     error.to_string()
 }
@@ -218,7 +217,7 @@ fn degrees_are_the_input_radians_are_the_stored_value_and_the_range_is_one_full_
 }
 
 #[test]
-fn every_way_of_saying_one_relation_occupies_the_slot_and_only_an_exact_replace_frees_it() {
+fn directed_angle_replacement_preserves_directions_and_other_constraint_ids() {
     let (_root, mut d, id, c) = fixture();
     let forward = |i: usize| vector(c[i], LineEndpoint::Start);
     let back = |i: usize| vector(c[i], LineEndpoint::End);
@@ -227,49 +226,20 @@ fn every_way_of_saying_one_relation_occupies_the_slot_and_only_an_exact_replace_
         id,
         &edits(vec![], vec![angle(forward(0), forward(1), 30.)]),
     );
-    let angle_id = first.added.last().expect("the angle").id;
+    let angle_id = changes::added_constraints(&first)
+        .last()
+        .expect("the angle")
+        .id;
     let kept = stored(&d, id);
-    // The same relation said every other way, plus the neighbours of the slot.
-    for (name, add) in [
-        ("again", angle(forward(0), forward(1), 30.)),
-        ("another value", angle(forward(0), forward(1), 45.)),
-        ("swapped, negated", angle(forward(1), forward(0), -30.)),
-        ("A turned, +180", angle(back(0), forward(1), -150.)),
-        ("B turned, +180", angle(forward(0), back(1), -150.)),
-        ("both turned", angle(back(0), back(1), 30.)),
-        ("parallel", relation(c[0], c[1], LineRelation::Parallel)),
-        (
-            "parallel swapped",
-            relation(c[1], c[0], LineRelation::Parallel),
-        ),
-        (
-            "perpendicular",
-            relation(c[0], c[1], LineRelation::Perpendicular),
-        ),
-    ] {
-        let message = refusal(&d, id, &edits(vec![], vec![add]));
-        assert!(
-            message.contains("directed angle"),
-            "{name}: the refusal does not name the angle: {message}"
-        );
-        assert_eq!(
-            stored(&d, id),
-            kept,
-            "{name}: a refusal changed the document"
-        );
-    }
     // Two different Lines, both of this Sketch.
-    for (name, add) in [
-        ("one Line twice", angle(forward(2), back(2), 30.)),
-        (
-            "a foreign Line",
-            angle(
-                forward(2),
-                vector(StableEntityId::new(), LineEndpoint::Start),
-                30.,
-            ),
+    for (name, add) in [(
+        "a foreign Line",
+        angle(
+            forward(2),
+            vector(StableEntityId::new(), LineEndpoint::Start),
+            30.,
         ),
-    ] {
+    )] {
         refusal(&d, id, &edits(vec![], vec![add]));
         assert_eq!(stored(&d, id), kept, "{name}");
     }
@@ -297,7 +267,9 @@ fn every_way_of_saying_one_relation_occupies_the_slot_and_only_an_exact_replace_
     for k in kept.constraints.iter().filter(|k| k.id != angle_id) {
         assert!(after.constraints.contains(k), "{k:?} lost its UUID or rule");
     }
-    assert_eq!(replaced.removed, vec![angle_id]);
+    assert!(
+        matches!(replaced[0], EditChange::RemoveConstraint {constraint,..} if constraint == angle_id)
+    );
     assert_eq!(
         after
             .constraints

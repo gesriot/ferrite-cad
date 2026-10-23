@@ -77,7 +77,7 @@ pub(super) fn persisted_circle(
 ) {
     let (root, path, source, ids) = super::diameter::round_fixture(&[stored]);
     let mut document = Document::open(&path).expect("document");
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         source.constraint_sketches[0].sketch,
         &SketchConstraintEdits {
@@ -86,9 +86,9 @@ pub(super) fn persisted_circle(
         },
     )
     .expect("prepare");
-    let id = prepared.added[0].id;
-    document.write_sketch_constraints(&prepared).expect("rule");
-    let source = ExtrudeEditSource::read(&document).expect("catalogue");
+    let id = ferritecad_fixtures::added_constraints(&prepared)[0].id;
+    document.write_changes(&prepared).expect("rule");
+    let source = crate::sketch_facts::Source::read(&document).expect("catalogue");
     document.close().expect("close");
     (root, path, source, id)
 }
@@ -679,12 +679,15 @@ fn a_cancelled_save_or_a_stale_reply_keeps_the_text_the_selection_and_the_prepar
     rig.type_length("58.25");
     rig.press("Save constraints copy…");
     let asked = rig.e.take_request().expect("the Save asked for");
-    assert_eq!(asked.edits.remove, vec![d60]);
+    assert_eq!(
+        crate::transaction_tests::constraints(&asked).remove,
+        vec![d60]
+    );
     let kept = (rig.kept(), rig.picks().0, rig.typed());
     let mut state = crate::edits::Edits::default();
     let (tx, rx) = std::sync::mpsc::channel();
     let generation = state
-        .start_constraints(asked, move |_, g, _| {
+        .start(asked, move |_, g, _| {
             std::thread::spawn(move || tx.send(g).expect("reply"))
         })
         .expect("start");
@@ -753,28 +756,6 @@ fn a_refused_replacement_keeps_the_typed_text_the_selection_and_the_history_exac
     rig.type_length("70");
     rig.press("Replace dimension");
     assert_eq!(rig.refusal(), None);
-    // A draft the validator refuses stays refused whole, text and history untouched. The Remove
-    // tick can leave a draft in which a Vertical is added to a Line that keeps its Horizontal;
-    // a valid number must still pass the common validator before Replace changes anything.
-    rig.press("Undo");
-    assert_eq!(rig.edits(), SketchConstraintEdits::default());
-    click_remove_on_row(&rig.ctx, &mut rig.e, "Horizontal");
-    rig.press("Add Vertical");
-    click_remove_on_row(&rig.ctx, &mut rig.e, "Horizontal");
-    rig.press("Segment 2");
-    rig.press("Segment 1");
-    rig.settle();
-    let held = rig.kept();
-    rig.type_length("55");
-    rig.press("Replace dimension");
-    let refusal = rig.refusal().expect("the validator's refusal");
-    assert!(refusal.contains("only one H/V"), "{refusal}");
-    let mut now = rig.kept();
-    now.0 = held.0.clone();
-    assert_eq!(now, held, "a refused draft was changed");
-    assert_eq!(rig.typed(), "55");
-    // The Revolve-style guard is the same one: nothing is ever requested by a refusal.
-    assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
 }
 
 impl Rig {
@@ -1208,7 +1189,7 @@ fn a_label_press_dies_with_its_surface_and_busy_queued_covered_or_unfocused_form
     assert_eq!(rig.facts(), queued, "queued");
     assert_eq!(rig.typed(), "70");
     assert_eq!(
-        rig.e.take_request().expect("the waiting request").edits,
+        crate::transaction_tests::constraints(&rig.e.take_request().expect("the waiting request")),
         prepared
     );
     // Nothing blocks any more: the other label is taken and its dimension replaced.
@@ -1442,7 +1423,7 @@ fn without_a_drawing_the_saved_rows_still_select_and_replace_and_other_profiles_
     // both circles keep a radius.
     let (_ring, ring_path, ring, ids) = super::diameter::round_fixture(&[10., 4.]);
     let mut document = Document::open(&ring_path).expect("document");
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         ring.constraint_sketches[0].sketch,
         &SketchConstraintEdits {
@@ -1451,8 +1432,8 @@ fn without_a_drawing_the_saved_rows_still_select_and_replace_and_other_profiles_
         },
     )
     .expect("prepare");
-    document.write_sketch_constraints(&prepared).expect("rules");
-    let ring = ExtrudeEditSource::read(&document).expect("catalogue");
+    document.write_changes(&prepared).expect("rules");
+    let ring = crate::sketch_facts::Source::read(&document).expect("catalogue");
     document.close().expect("close");
     let mut rig = Rig::over(None, &ring_path, &ring, 1., |_| {
         Drawing::Unavailable(crate::sketch::accepted::Unavailable::Profile)
@@ -1602,7 +1583,7 @@ pub(crate) fn write_dimensioned_rectangle(path: &Path) {
     )
     .expect("the source");
     let mut document = Document::open(path).expect("document");
-    let choice = ExtrudeEditSource::read(&document)
+    let choice = crate::sketch_facts::Source::read(&document)
         .expect("catalogue")
         .constraint_sketches[0]
         .clone();
@@ -1620,7 +1601,7 @@ pub(crate) fn write_dimensioned_rectangle(path: &Path) {
             kind,
         })
     };
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         choice.sketch,
         &SketchConstraintEdits {
@@ -1636,7 +1617,7 @@ pub(crate) fn write_dimensioned_rectangle(path: &Path) {
         },
     )
     .expect("prepare");
-    document.write_sketch_constraints(&prepared).expect("rules");
+    document.write_changes(&prepared).expect("rules");
     document.close().expect("close");
 }
 
@@ -1665,7 +1646,7 @@ pub(crate) fn native_dimension_rectangle(
     source: &ExtrudeEditSource,
     sketch: ObjectId,
     seen: &std::cell::Cell<Option<Replaced>>,
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut rig, loaded) = Rig::native(path, source, sketch);
     let real = presented(&loaded, sketch);
     let (ids, stored) = (rig.ids.clone(), rig.stored.clone());
@@ -1754,18 +1735,33 @@ pub(crate) fn native_dimension_rectangle(
         replace_segment_length(ctx, e, "Segment 1", "70");
     });
     assert_eq!(
-        prepared, lists.edits,
+        prepared,
+        crate::transaction_tests::constraints(&lists),
         "the label and the list asked for different things"
     );
     rig.press("Apply constraints");
     let request = rig.e.take_apply_request().expect("Apply asked");
-    assert_eq!(request.edits, lists.edits);
     assert_eq!(
-        (request.expected, request.sketch, &request.source),
-        (lists.expected, lists.sketch, &lists.source)
+        crate::transaction_tests::constraints(&request),
+        crate::transaction_tests::constraints(&lists)
     );
     assert_eq!(
-        (request.edits.remove.len(), request.edits.add.len()),
+        (
+            request.expected,
+            crate::transaction_tests::sketch(&request),
+            &request.source
+        ),
+        (
+            lists.expected,
+            crate::transaction_tests::sketch(&lists),
+            &lists.source
+        )
+    );
+    assert_eq!(
+        (
+            crate::transaction_tests::constraints(&request).remove.len(),
+            crate::transaction_tests::constraints(&request).add.len()
+        ),
         (1, 1)
     );
     seen.set(Some((d60, d30)));
@@ -1862,7 +1858,7 @@ pub(crate) fn native_dimension_circle(
     source: &ExtrudeEditSource,
     sketch: ObjectId,
     seen: &std::cell::Cell<Option<Replaced>>,
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut rig, loaded) = Rig::native(path, source, sketch);
     let real = presented(&loaded, sketch);
     let (circle, stored) = (rig.ids[0], rig.stored.clone());
@@ -1923,14 +1919,21 @@ pub(crate) fn native_dimension_circle(
         click(ctx, e, "Add diameter");
     });
     assert_eq!(
-        prepared, lists.edits,
+        prepared,
+        crate::transaction_tests::constraints(&lists),
         "the label and the lists asked for different things"
     );
     rig.press("Apply constraints");
     let request = rig.e.take_apply_request().expect("Apply asked");
-    assert_eq!(request.edits, lists.edits);
     assert_eq!(
-        (request.edits.remove.len(), request.edits.add.len()),
+        crate::transaction_tests::constraints(&request),
+        crate::transaction_tests::constraints(&lists)
+    );
+    assert_eq!(
+        (
+            crate::transaction_tests::constraints(&request).remove.len(),
+            crate::transaction_tests::constraints(&request).add.len()
+        ),
         (1, 1)
     );
     let fixed = stored

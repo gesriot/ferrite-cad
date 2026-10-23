@@ -2,10 +2,10 @@
 use std::{io::Read, path::PathBuf, process::ExitCode};
 
 use clap::Args;
-use ferritecad_document::{Document, DocumentVersion, ExpressionChange, ExpressionSlot};
+use ferritecad_document::{Document, DocumentVersion};
 use ferritecad_jobs::{EditRequest, EditedDocument};
 use ferritecad_kernel::OperationContext;
-use ferritecad_types::{CadError, ContentHash, ObjectId, Quantity, Result, Unit};
+use ferritecad_types::{CadError, ContentHash, Result};
 use serde::Deserialize;
 
 #[derive(Debug, Args)]
@@ -32,14 +32,7 @@ struct Input {
     changes: Vec<Change>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Change {
-    object: ObjectId,
-    slot: ExpressionSlot,
-    value: f64,
-    unit: String,
-}
+use crate::edit_input::Change;
 
 fn result(args: &EditArgs) -> Result<EditedDocument> {
     if args.json {
@@ -65,22 +58,7 @@ fn result(args: &EditArgs) -> Result<EditedDocument> {
     let changes = input
         .changes
         .into_iter()
-        .map(|change| {
-            let unit: Unit = change.unit.parse()?;
-            if unit.dimension() != change.slot.dimension() {
-                return Err(CadError::input(format!(
-                    "slot {} requires {}, got {}",
-                    change.slot,
-                    change.slot.dimension(),
-                    unit.dimension()
-                )));
-            }
-            ExpressionChange::constant(
-                change.object,
-                change.slot,
-                Quantity::new(change.value, unit)?.base_value(),
-            )
-        })
+        .map(Change::into_edit)
         .collect::<Result<Vec<_>>>()?;
     let document = Document::open_read_only(&args.source)?;
     let expected = DocumentVersion {

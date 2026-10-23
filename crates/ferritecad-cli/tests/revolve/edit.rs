@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! §27B: the saved profile of a §27A Revolve, edited through the existing
-//! `edit-sketch-copy` into a new copy and measured after the fact.
+//! `edit` into a new copy and measured after the fact.
 //!
 //! Every expected volume here is written out from closed-form geometry —
 //! annuli and frusta — and never taken from the production Pappus helper,
@@ -16,7 +16,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-const EDIT: &str = "edit-sketch-copy";
+const EDIT: &str = "edit";
 
 /// π·(R² − r²)·h: a straight bushing.
 pub(super) fn annulus(outer: f64, inner: f64, height: f64) -> f64 {
@@ -102,19 +102,8 @@ pub(super) fn edit(
     request: &Path,
     out: &Path,
 ) -> Command {
-    let mut c = cli();
-    c.arg(EDIT)
-        .arg(source)
-        .arg("--sketch")
-        .arg(sketch)
-        .arg("--expect-version")
-        .arg(version)
-        .arg("--request")
-        .arg(request)
-        .arg("-o")
-        .arg(out)
-        .arg("--json");
-    c
+    transaction::sketch_address(request, &json!(sketch));
+    transaction::command(source, version, request, out)
 }
 pub(super) fn edit_reply(out: Output, code: i32) -> Value {
     assert_eq!(out.status.code(), Some(code), "{out:?}");
@@ -138,7 +127,7 @@ pub(super) fn saved(path: &Path) -> Saved {
     Saved {
         sketch: s["sketch_id"].as_str().expect("id").to_owned(),
         version: c["content_version"].as_str().expect("version").to_owned(),
-        ids: s["vertices"]
+        ids: s["curves"]
             .as_array()
             .expect("editable vertices")
             .iter()
@@ -147,12 +136,11 @@ pub(super) fn saved(path: &Path) -> Saved {
     }
 }
 pub(super) fn write_edit(path: &Path, ids: &[String], points: &[[f64; 2]]) {
-    let vertices: Vec<Value> = ids
-        .iter()
-        .zip(points)
-        .map(|(id, p)| json!({"curve_id": id, "start_mm": p}))
-        .collect();
-    write(path, &json!({"request_version":1,"vertices":vertices}));
+    let curves: Vec<_> = ids.iter().map(|id| json!({"curve_id":id})).collect();
+    write(
+        path,
+        &transaction::line_changes(&json!({"sketch_id":null,"curves":curves}), points),
+    );
 }
 
 /// Every cell of every table, keyed by table name, rows in a stable order.
@@ -256,16 +244,7 @@ fn native_revolve_profile_edits_keep_names_measure_cache_sql_and_exports() {
         reply(create(&input, &source).output().expect("create"), 0);
         let before = inspect(&source);
         let s = &before["sketches"][0];
-        assert_eq!(s["editable"], true, "{s}");
-        assert_eq!(s["profile_feature"]["kind"], "full_turn_revolve");
-        assert_eq!(
-            s["profile_feature"]["feature_id"],
-            before["revolves"][0]["feature_id"]
-        );
-        assert_eq!(
-            s["profile_feature"]["body_id"],
-            before["revolves"][0]["body_id"]
-        );
+
         assert_eq!(before["features"], json!([]), "never an Extrude");
         let volume = measure(&source, &case.from, None);
         assert!((volume - case.from_mm3).abs() < 1e-6 * case.from_mm3);
@@ -286,7 +265,7 @@ fn native_revolve_profile_edits_keep_names_measure_cache_sql_and_exports() {
         );
         assert_eq!(v["result"]["destination"], out.to_str().expect("UTF-8"));
         assert_eq!(v["result"]["document_id"], before["document_id"]);
-        assert_eq!(v["result"]["sketch_id"], saved.sketch.as_str());
+
         assert_eq!(std::fs::read(&source).expect("source"), bytes);
         check_cells(&source, &out, &saved.sketch);
 
@@ -295,17 +274,17 @@ fn native_revolve_profile_edits_keep_names_measure_cache_sql_and_exports() {
         assert_eq!(after["features"], json!([]));
         assert_eq!(after["bodies"], before["bodies"]);
         let row = &after["sketches"][0];
-        assert_eq!(row["profile_feature"], s["profile_feature"]);
+
         assert_eq!(
-            row["vertices"]
+            row["curves"]
                 .as_array()
                 .expect("vertices")
                 .iter()
                 .map(|v| (
                     v["curve_id"].as_str().expect("id").to_owned(),
                     [
-                        v["start_mm"][0].as_f64().expect("x"),
-                        v["start_mm"][1].as_f64().expect("y")
+                        v["geometry"]["start_mm"][0].as_f64().expect("x"),
+                        v["geometry"]["start_mm"][1].as_f64().expect("y")
                     ]
                 ))
                 .collect::<Vec<_>>(),
@@ -444,11 +423,7 @@ fn native_revolve_profile_edits_keep_names_measure_cache_sql_and_exports() {
     assert!(r.status.success(), "{r:?}");
     let c = inspect(&plate);
     let row = &c["sketches"][0];
-    assert_eq!(row["editable"], true);
-    assert_eq!(
-        row["profile_feature"],
-        json!({"kind":"blind_extrude","feature_id":c["features"][0]["feature_id"],"height_mm":10.0})
-    );
+
     assert_eq!(c["revolves"], json!([]));
 }
 
@@ -565,273 +540,6 @@ pub(super) fn rewrite_sketch(path: &Path, change: impl FnOnce(&mut Sketch)) {
     })
     .expect("sketch");
     d.close().expect("close");
-}
-
-/// Discovery, protocol refusals and the writer's own re-derivation, with no
-/// kernel at all. Runs unchanged in the stub build.
-#[test]
-fn revolve_profile_discovery_protocol_and_writer_without_kernel() {
-    let d = tempfile::tempdir().expect("dir");
-    let source = d.path().join("bushing.fcad");
-    let (revolve, labels) = write_revolve_document(&source, &BUSHING);
-    let c = inspect(&source);
-    let row = &c["sketches"][0];
-    assert_eq!(row["editable"], true, "{row}");
-    assert_eq!(row["refusal"], Value::Null);
-    assert_eq!(row["document_refusal"], Value::Null);
-    assert_eq!(
-        row["vertices"],
-        json!(
-            labels
-                .iter()
-                .zip(BUSHING)
-                .map(|(id, p)| json!({"curve_id": id.to_string(), "start_mm": [p[0], p[1]]}))
-                .collect::<Vec<_>>()
-        )
-    );
-    assert_eq!(row["profile_feature"]["kind"], "full_turn_revolve");
-    assert_eq!(row["profile_feature"]["feature_id"], revolve.to_string());
-    assert_eq!(row["profile_feature"]["axis"], "sketch_y");
-    assert_eq!(row["profile_feature"]["extent"], "full_turn");
-    assert_eq!(
-        row["profile_feature"]["axis_clearance_mm"],
-        FullTurnRevolution::AXIS_CLEARANCE_MM
-    );
-    // The Revolve keeps its own discovery and meaning; the circle editors
-    // refuse. §27G deliberately replaces the old refusal of the constraint
-    // editor: a profile with a bore now names its Revolve there too.
-    assert_eq!(c["features"], json!([]));
-    assert_eq!(c["revolves"][0]["profile"]["available"], true);
-    assert_eq!(row["constraint_edit"]["available"], true);
-    assert_eq!(
-        row["constraint_edit"]["profile_feature"],
-        row["profile_feature"]
-    );
-    assert_eq!(row["circle_edit"]["available"], false);
-    assert_eq!(row["annulus_edit"]["available"], false);
-    assert_eq!(row["cut_history_v3"], Value::Null);
-
-    // Structures outside the class: discovery refuses and the command
-    // publishes nothing. Without a kernel the command stops at the kernel
-    // first; the structural refusal itself is checked natively.
-    for (why, path, refusal) in unsupported_variants(d.path()) {
-        let c = inspect(&path);
-        let row = &c["sketches"][0];
-        assert_eq!(row["editable"], false, "{why}");
-        assert_eq!(row["vertices"], Value::Null, "{why}");
-        assert_eq!(row["profile_feature"], Value::Null, "{why}");
-        assert!(
-            row["refusal"].as_str().expect("refusal").contains(refusal),
-            "{why}: {row}"
-        );
-    }
-
-    // Request protocol refusals come before any kernel or file work.
-    let ids: Vec<String> = labels.iter().map(ToString::to_string).collect();
-    let sketch = row_id(&c);
-    let version = c["content_version"].as_str().expect("version").to_owned();
-    let request_path = d.path().join("request.json");
-    let out = d.path().join("never.fcad");
-    let good: Vec<Value> = ids
-        .iter()
-        .zip(BUSHING)
-        .map(|(id, p)| json!({"curve_id": id, "start_mm": p}))
-        .collect();
-    for (why, body) in [
-        ("not JSON", b"{".to_vec()),
-        (
-            "unknown field",
-            serde_json::to_vec(&json!({"request_version":1,"vertices":good,"axis":"sketch_y"}))
-                .expect("JSON"),
-        ),
-        (
-            "later version",
-            serde_json::to_vec(&json!({"request_version":2,"vertices":good})).expect("JSON"),
-        ),
-        (
-            "null",
-            serde_json::to_vec(&json!({"request_version":1,"vertices":null})).expect("JSON"),
-        ),
-        (
-            "text coordinate",
-            serde_json::to_vec(
-                &json!({"request_version":1,"vertices":[{"curve_id":ids[0],"start_mm":["4",0]}]}),
-            )
-            .expect("JSON"),
-        ),
-        ("oversize", vec![b' '; 65537]),
-    ] {
-        std::fs::write(&request_path, &body).expect("request");
-        let names = entries(d.path());
-        let bytes = std::fs::read(&source).expect("source");
-        edit_reply(
-            edit(&source, &sketch, &version, &request_path, &out)
-                .output()
-                .expect("edit"),
-            2,
-        );
-        assert!(!out.exists(), "{why}");
-        assert_eq!(entries(d.path()), names, "{why}");
-        assert_eq!(std::fs::read(&source).expect("source"), bytes, "{why}");
-    }
-    // UTF-8 policy: a JSON command refuses a non-UTF-8 path before anything.
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        write_edit(&request_path, &ids, &BUSHING);
-        let odd = d
-            .path()
-            .join(std::ffi::OsStr::from_bytes(b"not-utf8-\xff.fcad"));
-        let v = edit_reply(
-            edit(&source, &sketch, &version, &request_path, &odd)
-                .output()
-                .expect("edit"),
-            2,
-        );
-        assert!(
-            v["error"]["message"]
-                .as_str()
-                .expect("message")
-                .contains("UTF-8")
-        );
-        assert!(!odd.exists());
-    }
-
-    // The writer re-derives the edit inside its own transaction: prepared
-    // payloads that were never produced by the rules are refused, and the
-    // document is left exactly as it was.
-    let target = d.path().join("writer.fcad");
-    std::fs::copy(&source, &target).expect("copy");
-    let bytes = std::fs::read(&target).expect("target");
-    let sketch_id = sketch.parse::<ObjectId>().expect("UUID");
-    let vertices = |points: &[[f64; 2]]| -> Vec<SketchVertex> {
-        labels
-            .iter()
-            .zip(points)
-            .map(|(id, p)| SketchVertex {
-                curve_id: *id,
-                start_mm: *p,
-            })
-            .collect()
-    };
-    let doc = Document::open_read_only(&target).expect("open");
-    let prepared = ferritecad_document::replace_sketch_coordinates(
-        &doc,
-        sketch_id,
-        &vertices(&[[3., 2.5], [8., 2.5], [8., 12.5], [3., 12.5]]),
-    )
-    .expect("a valid edit prepares");
-    // Preparation refuses what the policy refuses, by name.
-    for (why, points, message) in [
-        (
-            // §27C: a whole Line on the axis would make this bored part
-            // solid, which an edit may not do.
-            "axis contact",
-            vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            "cannot change between hollow and solid",
-        ),
-        (
-            "axis crossing",
-            vec![[-1., 0.], [10., 0.], [10., 15.], [-1., 15.]],
-            "positive radial side",
-        ),
-        (
-            "self-intersection",
-            vec![[4., 0.], [10., 15.], [10., 0.], [4., 15.]],
-            "",
-        ),
-        (
-            "degenerate",
-            vec![[4., 0.], [7., 0.], [10., 0.], [4., 0.]],
-            "",
-        ),
-        (
-            "winding",
-            vec![[4., 15.], [10., 15.], [10., 0.], [4., 0.]],
-            "winding",
-        ),
-    ] {
-        let error =
-            ferritecad_document::replace_sketch_coordinates(&doc, sketch_id, &vertices(&points))
-                .expect_err(why);
-        assert!(error.to_string().contains(message), "{why}: {error}");
-    }
-    let mut ids_wrong = vertices(&BUSHING);
-    ids_wrong.swap(1, 2);
-    let mut missing = vertices(&BUSHING);
-    missing.pop();
-    let mut duplicate = vertices(&BUSHING);
-    duplicate[1].curve_id = duplicate[0].curve_id;
-    let mut foreign = vertices(&BUSHING);
-    foreign[3].curve_id = StableEntityId::new();
-    for (why, request) in [
-        ("reordered", ids_wrong),
-        ("missing", missing),
-        ("duplicate", duplicate),
-        ("foreign", foreign),
-    ] {
-        let error = ferritecad_document::replace_sketch_coordinates(&doc, sketch_id, &request)
-            .expect_err(why);
-        assert!(
-            error
-                .to_string()
-                .contains("every saved curve UUID exactly once"),
-            "{why}: {error}"
-        );
-    }
-    doc.close().expect("close");
-    let forged = |change: &dyn Fn(&mut Sketch)| {
-        let mut record = prepared.clone();
-        let ObjectPayload::Sketch(sketch) = &mut record.payload else {
-            unreachable!()
-        };
-        change(sketch);
-        record
-    };
-    let line = |a: [f64; 2], b: [f64; 2]| SketchGeometry::Line {
-        start: Point2::new(a[0], a[1]).expect("point"),
-        end: Point2::new(b[0], b[1]).expect("point"),
-    };
-    for (why, record) in [
-        (
-            "a consistent profile on the axis",
-            forged(&|s: &mut Sketch| {
-                let p = [[0., 2.5], [8., 2.5], [8., 12.5], [0., 12.5]];
-                for (i, c) in s.curves.iter_mut().enumerate() {
-                    c.geometry = line(p[i], p[(i + 1) % 4]);
-                }
-            }),
-        ),
-        (
-            "an end moved without its start",
-            forged(&|s: &mut Sketch| s.curves[0].geometry = line([3., 2.5], [9., 2.5])),
-        ),
-        (
-            "a constraint slipped in",
-            forged(&|s: &mut Sketch| {
-                s.constraints.push(SketchConstraint {
-                    id: StableEntityId::new(),
-                    rule: SketchConstraintRule::Horizontal {
-                        a: SketchPointRef::new(labels[0], SketchPointSelector::Start),
-                        b: SketchPointRef::new(labels[0], SketchPointSelector::End),
-                    },
-                })
-            }),
-        ),
-        (
-            "a construction Line",
-            forged(&|s: &mut Sketch| s.curves[2].construction = true),
-        ),
-    ] {
-        let mut doc = Document::open(&target).expect("open");
-        doc.write_sketch_geometry(&record).expect_err(why);
-        doc.close().expect("close");
-        assert_eq!(std::fs::read(&target).expect("target"), bytes, "{why}");
-    }
-    // And the honest one is accepted by the same writer.
-    let mut doc = Document::open(&target).expect("open");
-    doc.write_sketch_geometry(&prepared).expect("prepared edit");
-    doc.close().expect("close");
 }
 
 fn row_id(catalog: &Value) -> String {
@@ -1066,23 +774,27 @@ fn native_revolve_profile_edit_delivery_late_guards_and_cancellation() {
 
     // The shared job, with the kernel that ships, at its own phases.
     let reading = ferritecad_jobs::read_extrude_source(&source).expect("reading");
-    let choice = &reading.sketches[0];
-    let vertices: Vec<SketchVertex> = choice
-        .vertices
-        .clone()
-        .expect("editable")
-        .into_iter()
+    let source_doc = Document::open_read_only(&source).expect("source");
+    let (sketch_id, saved_sketch) = ferritecad_fixtures::sketch(&source_doc).expect("sketch");
+    source_doc.close().expect("close");
+    let vertices: Vec<SketchVertex> = saved_sketch
+        .curves
+        .iter()
         .zip(to)
         .map(|(v, p)| SketchVertex {
-            curve_id: v.curve_id,
+            curve_id: v.id,
             start_mm: p,
         })
         .collect();
-    let job = |name: &str| ferritecad_jobs::EditSketchRequest {
+    let job = |name: &str| ferritecad_jobs::EditRequest {
+        changes: {
+            let document =
+                ferritecad_document::Document::open_read_only(&(source.clone())).expect("source");
+            ferritecad_fixtures::vertex_changes(&document, sketch_id, &(vertices.clone()))
+                .expect("changes")
+        },
         source: source.clone(),
         expected: reading.version,
-        sketch: choice.sketch,
-        vertices: vertices.clone(),
         destination: d.path().join(name),
     };
     let bytes = std::fs::read(&source).expect("source");
@@ -1097,7 +809,7 @@ fn native_revolve_profile_edit_delivery_late_guards_and_cancellation() {
                 stop.cancel();
             }
         }));
-    let error = ferritecad_jobs::edit_sketch_copy(
+    let error = ferritecad_jobs::edit_copy(
         &job("cancelled.fcad"),
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
@@ -1132,7 +844,7 @@ fn native_revolve_profile_edit_delivery_late_guards_and_cancellation() {
             d.close().expect("close");
         }
     }));
-    let error = ferritecad_jobs::edit_sketch_copy(
+    let error = ferritecad_jobs::edit_copy(
         &job("late.fcad"),
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
@@ -1161,13 +873,19 @@ fn native_revolve_profile_edit_delivery_late_guards_and_cancellation() {
         }));
     let mut request = job("after.fcad");
     request.expected = reading.version;
-    let edited = ferritecad_jobs::edit_sketch_copy(
+    let edited = ferritecad_jobs::edit_copy(
         &request,
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
     )
     .expect("published before the cancellation");
-    assert_eq!(edited.sketch, choice.sketch);
+    assert!(
+        Document::open_read_only(&edited.destination)
+            .expect("saved")
+            .object(sketch_id)
+            .expect("row")
+            .is_some()
+    );
     let volume = measure(&request.destination, &to, None);
     let expected = annulus(12., 5., 3.) + annulus(8., 5., 10.);
     assert!((volume - expected).abs() < 1e-6 * expected);

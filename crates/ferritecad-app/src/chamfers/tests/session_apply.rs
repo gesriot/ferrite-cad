@@ -55,22 +55,14 @@ pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     )
     .expect("reordered fixture");
     drop(db);
-    let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let reading = crate::sketch_facts::read(&path).expect("reading");
     (root, path, reading)
 }
-pub(crate) fn saved_of(reading: &ExtrudeEditSource) -> ferritecad_document::SavedChamfer {
-    reading
-        .sketches
-        .iter()
-        .find_map(|s| s.chamfer.as_ref())
-        .or_else(|| {
-            reading
-                .constraint_sketches
-                .iter()
-                .find_map(|s| s.chamfer.as_ref())
-        })
-        .expect("saved Chamfer")
-        .clone()
+pub(crate) fn saved_of(path: &std::path::Path) -> ferritecad_document::SavedChamfer {
+    let d = ferritecad_document::Document::open_read_only(path).expect("document");
+    ferritecad_document::saved_chamfer(&d, &d.objects().expect("objects"))
+        .expect("read chamfer")
+        .expect("chamfer")
 }
 
 fn ready(c: &creates::Creates, s: &sessions::Sessions) -> bool {
@@ -115,7 +107,7 @@ pub(crate) fn typed_distance(
         .chamfers
         .take_apply_request()
         .expect("changed widget request");
-    assert_eq!(r.changes[0].object, feature);
+    assert_eq!(r.changes[0].object(), feature);
     assert_eq!(r.expected, reading.version);
     assert_eq!(
         c.sketch.chamfers.distance.as_ref().expect("draft").typed,
@@ -143,10 +135,16 @@ pub(crate) fn visible_outcome(e: &mut crate::sketch::Editor, outcome: &str) {
 fn distance_current_text_draft_history_noop_clean_copy_and_add_exclusion() {
     let (_root, path, reading) = fixture();
     let s = opened(&path);
-    let chosen = saved_of(&reading);
+    let chosen = saved_of(&path);
     assert_eq!(chosen.corner.corner_mm, CORNER);
     let (form, r) = typed_distance(&path, &reading, &s, chosen.feature, "3.06250");
-    assert_eq!(r.changes[0].expression.value(), 3.0625);
+    assert_eq!(
+        r.changes[0]
+            .expression()
+            .expect("numeric form contains an expression change")
+            .value(),
+        3.0625
+    );
     let mut c = creates::Creates::default();
     c.sketch = form;
     let e = &mut c.sketch.chamfers;
@@ -183,7 +181,8 @@ fn distance_current_text_draft_history_noop_clean_copy_and_add_exclusion() {
     click(&ctx, e, "Apply distance");
     assert_eq!(
         e.take_apply_request().expect("current text").changes[0]
-            .expression
+            .expression()
+            .expect("expression")
             .value(),
         3.0625
     );
@@ -192,7 +191,8 @@ fn distance_current_text_draft_history_noop_clean_copy_and_add_exclusion() {
     click(&ctx, e, "Save distance copy…");
     assert_eq!(
         e.take_distance_request().expect("clean copy").changes[0]
-            .expression
+            .expression()
+            .expect("expression")
             .value(),
         3.0625
     );
@@ -206,7 +206,8 @@ fn distance_current_text_draft_history_noop_clean_copy_and_add_exclusion() {
     click(&ctx, e, "Save distance copy…");
     assert_eq!(
         e.take_distance_request().expect("no-op copy").changes[0]
-            .expression
+            .expression()
+            .expect("expression")
             .value(),
         2.375
     );
@@ -237,7 +238,7 @@ fn distance_current_text_draft_history_noop_clean_copy_and_add_exclusion() {
 fn distance_busy_guard_proves_changed_idle_request_and_excludes_other_work() {
     let (_root, path, reading) = fixture();
     let mut s = opened(&path);
-    let chosen = saved_of(&reading);
+    let chosen = saved_of(&path);
     let (form, _) = typed_distance(&path, &reading, &s, chosen.feature, "3.125");
     let mut c = creates::Creates::default();
     c.sketch = form;
@@ -339,10 +340,10 @@ fn distance_busy_guard_proves_changed_idle_request_and_excludes_other_work() {
 /// inside the form, and an accepted scene closes it.
 #[test]
 fn distance_dirty_discovery_copy_reason_refusal_retains_text_and_acceptance_closes_form() {
-    let (_root, path, reading) = fixture();
+    let (_root, path, _reading) = fixture();
     let original = std::fs::read(&path).expect("source");
     let mut s = opened(&path);
-    let chosen = saved_of(&reading);
+    let chosen = saved_of(&path);
     assert!(
         !crate::numeric::refuse_unsaved_copy(&mut s),
         "a clean copy is offered"
@@ -373,7 +374,7 @@ fn distance_dirty_discovery_copy_reason_refusal_retains_text_and_acceptance_clos
     assert!(s.dirty());
     let current = s.export_path().expect("current");
     assert_ne!(current, path, "the accepted snapshot, not the logical file");
-    let reading = ferritecad_jobs::read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let mut c = creates::Creates::default();
     tell(&mut c, &s);
     let ctx = egui::Context::default();

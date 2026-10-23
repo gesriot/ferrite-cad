@@ -20,9 +20,10 @@
 //! to the open document (**Apply distance**), through the session, while dirty.
 //! Its **Confirm draft number** keeps the form's own history of confirmed
 //! requests for the copy workflow; that history is not the document's Undo/Redo.
+use crate::sketch_facts::Source as ExtrudeEditSource;
 use ferritecad_document::{
     ChamferChoice, ChamferCorner, DocumentVersion, EdgeChamfer, ExpressionSlotValue,
-    ExtrudeEditSource, SavedChamferTarget, SweptEdge,
+    SavedChamferTarget, SweptEdge,
 };
 use ferritecad_jobs::{EdgeChamferRequest, EditRequest};
 use ferritecad_types::{CadError, ObjectId, Result};
@@ -407,7 +408,7 @@ impl Editor {
                             expected: draft.version,
 
                             changes: vec![
-                                ferritecad_document::ExpressionChange::constant(
+                                ferritecad_document::EditChange::constant(
                                     saved.object,
                                     ferritecad_document::ExpressionSlot::ChamferDistance,
                                     *distance_mm,
@@ -485,7 +486,7 @@ impl Editor {
                                     expected: draft.version,
 
                                     changes: vec![
-                                        ferritecad_document::ExpressionChange::constant(
+                                        ferritecad_document::EditChange::constant(
                                             saved.object,
                                             ferritecad_document::ExpressionSlot::ChamferDistance,
                                             distance_mm,
@@ -950,7 +951,7 @@ pub(crate) mod tests {
         )
         .expect("prepared");
         d.write_edge_chamfer(&prepared).expect("written");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }
@@ -1292,7 +1293,7 @@ pub(crate) mod tests {
 
         // The distance edit of the published copy: the worker and the CLI.
         let copy = Document::open_read_only(&ui).expect("copy");
-        let reading = ExtrudeEditSource::read(&copy).expect("snapshot");
+        let reading = crate::sketch_facts::Source::read(&copy).expect("snapshot");
         copy.close().expect("close");
         let mut e = Editor::default();
         begin_by(&mut e, &ui, &reading, "Edit Chamfer distance Chamfer");
@@ -1303,7 +1304,7 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Confirm draft number");
         click(&ctx, &mut e, "Save distance copy…");
         let mut request = e.take_distance_request().expect("widget request");
-        let feature = request.changes[0].object;
+        let feature = request.changes[0].object();
         let edited = root.path().join("worker-edit.fcad");
         request.destination = edited.clone();
         let mut edits = crate::edits::Edits::default();
@@ -1331,7 +1332,7 @@ pub(crate) mod tests {
             Some(edited.clone())
         );
         let input = root.path().join("distance.json");
-        std::fs::write(&input, format!(r#"{{"request_version":1,"changes":[{{"object":"{feature}","slot":{{"kind":"chamfer_distance"}},"value":5.25,"unit":"mm"}}]}}"#)).expect("input");
+        std::fs::write(&input, format!(r#"{{"request_version":1,"changes":[{{"kind":"set_expression","object":"{feature}","slot":{{"kind":"chamfer_distance"}},"value":5.25,"unit":"mm"}}]}}"#)).expect("input");
         let peer_edit = root.path().join("peer-edit.fcad");
         let out = std::process::Command::new(crate::creates::tests::ferritecad())
             .arg("edit")

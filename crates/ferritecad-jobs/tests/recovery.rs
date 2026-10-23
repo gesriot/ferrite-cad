@@ -65,7 +65,7 @@ fn apply(session: &mut DocumentSession, millimetres: f64) {
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     millimetres,

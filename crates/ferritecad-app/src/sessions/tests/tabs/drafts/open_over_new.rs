@@ -343,7 +343,7 @@ fn a_saved_object_form_survives_a_discarded_drawing_exactly() {
     let a = w.sessions.tab();
     w.apply(14.0);
     let current = w.sessions.export_path().expect("A");
-    let reading = read_extrude_source(&current).expect("A");
+    let reading = crate::sketch_facts::read(&current).expect("A");
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
@@ -772,7 +772,7 @@ fn open_alone_leaves_an_unfinished_new_and_every_other_hold_stays() {
     let mut copying = crate::edits::Edits::default();
     let request = {
         let current = w.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         assert!(copying.begin(&current, &reading));
         let feature = ferritecad_fixtures::expression_slot(
             &reading,
@@ -962,7 +962,7 @@ fn open_over_new_recipe_on_owners(root: &Path) {
     w.open(&root.join("a.fcad"));
     let a = w.sessions.tab();
     let current = w.sessions.export_path().expect("A");
-    let reading = read_extrude_source(&current).expect("A");
+    let reading = crate::sketch_facts::read(&current).expect("A");
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
@@ -1040,7 +1040,7 @@ fn open_over_new_recipe_on_owners(root: &Path) {
 
 /// Compares the outputs of the §30T window recipe in `root` with the shipped
 /// command line. Reads only what the window wrote; refuses a missing output before
-/// any peer job. A is the command line's `edit with extrude_distance 26` + `edit-sketch-copy`
+/// any peer job. A is the command line's `edit with extrude_distance 26` + `edit`
 /// (80 made 90) in every SQL cell but the write stamp; B was never written; nothing
 /// New was making reached a file.
 fn compare_open_over_new(root: &Path) {

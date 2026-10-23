@@ -5,10 +5,7 @@
 //! Containment is judged against the saved Lines, never their bounding box;
 //! every rule runs in the catalogue, preparation and the writer's transaction.
 use super::*;
-use ferritecad_document::{
-    CircularCutEdit, CutBoundary, SavedCircularCut, SketchVertex, prepare_circular_cut,
-    prepare_cut_parameters, replace_sketch_coordinates,
-};
+use ferritecad_document::{CutBoundary, SavedCircularCut, SketchVertex, prepare_circular_cut};
 use ferritecad_types::{ObjectId, StableEntityId};
 
 /// The acceptance L: 1600 mm², notch at the top right, reflex vertex (20, 20).
@@ -292,23 +289,21 @@ fn polygon_discovery_refusals_and_writer_checks_without_kernel() {
             check_boundary(&path, s, &L);
             assert!(s["extent"].is_object() && s.get("depth_mm").is_none());
         }
+        let context = &saved[0]["circular_cut_edit_v3"]["saved"];
         let sketch = catalog["sketches"]
             .as_array()
             .expect("sketches")
             .iter()
-            .find(|s| s["cut_history_v3"].is_object())
-            .expect("base Sketch")
-            .clone();
-        check_boundary(&path, &sketch["cut_history_v3"], &L);
-        assert_eq!(sketch["editable"], json!(true));
+            .find(|s| s["sketch_id"] == context["profile_sketch_id"])
+            .expect("base Sketch");
         assert_eq!(
-            sketch["vertices"]
+            sketch["curves"]
                 .as_array()
-                .expect("vertices")
+                .expect("curves")
                 .iter()
-                .map(|v| v["curve_id"].as_str().expect("id").to_owned())
+                .map(|c| c["curve_id"].as_str().expect("id").to_owned())
                 .collect::<Vec<_>>(),
-            curve_ids(&sketch["cut_history_v3"]["boundary"])
+            curve_ids(&context["boundary"])
         );
 
         // An old rectangle consumer is told nothing it could take as a
@@ -420,99 +415,6 @@ fn polygon_discovery_refusals_and_writer_checks_without_kernel() {
     }
     d.close().expect("close");
 
-    // Base edits check every tool, the far ones included, and name the Cut.
-    let root = tempfile::tempdir().expect("root");
-    let tools16 = tools(16);
-    let path = fixture(root.path(), &L, &tools16);
-    let saved = ordered(&path);
-    let lines = base_lines(&path);
-    let vertices = |points: &[[f64; 2]]| -> Vec<SketchVertex> {
-        lines
-            .iter()
-            .zip(points)
-            .map(|(l, p)| SketchVertex {
-                curve_id: l.0,
-                start_mm: *p,
-            })
-            .collect()
-    };
-    let moved = |x: f64| {
-        let mut p = L;
-        p[1][0] = x;
-        p[2][0] = x;
-        p
-    };
-    // Slot 9 is link 11 (r 2.25 at x 54.125); the right wall at 56 is 0.375
-    // short. Every other link, including slot 4 at r 1.5, is clear.
-    let far = &saved[11];
-    assert_eq!(far.center_mm, SLOTS[9]);
-    let d = Document::open_read_only(&path).expect("doc");
-    let error = replace_sketch_coordinates(&d, saved[0].profile_sketch, &vertices(&moved(56.)))
-        .expect_err("the far tool");
-    let message = error.to_string();
-    assert!(message.contains(&far.feature.to_string()), "{message}");
-    for other in saved.iter().filter(|s| s.feature != far.feature) {
-        assert!(!message.contains(&other.feature.to_string()), "{message}");
-    }
-    replace_sketch_coordinates(&d, saved[0].profile_sketch, &vertices(&moved(57.)))
-        .expect("clear of every tool");
-    // Into the notch: the L's reflex vertex moves up and right, over slot 13.
-    let mut notch = L;
-    notch[3] = [15., 20.];
-    notch[4] = [15., 40.];
-    let error = replace_sketch_coordinates(&d, saved[0].profile_sketch, &vertices(&notch))
-        .expect_err("a moved concave wall");
-    assert!(error.to_string().contains("Cut "), "{error}");
-    // Order, identities and winding are not coordinates.
-    let mut reversed: Vec<_> = vertices(&L);
-    reversed.reverse();
-    assert!(replace_sketch_coordinates(&d, saved[0].profile_sketch, &reversed).is_err());
-    let mut wound = L;
-    wound.reverse();
-    assert!(replace_sketch_coordinates(&d, saved[0].profile_sketch, &vertices(&wound)).is_err());
-    // A height edit re-checks the same rule and keeps the boundary.
-    d.close().expect("close");
-
-    // The writer's transaction repeats the rule against the document it
-    // writes to: a base edit prepared before a far tool moved is refused.
-    let late = root.path().join("late.fcad");
-    std::fs::copy(&path, &late).expect("copy");
-    let mut d = Document::open(&late).expect("doc");
-    let prepared = replace_sketch_coordinates(&d, saved[0].profile_sketch, &vertices(&moved(57.)))
-        .expect("valid when prepared");
-    let tool = CircularCutEdit {
-        tool_curve: far.tool_curve,
-        center_mm: [55., far.center_mm[1]],
-        radius_mm: far.radius_mm,
-        extent: far.extent,
-        vocabulary: ExtentVocabulary::BlindOrThroughAll,
-    };
-    let edit = prepare_cut_parameters(&d, far.feature, &tool).expect("valid in the old base");
-    d.write_cut_parameters(&edit).expect("the far tool moves");
-    let version = d.content_version().expect("version");
-    let error = d
-        .write_sketch_geometry(&prepared)
-        .expect_err("stale against a far tool");
-    assert!(
-        error.to_string().contains(&far.feature.to_string()),
-        "{error}"
-    );
-    assert_eq!(d.content_version().expect("version"), version, "atomic");
-    // And an add prepared before the base moved.
-    let (body, _) = tip(&d);
-    let add = prepare_circular_cut(
-        &d,
-        body,
-        &CircularCut {
-            center_mm: [6.125, 39. - 0.75 - 0.5],
-            radius_mm: 0.5,
-            extent: blind,
-        },
-    );
-    // 16 is the limit; the add is refused on count before geometry.
-    assert!(add.is_err());
-    d.close().expect("close");
-
     let root = tempfile::tempdir().expect("root");
     let path = fixture(root.path(), &L, &tools(2));
     let mut d = Document::open(&path).expect("doc");
@@ -532,7 +434,8 @@ fn polygon_discovery_refusals_and_writer_checks_without_kernel() {
     let mut lower = L;
     lower[4][1] = 37.5;
     lower[5][1] = 37.5;
-    d.write_sketch_coordinates(
+    let changes = ferritecad_fixtures::vertex_changes(
+        &d,
         saved[0].profile_sketch,
         &lines
             .iter()
@@ -543,7 +446,8 @@ fn polygon_discovery_refusals_and_writer_checks_without_kernel() {
             })
             .collect::<Vec<_>>(),
     )
-    .expect("the top wall moves down");
+    .expect("changes");
+    d.write_changes(&changes).expect("the top wall moves down");
     let version = d.content_version().expect("version");
     let error = d
         .write_circular_cut(&prepared)
@@ -710,39 +614,25 @@ fn height(source: &Path, destination: &Path, height: f64, code: i32) -> Value {
 /// same order, only numbers.
 fn sketch(source: &Path, destination: &Path, points: &[[f64; 2]], code: i32) -> Value {
     let catalog = inspect(source);
+    let context = ordered(source).remove(0);
     let base = catalog["sketches"]
         .as_array()
         .expect("sketches")
         .iter()
-        .find(|s| s["cut_history_v3"].is_object())
-        .expect("base Sketch")
-        .clone();
-    let ids = curve_ids(&base["cut_history_v3"]["boundary"]);
-    assert_eq!(ids.len(), points.len());
-    let vertices: Vec<Value> = ids
-        .iter()
-        .zip(points)
-        .map(|(id, p)| json!({"curve_id":id,"start_mm":p}))
-        .collect();
+        .find(|s| s["sketch_id"] == context.profile_sketch.to_string())
+        .expect("base Sketch");
     let request = source.with_extension("sketch.json");
-    write(&request, &json!({"request_version":1,"vertices":vertices}));
+    write(&request, &transaction::line_changes(base, points));
     reply(
-        cli()
-            .arg("edit-sketch-copy")
-            .arg(source)
-            .args(["--sketch", base["sketch_id"].as_str().expect("id")])
-            .args([
-                "--expect-version",
-                catalog["content_version"].as_str().expect("v"),
-            ])
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(destination)
-            .arg("--json")
-            .output()
-            .expect("sketch"),
-        "edit-sketch-copy",
+        transaction::command(
+            source,
+            catalog["content_version"].as_str().expect("v"),
+            &request,
+            destination,
+        )
+        .output()
+        .expect("sketch"),
+        "edit",
         code,
     )
 }

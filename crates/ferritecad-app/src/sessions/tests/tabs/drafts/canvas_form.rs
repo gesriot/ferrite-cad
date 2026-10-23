@@ -178,7 +178,7 @@ fn a_form_held_on_another_version_loses_its_drawing_and_keeps_its_picks() {
                     let expected = ticket.source().version();
                     ticket.edit(
                         vec![
-                            ferritecad_document::ExpressionChange::constant(
+                            ferritecad_document::EditChange::constant(
                                 feature,
                                 ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                 20.0,

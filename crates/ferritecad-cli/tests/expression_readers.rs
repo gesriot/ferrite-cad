@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
-use ferritecad_document::{
-    Document, ExpressionChange, ExpressionSlot, ExtrudeEditSource, ObjectPayload,
-};
+use ferritecad_document::{Document, EditChange, ExpressionSlot, ExtrudeEditSource, ObjectPayload};
 use ferritecad_kernel::OperationContext;
 use std::{collections::BTreeMap, path::Path};
 #[path = "support/transaction.rs"]
@@ -11,28 +9,6 @@ fn readers(path: &Path) -> BTreeMap<String, bool> {
     let document = Document::open_read_only(path).expect("document");
     let source = ExtrudeEditSource::read(&document).expect("reading");
     let mut result = BTreeMap::new();
-    for row in source.sketches {
-        result.insert(format!("sketch {}", row.sketch), row.vertices.is_some());
-        result.insert(
-            format!("sketch Fillets {}", row.sketch),
-            !row.fillets.is_empty(),
-        );
-        result.insert(
-            format!("sketch Chamfer {}", row.sketch),
-            row.chamfer.is_some(),
-        );
-    }
-    for row in source.constraint_sketches {
-        result.insert(format!("constraints {}", row.sketch), row.stored.is_some());
-        result.insert(
-            format!("constraint Fillets {}", row.sketch),
-            !row.fillets.is_empty(),
-        );
-        result.insert(
-            format!("constraint Chamfer {}", row.sketch),
-            row.chamfer.is_some(),
-        );
-    }
     for row in source.cut_features {
         result.insert(format!("Cut {}", row.feature), row.saved.is_some());
     }
@@ -145,8 +121,7 @@ fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
                     AddLineConstraint, AddSketchConstraint, LineConstraintKind as Kind,
                     LineEndpoint, LineLengthMm, SketchConstraintEdits, SketchCoordinateMm,
                 };
-                let sketch = &reading.sketches[0];
-                let vertices = sketch.vertices.as_ref().expect("rectangle");
+                let (sketch, stored) = ferritecad_fixtures::sketch(&document).expect("sketch");
                 let add = [
                     (0, Kind::Horizontal),
                     (1, Kind::Vertical),
@@ -166,14 +141,14 @@ fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
                 .into_iter()
                 .map(|(i, kind)| {
                     AddSketchConstraint::Line(AddLineConstraint::Line {
-                        curve: vertices[i].curve_id,
+                        curve: stored.curves[i].id,
                         kind,
                     })
                 })
                 .collect();
-                let prepared = ferritecad_document::prepare_sketch_constraints(
+                let prepared = ferritecad_fixtures::constraint_changes(
                     &document,
-                    sketch.sketch,
+                    sketch,
                     &SketchConstraintEdits {
                         remove: vec![],
                         add,
@@ -181,7 +156,7 @@ fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
                 )
                 .expect("constraints");
                 document
-                    .write_sketch_constraints(&prepared)
+                    .write_changes(&prepared)
                     .expect("dimensioned Chamfer");
             }
         }
@@ -198,9 +173,9 @@ fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
                 }
                 _ => slot.expression.value() * 0.95,
             };
-            let change = ExpressionChange::constant(slot.object, slot.slot, value).expect("change");
+            let change = EditChange::constant(slot.object, slot.slot, value).expect("change");
             let request = root.path().join("request.json");
-            std::fs::write(&request, serde_json::to_vec(&serde_json::json!({"request_version":1,"changes":[{"object":slot.object,"slot":slot.slot,"value":value,"unit":"mm"}]})).expect("JSON")).expect("request");
+            std::fs::write(&request, serde_json::to_vec(&serde_json::json!({"request_version":1,"changes":[{"kind":"set_expression","object":slot.object,"slot":slot.slot,"value":value,"unit":"mm"}]})).expect("JSON")).expect("request");
             let destination = root.path().join(format!("edited-{index}.fcad"));
             let output = transaction::command(
                 &source,

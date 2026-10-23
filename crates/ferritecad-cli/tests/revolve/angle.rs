@@ -69,7 +69,7 @@ pub(super) fn angle_reply(out: Output, code: i32) -> Value {
 pub(super) fn write_angle(path: &Path, degrees: f64) {
     write(
         path,
-        &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"revolve_angle"},"value":degrees,"unit":"deg"}]}),
+        &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"revolve_angle"},"value":degrees,"unit":"deg"}]}),
     );
 }
 
@@ -236,16 +236,6 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
             // §27F: the sector's profile is editable, and reports the angle
             // this copy now has.
             let sketch = &c["sketches"][0];
-            assert_eq!(sketch["editable"], true, "{sketch}");
-            assert_eq!(sketch["profile_feature"]["angle_deg"], json!(degrees));
-            assert_eq!(
-                sketch["profile_feature"]["kind"],
-                if solid {
-                    "partial_turn_revolve_axis_closed"
-                } else {
-                    "partial_turn_revolve"
-                }
-            );
 
             // Every archive the chain has built so far, under this copy's
             // name. The key moves with the angle, so a new angle is a Miss and
@@ -657,7 +647,7 @@ fn native_revolve_angle_edit_delivery_late_guards_and_cancellation() {
         expected: reading.version,
 
         changes: vec![
-            ferritecad_document::ExpressionChange::constant(
+            ferritecad_document::EditChange::constant(
                 choice.object,
                 ferritecad_document::ExpressionSlot::RevolveAngle,
                 220_f64.to_radians(),

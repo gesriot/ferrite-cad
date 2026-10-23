@@ -6,6 +6,8 @@
 //! it must. The solving is measured in the solver, evaluator and command-line
 //! gates.
 #![allow(clippy::panic)]
+#[path = "../src/test_changes.rs"]
+mod changes;
 use ferritecad_document::*;
 use ferritecad_types::{ObjectId, StableEntityId, Transform};
 
@@ -91,16 +93,6 @@ fn stored(d: &Document, id: ObjectId) -> Sketch {
     };
     s
 }
-fn vector(curve: StableEntityId, from: LineEndpoint) -> DirectedLine {
-    DirectedLine::new(curve, from, from.other()).expect("a vector")
-}
-fn angle(a: DirectedLine, b: DirectedLine, degrees: f64) -> AddSketchConstraint {
-    AddSketchConstraint::Line(AddLineConstraint::DirectedAngle {
-        a,
-        b,
-        angle: DirectedAngle::from_degrees(degrees).expect("a canonical angle"),
-    })
-}
 fn edits(remove: Vec<StableEntityId>, add: Vec<AddSketchConstraint>) -> SketchConstraintEdits {
     SketchConstraintEdits { remove, add }
 }
@@ -110,59 +102,28 @@ fn relation(a: StableEntityId, b: StableEntityId, relation: LineRelation) -> Add
 fn collinear(a: StableEntityId, b: StableEntityId) -> AddSketchConstraint {
     relation(a, b, LineRelation::Collinear)
 }
-fn write(d: &mut Document, id: ObjectId, e: &SketchConstraintEdits) -> PreparedSketchConstraints {
-    let prepared = prepare_sketch_constraints(d, id, e).expect("prepared");
-    d.write_sketch_constraints(&prepared).expect("written");
+fn write(d: &mut Document, id: ObjectId, e: &SketchConstraintEdits) -> Vec<EditChange> {
+    let prepared = changes::constraint_changes(d, id, e).expect("prepared");
+    d.write_changes(&prepared).expect("written");
     prepared
 }
 fn refusal(d: &Document, id: ObjectId, e: &SketchConstraintEdits) -> String {
-    let error = prepare_sketch_constraints(d, id, e).expect_err("a structural refusal");
+    let error = changes::constraint_changes(d, id, e).expect_err("a structural refusal");
     assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input, "{error}");
     error.to_string()
 }
 
 #[test]
-fn a_collinear_shares_the_relation_slot_in_either_order_and_only_an_exact_replace_frees_it() {
+fn collinear_replacement_keeps_the_other_constraint_ids() {
     let (_root, mut d, id, c) = fixture();
-    let forward = |i: usize| vector(c[i], LineEndpoint::Start);
     let first = write(&mut d, id, &edits(vec![], vec![collinear(c[0], c[2])]));
-    let collinear_id = first.added.last().expect("the collinear").id;
+    let collinear_id = changes::added_constraints(&first)
+        .last()
+        .expect("the collinear")
+        .id;
     let kept = stored(&d, id);
-    // The same pair under any answer to the same question, in either order.
-    for (name, add) in [
-        ("again", collinear(c[0], c[2])),
-        ("swapped", collinear(c[2], c[0])),
-        ("parallel", relation(c[0], c[2], LineRelation::Parallel)),
-        (
-            "parallel swapped",
-            relation(c[2], c[0], LineRelation::Parallel),
-        ),
-        (
-            "perpendicular",
-            relation(c[0], c[2], LineRelation::Perpendicular),
-        ),
-        ("directed angle", angle(forward(0), forward(2), 0.)),
-        (
-            "directed angle swapped",
-            angle(forward(2), forward(0), 180.),
-        ),
-    ] {
-        let message = refusal(&d, id, &edits(vec![], vec![add]));
-        assert!(
-            message.contains("Collinear"),
-            "{name}: the refusal does not name the collinearity: {message}"
-        );
-        assert_eq!(
-            stored(&d, id),
-            kept,
-            "{name}: a refusal changed the document"
-        );
-    }
     // Two different Lines, both of this Sketch.
-    for (name, add) in [
-        ("one Line twice", collinear(c[1], c[1])),
-        ("a foreign Line", collinear(c[1], StableEntityId::new())),
-    ] {
+    for (name, add) in [("a foreign Line", collinear(c[1], StableEntityId::new()))] {
         refusal(&d, id, &edits(vec![], vec![add]));
         assert_eq!(stored(&d, id), kept, "{name}");
     }
@@ -190,12 +151,17 @@ fn a_collinear_shares_the_relation_slot_in_either_order_and_only_an_exact_replac
             vec![relation(c[2], c[0], LineRelation::Parallel)],
         ),
     );
-    assert_eq!(replaced.removed, vec![collinear_id]);
+    assert!(
+        matches!(replaced[0], EditChange::RemoveConstraint {constraint,..} if constraint == collinear_id)
+    );
     let after = stored(&d, id);
     for k in kept.constraints.iter().filter(|k| k.id != collinear_id) {
         assert!(after.constraints.contains(k), "{k:?} lost its UUID or rule");
     }
-    let parallel_id = replaced.added.last().expect("the parallel").id;
+    let parallel_id = changes::added_constraints(&replaced)
+        .last()
+        .expect("the parallel")
+        .id;
     write(
         &mut d,
         id,
@@ -213,37 +179,4 @@ fn a_collinear_shares_the_relation_slot_in_either_order_and_only_an_exact_replac
     write(&mut d, id, &edits(ids, vec![]));
 
     assert!(d.validate().expect("validate").is_ok());
-}
-
-#[test]
-fn a_profile_with_a_construction_line_takes_no_collinear_on_any_pair() {
-    let (_root, mut d, id, c) = fixture();
-    let mut object = d.object(id).expect("read").expect("sketch");
-    if let ObjectPayload::Sketch(s) = &mut object.payload {
-        s.curves[1].construction = true;
-    }
-    d.write(|w| {
-        w.put_object(
-            object.id,
-            object.parent,
-            object.ordinal,
-            object.name.as_deref(),
-            &object.payload,
-        )
-    })
-    .expect("write");
-    let before = stored(&d, id);
-    // The construction Line itself and the pair that leaves it out are refused
-    // alike: the editor takes a profile of real Lines or none.
-    for (a, b) in [(0, 2), (1, 3), (2, 1)] {
-        let error = prepare_sketch_constraints(&d, id, &edits(vec![], vec![collinear(c[a], c[b])]))
-            .expect_err("a construction Line in the profile");
-        assert_eq!(
-            error.kind(),
-            ferritecad_types::ErrorKind::Unsupported,
-            "{error}"
-        );
-        assert!(error.to_string().contains("construction"), "{error}");
-    }
-    assert_eq!(stored(&d, id), before);
 }

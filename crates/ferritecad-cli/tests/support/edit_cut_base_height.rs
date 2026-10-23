@@ -30,7 +30,7 @@ fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
             ferritecad_document::ObjectPayload::Extrude(e) if e.operation == ferritecad_document::SolidOperation::NewBody && e.previous.is_none())).expect("base").id;
         let refs = d.topology_refs().expect("refs");
         let request = root.path().join("transaction.json");
-        std::fs::write(&request,serde_json::to_vec(&json!({"request_version":1,"changes":[{"object":base,"slot":ExpressionSlot::ExtrudeDistance,"value":height,"unit":"mm"}]})).expect("JSON")).expect("request");
+        std::fs::write(&request,serde_json::to_vec(&json!({"request_version":1,"changes":[{"kind":"set_expression","object":base,"slot":ExpressionSlot::ExtrudeDistance,"value":height,"unit":"mm"}]})).expect("JSON")).expect("request");
         let output = root.path().join("height.fcad");
         reply(
             cli()
@@ -121,7 +121,7 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
     }
-    use ferritecad_document::{CapSide, ExpressionChange, SemanticRole};
+    use ferritecad_document::{CapSide, EditChange, SemanticRole};
     for (height, depth, change_height, change_depth) in [
         (14.0, 12.0, true, false),
         (12.0, 10.0, false, true),
@@ -136,17 +136,13 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
         let mut changes = Vec::new();
         if change_height {
             changes.push(
-                ExpressionChange::constant(
-                    first.base_feature,
-                    ExpressionSlot::ExtrudeDistance,
-                    height,
-                )
-                .expect("height"),
+                EditChange::constant(first.base_feature, ExpressionSlot::ExtrudeDistance, height)
+                    .expect("height"),
             );
         }
         if change_depth {
             changes.push(
-                ExpressionChange::constant(first.feature, ExpressionSlot::ExtrudeDistance, depth)
+                EditChange::constant(first.feature, ExpressionSlot::ExtrudeDistance, depth)
                     .expect("depth"),
             );
         }
@@ -154,7 +150,7 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
         let request = root.path().join("changes.json");
         write(
             &request,
-            &json!({"request_version":1,"changes":changes.iter().map(|c|json!({"object":c.object,"slot":c.slot,"value":c.expression.value(),"unit":"mm"})).collect::<Vec<_>>()}),
+            &json!({"request_version":1,"changes":changes.iter().map(|c| { let EditChange::SetExpression {object,slot,expression} = c else {panic!("expression")}; json!({"kind":"set_expression","object":object,"slot":slot,"value":expression.value(),"unit":"mm"}) }).collect::<Vec<_>>()}),
         );
         let output = root.path().join("pocket.fcad");
         reply(
@@ -260,9 +256,8 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
             })
             .map(|r| r.id)
             .collect();
-        let losing =
-            ExpressionChange::constant(first.feature, ExpressionSlot::ExtrudeDistance, height)
-                .expect("through");
+        let losing = EditChange::constant(first.feature, ExpressionSlot::ExtrudeDistance, height)
+            .expect("through");
         let error = session
             .begin_step()
             .edit(
@@ -284,7 +279,7 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
 
         write(
             &request,
-            &json!({"request_version":1,"changes":[{"object":first.feature,"slot":ExpressionSlot::ExtrudeDistance,"value":height,"unit":"mm"}]}),
+            &json!({"request_version":1,"changes":[{"kind":"set_expression","object":first.feature,"slot":ExpressionSlot::ExtrudeDistance,"value":height,"unit":"mm"}]}),
         );
         let rejected = root.path().join("rejected.fcad");
         let bytes = std::fs::read(&output).expect("copy bytes");

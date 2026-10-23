@@ -1035,7 +1035,7 @@ fn native_json_inspect_edit_contract() {
             expected: common.version,
 
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature.parse().expect("UUID"),
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     27.0,

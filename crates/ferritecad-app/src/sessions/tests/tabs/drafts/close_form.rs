@@ -411,7 +411,7 @@ pub(super) fn form_families(quit: bool) {
         ("chamfer-add", &polygon.1),
         ("chamfer-edit", &chamfer.1),
     ] {
-        let reading = read_extrude_source(path).expect("reading");
+        let reading = crate::sketch_facts::read(path).expect("reading");
         let mut w = Window::new(Drawn::Mock, None);
         w.sessions.adopt(
             crate::sessions::test_open::open_in(w.private.path(), path, HistoryLimits::default())
@@ -796,7 +796,7 @@ fn close_recipe(root: &Path) {
     w.open(&root.join("b.fcad"));
     let b = w.sessions.tab();
     let source = w.sessions.export_path().expect("B");
-    let reading = read_extrude_source(&source).expect("B");
+    let reading = crate::sketch_facts::read(&source).expect("B");
     w.creates.sketch = crate::sketch::tests::analytic_apply::typed_circle(
         &source,
         &reading,
@@ -879,7 +879,7 @@ pub(super) fn compare_close(root: &Path) {
     assert_eq!(read("b.fcad"), read("inputs/b.fcad"), "B was written");
     let work = tempfile::tempdir().expect("peer");
     let source = root.join("inputs/a.fcad");
-    let reading = read_extrude_source(&source).expect("source");
+    let reading = crate::sketch_facts::read(&source).expect("source");
     let peer = work.path().join("peer.fcad");
     {
         let request = crate::edits::tests::expression_request(
@@ -1057,7 +1057,7 @@ fn close_request_preserves_foreground_work_and_gesture_holds() {
     kept(&w);
     w.creates.sketch.dismiss();
     let source = w.sessions.export_path().expect("source");
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     w.edits.type_height(f, "20");
     let copy = w
         .edits

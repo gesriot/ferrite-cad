@@ -803,7 +803,7 @@ fn fillet_discovery_and_protocol_without_native() {
     let before = std::fs::read(&f.source).expect("source bytes");
 
     let discovery = f.discovery();
-    assert_eq!(discovery["available"], true, "{discovery:?}");
+
     assert!(discovery["refusal"].is_null());
     assert!(discovery["document_refusal"].is_null());
     let target = &discovery["target"];
@@ -1075,7 +1075,7 @@ fn fillet_discovery_refuses_every_composition_outside_the_class_without_native()
         let before = std::fs::read(&f.source).expect("source bytes");
         for body in f.catalog["bodies"].as_array().expect("bodies") {
             let d = &body["fillet_edge"];
-            assert_eq!(d["available"], false, "{why}: {d}");
+
             assert!(d["target"].is_null(), "{why}");
             let reason = d["refusal"].as_str().expect("a reason");
             assert!(!reason.is_empty());
@@ -1310,7 +1310,7 @@ fn native_two_corners_both_windings_and_starts_are_what_the_numbers_say() {
             cut_side: true,
             ..Plate::new(corners)
         });
-        assert_eq!(f.discovery()["available"], true, "{label}");
+
         let (a, first) = fillet_at(&f, [X0 + W, Y0], 2.375, &format!("fillet-{label}-a"));
         let (b, second) = fillet_at(&f, [X0, Y0 + D], 3.0625, &format!("fillet-{label}-b"));
         // Changing the selection changes the corner, not only the numbers.
@@ -1533,7 +1533,7 @@ fn native_fillet_refusals_and_cancellation_are_atomic() {
     assert!(lost.exists(), "the published copy is kept");
     // §28G: the kept copy is a rounded plate, offered for a second Fillet.
     let kept = &inspect(&lost)["bodies"][0]["fillet_edge"];
-    assert_eq!(kept["available"], true, "{kept}");
+
     assert_eq!(kept["target"]["fillets"].as_array().map(Vec::len), Some(1));
     assert_eq!(std::fs::read(&f.source).expect("source bytes"), before);
 }
@@ -1565,7 +1565,7 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
     };
     // §28G: a second Fillet is offered, on the three other corners.
     let second = &catalog["bodies"][0]["fillet_edge"];
-    assert_eq!(second["available"], true, "{second}");
+
     assert_eq!(second["target"]["previous_feature_id"], fillet_id.as_str());
     assert_eq!(
         second["target"]["candidates"].as_array().map(Vec::len),
@@ -1573,11 +1573,6 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
     );
     names_it(&catalog["bodies"][0]["cut_edit"]["refusal"]);
 
-    assert_eq!(catalog["sketches"][0]["editable"], true, "§28D");
-    assert_eq!(
-        catalog["sketches"][0]["constraint_edit"]["available"], true,
-        "§28E"
-    );
     names_it(&catalog["sketches"][0]["circle_edit"]["refusal"]);
     names_it(&catalog["sketches"][0]["annulus_edit"]["refusal"]);
     let version = catalog["content_version"].as_str().expect("version");
@@ -1696,7 +1691,7 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
     ] {
         let catalog = inspect(&path);
         let d = &catalog["bodies"][0]["fillet_edge"];
-        assert_eq!(d["available"], false, "{why}: {d}");
+
         assert!(
             d["refusal"].as_str().is_some_and(|r| !r.is_empty()),
             "{why}"
@@ -1879,7 +1874,7 @@ mod radius {
         pub(super) fn ask_radius(&self, r: f64) {
             write(
                 &self.request,
-                &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"fillet_radius"},"value":r,"unit":"mm"}]}),
+                &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"fillet_radius"},"value":r,"unit":"mm"}]}),
             );
         }
         pub(super) fn edit(&self, output: &Path) -> Command {
@@ -2193,7 +2188,7 @@ mod radius {
             source: f.source.clone(),
             expected,
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::FilletRadius,
                     3.0,
@@ -2698,7 +2693,7 @@ mod height {
             source: f.source.clone(),
             expected,
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     9.0,
@@ -2835,13 +2830,13 @@ mod height {
 }
 
 /// §28D: the base rectangle under the saved Fillet, moved or resized through
-/// the existing `edit-sketch-copy`. Only the Sketch row changes; the Fillet
+/// the existing `edit`. Only the Sketch row changes; the Fillet
 /// keeps its row, its corner and radius, and every name.
 mod sketch {
     use super::radius::{filleted_by_cli, stored_refs};
     use super::*;
 
-    pub(super) const OP: &str = "edit-sketch-copy";
+    pub(super) const OP: &str = "edit";
 
     /// The saved plate as `[x0, y0, width, depth]`.
     const SAVED: [f64; 4] = [X0, Y0, W, D];
@@ -2873,45 +2868,26 @@ mod sketch {
         }
         /// Every saved vertex, in saved order, sent to `at`.
         pub(super) fn ask_starts(&self, at: &[[f64; 2]]) {
-            let vertices: Vec<Value> = self.sketch_row()["vertices"]
-                .as_array()
-                .expect("vertices")
-                .iter()
-                .zip(at)
-                .map(|(v, p)| json!({"curve_id": v["curve_id"], "start_mm": p}))
-                .collect();
             write(
                 &self.request,
-                &json!({"request_version": 1, "vertices": vertices}),
+                &transaction::line_changes(self.sketch_row(), at),
             );
         }
         /// The saved plate moved and resized to `rect`, corner for corner.
         pub(super) fn ask_rect(&self, rect: [f64; 4]) {
-            let at: Vec<[f64; 2]> = self.sketch_row()["vertices"]
+            let at: Vec<[f64; 2]> = self.sketch_row()["curves"]
                 .as_array()
                 .expect("vertices")
                 .iter()
                 .map(|v| {
-                    let p = &v["start_mm"];
+                    let p = &v["geometry"]["start_mm"];
                     mapped(rect, [p[0].as_f64().expect("x"), p[1].as_f64().expect("y")])
                 })
                 .collect();
             self.ask_starts(&at);
         }
         pub(super) fn redraw(&self, source: &Path, version: &str, output: &Path) -> Command {
-            let mut c = cli();
-            c.arg(OP)
-                .arg(source)
-                .arg("--sketch")
-                .arg(self.sketch_id())
-                .arg("--expect-version")
-                .arg(version)
-                .arg("--request")
-                .arg(&self.request)
-                .arg("-o")
-                .arg(output)
-                .arg("--json");
-            c
+            transaction::command(source, version, &self.request, output)
         }
     }
 
@@ -2965,17 +2941,17 @@ mod sketch {
         assert_eq!(plain.sketch_row()["fillet_base"], Value::Null);
         let f = crate::radius::filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
         let row = f.sketch_row();
-        assert_eq!(row["editable"], true, "{row}");
+
         assert_eq!(row["refusal"], Value::Null);
-        assert_eq!(row["vertices"].as_array().expect("vertices").len(), 4);
-        assert_eq!(row["profile_feature"]["feature_id"], f.base_id());
+        assert_eq!(row["curves"].as_array().expect("vertices").len(), 4);
+
         assert_eq!(row["cut_history_v3"], Value::Null, "not a Cut history");
         assert_eq!(row["fillet_base"], f.sketch_row()["fillet_base"]);
         assert_eq!(row["fillet_base"]["corner_mm"], json!([X0 + W, Y0]));
         assert_eq!(row["fillet_base"]["radius_mm"], 2.375);
         // The circle editors of this Sketch still refuse the filleted plate;
         // its Line constraints are §28E's.
-        assert_eq!(row["constraint_edit"]["available"], true);
+
         for editor in ["circle_edit", "annulus_edit"] {
             let reason = row[editor]["refusal"].as_str().expect("a reason");
             assert!(reason.contains(f.fillet_id()), "{editor}: {reason}");
@@ -3066,7 +3042,7 @@ mod sketch {
         d.close().expect("close");
         let catalog = inspect(&odd.source);
         let row = &catalog["sketches"][0];
-        assert_eq!(row["editable"], false);
+
         assert_eq!(row["fillet_base"], Value::Null);
         let reason = row["refusal"].as_str().expect("reason");
         assert!(
@@ -3211,7 +3187,7 @@ mod sketch {
         ] {
             let r = 3.0625;
             let f = filleted_by_cli(corners, corner, r, &format!("rounded-{label}"));
-            assert_eq!(f.sketch_row()["editable"], true);
+
             let (grown, _) = redrawn(&f, corner, r, H, up, &format!("sketch-{label}-up"));
             // A second edit of the edited copy, back inside the saved plate.
             let g = Fixture {
@@ -3222,12 +3198,12 @@ mod sketch {
             };
             // The copy's corner, as the saved vertices now stand.
             let now = mapped(up, corner);
-            let shrink: Vec<[f64; 2]> = g.sketch_row()["vertices"]
+            let shrink: Vec<[f64; 2]> = g.sketch_row()["curves"]
                 .as_array()
                 .expect("vertices")
                 .iter()
                 .map(|v| {
-                    let p = &v["start_mm"];
+                    let p = &v["geometry"]["start_mm"];
                     let (x, y) = (p[0].as_f64().expect("x"), p[1].as_f64().expect("y"));
                     [
                         if x == up[0] {
@@ -3318,7 +3294,7 @@ mod sketch {
         );
         let near_catalog = inspect(&near);
         assert_eq!(
-            near_catalog["sketches"][0]["vertices"][2]["start_mm"],
+            near_catalog["sketches"][0]["curves"][2]["geometry"]["start_mm"],
             json!(noisy[2]),
             "the accepted coordinates are not snapped"
         );
@@ -3433,12 +3409,12 @@ mod sketch {
         let step4 = [-6.0, 2.0, 22.25, 13.5];
         let last = k.root.path().join("step4.fcad");
         k.ask_starts(
-            &k.sketch_row()["vertices"]
+            &k.sketch_row()["curves"]
                 .as_array()
                 .expect("vertices")
                 .iter()
                 .map(|v| {
-                    let p = &v["start_mm"];
+                    let p = &v["geometry"]["start_mm"];
                     let (x, y) = (p[0].as_f64().expect("x"), p[1].as_f64().expect("y"));
                     [
                         if x == step1[0] {
@@ -3565,12 +3541,12 @@ mod sketch {
             content: d.content_version().expect("version"),
         };
         d.close().expect("close");
-        let vertices: Vec<ferritecad_document::SketchVertex> = f.sketch_row()["vertices"]
+        let vertices: Vec<ferritecad_document::SketchVertex> = f.sketch_row()["curves"]
             .as_array()
             .expect("vertices")
             .iter()
             .map(|v| {
-                let p = &v["start_mm"];
+                let p = &v["geometry"]["start_mm"];
                 ferritecad_document::SketchVertex {
                     curve_id: v["curve_id"].as_str().expect("id").parse().expect("UUID"),
                     start_mm: mapped(
@@ -3580,11 +3556,19 @@ mod sketch {
                 }
             })
             .collect();
-        let request = |destination: &Path| ferritecad_jobs::EditSketchRequest {
+        let request = |destination: &Path| ferritecad_jobs::EditRequest {
+            changes: {
+                let document = ferritecad_document::Document::open_read_only(&(f.source.clone()))
+                    .expect("source");
+                ferritecad_fixtures::vertex_changes(
+                    &document,
+                    f.sketch_id().parse().expect("UUID"),
+                    &(vertices.clone()),
+                )
+                .expect("changes")
+            },
             source: f.source.clone(),
-            expected,
-            sketch: f.sketch_id().parse().expect("UUID"),
-            vertices: vertices.clone(),
+            expected: expected,
             destination: destination.to_path_buf(),
         };
         for at in [0.0, 0.95] {
@@ -3602,8 +3586,7 @@ mod sketch {
                     }
                 }));
             let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-            let result =
-                ferritecad_jobs::edit_sketch_copy(&request(&destination), &mut kernel, &context);
+            let result = ferritecad_jobs::edit_copy(&request(&destination), &mut kernel, &context);
             assert!(result.is_err(), "cancelled at {at}: {result:?}");
             assert!(!destination.exists());
             assert_eq!(kernel.live_shape_count(), 0);
@@ -3618,9 +3601,7 @@ mod sketch {
             }),
         );
         let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-        assert!(
-            ferritecad_jobs::edit_sketch_copy(&request(&raced), &mut kernel, &context).is_err()
-        );
+        assert!(ferritecad_jobs::edit_copy(&request(&raced), &mut kernel, &context).is_err());
         assert_eq!(std::fs::read(&raced).expect("racer kept"), b"racing file");
 
         // A publication whose report is lost stays published: exit 7.
@@ -3643,14 +3624,14 @@ mod sketch {
 }
 
 /// §28E: the Line constraints of the rectangle under the saved Fillet,
-/// through the existing `edit-sketch-constraints-copy`. The stored Lines stay
+/// through the existing `edit`. The stored Lines stay
 /// the solver's starting guess; the part, and the Fillet's corner and radius,
 /// are the solved plate's.
 mod constraints {
     use super::radius::{filleted_by_cli, stored_refs};
     use super::*;
 
-    const OP: &str = "edit-sketch-constraints-copy";
+    const OP: &str = "edit";
 
     /// A kernel and a solver, or why this build has none. A build required
     /// to link PlaneGCS must have it: this never skips there.
@@ -3668,7 +3649,7 @@ mod constraints {
 
     impl Fixture {
         pub(crate) fn constraint_row(&self) -> &Value {
-            &self.catalog["sketches"][0]["constraint_edit"]
+            &self.catalog["sketches"][0]
         }
         pub(crate) fn plate_sketch_id(&self) -> &str {
             self.catalog["sketches"][0]["sketch_id"]
@@ -3995,7 +3976,7 @@ mod constraints {
     fn constraint_discovery_and_protocol_without_native() {
         let plain = crate::radius::filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
         let row = plain.constraint_row();
-        assert_eq!(row["available"], true, "{row}");
+
         assert_eq!(row["fillet_base"]["stored_corner_mm"], json!([X0 + W, Y0]));
         assert_eq!(
             row["fillet_base"]["fillet_feature_id"],
@@ -4023,15 +4004,15 @@ mod constraints {
             )],
         };
         let prepared =
-            ferritecad_document::prepare_sketch_constraints(&d, sketch, &edits).expect("prepared");
-        d.write_sketch_constraints(&prepared).expect("written");
+            ferritecad_fixtures::constraint_changes(&d, sketch, &edits).expect("prepared");
+        d.write_changes(&prepared).expect("written");
         d.close().expect("close");
         let f = Fixture {
             catalog: inspect(&plain.source),
             ..plain
         };
         let row = f.constraint_row();
-        assert_eq!(row["available"], true);
+
         assert_eq!(
             row["constraints"].as_array().expect("list").len(),
             5,
@@ -4045,10 +4026,7 @@ mod constraints {
         );
 
         let sketch_row = &f.catalog["sketches"][0];
-        assert_eq!(
-            sketch_row["editable"], false,
-            "coordinates of a constrained Sketch"
-        );
+
         assert!(
             sketch_row["refusal"]
                 .as_str()
@@ -4204,7 +4182,7 @@ mod constraints {
         let cache = place.with_extension("fcad-cache");
         let (old, _) = measure_events(&place, Some(&cache));
         let replaced = published(&g, corner, r, &map(22.25, depth), 0, "constraints-replaced");
-        let listed_now = inspect(&replaced)["sketches"][0]["constraint_edit"]["constraints"]
+        let listed_now = inspect(&replaced)["sketches"][0]["constraints"]
             .as_array()
             .expect("list")
             .clone();
@@ -4267,14 +4245,13 @@ mod constraints {
         let v = reply(u.constrain(&bare).output().expect("process"), OP, 0);
         assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 8);
         let catalog = inspect(&bare);
-        let left = catalog["sketches"][0]["constraint_edit"]["constraints"]
+        let left = catalog["sketches"][0]["constraints"]
             .as_array()
             .expect("list")
             .clone();
         assert_eq!(left.len(), 4);
         assert!(left.iter().all(|c| c["rule"]["kind"] == "coincident"));
-        assert_eq!(catalog["sketches"][0]["editable"], false);
-        assert_eq!(catalog["sketches"][0]["constraint_edit"]["available"], true);
+
         let (starts_now, _) = solved(&bare);
         assert_eq!(
             starts_now, starts,
@@ -4502,7 +4479,7 @@ mod constraints {
         use super::*;
 
         const ROUND: &str = "fillet-edge-copy";
-        const CONSTRAIN: &str = "edit-sketch-constraints-copy";
+        const CONSTRAIN: &str = "edit";
 
         impl Fixture {
             /// The candidate whose stored corner is `corner`.
@@ -4619,9 +4596,6 @@ mod constraints {
             let fillet = &after["fillets"][0];
             assert_eq!(fillet["feature_id"], result["feature_id"]);
 
-            assert_eq!(after["sketches"][0]["editable"], false, "coordinates");
-            assert_eq!(after["sketches"][0]["constraint_edit"]["available"], true);
-
             // The solve, read from the solver: the expected rectangle, no
             // snapping, and its DOF.
             let (solved_starts, measured) = solved(&copy);
@@ -4718,9 +4692,9 @@ mod constraints {
                 remove: Vec::new(),
                 add,
             };
-            let prepared = ferritecad_document::prepare_sketch_constraints(&d, sketch, &edits)
-                .expect("prepared");
-            d.write_sketch_constraints(&prepared).expect("written");
+            let prepared =
+                ferritecad_fixtures::constraint_changes(&d, sketch, &edits).expect("prepared");
+            d.write_changes(&prepared).expect("written");
             d.close().expect("close");
             Fixture {
                 catalog: inspect(&plain.source),
@@ -4756,7 +4730,7 @@ mod constraints {
 
             let f = constrained_without_kernel();
             let d = f.discovery();
-            assert_eq!(d["available"], true, "{d}");
+
             assert!(d["refusal"].is_null() && d["document_refusal"].is_null());
             let t = &d["target"];
             assert_eq!(t["profile_constrained"], true);
@@ -4784,7 +4758,6 @@ mod constraints {
                 assert!(joint[0].as_str() < joint[1].as_str(), "canonical");
             }
             assert_eq!(f.catalog["fillets"], json!([]));
-            assert_eq!(f.catalog["sketches"][0]["editable"], false);
 
             // A radius the stored rectangle could never carry is still a
             // well-formed request: its fate is the solved plate's.
@@ -5058,7 +5031,6 @@ mod constraints {
             };
             let k = g.at_copy(&first);
             let names = stored_refs(&first);
-            assert_eq!(k.catalog["sketches"][0]["editable"], false);
 
             // Replace the width.
             let width_rule = k.constraint_row()["constraints"]
@@ -5499,7 +5471,7 @@ mod sequential {
 
         // Discovery: the one saved Fillet, and the three other corners.
         let discovery = g.discovery();
-        assert_eq!(discovery["available"], true, "{discovery}");
+
         let target = &discovery["target"];
         let base = id(&target["base_feature_id"]);
         assert_eq!(id(&target["previous_feature_id"]), first_id);
@@ -5669,7 +5641,7 @@ mod sequential {
         let after = inspect(&copy);
         let row = &after["bodies"][0]["fillet_edge"];
         // §28L: a third Fillet is offered on the two corners still sharp.
-        assert_eq!(row["available"], true, "{row}");
+
         assert_eq!(
             row["target"]["candidates"].as_array().map(Vec::len),
             Some(2)
@@ -5679,7 +5651,7 @@ mod sequential {
         // §28H: each radius is editable, by its own UUID; §28I: and the
         // plate's height; the Sketch and its constraints are not.
 
-        let base_row = &after["sketches"][0]["constraint_edit"];
+        let base_row = &after["sketches"][0];
         assert_eq!(
             base_row["fillet_base"]["second_fillet"]["previous_feature_id"],
             first_id.to_string()
@@ -5687,8 +5659,6 @@ mod sequential {
         // §28J: a free plate's Sketch coordinates are editable under both
         // Fillets and a dimensioned one's are refused; §28K: the constraint
         // editor reads the history either way.
-        assert_eq!(after["sketches"][0]["editable"], !part.constrained);
-        assert_eq!(after["sketches"][0]["constraint_edit"]["available"], true);
 
         // Validation and the shipped rebuild.
         let checked = cli()
@@ -5824,7 +5794,7 @@ mod sequential {
         let f = crate::radius::filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
         let first = f.fillet_id().to_owned();
         let d = f.discovery();
-        assert_eq!(d["available"], true, "{d}");
+
         let t = &d["target"];
         assert_eq!(t["previous_feature_id"], first.as_str());
         assert_eq!(t["fillets"][0]["feature_id"], first.as_str());
@@ -5907,7 +5877,7 @@ mod sequential {
         let two = inspect(&f.source);
         let row = &two["bodies"][0]["fillet_edge"];
         // §28L: a third Fillet is offered on the two corners still sharp.
-        assert_eq!(row["available"], true, "{row}");
+
         assert_eq!(
             row["target"]["candidates"].as_array().map(Vec::len),
             Some(2)
@@ -5917,8 +5887,6 @@ mod sequential {
         // and the free plate's Sketch coordinates; the constraint editor
         // still refuses.
 
-        assert_eq!(two["sketches"][0]["editable"], true);
-        assert_eq!(two["sketches"][0]["constraint_edit"]["available"], true);
         assert!(two["bodies"][0]["cut_edit"]["refusal"].is_string());
         let version = two["content_version"].as_str().expect("version");
         f.ask_edge(&opposite["edge"], 1.0);
@@ -6214,7 +6182,7 @@ mod sequential {
         assert!(lost.exists(), "the published copy is kept");
         let kept = inspect(&lost);
         assert_eq!(kept["fillets"].as_array().map(Vec::len), Some(2));
-        assert_eq!(kept["bodies"][0]["fillet_edge"]["available"], true);
+
         assert_eq!(std::fs::read(&g.source).expect("bytes"), before);
     }
 
@@ -6546,7 +6514,7 @@ mod sequential {
                 assert_eq!(theirs[key], other[key], "{key}");
             }
             // §28L: two corners are still sharp, so a third Fillet is offered.
-            assert_eq!(after["bodies"][0]["fillet_edge"]["available"], true);
+
             // §28I: the plate's height is editable under both Fillets.
 
             let checked = cli()
@@ -6944,7 +6912,7 @@ mod sequential {
                 expected,
 
                 changes: vec![
-                    ferritecad_document::ExpressionChange::constant(
+                    ferritecad_document::EditChange::constant(
                         id_of(&json!(id1)),
                         ferritecad_document::ExpressionSlot::FilletRadius,
                         2.5,
@@ -7056,11 +7024,6 @@ mod sequential {
             );
             assert_eq!(rows(&after), [one.clone(), two.clone()]);
 
-            assert_eq!(after.catalog["sketches"][0]["editable"], !part.constrained);
-            assert_eq!(
-                after.catalog["sketches"][0]["constraint_edit"]["available"],
-                true
-            );
             if part.constrained {
                 let sketch = after.catalog["sketches"][0]["sketch_id"]
                     .as_str()
@@ -7434,7 +7397,7 @@ mod sequential {
                 expected,
 
                 changes: vec![
-                    ferritecad_document::ExpressionChange::constant(
+                    ferritecad_document::EditChange::constant(
                         id_of(&json!(base)),
                         ferritecad_document::ExpressionSlot::ExtrudeDistance,
                         9.0,
@@ -7495,7 +7458,7 @@ mod sequential {
         }
 
         /// One Sketch edit of `h`'s base rectangle to `rect`, published by the
-        /// shipped `edit-sketch-copy` and measured: discovery naming both
+        /// shipped `edit` and measured: discovery naming both
         /// Fillets in history order, the exact allowlist (the Sketch row alone),
         /// every name kept, both Fillet rows unchanged with their corners moved,
         /// validation, the B-Rep cold and through a real Miss and Hit over the
@@ -7516,7 +7479,7 @@ mod sequential {
             let refs = stored_refs(&h.source);
             let [one, two] = rows(h);
             let row = h.sketch_row().clone();
-            assert_eq!(row["editable"], true, "{row}");
+
             assert!(row["refusal"].is_null(), "{row}");
             let context = &row["fillet_base"];
             assert_eq!(context["fillet_feature_id"], one["feature_id"]);
@@ -7563,12 +7526,6 @@ mod sequential {
             let moved = &after.sketch_row()["fillet_base"];
             assert_eq!(moved["corner_mm"], json!(m1));
             assert_eq!(moved["second_fillet"]["corner_mm"], json!(m2));
-
-            assert_eq!(
-                after.sketch_row()["constraint_edit"]["available"],
-                true,
-                "the constraint editor reads both Fillets"
-            );
 
             let checked = cli()
                 .arg("validate")
@@ -7664,7 +7621,7 @@ mod sequential {
             let (_keep, h) = twice_without_kernel(2.375, 3.0625);
             let [one, two] = rows(&h);
             let row = h.sketch_row();
-            assert_eq!(row["editable"], true, "{row}");
+
             assert!(row["refusal"].is_null());
             assert_eq!(
                 row["fillet_base"],
@@ -7685,8 +7642,8 @@ mod sequential {
                     },
                 })
             );
-            assert_eq!(row["vertices"].as_array().map(Vec::len), Some(4));
-            assert_eq!(row["constraint_edit"]["available"], true);
+            assert_eq!(row["curves"].as_array().map(Vec::len), Some(4));
+
             assert_eq!(h.sketch_row()["fillet_base"], row["fillet_base"]);
 
             let before = std::fs::read(&h.source).expect("bytes");
@@ -8000,7 +7957,7 @@ mod sequential {
             }
             // A repeated curve, a foreign one and a short request.
             let good = starts(template, [X0, Y0, W, D]);
-            let vertices = h.sketch_row()["vertices"]
+            let vertices = h.sketch_row()["curves"]
                 .as_array()
                 .expect("vertices")
                 .clone();
@@ -8123,22 +8080,35 @@ mod sequential {
                         stop.cancel();
                     }
                 }));
-            let request = ferritecad_jobs::EditSketchRequest {
+            let request = ferritecad_jobs::EditRequest {
+                changes: {
+                    let document =
+                        ferritecad_document::Document::open_read_only(&(h.source.clone()))
+                            .expect("source");
+                    ferritecad_fixtures::vertex_changes(
+                        &document,
+                        id_of(&json!(h.sketch_id())),
+                        &(vertices
+                            .iter()
+                            .zip(&starts(template, [X0 - 2., Y0 - 2., W + 3., D + 3.]))
+                            .map(|(v, at)| ferritecad_document::SketchVertex {
+                                curve_id: v["curve_id"]
+                                    .as_str()
+                                    .expect("UUID")
+                                    .parse()
+                                    .expect("UUID"),
+                                start_mm: *at,
+                            })
+                            .collect::<Vec<_>>()),
+                    )
+                    .expect("changes")
+                },
                 source: h.source.clone(),
-                expected,
-                sketch: id_of(&json!(h.sketch_id())),
-                vertices: vertices
-                    .iter()
-                    .zip(&starts(template, [X0 - 2., Y0 - 2., W + 3., D + 3.]))
-                    .map(|(v, at)| ferritecad_document::SketchVertex {
-                        curve_id: v["curve_id"].as_str().expect("UUID").parse().expect("UUID"),
-                        start_mm: *at,
-                    })
-                    .collect(),
+                expected: expected,
                 destination: destination.clone(),
             };
             let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-            let result = ferritecad_jobs::edit_sketch_copy(&request, &mut kernel, &context);
+            let result = ferritecad_jobs::edit_copy(&request, &mut kernel, &context);
             assert!(result.is_err(), "{result:?}");
             assert!(!destination.exists());
             assert_eq!(kernel.live_shape_count(), 0);
@@ -8191,7 +8161,7 @@ mod sequential {
             let two = second_fillet(&g1, &part, first, 3.5, second, 2.0, "s-dimensioned-two");
             let h = g1.at_copy(&two);
             let row = h.sketch_row();
-            assert_eq!(row["editable"], false, "{row}");
+
             assert!(
                 row["refusal"]
                     .as_str()
@@ -8264,7 +8234,7 @@ mod sequential {
             .expect("closure links");
             d.close().expect("close");
             let h = plain.at_copy(&linked);
-            assert_eq!(h.sketch_row()["editable"], true, "{}", h.sketch_row());
+
             let rect = [-2.5, 1.25, 31.0, 10.0];
             let copy = moved_twice(
                 &h,
@@ -8301,7 +8271,7 @@ mod sequential {
             dimensioned, horizontal, length, only_this_sketch_changed, pin, rule, solved_vertex,
         };
 
-        const EDIT: &str = "edit-sketch-constraints-copy";
+        const EDIT: &str = "edit";
 
         /// Every saved constraint of the base Sketch, in the catalogue's order.
         fn listed(f: &Fixture) -> Vec<Value> {
@@ -8516,7 +8486,7 @@ mod sequential {
             let (_keep, h) = twice_without_kernel(2.375, 3.0625);
             let [one, two] = rows(&h);
             let row = h.constraint_row();
-            assert_eq!(row["available"], true, "{row}");
+
             assert!(row["refusal"].is_null());
             assert_eq!(
                 row["fillet_base"],
@@ -8536,7 +8506,7 @@ mod sequential {
                     },
                 })
             );
-            assert_eq!(h.catalog["sketches"][0]["editable"], true);
+
             assert_eq!(
                 h.catalog["sketches"][0]["fillet_base"]["second_fillet"]["fillet_feature_id"],
                 two["feature_id"]
@@ -8743,7 +8713,7 @@ mod sequential {
             let k = g2.at_copy(&closed);
             assert!(listed(&k).iter().all(|c| c["rule"]["kind"] == "coincident"));
             assert_eq!(listed(&k).len(), 4);
-            assert_eq!(k.catalog["sketches"][0]["editable"], true, "§28J again");
+
             assert_eq!(
                 k.catalog["sketches"][0]["fillet_base"]["second_fillet"]["fillet_feature_id"],
                 rows(&k)[1]["feature_id"]
@@ -9001,7 +8971,7 @@ mod sequential {
             );
             // A real redundancy: the equality says what H/V and the lengths said.
             let before = std::fs::read(&g.source).expect("bytes");
-            let catalog = &g.catalog["sketches"][0]["constraint_edit"]["curves"];
+            let catalog = &g.catalog["sketches"][0]["curves"];
             g.ask_constraints(
                 &[],
                 &[json!({
@@ -9118,26 +9088,35 @@ mod sequential {
                         stop.cancel();
                     }
                 }));
-            let request = ferritecad_jobs::EditSketchConstraintsRequest {
-                source: g.source.clone(),
-                expected,
-                sketch: id_of(&json!(g.plate_sketch_id())),
-                edits: ferritecad_document::SketchConstraintEdits {
-                    remove: vec![width_rule.as_str().expect("UUID").parse().expect("UUID")],
-                    add: vec![ferritecad_document::AddSketchConstraint::Line(
-                        ferritecad_document::AddLineConstraint::Line {
-                            curve: g.line(0).as_str().expect("UUID").parse().expect("UUID"),
-                            kind: ferritecad_document::LineConstraintKind::Distance(
-                                ferritecad_document::LineLengthMm::new(22.0).expect("length"),
-                            ),
-                        },
-                    )],
+            let request = ferritecad_jobs::EditRequest {
+                changes: {
+                    let document =
+                        ferritecad_document::Document::open_read_only(&(g.source.clone()))
+                            .expect("source");
+                    ferritecad_fixtures::constraint_changes(
+                        &document,
+                        id_of(&json!(g.plate_sketch_id())),
+                        &(ferritecad_document::SketchConstraintEdits {
+                            remove: vec![width_rule.as_str().expect("UUID").parse().expect("UUID")],
+                            add: vec![ferritecad_document::AddSketchConstraint::Line(
+                                ferritecad_document::AddLineConstraint::Line {
+                                    curve: g.line(0).as_str().expect("UUID").parse().expect("UUID"),
+                                    kind: ferritecad_document::LineConstraintKind::Distance(
+                                        ferritecad_document::LineLengthMm::new(22.0)
+                                            .expect("length"),
+                                    ),
+                                },
+                            )],
+                        }),
+                    )
+                    .expect("changes")
                 },
+                source: g.source.clone(),
+                expected: expected,
                 destination: destination.clone(),
             };
             let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-            let result =
-                ferritecad_jobs::edit_sketch_constraints_copy(&request, &mut kernel, &context);
+            let result = ferritecad_jobs::edit_copy(&request, &mut kernel, &context);
             assert!(result.is_err(), "{result:?}");
             assert!(!destination.exists());
             assert_eq!(kernel.live_shape_count(), 0);

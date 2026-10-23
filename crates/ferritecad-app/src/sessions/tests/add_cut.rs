@@ -95,7 +95,7 @@ fn peer_add(source: &Path, body: ObjectId, cut: &CircularCut, out: &Path) {
         "--body".as_ref(),
         body.to_string().as_ref(),
         "--expect-version".as_ref(),
-        read_extrude_source(source)
+        crate::sketch_facts::read(source)
             .expect("reading")
             .version
             .content
@@ -410,7 +410,7 @@ fn added_feature(before: &Path, after: &Path) -> ObjectId {
 }
 
 fn cut_ids(path: &Path) -> Vec<ObjectId> {
-    read_extrude_source(path)
+    crate::sketch_facts::read(path)
         .expect("reading")
         .cut_features
         .iter()
@@ -452,24 +452,33 @@ fn gate(name: &str) {
         ])
     };
     let current = s.export_path().expect("current");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let base = reading
         .sketches
         .iter()
         .find(|c| c.vertices.is_some())
         .expect("base");
-    let mut v = ferritecad_jobs::EditSketchRequest {
+    let mut v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(current),
+            base.sketch,
+            &(base.vertices.clone().expect("vertices")),
+        ),
         source: current,
         expected: reading.version,
-        sketch: base.sketch,
-        vertices: base.vertices.clone().expect("vertices"),
         destination: PathBuf::new(),
     };
-    for p in &mut v.vertices {
+    let mut vertices = crate::transaction_tests::vertices(&v);
+    for p in &mut vertices {
         if p.start_mm[0] == -2.5 {
             p.start_mm[0] = -3.75;
         }
     }
+    v.changes = crate::transaction_tests::vertex_changes(
+        &v.source,
+        crate::transaction_tests::sketch(&v),
+        &vertices,
+    );
     apply_sketch_native(&mut s, v.clone());
     let mut peer_before = root.path().join("peer-vertices.fcad");
     sketch_peer(&peer_height, &v, root.path(), &peer_before);
@@ -485,7 +494,7 @@ fn gate(name: &str) {
         .enumerate()
     {
         let current = s.export_path().expect("current");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let (mut form, r) = typed_add(&current, &reading, &s, typed);
         assert_eq!(r.body, body, "the Body is its saved UUID");
         assert_eq!(r.expected, reading.version);
@@ -510,7 +519,7 @@ fn gate(name: &str) {
             "Edit cut offers the new Cut"
         );
         assert_eq!(
-            selected(&read_extrude_source(&applied).expect("r"), 0)
+            selected(&crate::sketch_facts::read(&applied).expect("r"), 0)
                 .tools
                 .last()
                 .map(|t| t.feature),
@@ -538,7 +547,7 @@ fn gate(name: &str) {
 
     // Edit the second new Cut through §30F's own form and worker.
     let current = s.export_path().expect("current");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let index = selected(&reading, 0)
         .tools
         .iter()
@@ -638,7 +647,7 @@ fn gate(name: &str) {
     move_native(&mut s, true);
     assert!(s.can_redo());
     let current = s.export_path().expect("current");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let (form, mut r) = typed_add(
         &current,
         &reading,
@@ -818,7 +827,7 @@ fn compare_gui(root: &Path) {
         "Save As wrote the previous file"
     );
     let tmp = tempfile::tempdir().expect("peer root");
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     let body = reading.cut_bodies[0].body;
     let height = tmp.path().join("height.fcad");
     {
@@ -839,7 +848,7 @@ fn compare_gui(root: &Path) {
             height.as_os_str(),
         ])
     };
-    let reading = read_extrude_source(&height).expect("height reading");
+    let reading = crate::sketch_facts::read(&height).expect("height reading");
     let sketch = reading
         .sketches
         .iter()
@@ -851,11 +860,14 @@ fn compare_gui(root: &Path) {
             p.start_mm[0] = -3.75;
         }
     }
-    let v = ferritecad_jobs::EditSketchRequest {
+    let v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(height.clone()),
+            sketch.sketch,
+            &(vertices),
+        ),
         source: height.clone(),
         expected: reading.version,
-        sketch: sketch.sketch,
-        vertices,
         destination: PathBuf::new(),
     };
     let base = tmp.path().join("base.fcad");
@@ -871,7 +883,7 @@ fn compare_gui(root: &Path) {
     peer_add(&base, body, &cut(19.25, 30.5, 2.125, Some(4.875)), &first);
     let second = tmp.path().join("second.fcad");
     peer_add(&first, body, &cut(66.5, 10.75, 1.875, None), &second);
-    let reading = read_extrude_source(&second).expect("second reading");
+    let reading = crate::sketch_facts::read(&second).expect("second reading");
     let index = selected(&reading, 0)
         .tools
         .iter()
@@ -1066,25 +1078,28 @@ fn native_constrained_base_refuses_add_even_after_an_unsaved_constraint_apply() 
         .expect("base");
     apply_constraints_native(
         &mut s,
-        &ferritecad_jobs::EditSketchConstraintsRequest {
+        &ferritecad_jobs::EditRequest {
+            changes: crate::transaction_tests::constraint_changes(
+                &(source.clone()),
+                base.sketch,
+                &(ferritecad_document::SketchConstraintEdits {
+                    remove: vec![],
+                    add: vec![ferritecad_document::AddSketchConstraint::Line(
+                        ferritecad_document::AddLineConstraint::Line {
+                            curve: base.vertices.as_ref().expect("vertices")[0].curve_id,
+                            kind: ferritecad_document::LineConstraintKind::Horizontal,
+                        },
+                    )],
+                }),
+            ),
             source: source.clone(),
             expected: opened.version,
-            sketch: base.sketch,
-            edits: ferritecad_document::SketchConstraintEdits {
-                remove: vec![],
-                add: vec![ferritecad_document::AddSketchConstraint::Line(
-                    ferritecad_document::AddLineConstraint::Line {
-                        curve: base.vertices.as_ref().expect("vertices")[0].curve_id,
-                        kind: ferritecad_document::LineConstraintKind::Horizontal,
-                    },
-                )],
-            },
             destination: PathBuf::new(),
         },
     );
     assert!(s.dirty());
     let current = s.export_path().expect("constrained");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     assert!(
         reading.cut_bodies[0].refusal.is_some(),
         "the catalogue still refuses"

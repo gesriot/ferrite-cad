@@ -146,7 +146,7 @@ impl CheckpointAction {
 #[derive(Debug)]
 pub(crate) struct CheckpointStep {
     pub(crate) step: ProducedStep,
-    pub(crate) facts: Option<ferritecad_document::ExtrudeEditSource>,
+    pub(crate) facts: Option<crate::sketch_facts::Source>,
 }
 
 enum Staged {
@@ -174,7 +174,7 @@ struct Operation {
     worker: Option<JoinHandle<()>>,
     staged: Option<Staged>,
     /// §30N: the edit facts of a staged version that keeps the shown picture.
-    kept: Option<ferritecad_document::ExtrudeEditSource>,
+    kept: Option<crate::sketch_facts::Source>,
     ready_scene: Option<LoadedScene>,
 }
 
@@ -761,7 +761,7 @@ impl Sessions {
     /// Makes a staged version that keeps the picture current, and hands back its
     /// edit facts for the picture to carry. The statement that also re-points
     /// the shown picture at the new version; see [`Self::commit_staged`].
-    pub(crate) fn commit_kept(&mut self) -> Result<ferritecad_document::ExtrudeEditSource> {
+    pub(crate) fn commit_kept(&mut self) -> Result<crate::sketch_facts::Source> {
         let facts = self
             .operation
             .as_mut()
@@ -849,7 +849,7 @@ impl Sessions {
     pub(crate) fn finish_kept_facts(
         &mut self,
         address: Address,
-        result: Result<ferritecad_document::ExtrudeEditSource>,
+        result: Result<crate::sketch_facts::Source>,
     ) -> Edited {
         let Some(path) = self.staged_path(address) else {
             return Edited::Ignore;
@@ -1118,7 +1118,7 @@ fn spawn<T: Send + 'static>(
 pub(crate) fn spawn_apply(
     expected: ferritecad_document::DocumentVersion,
     ticket: StepTicket,
-    changes: Vec<ferritecad_document::ExpressionChange>,
+    changes: Vec<ferritecad_document::EditChange>,
     cancel: CancelToken,
     deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
 ) -> JoinHandle<()> {
@@ -1128,119 +1128,6 @@ pub(crate) fn spawn_apply(
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ticket.edit(
                 changes,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
-/// The vertex edit: the reused `edit-sketch-copy` operation on the worker that
-/// owns the kernel session. `expected` is the version the form was opened from.
-pub(crate) fn spawn_apply_sketch(
-    ticket: StepTicket,
-    sketch: ObjectId,
-    vertices: Vec<ferritecad_document::SketchVertex>,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.edit_sketch_vertices(
-                sketch,
-                vertices,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
-/// The constraint edit: the reused `edit-sketch-constraints-copy` operation on the
-/// worker that owns the kernel session. `expected` is the version the form was
-/// opened from.
-pub(crate) fn spawn_apply_constraints(
-    ticket: StepTicket,
-    sketch: ObjectId,
-    edits: ferritecad_document::SketchConstraintEdits,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.edit_sketch_constraints(
-                sketch,
-                edits,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
-/// The circle edit: the reused `edit-circle` copy operation on the worker that
-/// owns the kernel session. `expected` is the version the form was opened from.
-pub(crate) fn spawn_apply_circle(
-    ticket: StepTicket,
-    sketch: ObjectId,
-    edit: ferritecad_document::CircleEdit,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.edit_circle(
-                sketch,
-                edit,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
-/// The annulus edit: the reused `edit-annular` copy operation on the worker that
-/// owns the kernel session. `expected` is the version the form was opened from.
-pub(crate) fn spawn_apply_annulus(
-    ticket: StepTicket,
-    sketch: ObjectId,
-    edit: ferritecad_document::AnnulusEdit,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.edit_annulus(
-                sketch,
-                edit,
                 expected,
                 &mut kernel,
                 |kernel, source| kernel.import_step(source),
@@ -1382,7 +1269,7 @@ pub(crate) fn spawn_checkpoint(
                 CheckpointAction::Delete(id) => ticket.delete_checkpoint(*id, &context)?,
             };
             let facts = if step.keeps_picture() {
-                Some(ferritecad_jobs::read_extrude_source(step.path())?)
+                Some(crate::sketch_facts::read(step.path())?)
             } else {
                 None
             };
@@ -1402,12 +1289,12 @@ pub(crate) fn spawn_checkpoint(
 pub(crate) fn spawn_kept_facts(
     path: PathBuf,
     cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_document::ExtrudeEditSource>) + Send + 'static,
+    deliver: impl FnOnce(Result<crate::sketch_facts::Source>) + Send + 'static,
 ) -> JoinHandle<()> {
     spawn(
         move || {
             cancel.check()?;
-            let facts = ferritecad_jobs::read_extrude_source(&path)?;
+            let facts = crate::sketch_facts::read(&path)?;
             cancel.check()?;
             Ok(facts)
         },
@@ -1561,7 +1448,6 @@ mod tests {
     use ferritecad_document::Document;
     use ferritecad_jobs::{
         CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,
-        read_extrude_source,
     };
     use ferritecad_kernel::mock::MockKernel;
     use std::sync::mpsc;
@@ -1590,7 +1476,7 @@ mod tests {
         )
         .expect("a plate");
         let feature = ferritecad_fixtures::expression_slot(
-            &read_extrude_source(&file).expect("reading"),
+            &crate::sketch_facts::read(&file).expect("reading"),
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
         )
         .object;
@@ -1627,7 +1513,7 @@ mod tests {
                         let expected = ticket.source().version();
                         ticket.edit(
                             vec![
-                                ferritecad_document::ExpressionChange::constant(
+                                ferritecad_document::EditChange::constant(
                                     feature,
                                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                     millimetres,
@@ -1694,7 +1580,7 @@ mod tests {
 
     fn height_of(path: &Path) -> f64 {
         ferritecad_fixtures::expression_slot(
-            &read_extrude_source(path).expect("reading"),
+            &crate::sketch_facts::read(path).expect("reading"),
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
         )
         .expression
@@ -1790,7 +1676,7 @@ mod tests {
                         let expected = ticket.source().version();
                         ticket.edit(
                             vec![
-                                ferritecad_document::ExpressionChange::constant(
+                                ferritecad_document::EditChange::constant(
                                     feature,
                                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                     26.0,
@@ -1975,15 +1861,13 @@ mod tests {
         let theirs = f.root.path().join("theirs.fcad");
         std::fs::copy(&f.file, &theirs).expect("copy");
         let mut document = ferritecad_document::Document::open(&theirs).expect("open");
-        let prepared = ferritecad_document::ExpressionChange::constant(
+        let prepared = ferritecad_document::EditChange::constant(
             f.feature,
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
             99.0,
         )
         .expect("prepared");
-        document
-            .write_expression_changes(&[prepared])
-            .expect("written");
+        document.write_changes(&[prepared]).expect("written");
         document.close().expect("closed");
         std::fs::rename(&theirs, &f.file).expect("lands");
         let report = save(
@@ -2163,7 +2047,7 @@ mod tests {
                 expected: version_of(&accepted),
 
                 changes: vec![
-                    ferritecad_document::ExpressionChange::constant(
+                    ferritecad_document::EditChange::constant(
                         f.feature,
                         ferritecad_document::ExpressionSlot::ExtrudeDistance,
                         41.0,
@@ -2367,8 +2251,8 @@ mod tests {
 
     /// What the saved Sketch form asks for when the right-hand vertices of the
     /// plate it was opened on move `by` millimetres.
-    fn vertex_request(path: &Path, by: f64) -> ferritecad_jobs::EditSketchRequest {
-        let reading = read_extrude_source(path).expect("reading");
+    fn vertex_request(path: &Path, by: f64) -> ferritecad_jobs::EditRequest {
+        let reading = crate::sketch_facts::read(path).expect("reading");
         let choice = reading
             .sketches
             .iter()
@@ -2379,25 +2263,28 @@ mod tests {
             .iter()
             .map(|v| v.start_mm[0])
             .fold(f64::MIN, f64::max);
-        ferritecad_jobs::EditSketchRequest {
+        ferritecad_jobs::EditRequest {
+            changes: crate::transaction_tests::vertex_changes(
+                &(path.to_path_buf()),
+                choice.sketch,
+                &(vertices
+                    .into_iter()
+                    .map(|mut v| {
+                        if v.start_mm[0] == right {
+                            v.start_mm[0] += by;
+                        }
+                        v
+                    })
+                    .collect::<Vec<_>>()),
+            ),
             source: path.to_path_buf(),
             expected: reading.version,
-            sketch: choice.sketch,
-            vertices: vertices
-                .into_iter()
-                .map(|mut v| {
-                    if v.start_mm[0] == right {
-                        v.start_mm[0] += by;
-                    }
-                    v
-                })
-                .collect(),
             destination: PathBuf::new(),
         }
     }
 
     fn width_of(path: &Path) -> f64 {
-        let reading = read_extrude_source(path).expect("reading");
+        let reading = crate::sketch_facts::read(path).expect("reading");
         let vertices = reading.sketches[0].vertices.clone().expect("vertices");
         let xs = vertices.iter().map(|v| v.start_mm[0]);
         xs.clone().fold(f64::MIN, f64::max) - xs.fold(f64::MAX, f64::min)
@@ -2406,15 +2293,14 @@ mod tests {
     /// Apply vertices as the window runs it, on a thread, with the mock kernel.
     fn apply_vertices(
         sessions: &mut Sessions,
-        request: ferritecad_jobs::EditSketchRequest,
+        request: ferritecad_jobs::EditRequest,
     ) -> (Address, Edited) {
         let (tx, rx) = mpsc::channel();
         let generation = sessions
             .begin_apply(|ticket, _, _| {
                 std::thread::spawn(move || {
-                    tx.send(ticket.edit_sketch_vertices(
-                        request.sketch,
-                        request.vertices,
+                    tx.send(ticket.edit(
+                        request.changes,
                         request.expected,
                         &mut MockKernel::new(),
                         |_, _| {
@@ -2432,7 +2318,7 @@ mod tests {
         (generation, sessions.finish_apply(generation, result))
     }
 
-    fn accept_vertices(sessions: &mut Sessions, request: ferritecad_jobs::EditSketchRequest) {
+    fn accept_vertices(sessions: &mut Sessions, request: ferritecad_jobs::EditRequest) {
         let (generation, edited) = apply_vertices(sessions, request);
         assert!(matches!(edited, Edited::Show(_)), "{edited:?}");
         sessions.bind(Bind::Staged).expect("bind");
@@ -2498,15 +2384,13 @@ mod tests {
         let theirs = f.root.path().join("theirs.fcad");
         std::fs::copy(&f.file, &theirs).expect("copy");
         let mut document = Document::open(&theirs).expect("open");
-        let prepared = ferritecad_document::ExpressionChange::constant(
+        let prepared = ferritecad_document::EditChange::constant(
             f.feature,
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
             99.0,
         )
         .expect("p");
-        document
-            .write_expression_changes(&[prepared])
-            .expect("written");
+        document.write_changes(&[prepared]).expect("written");
         document.close().expect("closed");
         std::fs::rename(&theirs, &f.file).expect("lands");
         let report = save(&mut sessions, SaveTarget::InPlace, None).expect("answered");
@@ -2679,7 +2563,7 @@ mod tests {
                     ticket.source().version(),
                     ticket,
                     vec![
-                        ferritecad_document::ExpressionChange::constant(
+                        ferritecad_document::EditChange::constant(
                             feature,
                             ferritecad_document::ExpressionSlot::ExtrudeDistance,
                             millimetres,
@@ -2750,7 +2634,7 @@ mod tests {
             }
         }
         let feature = ferritecad_fixtures::expression_slot(
-            &read_extrude_source(&path).expect("reading"),
+            &crate::sketch_facts::read(&path).expect("reading"),
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
         )
         .object;
@@ -2839,9 +2723,7 @@ mod tests {
     /// against the command line doing the same to the same document.
     fn native_gate(root: &Path, source: &Path, feature: ObjectId, height: f64) {
         let original = std::fs::read(source).expect("source");
-        let version = ferritecad_jobs::read_extrude_source(source)
-            .expect("reading")
-            .version;
+        let version = crate::sketch_facts::read(source).expect("reading").version;
         let private = tempfile::tempdir().expect("private root");
         let mut sessions = Sessions::default();
         sessions.adopt(
@@ -2964,15 +2846,14 @@ mod tests {
         let _ = sessions;
     }
 
-    fn apply_sketch_native(sessions: &mut Sessions, request: ferritecad_jobs::EditSketchRequest) {
+    fn apply_sketch_native(sessions: &mut Sessions, request: ferritecad_jobs::EditRequest) {
         let (tx, rx) = mpsc::channel();
         let generation = sessions
             .begin_apply(|ticket, _, cancel| {
-                spawn_apply_sketch(
-                    ticket,
-                    request.sketch,
-                    request.vertices,
+                spawn_apply(
                     request.expected,
+                    ticket,
+                    request.changes.clone(),
                     cancel.clone(),
                     move |result| tx.send(result).expect("deliver"),
                 )
@@ -2995,37 +2876,17 @@ mod tests {
         assert!(sessions.finish_scene(generation, Ok(())));
     }
 
-    fn sketch_peer(
-        source: &Path,
-        request: &ferritecad_jobs::EditSketchRequest,
-        root: &Path,
-        out: &Path,
-    ) {
-        let body = request
-            .vertices
-            .iter()
-            .map(|v| {
-                format!(
-                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
-                    v.curve_id, v.start_mm[0], v.start_mm[1]
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+    fn sketch_peer(source: &Path, request: &ferritecad_jobs::EditRequest, root: &Path, out: &Path) {
         let file = root.join("vertices.json");
         std::fs::write(
             &file,
-            format!(r#"{{"request_version":1,"vertices":[{body}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("request");
-        let version = ferritecad_jobs::read_extrude_source(source)
-            .expect("reading")
-            .version;
+        let version = crate::sketch_facts::read(source).expect("reading").version;
         cli(&[
-            "edit-sketch-copy".as_ref(),
+            "edit".as_ref(),
             source.as_os_str(),
-            "--sketch".as_ref(),
-            request.sketch.to_string().as_ref(),
             "--expect-version".as_ref(),
             version.content.to_string().as_ref(),
             "--request".as_ref(),
@@ -3043,8 +2904,7 @@ mod tests {
             let (form, request) =
                 crate::sketch::tests::typed_apply(path, reading, sketch, from, to);
             assert!(
-                request
-                    .vertices
+                crate::transaction_tests::vertices(&request)
                     .iter()
                     .any(|v| v.start_mm.iter().any(|n| n.to_string() == to)),
                 "the typed number did not reach the request"
@@ -3064,12 +2924,12 @@ mod tests {
         artifacts: Option<(&str, &str)>,
         make: impl FnOnce(
             &Path,
-            &ferritecad_document::ExtrudeEditSource,
+            &crate::sketch_facts::Source,
             ObjectId,
-        ) -> (crate::sketch::Editor, ferritecad_jobs::EditSketchRequest),
+        ) -> (crate::sketch::Editor, ferritecad_jobs::EditRequest),
     ) {
         let original = std::fs::read(source).expect("source");
-        let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
+        let opened = crate::sketch_facts::read(source).expect("reading");
         let feature = ferritecad_fixtures::expression_slot(
             &opened,
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
@@ -3092,7 +2952,7 @@ mod tests {
         // The window: height, then the vertices through the form's own widgets.
         apply_native(&mut sessions, feature, height);
         let after_height = sessions.export_path().expect("accepted");
-        let reading = ferritecad_jobs::read_extrude_source(&after_height).expect("reading");
+        let reading = crate::sketch_facts::read(&after_height).expect("reading");
         let (mut form, request) = make(&after_height, &reading, sketch);
         apply_sketch_native(&mut sessions, request.clone());
         form.finish_session_change();
@@ -3250,17 +3110,23 @@ mod tests {
                 let (form, request) =
                     crate::sketch::anchor_tests::anchored_apply(after, reading, sketch, "5");
                 assert_eq!(
-                    request.vertices[0].start_mm,
+                    crate::transaction_tests::vertices(&request)[0].start_mm,
                     [33., 15.5],
                     "the anchor's vertex"
                 );
                 assert_eq!(
-                    request.vertices[1].start_mm,
+                    crate::transaction_tests::vertices(&request)[1].start_mm,
                     [33., 10.5],
                     "5 mm south of it"
                 );
-                assert_eq!(request.vertices[2].start_mm, [-4.5, 3.25]);
-                assert_eq!(request.vertices[3].start_mm, [-4.5, 15.5]);
+                assert_eq!(
+                    crate::transaction_tests::vertices(&request)[2].start_mm,
+                    [-4.5, 3.25]
+                );
+                assert_eq!(
+                    crate::transaction_tests::vertices(&request)[3].start_mm,
+                    [-4.5, 15.5]
+                );
                 (form, request)
             },
         );
@@ -3284,7 +3150,7 @@ mod tests {
         }
         // A rectangle under a Chamfer: a plate the Chamfer no longer fits is refused.
         let (root, path, _) = crate::chamfers::tests::chamfered(2.375);
-        let opened = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+        let opened = crate::sketch_facts::read(&path).expect("reading");
         let sketch = opened
             .sketches
             .iter()
@@ -3307,7 +3173,7 @@ mod tests {
             9.5,
         );
         let accepted = sessions.export_path().expect("accepted");
-        let reading = ferritecad_jobs::read_extrude_source(&accepted).expect("reading");
+        let reading = crate::sketch_facts::read(&accepted).expect("reading");
 
         // Through the form: the shortened plate is refused where it is typed, and the
         // typed number stays; nothing is asked of the session.
@@ -3324,28 +3190,36 @@ mod tests {
         assert!(form.active(), "the refused draft was discarded");
 
         // Past the form (a request the form would not make): the worker refuses it.
-        let mut forged = ferritecad_jobs::EditSketchRequest {
+        let mut forged = ferritecad_jobs::EditRequest {
+            changes: crate::transaction_tests::vertex_changes(
+                &(accepted.clone()),
+                sketch,
+                &(reading.sketches[0].vertices.clone().expect("vertices")),
+            ),
             source: accepted.clone(),
             expected: reading.version,
-            sketch,
-            vertices: reading.sketches[0].vertices.clone().expect("vertices"),
             destination: PathBuf::new(),
         };
-        for vertex in &mut forged.vertices {
+        let mut vertices = crate::transaction_tests::vertices(&forged);
+        for vertex in &mut vertices {
             if vertex.start_mm[0] == 33. {
                 vertex.start_mm[0] = -4.4;
             }
         }
+        forged.changes = crate::transaction_tests::vertex_changes(
+            &forged.source,
+            crate::transaction_tests::sketch(&forged),
+            &vertices,
+        );
         let before = (sessions.dirty(), sessions.can_undo(), sessions.can_redo());
         let files = private_files(&sessions);
         let (tx, rx) = mpsc::channel();
         let generation = sessions
             .begin_apply(|ticket, _, cancel| {
-                spawn_apply_sketch(
-                    ticket,
-                    forged.sketch,
-                    forged.vertices,
+                spawn_apply(
                     forged.expected,
+                    ticket,
+                    forged.changes.clone(),
                     cancel.clone(),
                     move |result| tx.send(result).expect("deliver"),
                 )
@@ -3372,7 +3246,7 @@ mod tests {
         // solver's); the height still applies and the constraints stay.
         if ferritecad_sketch_solver::is_available() {
             let (root, constrained, _) = constrained_chamfer_plate();
-            let reading = ferritecad_jobs::read_extrude_source(&constrained).expect("reading");
+            let reading = crate::sketch_facts::read(&constrained).expect("reading");
             let mut form = crate::sketch::Editor::default();
             form.set_session(true, true, false);
             let editable = reading
@@ -3418,45 +3292,62 @@ mod tests {
             _ => panic!("a Line"),
         };
         let flat = |i: usize| (start(i).y - start(i + 1).y).abs() < 1e-9;
-        let mut additions: Vec<String> = (0..curves.len())
-            .map(|i| {
-                format!(
-                    r#"{{"rule":"{}","curve_id":"{}"}}"#,
-                    if flat(i) { "horizontal" } else { "vertical" },
-                    curves[i].id
-                )
+        use ferritecad_document::{
+            AddLineConstraint, LineConstraintKind, LineEndpoint, LineLengthMm,
+            SketchConstraintEdits, SketchCoordinateMm,
+        };
+        let mut additions: Vec<_> = (0..curves.len())
+            .map(|i| AddLineConstraint::Line {
+                curve: curves[i].id,
+                kind: if flat(i) {
+                    LineConstraintKind::Horizontal
+                } else {
+                    LineConstraintKind::Vertical
+                },
             })
             .collect();
         let first = start(0);
-        additions.push(format!(
-            r#"{{"rule":"fixed","curve_id":"{}","at":"start","x_mm":{},"y_mm":{}}}"#,
-            curves[0].id, first.x, first.y
-        ));
-        let across = (0..curves.len()).find(|i| flat(*i)).expect("a horizontal");
-        let up = (0..curves.len()).find(|i| !flat(*i)).expect("a vertical");
-        additions.push(format!(
-            r#"{{"rule":"distance","curve_id":"{}","distance_mm":41.125}}"#,
-            curves[across].id
-        ));
-        additions.push(format!(
-            r#"{{"rule":"distance","curve_id":"{}","distance_mm":10.5}}"#,
-            curves[up].id
-        ));
+        additions.push(AddLineConstraint::Line {
+            curve: curves[0].id,
+            kind: LineConstraintKind::Fixed {
+                at: LineEndpoint::Start,
+                x: SketchCoordinateMm::new(first.x).expect("x"),
+                y: SketchCoordinateMm::new(first.y).expect("y"),
+            },
+        });
+        for (i, length) in [
+            (
+                (0..curves.len()).find(|i| flat(*i)).expect("horizontal"),
+                41.125,
+            ),
+            (
+                (0..curves.len()).find(|i| !flat(*i)).expect("vertical"),
+                10.5,
+            ),
+        ] {
+            additions.push(AddLineConstraint::Line {
+                curve: curves[i].id,
+                kind: LineConstraintKind::Distance(LineLengthMm::new(length).expect("length")),
+            });
+        }
+        let changes = crate::transaction_tests::constraint_changes(
+            &path,
+            choice.sketch,
+            &SketchConstraintEdits {
+                remove: vec![],
+                add: additions.into_iter().map(Into::into).collect(),
+            },
+        );
         let request = root.path().join("constraints.json");
         std::fs::write(
             &request,
-            format!(
-                r#"{{"request_version":1,"remove":[],"add":[{}]}}"#,
-                additions.join(",")
-            ),
+            ferritecad_fixtures::edit_request_json(&changes).to_string(),
         )
         .expect("request");
         let constrained = root.path().join("constrained.fcad");
         cli(&[
-            "edit-sketch-constraints-copy".as_ref(),
+            "edit".as_ref(),
             path.as_os_str(),
-            "--sketch".as_ref(),
-            choice.sketch.to_string().as_ref(),
             "--expect-version".as_ref(),
             source.version.content.to_string().as_ref(),
             "--request".as_ref(),
@@ -3477,7 +3368,7 @@ mod tests {
             return;
         }
         let (root, constrained, sketch) = constrained_chamfer_plate();
-        let reading = ferritecad_jobs::read_extrude_source(&constrained).expect("reading");
+        let reading = crate::sketch_facts::read(&constrained).expect("reading");
         assert_eq!(
             reading.unavailable_reason(),
             None,
@@ -3506,22 +3397,14 @@ mod tests {
         );
     }
 
-    fn apply_constraints_native(
-        sessions: &mut Sessions,
-        request: &ferritecad_jobs::EditSketchConstraintsRequest,
-    ) {
+    fn apply_constraints_native(sessions: &mut Sessions, request: &ferritecad_jobs::EditRequest) {
         let (tx, rx) = mpsc::channel();
-        let (sketch, edits, expected) = (request.sketch, request.edits.clone(), request.expected);
+        let (changes, expected) = (request.changes.clone(), request.expected);
         let generation = sessions
             .begin_apply(|ticket, _, cancel| {
-                spawn_apply_constraints(
-                    ticket,
-                    sketch,
-                    edits,
-                    expected,
-                    cancel.clone(),
-                    move |result| tx.send(result).expect("deliver"),
-                )
+                spawn_apply(expected, ticket, changes, cancel.clone(), move |result| {
+                    tx.send(result).expect("deliver")
+                })
             })
             .expect("started");
         let result = rx
@@ -3545,23 +3428,18 @@ mod tests {
     /// checkpoint, and no file is left.
     fn refused_constraints_native(
         sessions: &mut Sessions,
-        request: &ferritecad_jobs::EditSketchConstraintsRequest,
+        request: &ferritecad_jobs::EditRequest,
     ) -> String {
         let before = (sessions.dirty(), sessions.can_undo(), sessions.can_redo());
         let shown = sessions.export_path().expect("accepted");
         let files = private_files(sessions);
         let (tx, rx) = mpsc::channel();
-        let (sketch, edits, expected) = (request.sketch, request.edits.clone(), request.expected);
+        let (changes, expected) = (request.changes.clone(), request.expected);
         let generation = sessions
             .begin_apply(|ticket, _, cancel| {
-                spawn_apply_constraints(
-                    ticket,
-                    sketch,
-                    edits,
-                    expected,
-                    cancel.clone(),
-                    move |result| tx.send(result).expect("deliver"),
-                )
+                spawn_apply(expected, ticket, changes, cancel.clone(), move |result| {
+                    tx.send(result).expect("deliver")
+                })
             })
             .expect("started");
         let result = rx
@@ -3581,24 +3459,20 @@ mod tests {
 
     fn constraint_peer(
         source: &Path,
-        request: &ferritecad_jobs::EditSketchConstraintsRequest,
+        request: &ferritecad_jobs::EditRequest,
         root: &Path,
         out: &Path,
     ) {
         let file = root.join("constraints-request.json");
         std::fs::write(
             &file,
-            crate::constraints::tests::session_apply::peer_request(&request.edits),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("request");
-        let version = ferritecad_jobs::read_extrude_source(source)
-            .expect("reading")
-            .version;
+        let version = crate::sketch_facts::read(source).expect("reading").version;
         cli(&[
-            "edit-sketch-constraints-copy".as_ref(),
+            "edit".as_ref(),
             source.as_os_str(),
-            "--sketch".as_ref(),
-            request.sketch.to_string().as_ref(),
             "--expect-version".as_ref(),
             version.content.to_string().as_ref(),
             "--request".as_ref(),
@@ -3610,7 +3484,7 @@ mod tests {
 
     /// Every stored constraint of the document's Sketch, in stored order.
     fn stored_constraints(path: &Path) -> Vec<ferritecad_document::SketchConstraint> {
-        ferritecad_jobs::read_extrude_source(path)
+        crate::sketch_facts::read(path)
             .expect("reading")
             .constraint_sketches[0]
             .stored
@@ -3736,12 +3610,9 @@ mod tests {
         height: f64,
         draft: impl FnOnce(
             &Path,
-            &ferritecad_document::ExtrudeEditSource,
+            &crate::sketch_facts::Source,
             ObjectId,
-        ) -> (
-            crate::constraints::Editor,
-            ferritecad_jobs::EditSketchConstraintsRequest,
-        ),
+        ) -> (crate::constraints::Editor, ferritecad_jobs::EditRequest),
     ) {
         native_constraint_gate_with(root, source, height, None, draft);
     }
@@ -3760,15 +3631,12 @@ mod tests {
         readers: Option<SavedReader<'_>>,
         draft: impl FnOnce(
             &Path,
-            &ferritecad_document::ExtrudeEditSource,
+            &crate::sketch_facts::Source,
             ObjectId,
-        ) -> (
-            crate::constraints::Editor,
-            ferritecad_jobs::EditSketchConstraintsRequest,
-        ),
+        ) -> (crate::constraints::Editor, ferritecad_jobs::EditRequest),
     ) {
         let original = std::fs::read(source).expect("source");
-        let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
+        let opened = crate::sketch_facts::read(source).expect("reading");
         let feature = ferritecad_fixtures::expression_slot(
             &opened,
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
@@ -3785,7 +3653,7 @@ mod tests {
 
         apply_native(&mut sessions, feature, height);
         let after_height = sessions.export_path().expect("accepted");
-        let reading = ferritecad_jobs::read_extrude_source(&after_height).expect("reading");
+        let reading = crate::sketch_facts::read(&after_height).expect("reading");
         let old_ids: Vec<_> = stored_constraints(&after_height)
             .iter()
             .map(|c| c.id)
@@ -3810,7 +3678,7 @@ mod tests {
         let applied = sessions.export_path().expect("accepted");
         let new_ids: Vec<_> = stored_constraints(&applied).iter().map(|c| c.id).collect();
         assert_ne!(new_ids, old_ids, "the constraints did not change");
-        for removed in &request.edits.remove {
+        for removed in &crate::transaction_tests::constraints(&request).remove {
             assert!(!new_ids.contains(removed), "{removed} was not removed");
         }
 
@@ -3841,7 +3709,7 @@ mod tests {
         let (c_stl, c_fbx) = peer_bytes(&peer2, root, "c-constraints");
         assert_eq!(
             same_model_with_explicit_new_ids(&applied, &peer2, sketch, &old_ids, "Apply").len(),
-            request.edits.add.len(),
+            crate::transaction_tests::constraints(&request).add.len(),
             "every added constraint pairs with the command line's"
         );
 
@@ -3931,18 +3799,22 @@ mod tests {
         move_native(&mut sessions, true);
         assert!(sessions.can_redo());
         let mut forged = request.clone();
-        forged.expected =
-            ferritecad_jobs::read_extrude_source(&sessions.export_path().expect("accepted"))
-                .expect("reading")
-                .version;
-        forged.edits.remove = vec![ferritecad_types::StableEntityId::new()];
+        forged.expected = crate::sketch_facts::read(&sessions.export_path().expect("accepted"))
+            .expect("reading")
+            .version;
+        forged
+            .changes
+            .push(ferritecad_document::EditChange::RemoveConstraint {
+                sketch: crate::transaction_tests::sketch(&forged),
+                constraint: ferritecad_types::StableEntityId::new(),
+            });
         refused_constraints_native(&mut sessions, &forged);
         assert!(sessions.can_redo(), "a refusal cut off the Redo");
         apply_native(&mut sessions, feature, height + 2.0);
         assert!(!sessions.can_redo());
         assert_eq!(
             same_model_with_explicit_new_ids(source, &peer2, sketch, &old_ids, "branch").len(),
-            request.edits.add.len(),
+            crate::transaction_tests::constraints(&request).add.len(),
             "the branch wrote the file"
         );
     }
@@ -4032,15 +3904,14 @@ mod tests {
         {
             use ferritecad_document::{
                 AddLineConstraint, AddSketchConstraint, LineConstraintKind, SketchConstraintEdits,
-                prepare_sketch_constraints,
             };
             let mut document = Document::open(&path).expect("document");
-            let choice = ferritecad_document::ExtrudeEditSource::read(&document)
+            let choice = crate::sketch_facts::Source::read(&document)
                 .expect("catalog")
                 .constraint_sketches[0]
                 .clone();
             let curve = choice.stored.as_ref().expect("stored").curves[0].id;
-            let prepared = prepare_sketch_constraints(
+            let prepared = ferritecad_fixtures::constraint_changes(
                 &document,
                 choice.sketch,
                 &SketchConstraintEdits {
@@ -4052,11 +3923,12 @@ mod tests {
                 },
             )
             .expect("prepare");
-            let horizontal = prepared.added.last().expect("the Horizontal").id;
-            document
-                .write_sketch_constraints(&prepared)
-                .expect("joints");
-            let prepared = prepare_sketch_constraints(
+            let horizontal = ferritecad_fixtures::added_constraints(&prepared)
+                .last()
+                .expect("the Horizontal")
+                .id;
+            document.write_changes(&prepared).expect("joints");
+            let prepared = ferritecad_fixtures::constraint_changes(
                 &document,
                 choice.sketch,
                 &SketchConstraintEdits {
@@ -4065,9 +3937,7 @@ mod tests {
                 },
             )
             .expect("prepare");
-            document
-                .write_sketch_constraints(&prepared)
-                .expect("removed");
+            document.write_changes(&prepared).expect("removed");
             document.close().expect("close");
         }
         native_constraint_gate(root.path(), &path, 9.5, |path, source, _| {
@@ -4113,15 +3983,14 @@ mod tests {
         {
             use ferritecad_document::{
                 AddLineConstraint, AddSketchConstraint, LineConstraintKind, SketchConstraintEdits,
-                prepare_sketch_constraints,
             };
             let mut document = Document::open(&path).expect("document");
-            let choice = ferritecad_document::ExtrudeEditSource::read(&document)
+            let choice = crate::sketch_facts::Source::read(&document)
                 .expect("catalog")
                 .constraint_sketches[0]
                 .clone();
             let curve = choice.stored.as_ref().expect("stored").curves[0].id;
-            let prepared = prepare_sketch_constraints(
+            let prepared = ferritecad_fixtures::constraint_changes(
                 &document,
                 choice.sketch,
                 &SketchConstraintEdits {
@@ -4133,11 +4002,12 @@ mod tests {
                 },
             )
             .expect("prepare");
-            let horizontal = prepared.added.last().expect("the Horizontal").id;
-            document
-                .write_sketch_constraints(&prepared)
-                .expect("joints");
-            let prepared = prepare_sketch_constraints(
+            let horizontal = ferritecad_fixtures::added_constraints(&prepared)
+                .last()
+                .expect("the Horizontal")
+                .id;
+            document.write_changes(&prepared).expect("joints");
+            let prepared = ferritecad_fixtures::constraint_changes(
                 &document,
                 choice.sketch,
                 &SketchConstraintEdits {
@@ -4146,9 +4016,7 @@ mod tests {
                 },
             )
             .expect("prepare");
-            document
-                .write_sketch_constraints(&prepared)
-                .expect("removed");
+            document.write_changes(&prepared).expect("removed");
             document.close().expect("close");
         }
         native_constraint_gate(root.path(), &path, 9.5, |path, source, _| {
@@ -4513,7 +4381,7 @@ mod tests {
             return;
         }
         let (root, constrained, sketch) = constrained_chamfer_plate();
-        let opened = ferritecad_jobs::read_extrude_source(&constrained).expect("reading");
+        let opened = crate::sketch_facts::read(&constrained).expect("reading");
         let private = tempfile::tempdir().expect("private root");
         let mut sessions = Sessions::default();
         sessions.adopt(
@@ -4537,7 +4405,7 @@ mod tests {
         assert!(sessions.can_redo());
         move_native(&mut sessions, false);
         let accepted = sessions.export_path().expect("accepted");
-        let reading = ferritecad_jobs::read_extrude_source(&accepted).expect("reading");
+        let reading = crate::sketch_facts::read(&accepted).expect("reading");
         let stored = reading.constraint_sketches[0]
             .stored
             .as_ref()
@@ -4561,7 +4429,7 @@ mod tests {
         // a Redo to lose does not lose it.)
         move_native(&mut sessions, true);
         let accepted = sessions.export_path().expect("accepted");
-        let reading = ferritecad_jobs::read_extrude_source(&accepted).expect("reading");
+        let reading = crate::sketch_facts::read(&accepted).expect("reading");
         let (form, request) = crate::constraints::tests::session_apply::typed_parallel(
             &accepted,
             &reading,
@@ -4584,7 +4452,7 @@ mod tests {
         // The Chamfer: a width that leaves no room for it is refused where it is
         // typed (the form offers no Apply), and, past the form, by the worker.
         let accepted = sessions.export_path().expect("accepted");
-        let reading = ferritecad_jobs::read_extrude_source(&accepted).expect("reading");
+        let reading = crate::sketch_facts::read(&accepted).expect("reading");
         let (form, offered) = crate::constraints::tests::session_apply::replace_length_offers_apply(
             &accepted,
             &reading,
@@ -4593,18 +4461,25 @@ mod tests {
             "1",
         );
         assert!(form.active(), "the draft was erased");
-        let mut forged = ferritecad_jobs::EditSketchConstraintsRequest {
+        let mut forged = ferritecad_jobs::EditRequest {
+            changes: crate::transaction_tests::constraint_changes(
+                &(accepted.clone()),
+                sketch,
+                &(form.draft_edits().expect("a draft")),
+            ),
             source: accepted.clone(),
             expected: reading.version,
-            sketch,
-            edits: form.draft_edits().expect("a draft"),
             destination: PathBuf::new(),
         };
         if offered {
             // The form leaves the judgement to the document: the worker refuses.
             refused_constraints_native(&mut sessions, &forged);
         } else {
-            forged.edits = form.draft_edits().expect("a draft");
+            forged.changes = crate::transaction_tests::constraint_changes(
+                &forged.source,
+                sketch,
+                &form.draft_edits().expect("a draft"),
+            );
             refused_constraints_native(&mut sessions, &forged);
         }
         assert!(form.active());
@@ -4635,19 +4510,22 @@ mod tests {
             crate::sessions::test_open::open_in(private.path(), &path, HistoryLimits::default())
                 .expect("session"),
         );
-        let request = ferritecad_jobs::EditSketchConstraintsRequest {
+        let request = ferritecad_jobs::EditRequest {
+            changes: crate::transaction_tests::constraint_changes(
+                &(path.clone()),
+                sketch,
+                &(ferritecad_document::SketchConstraintEdits {
+                    remove: Vec::new(),
+                    add: vec![ferritecad_document::AddSketchConstraint::Line(
+                        ferritecad_document::AddLineConstraint::Line {
+                            curve: curves[0].id,
+                            kind: ferritecad_document::LineConstraintKind::Horizontal,
+                        },
+                    )],
+                }),
+            ),
             source: path.clone(),
             expected: source.version,
-            sketch,
-            edits: ferritecad_document::SketchConstraintEdits {
-                remove: Vec::new(),
-                add: vec![ferritecad_document::AddSketchConstraint::Line(
-                    ferritecad_document::AddLineConstraint::Line {
-                        curve: curves[0].id,
-                        kind: ferritecad_document::LineConstraintKind::Horizontal,
-                    },
-                )],
-            },
             destination: PathBuf::new(),
         };
         let said = refused_constraints_native(&mut sessions, &request);
@@ -4684,7 +4562,7 @@ mod tests {
                     ticket.source().version(),
                     ticket,
                     vec![
-                        ferritecad_document::ExpressionChange::constant(
+                        ferritecad_document::EditChange::constant(
                             feature,
                             ferritecad_document::ExpressionSlot::ExtrudeDistance,
                             30.0,
@@ -4740,12 +4618,9 @@ mod tests {
                     },
                 )],
             };
-            let prepared =
-                ferritecad_document::prepare_sketch_constraints(&document, sketch.0, &edits)
-                    .expect("prepared without a solver");
-            document
-                .write_sketch_constraints(&prepared)
-                .expect("written");
+            let prepared = ferritecad_fixtures::constraint_changes(&document, sketch.0, &edits)
+                .expect("prepared without a solver");
+            document.write_changes(&prepared).expect("written");
             document.close().expect("closed");
         }
         let original = std::fs::read(&path).expect("bytes");

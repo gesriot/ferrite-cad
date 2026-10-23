@@ -237,7 +237,6 @@ impl CutHistory {
 pub(crate) struct CutCatalog {
     pub bodies: Vec<CutChoice>,
     pub features: Vec<CutParameterChoice>,
-    pub sketches: Vec<crate::SketchChoice>,
 }
 
 pub(crate) fn cut_catalog(document: &Document, objects: &[ObjectRecord]) -> CutCatalog {
@@ -283,12 +282,7 @@ pub(crate) fn cut_catalog(document: &Document, objects: &[ObjectRecord]) -> CutC
             }
         })
         .collect();
-    let sketches = crate::sketch_edit::choices_with_history(document, objects, history.as_ref());
-    CutCatalog {
-        bodies,
-        features,
-        sketches,
-    }
+    CutCatalog { bodies, features }
 }
 
 pub fn cut_choices(document: &Document, objects: &[ObjectRecord]) -> Vec<CutChoice> {
@@ -301,30 +295,6 @@ pub(crate) fn supported(
     object: &ObjectRecord,
 ) -> Result<SavedCutTarget> {
     saved_history(document, objects)?.add_target(object.id)
-}
-
-/// Validate a changed base against every unchanged, absolute tool — near the
-/// change or not. Called by the coordinate editor's shared
-/// draft/prepare/writer check.
-pub(crate) fn validate_base(
-    curves: &[SketchCurve],
-    height_mm: f64,
-    tools: &[SavedCutTool],
-) -> Result<()> {
-    let boundary = CutBoundary::read(curves, height_mm)?;
-    for tool in tools {
-        validate(
-            height_mm,
-            &boundary,
-            &CircularCut {
-                center_mm: tool.center_mm,
-                radius_mm: tool.radius_mm,
-                extent: tool.extent,
-            },
-        )
-        .map_err(|e| CadError::input(format!("Cut {}: {e}", tool.feature)))?;
-    }
-    Ok(())
 }
 
 impl CutChoice {

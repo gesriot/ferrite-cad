@@ -290,7 +290,7 @@ fn artifacts(name: &str, stl: &[u8], fbx: &[u8]) {
 
 fn first_extrude(path: &Path) -> ObjectId {
     ferritecad_fixtures::expression_slot(
-        &ferritecad_jobs::read_extrude_source(path).expect("reading"),
+        &crate::sketch_facts::read(path).expect("reading"),
         ferritecad_document::ExpressionSlot::ExtrudeDistance,
     )
     .object
@@ -666,7 +666,7 @@ fn compare_gui(root: &Path) {
         "47".as_ref(),
         "13".as_ref(),
     ]);
-    let reading = ferritecad_jobs::read_extrude_source(&base).expect("base");
+    let reading = crate::sketch_facts::read(&base).expect("base");
     let edited = peer.join("edited.fcad");
     {
         let request = crate::edits::tests::expression_request(

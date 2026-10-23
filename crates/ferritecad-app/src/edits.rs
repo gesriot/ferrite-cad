@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
-use ferritecad_document::ExtrudeEditSource;
+use crate::sketch_facts::Source as ExtrudeEditSource;
 use ferritecad_jobs::{EditRequest, EditedDocument, edit_copy};
 use ferritecad_kernel::{CancelToken, OperationContext};
 use ferritecad_types::{CadError, ErrorKind, Result};
@@ -235,7 +235,7 @@ impl Edits {
             expected: form.reading.version,
 
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     form.shown.selected?,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     distance_mm,
@@ -266,50 +266,6 @@ impl Edits {
         })
     }
 
-    pub(crate) fn start_sketch(
-        &mut self,
-        request: ferritecad_jobs::EditSketchRequest,
-        spawn: impl FnOnce(ferritecad_jobs::EditSketchRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn start_circle(
-        &mut self,
-        request: ferritecad_jobs::EditCircleRequest,
-        spawn: impl FnOnce(ferritecad_jobs::EditCircleRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn finish_circle(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedCircle>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
-    pub(crate) fn start_annulus(
-        &mut self,
-        request: ferritecad_jobs::EditAnnulusRequest,
-        spawn: impl FnOnce(ferritecad_jobs::EditAnnulusRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn finish_annulus(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedAnnulus>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
     pub(crate) fn start_cut(
         &mut self,
         request: ferritecad_jobs::CircularCutRequest,
@@ -378,27 +334,6 @@ impl Edits {
     ) -> Option<PathBuf> {
         self.finish_path(generation, result.map(|r| r.destination))
     }
-    pub(crate) fn start_constraints(
-        &mut self,
-        request: ferritecad_jobs::EditSketchConstraintsRequest,
-        spawn: impl FnOnce(
-            ferritecad_jobs::EditSketchConstraintsRequest,
-            u64,
-            CancelToken,
-        ) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn finish_constraints(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedSketchConstraints>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
     fn start_at(
         &mut self,
         destination: &Path,
@@ -425,13 +360,6 @@ impl Edits {
         &mut self,
         generation: u64,
         result: Result<EditedDocument>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
-    pub(crate) fn finish_sketch(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedSketch>,
     ) -> Option<PathBuf> {
         self.finish_path(generation, result.map(|r| r.destination))
     }
@@ -485,7 +413,7 @@ pub(crate) fn run_edit(
 pub(crate) fn spawn_edit(
     source: PathBuf,
     expected: ferritecad_document::DocumentVersion,
-    changes: Vec<ferritecad_document::ExpressionChange>,
+    changes: Vec<ferritecad_document::EditChange>,
     destination: PathBuf,
     cancel: CancelToken,
     deliver: impl FnOnce(Result<EditedDocument>) + Send + 'static,
@@ -499,48 +427,6 @@ pub(crate) fn spawn_edit(
     spawn_job(cancel, move |context| run_edit(&request, context), deliver)
 }
 
-pub(crate) fn spawn_sketch_edit(
-    request: ferritecad_jobs::EditSketchRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::EditedSketch>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::edit_sketch_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
-pub(crate) fn spawn_circle_edit(
-    request: ferritecad_jobs::EditCircleRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::EditedCircle>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::edit_circle_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
-pub(crate) fn spawn_annulus_edit(
-    request: ferritecad_jobs::EditAnnulusRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::EditedAnnulus>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::edit_annulus_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
 pub(crate) fn spawn_cut(
     request: ferritecad_jobs::CircularCutRequest,
     cancel: CancelToken,
@@ -597,20 +483,6 @@ pub(crate) fn spawn_cut_edit(
         deliver,
     )
 }
-pub(crate) fn spawn_constraint_edit(
-    request: ferritecad_jobs::EditSketchConstraintsRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::EditedSketchConstraints>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::edit_sketch_constraints_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
 fn spawn_job<T: Send + 'static>(
     cancel: CancelToken,
     job: impl FnOnce(&OperationContext) -> Result<T> + Send + 'static,
@@ -641,7 +513,7 @@ pub(crate) mod tests {
         unit: &str,
     ) -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::new().expect("request file");
-        std::fs::write(file.path(), format!(r#"{{"request_version":1,"changes":[{{"object":"{object}","slot":{{"kind":"{kind}"}},"value":{value},"unit":"{unit}"}}]}}"#)).expect("request JSON");
+        std::fs::write(file.path(), format!(r#"{{"request_version":1,"changes":[{{"kind":"set_expression","object":"{object}","slot":{{"kind":"{kind}"}},"value":{value},"unit":"{unit}"}}]}}"#)).expect("request JSON");
         file
     }
     fn native() -> bool {
@@ -826,7 +698,9 @@ pub(crate) mod tests {
             let (source, feature) = make(root.path(), size);
             let original = std::fs::read(&source).expect("source bytes");
             let loaded = opened(&source);
-            let reading = loaded.edit_source.as_ref().expect("same reading as scene");
+            let reading = &crate::sketch_facts::Source::from(
+                loaded.edit_source.clone().expect("same reading as scene"),
+            );
             let ui = root.path().join("UI edited.fcad");
             let command = root.path().join("CLI edited.fcad");
             let (_edits, open) = ui_edit(&source, reading, feature, &ui);
@@ -998,7 +872,10 @@ pub(crate) mod tests {
         let before = tables(&source);
         let bytes = std::fs::read(&source).expect("before");
         let output = root.path().join("mixed edited.fcad");
-        let reading = opened(&source).edit_source.expect("accepted reading");
+        let reading = opened(&source)
+            .edit_source
+            .expect("accepted reading")
+            .into();
         ui_edit(&source, &reading, feature, &output);
         let after = tables(&output);
         for table in before.iter().filter(|(name, _)| name != "objects") {
@@ -1035,7 +912,10 @@ pub(crate) mod tests {
                  INSERT INTO extension(_rowid_, rowid, value) VALUES (1, 'kept', X'0102');"
             })
             .expect("extension");
-            let reading = opened(&source).edit_source.expect("accepted reading");
+            let reading = opened(&source)
+                .edit_source
+                .expect("accepted reading")
+                .into();
             let reason = if trigger {
                 "extension_write"
             } else {
@@ -1087,12 +967,13 @@ pub(crate) mod tests {
             if !trigger {
                 // Also change only rowid after the worker has built the copy:
                 // the final source recheck must see it before publication.
-                let current = opened(&source).edit_source.expect("fresh reading");
+                let current: crate::sketch_facts::Source =
+                    opened(&source).edit_source.expect("fresh reading").into();
                 let request = EditRequest {
                     source: source.clone(),
                     expected: current.version,
                     changes: vec![
-                        ferritecad_document::ExpressionChange::constant(
+                        ferritecad_document::EditChange::constant(
                             feature,
                             ferritecad_document::ExpressionSlot::ExtrudeDistance,
                             27.0,
@@ -1141,7 +1022,7 @@ pub(crate) mod tests {
                 .execute_batch(extension)
                 .expect("extension");
             let before = std::fs::read(&source).expect("source bytes");
-            let reading = opened(&source).edit_source.expect("readable model");
+            let reading = opened(&source).edit_source.expect("readable model").into();
             assert!(!Edits::default().begin(&source, &reading));
             let reason = reading.unavailable_reason().expect("named refusal");
             assert!(
@@ -1160,7 +1041,7 @@ pub(crate) mod tests {
                     "edit".as_ref(),
                     source.as_os_str(),
                     "--expect-version".as_ref(),
-                    ferritecad_jobs::read_extrude_source(std::path::Path::new(source.as_os_str()))
+                    crate::sketch_facts::read(std::path::Path::new(source.as_os_str()))
                         .expect("reading")
                         .version
                         .content
@@ -1195,7 +1076,8 @@ pub(crate) mod tests {
         for late in [false, true] {
             let root = tempfile::tempdir().expect("directory");
             let (source, feature) = make(root.path(), ["80", "50", "12"]);
-            let reading = opened(&source).edit_source.expect("reading");
+            let reading: crate::sketch_facts::Source =
+                opened(&source).edit_source.expect("reading").into();
             let mut edits = Edits::default();
             edits.begin(&source, &reading);
             let form = &mut edits.form.as_mut().expect("form").shown;
@@ -1318,7 +1200,8 @@ pub(crate) mod tests {
         let root = tempfile::tempdir().expect("directory");
         let (source, feature) = make(root.path(), ["80", "50", "12"]);
         let before = std::fs::read(&source).expect("bytes");
-        let reading = opened(&source).edit_source.expect("reading");
+        let reading: crate::sketch_facts::Source =
+            opened(&source).edit_source.expect("reading").into();
         let mut edits = Edits::default();
         assert!(edits.begin(&source, &reading));
         assert!(!edits.begin(&source, &reading));
@@ -1343,12 +1226,13 @@ pub(crate) mod tests {
         }
         let root = tempfile::tempdir().expect("directory");
         let (source, feature) = make(root.path(), ["80", "50", "12"]);
-        let reading = opened(&source).edit_source.expect("reading");
+        let reading: crate::sketch_facts::Source =
+            opened(&source).edit_source.expect("reading").into();
         let request = EditRequest {
             source: source.clone(),
             expected: reading.version,
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     27.0,
@@ -1630,7 +1514,7 @@ pub(crate) mod tests {
         assert_eq!(
             request.changes,
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     27.5

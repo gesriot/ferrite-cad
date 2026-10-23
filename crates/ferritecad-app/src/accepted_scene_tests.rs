@@ -6,7 +6,8 @@
 #![allow(clippy::panic)]
 use super::*;
 use crate::sketch::accepted::{Accepted, Drawing, Shape, Unavailable};
-use ferritecad_document::{Document, ExtrudeEditSource, ObjectPayload};
+use crate::sketch_facts::Source as ExtrudeEditSource;
+use ferritecad_document::{Document, ObjectPayload};
 use ferritecad_kernel::mock::MockKernel;
 
 /// A sample plate on disk, its facts and the real scene a rebuild makes of it.
@@ -27,7 +28,7 @@ fn plate(name: &str) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource, LoadedSc
         .edit_source
         .clone()
         .expect("the scene carries its facts");
-    (root, path, source, loaded)
+    (root, path, source.into(), loaded)
 }
 
 fn load(path: &Path) -> LoadedScene {
@@ -165,8 +166,9 @@ fn a_form_is_never_handed_the_drawing_of_another_version_or_document() {
     );
     // The same document at another version: not this scene's drawing either.
     let next = renamed(&path_a);
-    let newer = ExtrudeEditSource::read(&Document::open_read_only(&next).expect("document"))
-        .expect("facts");
+    let newer =
+        crate::sketch_facts::Source::read(&Document::open_read_only(&next).expect("document"))
+            .expect("facts");
     assert_eq!(newer.version.document_id, source_a.version.document_id);
     assert_ne!(newer.version.content, source_a.version.content);
     assert_eq!(
@@ -205,8 +207,9 @@ fn a_kept_picture_follows_its_version_and_a_failed_arrival_keeps_the_drawing_and
     // §30N: a version that draws the same model re-points the picture. The drawing is the
     // picture's and follows the facts' version in the same statement.
     let next = renamed(&path);
-    let newer = ExtrudeEditSource::read(&Document::open_read_only(&next).expect("document"))
-        .expect("facts");
+    let newer =
+        crate::sketch_facts::Source::read(&Document::open_read_only(&next).expect("document"))
+            .expect("facts");
     assert_eq!(
         scene
             .sketches

@@ -7,9 +7,10 @@
 //! Extrude and the two Lines that meet there. It lists them rather than
 //! letting a pointer pick geometry, because this slice has no picking, and a
 //! control that suggested otherwise would be promising it.
+use crate::sketch_facts::Source as ExtrudeEditSource;
 use ferritecad_document::{
-    DocumentVersion, EdgeFillet, ExpressionSlotValue, ExtrudeEditSource, FilletChoice,
-    FilletCorner, FilletEdge, SavedFilletTarget,
+    DocumentVersion, EdgeFillet, ExpressionSlotValue, FilletChoice, FilletCorner, FilletEdge,
+    SavedFilletTarget,
 };
 use ferritecad_jobs::{EdgeFilletRequest, EditRequest};
 use ferritecad_types::{CadError, ObjectId, Result};
@@ -317,7 +318,7 @@ impl Editor {
                             source: draft.source.clone(),
                             expected: draft.version,
 
-            changes: vec![ferritecad_document::ExpressionChange::constant(saved.object, ferritecad_document::ExpressionSlot::FilletRadius, valid.as_ref().copied().expect("validated radius")).expect("validated expression")],
+            changes: vec![ferritecad_document::EditChange::constant(saved.object, ferritecad_document::ExpressionSlot::FilletRadius, valid.as_ref().copied().expect("validated radius")).expect("validated expression")],
                             destination: PathBuf::new(),
                         });
                     }
@@ -356,7 +357,7 @@ impl Editor {
                                     source: draft.source.clone(),
                                     expected: draft.version,
 
-            changes: vec![ferritecad_document::ExpressionChange::constant(saved.object, ferritecad_document::ExpressionSlot::FilletRadius, radius_mm).expect("validated expression")],
+            changes: vec![ferritecad_document::EditChange::constant(saved.object, ferritecad_document::ExpressionSlot::FilletRadius, radius_mm).expect("validated expression")],
                                     destination: PathBuf::new(),
                                 });
                             }
@@ -871,7 +872,7 @@ pub(crate) mod tests {
             Ok(())
         })
         .expect("plate");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }
@@ -1396,9 +1397,9 @@ pub(crate) mod tests {
             add,
         };
         let prepared =
-            ferritecad_document::prepare_sketch_constraints(&d, sketch, &edits).expect("prepared");
-        d.write_sketch_constraints(&prepared).expect("written");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+            ferritecad_fixtures::constraint_changes(&d, sketch, &edits).expect("prepared");
+        d.write_changes(&prepared).expect("written");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }
@@ -1678,7 +1679,7 @@ pub(crate) mod tests {
         )
         .expect("prepared");
         d.write_edge_fillet(&prepared).expect("written");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }
@@ -1705,8 +1706,11 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Confirm draft number");
         click(&ctx, &mut e, "Save radius copy…");
         let mut request = e.take_radius_request().expect("widget request");
-        let radius = request.changes[0].expression.value();
-        let feature = request.changes[0].object;
+        let radius = request.changes[0]
+            .expression()
+            .expect("numeric form contains an expression change")
+            .value();
+        let feature = request.changes[0].object();
 
         let ui = root.path().join("worker.fcad");
         request.destination = ui.clone();
@@ -1745,7 +1749,7 @@ pub(crate) mod tests {
         let input = root.path().join("request.json");
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"changes":[{{"object":"{feature}","slot":{{"kind":"fillet_radius"}},"value":{radius},"unit":"mm"}}]}}"#),
+            format!(r#"{{"request_version":1,"changes":[{{"kind":"set_expression","object":"{feature}","slot":{{"kind":"fillet_radius"}},"value":{radius},"unit":"mm"}}]}}"#),
         )
         .expect("input");
         let peer = root.path().join("peer.fcad");
@@ -2002,7 +2006,7 @@ pub(crate) mod tests {
         )
         .expect("prepared");
         d.write_edge_fillet(&prepared).expect("written");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }
@@ -2017,13 +2021,7 @@ pub(crate) mod tests {
         }
         let (root, path, source) = rounded_twice(2.375, 3.0625);
         let before = std::fs::read(&path).expect("source");
-        let feature = source
-            .sketches
-            .iter()
-            .flat_map(|s| s.fillets.iter())
-            .find(|s| s.history_index == 1)
-            .expect("Fillet 1")
-            .feature;
+        let feature = session_apply::selected(&source, 0).feature;
         let mut e = Editor::default();
         begin_by(
             &mut e,
@@ -2039,7 +2037,7 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Confirm draft number");
         click(&ctx, &mut e, "Save radius copy…");
         let mut request = e.take_radius_request().expect("widget request");
-        assert_eq!(request.changes[0].object, feature);
+        assert_eq!(request.changes[0].object(), feature);
         let ui = root.path().join("worker.fcad");
         request.destination = ui.clone();
         let mut edits = crate::edits::Edits::default();
@@ -2075,7 +2073,7 @@ pub(crate) mod tests {
         assert!(!editor.active());
 
         let input = root.path().join("request.json");
-        std::fs::write(&input, format!(r#"{{"request_version":1,"changes":[{{"object":"{feature}","slot":{{"kind":"fillet_radius"}},"value":4.8125,"unit":"mm"}}]}}"#)).expect("input");
+        std::fs::write(&input, format!(r#"{{"request_version":1,"changes":[{{"kind":"set_expression","object":"{feature}","slot":{{"kind":"fillet_radius"}},"value":4.8125,"unit":"mm"}}]}}"#)).expect("input");
         let peer = root.path().join("peer.fcad");
         let out = std::process::Command::new(crate::creates::tests::ferritecad())
             .arg("edit")
@@ -2122,7 +2120,7 @@ pub(crate) mod tests {
             )
             .expect("prepared");
             d.write_edge_fillet(&prepared).expect("written");
-            source = ExtrudeEditSource::read(&d).expect("snapshot");
+            source = crate::sketch_facts::Source::read(&d).expect("snapshot");
             d.close().expect("close");
         }
         (root, path, source)

@@ -75,7 +75,7 @@ impl Window {
         assert!(self.sessions.untitled() && self.sessions.dirty());
         assert!(!self.creates.making_new() && !self.creates.has_held_new());
         let source = self.sessions.export_path().expect("created");
-        let reading = read_extrude_source(&source).expect("created model");
+        let reading = crate::sketch_facts::read(&source).expect("created model");
         if content == NewContent::SamplePlate {
             assert_eq!(
                 ferritecad_fixtures::expression_slot(
@@ -242,7 +242,8 @@ fn finish_returned_drawing(w: &mut Window, before: &(Vec<[String; 2]>, usize, us
         w.bind_candidate(candidate, Ok(()))
             .expect("returned drawing accepted");
     }
-    let reading = read_extrude_source(&w.sessions.export_path().expect("New model")).expect("read");
+    let reading =
+        crate::sketch_facts::read(&w.sessions.export_path().expect("New model")).expect("read");
     assert_eq!(
         reading.sketches[0]
             .vertices
@@ -457,7 +458,7 @@ fn save_refusals_dialog_cancel_save_as_and_external_conflict_return_whole_new() 
     w.assert_literal_new(NewContent::Empty);
     assert!(!w.sessions.dirty());
     assert!(
-        read_extrude_source(&root.path().join("saved.fcad"))
+        crate::sketch_facts::read(&root.path().join("saved.fcad"))
             .expect("saved accepted Empty")
             .expression_slots
             .iter()
@@ -900,7 +901,7 @@ fn new_contour_over_saved_sketch_returns_both_editors_with_functional_history() 
     w.open(&a_file);
     let a = w.sessions.tab();
     let source = w.sessions.export_path().expect("A");
-    let reading = read_extrude_source(&source).expect("A");
+    let reading = crate::sketch_facts::read(&source).expect("A");
     w.creates.sketch = crate::sketch::tests::typed_apply(
         &source,
         &reading,
@@ -1005,7 +1006,7 @@ fn compare_new_outputs(root: &Path) {
         read_semantics(&independently_created).1,
         "independent creations reused UUIDs"
     );
-    let reading = read_extrude_source(&origin).expect("origin");
+    let reading = crate::sketch_facts::read(&origin).expect("origin");
     let peer = peer_root.path().join("edited.fcad");
     {
         let request = crate::edits::tests::expression_request(
@@ -1149,7 +1150,7 @@ fn native_new_recipe(root: &Path) {
     let b = w.sessions.tab();
     w.apply(22.);
     let source = w.sessions.export_path().expect("B");
-    let reading = read_extrude_source(&source).expect("B");
+    let reading = crate::sketch_facts::read(&source).expect("B");
     w.creates.sketch = crate::sketch::tests::analytic_apply::typed_circle(
         &source,
         &reading,

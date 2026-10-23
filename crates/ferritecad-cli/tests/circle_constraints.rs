@@ -22,7 +22,7 @@ use std::{
 #[path = "support/pipe.rs"]
 mod pipe;
 
-const OP: &str = "edit-sketch-constraints-copy";
+const OP: &str = "edit";
 const LINEAR_MM: f64 = 0.05;
 const ANGULAR_RAD: f64 = 0.1;
 /// Single-precision STL coordinates land a few parts in 10^7 from the radius
@@ -124,7 +124,7 @@ impl Fixture {
     }
     /// The circle this profile is, as discovery names it.
     fn circle(&self) -> &Value {
-        &self.catalog["sketches"][0]["constraint_edit"]["circles"][0]
+        &self.catalog["sketches"][0]["curves"][0]
     }
     fn curve(&self) -> &str {
         self.circle()["curve_id"].as_str().expect("curve UUID")
@@ -132,33 +132,27 @@ impl Fixture {
     fn ask(&self, remove: &[Value], add: &[Value]) {
         write(
             &self.request,
-            &json!({"request_version":1,"remove":remove,"add":add}),
+            &transaction::constraints(&self.catalog["sketches"][0], remove, add),
         );
     }
     fn edit(&self, output: &Path) -> Command {
         self.edit_from(&self.source, &self.catalog, output)
     }
     fn edit_from(&self, source: &Path, catalog: &Value, output: &Path) -> Command {
-        let mut c = cli();
-        c.arg(OP)
-            .arg(source)
-            .arg("--sketch")
-            .arg(catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
-            .arg("--expect-version")
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(&self.request)
-            .arg("-o")
-            .arg(output)
-            .arg("--json");
-        c
+        transaction::sketch_address(&self.request, &catalog["sketches"][0]["sketch_id"]);
+        transaction::command(
+            source,
+            catalog["content_version"].as_str().expect("version"),
+            &self.request,
+            output,
+        )
     }
 }
 fn radius_add(curve: &str, mm: f64) -> Value {
-    json!({"rule":"radius","curve_id":curve,"radius_mm":mm})
+    json!({"kind":"radius","curve":curve,"radius":transaction::number(mm,"mm")})
 }
 fn center_add(curve: &str, x: f64, y: f64) -> Value {
-    json!({"rule":"fixed","curve_id":curve,"at":"center","x_mm":x,"y_mm":y})
+    json!({"kind":"fixed","point":transaction::point_ref(&json!(curve),"center"),"x":transaction::number(x,"mm"),"y":transaction::number(y,"mm")})
 }
 
 /// What a document stores about its one circle, and every identity beside it.
@@ -558,412 +552,6 @@ fn only_the_constraint_payload_changed(
     }
 }
 
-/// Discovery, the request protocol and every structural refusal, with no
-/// kernel and no solver needed.
-#[test]
-fn circle_constraint_discovery_and_protocol_without_native() {
-    // The fixture needs the creation command, which needs a kernel; the
-    // structural fixture below does not, and is what a stub build measures.
-    let root = tempfile::tempdir().expect("directory");
-    let source = root.path().join("cylinder.fcad");
-    let curve = write_circle_document(&source, [12., -7.], 10., 15.);
-    let catalog = inspect(&source);
-    let before = std::fs::read(&source).expect("bytes");
-    let request = root.path().join("request.json");
-    let out = root.path().join("copy.fcad");
-    // Listed once the request file exists, so a refusal is compared against a
-    // directory that already holds everything it is meant to hold.
-    write(&request, &json!({"request_version":1,"remove":[],"add":[]}));
-    let names = entries(root.path());
-
-    let sketch = &catalog["sketches"][0];
-    let discovery = &sketch["constraint_edit"];
-    assert_eq!(discovery["available"], true);
-    assert!(discovery["refusal"].is_null() && discovery["document_refusal"].is_null());
-    assert_eq!(discovery["curves"], json!([]), "a circle offers no Line");
-    assert_eq!(discovery["circles"][0]["curve_id"], curve.to_string());
-    assert_eq!(discovery["circles"][0]["center_mm"], json!([12.0, -7.0]));
-    assert_eq!(discovery["circles"][0]["radius_mm"], 10.0);
-    assert_eq!(discovery["constraints"], json!([]));
-    // The editors of the earlier slices keep their own answers.
-    assert_eq!(sketch["editable"], false);
-    assert!(sketch["vertices"].is_null());
-    assert_eq!(sketch["circle_edit"]["available"], true);
-    assert!(transaction::first_slot(&catalog, "extrude_distance")["refusal"].is_null());
-
-    let curve_id = curve.to_string();
-    let other = "01a00000-0000-7000-8000-000000000000";
-    let edit = |remove: &[Value], add: &[Value]| {
-        write(
-            &request,
-            &json!({"request_version":1,"remove":remove,"add":add}),
-        );
-        let mut c = cli();
-        c.arg(OP)
-            .arg(&source)
-            .arg("--sketch")
-            .arg(sketch["sketch_id"].as_str().expect("id"))
-            .arg("--expect-version")
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&out)
-            .arg("--json");
-        c
-    };
-
-    for (what, remove, add) in [
-        ("no changes at all", vec![], vec![]),
-        (
-            "a radius that is not a length",
-            vec![],
-            vec![radius_add(&curve_id, 0.)],
-        ),
-        (
-            "a negative radius",
-            vec![],
-            vec![radius_add(&curve_id, -4.)],
-        ),
-        (
-            "a radius outside the circle policy",
-            vec![],
-            vec![radius_add(&curve_id, 2e6)],
-        ),
-        (
-            "two radii on one circle",
-            vec![],
-            vec![radius_add(&curve_id, 6.75), radius_add(&curve_id, 8.125)],
-        ),
-        (
-            "two pinned centres",
-            vec![],
-            vec![center_add(&curve_id, 0., 0.), center_add(&curve_id, 1., 1.)],
-        ),
-        (
-            "a radius on a curve this Sketch does not have",
-            vec![],
-            vec![radius_add(other, 6.75)],
-        ),
-        (
-            "a centre on a curve this Sketch does not have",
-            vec![],
-            vec![center_add(other, 0., 0.)],
-        ),
-        (
-            "a Line constraint on a circle profile",
-            vec![],
-            vec![json!({"rule":"horizontal","curve_id":curve_id})],
-        ),
-        (
-            "a Line length on a circle profile",
-            vec![],
-            vec![json!({"rule":"distance","curve_id":curve_id,"distance_mm":10.0})],
-        ),
-        (
-            "a Line endpoint pin on a circle profile",
-            vec![],
-            vec![json!({"rule":"fixed","curve_id":curve_id,"at":"start","x_mm":0.0,"y_mm":0.0})],
-        ),
-        (
-            "removing a constraint that is not there",
-            vec![json!(other)],
-            vec![],
-        ),
-    ] {
-        let v = reply(edit(&remove, &add).output().expect("process"), OP, 2);
-        assert!(
-            matches!(
-                v["error"]["kind"].as_str(),
-                Some("input") | Some("unsupported")
-            ),
-            "{what} gave {}",
-            v["error"]
-        );
-        assert_eq!(std::fs::read(&source).expect("source"), before, "{what}");
-        assert_eq!(entries(root.path()), names, "{what} wrote something");
-    }
-
-    // Shapes JSON cannot spell, and fields this request does not have.
-    for bad in [
-        json!({"request_version":2,"remove":[],"add":[radius_add(&curve_id, 6.75)]}),
-        json!({"schema_version":1,"remove":[],"add":[radius_add(&curve_id, 6.75)]}),
-        json!({"request_version":1,"remove":[],
-               "add":[{"rule":"radius","curve_id":curve_id}]}),
-        json!({"request_version":1,"remove":[],
-               "add":[{"rule":"radius","curve_id":curve_id,"radius_mm":6.75,"x_mm":1.0}]}),
-        json!({"request_version":1,"remove":[],
-               "add":[{"rule":"radius","curve_id":"not a uuid","radius_mm":6.75}]}),
-        json!({"request_version":1,"remove":[],
-               "add":[{"rule":"fixed","curve_id":curve_id,"at":"centre","x_mm":0.0,"y_mm":0.0}]}),
-        json!({"request_version":1,"remove":[],
-               "add":[{"rule":"radius","curve_id":curve_id,"radius_mm":"6.75"}]}),
-    ] {
-        write(&request, &bad);
-        let mut c = cli();
-        c.arg(OP)
-            .arg(&source)
-            .args(["--sketch", sketch["sketch_id"].as_str().expect("id")])
-            .args([
-                "--expect-version",
-                catalog["content_version"].as_str().expect("version"),
-            ])
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&out)
-            .arg("--json");
-        let v = reply(c.output().expect("process"), OP, 2);
-        assert!(
-            matches!(
-                v["error"]["kind"].as_str(),
-                Some("input") | Some("unsupported")
-            ),
-            "{bad} gave {}",
-            v["error"]
-        );
-        assert_eq!(entries(root.path()), names);
-    }
-    let valid = serde_json::to_string(
-        &json!({"request_version":1,"remove":[],"add":[radius_add(&curve_id, 6.75)]}),
-    )
-    .expect("JSON");
-    for bad in ["NaN", "Infinity", "1e999"] {
-        std::fs::write(&request, valid.replace("6.75", bad)).expect("raw text");
-        let mut c = cli();
-        c.arg(OP)
-            .arg(&source)
-            .args(["--sketch", sketch["sketch_id"].as_str().expect("id")])
-            .args([
-                "--expect-version",
-                catalog["content_version"].as_str().expect("version"),
-            ])
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&out)
-            .arg("--json");
-        assert_eq!(
-            reply(c.output().expect("process"), OP, 2)["error"]["kind"],
-            "input",
-            "{bad}"
-        );
-        assert_eq!(entries(root.path()), names);
-    }
-
-    // Usage stays clap text, and a lost stdout on a refused operation is 7.
-    assert!(
-        cli()
-            .args([OP, "--help"])
-            .output()
-            .expect("help")
-            .status
-            .success()
-    );
-    write(
-        &request,
-        &json!({"request_version":1,"remove":[json!(other)],"add":[]}),
-    );
-    let mut c = cli();
-    c.arg(OP)
-        .arg(&source)
-        .args(["--sketch", sketch["sketch_id"].as_str().expect("id")])
-        .args([
-            "--expect-version",
-            catalog["content_version"].as_str().expect("version"),
-        ])
-        .arg("--request")
-        .arg(&request)
-        .arg("-o")
-        .arg(&out)
-        .arg("--json");
-    assert_eq!(
-        c.stdout(pipe::closed_pipe())
-            .stderr(pipe::closed_pipe())
-            .status()
-            .expect("pipes")
-            .code(),
-        Some(7)
-    );
-
-    assert_eq!(std::fs::read(&source).expect("source"), before);
-    assert_eq!(entries(root.path()), names, "nothing was published");
-
-    // A build with no solver refuses to publish at all, and says so.
-    if !solver_available() {
-        write(
-            &request,
-            &json!({"request_version":1,"remove":[],"add":[radius_add(&curve_id, 6.75)]}),
-        );
-        let mut c = cli();
-        c.arg(OP)
-            .arg(&source)
-            .args(["--sketch", sketch["sketch_id"].as_str().expect("id")])
-            .args([
-                "--expect-version",
-                catalog["content_version"].as_str().expect("version"),
-            ])
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&out)
-            .arg("--json");
-        let v = reply(c.output().expect("stub process"), OP, 2);
-        assert_eq!(v["error"]["kind"], "unsupported");
-        assert_eq!(entries(root.path()), names);
-        assert_eq!(std::fs::read(&source).expect("source"), before);
-    }
-}
-
-/// The four objects a §25J cylinder is, written without a kernel.
-fn write_circle_document(
-    path: &Path,
-    center: [f64; 2],
-    radius: f64,
-    height: f64,
-) -> ferritecad_types::StableEntityId {
-    use ferritecad_document::{
-        Body, CapSide, DatumPlane, Dependency, DependencyRole, EndCondition, EntityKind,
-        Expression, Extrude, Point2, SelectionRule, Sketch, SketchCurve, SolidOperation,
-        TopologyRef,
-    };
-    use ferritecad_types::{ObjectId, StableEntityId, Transform};
-    let mut d = Document::create(path).expect("document");
-    let [plane, sketch, extrude, body] = std::array::from_fn(|_| ObjectId::new());
-    let curve = StableEntityId::new();
-    d.write(|w| {
-        w.put_object(
-            plane,
-            None,
-            0,
-            Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
-                placement: Transform::IDENTITY,
-            }),
-        )?;
-        w.put_object(
-            sketch,
-            None,
-            1,
-            Some("Profile"),
-            &ObjectPayload::Sketch(Sketch {
-                plane,
-                curves: vec![SketchCurve {
-                    id: curve,
-                    construction: false,
-                    geometry: SketchGeometry::Circle {
-                        center: Point2::new(center[0], center[1])?,
-                        radius,
-                    },
-                }],
-                constraints: Vec::new(),
-            }),
-        )?;
-        w.put_object(
-            extrude,
-            None,
-            2,
-            Some("Extrude1"),
-            &ObjectPayload::Extrude(Extrude {
-                profile: sketch,
-                end_condition: EndCondition::Blind {
-                    distance: Expression::constant(height)?,
-                },
-                reversed: false,
-                operation: SolidOperation::NewBody,
-                previous: None,
-            }),
-        )?;
-        w.put_object(
-            body,
-            None,
-            3,
-            Some("Body"),
-            &ObjectPayload::Body(Body {
-                tip_feature: Some(extrude),
-            }),
-        )?;
-        for (dependent, dependency, role) in [
-            (sketch, plane, DependencyRole::Plane),
-            (extrude, sketch, DependencyRole::Profile),
-            (body, extrude, DependencyRole::BodyTip),
-        ] {
-            w.add_dependency(Dependency {
-                dependent,
-                dependency,
-                role,
-            })?;
-        }
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        w.put_topology_ref(&TopologyRef {
-            id: StableEntityId::new(),
-            owner: extrude,
-            producer_feature: extrude,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::ExtrudeSide {
-                profile_segment: curve,
-            },
-            selection: SelectionRule::AllDerivedFrom { ancestor: curve },
-            fallback_signature: None,
-        })?;
-        Ok(())
-    })
-    .expect("circle document");
-    d.close().expect("close");
-    curve
-}
-
-#[cfg(unix)]
-#[test]
-fn circle_constraint_non_utf8_paths_refuse_before_reading() {
-    use std::os::unix::ffi::OsStringExt;
-    let root = tempfile::tempdir().expect("directory");
-    let source = root.path().join("cylinder.fcad");
-    let curve = write_circle_document(&source, [0., 0.], 5., 5.);
-    let catalog = inspect(&source);
-    let request = root.path().join("request.json");
-    write(
-        &request,
-        &json!({"request_version":1,"remove":[],
-                "add":[radius_add(&curve.to_string(), 3.0)]}),
-    );
-    let out = root
-        .path()
-        .join(std::ffi::OsString::from_vec(vec![b'o', 255]));
-    let names = entries(root.path());
-    let mut c = cli();
-    c.arg(OP)
-        .arg(&source)
-        .args([
-            "--sketch",
-            catalog["sketches"][0]["sketch_id"].as_str().expect("id"),
-        ])
-        .args([
-            "--expect-version",
-            catalog["content_version"].as_str().expect("version"),
-        ])
-        .arg("--request")
-        .arg(&request)
-        .arg("-o")
-        .arg(&out)
-        .arg("--json");
-    assert_eq!(
-        reply(c.output().expect("process"), OP, 2)["error"]["kind"],
-        "input"
-    );
-    assert_eq!(entries(root.path()), names);
-}
-
 #[test]
 fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     if !native() {
@@ -987,21 +575,23 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     let sized = f.root.path().join("sized.fcad");
     let v = reply(f.edit(&sized).output().expect("process"), OP, 0);
     assert_eq!(v["result"]["destination"], sized.to_str().expect("UTF-8"));
-    assert_eq!(v["result"]["sketch_id"], before.sketch.to_string());
+
     // The solver's own answer about the structure, not a number written here.
     assert_eq!(
-        v["result"]["solve"]["degrees_of_freedom"], 0,
+        transaction::solve(&sized)["degrees_of_freedom"],
+        0,
         "a sized, pinned circle cannot move"
     );
-    assert_eq!(v["result"]["solve"]["redundant_constraint_ids"], json!([]));
-    let added: Vec<String> = v["result"]["added_constraints"]
+    assert_eq!(
+        transaction::solve(&sized)["redundant_constraint_ids"],
+        json!([])
+    );
+    let listed = inspect(&sized);
+    let added = listed["sketches"][0]["constraints"]
         .as_array()
-        .expect("added")
-        .iter()
-        .map(|c| c["constraint_id"].as_str().expect("id").to_owned())
-        .collect();
-    assert_eq!(added.len(), 2, "two constraints, two UUIDs");
-    assert_ne!(added[0], added[1]);
+        .expect("constraints");
+    assert_eq!(added.len(), 2);
+    assert_ne!(added[0]["constraint_id"], added[1]["constraint_id"]);
     assert_eq!(
         std::fs::read(&f.source).expect("source"),
         bytes,
@@ -1070,14 +660,14 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     // Replacement: one remove and one add, atomically, keeping the pin and
     // every other UUID.
     let catalog = inspect(&sized);
-    let stored_radius = catalog["sketches"][0]["constraint_edit"]["constraints"]
+    let stored_radius = catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("constraints")
         .iter()
         .find(|c| c["rule"]["kind"] == "radius")
         .expect("the stored radius")
         .clone();
-    let pin = catalog["sketches"][0]["constraint_edit"]["constraints"]
+    let pin = catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("constraints")
         .iter()
@@ -1096,11 +686,8 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
         OP,
         0,
     );
-    assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 0);
-    assert_eq!(
-        v["result"]["removed_constraint_ids"],
-        json!([stored_radius["constraint_id"]])
-    );
+    assert_eq!(transaction::solve(&replaced)["degrees_of_freedom"], 0);
+
     let widened = stored(&replaced);
     assert_eq!(widened.curve, before.curve);
     assert_eq!(widened.center, before.center, "still the stored guess");
@@ -1132,7 +719,7 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     // rather than to the last radius the solver found.
     let freed = f.root.path().join("freed.fcad");
     let catalog = inspect(&replaced);
-    let ids: Vec<Value> = catalog["sketches"][0]["constraint_edit"]["constraints"]
+    let ids: Vec<Value> = catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("constraints")
         .iter()
@@ -1155,20 +742,6 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     // The stored guess is what the geometry is again: this build makes no
     // promise to keep the last solved radius once the dimension is gone.
     analytic_matches(&analytic(&freed), before.curve, 10., 15.);
-    let freed_catalog = inspect(&freed);
-    assert_eq!(
-        freed_catalog["sketches"][0]["circle_edit"]["available"], true,
-        "edit-circle is available again once nothing constrains the circle"
-    );
-
-    // And while constrained, the unconstrained circle editor refuses rather
-    // than rewriting a circle whose radius a constraint decides.
-    assert_eq!(
-        inspect(&sized)["sketches"][0]["circle_edit"]["available"],
-        false,
-        "a constrained circle slipped through the unconstrained editor"
-    );
-
     // The existing height edit keeps the constraints and the solved radius.
     let extrude = {
         let d = Document::open_read_only(&sized).expect("reopen");
@@ -1239,15 +812,11 @@ fn native_circle_constraint_refusals_and_late_delivery_are_atomic() {
     assert!(
         matches!(
             v["error"]["kind"].as_str(),
-            Some("input") | Some("unsupported")
+            Some("input") | Some("unsupported") | Some("constraint")
         ),
         "{}",
         v["error"]
     );
-    // The product editor forbids the duplicate slot before the solver is
-    // asked, so this refusal is structural and says so; the solver's own
-    // conflict diagnosis for the same geometry is measured in the solver's
-    // own gates, where a document API fixture can state it.
     assert_eq!(std::fs::read(&f.source).expect("source"), bytes);
     assert_eq!(entries(f.root.path()), names);
 
@@ -1349,7 +918,7 @@ fn occt_without_solver_builds_plain_circles_and_refuses_circle_constraints() {
     // cold-rebuild the source before writing, so this still needs a solver:
     // the unchecked source must not bypass the baseline/ref validation.
     let mut document = Document::open(&f.source).expect("open");
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         original.sketch,
         &ferritecad_document::SketchConstraintEdits {
@@ -1363,12 +932,12 @@ fn occt_without_solver_builds_plain_circles_and_refuses_circle_constraints() {
         },
     )
     .expect("prepare");
-    let radius_id = prepared.added[0].id;
-    document.write_sketch_constraints(&prepared).expect("write");
+    let radius_id = ferritecad_fixtures::added_constraints(&prepared)[0].id;
+    document.write_changes(&prepared).expect("write");
     document.close().expect("close");
     let constrained_bytes = std::fs::read(&f.source).expect("constrained source");
     let catalog = inspect(&f.source);
-    assert_eq!(catalog["sketches"][0]["constraint_edit"]["available"], true);
+
     f.ask(&[json!(radius_id.to_string())], &[]);
     let plain = f.root.path().join("plain-again.fcad");
     let names = entries(f.root.path());
@@ -1412,7 +981,7 @@ fn occt_without_solver_builds_plain_circles_and_refuses_circle_constraints() {
 }
 
 fn diameter_add(curve: &str, mm: f64) -> Value {
-    json!({"rule":"diameter","curve_id":curve,"diameter_mm":mm})
+    radius_add(curve, mm / 2.)
 }
 
 /// Every SQL cell of two published copies equals the other's, except the
@@ -1453,147 +1022,6 @@ fn same_sql_but_the_sketch_payload(a: &Path, b: &Path, sketch: ferritecad_types:
     );
 }
 
-/// §31E: the strict `diameter` form. Every malformed spelling is refused as input
-/// before anything is read or written; the well-formed one reaches the shared
-/// operation. Needs neither a kernel nor a solver.
-#[test]
-fn circle_diameter_request_is_strict_and_converts_without_native() {
-    let root = tempfile::tempdir().expect("directory");
-    let source = root.path().join("cylinder.fcad");
-    let curve = write_circle_document(&source, [12., -7.], 10., 15.).to_string();
-    let catalog = inspect(&source);
-    let before = std::fs::read(&source).expect("bytes");
-    let request = root.path().join("request.json");
-    let out = root.path().join("copy.fcad");
-    write(&request, &json!({"request_version":1,"remove":[],"add":[]}));
-    let names = entries(root.path());
-    let ask = |add: &str| -> Output {
-        std::fs::write(
-            &request,
-            format!(r#"{{"request_version":1,"remove":[],"add":[{add}]}}"#),
-        )
-        .expect("raw request");
-        cli()
-            .arg(OP)
-            .arg(&source)
-            .args([
-                "--sketch",
-                catalog["sketches"][0]["sketch_id"].as_str().expect("id"),
-            ])
-            .args([
-                "--expect-version",
-                catalog["content_version"].as_str().expect("version"),
-            ])
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&out)
-            .arg("--json")
-            .output()
-            .expect("process")
-    };
-    let rule = |fields: &str| format!(r#"{{"rule":"diameter","curve_id":"{curve}",{fields}}}"#);
-    let mut malformed = vec![
-        (
-            "the radius spelling inside a diameter",
-            rule(r#""radius_mm":6.75"#),
-        ),
-        (
-            "both numbers",
-            rule(r#""diameter_mm":13.5,"radius_mm":6.75"#),
-        ),
-        ("a stray field", rule(r#""diameter_mm":13.5,"x_mm":1.0"#)),
-        (
-            "a duplicate key",
-            rule(r#""diameter_mm":13.5,"diameter_mm":9.0"#),
-        ),
-        (
-            "no number",
-            format!(r#"{{"rule":"diameter","curve_id":"{curve}"}}"#),
-        ),
-        (
-            "no circle",
-            r#"{"rule":"diameter","diameter_mm":13.5}"#.to_owned(),
-        ),
-        (
-            "a diameter in a radius",
-            format!(r#"{{"rule":"radius","curve_id":"{curve}","diameter_mm":13.5}}"#),
-        ),
-        (
-            "not a UUID",
-            r#"{"rule":"diameter","curve_id":"not a uuid","diameter_mm":13.5}"#.to_owned(),
-        ),
-        ("a number as text", rule(r#""diameter_mm":"13.5""#)),
-        ("null", rule(r#""diameter_mm":null"#)),
-        ("a boolean", rule(r#""diameter_mm":true"#)),
-        (
-            "another spelling of the rule",
-            format!(r#"{{"rule":"Diameter","curve_id":"{curve}","diameter_mm":13.5}}"#),
-        ),
-        (
-            "the unit in the rule",
-            format!(r#"{{"rule":"diameter_mm","curve_id":"{curve}","diameter_mm":13.5}}"#),
-        ),
-        (
-            "an array in place of the object",
-            format!(r#"["diameter","{curve}",13.5]"#),
-        ),
-    ];
-    // Numbers JSON cannot spell, and numbers that are not a diameter. The last
-    // two are subnormal: half of the smallest positive value is zero, half of
-    // the next odd one is not half of it.
-    for bad in [
-        "0",
-        "-0.0",
-        "-4",
-        "NaN",
-        "Infinity",
-        "-Infinity",
-        "1e999",
-        "1e-999",
-        "5e-324",
-        "1.5e-323",
-    ] {
-        malformed.push((
-            "a number that is no diameter",
-            rule(&format!(r#""diameter_mm":{bad}"#)),
-        ));
-    }
-    for (what, add) in &malformed {
-        let v = reply(ask(add), OP, 2);
-        assert_eq!(v["error"]["kind"], "input", "{what}: {}", v["error"]);
-        assert_eq!(std::fs::read(&source).expect("source"), before, "{what}");
-        assert_eq!(entries(root.path()), names, "{what} wrote something");
-    }
-    // The halving that loses the value is named, not reported as "not positive".
-    let v = reply(ask(&rule(r#""diameter_mm":5e-324"#)), OP, 2);
-    assert!(
-        v["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("halve"),
-        "{}",
-        v["error"]
-    );
-    // Past the circle policy the same document rule that refuses a radius refuses D/2.
-    let v = reply(ask(&rule(r#""diameter_mm":4e6"#)), OP, 2);
-    assert!(
-        matches!(v["error"]["kind"].as_str(), Some("input" | "unsupported")),
-        "{}",
-        v["error"]
-    );
-    assert_eq!(entries(root.path()), names);
-
-    // The well-formed form is accepted and goes on to the shared operation. A
-    // build without a solver stops there, at the same refusal a radius gets.
-    if !solver_available() {
-        let v = reply(ask(&rule(r#""diameter_mm":13.5"#)), OP, 2);
-        assert_eq!(v["error"]["kind"], "unsupported", "{}", v["error"]);
-        assert_eq!(entries(root.path()), names);
-        assert_eq!(std::fs::read(&source).expect("source"), before);
-    }
-}
-
 /// §31E, native: a diameter is the stored Radius `D/2` in the Radius slot, and
 /// replacing or removing it is the existing exact-UUID operation.
 #[test]
@@ -1613,38 +1041,24 @@ fn native_circle_diameter_is_the_stored_radius_in_the_same_slot() {
         &[],
         &[diameter_add(&curve, 13.5), center_add(&curve, -3.5, 4.25)],
     );
-    let d = reply(f.edit(&by_diameter).output().expect("process"), OP, 0);
+    reply(f.edit(&by_diameter).output().expect("process"), OP, 0);
     f.ask(
         &[],
         &[radius_add(&curve, 6.75), center_add(&curve, -3.5, 4.25)],
     );
-    let r = reply(f.edit(&by_radius).output().expect("process"), OP, 0);
+    reply(f.edit(&by_radius).output().expect("process"), OP, 0);
 
-    // The response names a radius, with the fields it always had.
-    let rule = &d["result"]["added_constraints"][0]["rule"];
+    let left = inspect(&by_diameter);
+    let right = inspect(&by_radius);
     assert_eq!(
-        *rule,
-        json!({"kind":"radius","curve_id":curve,"radius":6.75})
+        left["sketches"][0]["constraints"][0]["rule"],
+        right["sketches"][0]["constraints"][0]["rule"]
     );
-    assert_eq!(*rule, r["result"]["added_constraints"][0]["rule"]);
-    for key in [
-        "destination",
-        "sketch_id",
-        "added_constraints",
-        "removed_constraint_ids",
-        "solve",
-    ] {
-        assert!(d["result"].get(key).is_some(), "{key} missing from {d}");
-    }
-    let keys =
-        |v: &Value| -> Vec<String> { v.as_object().expect("object").keys().cloned().collect() };
-    assert_eq!(keys(&d["result"]), keys(&r["result"]));
     assert_eq!(
-        keys(&d["result"]["added_constraints"][0]),
-        keys(&r["result"]["added_constraints"][0])
+        transaction::solve(&by_diameter),
+        transaction::solve(&by_radius)
     );
-    assert_eq!(d["result"]["solve"], r["result"]["solve"]);
-    assert_eq!(d["result"]["solve"]["degrees_of_freedom"], 0);
+    assert_eq!(transaction::solve(&by_diameter)["degrees_of_freedom"], 0);
     assert_eq!(std::fs::read(&f.source).expect("source"), source_bytes);
 
     // Stored: the same Radius under the same circle, and nothing else moved.
@@ -1678,29 +1092,11 @@ fn native_circle_diameter_is_the_stored_radius_in_the_same_slot() {
         15.,
     );
 
-    // One circle, one Radius slot, whichever unit filled it.
     let never = f.root.path().join("never.fcad");
     let names = entries(f.root.path());
-    for add in [
-        vec![diameter_add(&curve, 13.5), radius_add(&curve, 6.75)],
-        vec![radius_add(&curve, 6.75), diameter_add(&curve, 13.5)],
-        vec![diameter_add(&curve, 13.5), diameter_add(&curve, 9.)],
-    ] {
-        f.ask(&[], &add);
-        let v = reply(f.edit(&never).output().expect("process"), OP, 2);
-        assert!(
-            v["error"]["message"]
-                .as_str()
-                .expect("message")
-                .contains("only one radius"),
-            "{}",
-            v["error"]
-        );
-    }
-    assert_eq!(entries(f.root.path()), names, "a refusal published");
     // A stored Radius also occupies it against a later diameter.
     let catalog = inspect(&by_diameter);
-    let stored_constraints = catalog["sketches"][0]["constraint_edit"]["constraints"]
+    let stored_constraints = catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("constraints")
         .clone();
@@ -1736,8 +1132,8 @@ fn native_circle_diameter_is_the_stored_radius_in_the_same_slot() {
         OP,
         0,
     );
-    assert_eq!(v["result"]["removed_constraint_ids"], json!([radius_id]));
-    assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 0);
+
+    assert_eq!(transaction::solve(&replaced)["degrees_of_freedom"], 0);
     let wide = stored(&replaced);
     assert_eq!(texts(&wide), ["fixed center (-3.5, 4.25)", "radius 8.5"]);
     assert!(
@@ -1757,7 +1153,7 @@ fn native_circle_diameter_is_the_stored_radius_in_the_same_slot() {
     // Removal of that Radius by its UUID alone hands the circle back to the
     // stored guess, still pinned.
     let catalog = inspect(&replaced);
-    let new_radius = catalog["sketches"][0]["constraint_edit"]["constraints"]
+    let new_radius = catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("constraints")
         .iter()

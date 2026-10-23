@@ -68,9 +68,40 @@ pub fn profile_from_sketch(
     plane: SketchPlane,
 ) -> Result<SketchEvaluation> {
     match crate::solve::solved(sketch, id)? {
-        Some((solved, report)) => evaluation_of(&solved, id, plane, Some(report)),
+        Some((solved, report)) => {
+            preserve_circle_roles(sketch, &solved)?;
+            evaluation_of(&solved, id, plane, Some(report))
+        }
         None => evaluation_of(sketch, id, plane, None),
     }
+}
+
+fn preserve_circle_roles(saved: &Sketch, solved: &Sketch) -> Result<()> {
+    let circles: Vec<_> = saved.curves.iter().filter(|c| !c.construction).collect();
+    let [a, b] = circles.as_slice() else {
+        return Ok(());
+    };
+    let (SketchGeometry::Circle { radius: ar, .. }, SketchGeometry::Circle { radius: br, .. }) =
+        (&a.geometry, &b.geometry)
+    else {
+        return Ok(());
+    };
+    let (outer, inner) = if ar >= br { (a.id, b.id) } else { (b.id, a.id) };
+    let radius = |id| {
+        solved.curves.iter().find_map(|c| match c.geometry {
+            SketchGeometry::Circle { radius, .. } if c.id == id => Some(radius),
+            _ => None,
+        })
+    };
+    // Reclassifying the solved pair by size would silently exchange the named walls.
+    if let (Some(outer_radius), Some(inner_radius)) = (radius(outer), radius(inner))
+        && outer_radius <= inner_radius
+    {
+        return Err(CadError::constraint(format!(
+            "solved circles exchanged boundary {outer} and bore {inner}"
+        )));
+    }
+    Ok(())
 }
 
 /// The three sides of one sketch evaluation.

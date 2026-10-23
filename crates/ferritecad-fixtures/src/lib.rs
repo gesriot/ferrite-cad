@@ -30,6 +30,9 @@
 //! into a directory the caller owns, so a test run leaves the checkout as it
 //! found it.
 
+mod edit_request;
+pub use edit_request::edit_request_json;
+
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -758,4 +761,60 @@ pub fn expression_slot(
         .iter()
         .find(|value| value.slot == slot)
         .expect("fixture expression slot")
+}
+
+pub fn constraint_changes(
+    document: &ferritecad_document::Document,
+    id: ferritecad_types::ObjectId,
+    edits: &ferritecad_document::SketchConstraintEdits,
+) -> ferritecad_types::Result<Vec<ferritecad_document::EditChange>> {
+    let object = document
+        .object(id)?
+        .ok_or_else(|| ferritecad_types::CadError::input("fixture sketch is missing"))?;
+    let ferritecad_document::ObjectPayload::Sketch(sketch) = object.payload else {
+        return Err(ferritecad_types::CadError::input(
+            "fixture object is not a sketch",
+        ));
+    };
+    ferritecad_document::sketch_constraint_changes(id, &sketch, edits)
+}
+pub fn added_constraints(
+    changes: &[ferritecad_document::EditChange],
+) -> Vec<&ferritecad_document::SketchConstraint> {
+    changes
+        .iter()
+        .filter_map(|c| match c {
+            ferritecad_document::EditChange::AddConstraint { constraint, .. } => Some(constraint),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Read the single sketch of a fixture without an editor catalogue.
+pub fn sketch(
+    document: &ferritecad_document::Document,
+) -> ferritecad_types::Result<(ferritecad_types::ObjectId, Sketch)> {
+    document
+        .objects()?
+        .into_iter()
+        .find_map(|o| match o.payload {
+            ObjectPayload::Sketch(sketch) => Some((o.id, sketch)),
+            _ => None,
+        })
+        .ok_or_else(|| ferritecad_types::CadError::input("fixture has no sketch"))
+}
+pub fn vertex_changes(
+    document: &ferritecad_document::Document,
+    id: ferritecad_types::ObjectId,
+    vertices: &[ferritecad_document::SketchVertex],
+) -> ferritecad_types::Result<Vec<ferritecad_document::EditChange>> {
+    let object = document
+        .object(id)?
+        .ok_or_else(|| ferritecad_types::CadError::input("fixture sketch is missing"))?;
+    let ObjectPayload::Sketch(sketch) = object.payload else {
+        return Err(ferritecad_types::CadError::input(
+            "fixture object is not a sketch",
+        ));
+    };
+    ferritecad_document::move_sketch_vertices(id, &sketch, vertices)
 }

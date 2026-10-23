@@ -30,7 +30,7 @@
 
 use std::path::Path;
 
-use ferritecad_document::ExtrudeEditSource;
+use crate::sketch_facts::Source as ExtrudeEditSource;
 use ferritecad_ui::{
     Activity, Chosen, ModelRow, NewChoice, ReplaceChoice, RowVisibility, Selected, SolvedSketch,
 };
@@ -410,7 +410,7 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
         ui.separator();
         let unavailable = scene
             .edit_source
-            .map(ExtrudeEditSource::unavailable_reason)
+            .map(|source| source.unavailable_reason())
             .unwrap_or(Some("Open a document to edit an extrusion."));
         answers.chosen.edit = in_tab_scope(ui, "tab-height", forms_scope, |ui| {
             sections

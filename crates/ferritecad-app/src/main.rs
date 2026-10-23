@@ -46,7 +46,11 @@ mod recoveries;
 mod restores;
 mod sessions;
 mod sketch;
+mod sketch_facts;
+mod sketch_transactions;
 mod tabs;
+#[cfg(test)]
+mod transaction_tests;
 mod workspace;
 
 use std::ffi::{OsStr, OsString};
@@ -272,19 +276,19 @@ enum AppEvent {
     /// A saved edit has finished; opening its output is a separate event.
     SketchConstraintsEdited {
         generation: u64,
-        result: Box<Result<ferritecad_jobs::EditedSketchConstraints>>,
+        result: Box<Result<ferritecad_jobs::EditedDocument>>,
     },
     SketchEdited {
         generation: u64,
-        result: Result<ferritecad_jobs::EditedSketch>,
+        result: Result<ferritecad_jobs::EditedDocument>,
     },
     CircleEdited {
         generation: u64,
-        result: Result<ferritecad_jobs::EditedCircle>,
+        result: Result<ferritecad_jobs::EditedDocument>,
     },
     AnnulusEdited {
         generation: u64,
-        result: Result<ferritecad_jobs::EditedAnnulus>,
+        result: Result<ferritecad_jobs::EditedDocument>,
     },
     RevolveAngleEdited {
         generation: u64,
@@ -348,7 +352,7 @@ enum AppEvent {
     /// Form facts for a metadata-only Undo/Redo; the shown model stays.
     KeptFacts {
         generation: sessions::Address,
-        result: Box<Result<ferritecad_document::ExtrudeEditSource>>,
+        result: Box<Result<crate::sketch_facts::Source>>,
     },
     /// §30O: the picture of a hidden tab that is being shown, or why not.
     TabShown {
@@ -1684,7 +1688,7 @@ fn spawn_load(
 /// one document replaces another, not an interface anything else uses.
 #[derive(Debug)]
 struct PreparedLoad<P> {
-    edit_source: Option<ferritecad_document::ExtrudeEditSource>,
+    edit_source: Option<crate::sketch_facts::Source>,
     /// The document this arrival was read from, carried so that it becomes
     /// current with the picture rather than before it.
     document: PathBuf,
@@ -1779,7 +1783,7 @@ fn prepare_arrival<P>(
         loaded.sketch_presentations,
     );
     Ok(PreparedLoad {
-        edit_source: loaded.edit_source,
+        edit_source: loaded.edit_source.map(crate::sketch_facts::Source::from),
         document: document.to_path_buf(),
         framed: input,
         prepared,
@@ -2161,7 +2165,7 @@ struct Live {
 /// produce byte-identical geometry: the same raw pick beside a different
 /// catalogue could otherwise silently name another document object.
 struct LiveScene<P> {
-    edit_source: Option<ferritecad_document::ExtrudeEditSource>,
+    edit_source: Option<crate::sketch_facts::Source>,
     /// The document this picture was read from, exactly as it was read.
     ///
     /// `None` until a reading has been accepted, which is what makes writing
@@ -2349,7 +2353,7 @@ fn commit_scene<P>(
 fn retarget_scene<P>(
     scene: &mut LiveScene<P>,
     document: PathBuf,
-    edit_source: ferritecad_document::ExtrudeEditSource,
+    edit_source: crate::sketch_facts::Source,
 ) {
     scene.document = Some(document);
     scene.sketches.follow(edit_source.version);
@@ -4376,32 +4380,52 @@ impl ApplicationHandler<AppEvent> for App {
                             _ => {}
                         }
                         if let Some(request) = self.creates.sketch.constraints.take_request() {
-                            self.ask_where_to_edit_constraints(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Constraints,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.constraints.take_apply_request()
                         {
-                            self.apply_constraints(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_apply_request() {
-                            self.apply_sketch(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_apply_circle_request() {
-                            self.apply_circle(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_apply_annulus_request() {
-                            self.apply_annulus(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_apply_angle_request() {
                             self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_edit_request() {
-                            self.ask_where_to_edit_sketch(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Sketch,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.take_circle_edit_request() {
-                            self.ask_where_to_edit_circle(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Circle,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.take_annulus_edit_request() {
-                            self.ask_where_to_edit_annulus(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Annulus,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.take_angle_edit_request() {
                             self.ask_where_to_edit(
@@ -5662,134 +5686,6 @@ impl App {
         )
     }
 
-    /// Apply the vertices of the saved Sketch form to the open document. No file
-    /// dialog; the same session step and two-phase scene as Apply height. A refusal,
-    /// a cancellation or a stale form leaves the draft where it is.
-    fn apply_sketch(&mut self, request: ferritecad_jobs::EditSketchRequest) {
-        if !can_apply_sketch(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply_sketch(
-                ticket,
-                request.sketch,
-                request.vertices,
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
-    /// Apply the constraint draft of the saved Sketch to the open document. No file
-    /// dialog; the same session step and two-phase scene as Apply height.
-    fn apply_constraints(&mut self, request: ferritecad_jobs::EditSketchConstraintsRequest) {
-        if !can_apply_constraints(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply_constraints(
-                ticket,
-                request.sketch,
-                request.edits,
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
-    /// Apply the saved Circle form to the open document. No file dialog; the same
-    /// session step and two-phase scene as Apply height.
-    fn apply_circle(&mut self, request: ferritecad_jobs::EditCircleRequest) {
-        if !can_apply_analytic(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply_circle(
-                ticket,
-                request.sketch,
-                request.edit,
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
-    /// Apply the saved annulus form to the open document, like the Circle.
-    fn apply_annulus(&mut self, request: ferritecad_jobs::EditAnnulusRequest) {
-        if !can_apply_analytic(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply_annulus(
-                ticket,
-                request.sketch,
-                request.edit,
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
     /// Apply one existing circular Cut to the accepted snapshot, without a dialog.
     fn apply_cut(&mut self, request: ferritecad_jobs::EditCircularCutRequest) {
         if !can_apply_cut(
@@ -6067,132 +5963,6 @@ impl App {
             self.edits.begin(path, source);
             self.input.request_redraw();
         }
-    }
-
-    fn ask_where_to_edit_constraints(
-        &mut self,
-        mut request: ferritecad_jobs::EditSketchConstraintsRequest,
-    ) {
-        if self.edits.running() {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("sketch-constraints.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_constraints(request, move |request, generation, cancel| {
-                edits::spawn_constraint_edit(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::SketchConstraintsEdited {
-                        generation,
-                        result: Box::new(result),
-                    });
-                })
-            });
-        self.input.request_redraw();
-    }
-
-    fn ask_where_to_edit_sketch(&mut self, mut request: ferritecad_jobs::EditSketchRequest) {
-        if self.edits.running() {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("edited-sketch.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_sketch(request, move |request, generation, cancel| {
-                edits::spawn_sketch_edit(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::SketchEdited { generation, result });
-                })
-            });
-        self.input.request_redraw();
-    }
-
-    fn ask_where_to_edit_circle(&mut self, mut request: ferritecad_jobs::EditCircleRequest) {
-        if self.edits.running() {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("edited-circle.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_circle(request, move |request, generation, cancel| {
-                edits::spawn_circle_edit(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::CircleEdited { generation, result });
-                })
-            });
-        self.input.request_redraw();
-    }
-
-    fn ask_where_to_edit_annulus(&mut self, mut request: ferritecad_jobs::EditAnnulusRequest) {
-        if self.edits.running() {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("edited-annulus.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_annulus(request, move |request, generation, cancel| {
-                edits::spawn_annulus_edit(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::AnnulusEdited { generation, result });
-                })
-            });
-        self.input.request_redraw();
     }
 
     fn ask_where_to_cut(&mut self, mut request: ferritecad_jobs::CircularCutRequest) {
@@ -20172,7 +19942,7 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("plate");
-        let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+        let reading = crate::sketch_facts::read(&path).expect("reading");
         let mut input = ViewportInput::new();
         let mut creates = creates::Creates::default();
         let edits = edits::Edits::default();
@@ -20463,7 +20233,6 @@ mod tests {
     fn an_open_height_form_keeps_the_copy_workflow_available_on_a_clean_document() {
         use ferritecad_jobs::{
             CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,
-            read_extrude_source,
         };
         let root = tempfile::tempdir().expect("directory");
         let private = tempfile::tempdir().expect("private");
@@ -20481,7 +20250,7 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("a plate");
-        let reading = read_extrude_source(&file).expect("reading");
+        let reading = crate::sketch_facts::read(&file).expect("reading");
         let mut sessions = sessions::Sessions::default();
         sessions.adopt(
             crate::sessions::test_open::open_in(private.path(), &file, HistoryLimits::default())
@@ -20521,7 +20290,7 @@ mod tests {
                         let expected = ticket.source().version();
                         ticket.edit(
                             vec![
-                                ferritecad_document::ExpressionChange::constant(
+                                ferritecad_document::EditChange::constant(
                                     feature,
                                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                     25.0,

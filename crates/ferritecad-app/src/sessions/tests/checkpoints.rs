@@ -241,9 +241,7 @@ fn the_checkpoint_predicate_says_why_and_waits_for_forms_operations_names_and_th
         let next = dir.path().join(format!("{index}.fcad"));
         ferritecad_jobs::create_checkpoint_copy(
             &ferritecad_jobs::CreateCheckpointRequest {
-                expected: ferritecad_jobs::read_extrude_source(&source)
-                    .expect("reading")
-                    .version,
+                expected: crate::sketch_facts::read(&source).expect("reading").version,
                 source,
                 name: format!("n{index}"),
                 destination: next.clone(),
@@ -425,7 +423,7 @@ fn restore_native(s: &mut Sessions, id: CheckpointId) {
 }
 
 fn add_cut_native(s: &mut Sessions) {
-    let reading = read_extrude_source(&s.export_path().expect("current")).expect("reading");
+    let reading = crate::sketch_facts::read(&s.export_path().expect("current")).expect("reading");
     let body = reading.cut_bodies[0].body;
     let (tx, rx) = mpsc::channel();
     let generation = s
@@ -828,7 +826,7 @@ fn compare_gui(root: &Path) {
         "checkpoint A is not the opened plate"
     );
     assert_eq!(height_of(&cli_a), 12.0);
-    let b_reading = read_extrude_source(&cli_b).expect("reading");
+    let b_reading = crate::sketch_facts::read(&cli_b).expect("reading");
     assert_eq!(
         ferritecad_fixtures::expression_slot(
             &b_reading,

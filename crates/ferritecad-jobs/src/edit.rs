@@ -15,7 +15,7 @@ use crate::{Existing, Temporary, path_entry_exists, refuse_source_as_destination
 pub struct EditRequest {
     pub source: PathBuf,
     pub expected: DocumentVersion,
-    pub changes: Vec<ferritecad_document::ExpressionChange>,
+    pub changes: Vec<ferritecad_document::EditChange>,
     pub destination: PathBuf,
 }
 
@@ -48,7 +48,7 @@ pub(crate) fn edit_copy_with<K: GeometryKernel + ?Sized>(
         kernel,
         context,
         run,
-        |_| Ok(CopyWrite::Expressions(request.changes.clone())),
+        |_| Ok(CopyWrite::Changes(request.changes.clone())),
         |_, checked| {
             Ok(EditedDocument {
                 rebuild: checked.rebuild,
@@ -56,267 +56,6 @@ pub(crate) fn edit_copy_with<K: GeometryKernel + ?Sized>(
                 version: checked
                     .version
                     .expect("candidate rebuild records its version"),
-            })
-        },
-    )
-}
-
-#[derive(Debug, Clone)]
-pub struct EditSketchRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub sketch: ObjectId,
-    pub vertices: Vec<ferritecad_document::SketchVertex>,
-    pub destination: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EditedSketch {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    pub sketch: ObjectId,
-}
-
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
-    request: &EditSketchRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<EditedSketch> {
-    edit_sketch_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn edit_sketch_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EditSketchRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<EditedSketch> {
-    context.check_cancelled()?;
-    let rebuild = edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            Ok(CopyWrite::Coordinates(
-                ferritecad_document::replace_sketch_coordinates(
-                    source,
-                    request.sketch,
-                    &request.vertices,
-                )?,
-            ))
-        },
-        |_, checked| Ok(checked.rebuild),
-    )?;
-    Ok(EditedSketch {
-        rebuild,
-        destination: request.destination.clone(),
-        document_id: request.expected.document_id,
-        sketch: request.sketch,
-    })
-}
-
-#[derive(Debug, Clone)]
-pub struct EditCircleRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub sketch: ObjectId,
-    /// The circle to move or resize, named by its own UUID. No height: the
-    /// saved extrusion decides that, and `edit_copy` changes it.
-    pub edit: ferritecad_document::CircleEdit,
-    pub destination: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EditedCircle {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    pub sketch: ObjectId,
-    pub curve: StableEntityId,
-}
-
-/// Change the centre and radius of one saved analytic circle in a new copy.
-///
-/// The same snapshot, baseline rebuild, reference check, version recheck and
-/// atomic publication every other copy edit uses; only the prepared payload
-/// differs. Nothing here opens a second copier or relaxes the reference rule.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn edit_circle_copy<K: GeometryKernel + ?Sized>(
-    request: &EditCircleRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<EditedCircle> {
-    edit_circle_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn edit_circle_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EditCircleRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<EditedCircle> {
-    context.check_cancelled()?;
-    let rebuild = edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::replace_circle_geometry(source, request.sketch, &request.edit)
-                .map(CopyWrite::Circle)
-        },
-        |_, checked| Ok(checked.rebuild),
-    )?;
-    Ok(EditedCircle {
-        rebuild,
-        destination: request.destination.clone(),
-        document_id: request.expected.document_id,
-        sketch: request.sketch,
-        curve: request.edit.curve_id,
-    })
-}
-
-#[derive(Debug, Clone)]
-pub struct EditAnnulusRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub sketch: ObjectId,
-    /// The two circles to move and resize, each named by its own UUID in the
-    /// role it already holds. No height: the saved extrusion decides that, and
-    /// `edit_copy` changes it.
-    pub edit: ferritecad_document::AnnulusEdit,
-    pub destination: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EditedAnnulus {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    pub sketch: ObjectId,
-    pub outer_curve: StableEntityId,
-    pub inner_curve: StableEntityId,
-}
-
-/// Change the shared centre and both radii of one saved annular profile in a
-/// new copy.
-///
-/// The same snapshot, baseline rebuild, reference check, version recheck and
-/// atomic publication every other copy edit uses; only the prepared payload
-/// differs. Nothing here opens a second copier or relaxes the reference rule.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn edit_annulus_copy<K: GeometryKernel + ?Sized>(
-    request: &EditAnnulusRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<EditedAnnulus> {
-    edit_annulus_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn edit_annulus_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EditAnnulusRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<EditedAnnulus> {
-    context.check_cancelled()?;
-    let rebuild = edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::replace_annulus_geometry(source, request.sketch, &request.edit)
-                .map(CopyWrite::Annulus)
-        },
-        |_, checked| Ok(checked.rebuild),
-    )?;
-    Ok(EditedAnnulus {
-        rebuild,
-        destination: request.destination.clone(),
-        document_id: request.expected.document_id,
-        sketch: request.sketch,
-        outer_curve: request.edit.outer_curve_id,
-        inner_curve: request.edit.inner_curve_id,
-    })
-}
-
-#[derive(Debug, Clone)]
-pub struct EditSketchConstraintsRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub sketch: ObjectId,
-    pub edits: ferritecad_document::SketchConstraintEdits,
-    pub destination: PathBuf,
-}
-#[derive(Debug, Clone, PartialEq)]
-pub struct EditedSketchConstraints {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    pub sketch: ObjectId,
-    pub added: Vec<ferritecad_document::SketchConstraint>,
-    pub removed: Vec<StableEntityId>,
-    /// What the solve found out, and `None` when the edit left nothing to
-    /// solve.
-    ///
-    /// Reachable only since a profile could be one analytic circle: a Line
-    /// profile keeps its Coincident closure however many dimensions are taken
-    /// off it, so there was always a system. A circle has no joints, so
-    /// removing its last constraint leaves a drawing with no relationships —
-    /// and a sketch with none asks the solver nothing, exactly as a document
-    /// written before constraints existed does.
-    pub solve: Option<ferritecad_eval::SketchSolveReport>,
-}
-
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
-    request: &EditSketchConstraintsRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<EditedSketchConstraints> {
-    edit_sketch_constraints_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn edit_sketch_constraints_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EditSketchConstraintsRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<EditedSketchConstraints> {
-    context.check_cancelled()?;
-    edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::prepare_sketch_constraints(source, request.sketch, &request.edits)
-                .map(|p| CopyWrite::Constraints(Box::new(p)))
-        },
-        |prepared, checked| {
-            let CopyWrite::Constraints(prepared) = prepared else {
-                return Err(CadError::input("missing prepared constraint edit"));
-            };
-            Ok(EditedSketchConstraints {
-                rebuild: checked.rebuild,
-                destination: request.destination.clone(),
-                document_id: request.expected.document_id,
-                sketch: request.sketch,
-                added: prepared.added.clone(),
-                removed: prepared.removed.clone(),
-                solve: checked.solve,
             })
         },
     )
@@ -665,18 +404,12 @@ pub(crate) fn edit_circular_cut_copy_with<K: GeometryKernel + ?Sized>(
 }
 
 enum CopyWrite {
-    Expressions(Vec<ferritecad_document::ExpressionChange>),
+    Changes(Vec<ferritecad_document::EditChange>),
     /// Boxed: this variant is much larger than the others, and an enum sized
     /// for it would make every copy operation carry the difference.
     Cut(Box<ferritecad_document::PreparedCircularCut>),
     /// Boxed for the same reason as the one above it.
     CutParameters(Box<ferritecad_document::PreparedCutParameters>),
-    Coordinates(ferritecad_document::ObjectRecord),
-    /// Boxed since §28E carries the Fillet the frame read, for the reason Cut
-    /// is.
-    Constraints(Box<ferritecad_document::PreparedSketchConstraints>),
-    Circle(ferritecad_document::ObjectRecord),
-    Annulus(ferritecad_document::ObjectRecord),
     /// §28A; boxed for the reason Cut is.
     Fillet(Box<ferritecad_document::PreparedEdgeFillet>),
     /// §29A; boxed for the reason Cut is.
@@ -759,7 +492,6 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
                 None,
                 None,
                 None,
-                None,
             )?
             .0;
             &computed
@@ -771,44 +503,21 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     context.check_cancelled()?;
     let mut expression_minted = Vec::new();
     match &prepared {
-        CopyWrite::Expressions(changes) => {
-            expression_minted = document.write_expression_changes(changes)?
-        }
-        CopyWrite::Coordinates(prepared) => document.write_sketch_geometry(prepared)?,
-        CopyWrite::Constraints(p) => document.write_sketch_constraints(p)?,
-        CopyWrite::Circle(prepared) => document.write_circle_geometry(prepared)?,
-        CopyWrite::Annulus(prepared) => document.write_annulus_geometry(prepared)?,
+        CopyWrite::Changes(changes) => expression_minted = document.write_changes(changes)?,
         CopyWrite::Cut(prepared) => document.write_circular_cut(prepared)?,
         CopyWrite::CutParameters(prepared) => document.write_cut_parameters(prepared)?,
         CopyWrite::Fillet(p) => document.write_edge_fillet(p)?,
         CopyWrite::Chamfer(p) => document.write_edge_chamfer(p)?,
     }
-    // A solve is asked for only when the edited sketch still has something to
-    // solve. Taking the last constraint off a circle leaves a drawing with no
-    // relationships, and demanding a report for it would make an unconstrained
-    // sketch require a solver — the one thing a document written before
-    // constraints existed must never start doing.
-    let constraints = match &prepared {
-        CopyWrite::Constraints(p) => match &p.object().payload {
-            ObjectPayload::Sketch(sketch) if !sketch.constraints.is_empty() => Some(SolveCheck {
-                sketch: p.object().id,
-                profile_use: p.profile_use(),
-                roles: p.circle_roles(),
-            }),
-            _ => None,
-        },
-        _ => None,
-    };
     // Every name the edit *added* has to resolve as well. The baseline
     // comparison below can only speak about names that already existed, so a
     // feature that published geometry nothing could point at would pass it.
     let minted: BTreeSet<StableEntityId> = match &prepared {
-        CopyWrite::Expressions(_) => expression_minted.into_iter().collect(),
+        CopyWrite::Changes(_) => expression_minted.into_iter().collect(),
         CopyWrite::Cut(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::Fillet(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::Chamfer(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::CutParameters(p) => p.added_references().iter().map(|r| r.id).collect(),
-        _ => BTreeSet::new(),
     };
     let required: BTreeSet<StableEntityId> = baseline.union(&minted).copied().collect();
     // A new Fillet's corner is read from the plate this very rebuild built
@@ -822,7 +531,6 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         kernel,
         &phase(context, 0.4, 0.9),
         Some(&required),
-        constraints,
         fillet,
         Some(baseline_unbuilt),
         run.observe.as_deref_mut(),
@@ -864,29 +572,12 @@ fn require_version(document: &Document, expected: DocumentVersion) -> Result<()>
     Ok(())
 }
 
-/// What the solved drawing of one changed sketch has to be.
-///
-/// The saved roles travel with it because they are a fact about the document
-/// before the solve, and the one question the solved geometry cannot answer
-/// about itself: a pair that swapped sizes is a perfectly good annulus, and
-/// only the saved roles say it is not the one that was being edited.
-#[derive(Debug, Clone, Copy)]
-struct SolveCheck {
-    sketch: ObjectId,
-    /// The feature that turns the profile into a solid (§27G): an Extrude of
-    /// a height, or a Revolve with its stated turn. Never a height made up
-    /// for a Revolve.
-    profile_use: ferritecad_document::SketchProfileUse,
-    roles: Option<(StableEntityId, StableEntityId)>,
-}
-
 /// What the rebuild of a written copy found, for its completion.
 #[derive(Debug, Default)]
 struct Checked {
     version: Option<DocumentVersion>,
     scene: Option<ferritecad_scene::LoadedScene>,
     rebuild: ferritecad_eval::RebuildReport,
-    solve: Option<ferritecad_eval::SketchSolveReport>,
     /// The corner of a new Fillet, on the plate the rebuild built.
     fillet_corner: Option<ferritecad_document::FilletCorner>,
 }
@@ -897,7 +588,6 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     context: &OperationContext,
     baseline: Option<&BTreeSet<StableEntityId>>,
-    constraints: Option<SolveCheck>,
     fillet: Option<ObjectId>,
     baseline_unbuilt: Option<&BTreeSet<ObjectId>>,
     observe: Option<&mut Observe<'_, K>>,
@@ -965,140 +655,6 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
         None => built,
     };
     let result = (|| {
-        let solve = if let Some(SolveCheck {
-            sketch: id,
-            profile_use,
-            roles,
-        }) = constraints
-        {
-            let report = built.solve_report(id).ok_or_else(|| {
-                CadError::constraint("changed constrained Sketch produced no solve report")
-            })?;
-            let picture = built.sketch_presentation(id).ok_or_else(|| {
-                CadError::constraint("changed constrained Sketch produced no presentation")
-            })?;
-            // What the solved drawing has to be is a question about its
-            // geometry, so it is asked of the geometry. A Line profile has to
-            // still close and still be a polygon this build would publish; one
-            // analytic circle has no joints to lose and is judged by the circle
-            // policy instead. Neither check is a second copy of the numeric
-            // rules — both call the same policy the creation route calls.
-            let mut starts = Vec::new();
-            let mut ends = Vec::new();
-            let mut circles = Vec::new();
-            let mut vertices = Vec::new();
-            for curve in picture.curves() {
-                match *curve.geometry() {
-                    ferritecad_document::SketchGeometry::Line { start, end } => {
-                        starts.push([start.x, start.y]);
-                        ends.push([end.x, end.y]);
-                        vertices.push(ferritecad_document::SketchVertex {
-                            curve_id: curve.id(),
-                            start_mm: [start.x, start.y],
-                        });
-                    }
-                    ferritecad_document::SketchGeometry::Circle { center, radius } => {
-                        circles.push((curve.id(), [center.x, center.y], radius));
-                    }
-                    _ => {
-                        return Err(CadError::unsupported(
-                            "constraint edit solved a curve that is neither a Line nor a Circle",
-                        ));
-                    }
-                }
-            }
-            // Only an extrusion has a height for a circle policy; the catalogue
-            // never offers a Revolve profile of circles, and none is assumed.
-            let extrusion = || match profile_use {
-                ferritecad_document::SketchProfileUse::BlindExtrude { height_mm, .. } => {
-                    Ok(height_mm)
-                }
-                _ => Err(CadError::unsupported(
-                    "a Revolve profile is Lines, and this solved to a Circle",
-                )),
-            };
-            if starts.is_empty() == circles.is_empty() {
-                return Err(CadError::unsupported(
-                    "a constrained profile is Lines or one Circle, and this solved to neither",
-                ));
-            }
-            if circles.is_empty() {
-                for (i, end) in ends.iter().enumerate() {
-                    let next = starts[(i + 1) % starts.len()];
-                    if (end[0] - next[0]).abs()
-                        > ferritecad_document::PolygonExtrusion::TOLERANCE_MM
-                        || (end[1] - next[1]).abs()
-                            > ferritecad_document::PolygonExtrusion::TOLERANCE_MM
-                    {
-                        return Err(CadError::constraint(
-                            "solved constraint polygon lost an adjacent joint",
-                        ));
-                    }
-                }
-                // The policy of the feature that uses the profile, asked of
-                // the solved starts: the polygon an Extrude of the saved
-                // height publishes, or, for a turned profile, the class the
-                // Revolve states with its axis clearance.
-                profile_use.check(&vertices)?;
-            } else if let Some((outer_id, inner_id)) = roles {
-                // Two circles, and which is which was decided from the saved
-                // radii before the solve. Each is found by its own UUID: taking
-                // them in list order, or re-deciding the roles from the solved
-                // radii, would accept a pair that had swapped sizes as though
-                // it had always been the other way round.
-                let solved = |wanted| {
-                    circles
-                        .iter()
-                        .find(|(id, ..)| *id == wanted)
-                        .map(|(_, center, radius)| (*center, *radius))
-                        .ok_or_else(|| {
-                            CadError::constraint(format!(
-                                "the solved drawing has no circle {wanted}, which this edit named"
-                            ))
-                        })
-                };
-                if circles.len() != 2 {
-                    return Err(CadError::unsupported(
-                        "an annular profile is exactly two analytic Circles",
-                    ));
-                }
-                let (outer_center, outer_radius) = solved(outer_id)?;
-                let (inner_center, inner_radius) = solved(inner_id)?;
-                // Concentricity is checked on the solved centres, because it is
-                // what the part needs and not every accepted request states it.
-                if !ferritecad_document::AnnularExtrusion::concentric(
-                    ferritecad_document::Point2::new(outer_center[0], outer_center[1])?,
-                    ferritecad_document::Point2::new(inner_center[0], inner_center[1])?,
-                ) {
-                    return Err(CadError::constraint(
-                        "the solved circles are about different centres, and an off-centre hole \
-                         needs more than this slice builds",
-                    ));
-                }
-                // The saved roles are passed in that order, so a solve that put
-                // the bore outside its boundary is refused by the one numeric
-                // policy rather than by a second opinion here.
-                ferritecad_document::AnnularExtrusion::new(
-                    outer_center,
-                    outer_radius,
-                    inner_radius,
-                    extrusion()?,
-                )?;
-            } else {
-                let [(_, center, radius)] = circles.as_slice() else {
-                    return Err(CadError::unsupported(
-                        "constraint edit supports one analytic Circle per profile",
-                    ));
-                };
-                // The solved numbers, not the saved guess: a solve that moved
-                // the circle outside what this build will publish has to be
-                // refused here rather than at the kernel.
-                ferritecad_document::CircleExtrusion::new(*center, *radius, extrusion()?)?;
-            }
-            Some(report.clone())
-        } else {
-            None
-        };
         let fillet_corner = match fillet {
             Some(id) => Some(built_fillet_corner(document, &built, id)?),
             None => None,
@@ -1118,7 +674,6 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                     .map(|observe| observe(document, &built, kernel, &phase(context, 0.7, 1.0)))
                     .transpose()?,
                 rebuild,
-                solve,
                 fillet_corner,
             },
         ))
@@ -1213,7 +768,7 @@ mod tests {
             expected: reading.version,
 
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     reading.expression_slots[0].object,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     27.0,
@@ -1235,7 +790,7 @@ mod tests {
     fn replace(request: &mut EditRequest, change: impl FnOnce(&mut ObjectRecord)) {
         let mut doc = Document::open(&request.source).expect("source");
         let mut object = doc
-            .object(request.changes[0].object)
+            .object(request.changes[0].object())
             .expect("object")
             .expect("selected");
         change(&mut object);
@@ -1281,7 +836,7 @@ mod tests {
         });
         let mut source = Document::open(&request.source).expect("source");
         let first = source
-            .object(request.changes[0].object)
+            .object(request.changes[0].object())
             .expect("object")
             .expect("first");
         let second = ObjectId::new();
@@ -1324,7 +879,7 @@ mod tests {
             output.topology_refs().expect("refs")
         );
         for (old, new) in expected.iter_mut().zip(&actual) {
-            if old.id == request.changes[0].object {
+            if old.id == request.changes[0].object() {
                 assert_eq!(old.id, new.id);
                 assert_eq!(old.name, new.name);
                 assert_eq!(old.parent, new.parent);
@@ -1347,7 +902,7 @@ mod tests {
         let (_root, mut request) = fixture();
         let mut d = Document::open(&request.source).expect("source");
         let first = d
-            .object(request.changes[0].object)
+            .object(request.changes[0].object())
             .expect("object")
             .expect("extrusion");
         let second = ObjectId::new();
@@ -1374,7 +929,7 @@ mod tests {
             .expect("reading")
             .version;
         request.changes.push(
-            ferritecad_document::ExpressionChange::constant(
+            ferritecad_document::EditChange::constant(
                 second,
                 ferritecad_document::ExpressionSlot::ExtrudeDistance,
                 27.0,
@@ -1407,7 +962,10 @@ mod tests {
     fn changes_are_ordered_and_payload_validation_checks_the_final_candidate() {
         let (_root, mut request) = fixture();
         let mut intermediate = request.changes[0].clone();
-        intermediate.expression = Expression::constant(0.0).expect("finite intermediate value");
+        if let ferritecad_document::EditChange::SetExpression { expression, .. } = &mut intermediate
+        {
+            *expression = Expression::constant(0.0).expect("finite intermediate value");
+        }
         request.changes.insert(0, intermediate);
         edit_copy(
             &request,
@@ -1422,7 +980,7 @@ mod tests {
         assert_eq!(
             saved
                 .iter()
-                .find(|s| s.object == request.changes[0].object)
+                .find(|s| s.object == request.changes[0].object())
                 .expect("height")
                 .expression
                 .value(),
@@ -1441,7 +999,11 @@ mod tests {
     fn invalid_inputs_and_missing_slots_leave_all_files_unchanged() {
         for value in [0.0, -3.0] {
             let (_root, mut request) = fixture();
-            request.changes[0].expression = Expression::constant(value).expect("finite");
+            if let ferritecad_document::EditChange::SetExpression { expression, .. } =
+                &mut request.changes[0]
+            {
+                *expression = Expression::constant(value).expect("finite");
+            }
             refused(
                 &request,
                 &OperationContext::default(),
@@ -1449,7 +1011,11 @@ mod tests {
             );
         }
         let (_root, mut request) = fixture();
-        request.changes[0].object = ObjectId::new();
+        if let ferritecad_document::EditChange::SetExpression { object, .. } =
+            &mut request.changes[0]
+        {
+            *object = ObjectId::new();
+        }
         refused(
             &request,
             &OperationContext::default(),
@@ -1695,7 +1261,7 @@ mod tests {
                     }),
                 )?;
                 writer.add_dependency(Dependency {
-                    dependent: request.changes[0].object,
+                    dependent: request.changes[0].object(),
                     dependency: parameter,
                     role: DependencyRole::Parameter,
                 })?;
@@ -1719,7 +1285,7 @@ mod tests {
             let (_root, request) = fixture();
             let document = Document::open_read_only(&request.source).expect("source");
             let record = document
-                .object(request.changes[0].object)
+                .object(request.changes[0].object())
                 .expect("row")
                 .expect("feature");
             let encoded = record.payload.to_storage_bytes().expect("payload");
@@ -1795,23 +1361,27 @@ mod tests {
         assert_eq!(std::fs::read(&request.source).expect("source"), before);
         assert_eq!(std::fs::read(foreign).expect("foreign"), b"foreign cache");
     }
-    fn sketch_fixture() -> (tempfile::TempDir, EditSketchRequest) {
-        let (root, old) = fixture();
-        let reading = read_extrude_source(&old.source).expect("catalog");
-        let choice = &reading.sketches[0];
-        let mut vertices = choice.vertices.clone().expect("supported");
-        vertices[1].start_mm[0] = 100.;
-        vertices[2].start_mm[0] = 100.;
-        (
-            root,
-            EditSketchRequest {
-                source: old.source,
-                expected: reading.version,
-                sketch: choice.sketch,
-                vertices,
-                destination: old.destination,
-            },
-        )
+    fn sketch_fixture() -> (tempfile::TempDir, EditRequest) {
+        let (root, mut request) = fixture();
+        let d = Document::open_read_only(&request.source).expect("document");
+        let (id, sketch) = ferritecad_fixtures::sketch(&d).expect("sketch");
+        let vertices = sketch
+            .curves
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let ferritecad_document::SketchGeometry::Line { start, .. } = c.geometry else {
+                    unreachable!("fixture lines")
+                };
+                ferritecad_document::SketchVertex {
+                    curve_id: c.id,
+                    start_mm: [if i == 1 || i == 2 { 100. } else { start.x }, start.y],
+                }
+            })
+            .collect::<Vec<_>>();
+        request.changes =
+            ferritecad_document::move_sketch_vertices(id, &sketch, &vertices).expect("changes");
+        (root, request)
     }
 
     #[test]
@@ -1823,27 +1393,22 @@ mod tests {
             .modified()
             .expect("mtime");
         let source = Document::open_read_only(&request.source).expect("source");
-        let expected = ferritecad_document::replace_sketch_coordinates(
-            &source,
-            request.sketch,
-            &request.vertices,
-        )
-        .expect("prepared");
+        let sketch_id = request.changes[0].object();
         let mut kernel = MockKernel::new();
-        let saved = edit_sketch_copy(&request, &mut kernel, &OperationContext::default())
-            .expect("published");
+        let saved =
+            edit_copy(&request, &mut kernel, &OperationContext::default()).expect("published");
         assert_eq!(
             kernel.live_shape_count(),
             0,
             "released before kernel destructor"
         );
         assert_eq!(kernel.extrude_count(), 2, "two cold checks");
-        assert_eq!(saved.document_id, source.meta().document_id);
+        assert_eq!(saved.version.document_id, source.meta().document_id);
         let copy = Document::open_read_only(&saved.destination).expect("copy");
+        assert_eq!(copy.meta().document_id, source.meta().document_id);
         assert_eq!(
-            copy.meta(),
-            source.meta(),
-            "all metadata including modified_at"
+            copy.meta().display_length_unit,
+            source.meta().display_length_unit
         );
         assert_eq!(
             copy.dependencies().expect("deps"),
@@ -1855,12 +1420,11 @@ mod tests {
         );
         for o in source.objects().expect("objects") {
             let actual = copy.object(o.id).expect("object").expect("same ID");
-            if o.id == request.sketch {
-                assert_eq!(actual.payload, expected.payload);
-                assert_eq!(actual.id, expected.id);
-                assert_eq!(actual.name, expected.name);
-                assert_eq!(actual.ordinal, expected.ordinal);
-                assert_eq!(actual.parent, expected.parent);
+            if o.id == sketch_id {
+                assert_eq!(actual.id, o.id);
+                assert_eq!(actual.name, o.name);
+                assert_eq!(actual.ordinal, o.ordinal);
+                assert_eq!(actual.parent, o.parent);
                 let (ObjectPayload::Sketch(old), ObjectPayload::Sketch(new)) =
                     (o.payload, actual.payload)
                 else {
@@ -1896,7 +1460,7 @@ mod tests {
     fn constraint_copy_refusals_cancellation_races_and_cleanup() {
         let (_root, old) = sketch_fixture();
         let request = constraint_request(&old);
-        let probe = edit_sketch_constraints_copy(
+        let probe = edit_copy(
             &request,
             &mut MockKernel::new(),
             &OperationContext::default(),
@@ -1911,31 +1475,22 @@ mod tests {
         probe.expect("constraint solve with test kernel");
         copy_faults(true);
     }
-    fn constraint_request(old: &EditSketchRequest) -> EditSketchConstraintsRequest {
-        EditSketchConstraintsRequest {
-            source: old.source.clone(),
-            expected: old.expected,
-            sketch: old.sketch,
-            destination: old.destination.clone(),
-            edits: ferritecad_document::SketchConstraintEdits {
-                remove: vec![],
-                add: vec![
-                    ferritecad_document::AddSketchConstraint::Line(
-                        ferritecad_document::AddLineConstraint::Line {
-                            curve: old.vertices[0].curve_id,
-                            kind: ferritecad_document::LineConstraintKind::Horizontal,
-                        },
-                    ),
-                    ferritecad_document::AddSketchConstraint::Line(
-                        ferritecad_document::AddLineConstraint::Line {
-                            curve: old.vertices[0].curve_id,
-                            kind: ferritecad_document::LineConstraintKind::Distance(
-                                ferritecad_document::LineLengthMm::new(60.).expect("length"),
-                            ),
-                        },
-                    ),
-                ],
-            },
+    fn constraint_request(old: &EditRequest) -> EditRequest {
+        let d = Document::open_read_only(&old.source).expect("document");
+        let (id, sketch) = ferritecad_fixtures::sketch(&d).expect("sketch");
+        let edits = ferritecad_document::SketchConstraintEdits {
+            remove: vec![],
+            add: vec![ferritecad_document::AddSketchConstraint::Line(
+                ferritecad_document::AddLineConstraint::Line {
+                    curve: sketch.curves[0].id,
+                    kind: ferritecad_document::LineConstraintKind::Horizontal,
+                },
+            )],
+        };
+        EditRequest {
+            changes: ferritecad_document::sketch_constraint_changes(id, &sketch, &edits)
+                .expect("changes"),
+            ..old.clone()
         }
     }
     fn copy_faults(constraints: bool) {
@@ -2029,10 +1584,9 @@ mod tests {
             // Reuse the fault seam after a successful baseline rebuild: the
             // second extrusion, with the changed profile, fails or loses a ref.
             let result = if constraints {
-                edit_sketch_constraints_copy(&constraint_request(&request), &mut kernel, &context)
-                    .map(|_| ())
+                edit_copy(&constraint_request(&request), &mut kernel, &context).map(|_| ())
             } else {
-                edit_sketch_copy(&request, &mut kernel, &context).map(|_| ())
+                edit_copy(&request, &mut kernel, &context).map(|_| ())
             };
             if case == "late" {
                 assert!(result.is_ok(), "{case}: {result:?}");

@@ -11,10 +11,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
-#[path = "support/pipe.rs"]
-mod pipe;
 
-const OP: &str = "edit-annular";
+const OP: &str = "edit";
 const LINEAR_MM: f64 = 0.05;
 const ANGULAR_RAD: f64 = 0.1;
 /// How far a measured coordinate may sit from the radius it belongs to.
@@ -48,30 +46,7 @@ fn inspect(path: &Path) -> Value {
 fn write(path: &Path, value: &Value) {
     std::fs::write(path, serde_json::to_vec(value).expect("JSON")).expect("request");
 }
-fn entries(path: &Path) -> Vec<std::ffi::OsString> {
-    let mut v: Vec<_> = std::fs::read_dir(path)
-        .expect("directory")
-        .map(|e| e.expect("entry").file_name())
-        .collect();
-    v.sort();
-    v
-}
-/// What a refusal raised *inside the shared job* is called in this build.
-///
-/// The command opens its kernel before handing the request over, so in a build
-/// with no Open CASCADE every such refusal is the missing kernel rather than the
-/// reason the job would have given. Both are exit 2 and both publish nothing,
-/// which is what the kernel-free gate is about; the native gates below assert
-/// the specific reasons. Refusals decided *before* the job — the request
-/// protocol, the version field's own syntax, a non-UTF-8 path — are the same in
-/// either build and are asserted exactly.
-fn job_refusal(native: &'static str) -> &'static str {
-    if ferritecad_occt::is_available() {
-        native
-    } else {
-        "unsupported"
-    }
-}
+
 fn native() -> bool {
     if ferritecad_occt::is_available() {
         true
@@ -98,15 +73,6 @@ struct Fixture {
     catalog: Value,
 }
 impl Fixture {
-    /// One hollow part, written through the document API.
-    ///
-    /// Not through `create-annular-extrude`: that command checks the geometry
-    /// with a kernel before it publishes, and discovery and the request
-    /// protocol have to be testable in a build that has no kernel at all. The
-    /// native gates below edit a document that command really made.
-    fn annulus() -> Self {
-        Self::built(|path| write_annular_document(path, [12., -7.], 10., 4., 15., false))
-    }
     /// The same drawing with the bore written first, which creation never does.
     fn swapped() -> Self {
         Self::built(|path| write_annular_document(path, [12., -7.], 10., 4., 15., true))
@@ -126,16 +92,15 @@ impl Fixture {
         f.ask([-3.5, 4.25], 6.75, 2.125);
         f
     }
-    fn saved(&self) -> &Value {
-        &self.catalog["sketches"][0]["annulus_edit"]["annulus"]
-    }
+
     fn ask(&self, center: [f64; 2], outer: f64, inner: f64) {
+        let saved = stored(&self.source);
         write(
             &self.request,
-            &json!({"request_version":1,
-                    "outer_curve_id":self.saved()["outer_curve_id"],
-                    "inner_curve_id":self.saved()["inner_curve_id"],
-                    "center_mm":center,"outer_radius_mm":outer,"inner_radius_mm":inner}),
+            &json!({"request_version":1,"changes":[
+                transaction::circle(&json!(saved.sketch), &json!(saved.outer), center, outer),
+                transaction::circle(&json!(saved.sketch), &json!(saved.inner), center, inner),
+            ]}),
         );
     }
     fn edit(&self, output: &Path) -> Command {
@@ -145,8 +110,6 @@ impl Fixture {
         let mut c = cli();
         c.arg(OP)
             .arg(source)
-            .arg("--sketch")
-            .arg(catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
             .arg("--expect-version")
             .arg(catalog["content_version"].as_str().expect("version"))
             .arg("--request")
@@ -748,272 +711,6 @@ fn only_the_sketch_row_changed(source: &Path, copy: &Path, sketch: ferritecad_ty
     );
 }
 
-#[test]
-fn annulus_discovery_and_protocol_without_kernel() {
-    let f = Fixture::annulus();
-    let out = f.root.path().join("copy.fcad");
-    let before = std::fs::read(&f.source).expect("bytes");
-    let names = entries(f.root.path());
-
-    // Discovery is additive and says the same things the other editors do about
-    // themselves, without a kernel anywhere in sight.
-    let sketch = &f.catalog["sketches"][0];
-    assert_eq!(sketch["editable"], false, "the Line editor still refuses");
-    assert!(sketch["vertices"].is_null(), "no invented polygon");
-    assert_eq!(sketch["circle_edit"]["available"], false);
-    assert!(sketch["circle_edit"]["circle"].is_null());
-    // The constraint editor now manages this profile too (§25O), and says so
-    // about the same two circles this editor names. What it must not do is
-    // take this editor's answer away: an unconstrained ring still edits here.
-    assert_eq!(sketch["constraint_edit"]["available"], true);
-    assert_eq!(
-        sketch["constraint_edit"]["circles"]
-            .as_array()
-            .expect("circles")
-            .len(),
-        2
-    );
-    assert!(transaction::first_slot(&f.catalog, "extrude_distance")["refusal"].is_null());
-    assert_eq!(
-        transaction::first_slot(&f.catalog, "extrude_distance")["expression"]["value"],
-        15.0
-    );
-
-    let annulus_edit = &sketch["annulus_edit"];
-    assert_eq!(annulus_edit["available"], true);
-    assert!(annulus_edit["refusal"].is_null());
-    assert!(annulus_edit["document_refusal"].is_null());
-    let saved = f.saved();
-    let stored = stored(&f.source);
-    assert_eq!(saved["outer_curve_id"], stored.outer.to_string());
-    assert_eq!(saved["inner_curve_id"], stored.inner.to_string());
-    assert_ne!(saved["outer_curve_id"], saved["inner_curve_id"]);
-    assert_eq!(saved["center_mm"], json!([12.0, -7.0]));
-    assert_eq!(saved["inner_center_mm"], json!([12.0, -7.0]));
-    assert_eq!(saved["outer_radius_mm"], 10.0);
-    assert_eq!(saved["inner_radius_mm"], 4.0);
-    assert_eq!(saved["height_mm"], 15.0);
-    assert_eq!(sketch["sketch_id"], stored.sketch.to_string());
-
-    // The stored order does not decide the roles: the same drawing written the
-    // other way round discovers the same two UUIDs in the same roles.
-    let other = Fixture::swapped();
-    let other_stored = stored_swapped_check(&other);
-    assert_eq!(
-        other.saved()["outer_radius_mm"],
-        10.0,
-        "the bore was written first and became the boundary"
-    );
-    assert_eq!(other.saved()["inner_radius_mm"], 4.0);
-    assert_eq!(
-        other.saved()["outer_curve_id"],
-        other_stored.outer.to_string()
-    );
-
-    // Every structural and numeric refusal is reachable with no kernel, and
-    // none of them writes anything.
-    for value in [
-        // The version is this request's own, and only one of it is accepted.
-        json!({"request_version":2,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"schema_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        // Every field is required, and nothing else is accepted.
-        json!({"request_version":1,"inner_curve_id":saved["inner_curve_id"],
-               "center_mm":[0,0],"outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "center_mm":[0,0],"outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10}),
-        // The height belongs to edit, and a lone radius to edit-circle.
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4,"height_mm":20}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4,"radius_mm":7}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4,
-               "inner_center_mm":[1,1]}),
-        // A centre is exactly two numbers.
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":["0","0"],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        // Both radii are positive finite millimetres inside the policy.
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":10}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":12}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":9.9999}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":0}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":0,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":2e6,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[2e6,0],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        // Both UUIDs must be the saved ones, in their saved roles.
-        json!({"request_version":1,"outer_curve_id":saved["inner_curve_id"],
-               "inner_curve_id":saved["outer_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":saved["outer_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"request_version":1,
-               "outer_curve_id":"01a00000-0000-7000-8000-000000000000",
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
-               "inner_curve_id":"01a00000-0000-7000-8000-000000000000",
-               "center_mm":[0,0],"outer_radius_mm":10,"inner_radius_mm":4}),
-        json!({"request_version":1,"outer_curve_id":"not a uuid",
-               "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
-               "outer_radius_mm":10,"inner_radius_mm":4}),
-    ] {
-        write(&f.request, &value);
-        let v = reply(f.edit(&out).output().expect("process"), OP, 2);
-        assert!(
-            matches!(
-                v["error"]["kind"].as_str(),
-                Some("input") | Some("unsupported")
-            ),
-            "{value} gave {}",
-            v["error"]
-        );
-        assert_eq!(std::fs::read(&f.source).expect("source"), before);
-        assert_eq!(entries(f.root.path()), names, "{value} wrote something");
-    }
-
-    // JSON cannot spell these, so they arrive as raw text.
-    f.ask([0., 0.], 10., 4.);
-    let valid = std::fs::read_to_string(&f.request).expect("request");
-    for (field, bad) in [
-        ("\"outer_radius_mm\":10.0", "\"outer_radius_mm\":NaN"),
-        ("\"outer_radius_mm\":10.0", "\"outer_radius_mm\":1e999"),
-        ("\"inner_radius_mm\":4.0", "\"inner_radius_mm\":Infinity"),
-        ("\"center_mm\":[0.0,0.0]", "\"center_mm\":[NaN,0.0]"),
-    ] {
-        assert!(valid.contains(field), "{field} not in {valid}");
-        std::fs::write(&f.request, valid.replace(field, bad)).expect("bad number");
-        let v = reply(f.edit(&out).output().expect("process"), OP, 2);
-        assert_eq!(v["error"]["kind"], "input", "{bad}");
-        assert_eq!(entries(f.root.path()), names);
-    }
-
-    // A stale version, a foreign Sketch and a taken destination are refused
-    // before a kernel would ever be needed.
-    f.ask([-3.5, 4.25], 6.75, 2.125);
-    let mut stale = f.catalog.clone();
-    stale["content_version"] =
-        json!("0000000000000000000000000000000000000000000000000000000000000000");
-    let v = reply(
-        f.edit_from(&f.source, &stale, &out)
-            .output()
-            .expect("process"),
-        OP,
-        2,
-    );
-    assert_eq!(v["error"]["kind"], job_refusal("input"));
-    if ferritecad_occt::is_available() {
-        assert!(
-            v["error"]["message"]
-                .as_str()
-                .expect("message")
-                .contains("has changed"),
-            "{}",
-            v["error"]["message"]
-        );
-    }
-
-    let mut foreign = f.catalog.clone();
-    foreign["sketches"][0]["sketch_id"] = json!("01a00000-0000-7000-8000-000000000000");
-    reply(
-        f.edit_from(&f.source, &foreign, &out)
-            .output()
-            .expect("process"),
-        OP,
-        2,
-    );
-
-    std::fs::write(&out, b"occupied").expect("occupied");
-    let v = reply(f.edit(&out).output().expect("process"), OP, 2);
-    assert_eq!(v["error"]["kind"], job_refusal("input"));
-    assert_eq!(std::fs::read(&out).expect("output"), b"occupied");
-    std::fs::remove_file(&out).expect("clear");
-
-    // Source as its own destination, and a request file that is not there.
-    reply(f.edit(&f.source).output().expect("process"), OP, 2);
-    std::fs::remove_file(&f.request).expect("take the request away");
-    assert_eq!(
-        reply(f.edit(&out).output().expect("process"), OP, 2)["error"]["kind"],
-        "io"
-    );
-    f.ask([-3.5, 4.25], 6.75, 2.125);
-
-    // Usage stays clap text and help works.
-    assert!(
-        cli()
-            .args([OP, "--help"])
-            .output()
-            .expect("help")
-            .status
-            .success()
-    );
-    let usage = cli().args([OP, "--json"]).output().expect("usage");
-    assert_eq!(usage.status.code(), Some(2));
-    assert!(usage.stdout.is_empty(), "usage stays clap text");
-
-    // A lost stdout is exit 7 even when the operation itself was refused, and
-    // the refusal still published nothing. The other half of that rule — a
-    // report lost *after* a real publication — needs a kernel and is asserted
-    // by the native gate below.
-    assert_eq!(
-        f.edit_from(&f.source, &stale, &out)
-            .stdout(pipe::closed_pipe())
-            .stderr(pipe::closed_pipe())
-            .status()
-            .expect("pipes")
-            .code(),
-        Some(7)
-    );
-
-    assert_eq!(std::fs::read(&f.source).expect("source"), before);
-    assert_eq!(entries(f.root.path()), names, "nothing was published");
-
-    // A build with no kernel refuses to publish at all, and says so.
-    if !ferritecad_occt::is_available() {
-        let v = reply(f.edit(&out).output().expect("stub process"), OP, 2);
-        assert_eq!(v["error"]["kind"], "unsupported");
-        assert_eq!(entries(f.root.path()), names);
-        assert_eq!(std::fs::read(&f.source).expect("source"), before);
-    }
-}
-
 /// The swapped fixture really does store the bore first.
 fn stored_swapped_check(f: &Fixture) -> Stored {
     let s = stored(&f.source);
@@ -1023,21 +720,6 @@ fn stored_swapped_check(f: &Fixture) -> Stored {
         "the fixture did not store the bore first"
     );
     s
-}
-
-#[cfg(unix)]
-#[test]
-fn annulus_edit_non_utf8_paths_refuse_before_reading() {
-    use std::os::unix::ffi::OsStringExt;
-    let f = Fixture::annulus();
-    let out = f
-        .root
-        .path()
-        .join(std::ffi::OsString::from_vec(vec![b'o', 255]));
-    let names = entries(f.root.path());
-    let v = reply(f.edit(&out).output().expect("process"), OP, 2);
-    assert_eq!(v["error"]["kind"], "input");
-    assert_eq!(entries(f.root.path()), names);
 }
 
 #[test]
@@ -1076,23 +758,20 @@ fn native_annulus_edit_moves_and_resizes_only_the_named_pair() {
     assert_eq!(made["result"]["inner_curve_id"], before.inner.to_string());
 
     let catalog = inspect(&source);
-    let saved = &catalog["sketches"][0]["annulus_edit"]["annulus"];
     let request = root.path().join("edit.json");
     let ask = |center: [f64; 2], outer: f64, inner: f64| {
         write(
             &request,
-            &json!({"request_version":1,
-                    "outer_curve_id":saved["outer_curve_id"],
-                    "inner_curve_id":saved["inner_curve_id"],
-                    "center_mm":center,"outer_radius_mm":outer,"inner_radius_mm":inner}),
+            &json!({"request_version":1,"changes":[
+                transaction::circle(&json!(before.sketch), &json!(before.outer), center, outer),
+                transaction::circle(&json!(before.sketch), &json!(before.inner), center, inner)
+            ]}),
         );
     };
     let edit = |output: &Path| {
         let mut c = cli();
         c.arg(OP)
             .arg(&source)
-            .arg("--sketch")
-            .arg(catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
             .arg("--expect-version")
             .arg(catalog["content_version"].as_str().expect("version"))
             .arg("--request")
@@ -1116,9 +795,7 @@ fn native_annulus_edit_moves_and_resizes_only_the_named_pair() {
         let copy = root.path().join(name);
         let v = reply(edit(&copy).output().expect("process"), OP, 0);
         assert_eq!(v["result"]["destination"], copy.to_str().expect("UTF-8"));
-        assert_eq!(v["result"]["sketch_id"], before.sketch.to_string());
-        assert_eq!(v["result"]["outer_curve_id"], before.outer.to_string());
-        assert_eq!(v["result"]["inner_curve_id"], before.inner.to_string());
+
         assert_eq!(
             v["result"]["document_id"], catalog["document_id"],
             "a copy keeps the document identity"
@@ -1255,15 +932,6 @@ fn native_annulus_edit_moves_and_resizes_only_the_named_pair() {
         25.,
     );
 
-    // And the annular editor still accepts the height-edited copy, because the
-    // class is about the profile rather than about the extrusion's number.
-    let again = inspect(&taller);
-    assert_eq!(again["sketches"][0]["annulus_edit"]["available"], true);
-    assert_eq!(
-        again["sketches"][0]["annulus_edit"]["annulus"]["height_mm"],
-        25.0
-    );
-
     assert_eq!(
         std::fs::read(&source).expect("source"),
         bytes,
@@ -1283,9 +951,7 @@ fn native_annulus_edit_ignores_the_order_the_circles_are_stored_in() {
     let bytes = std::fs::read(&f.source).expect("source");
     let copy = f.root.path().join("copy.fcad");
     f.ask([-3.5, 4.25], 6.75, 2.125);
-    let v = reply(f.edit(&copy).output().expect("process"), OP, 0);
-    assert_eq!(v["result"]["outer_curve_id"], before.outer.to_string());
-    assert_eq!(v["result"]["inner_curve_id"], before.inner.to_string());
+    reply(f.edit(&copy).output().expect("process"), OP, 0);
 
     let after = stored(&copy);
     assert_eq!(
@@ -1309,322 +975,4 @@ fn native_annulus_edit_ignores_the_order_the_circles_are_stored_in() {
         2.125,
         15.,
     );
-}
-
-#[test]
-fn native_annulus_edit_refusals_preserve_source_and_destinations() {
-    if !native() {
-        return;
-    }
-    let f = Fixture::annulus();
-    let bytes = std::fs::read(&f.source).expect("source");
-    let out = f.root.path().join("copy.fcad");
-    let names = entries(f.root.path());
-
-    // A hard link and a symlink to the source are the source.
-    let alias = f.root.path().join("alias.fcad");
-    std::fs::hard_link(&f.source, &alias).expect("hard link");
-    reply(f.edit(&alias).output().expect("process"), OP, 2);
-    assert_eq!(std::fs::read(&f.source).expect("source"), bytes);
-    std::fs::remove_file(&alias).expect("clear");
-    #[cfg(unix)]
-    {
-        let link = f.root.path().join("symlink.fcad");
-        std::os::unix::fs::symlink(&f.source, &link).expect("symlink");
-        reply(f.edit(&link).output().expect("process"), OP, 2);
-        assert_eq!(std::fs::read(&f.source).expect("source"), bytes);
-        std::fs::remove_file(&link).expect("clear");
-    }
-
-    // A source that is not a document at all, and one that does not exist.
-    let broken = f.root.path().join("broken.fcad");
-    std::fs::write(&broken, b"not a document").expect("broken");
-    reply(
-        f.edit_from(&broken, &f.catalog, &out)
-            .output()
-            .expect("process"),
-        OP,
-        2,
-    );
-    let gone = f.root.path().join("gone.fcad");
-    reply(
-        f.edit_from(&gone, &f.catalog, &out)
-            .output()
-            .expect("process"),
-        OP,
-        2,
-    );
-    std::fs::remove_file(&broken).expect("clear");
-
-    // A document outside the class: one circle only, which the circle editor
-    // owns and this one must refuse by structure.
-    let single = f.root.path().join("single.fcad");
-    write_single_circle_document(&single);
-    let single_catalog = inspect(&single);
-    assert_eq!(
-        single_catalog["sketches"][0]["annulus_edit"]["available"],
-        false
-    );
-    assert!(
-        single_catalog["sketches"][0]["annulus_edit"]["annulus"].is_null(),
-        "no invented pair"
-    );
-    assert!(
-        single_catalog["sketches"][0]["annulus_edit"]["refusal"]
-            .as_str()
-            .expect("a reason")
-            .contains("exactly two unconstrained Circles"),
-        "{}",
-        single_catalog["sketches"][0]["annulus_edit"]["refusal"]
-    );
-    assert_eq!(
-        single_catalog["sketches"][0]["circle_edit"]["available"], true,
-        "and the circle editor still owns that document"
-    );
-    reply(
-        f.edit_from(&single, &single_catalog, &out)
-            .output()
-            .expect("process"),
-        OP,
-        2,
-    );
-
-    assert_eq!(std::fs::read(&f.source).expect("source"), bytes);
-    let mut expected = names;
-    expected.push("single.fcad".into());
-    expected.sort();
-    assert_eq!(entries(f.root.path()), expected, "a refusal published");
-
-    // Losing stdout after a real publication is late, not a rollback.
-    f.ask([-3.5, 4.25], 6.75, 2.125);
-    let published = f.root.path().join("published.fcad");
-    assert_eq!(
-        f.edit(&published)
-            .stdout(pipe::closed_pipe())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .expect("closed stdout")
-            .status
-            .code(),
-        Some(7)
-    );
-    let kept = stored(&published);
-    assert_eq!(kept.outer_radius, 6.75);
-    assert_eq!(kept.inner_radius, 2.125);
-    analytic_matches(&analytic(&published), &kept);
-}
-
-/// One circle, for the structural refusal above.
-fn write_single_circle_document(path: &Path) {
-    use ferritecad_document::{
-        Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude, Point2,
-        Sketch, SketchCurve, SolidOperation,
-    };
-    use ferritecad_types::{ObjectId, StableEntityId, Transform};
-    let mut d = Document::create(path).expect("document");
-    let [plane, sketch, extrude, body] = std::array::from_fn(|_| ObjectId::new());
-    d.write(|w| {
-        w.put_object(
-            plane,
-            None,
-            0,
-            Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
-                placement: Transform::IDENTITY,
-            }),
-        )?;
-        w.put_object(
-            sketch,
-            None,
-            1,
-            Some("Profile"),
-            &ObjectPayload::Sketch(Sketch {
-                plane,
-                curves: vec![SketchCurve {
-                    id: StableEntityId::new(),
-                    construction: false,
-                    geometry: SketchGeometry::Circle {
-                        center: Point2::new(0., 0.)?,
-                        radius: 8.,
-                    },
-                }],
-                constraints: Vec::new(),
-            }),
-        )?;
-        w.put_object(
-            extrude,
-            None,
-            2,
-            Some("Extrude1"),
-            &ObjectPayload::Extrude(Extrude {
-                profile: sketch,
-                end_condition: EndCondition::Blind {
-                    distance: Expression::constant(5.)?,
-                },
-                reversed: false,
-                operation: SolidOperation::NewBody,
-                previous: None,
-            }),
-        )?;
-        w.put_object(
-            body,
-            None,
-            3,
-            Some("Body"),
-            &ObjectPayload::Body(Body {
-                tip_feature: Some(extrude),
-            }),
-        )?;
-        for (dependent, dependency, role) in [
-            (sketch, plane, DependencyRole::Plane),
-            (extrude, sketch, DependencyRole::Profile),
-            (body, extrude, DependencyRole::BodyTip),
-        ] {
-            w.add_dependency(Dependency {
-                dependent,
-                dependency,
-                role,
-            })?;
-        }
-        Ok(())
-    })
-    .expect("single circle document");
-    d.close().expect("close");
-}
-
-#[test]
-fn native_annulus_edit_cancellation_races_and_cleanup_are_atomic() {
-    use ferritecad_kernel::{CancelToken, ProgressSink};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    if !native() {
-        return;
-    }
-    for case in [
-        "before", "snapshot", "rebuilt", "closed", "late", "occupied", "changed", "alias",
-    ] {
-        let f = Fixture::annulus();
-        let saved = stored(&f.source);
-        let bytes = std::fs::read(&f.source).expect("source");
-        let mtime = std::fs::metadata(&f.source)
-            .expect("metadata")
-            .modified()
-            .expect("mtime");
-        let destination = f.root.path().join("copy.fcad");
-        let request = ferritecad_jobs::EditAnnulusRequest {
-            source: f.source.clone(),
-            expected: ferritecad_document::DocumentVersion {
-                document_id: {
-                    let d = Document::open_read_only(&f.source).expect("source");
-                    let id = d.meta().document_id;
-                    d.close().expect("close");
-                    id
-                },
-                content: f.catalog["content_version"]
-                    .as_str()
-                    .expect("version")
-                    .parse()
-                    .expect("hash"),
-            },
-            sketch: saved.sketch,
-            edit: ferritecad_document::AnnulusEdit {
-                outer_curve_id: saved.outer,
-                inner_curve_id: saved.inner,
-                center_mm: [-3.5, 4.25],
-                outer_radius_mm: 6.75,
-                inner_radius_mm: 2.125,
-            },
-            destination: destination.clone(),
-        };
-        let cancel = CancelToken::new();
-        if case == "before" {
-            cancel.cancel();
-        }
-        let token = cancel.clone();
-        let source = f.source.clone();
-        let dest = destination.clone();
-        let once = Arc::new(AtomicBool::new(false));
-        let context = OperationContext::default()
-            .with_cancel(cancel)
-            .with_progress(ProgressSink::new(move |p| {
-                let threshold = match case {
-                    "snapshot" => 0.1,
-                    "rebuilt" => 0.4,
-                    "late" => 1.,
-                    _ => 0.95,
-                };
-                if p != threshold || once.swap(true, Ordering::SeqCst) {
-                    return;
-                }
-                match case {
-                    "snapshot" | "rebuilt" | "closed" | "late" => token.cancel(),
-                    "occupied" => std::fs::write(&dest, b"raced destination").expect("race"),
-                    "changed" => {
-                        let mut d = Document::open(&source).expect("source writer");
-                        let mut o = d.objects().expect("objects").remove(0);
-                        o.name = Some("changed during edit".into());
-                        d.write(|w| {
-                            w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload)
-                        })
-                        .expect("change");
-                        d.close().expect("close");
-                    }
-                    "alias" => std::fs::hard_link(&source, &dest).expect("late alias"),
-                    _ => {}
-                }
-            }));
-        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-        let result = ferritecad_jobs::edit_annulus_copy(&request, &mut kernel, &context);
-        if case == "late" {
-            // Cancellation that arrives after publication is simply late.
-            result.as_ref().expect(case);
-            let published = stored(&destination);
-            assert_eq!(published.center, [-3.5, 4.25]);
-            assert_eq!(published.outer_radius, 6.75);
-            assert_eq!(published.inner_radius, 2.125);
-        } else {
-            let error = result.expect_err(case);
-            let expected = match case {
-                "before" | "snapshot" | "rebuilt" | "closed" => {
-                    ferritecad_types::ErrorKind::Cancellation
-                }
-                _ => ferritecad_types::ErrorKind::Input,
-            };
-            assert_eq!(error.kind(), expected, "{case}: {error}");
-        }
-        assert_eq!(kernel.live_shape_count(), 0, "{case} leaked handles");
-        if case != "changed" {
-            assert_eq!(std::fs::read(&f.source).expect("source"), bytes, "{case}");
-            assert_eq!(
-                std::fs::metadata(&f.source)
-                    .expect("metadata")
-                    .modified()
-                    .expect("mtime"),
-                mtime,
-                "{case}"
-            );
-        }
-        if case == "occupied" {
-            assert_eq!(
-                std::fs::read(&destination).expect("destination"),
-                b"raced destination"
-            );
-        }
-        if case == "alias" {
-            assert_eq!(std::fs::read(&destination).expect("alias"), bytes);
-        }
-        let mut expected: Vec<std::ffi::OsString> =
-            vec!["кольцо space.fcad".into(), "request.json".into()];
-        if matches!(case, "late" | "occupied" | "alias") {
-            expected.push("copy.fcad".into());
-        }
-        expected.sort();
-        assert_eq!(
-            entries(f.root.path()),
-            expected,
-            "{case}: scratch or sidecars remained"
-        );
-    }
 }

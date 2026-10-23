@@ -402,7 +402,20 @@ fn a_saved_vertex_moves_from_another_anchor_without_switching_the_selection() {
     assert_eq!(e.canvas.selected, Some(2));
     let moved = e.draft.clone();
     let request = e.edit_request().expect("a valid saved edit");
-    assert_eq!(request.vertices[2].start_mm, [35., 40.]);
+    assert_eq!(
+        crate::transaction_tests::vertices_in(
+            &request,
+            e.editing
+                .as_ref()
+                .expect("saved")
+                .1
+                .stored
+                .as_ref()
+                .expect("sketch")
+        )[2]
+        .start_mm,
+        [35., 40.]
+    );
     e.undo();
     assert_eq!(e.draft, first);
     e.redo();
@@ -1246,7 +1259,7 @@ pub(crate) fn anchored_apply(
     reading: &ExtrudeEditSource,
     sketch: ferritecad_types::ObjectId,
     length: &str,
-) -> (Editor, EditSketchRequest) {
+) -> (Editor, EditRequest) {
     let mut e = Editor::default();
     e.set_session(true, true, false);
     assert!(e.begin_edit(path, reading, sketch));

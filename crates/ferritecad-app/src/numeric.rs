@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 
 use crate::{App, AppEvent, dialogs, edits, sessions};
-use ferritecad_document::{DOCUMENT_EXTENSION, DocumentVersion, ExpressionChange};
+use ferritecad_document::{DOCUMENT_EXTENSION, DocumentVersion, EditChange};
 use ferritecad_jobs::EditRequest;
 
 #[derive(Clone, Copy)]
@@ -11,13 +11,17 @@ pub(crate) enum Form {
     Angle,
     Radius,
     Distance,
+    Sketch,
+    Circle,
+    Annulus,
+    Constraints,
 }
 
 impl App {
     pub(crate) fn apply_expressions(
         &mut self,
         expected: DocumentVersion,
-        changes: Vec<ExpressionChange>,
+        changes: Vec<EditChange>,
     ) {
         if self.creates.making_new()
             || self.edits.running()
@@ -44,7 +48,7 @@ impl App {
         form: Form,
         source: PathBuf,
         expected: DocumentVersion,
-        changes: Vec<ExpressionChange>,
+        changes: Vec<EditChange>,
     ) {
         if refuse_unsaved_copy(&mut self.sessions)
             || self.sessions.busy()
@@ -58,6 +62,10 @@ impl App {
             return;
         };
         let name = match form {
+            Form::Sketch => "edited-sketch.fcad",
+            Form::Circle => "edited-circle.fcad",
+            Form::Annulus => "edited-annulus.fcad",
+            Form::Constraints => "sketch-constraints.fcad",
             Form::Height => "edited.fcad",
             Form::Angle => "edited-revolve.fcad",
             Form::Radius => "edited-fillet.fcad",
@@ -92,6 +100,13 @@ impl App {
                     cancel,
                     move |result| {
                         let event = match form {
+                            Form::Sketch => AppEvent::SketchEdited { generation, result },
+                            Form::Circle => AppEvent::CircleEdited { generation, result },
+                            Form::Annulus => AppEvent::AnnulusEdited { generation, result },
+                            Form::Constraints => AppEvent::SketchConstraintsEdited {
+                                generation,
+                                result: Box::new(result),
+                            },
                             Form::Height => AppEvent::Edited { generation, result },
                             Form::Angle => AppEvent::RevolveAngleEdited { generation, result },
                             Form::Radius => AppEvent::FilletRadiusEdited { generation, result },

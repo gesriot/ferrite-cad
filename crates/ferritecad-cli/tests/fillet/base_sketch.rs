@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! §29C: the four stored vertices of the plate under the one saved Chamfer are
-//! moved or resized by the existing `edit-sketch-copy`, in a new copy. The
+//! moved or resized by the existing `edit`, in a new copy. The
 //! Chamfer keeps its corner (found by its two Line UUIDs, never by a row or an
 //! absolute coordinate), its distance and every name; the only SQL cell pair
 //! that moves is the Sketch's payload and hash. The B-Rep, the independently
@@ -10,7 +10,7 @@ use crate::radius::stored_refs;
 use crate::sketch::{mapped, only_this_row_changed};
 use ferritecad_eval::CacheOutcome;
 
-const SKETCH: &str = "edit-sketch-copy";
+const SKETCH: &str = "edit";
 /// A distance far from every bound, so only the plate varies.
 const DIST: f64 = 0.75;
 /// Larger on both sides and moved.
@@ -26,8 +26,8 @@ const RESIZED: [f64; 4] = [X0, Y0, W + 3.5, D - 2.0];
 /// each saved vertex goes to the same corner of the new rectangle, whichever
 /// coordinates the plate has now.
 fn ask_rect(f: &Fixture, rect: [f64; 4]) {
-    let vertices = f.sketch_row()["vertices"].as_array().expect("vertices");
-    let at = |v: &Value, k: usize| v["start_mm"][k].as_f64().expect("number");
+    let vertices = f.sketch_row()["curves"].as_array().expect("vertices");
+    let at = |v: &Value, k: usize| v["geometry"]["start_mm"][k].as_f64().expect("number");
     let low = |k: usize| vertices.iter().map(|v| at(v, k)).fold(f64::MAX, f64::min);
     let (lx, ly) = (low(0), low(1));
     let points: Vec<[f64; 2]> = vertices
@@ -128,12 +128,7 @@ fn resketched(
     let base = &after["sketches"][0]["chamfer_base"];
     assert_eq!(base["distance_mm"], DIST);
     assert_eq!(base["corner_mm"], json!(new_corner));
-    assert_eq!(base, &after["sketches"][0]["chamfer_base"]);
-    assert_eq!(
-        base["edge"],
-        before_catalog["sketches"][0]["chamfer_base"]["edge"]
-    );
-    assert_eq!(after["sketches"][0]["editable"], true);
+
     assert_eq!(
         after["bodies"][0]["body_id"],
         before_catalog["bodies"][0]["body_id"]
@@ -281,7 +276,7 @@ fn native_the_sketch_of_a_chamfered_plate_changes_at_every_corner_in_three_order
             let request = f.root.path().join(format!("{tag}-d.json"));
             write(
                 &request,
-                &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":max,"unit":"mm"}]}),
+                &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":max,"unit":"mm"}]}),
             );
             let wide = f.root.path().join(format!("{tag}-d.fcad"));
             reply(
@@ -470,7 +465,7 @@ fn native_sketch_bounds_and_candidates_are_exact_under_a_chamfer() {
     assert!(v.to_string().contains("side"), "{v}");
 
     // Not a rectangle, a wrong order, a foreign Line and a missing Line.
-    let row = g.sketch_row()["vertices"].clone();
+    let row = g.sketch_row()["curves"].clone();
     let mut at: Vec<[f64; 2]> = row
         .as_array()
         .expect("vertices")
@@ -479,8 +474,8 @@ fn native_sketch_bounds_and_candidates_are_exact_under_a_chamfer() {
             mapped(
                 BIG,
                 [
-                    v["start_mm"][0].as_f64().expect("x"),
-                    v["start_mm"][1].as_f64().expect("y"),
+                    v["geometry"]["start_mm"][0].as_f64().expect("x"),
+                    v["geometry"]["start_mm"][1].as_f64().expect("y"),
                 ],
             )
         })
@@ -493,14 +488,14 @@ fn native_sketch_bounds_and_candidates_are_exact_under_a_chamfer() {
     swapped.swap(0, 1);
     write(
         &g.request,
-        &json!({"request_version":1,"vertices": swapped.iter().map(|v| json!({"curve_id": v["curve_id"], "start_mm": v["start_mm"]})).collect::<Vec<_>>()}),
+        &json!({"request_version":1,"vertices": swapped.iter().map(|v| json!({"curve_id": v["curve_id"], "start_mm": v["geometry"]["start_mm"]})).collect::<Vec<_>>()}),
     );
     refuse("the Lines in another order", "input");
     let mut foreign: Vec<Value> = row
         .as_array()
         .expect("vertices")
         .iter()
-        .map(|v| json!({"curve_id": v["curve_id"], "start_mm": v["start_mm"]}))
+        .map(|v| json!({"curve_id": v["curve_id"], "start_mm": v["geometry"]["start_mm"]}))
         .collect();
     foreign[1]["curve_id"] = json!(ferritecad_types::StableEntityId::new().to_string());
     write(
@@ -519,7 +514,7 @@ fn native_sketch_bounds_and_candidates_are_exact_under_a_chamfer() {
         .as_array()
         .expect("vertices")
         .iter()
-        .map(|v| json!({"curve_id": v["curve_id"], "start_mm": v["start_mm"]}))
+        .map(|v| json!({"curve_id": v["curve_id"], "start_mm": v["geometry"]["start_mm"]}))
         .collect();
     bad[0]["start_mm"] = json!([f64::MAX * 4.0, 0.0]);
     write(&g.request, &json!({"request_version":1,"vertices": bad}));
@@ -631,7 +626,7 @@ fn native_sketch_refusals_races_and_guards_are_atomic_under_a_chamfer() {
             .expect("additional base reference");
         document.close().expect("close");
         let (sketch, version, catalog) = catalog_of(&h.source);
-        assert_eq!(catalog["sketches"][0]["editable"], true, "{catalog}");
+
         let kept = std::fs::read(&h.source).expect("bytes");
         let output = h.root.path().join("sketch.fcad");
         ask_rect(&h, BIG);
@@ -666,29 +661,13 @@ fn chamfer_base_sketch_discovery_and_protocol_without_native() {
         assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
     }
     let plain = Fixture::drawn(Plate::new(CCW));
-    assert_eq!(plain.catalog["sketches"][0]["chamfer_base"], Value::Null);
+
     let f = chamfered_without_kernel(Plate::new(CCW), [X0 + W, Y0], 2.375);
     let row = &f.catalog["sketches"][0];
-    assert_eq!(row["editable"], true, "{row}");
+
     assert_eq!(row["refusal"], Value::Null);
-    assert_eq!(row["vertices"].as_array().expect("vertices").len(), 4);
+    assert_eq!(row["curves"].as_array().expect("vertices").len(), 4);
     assert_eq!(row["fillet_base"], Value::Null);
-    assert_eq!(row["fillet_history"], Value::Null);
-    assert_eq!(
-        row["chamfer_base"],
-        f.catalog["sketches"][0]["chamfer_base"]
-    );
-    assert_eq!(row["chamfer_base"]["corner_mm"], json!([X0 + W, Y0]));
-    assert_eq!(row["chamfer_base"]["distance_mm"], 2.375);
-    assert_eq!(row["chamfer_base"]["distance_unit"], "mm");
-    assert_eq!(
-        row["chamfer_base"]["chamfer_feature_id"],
-        f.catalog["chamfers"][0]["feature_id"]
-    );
-    assert_eq!(
-        f.catalog["sketches"][0]["constraint_edit"]["available"],
-        true
-    );
 
     // The request protocol is the existing one: a build without a kernel asks
     // for it before any other check.

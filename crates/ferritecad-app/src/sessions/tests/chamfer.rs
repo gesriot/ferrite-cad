@@ -35,20 +35,20 @@ pub(super) fn apply(s: &mut Sessions, r: &EditRequest) -> Edited {
     }
     edited
 }
-fn reading_of(path: &Path) -> ferritecad_document::ExtrudeEditSource {
-    read_extrude_source(path).expect("reading")
+fn reading_of(path: &Path) -> crate::sketch_facts::Source {
+    crate::sketch_facts::read(path).expect("reading")
 }
 /// A request made past the form, from the accepted snapshot, by the saved UUID.
 fn request(s: &Sessions, distance_mm: f64) -> EditRequest {
     let source = s.export_path().expect("current");
     let reading = reading_of(&source);
     EditRequest {
-        source,
+        source: source.clone(),
         expected: reading.version,
 
         changes: vec![
-            ferritecad_document::ExpressionChange::constant(
-                saved_of(&reading).feature,
+            ferritecad_document::EditChange::constant(
+                saved_of(&source).feature,
                 ferritecad_document::ExpressionSlot::ChamferDistance,
                 distance_mm,
             )
@@ -64,15 +64,22 @@ pub(super) fn peer(source: &Path, r: &EditRequest, out: &Path) {
         &file,
         format!(
             r#"{{"request_version":1,"distance_mm":{}}}"#,
-            r.changes[0].expression.value()
+            r.changes[0]
+                .expression()
+                .expect("numeric form contains an expression change")
+                .value()
         ),
     )
     .expect("request");
     {
         let request = crate::edits::tests::expression_request(
-            &r.changes[0].object.to_string(),
+            &r.changes[0].object().to_string(),
             "chamfer_distance",
-            &r.changes[0].expression.value().to_string(),
+            &r.changes[0]
+                .expression()
+                .expect("numeric form contains an expression change")
+                .value()
+                .to_string(),
             "mm",
         );
         cli(&[
@@ -98,7 +105,7 @@ fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
 /// capability and extra datum is the same, and the payload keeps its UUID,
 /// predecessor and joint with only the distance replaced.
 fn only_distance(before: &Path, after: &Path, distance_mm: f64) {
-    let chamfer = saved_of(&reading_of(before));
+    let chamfer = saved_of(before);
     let (a, b) = (sql(before), sql(after));
     assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
     let id = rusqlite::types::Value::Blob(chamfer.feature.to_bytes().to_vec());
@@ -142,7 +149,7 @@ fn only_distance(before: &Path, after: &Path, distance_mm: f64) {
 /// one named Chamfer face is the plane of exactly `corner`: outward diagonal
 /// normal, through the two points `d` along each adjacent side, area `d·√2·H`.
 pub(super) fn cold(path: &Path, rect: [f64; 4], corner: [f64; 2], height: f64) -> f64 {
-    let chamfer = saved_of(&reading_of(path));
+    let chamfer = saved_of(path);
     let distance = chamfer.distance_mm;
     let d = Document::open_read_only(path).expect("document");
     let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
@@ -346,7 +353,7 @@ fn gate(name: &str) {
     }
     let (root, source, opened) = fixture();
     let original = std::fs::read(&source).expect("source");
-    let initial = saved_of(&opened);
+    let initial = saved_of(&source);
     assert_eq!(initial.corner.corner_mm, CORNER);
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
@@ -378,25 +385,34 @@ fn gate(name: &str) {
     accepted.push(s.export_path().expect("height"));
     let current = s.export_path().expect("current");
     let reading = reading_of(&current);
-    let mut v = ferritecad_jobs::EditSketchRequest {
+    let mut v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(current),
+            initial.profile,
+            &(reading
+                .sketches
+                .iter()
+                .find(|c| c.sketch == initial.profile)
+                .expect("base")
+                .vertices
+                .clone()
+                .expect("vertices")),
+        ),
         source: current,
         expected: reading.version,
-        sketch: initial.profile,
-        vertices: reading
-            .sketches
-            .iter()
-            .find(|c| c.sketch == initial.profile)
-            .expect("base")
-            .vertices
-            .clone()
-            .expect("vertices"),
         destination: PathBuf::new(),
     };
-    for p in &mut v.vertices {
+    let mut vertices = crate::transaction_tests::vertices(&v);
+    for p in &mut vertices {
         if p.start_mm[0] == -4.5 {
             p.start_mm[0] = -5.75;
         }
     }
+    v.changes = crate::transaction_tests::vertex_changes(
+        &v.source,
+        crate::transaction_tests::sketch(&v),
+        &vertices,
+    );
     let pv = root.path().join("vertices.fcad");
     sketch_peer(&peers, &v, root.path(), &pv);
     apply_sketch_native(&mut s, v);
@@ -407,7 +423,7 @@ fn gate(name: &str) {
     let rect = [-5.75, 3.25, 33., 15.5];
     let corner = [-5.75, 3.25];
     assert_eq!(
-        saved_of(&reading_of(&s.export_path().expect("vertices")))
+        saved_of(&s.export_path().expect("vertices"))
             .corner
             .corner_mm,
         corner
@@ -416,7 +432,7 @@ fn gate(name: &str) {
     for (step, value) in ["3.06250", "4.4375", "6.125"].into_iter().enumerate() {
         let current = s.export_path().expect("current");
         let reading = reading_of(&current);
-        let chosen = saved_of(&reading);
+        let chosen = saved_of(&current);
         let (mut form, r) = typed_distance(&current, &reading, &s, chosen.feature, value);
         let out = root.path().join(format!("peer-{step}.fcad"));
         peer(&peers, &r, &out);
@@ -424,7 +440,14 @@ fn gate(name: &str) {
         form.finish_session_change();
         assert!(!form.active(), "acceptance closes the old version's form");
         let applied = s.export_path().expect("applied");
-        only_distance(&current, &applied, r.changes[0].expression.value());
+        only_distance(
+            &current,
+            &applied,
+            r.changes[0]
+                .expression()
+                .expect("numeric form contains an expression change")
+                .value(),
+        );
         assert_eq!(sql(&applied), sql(&out));
         accepted.push(applied);
         peer_files.push(out.clone());
@@ -453,7 +476,7 @@ fn gate(name: &str) {
     // unsaved export against the command line's.
     move_native(&mut s, true);
     let middle = s.export_path().expect("middle");
-    assert_eq!(saved_of(&reading_of(&middle)).distance_mm, 4.4375);
+    assert_eq!(saved_of(&middle).distance_mm, 4.4375);
     cold(&middle, rect, corner, 9.25);
     let (stl, fbx) = export_bytes(&middle, &source, root.path(), "undo");
     assert_eq!(
@@ -474,7 +497,7 @@ fn gate(name: &str) {
     assert!(s.can_redo() && s.dirty());
     let before = state(&s);
     let current = s.export_path().expect("current");
-    let chosen = saved_of(&reading_of(&current));
+    let chosen = saved_of(&current);
     let noop = request(&s, chosen.distance_mm);
     assert_eq!(apply(&mut s, &noop), Edited::NoChange);
     assert_eq!(state(&s), before, "a no-op kept Redo and left no file");
@@ -517,8 +540,12 @@ fn gate(name: &str) {
         &current,
         &reading_of(&current),
         &s,
-        r.changes[0].object,
-        &r.changes[0].expression.value().to_string(),
+        r.changes[0].object(),
+        &r.changes[0]
+            .expression()
+            .expect("numeric form contains an expression change")
+            .value()
+            .to_string(),
     );
     let draft = draft_state(&form);
     let (tx, rx) = mpsc::channel();
@@ -633,7 +660,7 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
     };
     let (root, source, reading) = fixture();
     let original = std::fs::read(&source).expect("source");
-    let chosen = saved_of(&reading);
+    let chosen = saved_of(&source);
     let d = Document::open_read_only(&source).expect("document");
     let ObjectPayload::Sketch(sketch) = d
         .object(chosen.profile)
@@ -678,14 +705,17 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     apply_constraints_native(
         &mut s,
-        &ferritecad_jobs::EditSketchConstraintsRequest {
+        &ferritecad_jobs::EditRequest {
+            changes: crate::transaction_tests::constraint_changes(
+                &(source.clone()),
+                chosen.profile,
+                &(SketchConstraintEdits {
+                    remove: Vec::new(),
+                    add,
+                }),
+            ),
             source: source.clone(),
             expected: reading.version,
-            sketch: chosen.profile,
-            edits: SketchConstraintEdits {
-                remove: Vec::new(),
-                add,
-            },
             destination: PathBuf::new(),
         },
     );
@@ -702,7 +732,7 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
     assert_eq!(after.curves, sketch.curves, "stored approximation");
     drop(dd);
     let reading = reading_of(&current);
-    let stored = saved_of(&reading);
+    let stored = saved_of(&current);
     assert!(stored.constrained);
     assert_eq!(stored.corner.corner_mm, CORNER, "a stored fact");
     let stored_max = stored.corner.max_distance_mm;
@@ -800,11 +830,10 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
     };
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_apply_constraints(
-                t,
-                stored.profile,
-                edits,
+            spawn_apply(
                 reading.version,
+                t,
+                crate::transaction_tests::constraint_changes(&current, stored.profile, &edits),
                 c.clone(),
                 move |v| tx.send(v).expect("deliver"),
             )
@@ -832,7 +861,7 @@ fn stub_distance_apply_refuses_without_publication() {
     let original = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
-    let (_form, r) = typed_distance(&source, &reading, &s, saved_of(&reading).feature, "3.125");
+    let (_form, r) = typed_distance(&source, &reading, &s, saved_of(&source).feature, "3.125");
     let before = state(&s);
     let (g, rx) = start(&mut s, &r);
     let e = rx.recv().expect("answer").expect_err("no kernel");

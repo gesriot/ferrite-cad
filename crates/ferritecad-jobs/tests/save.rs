@@ -66,7 +66,7 @@ fn apply(session: &mut DocumentSession, feature: ObjectId, millimetres: f64) {
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     millimetres,
@@ -350,7 +350,7 @@ fn a_change_between_the_first_compare_and_the_lock_is_caught_by_the_second_compa
             std::fs::copy(&file, &other).expect("copy");
             let mut document = ferritecad_document::Document::open(&other).expect("open");
             let reading = read_extrude_source(&other).expect("reading");
-            let prepared = ferritecad_document::ExpressionChange::constant(
+            let prepared = ferritecad_document::EditChange::constant(
                 reading
                     .expression_slots
                     .iter()
@@ -361,9 +361,7 @@ fn a_change_between_the_first_compare_and_the_lock_is_caught_by_the_second_compa
                 17.0,
             )
             .expect("prepared");
-            document
-                .write_expression_changes(&[prepared])
-                .expect("written");
+            document.write_changes(&[prepared]).expect("written");
             document.close().expect("closed");
             std::fs::rename(&other, &file).expect("lands");
         }),
@@ -435,7 +433,7 @@ fn a_writer_that_ignores_the_lock_can_win_the_instant_before_the_rename() {
             std::fs::copy(&file, &other).expect("copy");
             let mut document = ferritecad_document::Document::open(&other).expect("open");
             let reading = read_extrude_source(&other).expect("reading");
-            let prepared = ferritecad_document::ExpressionChange::constant(
+            let prepared = ferritecad_document::EditChange::constant(
                 reading
                     .expression_slots
                     .iter()
@@ -446,9 +444,7 @@ fn a_writer_that_ignores_the_lock_can_win_the_instant_before_the_rename() {
                 99.0,
             )
             .expect("prepared");
-            document
-                .write_expression_changes(&[prepared])
-                .expect("written");
+            document.write_changes(&[prepared]).expect("written");
             document.close().expect("closed");
             std::fs::rename(&other, &file).expect("lands");
         }),

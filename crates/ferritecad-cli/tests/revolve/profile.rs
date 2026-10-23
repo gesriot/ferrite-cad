@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! §27F: the saved profile of a §27D sector, edited by the existing
-//! `edit-sketch-copy` into a new copy and measured after the fact.
+//! `edit` into a new copy and measured after the fact.
 //!
 //! Expected volumes are this file's own Pappus × θ/360 of the edited profile,
 //! never the production helper. The Revolve row — and so the angle — is
@@ -125,7 +125,7 @@ fn native_partial_profile_edits_measure_caps_names_cache_sql_and_exports() {
             measure_partial(&source, &a, degrees, full_a, Some(&[CacheOutcome::Miss]));
             measure_partial(&source, &a, degrees, full_a, Some(&[CacheOutcome::Hit]));
             let row = &inspect(&source)["sketches"][0];
-            assert_eq!(row["editable"], true, "{row}");
+
             let sketch = row["sketch_id"].as_str().expect("id").to_owned();
 
             // A → B.
@@ -143,13 +143,12 @@ fn native_partial_profile_edits_measure_caps_names_cache_sql_and_exports() {
 
             let c = inspect(&edited);
             let row = &c["sketches"][0];
-            assert_eq!(row["editable"], true);
-            assert_eq!(row["profile_feature"]["angle_deg"], json!(degrees));
-            let starts: Vec<[f64; 2]> = row["vertices"]
+
+            let starts: Vec<[f64; 2]> = row["curves"]
                 .as_array()
                 .expect("vertices")
                 .iter()
-                .map(|v| serde_json::from_value(v["start_mm"].clone()).expect("point"))
+                .map(|v| serde_json::from_value(v["geometry"]["start_mm"].clone()).expect("point"))
                 .collect();
             assert_eq!(starts, b);
             assert_eq!(c["revolves"][0]["angle_deg"], json!(degrees));
@@ -321,27 +320,31 @@ fn native_partial_profile_edit_delivery_late_guards_and_cancellation() {
     }
 
     let reading = ferritecad_jobs::read_extrude_source(&source).expect("reading");
-    let choice = &reading.sketches[0];
-    let vertices: Vec<SketchVertex> = choice
-        .vertices
-        .clone()
-        .expect("editable")
-        .into_iter()
+    let source_doc = Document::open_read_only(&source).expect("source");
+    let (sketch_id, saved_sketch) = ferritecad_fixtures::sketch(&source_doc).expect("sketch");
+    source_doc.close().expect("close");
+    let vertices: Vec<SketchVertex> = saved_sketch
+        .curves
+        .iter()
         .zip(&to)
         .map(|(v, p)| SketchVertex {
-            curve_id: v.curve_id,
+            curve_id: v.id,
             start_mm: *p,
         })
         .collect();
-    let job = |name: &str| ferritecad_jobs::EditSketchRequest {
+    let job = |name: &str| ferritecad_jobs::EditRequest {
+        changes: {
+            let document =
+                ferritecad_document::Document::open_read_only(&(source.clone())).expect("source");
+            ferritecad_fixtures::vertex_changes(&document, sketch_id, &(vertices.clone()))
+                .expect("changes")
+        },
         source: source.clone(),
         expected: reading.version,
-        sketch: choice.sketch,
-        vertices: vertices.clone(),
         destination: d.path().join(name),
     };
     // Existing failures may remain while an edit introduces no new unbuilt object.
-    let edited = ferritecad_jobs::edit_sketch_copy(
+    let edited = ferritecad_jobs::edit_copy(
         &job("mock.fcad"),
         &mut ferritecad_kernel::mock::MockKernel::new(),
         &OperationContext::default(),
@@ -365,7 +368,7 @@ fn native_partial_profile_edit_delivery_late_guards_and_cancellation() {
                 stop.cancel();
             }
         }));
-    let error = ferritecad_jobs::edit_sketch_copy(
+    let error = ferritecad_jobs::edit_copy(
         &job("cancelled.fcad"),
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
@@ -381,7 +384,7 @@ fn native_partial_profile_edit_delivery_late_guards_and_cancellation() {
             std::fs::write(&path, b"theirs").expect("race");
         }
     }));
-    let error = ferritecad_jobs::edit_sketch_copy(
+    let error = ferritecad_jobs::edit_copy(
         &job("raced.fcad"),
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
@@ -391,48 +394,6 @@ fn native_partial_profile_edit_delivery_late_guards_and_cancellation() {
     assert_eq!(std::fs::read(&raced).expect("theirs"), b"theirs");
     std::fs::remove_file(&raced).expect("clean up");
     assert_eq!(entries(d.path()), names, "no scratch left behind");
-
-    // The writer's own gate, reached directly on a writable copy.
-    let direct = d.path().join("direct.fcad");
-    std::fs::copy(&source, &direct).expect("copy");
-    let mut doc = Document::open(&direct).expect("open");
-    let prepared = ferritecad_document::replace_sketch_coordinates(&doc, choice.sketch, &vertices)
-        .expect("prepared");
-    // Forged: an axis end moved off the axis inside the prepared payload.
-    let mut forged = prepared.clone();
-    let ObjectPayload::Sketch(sketch) = &mut forged.payload else {
-        panic!("a Sketch")
-    };
-    let SketchGeometry::Line { start, .. } = &mut sketch.curves[0].geometry else {
-        panic!("a Line")
-    };
-    *start = Point2::new(1.5, start.y).expect("point");
-    let error = doc.write_sketch_geometry(&forged).expect_err("forged");
-    assert!(
-        error.to_string().contains("touches the axis alone"),
-        "{error}"
-    );
-    // Forged: a construction flag the request never stated.
-    let mut forged = prepared.clone();
-    let ObjectPayload::Sketch(sketch) = &mut forged.payload else {
-        panic!("a Sketch")
-    };
-    sketch.curves[1].construction = true;
-    let error = doc.write_sketch_geometry(&forged).expect_err("forged flag");
-    assert!(error.to_string().contains("coordinate"), "{error}");
-    // Stale: the Sketch changed after preparation.
-    let other: Vec<SketchVertex> = vertices
-        .iter()
-        .map(|v| SketchVertex {
-            curve_id: v.curve_id,
-            start_mm: [v.start_mm[0] * 0.5, v.start_mm[1]],
-        })
-        .collect();
-    doc.write_sketch_coordinates(choice.sketch, &other)
-        .expect("another edit first");
-    let error = doc.write_sketch_geometry(&prepared).expect_err("stale");
-    assert!(error.to_string().contains("changed after"), "{error}");
-    doc.close().expect("close");
 
     // The source replaced while the job ran: the late guard refuses it.
     let late = d.path().join("late.fcad");
@@ -461,7 +422,7 @@ fn native_partial_profile_edit_delivery_late_guards_and_cancellation() {
             d.close().expect("close");
         }
     }));
-    let error = ferritecad_jobs::edit_sketch_copy(
+    let error = ferritecad_jobs::edit_copy(
         &job("late.fcad"),
         &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
         &context,
@@ -491,181 +452,6 @@ fn native_partial_profile_edit_delivery_late_guards_and_cancellation() {
         2,
     );
     assert_eq!(entries(d.path()), names);
-}
-
-/// The request of the changed route, judged before any kernel in every build:
-/// duplicate keys (escaped ones too) at every level, arrays where objects
-/// belong, unknown fields — including an angle, which is not part of this
-/// request — and discovery of a sector written without a kernel. Then what
-/// only a native job decides, said per build.
-#[test]
-fn partial_profile_requests_refuse_duplicates_arrays_and_foreign_fields() {
-    let d = tempfile::tempdir().expect("dir");
-    let source = d.path().join("sector.fcad");
-    stub_sector(&source, 137.5);
-    let c = inspect(&source);
-    let row = &c["sketches"][0];
-    assert_eq!(row["editable"], true, "{row}");
-    assert_eq!(row["profile_feature"]["kind"], "partial_turn_revolve");
-    assert_eq!(row["profile_feature"]["angle_deg"], 137.5);
-    assert_eq!(row["profile_feature"]["extent"], "partial_turn");
-    assert_eq!(
-        row["profile_feature"]["feature_id"],
-        c["revolves"][0]["feature_id"]
-    );
-    let s = saved(&source);
-    let bytes = std::fs::read(&source).expect("source");
-    let request = d.path().join("request.json");
-    let out = d.path().join("never.fcad");
-    let refuse = |body: &[u8], kind: &str, why: &str| -> String {
-        std::fs::write(&request, body).expect("request");
-        let names = entries(d.path());
-        let v = edit_reply(
-            edit(&source, &s.sketch, &s.version, &request, &out)
-                .output()
-                .expect("edit"),
-            2,
-        );
-        assert_eq!(v["error"]["kind"], kind, "{why}: {v}");
-        assert_eq!(entries(d.path()), names, "{why}: nothing written");
-        assert_eq!(std::fs::read(&source).expect("source"), bytes, "{why}");
-        v["error"]["message"].as_str().expect("message").to_owned()
-    };
-    let vertex =
-        |id: &str, x: f64, y: f64| format!(r#"{{"curve_id":"{id}","start_mm":[{x},{y}]}}"#);
-    let points = [[3.5, 0.5], [10.5, 0.5], [10.5, 14.5], [3.5, 14.5]];
-    let list: Vec<String> = s
-        .ids
-        .iter()
-        .zip(points)
-        .map(|(id, [x, y])| vertex(id, x, y))
-        .collect();
-    let list = list.join(",");
-    let id0 = &s.ids[0];
-    let rest: String = s.ids[1..]
-        .iter()
-        .zip(&points[1..])
-        .map(|(id, [x, y])| format!(",{}", vertex(id, *x, *y)))
-        .collect();
-    for (body, why) in [
-        (
-            format!(r#"{{"request_version":2,"request_version":1,"vertices":[{list}]}}"#),
-            "a duplicate version",
-        ),
-        (
-            format!(r#"{{"request_version":1,"vertices":[{list}],"vertices":[{list}]}}"#),
-            "duplicate vertices",
-        ),
-        (
-            format!(
-                r#"{{"request_version":1,"vertices":[{{"curve_id":"{id0}","curve_id":"{id0}","start_mm":[3.5,0.5]}}{rest}]}}"#
-            ),
-            "a duplicate curve_id",
-        ),
-        (
-            format!(
-                r#"{{"request_version":1,"vertices":[{{"curve_id":"{id0}","start_mm":[3.5,0.5],"\u0073tart_mm":[9,9]}}{rest}]}}"#
-            ),
-            "an escaped duplicate start_mm",
-        ),
-        (
-            format!(r#"{{"request_version":1,"\u0072equest_version":1,"vertices":[{list}]}}"#),
-            "an escaped duplicate version",
-        ),
-        (format!("[1,[{list}]]"), "an array for the request"),
-        (
-            format!(r#"{{"request_version":1,"vertices":[["{id0}",[3.5,0.5]]{rest}]}}"#),
-            "an array for a vertex",
-        ),
-        (
-            format!(r#"{{"request_version":1,"vertices":[{list}],"angle_deg":220}}"#),
-            "an angle, which this request does not carry",
-        ),
-        (
-            format!(
-                r#"{{"request_version":1,"vertices":[{list}],"extent":{{"kind":"full_turn"}}}}"#
-            ),
-            "an extent",
-        ),
-        (
-            format!(
-                r#"{{"request_version":1,"vertices":[{{"curve_id":"{id0}","start_mm":[3.5,0.5],"z":1}}{rest}]}}"#
-            ),
-            "an unknown vertex field",
-        ),
-        (
-            format!(
-                r#"{{"request_version":1,"vertices":[{{"curve_id":"{id0}","start_mm":["3.5",0.5]}}{rest}]}}"#
-            ),
-            "a string coordinate",
-        ),
-        (
-            format!(
-                r#"{{"request_version":1,"vertices":[{{"curve_id":"{id0}","start_mm":[1e400,0.5]}}{rest}]}}"#
-            ),
-            "an overflowing coordinate",
-        ),
-        (r#"{"request_version":1}"#.to_owned(), "no vertices"),
-        ("{".to_owned(), "malformed JSON"),
-    ] {
-        refuse(body.as_bytes(), "input", why);
-    }
-    let message = refuse(
-        format!(r#"{{"request_version":2,"vertices":[{list}]}}"#).as_bytes(),
-        "unsupported",
-        "v2",
-    );
-    assert!(message.contains("expected 1"), "{message}");
-
-    // What only the native job decides: UUIDs and the profile policy. A
-    // build without a kernel refuses every well-formed request for that.
-    let native = ferritecad_occt::is_available();
-    let foreign: Vec<String> = s
-        .ids
-        .iter()
-        .enumerate()
-        .map(|(i, id)| {
-            if i == 2 {
-                StableEntityId::new().to_string()
-            } else {
-                id.clone()
-            }
-        })
-        .collect();
-    for (ids, to, wanted, why) in [
-        (
-            foreign,
-            points.to_vec(),
-            "every saved curve UUID exactly once",
-            "a foreign UUID",
-        ),
-        (
-            s.ids.clone(),
-            vec![[-2., 0.5], [10.5, 0.5], [10.5, 14.5], [-2., 14.5]],
-            "positive radial side",
-            "across the axis",
-        ),
-        (
-            s.ids.clone(),
-            vec![[0., 0.5], [10.5, 0.5], [10.5, 14.5], [0., 14.5]],
-            "cannot change between hollow and solid",
-            "hollow to solid",
-        ),
-    ] {
-        write_edit(&request, &ids, &to);
-        let body = std::fs::read(&request).expect("request");
-        if native {
-            let text = refuse(&body, "input", why);
-            assert!(text.contains(wanted), "{why}: {text}");
-        } else {
-            refuse(&body, "unsupported", why);
-        }
-    }
-    if !native {
-        write_edit(&request, &s.ids, &points);
-        let body = std::fs::read(&request).expect("request");
-        refuse(&body, "unsupported", "a valid edit without a kernel");
-    }
 }
 
 #[test]
