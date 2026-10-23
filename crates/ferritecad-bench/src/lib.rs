@@ -197,32 +197,33 @@ fn apply(
 ) -> Result<ferritecad_jobs::ProducedStep> {
     let expected = session.current().version();
     let ticket = session.begin_step();
-    match operation {
-        "apply_height" => ticket.edit_extrude_height(
+    let (object, slot, value) = match operation {
+        "apply_height" => (
             case.extrude.expect("extrude"),
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
             12.0,
-            kernel,
-            |k, bytes| k.import_step(bytes),
-            context,
         ),
-        "apply_fillet" => ticket.edit_fillet_radius(
+        "apply_fillet" => (
             case.fillet.expect("fillet"),
+            ferritecad_document::ExpressionSlot::FilletRadius,
             2.5,
-            expected,
-            kernel,
-            |k, bytes| k.import_step(bytes),
-            context,
         ),
-        "apply_angle" => ticket.edit_revolve_angle(
+        "apply_angle" => (
             case.revolve.expect("revolve"),
-            200.0_f64.to_radians(),
-            expected,
-            kernel,
-            |k, bytes| k.import_step(bytes),
-            context,
+            ferritecad_document::ExpressionSlot::RevolveAngle,
+            200_f64.to_radians(),
         ),
-        _ => Err(CadError::input("unknown benchmark operation")),
-    }
+        _ => return Err(CadError::input("unknown benchmark operation")),
+    };
+    ticket.edit(
+        vec![ferritecad_document::ExpressionChange::constant(
+            object, slot, value,
+        )?],
+        expected,
+        kernel,
+        |k, bytes| k.import_step(bytes),
+        context,
+    )
 }
 
 #[cfg(test)]

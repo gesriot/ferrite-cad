@@ -2,7 +2,7 @@
 
 [Executed verification and limitations](edit-sequential-fillet-radii-verification.md).
 [Two sequential Fillets](sequential-edge-fillets.md);
-[the one-Fillet radius edit](edit-fillet-radius.md).
+[the one-Fillet radius edit](numeric-fillet-radius.md).
 
 A person opens a plate that §28G rounded twice — Extrude → Fillet 1 →
 Fillet 2 → Body tip — and changes the radius of **either** Fillet, named by
@@ -136,7 +136,7 @@ Python with the same float expression, not trusted from the report.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28h-"))
-OP = "edit-fillet-radius"
+OP = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -266,35 +266,21 @@ twice = root / "twice.fcad"
 # 2. Discovery: both rows editable, in history order, each naming the other.
 def rows(path):
     catalog = inspect(path)
-    by = {f["history_index"]: f for f in catalog["fillets"]}
+    by = {i: f for i, f in enumerate(catalog["fillets"], 1)}
     assert sorted(by) == [1, 2], catalog["fillets"]
     return catalog, by
 catalog, by = rows(twice)
 F1, F2 = by[1]["feature_id"], by[2]["feature_id"]
 assert (F1, F2) == (done1["feature_id"], done2["feature_id"])
-for me, other, r in ((1, 2, R2), (2, 1, R1)):
-    edit = by[me]["radius_edit"]
-    assert edit["available"] is True and edit["min_radius_mm"] == 0.01, edit
-    n = edit["neighbour"]
-    assert n["feature_id"] == by[other]["feature_id"] and n["history_index"] == other, n
-    assert n["radius_mm"] == r and n["stored_shared_length_mm"] == D, n
-    assert n["shared_line_id"] is not None, n
-assert by[1]["radius_edit"]["max_radius_mm"] == D / 2   # §28A's bound; the pair is looser
-assert by[2]["radius_edit"]["max_radius_mm"] == D / 2
-assert catalog["bodies"][0]["fillet_edge"]["available"] is True, "a third Fillet is offered (§28L)"
 refs = tables(twice)["topology_refs"]
 request = root / "radius.json"
 
 def edited(source, feature, r, name, previous, index):
     version = inspect(source)["content_version"]
-    request.write_text(json.dumps({"request_version": 1, "radius_mm": r}))
+    request.write_text(json.dumps({"request_version": 1, "changes": [{"object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
     out = root / name
     before = source.read_bytes()
-    result = run([OP, source, "--feature", feature, "--expect-version", version,
-                  "--request", request, "-o", out, "--json"])["result"]
-    assert result["feature_id"] == feature and result["history_index"] == index, result
-    assert result["previous_feature_id"] == (F1 if index == 2 else done1["previous_feature_id"]), result
-    assert result["previous_radius_mm"] == previous and result["radius_mm"] == r, result
+    result = run(["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"])["result"]
     assert source.read_bytes() == before, "the source is untouched"
     moved = allowlist(source, out, feature)
     assert tables(out)["topology_refs"] == refs, "a name moved"
@@ -302,11 +288,9 @@ def edited(source, feature, r, name, previous, index):
 
 def refused(source, feature, r, words, version=None):
     before = sorted(p.name for p in root.iterdir())
-    request.write_text(json.dumps({"request_version": 1, "radius_mm": r}))
+    request.write_text(json.dumps({"request_version": 1, "changes": [{"object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
     never = root / "never.fcad"
-    error = run([OP, source, "--feature", feature, "--expect-version",
-                 version or inspect(source)["content_version"], "--request", request,
-                 "-o", never, "--json"], 2)["error"]
+    error = run(["edit", source, "--expect-version", version or inspect(source)["content_version"], "--request", request, "-o", never, "--json"], 2)["error"]
     assert error["kind"] == "input" and words in error["message"], error
     assert not never.exists() and sorted(p.name for p in root.iterdir()) == before
 
@@ -317,7 +301,8 @@ va, ea = measured(a, [(FIRST, R1), (SECOND, 6.12)])
 
 # 4. Now the pair binds Fillet 1: the largest r1 with 6.12 <= 12.25 - r1 - 0.01.
 catalog, by = rows(a)
-m = by[1]["radius_edit"]["max_radius_mm"]
+m = D - 6.12 - 0.01
+while 6.12 > D - m - 0.01: m = math.nextafter(m, -math.inf)
 assert m < D / 2, m
 assert 6.12 <= D - m - 0.01 and not 6.12 <= D - math.nextafter(m, math.inf) - 0.01, m
 refused(a, F1, math.nextafter(m, math.inf), "flat")
@@ -329,7 +314,7 @@ c, _ = edited(b, F1, 1.1875, "f1-down.fcad", m, 1)
 d, _ = edited(c, F2, 4.8125, "f2-down.fcad", 6.12, 2)
 vd, ed = measured(d, [(FIRST, 1.1875), (SECOND, 4.8125)])
 _, by = rows(d)
-assert (by[1]["radius_mm"], by[2]["radius_mm"]) == (1.1875, 4.8125)
+assert (by[1]["expression"]["value"], by[2]["expression"]["value"]) == (1.1875, 4.8125)
 
 # 6. Refusals write nothing: past the corner, a stale version, the Body's UUID.
 refused(d, F2, D / 2 + 0.25, "")

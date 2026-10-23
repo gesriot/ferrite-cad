@@ -40,21 +40,21 @@ mod cut_boundary;
 mod cut_edit;
 mod document;
 mod edit;
+mod expression_edit;
+pub use expression_edit::{ExpressionChange, ExpressionSlot, ExpressionSlotValue};
 mod fillet;
 mod fillet_radius;
 mod height_edit;
 mod polygon;
 mod revolve;
-mod revolve_angle_edit;
 mod sketch_edit;
 pub use annulus_edit::{
     AnnulusChoice, AnnulusEdit, SavedAnnulus, annulus_choices, replace_annulus_geometry,
 };
 pub use chamfer::{
-    ChamferChoice, ChamferCorner, ChamferDistanceChoice, EdgeChamfer, MIN_DISTANCE_MM, MIN_FLAT_MM,
-    PreparedChamferDistance, PreparedEdgeChamfer, SavedChamfer, SavedChamferTarget,
-    chamfer_choices, chamfer_distance_choices, check_distance_value, evaluable_chamfer,
-    max_distance_of, prepare_chamfer_distance, prepare_edge_chamfer, saved_chamfer,
+    ChamferChoice, ChamferCorner, EdgeChamfer, MIN_DISTANCE_MM, MIN_FLAT_MM, PreparedEdgeChamfer,
+    SavedChamfer, SavedChamferTarget, chamfer_choices, check_distance_value, evaluable_chamfer,
+    max_distance_of, prepare_edge_chamfer, saved_chamfer,
 };
 pub use circle_edit::{
     CircleChoice, CircleEdit, SavedCircle, circle_choices, replace_circle_geometry,
@@ -69,20 +69,15 @@ pub use cut_edit::{
 pub use fillet::{
     EdgeFillet, ExistingFillet, FilletChoice, FilletCorner, MAX_PLATE_FILLETS, MAX_RADIUS_FRACTION,
     MIN_RADIUS_MM, PreparedEdgeFillet, SavedFilletTarget, check_pair, check_radius_value,
-    corner_for, evaluable_fillet, fillet_choices, pair_bound, pair_bound_of_first,
-    prepare_edge_fillet, rectangle_corners, shared_side,
+    corner_for, evaluable_fillet, fillet_choices, pair_bound, prepare_edge_fillet,
+    rectangle_corners, shared_side,
 };
-pub use fillet_radius::{
-    FilletRadiusChoice, NeighbourFillet, PreparedFilletRadius, SavedFillet, fillet_radius_choices,
-    prepare_fillet_radius,
-};
+pub use fillet_radius::{NeighbourFillet, SavedFillet};
 pub use polygon::{
     AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion, RevolutionClosure,
 };
 pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices, stated_revolution};
-pub use revolve_angle_edit::{
-    PreparedRevolveAngle, RevolveAngleChoice, prepare_revolve_angle, revolve_angle_choices,
-};
+
 pub use sketch_edit::{
     SketchChoice, SketchCutHistory, SketchProfileUse, SketchVertex, replace_sketch_coordinates,
     sketch_choices,
@@ -100,7 +95,7 @@ pub use document::{
     MAX_CHECKPOINT_NAME_CHARS, MAX_CHECKPOINTS, ObjectRecord, ReopenedStepImport,
     StepImportRequest, StepImporter, StoredStepImport, StoredTopologyRef, checkpoint_name,
 };
-pub use edit::{DocumentVersion, ExtrudeChoice, ExtrudeEditSource, editable_extrude};
+pub use edit::{DocumentVersion, ExtrudeEditSource, editable_extrude};
 pub use envelope::Envelope;
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
@@ -123,9 +118,6 @@ pub use sketch_constraints::{
     prepare_sketch_constraints,
 };
 
-pub use height_edit::{
-    BaseHeightContext, PreparedExtrudeHeight, ProtectedCutFloor, prepare_extrude_height,
-    validate_extrude_distance,
-};
+pub use height_edit::validate_extrude_distance;
 
 pub use model_tree::{ModelRowId, ModelTree, ModelTreeRow};

@@ -2,7 +2,7 @@
 
 Marker `FCAD_30G_FILLET_RADIUS_SESSION_APPLY`.
 [Verification and real-window recipe](fillet-radius-session-apply-verification.md).
-The existing [radius edit](edit-fillet-radius.md) and its current
+The existing [radius edit](numeric-fillet-radius.md) and its current
 [1–4 Fillet history](rectangular-fillet-history.md) join the
 [document session](document-session.md).
 

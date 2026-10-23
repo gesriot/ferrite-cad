@@ -774,7 +774,11 @@ fn open_alone_leaves_an_unfinished_new_and_every_other_hold_stays() {
         let current = w.sessions.export_path().expect("shown");
         let reading = read_extrude_source(&current).expect("reading");
         assert!(copying.begin(&current, &reading));
-        let feature = reading.features[0].feature;
+        let feature = ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         copying.type_height(feature, "20");
         copying
             .request(user.path().join("copy-out.fcad"))
@@ -1036,7 +1040,7 @@ fn open_over_new_recipe_on_owners(root: &Path) {
 
 /// Compares the outputs of the §30T window recipe in `root` with the shipped
 /// command line. Reads only what the window wrote; refuses a missing output before
-/// any peer job. A is the command line's `edit-extrude 26` + `edit-sketch-copy`
+/// any peer job. A is the command line's `edit with extrude_distance 26` + `edit-sketch-copy`
 /// (80 made 90) in every SQL cell but the write stamp; B was never written; nothing
 /// New was making reached a file.
 fn compare_open_over_new(root: &Path) {

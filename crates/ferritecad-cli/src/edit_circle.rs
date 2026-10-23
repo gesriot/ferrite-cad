@@ -33,7 +33,7 @@ pub struct EditCircleArgs {
 ///
 /// `request_version` is this command's only version field, spelled the way the
 /// sketch edit beside it spells one; there is no synonym. There is no height
-/// here either: the saved extrusion keeps it, and `edit-extrude` changes it.
+/// here either: the saved extrusion keeps it, and `edit with extrude_distance` changes it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Input {

@@ -190,6 +190,12 @@ volumes at each step.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28l-"))
+
+def edit_args(source, feature, height, version, out):
+    request = root / "expression.json"
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+    return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 MIN_RADIUS = 0.01
 
 def run(args, code=0):
@@ -373,14 +379,13 @@ for k, (index, radius) in enumerate(zip(ORDER, RADII)):
     assert len(done["references"]) == 7 + k, done
     docs.append(out)
     catalog = inspect(out)
-    assert [f["history_index"] for f in catalog["fillets"]] == list(range(1, k + 2))
+    assert {f["feature_id"] for f in catalog["fillets"]} == set(ids)
     for f in catalog["fillets"]:
-        edit = f["radius_edit"]
-        assert edit["available"] is True and len(edit["neighbours"]) == k, f
-        assert (edit["neighbour"] is not None) == (k == 1), "the older single neighbour: two only"
-    base = next(f for f in catalog["features"] if f["fillet_history"] is not None)
+        slot = next(s for s in catalog["expression_slots"] if s["object"] == f["feature_id"] and s["slot"]["kind"] == "fillet_radius")
+        assert slot["refusal"] is None and slot["expression"] == f["expression"]
+    base = next(s for s in catalog["sketches"] if s["fillet_history"] is not None)
     assert base["fillet_history"]["count"] == k + 1
-    assert (base["fillet_base"] is not None) == (k + 1 <= 2), "the older projection: one or two"
+    assert (base["fillet_base"] is not None) == (k + 1 <= 2)
     seen = measured(out, RECT, ROUNDED[:k + 1])
 results = {"four": seen}
 four = docs[-1]
@@ -393,12 +398,10 @@ assert edge["available"] is False and "every corner" in edge["refusal"], edge
 refs = tables(four)["topology_refs"]
 bound = D - RADII[0] - MIN_RADIUS
 row = rounded_row(four, 3)
-assert row["radius_edit"]["max_radius_mm"] == bound, row["radius_edit"]
 def edit_radius(source, feature, radius, out, code=0):
     catalog = inspect(source)
-    req = request("radius.json", {"request_version": 1, "radius_mm": radius})
-    args = ["edit-fillet-radius", source, "--feature", feature, "--expect-version",
-            catalog["content_version"], "--request", req, "-o", out, "--json"]
+    req = request("radius.json", {"request_version": 1, "changes": [{"object": feature, "slot": {"kind": "fillet_radius"}, "value": radius, "unit": "mm"}]})
+    args = ["edit", source, "--expect-version", catalog["content_version"], "--request", req, "-o", out, "--json"]
     return run(args, code) if code else geometry(args, out)
 refused = edit_radius(four, ids[3], math.nextafter(bound, 99), root / "no.fcad", code=2)["error"]
 assert refused["kind"] == "input" and ids[0] in refused["message"] and "flat" in refused["message"], refused
@@ -417,8 +420,7 @@ assert tables(early)["topology_refs"] == refs
 results["early"] = measured(early, RECT, [(ROUNDED[0][0], 2.375)] + ROUNDED[1:])
 base_id = inspect(four)["features"][0]["feature_id"]
 taller = root / "taller.fcad"
-geometry(["edit-extrude", four, "--feature", base_id, "--distance-mm", "9.5", "--expect-version",
-          inspect(four)["content_version"], "-o", taller, "--json"], taller)
+geometry(edit_args(four, base_id, "9.5", inspect(four)["content_version"], taller), taller)
 only_row(four, taller, base_id)
 assert tables(taller)["topology_refs"] == refs
 measured(taller, RECT, ROUNDED, 9.5)
@@ -461,7 +463,6 @@ only_row(four, dimensioned, sketch["sketch_id"])
 assert tables(dimensioned)["topology_refs"] == refs
 after = inspect(dimensioned)
 assert after["sketches"][0]["editable"] is False, "a dimensioned plate: the constraint editor"
-assert all(f["radius_edit"]["max_radius_mm"] is None for f in after["fillets"]), "the solved plate's bound"
 results["dimensioned"] = measured(dimensioned, rect_c, ROUNDED)
 user = [c["constraint_id"] for c in after["sketches"][0]["constraint_edit"]["constraints"]
         if c["rule"]["kind"] != "coincident"]

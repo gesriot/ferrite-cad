@@ -433,18 +433,24 @@ fn gate(name: &str) {
     // Dirty base: height, then the left wall's two vertices.
     apply_native(&mut s, selected(&opened, 0).base_feature, 15.25);
     let peer_height = root.path().join("peer-height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        selected(&opened, 0).base_feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        opened.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "15.25".as_ref(),
-        "-o".as_ref(),
-        peer_height.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &selected(&opened, 0).base_feature.to_string(),
+            "extrude_distance",
+            "15.25",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            opened.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            peer_height.as_os_str(),
+        ])
+    };
     let current = s.export_path().expect("current");
     let reading = read_extrude_source(&current).expect("reading");
     let base = reading
@@ -815,18 +821,24 @@ fn compare_gui(root: &Path) {
     let reading = read_extrude_source(&source).expect("reading");
     let body = reading.cut_bodies[0].body;
     let height = tmp.path().join("height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        selected(&reading, 0).base_feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        reading.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "15.25".as_ref(),
-        "-o".as_ref(),
-        height.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &selected(&reading, 0).base_feature.to_string(),
+            "extrude_distance",
+            "15.25",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            height.as_os_str(),
+        ])
+    };
     let reading = read_extrude_source(&height).expect("height reading");
     let sketch = reading
         .sketches

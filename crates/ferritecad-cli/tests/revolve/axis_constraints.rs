@@ -375,8 +375,8 @@ fn native_axis_closed_sector_caps_names_angle_edit_and_exports() {
     exports(&wide, &grown, Some(SHAFT_DEG), "axis-constraints-sector");
 
     // The angle edit writes only the Revolve row and keeps the constraints.
-    let (revolve, version, discovered) = target(&wide);
-    assert_eq!(discovered["angle_edit"]["available"], true, "{discovered}");
+    let (revolve, version, _) = target(&wide);
+
     let angle_request = root.join("angle.json");
     write_angle(&angle_request, 212.25);
     let turned = root.join("turned.fcad");
@@ -564,7 +564,7 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
         s.constraints.push(horizontal(sector_labels[0]));
     });
     let (_, _, discovered) = target(&constrained_sector);
-    assert_eq!(discovered["angle_edit"]["available"], true, "{discovered}");
+
     assert_eq!(discovered["profile"]["available"], true, "{discovered}");
     assert_eq!(
         inspect(&constrained_sector)["sketches"][0]["constraint_edit"]["available"],

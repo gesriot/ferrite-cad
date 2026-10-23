@@ -76,12 +76,24 @@ fn create(session: &mut DocumentSession, name: &str) -> CheckpointEntry {
 fn apply(session: &mut DocumentSession, millimetres: f64) {
     let feature = read_extrude_source(session.current().path())
         .expect("reading")
-        .features[0]
-        .feature;
-    let step = support::viewed(session.begin_step())
-        .edit_extrude_height(
-            feature,
-            millimetres,
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("height slot")
+        .object;
+    let step = {
+        let ticket = support::viewed(session.begin_step());
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    millimetres,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -90,7 +102,8 @@ fn apply(session: &mut DocumentSession, millimetres: f64) {
             },
             &context(),
         )
-        .expect("an edit");
+    }
+    .expect("an edit");
     assert!(!step.keeps_picture(), "a height changes what is drawn");
     session.commit_step(step).expect("accepted");
 }
@@ -109,7 +122,13 @@ fn redo(session: &mut DocumentSession) {
 
 fn height(path: &Path) -> f64 {
     let source = read_extrude_source(path).expect("reading");
-    source.features[0].distance_mm.expect("a constant height")
+    source
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("height slot")
+        .expression
+        .value()
 }
 
 #[test]

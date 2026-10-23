@@ -830,8 +830,13 @@ fn compare_gui(root: &Path) {
     assert_eq!(height_of(&cli_a), 12.0);
     let b_reading = read_extrude_source(&cli_b).expect("reading");
     assert_eq!(
-        b_reading.features[0].distance_mm,
-        Some(20.0),
+        ferritecad_fixtures::expression_slot(
+            &b_reading,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance
+        )
+        .expression
+        .value(),
+        20.0,
         "checkpoint B height"
     );
     // The catalogue has a row for every feature, including the NewBody base

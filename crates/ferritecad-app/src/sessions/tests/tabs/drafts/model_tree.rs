@@ -205,7 +205,11 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
     let plate_path = root.path().join("plate.fcad");
     plate(&plate_path, 12.);
     w.open(&plate_path);
-    let accepted_id = source(&w).features[0].feature;
+    let accepted_id = ferritecad_fixtures::expression_slot(
+        source(&w),
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
     assert!(
         source(&w)
             .model_tree
@@ -219,7 +223,15 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
     w.apply(17.25);
     w.step(true);
     w.step(false);
-    assert_eq!(source(&w).features[0].distance_mm, Some(17.25));
+    assert_eq!(
+        ferritecad_fixtures::expression_slot(
+            source(&w),
+            ferritecad_document::ExpressionSlot::ExtrudeDistance
+        )
+        .expression
+        .value(),
+        17.25
+    );
     assert!(!open_action(&mut w, other));
     let selected = w.tabs.model_navigation(current_tab).selected;
     let mut vanished = source(&w).clone();
@@ -582,8 +594,24 @@ fn native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes(
     );
     let rs = read_extrude_source(&rp).expect("reading");
     for (path, id, edit) in [
-        (&fp, fs.fillet_features[0].feature, ModelEdit::Fillet),
-        (&cp, cs.chamfer_features[0].feature, ModelEdit::Chamfer),
+        (
+            &fp,
+            ferritecad_fixtures::expression_slot(
+                &fs,
+                ferritecad_document::ExpressionSlot::FilletRadius,
+            )
+            .object,
+            ModelEdit::Fillet,
+        ),
+        (
+            &cp,
+            ferritecad_fixtures::expression_slot(
+                &cs,
+                ferritecad_document::ExpressionSlot::ChamferDistance,
+            )
+            .object,
+            ModelEdit::Chamfer,
+        ),
         (&rp, revolve, ModelEdit::RevolveAngle),
         (&rp, rs.sketches[0].sketch, ModelEdit::Vertices),
         (

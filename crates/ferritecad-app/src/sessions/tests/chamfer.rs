@@ -6,29 +6,21 @@ use crate::chamfers::tests::session_apply::{
     CORNER, draft_state, fixture, saved_of, typed_distance, visible_outcome,
 };
 use ferritecad_document::{MIN_FLAT_MM, ObjectPayload, SemanticRole};
-use ferritecad_jobs::EditChamferDistanceRequest;
+use ferritecad_jobs::EditRequest;
 use ferritecad_kernel::{FaceSurface, GeometryKernel};
 
-fn start(
-    s: &mut Sessions,
-    r: &EditChamferDistanceRequest,
-) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_apply_chamfer_distance(
-                t,
-                r.feature,
-                r.distance_mm,
-                r.expected,
-                c.clone(),
-                move |v| tx.send(v).expect("deliver"),
-            )
+            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
+                tx.send(v).expect("deliver")
+            })
         })
         .expect("start");
     (g, rx)
 }
-pub(super) fn apply(s: &mut Sessions, r: &EditChamferDistanceRequest) -> Edited {
+pub(super) fn apply(s: &mut Sessions, r: &EditRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(g, rx.recv().expect("answer"));
     if let Edited::Show(path) = &edited {
@@ -47,39 +39,55 @@ fn reading_of(path: &Path) -> ferritecad_document::ExtrudeEditSource {
     read_extrude_source(path).expect("reading")
 }
 /// A request made past the form, from the accepted snapshot, by the saved UUID.
-fn request(s: &Sessions, distance_mm: f64) -> EditChamferDistanceRequest {
+fn request(s: &Sessions, distance_mm: f64) -> EditRequest {
     let source = s.export_path().expect("current");
     let reading = reading_of(&source);
-    EditChamferDistanceRequest {
+    EditRequest {
         source,
         expected: reading.version,
-        feature: saved_of(&reading).feature,
-        distance_mm,
+
+        changes: vec![
+            ferritecad_document::ExpressionChange::constant(
+                saved_of(&reading).feature,
+                ferritecad_document::ExpressionSlot::ChamferDistance,
+                distance_mm,
+            )
+            .expect("validated expression"),
+        ],
         destination: PathBuf::new(),
     }
 }
 /// The shipped command line, from the same accepted file the window read.
-pub(super) fn peer(source: &Path, r: &EditChamferDistanceRequest, out: &Path) {
+pub(super) fn peer(source: &Path, r: &EditRequest, out: &Path) {
     let file = out.with_extension("json");
     std::fs::write(
         &file,
-        format!(r#"{{"request_version":1,"distance_mm":{}}}"#, r.distance_mm),
+        format!(
+            r#"{{"request_version":1,"distance_mm":{}}}"#,
+            r.changes[0].expression.value()
+        ),
     )
     .expect("request");
-    cli(&[
-        "edit-chamfer-distance".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        r.feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        reading_of(source).version.content.to_string().as_ref(),
-        "--request".as_ref(),
-        file.as_os_str(),
-        "-o".as_ref(),
-        out.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &r.changes[0].object.to_string(),
+            "chamfer_distance",
+            &r.changes[0].expression.value().to_string(),
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            reading_of(source).version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            out.as_os_str(),
+        ])
+    };
 }
-fn refuse(s: &mut Sessions, r: &EditChamferDistanceRequest) -> String {
+fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     let before = state(s);
     assert_eq!(apply(s, r), Edited::Failed);
     assert_eq!(state(s), before);
@@ -346,18 +354,24 @@ fn gate(name: &str) {
     let mut peers = source.clone();
     let mut accepted = vec![s.export_path().expect("initial")];
     let ph = root.path().join("height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        peers.as_os_str(),
-        "--feature".as_ref(),
-        base.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        opened.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "9.25".as_ref(),
-        "-o".as_ref(),
-        ph.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &base.to_string(),
+            "extrude_distance",
+            "9.25",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            peers.as_os_str(),
+            "--expect-version".as_ref(),
+            opened.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            ph.as_os_str(),
+        ])
+    };
     apply_native(&mut s, base, 9.25);
     assert_eq!(sql(&s.export_path().expect("height")), sql(&ph));
     peers = ph;
@@ -410,7 +424,7 @@ fn gate(name: &str) {
         form.finish_session_change();
         assert!(!form.active(), "acceptance closes the old version's form");
         let applied = s.export_path().expect("applied");
-        only_distance(&current, &applied, r.distance_mm);
+        only_distance(&current, &applied, r.changes[0].expression.value());
         assert_eq!(sql(&applied), sql(&out));
         accepted.push(applied);
         peer_files.push(out.clone());
@@ -503,8 +517,8 @@ fn gate(name: &str) {
         &current,
         &reading_of(&current),
         &s,
-        r.feature,
-        &r.distance_mm.to_string(),
+        r.changes[0].object,
+        &r.changes[0].expression.value().to_string(),
     );
     let draft = draft_state(&form);
     let (tx, rx) = mpsc::channel();

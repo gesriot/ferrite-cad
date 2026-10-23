@@ -245,15 +245,24 @@ pub(super) fn orphan(
 ) -> RecordId {
     let mut session = crate::sessions::test_open::open_in(private, file, HistoryLimits::default())
         .expect("session");
-    let feature = read_extrude_source(session.current().path())
-        .expect("reading")
-        .features[0]
-        .feature;
-    let step = session
-        .begin_step()
-        .edit_extrude_height(
-            feature,
-            millimetres,
+    let feature = ferritecad_fixtures::expression_slot(
+        &read_extrude_source(session.current().path()).expect("reading"),
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
+    let step = {
+        let ticket = session.begin_step();
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    millimetres,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -262,7 +271,8 @@ pub(super) fn orphan(
             },
             &OperationContext::default(),
         )
-        .expect("edit");
+    }
+    .expect("edit");
     session.commit_step(step).expect("accepted");
     let mut record = store.create_record().expect("record");
     record
@@ -1207,18 +1217,29 @@ fn recovered_peer(inputs: &Path, work: &Path) -> PathBuf {
     let plate = inputs.join("plate.fcad");
     let reading = read_extrude_source(&plate).expect("plate");
     let peer = work.join("c-peer.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        plate.as_os_str(),
-        "--feature".as_ref(),
-        reading.features[0].feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        reading.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "22".as_ref(),
-        "-o".as_ref(),
-        peer.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
+            "extrude_distance",
+            "22",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            plate.as_os_str(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            peer.as_os_str(),
+        ])
+    };
     peer
 }
 

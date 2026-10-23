@@ -8,6 +8,8 @@
 //! this slice exists to keep: the stored sketch is still the starting guess it
 //! always was, and the solved answer never quietly replaces it.
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
@@ -587,7 +589,7 @@ fn circle_constraint_discovery_and_protocol_without_native() {
     assert_eq!(sketch["editable"], false);
     assert!(sketch["vertices"].is_null());
     assert_eq!(sketch["circle_edit"]["available"], true);
-    assert_eq!(catalog["edit_extrude"]["available"], true);
+    assert!(transaction::first_slot(&catalog, "extrude_distance")["refusal"].is_null());
 
     let curve_id = curve.to_string();
     let other = "01a00000-0000-7000-8000-000000000000";
@@ -1181,18 +1183,21 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
         id
     };
     let taller = f.root.path().join("taller.fcad");
-    let r = cli()
-        .arg("edit-extrude")
-        .arg(&sized)
-        .arg("--feature")
-        .arg(extrude.to_string())
-        .arg("--distance-mm")
-        .arg("25")
-        .arg("-o")
-        .arg(&taller)
-        .arg("--json")
-        .output()
-        .expect("edit-extrude");
+    let r = transaction::constant(
+        &sized,
+        &Document::open_read_only(&sized)
+            .expect("document")
+            .content_version()
+            .expect("version")
+            .to_string(),
+        &extrude.to_string(),
+        "extrude_distance",
+        "25",
+        "mm",
+        &taller,
+    )
+    .output()
+    .expect("edit");
     assert!(r.status.success(), "{r:?}");
     let raised = stored(&taller);
     assert_eq!(raised.height_mm, 25.);

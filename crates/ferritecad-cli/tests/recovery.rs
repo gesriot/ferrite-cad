@@ -317,8 +317,12 @@ fn dirty_copy_of_a_source(root: &Path, user: &Path, sessions: &Path) -> Dirty {
         DocumentSession::open_in(sessions, &source, HistoryLimits::default()).expect("opened");
     let feature = read_extrude_source(session.current().path())
         .expect("reading")
-        .features[0]
-        .feature;
+        .expression_slots
+        .iter()
+        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .cloned()
+        .collect::<Vec<_>>()[0]
+        .object;
     if session.current().rebuild_facts().is_none() {
         session
             .current()
@@ -330,11 +334,19 @@ fn dirty_copy_of_a_source(root: &Path, user: &Path, sessions: &Path) -> Dirty {
             )
             .expect("Open picture and baseline facts");
     }
-    let step = session
-        .begin_step()
-        .edit_extrude_height(
-            feature,
-            22.0,
+    let step = {
+        let ticket = session.begin_step();
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    22.0,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -343,7 +355,8 @@ fn dirty_copy_of_a_source(root: &Path, user: &Path, sessions: &Path) -> Dirty {
             },
             &OperationContext::default(),
         )
-        .expect("an edit");
+    }
+    .expect("an edit");
     session.commit_step(step).expect("accepted");
     let store = RecoveryStore::open(root).expect("store");
     let mut record = store.create_record().expect("record");

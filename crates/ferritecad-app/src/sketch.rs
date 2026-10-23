@@ -2,13 +2,12 @@
 //! A disposable drawing, separate from the accepted scene and persisted model.
 //! No kernel, filesystem, IDs, or document mutation occurs while editing it.
 use ferritecad_document::{
-    AnnulusChoice, AnnulusEdit, CircleChoice, CircleEdit, ExtrudeEditSource, RevolveAngleChoice,
+    AnnulusChoice, AnnulusEdit, CircleChoice, CircleEdit, ExpressionSlotValue, ExtrudeEditSource,
     SketchChoice, SketchProfileUse, SketchVertex,
 };
 use ferritecad_jobs::{
-    AnnularExtrusion, CircleExtrusion, EditAnnulusRequest, EditCircleRequest,
-    EditRevolveAngleRequest, EditSketchRequest, FullTurnRevolution, NewDocument, PolygonExtrusion,
-    RevolveAngle,
+    AnnularExtrusion, CircleExtrusion, EditAnnulusRequest, EditCircleRequest, EditRequest,
+    EditSketchRequest, FullTurnRevolution, NewDocument, PolygonExtrusion, RevolveAngle,
 };
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
@@ -198,11 +197,11 @@ pub(crate) struct Editor {
     /// §27E: the saved partial Revolve whose angle is being edited, with the
     /// request it was read from, the angle as typed, and that draft's own
     /// bounded history under the same policy as the others.
-    editing_angle: Option<(EditRevolveAngleRequest, RevolveAngleChoice)>,
-    pending_angle_edit: Option<EditRevolveAngleRequest>,
+    editing_angle: Option<(EditRequest, ExpressionSlotValue)>,
+    pending_angle_edit: Option<EditRequest>,
     /// §30E: availability and request for Apply inside the open document.
     can_apply_angle: bool,
-    pending_apply_angle: Option<EditRevolveAngleRequest>,
+    pending_apply_angle: Option<EditRequest>,
     angle_edit: String,
     angle_undo: Vec<String>,
     angle_redo: Vec<String>,
@@ -335,7 +334,7 @@ impl Editor {
     pub(crate) fn set_angle_apply(&mut self, can_apply: bool) {
         self.can_apply_angle = can_apply;
     }
-    pub(crate) fn take_apply_angle_request(&mut self) -> Option<EditRevolveAngleRequest> {
+    pub(crate) fn take_apply_angle_request(&mut self) -> Option<EditRequest> {
         self.pending_apply_angle.take()
     }
 
@@ -554,7 +553,7 @@ impl Editor {
     pub(crate) fn take_annulus_edit_request(&mut self) -> Option<EditAnnulusRequest> {
         self.pending_annulus_edit.take()
     }
-    pub(crate) fn take_angle_edit_request(&mut self) -> Option<EditRevolveAngleRequest> {
+    pub(crate) fn take_angle_edit_request(&mut self) -> Option<EditRequest> {
         self.pending_angle_edit.take()
     }
     /// Begin editing the angle of one saved partial Revolve of the accepted
@@ -573,24 +572,28 @@ impl Editor {
             return false;
         }
         let Some(choice) = source
-            .revolve_angles
-            .iter()
-            .find(|c| c.feature == id && c.refusal.is_none())
+            .expression_slot(id, ferritecad_document::ExpressionSlot::RevolveAngle)
+            .filter(|c| c.refusal.is_none())
         else {
             return false;
         };
-        let Some(radians) = choice.radians else {
-            return false;
-        };
+        let radians = choice.expression.value();
         self.dismiss();
         self.angle_edit = ferritecad_types::display_degrees(radians).to_string();
         self.angle_applied = Some(self.angle_edit.clone());
         self.editing_angle = Some((
-            EditRevolveAngleRequest {
+            EditRequest {
                 source: path.to_path_buf(),
                 expected: source.version,
-                feature: id,
-                radians,
+
+                changes: vec![
+                    ferritecad_document::ExpressionChange::constant(
+                        id,
+                        ferritecad_document::ExpressionSlot::RevolveAngle,
+                        radians,
+                    )
+                    .expect("validated expression"),
+                ],
                 destination: PathBuf::new(),
             },
             choice.clone(),
@@ -599,20 +602,21 @@ impl Editor {
     }
     /// What the angle edit form is asking for, or why it is not an edit yet.
     /// Parses here; whether the number is an angle is the document's answer.
-    fn angle_edit_request(&self) -> Result<EditRevolveAngleRequest> {
+    fn angle_edit_request(&self) -> Result<EditRequest> {
         let (basis, choice) = self
             .editing_angle
             .as_ref()
             .ok_or_else(|| CadError::input("no saved Revolve angle draft"))?;
         let mut request = basis.clone();
-        request.radians = choice
-            .validate_angle(number(&self.angle_edit)?.to_radians())?
-            .radians();
+        let radians = number(&self.angle_edit)?.to_radians();
+        choice.validate(radians)?;
+        request.changes[0].expression = ferritecad_document::Expression::constant(radians)?;
         Ok(request)
     }
     fn apply_angle(&mut self) -> Result<()> {
         let request = self.angle_edit_request()?;
-        self.angle_edit = ferritecad_types::display_degrees(request.radians).to_string();
+        self.angle_edit =
+            ferritecad_types::display_degrees(request.changes[0].expression.value()).to_string();
         let before = self
             .angle_applied
             .replace(self.angle_edit.clone())
@@ -634,17 +638,13 @@ impl Editor {
     pub(crate) fn take_fillet_request(&mut self) -> Option<ferritecad_jobs::EdgeFilletRequest> {
         self.fillets.take_request()
     }
-    pub(crate) fn take_fillet_radius_request(
-        &mut self,
-    ) -> Option<ferritecad_jobs::EditFilletRadiusRequest> {
+    pub(crate) fn take_fillet_radius_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.fillets.take_radius_request()
     }
     pub(crate) fn take_chamfer_request(&mut self) -> Option<ferritecad_jobs::EdgeChamferRequest> {
         self.chamfers.take_request()
     }
-    pub(crate) fn take_chamfer_distance_request(
-        &mut self,
-    ) -> Option<ferritecad_jobs::EditChamferDistanceRequest> {
+    pub(crate) fn take_chamfer_distance_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.chamfers.take_distance_request()
     }
     /// Begin editing one saved pair of concentric circles of the accepted scene.
@@ -993,18 +993,22 @@ impl Editor {
                     response.on_hover_text(reason);
                 }
             }
-            for choice in &source.revolve_angles {
+            for choice in source
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+            {
                 let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                 let response = ui.add_enabled(
                     (can_begin || self.can_begin_sketch) && refusal.is_none(),
                     egui::Button::new(format!(
                         "Edit Revolve angle {} — {}…",
                         choice.name.as_deref().unwrap_or("Unnamed"),
-                        choice.feature
+                        choice.object
                     )),
                 );
                 if response.clicked() {
-                    self.begin_angle_edit(path, source, choice.feature);
+                    self.begin_angle_edit(path, source, choice.object);
                 }
                 if let Some(reason) = refusal {
                     response.on_hover_text(reason);
@@ -1580,19 +1584,12 @@ impl Editor {
         ui.label("Saved partial Revolve · angle only · right-handed about the sketch +Y axis");
         ui.small(format!(
             "Revolve {} · {}",
-            request.feature,
+            request.changes[0].object,
             crate::sessions::shown_as(&request.source)
         ));
         ui.small(format!(
-            "Saved angle {}° · {} · profile, axis, direction and every UUID are retained",
-            choice
-                .radians
-                .map(|r| ferritecad_types::display_degrees(r).to_string())
-                .unwrap_or_default(),
-            match choice.axis_segment {
-                Some(line) => format!("solid, closed on the axis along Line {line}"),
-                None => "with a bore".to_owned(),
-            }
+            "Saved angle {}°",
+            ferritecad_types::display_degrees(choice.expression.value())
         ));
         egui::Grid::new("ferritecad saved revolve angle")
             .num_columns(3)
@@ -1616,8 +1613,8 @@ impl Editor {
                 let differs = self
                     .editing_angle
                     .as_ref()
-                    .and_then(|(_, choice)| choice.radians)
-                    != Some(request.radians);
+                    .map(|(_, choice)| choice.expression.value())
+                    != Some(request.changes[0].expression.value());
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
@@ -5827,12 +5824,17 @@ pub(crate) mod tests {
             .expect("accepted scene")
         };
         let reading = loaded.edit_source.expect("accepted edit facts");
-        let [angle] = reading.revolve_angles.as_slice() else {
-            panic!("one Revolve angle row");
-        };
+        let angle = reading
+            .expression_slots
+            .iter()
+            .find(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+            .expect("angle slot");
         assert_eq!(angle.refusal, None);
-        assert_eq!(angle.radians.map(f64::to_degrees), Some(137.5));
-        let feature = angle.feature;
+        assert_eq!(
+            ferritecad_types::display_degrees(angle.expression.value()),
+            137.5
+        );
+        let feature = angle.object;
         // §27F: the sector's coordinates are a separate, available edit.
         let sketch = &reading.sketches[0];
         assert_eq!(sketch.refusal, None);
@@ -5866,7 +5868,7 @@ pub(crate) mod tests {
         for wanted in [
             "Edit saved Revolve angle",
             "Saved partial Revolve · angle only · right-handed about the sketch +Y axis",
-            "Saved angle 137.5° · with a bore · profile, axis, direction and every UUID are retained",
+            "Saved angle 137.5°",
             "137.5",
             "° (0.01–359.99, a full turn is not an angle)",
         ] {
@@ -5912,8 +5914,11 @@ pub(crate) mod tests {
         let out = frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, text_at(&out, "Save edited Revolve copy…"));
         let request = e.take_angle_edit_request().expect("submit");
-        assert_eq!(request.feature, feature);
-        assert_eq!(request.radians, 220.0_f64.to_radians());
+        assert_eq!(request.changes[0].object, feature);
+        assert_eq!(
+            request.changes[0].expression.value(),
+            220.0_f64.to_radians()
+        );
         assert_eq!(request.expected, reading.version);
         let kept = (e.angle_edit.clone(), e.angle_undo.clone());
 
@@ -5928,10 +5933,15 @@ pub(crate) mod tests {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let generation = edits
-                .start_revolve_angle(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_revolve_angle_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
+                .start(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_edit(
+                        r.source,
+                        r.expected,
+                        r.changes,
+                        r.destination,
+                        c,
+                        move |result| tx.send((g, result)).expect("reply"),
+                    )
                 })
                 .expect("worker");
             assert!(
@@ -5968,13 +5978,11 @@ pub(crate) mod tests {
 
         // The peer CLI, the same request, the same source.
         let edit = root.path().join("angle.json");
-        std::fs::write(&edit, r#"{"request_version":1,"angle_deg":220}"#).expect("request");
+        std::fs::write(&edit, format!(r#"{{"request_version":1,"changes":[{{"object":"{feature}","slot":{{"kind":"revolve_angle"}},"value":220,"unit":"deg"}}]}}"#)).expect("request");
         let cli = root.path().join("cli.fcad");
         let p = std::process::Command::new(ferritecad())
-            .arg("edit-revolve-angle")
+            .arg("edit")
             .arg(&source)
-            .arg("--feature")
-            .arg(feature.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -8352,11 +8360,15 @@ pub(crate) mod tests {
         );
         let reading = crate::constraints::tests::revolve::reading(&path);
         let angle = reading
-            .revolve_angles
+            .expression_slots
+            .iter()
+            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
+            .cloned()
+            .collect::<Vec<_>>()
             .iter()
             .find(|c| c.refusal.is_none())
             .expect("angle")
-            .feature;
+            .object;
         let mut e = Editor::default();
         assert!(e.begin_angle_edit(&path, &reading, angle));
         let ctx = egui::Context::default();

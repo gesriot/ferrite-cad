@@ -33,18 +33,15 @@ const EXIT_REPORT_DELIVERY: u8 = 7;
 #[serde(rename_all = "kebab-case")]
 pub enum Operation {
     Inspect,
-    EditExtrude,
+    Edit,
     EditSketchCopy,
     EditCircle,
     EditAnnular,
     EditSketchConstraintsCopy,
     CutCircularCopy,
     EditCircularCut,
-    EditRevolveAngle,
     FilletEdgeCopy,
-    EditFilletRadius,
     ChamferEdgeCopy,
-    EditChamferDistance,
     Create,
     CreateSketchExtrude,
     CreateSketchRevolve,
@@ -79,6 +76,8 @@ enum Outcome<T> {
 
 #[derive(Serialize)]
 struct Failure {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    lost_references: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rebuild: Option<ferritecad_eval::RebuildReport>,
     kind: &'static str,
@@ -102,6 +101,8 @@ impl From<&CadError> for Failure {
             source = cause.source();
         }
         Self {
+            lost_references: ferritecad_eval::RebuildRefusal::from_error(error).map(|r| r.lost_references.iter()
+                .map(|(id, error)| serde_json::json!({"reference":id,"message":error.to_string()})).collect()).unwrap_or_default(),
             rebuild: ferritecad_eval::RebuildRefusal::from_error(error).map(|r| r.report.clone()),
             kind: error.kind().as_str(),
             message: error.to_string(),
@@ -122,7 +123,7 @@ pub struct Inspection {
     content_version: ContentHash,
     display_units: DisplayUnits,
     distance_unit: &'static str,
-    edit_extrude: EditAvailability,
+    expression_slots: Vec<Slot>,
     features: Vec<Feature>,
     bodies: Vec<Body>,
     sketches: Vec<Sketch>,
@@ -130,135 +131,28 @@ pub struct Inspection {
     /// keeps listing Extrudes only, so no consumer of that array can take a
     /// Revolve for one.
     revolves: Vec<RevolveDiscovery>,
-    /// §28B, additive: every saved Fillet, with whether `edit-fillet-radius`
-    /// accepts it. Not a `features` entry, for the reason `revolves` is not.
-    fillets: Vec<FilletFeatureDiscovery>,
-    /// §29A, additive: every saved Chamfer, with whether
-    /// `edit-chamfer-distance` accepts it. Not a `features` entry either.
-    chamfers: Vec<chamfer::ChamferFeatureDiscovery>,
+    /// Saved Fillet identity, edge and expression facts.
+    fillets: Vec<serde_json::Value>,
+    /// Saved Chamfer identity, edge and expression facts.
+    chamfers: Vec<serde_json::Value>,
 }
 
-/// One saved Fillet (§28A), as the pinned reading found it, and what
-/// `edit-fillet-radius` (§28B) would accept about it. The edge, corner and
-/// radius are the stored ones even when the edit is refused.
 #[derive(Serialize)]
-struct FilletFeatureDiscovery {
-    feature_id: ObjectId,
+struct Slot {
+    object: ObjectId,
     name: Option<String>,
-    body_id: Option<ObjectId>,
-    previous_feature_id: ObjectId,
-    edge: FilletEdgeDto,
-    /// The corner of the rounded edge; `null` when the frame is refused. In
-    /// the stored coordinates when `profile_constrained`.
-    corner_mm: Option<[f64; 2]>,
-    radius_mm: f64,
-    /// §28E, additive: whether the plate's base Sketch carries constraints.
-    /// Then `corner_mm` is the stored approximation, and
-    /// `radius_edit.max_radius_mm` is `null`: the bound is the solved plate's,
-    /// checked when a copy is rebuilt. `false` when the frame is refused.
-    profile_constrained: bool,
-    /// §28H, additive: the place in the history, 1 for the only or first
-    /// Fillet and up to 4 (§28L), each Fillet rounding the result of the one
-    /// before it; `null` when the frame is refused.
-    history_index: Option<usize>,
-    radius_edit: FilletRadiusEditDiscovery,
-}
-
-/// `available` folds in the document-wide refusal, which keeps its priority;
-/// `refusal` is this Fillet's own reason and `document_refusal` the shared
-/// one. The bounds are the domain's, both inclusive, for this corner; `null`
-/// when the frame is refused.
-#[derive(Serialize)]
-struct FilletRadiusEditDiscovery {
-    available: bool,
+    slot: ferritecad_document::ExpressionSlot,
+    expression: ferritecad_document::Expression,
+    dimension: ferritecad_types::Dimension,
+    display_value: f64,
+    display_unit: &'static str,
     refusal: Option<String>,
-    document_refusal: Option<String>,
-    min_radius_mm: f64,
-    /// §28H/§28L: for an unconstrained plate rounded more than once also the
-    /// pair bound beside **every** adjacent Fillet, earlier or later, by the
-    /// check's own predicate: the minimum of them all.
-    max_radius_mm: Option<f64>,
-    /// §28H, additive: the other Fillet of a history of **exactly two**
-    /// Fillets, as saved. `null` for one Fillet and for three or four, whose
-    /// neighbours are `neighbours`; a scalar never stands for several.
-    neighbour: Option<NeighbourFilletDto>,
-    /// §28L, additive: every other Fillet of the history (none to three), in
-    /// history order, as saved, each with the Line it shares with this one.
-    neighbours: Vec<NeighbourFilletDto>,
-}
-
-/// §28H: the Fillet beside the one a radius edit changes.
-#[derive(Serialize)]
-struct NeighbourFilletDto {
-    feature_id: ObjectId,
-    history_index: usize,
-    edge: FilletEdgeDto,
-    /// Its corner on the stored Lines.
-    stored_corner_mm: [f64; 2],
-    radius_mm: f64,
-    /// The Line the two corners share and its stored length; both `null` for
-    /// the opposite corner. Stored, not solved, when `profile_constrained`.
-    shared_line_id: Option<StableEntityId>,
-    stored_shared_length_mm: Option<f64>,
-}
-
-impl FilletFeatureDiscovery {
-    fn new(
-        choice: ferritecad_document::FilletRadiusChoice,
-        document_refusal: Option<String>,
-    ) -> Self {
-        let saved = choice.saved.as_ref();
-        Self {
-            feature_id: choice.feature,
-            name: choice.name,
-            body_id: saved.map(|s| s.body),
-            previous_feature_id: choice.stored.previous,
-            edge: FilletEdgeDto {
-                feature_id: choice.stored.edge.feature,
-                joint: choice.stored.edge.joint.segments(),
-            },
-            corner_mm: saved.map(|s| s.corner.corner_mm),
-            radius_mm: choice.stored.radius_mm.value(),
-            profile_constrained: saved.is_some_and(|s| s.constrained),
-            history_index: saved.map(|s| s.history_index),
-            radius_edit: FilletRadiusEditDiscovery {
-                available: choice.refusal.is_none() && document_refusal.is_none(),
-                refusal: choice.refusal,
-                document_refusal,
-                min_radius_mm: ferritecad_document::MIN_RADIUS_MM,
-                max_radius_mm: saved.and_then(|s| s.max_radius_mm()),
-                neighbour: saved
-                    .and_then(|s| s.neighbour())
-                    .map(NeighbourFilletDto::of),
-                neighbours: saved
-                    .map(|s| s.neighbours.iter().map(NeighbourFilletDto::of).collect())
-                    .unwrap_or_default(),
-            },
-        }
-    }
-}
-
-impl NeighbourFilletDto {
-    fn of(n: &ferritecad_document::NeighbourFillet) -> Self {
-        Self {
-            feature_id: n.feature,
-            history_index: n.history_index,
-            edge: FilletEdgeDto {
-                feature_id: n.edge.feature,
-                joint: n.edge.joint.segments(),
-            },
-            stored_corner_mm: n.corner.corner_mm,
-            radius_mm: n.radius_mm,
-            shared_line_id: n.shared.map(|(line, _)| line),
-            stored_shared_length_mm: n.shared.map(|(_, length)| length),
-        }
-    }
 }
 
 /// One saved Revolve, as the pinned reading found it. Its profile's
 /// coordinates are edited through `edit-sketch-copy` (§27B); whether that is
 /// allowed is the Sketch row's `editable`, not `profile.available`. Its angle
-/// is edited through `edit-revolve-angle` (§27E), as `angle_edit` says.
+/// is addressed by the `revolve_angle` expression slot.
 #[derive(Serialize)]
 struct RevolveDiscovery {
     feature_id: ObjectId,
@@ -279,41 +173,6 @@ struct RevolveDiscovery {
     /// §27D, additive: the stored angle of a partial turn, in degrees
     /// (`extent` is then `"partial_turn"`); null for a full turn.
     angle_deg: Option<f64>,
-    /// §27E, additive: whether `edit-revolve-angle` accepts this Revolve.
-    angle_edit: AngleEditDiscovery,
-}
-
-/// What `edit-revolve-angle` would accept about one Revolve, from the same
-/// reading. `available` folds in the document-wide refusal, which keeps its
-/// priority; `refusal` is this Revolve's own reason and `document_refusal` the
-/// shared one, as `circle_edit` and `annulus_edit` report them. The bounds are
-/// the domain's, both inclusive; the saved angle stays in `angle_deg`.
-#[derive(Serialize)]
-struct AngleEditDiscovery {
-    available: bool,
-    refusal: Option<String>,
-    document_refusal: Option<String>,
-    min_deg: f64,
-    max_deg: f64,
-}
-
-impl AngleEditDiscovery {
-    fn new(
-        choice: ferritecad_document::RevolveAngleChoice,
-        document_refusal: Option<String>,
-    ) -> Self {
-        Self {
-            available: choice.refusal.is_none() && document_refusal.is_none(),
-            refusal: choice.refusal,
-            document_refusal,
-            min_deg: ferritecad_types::display_degrees(
-                ferritecad_document::RevolveAngle::MIN_RADIANS,
-            ),
-            max_deg: ferritecad_types::display_degrees(
-                ferritecad_document::RevolveAngle::MAX_RADIANS,
-            ),
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -334,9 +193,8 @@ struct RevolveSegment {
 }
 
 impl RevolveDiscovery {
-    fn new(r: ferritecad_document::RevolveChoice, angle_edit: AngleEditDiscovery) -> Self {
+    fn new(r: ferritecad_document::RevolveChoice) -> Self {
         Self {
-            angle_edit,
             feature_id: r.feature,
             name: r.name,
             body_id: r.body,
@@ -1219,50 +1077,12 @@ struct DisplayUnits {
 }
 
 #[derive(Serialize)]
-struct EditAvailability {
-    available: bool,
-    /// Also explains an empty catalog or a catalog with no supported feature.
-    refusal: Option<String>,
-    /// Only the document-wide copy_access restriction, separate from a feature.
-    document_refusal: Option<String>,
-}
-
-#[derive(Serialize)]
 struct Feature {
     feature_id: ObjectId,
     name: Option<String>,
-    distance_mm: Option<f64>,
-    /// Effective availability, including the document-wide copy restriction.
-    editable: bool,
-    /// Feature-local refusal. None does not override document_refusal.
-    refusal: Option<String>,
-    /// Whether this feature is a saved circular cut whose tool and depth can be
-    /// changed, and what it is today. Its own answer beside `editable`, which
-    /// keeps meaning exactly what it always did about `edit-extrude` — and
-    /// which still refuses a Cut.
     circular_cut_edit: CutParameterDiscovery<BlindDepth>,
-    /// The same answer in the form that can describe ThroughAll (§26H).
     circular_cut_edit_v2: CutParameterDiscovery<ExplicitEnd>,
-    /// The same answer for any supported polygon, with its real boundary (§26I).
     circular_cut_edit_v3: CutParameterDiscovery<ExplicitEnd, PolygonBoundary>,
-    /// v1: `null` also when the history holds a ThroughAll Cut; see `_v2`.
-    /// v1 and `_v2`: `null` unless the part is an axis-aligned rectangle; see `_v3`.
-    base_height_edit: Option<BaseHeightDiscovery<BlindDepth>>,
-    base_height_edit_v2: Option<BaseHeightDiscovery<ExplicitEnd>>,
-    base_height_edit_v3: Option<BaseHeightDiscovery<ExplicitEnd, PolygonBoundary>>,
-    /// §28C, additive: the saved Fillet over this plate when this is the base
-    /// Extrude under it and `edit-extrude` may change its height. The Fillet
-    /// keeps its edge and radius. `null` on every other row. Not a Cut
-    /// history: the `base_height_edit*` fields stay `null`. §28L: `null` for a
-    /// history of three or four Fillets; see `fillet_history`.
-    fillet_base: Option<FilletBaseDiscovery>,
-    /// §28L, additive: every saved Fillet over this plate in history order,
-    /// one to four; `null` on every other row.
-    fillet_history: Option<FilletHistoryDiscovery>,
-    /// §29B, additive: the saved Chamfer over this plate when this is the base
-    /// Extrude under it and `edit-extrude` may change its height. The Chamfer
-    /// keeps its edge and distance. `null` on every other row.
-    chamfer_base: Option<chamfer::ChamferBaseDiscovery>,
 }
 
 /// The whole Fillet history a base edit keeps (§28L), additive: every saved
@@ -1391,43 +1211,6 @@ impl FilletBaseDiscovery {
     }
 }
 
-/// Absolute tools and protected historical/descendant floor UUIDs for base height edits.
-#[derive(Serialize)]
-struct BaseHeightDiscovery<E, P = RectangleExtents> {
-    body_id: ObjectId,
-    profile_sketch_id: ObjectId,
-    /// v1/`_v2`: `extents_mm`; `_v3`: `bounds_mm` and `boundary`.
-    #[serde(flatten)]
-    profile: P,
-    tools: Vec<ExistingCut<E>>,
-    protected_floors: Vec<ProtectedFloor>,
-}
-#[derive(Serialize)]
-struct ProtectedFloor {
-    feature_id: ObjectId,
-    reference_ids: Vec<ferritecad_types::StableEntityId>,
-}
-impl<E: EndForm, P: ProfileForm> BaseHeightDiscovery<E, P> {
-    /// `None` when this form cannot describe every tool or the part; see
-    /// [`EndForm`] and [`ProfileForm`].
-    fn of(h: &ferritecad_document::BaseHeightContext) -> Option<Self> {
-        Some(Self {
-            body_id: h.body,
-            profile_sketch_id: h.profile,
-            profile: P::of(&h.boundary)?,
-            tools: ExistingCut::all(&h.tools)?,
-            protected_floors: h
-                .protected_floors
-                .iter()
-                .map(|p| ProtectedFloor {
-                    feature_id: p.feature,
-                    reference_ids: p.references.clone(),
-                })
-                .collect(),
-        })
-    }
-}
-
 /// What `edit-circular-cut` would accept about one feature, from the same
 /// reading.
 #[derive(Serialize)]
@@ -1550,16 +1333,15 @@ pub struct Edited {
     rebuild: ferritecad_eval::RebuildReport,
     destination: PathBuf,
     document_id: DocumentId,
-    feature_id: ObjectId,
+    content_version: ContentHash,
 }
-
 impl From<ferritecad_jobs::EditedDocument> for Edited {
     fn from(edited: ferritecad_jobs::EditedDocument) -> Self {
         Self {
             rebuild: edited.rebuild,
             destination: edited.destination,
-            document_id: edited.document_id,
-            feature_id: edited.feature,
+            document_id: edited.version.document_id,
+            content_version: edited.version.content,
         }
     }
 }
@@ -1658,7 +1440,6 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     } else {
         (None, None)
     };
-    let refusal = source.unavailable_reason().map(str::to_owned);
     let mut constraint_choices: std::collections::BTreeMap<_, _> = source
         .constraint_sketches
         .into_iter()
@@ -1686,36 +1467,24 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .into_iter()
         .map(|c| (c.body, c))
         .collect();
-    let mut cut_parameter_choices: std::collections::BTreeMap<_, _> = source
-        .cut_features
-        .into_iter()
-        .map(|c| (c.feature, c))
-        .collect();
-    let mut angle_choices: std::collections::BTreeMap<_, _> = source
-        .revolve_angles
-        .into_iter()
-        .map(|c| (c.feature, c))
-        .collect();
+    let cut_parameter_choices = source.cut_features;
     let revolves = source
         .revolves
         .into_iter()
-        .map(|r| {
-            let angle = angle_choices
-                .remove(&r.feature)
-                .expect("same snapshot Revolve catalogue");
-            RevolveDiscovery::new(r, AngleEditDiscovery::new(angle, source.refusal.clone()))
-        })
+        .map(RevolveDiscovery::new)
         .collect();
-    let fillets = source
-        .fillet_features
-        .into_iter()
-        .map(|c| FilletFeatureDiscovery::new(c, source.refusal.clone()))
-        .collect();
-    let chamfers = source
-        .chamfer_features
-        .into_iter()
-        .map(|c| chamfer::ChamferFeatureDiscovery::new(c, source.refusal.clone()))
-        .collect();
+    let edge_features = |fillet: bool| -> Result<Vec<serde_json::Value>> {
+        Ok(document.objects()?.into_iter().filter_map(|o| {
+            let (previous, edge, value) = match o.payload {
+                ferritecad_document::ObjectPayload::Fillet(f) if fillet => (f.previous, f.edge, f.radius_mm),
+                ferritecad_document::ObjectPayload::Chamfer(c) if !fillet => (c.previous, c.edge, c.distance_mm),
+                _ => return None,
+            };
+            Some(serde_json::json!({"feature_id":o.id,"name":o.name,"previous_feature_id":previous,"edge":{"feature_id":edge.feature,"joint":edge.joint.segments()},"expression":value}))
+        }).collect())
+    };
+    let fillets = edge_features(true)?;
+    let chamfers = edge_features(false)?;
     let result = Inspection {
         rebuild,
         rebuild_error,
@@ -1726,11 +1495,27 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             angle: document.meta().display_angle_unit.symbol(),
         },
         distance_unit: "mm",
-        edit_extrude: EditAvailability {
-            available: refusal.is_none(),
-            refusal,
-            document_refusal: source.refusal.clone(),
-        },
+        expression_slots: source
+            .expression_slots
+            .into_iter()
+            .map(|s| {
+                let angle = s.dimension == ferritecad_types::Dimension::Angle;
+                Slot {
+                    object: s.object,
+                    name: s.name,
+                    slot: s.slot,
+                    dimension: s.dimension,
+                    display_value: if angle {
+                        ferritecad_types::display_degrees(s.expression.value())
+                    } else {
+                        s.expression.value()
+                    },
+                    display_unit: if angle { "deg" } else { "mm" },
+                    expression: s.expression,
+                    refusal: source.refusal.clone().or(s.refusal),
+                }
+            })
+            .collect(),
         sketches: source
             .sketches
             .into_iter()
@@ -1775,50 +1560,26 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 }),
             })
             .collect(),
-        features: source
-            .features
-            .into_iter()
-            .map(|feature| {
-                let choice = cut_parameter_choices
-                    .remove(&feature.feature)
-                    .expect("same snapshot feature catalogue");
-                Feature {
-                    circular_cut_edit: CutParameterDiscovery::new(
-                        &choice,
-                        source.refusal.clone(),
-                        "circular_cut_edit",
-                    ),
-                    circular_cut_edit_v2: CutParameterDiscovery::new(
-                        &choice,
-                        source.refusal.clone(),
-                        "circular_cut_edit",
-                    ),
-                    circular_cut_edit_v3: CutParameterDiscovery::new(
-                        &choice,
-                        source.refusal.clone(),
-                        "circular_cut_edit",
-                    ),
-                    base_height_edit: feature
-                        .cut_history
-                        .as_ref()
-                        .and_then(BaseHeightDiscovery::of),
-                    base_height_edit_v2: feature
-                        .cut_history
-                        .as_ref()
-                        .and_then(BaseHeightDiscovery::of),
-                    base_height_edit_v3: feature
-                        .cut_history
-                        .as_ref()
-                        .and_then(BaseHeightDiscovery::of),
-                    fillet_base: FilletBaseDiscovery::of_history(&feature.fillets),
-                    fillet_history: FilletHistoryDiscovery::of(&feature.fillets),
-                    chamfer_base: chamfer::ChamferBaseDiscovery::of(feature.chamfer.as_ref()),
-                    feature_id: feature.feature,
-                    name: feature.name,
-                    distance_mm: feature.distance_mm,
-                    editable: source.refusal.is_none() && feature.refusal.is_none(),
-                    refusal: feature.refusal,
-                }
+        features: cut_parameter_choices
+            .iter()
+            .map(|choice| Feature {
+                feature_id: choice.feature,
+                name: choice.name.clone(),
+                circular_cut_edit: CutParameterDiscovery::new(
+                    choice,
+                    source.refusal.clone(),
+                    "circular_cut_edit",
+                ),
+                circular_cut_edit_v2: CutParameterDiscovery::new(
+                    choice,
+                    source.refusal.clone(),
+                    "circular_cut_edit",
+                ),
+                circular_cut_edit_v3: CutParameterDiscovery::new(
+                    choice,
+                    source.refusal.clone(),
+                    "circular_cut_edit",
+                ),
             })
             .collect(),
         bodies: {

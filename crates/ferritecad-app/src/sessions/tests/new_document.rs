@@ -289,10 +289,11 @@ fn artifacts(name: &str, stl: &[u8], fbx: &[u8]) {
 }
 
 fn first_extrude(path: &Path) -> ObjectId {
-    ferritecad_jobs::read_extrude_source(path)
-        .expect("reading")
-        .features[0]
-        .feature
+    ferritecad_fixtures::expression_slot(
+        &ferritecad_jobs::read_extrude_source(path).expect("reading"),
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object
 }
 
 /// The matrix: each variant, created, edited where it has a height, exported
@@ -667,18 +668,29 @@ fn compare_gui(root: &Path) {
     ]);
     let reading = ferritecad_jobs::read_extrude_source(&base).expect("base");
     let edited = peer.join("edited.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        base.as_os_str(),
-        "--feature".as_ref(),
-        reading.features[0].feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        reading.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "21.5".as_ref(),
-        "-o".as_ref(),
-        edited.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
+            "extrude_distance",
+            "21.5",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            base.as_os_str(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            edited.as_os_str(),
+        ])
+    };
 
     // The first Save is the edited plate, under a bijection of its new identities.
     let first = root.join("first-save.fcad");

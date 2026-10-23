@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Putting the accepted version where the user's file is: Save and Save As.
 //!
-//! Not a copy job. The copy operations (`edit-extrude` and the rest) refuse to
+//! Not a copy job. The copy operations (`edit with extrude_distance` and the rest) refuse to
 //! write over their source and refuse any occupied destination, and those refusals
 //! are the protection the command line relies on; they are unchanged. Save is a
 //! different operation with its own, narrower permission: it may replace *one*

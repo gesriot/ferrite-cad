@@ -198,6 +198,12 @@ prints `FCAD_29D_RECIPE_OK` with the measured and exact volumes.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29d-"))
+
+def edit_args(source, feature, height, version, out):
+    request = root / "expression.json"
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+    return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 OP = "edit-sketch-constraints-copy"
 
 def run(args, code=0):
@@ -330,10 +336,9 @@ catalog = inspect(chamfered)
 editor = sketch["constraint_edit"]
 assert editor["available"] is True, editor
 context = editor["chamfer_base"]
-assert context == catalog["features"][0]["chamfer_base"], context
+assert context == catalog["sketches"][0]["chamfer_base"], context
 assert context["chamfer_feature_id"] == chamfer["feature_id"] and context["edge"] == chamfer["edge"]
 assert context["corner_mm"] == CORNER and context["distance_mm"] == d1, context
-assert context["profile_constrained"] is False and chamfer["profile_constrained"] is False
 lines = [c["curve_id"] for c in editor["curves"]]
 starts = [c["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
@@ -378,8 +383,6 @@ after = inspect(first)
 assert [c["start_mm"] for c in after["sketches"][0]["constraint_edit"]["curves"]] == starts
 (again,) = after["chamfers"]
 assert again["feature_id"] == chamfer["feature_id"] and again["edge"] == chamfer["edge"], again
-assert again["distance_mm"] == d1 and again["profile_constrained"] is True, again
-assert again["distance_edit"]["max_distance_mm"] is None, again
 assert after["sketches"][0]["editable"] is False
 assert chamfer["feature_id"] in after["sketches"][0]["refusal"], after["sketches"][0]
 rect = [AT[0], AT[1], WIDTH, DEPTH]
@@ -403,16 +406,14 @@ v2, e2 = measured(replaced, rect2, corner2, d1, H)
 #    constraints are kept byte for byte.
 catalog2 = inspect(replaced)
 taller = root / "taller.fcad"
-run(["edit-extrude", replaced, "--feature", catalog2["features"][0]["feature_id"],
-     "--distance-mm", 9.75, "--expect-version", catalog2["content_version"], "-o", taller, "--json"])
+run(edit_args(replaced, catalog2["features"][0]["feature_id"], 9.75, catalog2["content_version"], taller))
 assert sketch_row(taller) == sketch_row(replaced), "the constraints are kept"
 v3, e3 = measured(taller, rect2, corner2, d1, 9.75)
 catalog3 = inspect(taller)
 distance_req = root / "distance.json"
-distance_req.write_text(json.dumps({"request_version": 1, "distance_mm": 14.5}))
+distance_req.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": 14.5, "unit": "mm"}]}))
 wider = root / "wider.fcad"
-run(["edit-chamfer-distance", taller, "--feature", chamfer["feature_id"], "--expect-version",
-     catalog3["content_version"], "--request", distance_req, "-o", wider, "--json"])
+run(["edit", taller, "--expect-version", catalog3["content_version"], "--request", distance_req, "-o", wider, "--json"])
 assert sketch_row(wider) == sketch_row(taller), "the constraints are kept"
 v4, e4 = measured(wider, rect2, corner2, 14.5, 9.75)
 
@@ -433,10 +434,9 @@ never = root / "never.fcad"
 error = constrain(fewer, catalog5["content_version"], user, [], never, 2)
 assert error["kind"] == "input" and chamfer["feature_id"] in error["message"], error
 assert "does not fit the solved plate" in error["message"] and not never.exists(), error
-distance_req.write_text(json.dumps({"request_version": 1, "distance_mm": 3.0}))
+distance_req.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": 3.0, "unit": "mm"}]}))
 lower = root / "lower.fcad"
-run(["edit-chamfer-distance", fewer, "--feature", chamfer["feature_id"], "--expect-version",
-     catalog5["content_version"], "--request", distance_req, "-o", lower, "--json"])
+run(["edit", fewer, "--expect-version", catalog5["content_version"], "--request", distance_req, "-o", lower, "--json"])
 catalog5 = inspect(lower)
 bare = root / "bare.fcad"
 constrain(lower, catalog5["content_version"], user, [], bare)
@@ -444,9 +444,8 @@ catalog6 = inspect(bare)
 left = catalog6["sketches"][0]["constraint_edit"]["constraints"]
 assert len(left) == 4 and all(c["rule"]["kind"] == "coincident" for c in left), left
 assert [c["start_mm"] for c in catalog6["sketches"][0]["constraint_edit"]["curves"]] == starts
-assert catalog6["chamfers"][0]["profile_constrained"] is False
+assert catalog6["sketches"][0]["chamfer_base"]["profile_constrained"] is False
 assert catalog6["sketches"][0]["editable"] is True
-assert catalog6["chamfers"][0]["distance_edit"]["max_distance_mm"] is not None
 rect3 = [-10.125, 7.5, 52.25, 20.5]
 x0, y0, w3, d3 = rect3
 new = [[x0 + w3, y0 + d3], [x0 + w3, y0], [x0, y0], [x0, y0 + d3]]

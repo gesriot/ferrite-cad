@@ -405,18 +405,24 @@ fn gate(count: usize, height: bool, name: &str) {
     if height {
         apply_native(&mut s, selected(&opened, 0).base_feature, 15.25);
         let out = root.path().join("peer-height.fcad");
-        cli(&[
-            "edit-extrude".as_ref(),
-            source.as_os_str(),
-            "--feature".as_ref(),
-            selected(&opened, 0).base_feature.to_string().as_ref(),
-            "--expect-version".as_ref(),
-            opened.version.content.to_string().as_ref(),
-            "--distance-mm".as_ref(),
-            "15.25".as_ref(),
-            "-o".as_ref(),
-            out.as_os_str(),
-        ]);
+        {
+            let request = crate::edits::tests::expression_request(
+                &selected(&opened, 0).base_feature.to_string(),
+                "extrude_distance",
+                "15.25",
+                "mm",
+            );
+            cli(&[
+                "edit".as_ref(),
+                source.as_os_str(),
+                "--expect-version".as_ref(),
+                opened.version.content.to_string().as_ref(),
+                "--request".as_ref(),
+                request.path().as_os_str(),
+                "--output".as_ref(),
+                out.as_os_str(),
+            ])
+        };
         assert_eq!(sql(&s.export_path().expect("height"), &[]), sql(&out, &[]));
         let now = read_extrude_source(&s.export_path().expect("height")).expect("reading");
         for (a, b) in selected(&opened, 0)
@@ -820,18 +826,24 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
     let tmp = tempfile::tempdir().expect("peer root");
     let reading = read_extrude_source(&source).expect("reading");
     let height = tmp.path().join("height.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        selected(&reading, 0).base_feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        reading.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "15.25".as_ref(),
-        "-o".as_ref(),
-        height.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &selected(&reading, 0).base_feature.to_string(),
+            "extrude_distance",
+            "15.25",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            height.as_os_str(),
+        ])
+    };
     let reading = read_extrude_source(&height).expect("height reading");
     let base = reading
         .sketches

@@ -59,12 +59,10 @@ use crate::checkpoint::{
 use crate::create::{CreateDocumentRequest, NewDocument, create_document_with_kernel};
 use crate::edit::{
     CircularCutRequest, EdgeChamferRequest, EdgeFilletRequest, EditAnnulusRequest,
-    EditChamferDistanceRequest, EditCircleRequest, EditCircularCutRequest, EditExtrudeRequest,
-    EditFilletRadiusRequest, EditRevolveAngleRequest, EditSketchConstraintsRequest,
-    EditSketchRequest, chamfer_edge_copy_with, circular_cut_copy_with, edit_annulus_copy_with,
-    edit_chamfer_distance_copy_with, edit_circle_copy_with, edit_circular_cut_copy_with,
-    edit_extrude_copy_with, edit_fillet_radius_copy_with, edit_revolve_angle_copy_with,
-    edit_sketch_constraints_copy_with, edit_sketch_copy_with, fillet_edge_copy_with,
+    EditCircleRequest, EditCircularCutRequest, EditSketchConstraintsRequest, EditSketchRequest,
+    chamfer_edge_copy_with, circular_cut_copy_with, edit_annulus_copy_with, edit_circle_copy_with,
+    edit_circular_cut_copy_with, edit_sketch_constraints_copy_with, edit_sketch_copy_with,
+    fillet_edge_copy_with,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
 
@@ -696,30 +694,25 @@ impl StepTicket {
         &self.destination
     }
 
-    /// Changes the blind height of one Extrude: the reused `edit-extrude` copy
-    /// operation, reading the current version and writing the next, so the
-    /// result is what the command line's `edit-extrude` makes from the same
-    /// document. The caller owns the kernel and its thread.
-    #[allow(clippy::too_many_arguments)]
-    pub fn edit_extrude_height<K: GeometryKernel + ?Sized>(
+    pub fn edit<K: GeometryKernel + ?Sized>(
         self,
-        feature: ObjectId,
-        distance_mm: f64,
+        changes: Vec<ferritecad_document::ExpressionChange>,
+        expected: DocumentVersion,
         kernel: &mut K,
         read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
+        self.check_form_version(expected)?;
         self.run_edit(
             kernel,
             read_step,
             context,
             |source, expected, destination, kernel, run| {
-                edit_extrude_copy_with(
-                    &EditExtrudeRequest {
+                crate::edit::edit_copy_with(
+                    &crate::EditRequest {
                         source: source.to_path_buf(),
                         expected,
-                        feature,
-                        distance_mm,
+                        changes,
                         destination: destination.to_path_buf(),
                     },
                     kernel,
@@ -975,42 +968,6 @@ impl StepTicket {
         )
     }
 
-    /// Changes the angle of one supported saved partial Revolve using the same
-    /// copy job as the CLI. The form must name the current version; model-content
-    /// comparison decides no-op, preserving Redo and releasing the private file.
-    #[allow(clippy::too_many_arguments)]
-    pub fn edit_revolve_angle<K: GeometryKernel + ?Sized>(
-        self,
-        feature: ObjectId,
-        radians: f64,
-        expected: DocumentVersion,
-        kernel: &mut K,
-        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
-        context: &OperationContext,
-    ) -> Result<ProducedStep> {
-        self.check_form_version(expected)?;
-        self.run_edit(
-            kernel,
-            read_step,
-            context,
-            |source, expected, destination, kernel, run| {
-                edit_revolve_angle_copy_with(
-                    &EditRevolveAngleRequest {
-                        source: source.to_path_buf(),
-                        expected,
-                        feature,
-                        radians,
-                        destination: destination.to_path_buf(),
-                    },
-                    kernel,
-                    context,
-                    run,
-                )
-                .map(|_| ())
-            },
-        )
-    }
-
     /// §30J: adds one Fillet to the Body named by its saved UUID, at the corner
     /// named by the base feature and its two Line UUIDs, using the current accepted
     /// snapshot and the CLI's existing `fillet_edge_copy`. The feature and its
@@ -1038,41 +995,6 @@ impl StepTicket {
                         expected,
                         body,
                         fillet,
-                        destination: destination.to_path_buf(),
-                    },
-                    kernel,
-                    context,
-                    run,
-                )
-                .map(|_| ())
-            },
-        )
-    }
-
-    /// Changes the selected existing Fillet by UUID through the same copy job as
-    /// the CLI. No identity is created; model comparison discards a numeric no-op.
-    #[allow(clippy::too_many_arguments)]
-    pub fn edit_fillet_radius<K: GeometryKernel + ?Sized>(
-        self,
-        feature: ObjectId,
-        radius_mm: f64,
-        expected: DocumentVersion,
-        kernel: &mut K,
-        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
-        context: &OperationContext,
-    ) -> Result<ProducedStep> {
-        self.check_form_version(expected)?;
-        self.run_edit(
-            kernel,
-            read_step,
-            context,
-            |source, expected, destination, kernel, run| {
-                edit_fillet_radius_copy_with(
-                    &EditFilletRadiusRequest {
-                        source: source.to_path_buf(),
-                        expected,
-                        feature,
-                        radius_mm,
                         destination: destination.to_path_buf(),
                     },
                     kernel,
@@ -1112,43 +1034,6 @@ impl StepTicket {
                         expected,
                         body,
                         chamfer,
-                        destination: destination.to_path_buf(),
-                    },
-                    kernel,
-                    context,
-                    run,
-                )
-                .map(|_| ())
-            },
-        )
-    }
-
-    /// Changes the distance of the selected existing Chamfer by UUID through the
-    /// CLI's copy job, reading the accepted snapshot. No identity is created; the
-    /// bound is the domain's and, on a constrained base, the evaluator's on the
-    /// solved Lines. Model comparison discards a numeric no-op.
-    #[allow(clippy::too_many_arguments)]
-    pub fn edit_chamfer_distance<K: GeometryKernel + ?Sized>(
-        self,
-        feature: ObjectId,
-        distance_mm: f64,
-        expected: DocumentVersion,
-        kernel: &mut K,
-        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
-        context: &OperationContext,
-    ) -> Result<ProducedStep> {
-        self.check_form_version(expected)?;
-        self.run_edit(
-            kernel,
-            read_step,
-            context,
-            |source, expected, destination, kernel, run| {
-                edit_chamfer_distance_copy_with(
-                    &EditChamferDistanceRequest {
-                        source: source.to_path_buf(),
-                        expected,
-                        feature,
-                        distance_mm,
                         destination: destination.to_path_buf(),
                     },
                     kernel,

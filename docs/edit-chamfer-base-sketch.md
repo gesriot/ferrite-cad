@@ -147,6 +147,12 @@ import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29c-"))
 
+def edit_args(source, feature, height, version, out):
+    request = root / "expression.json"
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+    return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
+
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
     if p.returncode == 7:
@@ -290,7 +296,7 @@ saved = inspect(one)
 chamfer = saved["chamfers"][0]
 sketch = saved["sketches"][0]
 assert sketch["editable"] is True and sketch["refusal"] is None
-assert sketch["chamfer_base"] == saved["features"][0]["chamfer_base"]
+assert sketch["chamfer_base"] == saved["sketches"][0]["chamfer_base"]
 assert sketch["chamfer_base"] == {"chamfer_feature_id": chamfer["feature_id"],
                                   "body_id": saved["bodies"][0]["body_id"], "edge": chamfer["edge"],
                                   "corner_mm": corner_of([X0, Y0, W, D]), "distance_mm": d1,
@@ -325,10 +331,10 @@ for name, rect in rects.items():
     assert only_row(one, out, sketch["sketch_id"]) >= 2
     assert [r[0] for r in tables(out)["topology_refs"][1]] == refs_before, "every name keeps its UUID"
     after = inspect(out)
-    assert after["features"][0]["distance_mm"] == H, "the height is kept"
+    assert next(s for s in after["expression_slots"] if s["slot"]["kind"] == "extrude_distance")["expression"]["value"] == H, "the height is kept"
     assert after["chamfers"][0]["feature_id"] == chamfer["feature_id"]
     assert after["chamfers"][0]["edge"] == chamfer["edge"], "the same two Lines meet"
-    assert after["chamfers"][0]["distance_mm"] == d1, "the distance is kept, not reduced"
+    assert after["chamfers"][0]["expression"]["value"] == d1, "the distance is kept, not reduced"
     assert after["sketches"][0]["chamfer_base"]["corner_mm"] == corner_of(rect)
     measured(out, rect, d1, H)
     copies[name] = out
@@ -337,14 +343,11 @@ for name, rect in rects.items():
 #    plate, and the distance bound follows the NEW adjacent sides.
 edited = inspect(copies["big"])
 taller = root / "taller.fcad"
-geometry(["edit-extrude", copies["big"], "--feature", edited["features"][0]["feature_id"],
-          "--distance-mm", "9.5", "--expect-version", edited["content_version"], "-o", taller, "--json"], taller)
+geometry(edit_args(copies["big"], edited["features"][0]["feature_id"], "9.5", edited["content_version"], taller), taller)
 measured(taller, rects["big"], d1, 9.5)
-assert edited["chamfers"][0]["distance_edit"]["max_distance_mm"] == min(rects["big"][2], rects["big"][3]) - 0.01
-request.write_text(json.dumps({"request_version": 1, "distance_mm": rects["big"][3] - 0.01}))
+request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": rects["big"][3] - 0.01, "unit": "mm"}]}))
 far = root / "far.fcad"
-geometry(["edit-chamfer-distance", copies["big"], "--feature", chamfer["feature_id"],
-          "--expect-version", edited["content_version"], "--request", request, "-o", far, "--json"], far)
+geometry(["edit", copies["big"], "--expect-version", edited["content_version"], "--request", request, "-o", far, "--json"], far)
 measured(far, rects["big"], rects["big"][3] - 0.01, H)
 
 # 5. The bound is exact: the smallest side that still fits the saved distance
@@ -359,7 +362,7 @@ exact_side = root / "exact.fcad"
 geometry(["edit-sketch-copy", one, "--sketch", sketch["sketch_id"],
           "--expect-version", saved["content_version"], "--request", ask(saved, [0.0, 0.0, 40.0, s]),
           "-o", exact_side, "--json"], exact_side)
-assert inspect(exact_side)["chamfers"][0]["distance_mm"] == d1
+assert inspect(exact_side)["chamfers"][0]["expression"]["value"] == d1
 measured(exact_side, [0.0, 0.0, 40.0, s], d1, H)
 
 # 6. Refusals write nothing: just below the bound, a plate turned half a turn

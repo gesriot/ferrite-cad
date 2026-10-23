@@ -12,11 +12,10 @@ use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 use crate::{Existing, Temporary, path_entry_exists, refuse_source_as_destination};
 
 #[derive(Debug, Clone)]
-pub struct EditExtrudeRequest {
+pub struct EditRequest {
     pub source: PathBuf,
     pub expected: DocumentVersion,
-    pub feature: ObjectId,
-    pub distance_mm: f64,
+    pub changes: Vec<ferritecad_document::ExpressionChange>,
     pub destination: PathBuf,
 }
 
@@ -24,54 +23,42 @@ pub struct EditExtrudeRequest {
 pub struct EditedDocument {
     pub rebuild: ferritecad_eval::RebuildReport,
     pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    pub feature: ObjectId,
+    pub version: DocumentVersion,
 }
 
-/// A saved version of the same model, preserving every identity. The caller
-/// owns the kernel thread. Cancellation before publication leaves no output;
-/// after publication this returns success even if cancellation has arrived.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
-    request: &EditExtrudeRequest,
+pub fn edit_copy<K: GeometryKernel + ?Sized>(
+    request: &EditRequest,
     kernel: &mut K,
     context: &OperationContext,
 ) -> Result<EditedDocument> {
-    edit_extrude_copy_with(request, kernel, context, &mut EditRun::standalone())
+    edit_copy_with(request, kernel, context, &mut EditRun::standalone())
 }
 
-pub(crate) fn edit_extrude_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EditExtrudeRequest,
+pub(crate) fn edit_copy_with<K: GeometryKernel + ?Sized>(
+    request: &EditRequest,
     kernel: &mut K,
     context: &OperationContext,
     run: &mut EditRun<'_, K>,
 ) -> Result<EditedDocument> {
     context.check_cancelled()?;
-    ferritecad_document::validate_extrude_distance(request.distance_mm)?;
-    let rebuild = edit_object_copy(
+    edit_object_copy(
         &request.source,
         request.expected,
         &request.destination,
         kernel,
         context,
         run,
-        |source| {
-            Ok(CopyWrite::Height(Box::new(
-                ferritecad_document::prepare_extrude_height(
-                    source,
-                    request.feature,
-                    request.distance_mm,
-                )?,
-            )))
+        |_| Ok(CopyWrite::Expressions(request.changes.clone())),
+        |_, checked| {
+            Ok(EditedDocument {
+                rebuild: checked.rebuild,
+                destination: request.destination.clone(),
+                version: checked
+                    .version
+                    .expect("candidate rebuild records its version"),
+            })
         },
-        |_, checked| Ok(checked.rebuild),
-    )?;
-    Ok(EditedDocument {
-        rebuild,
-        destination: request.destination.clone(),
-        document_id: request.expected.document_id,
-        feature: request.feature,
-    })
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -133,237 +120,13 @@ pub(crate) fn edit_sketch_copy_with<K: GeometryKernel + ?Sized>(
     })
 }
 
-/// §27E: a new stated angle for one saved partial Revolve.
-#[derive(Debug, Clone)]
-pub struct EditRevolveAngleRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub feature: ObjectId,
-    /// Radians, exactly as given; the domain's `RevolveAngle` decides.
-    pub radians: f64,
-    pub destination: PathBuf,
-}
-
-/// The same model at a new angle, every identity kept. Its angle is only
-/// written through the shared copy spine: the prepared row is derived again
-/// inside the write, every saved name must resolve after a cold rebuild, and
-/// the source is checked once more before a no-clobber publication.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn edit_revolve_angle_copy<K: GeometryKernel + ?Sized>(
-    request: &EditRevolveAngleRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<EditedDocument> {
-    edit_revolve_angle_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn edit_revolve_angle_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EditRevolveAngleRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<EditedDocument> {
-    context.check_cancelled()?;
-    let rebuild = edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::prepare_revolve_angle(source, request.feature, request.radians)
-                .map(CopyWrite::RevolveAngle)
-        },
-        |_, checked| Ok(checked.rebuild),
-    )?;
-    Ok(EditedDocument {
-        rebuild,
-        destination: request.destination.clone(),
-        document_id: request.expected.document_id,
-        feature: request.feature,
-    })
-}
-
-/// §28B: a new radius for the one saved Fillet. The edge is the saved one
-/// and cannot be named here.
-#[derive(Debug, Clone)]
-pub struct EditFilletRadiusRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub feature: ObjectId,
-    pub radius_mm: f64,
-    pub destination: PathBuf,
-}
-
-/// What one published radius edit is, from the prepared edit itself.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EditedFilletRadius {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    pub body: ObjectId,
-    pub feature: ObjectId,
-    /// The saved edge and corner, unchanged by this edit.
-    pub edge: ferritecad_document::FilletEdge,
-    pub corner_mm: [f64; 2],
-    pub previous_radius_mm: f64,
-    pub radius_mm: f64,
-    /// §28H/§28L: the feature the edited Fillet rounds — the plate for the only
-    /// or first Fillet, the Fillet before it otherwise — and its place in the
-    /// history (1 to 4). Both unchanged by the edit.
-    pub previous: ObjectId,
-    pub history_index: usize,
-}
-
-/// Change the radius of the one saved Fillet in a new copy.
-///
-/// The same snapshot, baseline rebuild, reference check, version recheck and
-/// atomic publication every other copy edit uses. Nothing is minted, so every
-/// saved name, and only those, must resolve after the edit.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn edit_fillet_radius_copy<K: GeometryKernel + ?Sized>(
-    request: &EditFilletRadiusRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<EditedFilletRadius> {
-    edit_fillet_radius_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn edit_fillet_radius_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EditFilletRadiusRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<EditedFilletRadius> {
-    context.check_cancelled()?;
-    edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::prepare_fillet_radius(source, request.feature, request.radius_mm)
-                .map(Box::new)
-                .map(CopyWrite::FilletRadius)
-        },
-        |prepared, checked| {
-            let CopyWrite::FilletRadius(prepared) = prepared else {
-                return Err(CadError::input("missing prepared Fillet radius edit"));
-            };
-            let saved = prepared.saved();
-            Ok(EditedFilletRadius {
-                rebuild: checked.rebuild,
-                destination: request.destination.clone(),
-                document_id: request.expected.document_id,
-                body: saved.body,
-                feature: saved.feature,
-                edge: saved.edge,
-                corner_mm: saved.corner.corner_mm,
-                previous_radius_mm: saved.radius_mm,
-                radius_mm: prepared.radius_mm(),
-                previous: saved.previous,
-                history_index: saved.history_index,
-            })
-        },
-    )
-}
-
-/// §29A: a new distance for the one saved Chamfer. The edge is the saved one
-/// and cannot be named here.
-#[derive(Debug, Clone)]
-pub struct EditChamferDistanceRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub feature: ObjectId,
-    pub distance_mm: f64,
-    pub destination: PathBuf,
-}
-
-/// What one published distance edit is, from the prepared edit itself.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EditedChamferDistance {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    pub body: ObjectId,
-    pub feature: ObjectId,
-    /// The saved edge and corner, unchanged by this edit.
-    pub edge: ferritecad_document::SweptEdge,
-    pub corner_mm: [f64; 2],
-    pub previous_distance_mm: f64,
-    pub distance_mm: f64,
-    /// The feature the Chamfer cuts, unchanged by the edit.
-    pub previous: ObjectId,
-}
-
-/// Change the distance of the one saved Chamfer in a new copy (§29A).
-///
-/// The same snapshot, baseline rebuild, reference check, version recheck and
-/// atomic publication every other copy edit uses. Nothing is minted, so every
-/// saved name, and only those, must resolve after the edit.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn edit_chamfer_distance_copy<K: GeometryKernel + ?Sized>(
-    request: &EditChamferDistanceRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<EditedChamferDistance> {
-    edit_chamfer_distance_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn edit_chamfer_distance_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EditChamferDistanceRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<EditedChamferDistance> {
-    context.check_cancelled()?;
-    edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::prepare_chamfer_distance(
-                source,
-                request.feature,
-                request.distance_mm,
-            )
-            .map(Box::new)
-            .map(CopyWrite::ChamferDistance)
-        },
-        |prepared, checked| {
-            let CopyWrite::ChamferDistance(prepared) = prepared else {
-                return Err(CadError::input("missing prepared Chamfer distance edit"));
-            };
-            let saved = prepared.saved();
-            Ok(EditedChamferDistance {
-                rebuild: checked.rebuild,
-                destination: request.destination.clone(),
-                document_id: request.expected.document_id,
-                body: saved.body,
-                feature: saved.feature,
-                edge: saved.edge,
-                corner_mm: saved.corner.corner_mm,
-                previous_distance_mm: saved.distance_mm,
-                distance_mm: prepared.distance_mm(),
-                previous: saved.base_feature,
-            })
-        },
-    )
-}
-
 #[derive(Debug, Clone)]
 pub struct EditCircleRequest {
     pub source: PathBuf,
     pub expected: DocumentVersion,
     pub sketch: ObjectId,
     /// The circle to move or resize, named by its own UUID. No height: the
-    /// saved extrusion decides that, and `edit_extrude_copy` changes it.
+    /// saved extrusion decides that, and `edit_copy` changes it.
     pub edit: ferritecad_document::CircleEdit,
     pub destination: PathBuf,
 }
@@ -427,7 +190,7 @@ pub struct EditAnnulusRequest {
     pub sketch: ObjectId,
     /// The two circles to move and resize, each named by its own UUID in the
     /// role it already holds. No height: the saved extrusion decides that, and
-    /// `edit_extrude_copy` changes it.
+    /// `edit_copy` changes it.
     pub edit: ferritecad_document::AnnulusEdit,
     pub destination: PathBuf,
 }
@@ -902,7 +665,7 @@ pub(crate) fn edit_circular_cut_copy_with<K: GeometryKernel + ?Sized>(
 }
 
 enum CopyWrite {
-    Height(Box<ferritecad_document::PreparedExtrudeHeight>),
+    Expressions(Vec<ferritecad_document::ExpressionChange>),
     /// Boxed: this variant is much larger than the others, and an enum sized
     /// for it would make every copy operation carry the difference.
     Cut(Box<ferritecad_document::PreparedCircularCut>),
@@ -914,53 +677,11 @@ enum CopyWrite {
     Constraints(Box<ferritecad_document::PreparedSketchConstraints>),
     Circle(ferritecad_document::ObjectRecord),
     Annulus(ferritecad_document::ObjectRecord),
-    RevolveAngle(ferritecad_document::PreparedRevolveAngle),
     /// §28A; boxed for the reason Cut is.
     Fillet(Box<ferritecad_document::PreparedEdgeFillet>),
-    /// §28B; boxed for the reason Cut is.
-    FilletRadius(Box<ferritecad_document::PreparedFilletRadius>),
     /// §29A; boxed for the reason Cut is.
     Chamfer(Box<ferritecad_document::PreparedEdgeChamfer>),
-    /// §29A; boxed for the reason Cut is.
-    ChamferDistance(Box<ferritecad_document::PreparedChamferDistance>),
 }
-impl CopyWrite {
-    fn object(&self) -> &ferritecad_document::ObjectRecord {
-        match self {
-            Self::Coordinates(o) | Self::Circle(o) | Self::Annulus(o) => o,
-            Self::Height(p) => p.feature(),
-            Self::RevolveAngle(p) => p.feature(),
-            Self::FilletRadius(p) => p.feature(),
-            Self::ChamferDistance(p) => p.feature(),
-            Self::Constraints(p) => p.object(),
-            // The body is the one object a cut changes; the two it adds did
-            // not exist to be read.
-            Self::Cut(p) => p.body(),
-            // The Body is the one saved object a fillet changes.
-            Self::Fillet(p) => p.body(),
-            Self::Chamfer(p) => p.body(),
-            // Two objects change here, and this is the one a generic write
-            // would name. Nothing but that generic write uses it, and this
-            // variant does not take it.
-            Self::CutParameters(p) => p.feature(),
-        }
-    }
-
-    /// Whether every saved reference must resolve before and after the edit.
-    ///
-    /// True for every edit to a profile: moving a vertex, a constraint or a
-    /// circle may not cost the document a name it had. An extrusion distance
-    /// edit with no Cut, Fillet or Chamfer over it predates the rule
-    /// and keeps its weaker promise, so it is named here rather than
-    /// everything else being exempted by default. A rounded plate (§28C) is
-    /// not that edit, nor is a chamfered plate (§29B): every saved name must
-    /// resolve and survive its height.
-    fn requires_resolved_references(&self) -> bool {
-        !matches!(self, Self::Height(p)
-            if p.history().is_none() && p.fillet().is_none() && p.chamfer().is_none())
-    }
-}
-
 pub(crate) type Observe<'a, K> = dyn FnMut(
         &Document,
         &ferritecad_eval::RebuildResult,
@@ -1016,7 +737,6 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         )));
     }
     let prepared = prepare(&source)?;
-    let selected = prepared.object();
     let temporary = Temporary::beside(destination)?;
     source.snapshot_to(temporary.path())?;
     source.close()?;
@@ -1047,31 +767,21 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     };
     let baseline_unbuilt = &facts.unbuilt;
     let baseline = &facts.resolved;
-    if prepared.requires_resolved_references()
-        && document.topology_refs()?.iter().any(|reference| {
-            !baseline.contains(&reference.id)
-                && !baseline_unbuilt.contains(&reference.producer_feature)
-        })
-    {
-        return Err(CadError::topology(
-            "saved sketch has unresolved topology references",
-        ));
-    }
     context.progress().report(0.4);
     context.check_cancelled()?;
+    let mut expression_minted = Vec::new();
     match &prepared {
+        CopyWrite::Expressions(changes) => {
+            expression_minted = document.write_expression_changes(changes)?
+        }
         CopyWrite::Coordinates(prepared) => document.write_sketch_geometry(prepared)?,
         CopyWrite::Constraints(p) => document.write_sketch_constraints(p)?,
         CopyWrite::Circle(prepared) => document.write_circle_geometry(prepared)?,
         CopyWrite::Annulus(prepared) => document.write_annulus_geometry(prepared)?,
         CopyWrite::Cut(prepared) => document.write_circular_cut(prepared)?,
         CopyWrite::CutParameters(prepared) => document.write_cut_parameters(prepared)?,
-        CopyWrite::Height(p) => document.write_extrude_height(p)?,
-        CopyWrite::RevolveAngle(p) => document.write_revolve_angle(p)?,
         CopyWrite::Fillet(p) => document.write_edge_fillet(p)?,
-        CopyWrite::FilletRadius(p) => document.write_fillet_radius(p)?,
         CopyWrite::Chamfer(p) => document.write_edge_chamfer(p)?,
-        CopyWrite::ChamferDistance(p) => document.write_chamfer_distance(p)?,
     }
     // A solve is asked for only when the edited sketch still has something to
     // solve. Taking the last constraint off a circle leaves a drawing with no
@@ -1081,7 +791,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     let constraints = match &prepared {
         CopyWrite::Constraints(p) => match &p.object().payload {
             ObjectPayload::Sketch(sketch) if !sketch.constraints.is_empty() => Some(SolveCheck {
-                sketch: selected.id,
+                sketch: p.object().id,
                 profile_use: p.profile_use(),
                 roles: p.circle_roles(),
             }),
@@ -1093,7 +803,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     // comparison below can only speak about names that already existed, so a
     // feature that published geometry nothing could point at would pass it.
     let minted: BTreeSet<StableEntityId> = match &prepared {
-        CopyWrite::Height(p) => p.added_references().iter().map(|r| r.id).collect(),
+        CopyWrite::Expressions(_) => expression_minted.into_iter().collect(),
         CopyWrite::Cut(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::Fillet(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::Chamfer(p) => p.references().iter().map(|r| r.id).collect(),
@@ -1173,6 +883,7 @@ struct SolveCheck {
 /// What the rebuild of a written copy found, for its completion.
 #[derive(Debug, Default)]
 struct Checked {
+    version: Option<DocumentVersion>,
     scene: Option<ferritecad_scene::LoadedScene>,
     rebuild: ferritecad_eval::RebuildReport,
     solve: Option<ferritecad_eval::SketchSolveReport>,
@@ -1197,31 +908,63 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
         context.clone()
     };
     let built = rebuild_cold(document, kernel, &rebuilding)?;
-    let built = match baseline_unbuilt {
-        Some(baseline) => built.require_no_new_failures(baseline, kernel)?,
-        None => built,
-    };
     let rebuild = built.report();
     let unbuilt = rebuild.unbuilt();
-    let result = (|| {
-        let mut resolved = BTreeSet::new();
-        for reference in document.topology_refs()? {
-            match built.resolve(&reference) {
-                Ok(found) if !found.is_empty() => {
-                    resolved.insert(reference.id);
-                }
-                Err(error) if baseline.is_some_and(|set| set.contains(&reference.id)) => {
-                    return Err(error);
-                }
-                _ if baseline.is_some_and(|set| set.contains(&reference.id)) => {
-                    return Err(CadError::topology(format!(
-                        "edit lost reference {}",
-                        reference.id
-                    )));
-                }
-                _ => {}
-            }
+    let references = match document.topology_refs() {
+        Ok(references) => references,
+        Err(error) => {
+            built.release_all(kernel);
+            return Err(error);
         }
+    };
+    let mut resolved = BTreeSet::new();
+    let mut lost = std::collections::BTreeMap::new();
+    for reference in references {
+        match built.resolve(&reference) {
+            Ok(found) if !found.is_empty() => {
+                resolved.insert(reference.id);
+            }
+            outcome if baseline.is_some_and(|set| set.contains(&reference.id)) => {
+                lost.insert(
+                    reference.id,
+                    outcome.err().unwrap_or_else(|| {
+                        CadError::topology(format!("edit lost reference {}", reference.id))
+                    }),
+                );
+            }
+            _ => {}
+        }
+    }
+    if let Some(required) = baseline {
+        for id in required.difference(&resolved) {
+            lost.entry(*id)
+                .or_insert_with(|| CadError::topology(format!("edit lost reference {id}")));
+        }
+    }
+    let built = match baseline_unbuilt {
+        Some(baseline) => built
+            .require_preserved(baseline, lost, kernel)
+            .map_err(|error| {
+                let names = document
+                    .objects()
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter(|object| unbuilt.contains(&object.id) && !baseline.contains(&object.id))
+                    .filter_map(|object| object.name.map(|name| format!("{name} ({})", object.id)))
+                    .collect::<Vec<_>>();
+                if names.is_empty() {
+                    return error;
+                }
+                CadError::Context {
+                    kind: error.kind(),
+                    message: format!("{}: {error}", names.join(", ")),
+                    source: Box::new(error),
+                }
+            })?,
+        None => built,
+    };
+    let result = (|| {
         let solve = if let Some(SolveCheck {
             sketch: id,
             profile_use,
@@ -1367,6 +1110,10 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                 unbuilt: unbuilt.clone(),
             },
             Checked {
+                version: Some(DocumentVersion {
+                    document_id: document.meta().document_id,
+                    content: document.content_version()?,
+                }),
                 scene: observe
                     .map(|observe| observe(document, &built, kernel, &phase(context, 0.7, 1.0)))
                     .transpose()?,
@@ -1444,7 +1191,7 @@ mod tests {
     };
     use ferritecad_kernel::{mock::MockKernel, *};
 
-    fn fixture() -> (tempfile::TempDir, EditExtrudeRequest) {
+    fn fixture() -> (tempfile::TempDir, EditRequest) {
         let root = tempfile::tempdir().expect("directory");
         let source = root.path().join("source.fcad");
         create_document(
@@ -1461,11 +1208,18 @@ mod tests {
         )
         .expect("source");
         let reading = read_extrude_source(&source).expect("reading");
-        let request = EditExtrudeRequest {
+        let request = EditRequest {
             source,
             expected: reading.version,
-            feature: reading.features[0].feature,
-            distance_mm: 27.0,
+
+            changes: vec![
+                ferritecad_document::ExpressionChange::constant(
+                    reading.expression_slots[0].object,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    27.0,
+                )
+                .expect("test value"),
+            ],
             destination: root.path().join("output.fcad"),
         };
         (root, request)
@@ -1478,10 +1232,10 @@ mod tests {
         out.sort();
         out
     }
-    fn replace(request: &mut EditExtrudeRequest, change: impl FnOnce(&mut ObjectRecord)) {
+    fn replace(request: &mut EditRequest, change: impl FnOnce(&mut ObjectRecord)) {
         let mut doc = Document::open(&request.source).expect("source");
         let mut object = doc
-            .object(request.feature)
+            .object(request.changes[0].object)
             .expect("object")
             .expect("selected");
         change(&mut object);
@@ -1501,14 +1255,14 @@ mod tests {
             .version;
     }
     fn refused(
-        request: &EditExtrudeRequest,
+        request: &EditRequest,
         context: &OperationContext,
         kind: ferritecad_types::ErrorKind,
     ) {
         let before = std::fs::read(&request.source).expect("bytes");
         let files = entries(request.source.parent().expect("parent"));
         let mut kernel = MockKernel::new();
-        let error = edit_extrude_copy(request, &mut kernel, context).expect_err("refused");
+        let error = edit_copy(request, &mut kernel, context).expect_err("refused");
         assert_eq!(error.kind(), kind, "{error}");
         assert_eq!(kernel.live_shape_count(), 0);
         assert_eq!(before, std::fs::read(&request.source).expect("bytes"));
@@ -1527,7 +1281,7 @@ mod tests {
         });
         let mut source = Document::open(&request.source).expect("source");
         let first = source
-            .object(request.feature)
+            .object(request.changes[0].object)
             .expect("object")
             .expect("first");
         let second = ObjectId::new();
@@ -1554,7 +1308,7 @@ mod tests {
             .version;
         let bytes = std::fs::read(&request.source).expect("before");
         let mut kernel = MockKernel::new();
-        edit_extrude_copy(&request, &mut kernel, &OperationContext::default()).expect("edit");
+        edit_copy(&request, &mut kernel, &OperationContext::default()).expect("edit");
         assert_eq!(kernel.live_shape_count(), 0);
         let source = Document::open_read_only(&request.source).expect("source");
         let output = Document::open_read_only(&request.destination).expect("output");
@@ -1570,7 +1324,7 @@ mod tests {
             output.topology_refs().expect("refs")
         );
         for (old, new) in expected.iter_mut().zip(&actual) {
-            if old.id == request.feature {
+            if old.id == request.changes[0].object {
                 assert_eq!(old.id, new.id);
                 assert_eq!(old.name, new.name);
                 assert_eq!(old.parent, new.parent);
@@ -1589,47 +1343,118 @@ mod tests {
     }
 
     #[test]
-    fn invalid_inputs_and_unsupported_features_leave_all_files_unchanged() {
-        use ferritecad_types::ErrorKind::{Input, Unsupported};
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -3.0] {
+    fn one_refusal_reports_every_new_failure_and_lost_reference() {
+        let (_root, mut request) = fixture();
+        let mut d = Document::open(&request.source).expect("source");
+        let first = d
+            .object(request.changes[0].object)
+            .expect("object")
+            .expect("extrusion");
+        let second = ObjectId::new();
+        let ObjectPayload::Extrude(extrude) = &first.payload else {
+            panic!("extrusion");
+        };
+        d.write(|w| {
+            w.put_object(
+                second,
+                first.parent,
+                20,
+                Some("Second extrusion"),
+                &first.payload,
+            )?;
+            w.add_dependency(Dependency {
+                dependent: second,
+                dependency: extrude.profile,
+                role: DependencyRole::Profile,
+            })
+        })
+        .expect("independent feature");
+        d.close().expect("close");
+        request.expected = read_extrude_source(&request.source)
+            .expect("reading")
+            .version;
+        request.changes.push(
+            ferritecad_document::ExpressionChange::constant(
+                second,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                27.0,
+            )
+            .expect("height"),
+        );
+        let before = std::fs::read(&request.source).expect("before");
+        let mut kernel = Refusing {
+            inner: MockKernel::new(),
+            lose_ref: false,
+            sketch_fault: false,
+        };
+        let error =
+            edit_copy(&request, &mut kernel, &OperationContext::default()).expect_err("both fail");
+        let refusal =
+            ferritecad_eval::RebuildRefusal::from_error(&error).expect("aggregate refusal");
+        for id in [first.id, second] {
+            assert!(refusal.report.failed.iter().any(|f| f.id == id), "{error}");
+        }
+        assert!(
+            !refusal.lost_references.is_empty(),
+            "reference losses accompany feature failures"
+        );
+        assert_eq!(kernel.inner.live_shape_count(), 0);
+        assert!(!request.destination.exists());
+        assert_eq!(std::fs::read(&request.source).expect("unchanged"), before);
+    }
+
+    #[test]
+    fn changes_are_ordered_and_payload_validation_checks_the_final_candidate() {
+        let (_root, mut request) = fixture();
+        let mut intermediate = request.changes[0].clone();
+        intermediate.expression = Expression::constant(0.0).expect("finite intermediate value");
+        request.changes.insert(0, intermediate);
+        edit_copy(
+            &request,
+            &mut MockKernel::new(),
+            &OperationContext::default(),
+        )
+        .expect("final height is valid");
+        let saved = Document::open_read_only(&request.destination)
+            .expect("copy")
+            .expression_slots()
+            .expect("slots");
+        assert_eq!(
+            saved
+                .iter()
+                .find(|s| s.object == request.changes[0].object)
+                .expect("height")
+                .expression
+                .value(),
+            27.0
+        );
+        std::fs::remove_file(&request.destination).expect("remove owned output");
+        request.changes.reverse();
+        refused(
+            &request,
+            &OperationContext::default(),
+            ferritecad_types::ErrorKind::Input,
+        );
+    }
+
+    #[test]
+    fn invalid_inputs_and_missing_slots_leave_all_files_unchanged() {
+        for value in [0.0, -3.0] {
             let (_root, mut request) = fixture();
-            request.distance_mm = value;
-            refused(&request, &OperationContext::default(), Input);
+            request.changes[0].expression = Expression::constant(value).expect("finite");
+            refused(
+                &request,
+                &OperationContext::default(),
+                ferritecad_types::ErrorKind::Input,
+            );
         }
         let (_root, mut request) = fixture();
-        let selected = request.feature;
-        request.feature = ObjectId::new();
-        refused(&request, &OperationContext::default(), Input);
-        let doc = Document::open_read_only(&request.source).expect("document");
-        request.feature = doc
-            .objects()
-            .expect("objects")
-            .iter()
-            .find(|o| !matches!(o.payload, ObjectPayload::Extrude(_)))
-            .expect("other")
-            .id;
-        doc.close().expect("close");
-        refused(&request, &OperationContext::default(), Unsupported);
-        request.feature = selected;
-        for end in [
-            EndCondition::Symmetric {
-                distance: Expression::constant(13.0).expect("literal"),
-            },
-            EndCondition::ThroughAll,
-            EndCondition::Blind {
-                distance: Expression::new("height * 2", 13.0).expect("expression"),
-            },
-            EndCondition::Blind {
-                distance: Expression::new("12", 13.0).expect("inconsistent literal"),
-            },
-        ] {
-            replace(&mut request, |o| {
-                if let ObjectPayload::Extrude(e) = &mut o.payload {
-                    e.end_condition = end;
-                }
-            });
-            refused(&request, &OperationContext::default(), Unsupported);
-        }
+        request.changes[0].object = ObjectId::new();
+        refused(
+            &request,
+            &OperationContext::default(),
+            ferritecad_types::ErrorKind::Input,
+        );
     }
 
     #[test]
@@ -1710,7 +1535,7 @@ mod tests {
                         stop.cancel();
                     }
                 }));
-            let result = edit_extrude_copy(&request, &mut MockKernel::new(), &context);
+            let result = edit_copy(&request, &mut MockKernel::new(), &context);
             assert_eq!(
                 result.is_ok(),
                 event == "late cancel",
@@ -1825,7 +1650,7 @@ mod tests {
                 lose_ref,
                 sketch_fault: false,
             };
-            let error = edit_extrude_copy(&request, &mut kernel, &OperationContext::default())
+            let error = edit_copy(&request, &mut kernel, &OperationContext::default())
                 .expect_err("refused edited geometry");
             assert_eq!(
                 error.kind(),
@@ -1847,7 +1672,7 @@ mod tests {
         let path = root.path().join("empty.fcad");
         let document = Document::create(path).expect("empty");
         let reading = ExtrudeEditSource::read(&document).expect("reading");
-        assert!(reading.features.is_empty());
+        assert!(reading.expression_slots.is_empty());
         assert!(reading.unavailable_reason().is_some());
     }
 
@@ -1870,7 +1695,7 @@ mod tests {
                     }),
                 )?;
                 writer.add_dependency(Dependency {
-                    dependent: request.feature,
+                    dependent: request.changes[0].object,
                     dependency: parameter,
                     role: DependencyRole::Parameter,
                 })?;
@@ -1894,7 +1719,7 @@ mod tests {
             let (_root, request) = fixture();
             let document = Document::open_read_only(&request.source).expect("source");
             let record = document
-                .object(request.feature)
+                .object(request.changes[0].object)
                 .expect("row")
                 .expect("feature");
             let encoded = record.payload.to_storage_bytes().expect("payload");
@@ -1961,7 +1786,7 @@ mod tests {
                 }
             }));
         assert!(matches!(
-            edit_extrude_copy(&request, &mut MockKernel::new(), &context),
+            edit_copy(&request, &mut MockKernel::new(), &context),
             Err(CadError::Cancelled)
         ));
         let mut expected = vec![request.source.clone(), foreign.clone()];

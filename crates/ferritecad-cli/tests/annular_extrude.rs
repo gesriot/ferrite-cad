@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{
     CapSide, Document, ObjectPayload, SemanticRole, SketchGeometry, TopologyRef,
 };
@@ -1039,18 +1041,21 @@ fn native_annulus_height_copy_keeps_both_circles_and_every_identity() {
         id
     };
     let taller = d.path().join("taller.fcad");
-    let r = cli()
-        .arg("edit-extrude")
-        .arg(&source)
-        .arg("--feature")
-        .arg(extrude.to_string())
-        .arg("--distance-mm")
-        .arg("25")
-        .arg("-o")
-        .arg(&taller)
-        .arg("--json")
-        .output()
-        .expect("edit-extrude");
+    let r = transaction::constant(
+        &source,
+        &Document::open_read_only(&source)
+            .expect("document")
+            .content_version()
+            .expect("version")
+            .to_string(),
+        &extrude.to_string(),
+        "extrude_distance",
+        "25",
+        "mm",
+        &taller,
+    )
+    .output()
+    .expect("edit");
     assert!(r.status.success(), "{r:?}");
 
     // Both circles, both identities and every other stored fact are the
@@ -1300,9 +1305,11 @@ fn annulus_discovery_refuses_both_earlier_editors_and_says_so() {
     );
 
     // The height, which this slice does leave editable, is still offered.
-    assert_eq!(v["result"]["edit_extrude"]["available"], true);
-    assert_eq!(v["result"]["features"][0]["editable"], true);
-    assert_eq!(v["result"]["features"][0]["distance_mm"], 15.0);
+    assert!(transaction::first_slot(&v["result"], "extrude_distance")["refusal"].is_null());
+    assert_eq!(
+        transaction::first_slot(&v["result"], "extrude_distance")["expression"]["value"],
+        15.0
+    );
 
     // An attempted Circle edit is refused and writes nothing. With a kernel,
     // it reaches the structural refusal; without one, the existing CLI kernel

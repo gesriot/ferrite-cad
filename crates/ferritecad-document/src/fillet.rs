@@ -181,42 +181,6 @@ pub fn pair_bound(length_mm: f64, first_radius_mm: f64) -> f64 {
     length_mm - first_radius_mm - MIN_RADIUS_MM
 }
 
-/// §28H: the largest first radius beside a second one of
-/// `second_radius_mm` on a shared Line of `length_mm`, by the same predicate
-/// [`check_pair`] applies in history order (`r2 ≤ pair_bound(L, r1)`).
-///
-/// Not `pair_bound(L, r2)`: the rule is not symmetric in floating point, and
-/// an offered maximum the check would then refuse (by an ulp) is what §28G
-/// measured once already. Bisect the ordered positive-float bit patterns,
-/// so the search takes at most 63 steps even when the answer is near zero.
-/// Returns NaN for non-finite/negative inputs or when no nonnegative first
-/// radius fits. The corner and minimum-radius checks remain the caller's.
-pub fn pair_bound_of_first(length_mm: f64, second_radius_mm: f64) -> f64 {
-    if !length_mm.is_finite()
-        || !second_radius_mm.is_finite()
-        || length_mm <= 0.0
-        || second_radius_mm < 0.0
-    {
-        return f64::NAN;
-    }
-    let fits = |first: f64| second_radius_mm <= pair_bound(length_mm, first);
-    if !fits(0.0) {
-        return f64::NAN;
-    }
-    // Zero fits, while L cannot: its remainder is -MIN_RADIUS_MM.
-    // Nonnegative finite f64 bit patterns have the same order as their values.
-    let (mut low, mut high) = (0_u64, length_mm.to_bits());
-    while high - low > 1 {
-        let mid = low + (high - low) / 2;
-        if fits(f64::from_bits(mid)) {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
-    f64::from_bits(low)
-}
-
 /// The Line two corners share, with its length, if they are adjacent.
 pub fn shared_side(first: &FilletCorner, second: &FilletCorner) -> Option<(StableEntityId, f64)> {
     let theirs = second.joint.segments();
@@ -524,7 +488,7 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
     if fillets.len() > 1 {
         return Err(unsupported(format!(
             "this Body ends in Fillet {} after {} Fillets in all (§28G, §28L); only the radius \
-             of any Fillet (edit-fillet-radius, §28H), the plate's height (edit-extrude, \
+             of any Fillet (edit with fillet_radius, §28H), the plate's height (edit with extrude_distance, \
              §28I), the base Sketch's Line coordinates (edit-sketch-copy, §28J) and its Line \
              constraints (edit-sketch-constraints-copy, §28K) can be edited, and a Fillet added \
              on another corner (fillet-edge-copy) while fewer than {MAX_PLATE_FILLETS} are \
@@ -534,8 +498,8 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
         )));
     }
     Err(unsupported(format!(
-        "this Body ends in Fillet {} (§28A); only its radius (edit-fillet-radius, §28B), the \
-         rounded plate's height (edit-extrude, §28C), its base Sketch's coordinates \
+        "this Body ends in Fillet {} (§28A); only its radius (edit with fillet_radius, §28B), the \
+         rounded plate's height (edit with extrude_distance, §28C), its base Sketch's coordinates \
          (edit-sketch-copy, §28D) and that Sketch's Line constraints \
          (edit-sketch-constraints-copy, §28E) can be edited, and another Fillet added on \
          another corner (fillet-edge-copy, §28G, up to four, §28L). Editing the rest of a \
@@ -1614,10 +1578,11 @@ mod tests {
         assert!(twice.to_string().contains(&saved.id.to_string()), "{twice}");
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         assert_eq!(reading.unavailable_reason(), None, "the plate's height");
-        let base = reading.features.iter().find(|f| f.fillet().is_some());
-        assert!(base.is_some_and(
-            |f| f.refusal.is_none() && f.fillet().is_some_and(|r| r.feature == saved.id)
-        ));
+        assert!(
+            reading
+                .expression_slot(saved.id, crate::ExpressionSlot::FilletRadius)
+                .is_some()
+        );
         assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
         // Its base Sketch is editable (§28D), with the Fillet as context, and
         // so are its Line constraints (§28E).
@@ -1830,23 +1795,16 @@ mod tests {
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         // §28H: the radius of either Fillet is editable; §28I: and the base
         // height, with both Fillets as context; the Sketch editors are not.
-        assert!(reading.fillet_features.iter().all(|c| c.refusal.is_none()));
-        assert_eq!(reading.fillet_features.len(), 2);
-        let (base,) = match reading.features.as_slice() {
-            [base] => (base,),
-            other => panic!("one Extrude: {other:?}"),
-        };
-        assert!(base.refusal.is_none(), "{:?}", base.refusal);
-        let (one, two) = (
-            base.fillet().expect("Fillet 1"),
-            base.fillets.get(1).expect("Fillet 2"),
-        );
-        assert_eq!(one.previous, base.feature);
         assert_eq!(
-            two.previous, one.feature,
-            "Fillet 2 rounds Fillet 1's result"
+            reading
+                .expression_slots
+                .iter()
+                .filter(|s| s.slot == crate::ExpressionSlot::FilletRadius)
+                .count(),
+            2
         );
-        assert_eq!((one.history_index, two.history_index), (1, 2));
+        let one = &reading.sketches[0].fillets[0];
+        let two = &reading.sketches[0].fillets[1];
         // §28J: the base Sketch's coordinates read both Fillets.
         assert!(reading.sketches.iter().all(|s| s.refusal.is_none()));
         // §28K: so do its Line constraints, with both Fillets in order.

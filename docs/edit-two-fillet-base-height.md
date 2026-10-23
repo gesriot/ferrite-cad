@@ -123,8 +123,14 @@ measured mesh and exact volumes at each height.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28i-"))
-OP = "edit-extrude"
-RADIUS = "edit-fillet-radius"
+
+def edit_args(source, feature, height, version, out):
+    request = root / "expression.json"
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+    return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
+OP = "edit"
+RADIUS = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -254,11 +260,9 @@ twice = root / "twice.fcad"
 # 2. Discovery: the base row is editable and names both Fillets in history
 #    order; Fillet 2 rounds Fillet 1's result, not the base.
 catalog = inspect(twice)
-assert catalog["edit_extrude"]["available"] is True, catalog["edit_extrude"]
 (base,) = catalog["features"]
 BASE = base["feature_id"]
-assert base["editable"] is True and base["refusal"] is None and base["distance_mm"] == H, base
-ctx = base["fillet_base"]
+ctx = catalog["sketches"][0]["fillet_base"]
 assert ctx["fillet_feature_id"] == done1["feature_id"] and ctx["radius_mm"] == R1, ctx
 two = ctx["second_fillet"]
 assert two["fillet_feature_id"] == done2["feature_id"] and two["radius_mm"] == R2, two
@@ -270,14 +274,11 @@ def raised(source, h, name):
     version = inspect(source)["content_version"]
     out = root / name
     before = source.read_bytes()
-    result = run([OP, source, "--feature", BASE, "--distance-mm", h,
-                  "--expect-version", version, "-o", out, "--json"])["result"]
-    assert result["feature_id"] == BASE, result
+    result = run(edit_args(source, BASE, h, version, out))["result"]
     assert source.read_bytes() == before, "the source is untouched"
     allowlist(source, out, BASE)
     assert tables(out)["topology_refs"] == refs, "a name moved"
     (row,) = inspect(out)["features"]
-    assert row["distance_mm"] == h and row["fillet_base"] == ctx, row
     return out
 
 # 3. Up, then down: only the base row moves; both Fillets stay, measured.
@@ -288,10 +289,9 @@ vd, ed = measured(down, [(FIRST, R1), (SECOND, R2)], 2.25)
 
 # 4. Each radius stays editable on the lowered plate.
 request = root / "radius.json"
-request.write_text(json.dumps({"request_version": 1, "radius_mm": 4.25}))
+request.write_text(json.dumps({"request_version": 1, "changes": [{"object": done1["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 4.25, "unit": "mm"}]}))
 f1 = root / "down-f1.fcad"
-run([RADIUS, down, "--feature", done1["feature_id"], "--expect-version",
-     inspect(down)["content_version"], "--request", request, "-o", f1, "--json"])
+run(["edit", down, "--expect-version", inspect(down)["content_version"], "--request", request, "-o", f1, "--json"])
 v1, e1 = measured(f1, [(FIRST, 4.25), (SECOND, R2)], 2.25)
 
 # 5. Refusals write nothing: Fillet 2 as the feature, a zero height, a stale
@@ -303,8 +303,7 @@ for feature, h, version, kind in (
         (BASE, 0, inspect(down)["content_version"], "input"),
         (BASE, 9.0, catalog["content_version"], "input"),
         (BASE, 1e-6, inspect(down)["content_version"], "kernel")):
-    error = run([OP, down, "--feature", feature, "--distance-mm", h, "--expect-version",
-                 version, "-o", never, "--json"], 2)["error"]
+    error = run(edit_args(down, feature, h, version, never), 2)["error"]
     assert kind is None or error["kind"] == kind, error
 assert not never.exists() and sorted(p.name for p in root.iterdir()) == names
 print("FCAD_28I_RECIPE_OK", f"up={vu:.6f}/{eu:.6f}", f"down={vd:.6f}/{ed:.6f}",

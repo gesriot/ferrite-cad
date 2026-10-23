@@ -12,7 +12,7 @@ import tempfile
 RECIPES = [('docs/single-edge-fillet.md',
   'FCAD_28A_AGENT_RECIPE',
   {'no-solver': 'FCAD_28A_RECIPE_OK ', 'stub': 'FCAD_28A_RECIPE_NO_KERNEL '}),
- ('docs/edit-fillet-radius.md',
+ ('docs/numeric-fillet-radius.md',
   'FCAD_28B_AGENT_RECIPE',
   {'no-solver': 'FCAD_28B_RECIPE_OK ', 'stub': 'FCAD_28B_RECIPE_NO_KERNEL '}),
  ('docs/edit-fillet-base-height.md',

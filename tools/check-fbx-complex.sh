@@ -809,7 +809,7 @@ if [ -n "${FCAD_FILLET_FBX_DIR:-}" ]; then
         grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
     done
     echo "FCAD_CHAMFER_UFBX_EXECUTED"
-    # §29B: the chamfered plate made taller and shorter through edit-extrude, in
+    # §29B: the chamfered plate made taller and shorter through edit with extrude_distance, in
     # three drawing orders, each read the same two ways and joined against the
     # STL of the same copy.
     for name in height-0-up height-0-down height-1-up height-1-down height-2-up height-2-down; do

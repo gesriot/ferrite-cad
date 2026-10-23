@@ -24,14 +24,20 @@ pub(crate) fn fixture(count: usize) -> (tempfile::TempDir, PathBuf, ExtrudeEditS
     let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
     (root, path, reading)
 }
-pub(crate) fn selected(reading: &ExtrudeEditSource, index: usize) -> SavedFillet {
+pub(crate) fn selected(
+    reading: &ExtrudeEditSource,
+    index: usize,
+) -> ferritecad_document::SavedFillet {
     reading
-        .fillet_features
+        .sketches
         .iter()
-        .find_map(|c| c.saved.as_ref().filter(|s| s.history_index == index + 1))
+        .flat_map(|s| &s.fillets)
+        .chain(reading.constraint_sketches.iter().flat_map(|s| &s.fillets))
+        .find(|s| s.history_index == index + 1)
         .expect("history UUID")
         .clone()
 }
+
 fn ready(c: &creates::Creates, s: &sessions::Sessions) -> bool {
     can_apply_fillet_radius(
         c,
@@ -55,7 +61,7 @@ pub(crate) fn typed_radius(
     s: &sessions::Sessions,
     feature: ObjectId,
     value: &str,
-) -> (crate::sketch::Editor, EditFilletRadiusRequest) {
+) -> (crate::sketch::Editor, EditRequest) {
     let mut c = creates::Creates::default();
     assert!(c.sketch.fillets.begin_radius(path, reading, feature));
     assert!(ready(&c, s), "own form allows a changed idle request");
@@ -71,7 +77,7 @@ pub(crate) fn typed_radius(
         .fillets
         .take_apply_request()
         .expect("changed widget request");
-    assert_eq!(r.feature, feature);
+    assert_eq!(r.changes[0].object, feature);
     assert_eq!(r.expected, reading.version);
     (c.sketch, r)
 }
@@ -94,7 +100,7 @@ fn radius_current_text_confirmation_noop_clean_copy_and_add_exclusion() {
     let s = opened(&path);
     let chosen = selected(&reading, 0);
     let (form, r) = typed_radius(&path, &reading, &s, chosen.feature, "3.12500");
-    assert_eq!(r.radius_mm, 3.125);
+    assert_eq!(r.changes[0].expression.value(), 3.125);
     let mut c = creates::Creates::default();
     c.sketch = form;
     let e = &mut c.sketch.fillets;
@@ -107,7 +113,9 @@ fn radius_current_text_confirmation_noop_clean_copy_and_add_exclusion() {
     assert!(e.take_apply_request().is_none());
     click(&ctx, e, "Save radius copy…");
     assert_eq!(
-        e.take_radius_request().expect("clean copy").radius_mm,
+        e.take_radius_request().expect("clean copy").changes[0]
+            .expression
+            .value(),
         3.125
     );
     enter(&ctx, e, "New radius (mm):", "2.375000");
@@ -118,7 +126,9 @@ fn radius_current_text_confirmation_noop_clean_copy_and_add_exclusion() {
     click(&ctx, e, "Confirm draft number");
     click(&ctx, e, "Save radius copy…");
     assert_eq!(
-        e.take_radius_request().expect("no-op copy").radius_mm,
+        e.take_radius_request().expect("no-op copy").changes[0]
+            .expression
+            .value(),
         2.375
     );
     e.dismiss();
@@ -291,7 +301,7 @@ fn radius_dirty_discovery_refusal_retains_text_and_acceptance_closes_form() {
     for _ in 0..3 {
         frame(&ctx, e, false);
     }
-    for text in ["banana", "0", "6.2"] {
+    for text in ["banana", "0", "inf"] {
         enter(&ctx, e, "New radius (mm):", text);
         click(&ctx, e, "Apply radius");
         assert!(e.take_apply_request().is_none());

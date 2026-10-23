@@ -3,24 +3,21 @@
 use super::*;
 use crate::sketch::tests::angle_apply::typed_angle;
 use ferritecad_document::{ObjectPayload, SemanticRole};
-use ferritecad_jobs::EditRevolveAngleRequest;
+use ferritecad_jobs::EditRequest;
 use ferritecad_kernel::OperationContext;
 
-fn start(
-    s: &mut Sessions,
-    r: &EditRevolveAngleRequest,
-) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_apply_angle(t, r.feature, r.radians, r.expected, c.clone(), move |v| {
+            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
                 tx.send(v).expect("deliver")
             })
         })
         .expect("start");
     (g, rx)
 }
-fn apply(s: &mut Sessions, r: &EditRevolveAngleRequest) -> Edited {
+fn apply(s: &mut Sessions, r: &EditRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(g, rx.recv().expect("edit"));
     if let Edited::Show(path) = &edited {
@@ -34,7 +31,7 @@ fn apply(s: &mut Sessions, r: &EditRevolveAngleRequest) -> Edited {
     }
     edited
 }
-fn peer(source: &Path, r: &EditRevolveAngleRequest, root: &Path, out: &Path) {
+fn peer(source: &Path, r: &EditRequest, root: &Path, out: &Path) {
     let file = root.join(format!(
         "{}.json",
         out.file_stem().expect("name").to_string_lossy()
@@ -43,40 +40,57 @@ fn peer(source: &Path, r: &EditRevolveAngleRequest, root: &Path, out: &Path) {
         &file,
         format!(
             r#"{{"request_version":1,"angle_deg":{}}}"#,
-            r.radians.to_degrees()
+            r.changes[0].expression.value().to_degrees()
         ),
     )
     .expect("request");
-    cli(&[
-        "edit-revolve-angle".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        r.feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        read_extrude_source(source)
-            .expect("reading")
-            .version
-            .content
-            .to_string()
-            .as_ref(),
-        "--request".as_ref(),
-        file.as_os_str(),
-        "-o".as_ref(),
-        out.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &r.changes[0].object.to_string(),
+            "revolve_angle",
+            &r.changes[0].expression.value().to_string(),
+            "rad",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            read_extrude_source(source)
+                .expect("reading")
+                .version
+                .content
+                .to_string()
+                .as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            out.as_os_str(),
+        ])
+    };
 }
-fn request(s: &Sessions, degrees: f64) -> EditRevolveAngleRequest {
+fn request(s: &Sessions, degrees: f64) -> EditRequest {
     let source = s.export_path().expect("accepted");
     let reading = read_extrude_source(&source).expect("reading");
-    EditRevolveAngleRequest {
+    EditRequest {
         source,
         expected: reading.version,
-        feature: reading.revolve_angles[0].feature,
-        radians: degrees.to_radians(),
+
+        changes: vec![
+            ferritecad_document::ExpressionChange::constant(
+                ferritecad_fixtures::expression_slot(
+                    &reading,
+                    ferritecad_document::ExpressionSlot::RevolveAngle,
+                )
+                .object,
+                ferritecad_document::ExpressionSlot::RevolveAngle,
+                degrees.to_radians(),
+            )
+            .expect("validated expression"),
+        ],
         destination: PathBuf::new(),
     }
 }
-fn refuse(s: &mut Sessions, r: &EditRevolveAngleRequest) -> String {
+fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     let before = (
         s.dirty(),
         s.can_undo(),
@@ -298,7 +312,16 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         .expect("doc")
         .topology_refs()
         .expect("refs");
-    let axis_line = opened.revolve_angles[0].axis_segment;
+    let axis_line = opened
+        .sketches
+        .iter()
+        .find_map(|s| match s.profile_use {
+            Some(ferritecad_document::SketchProfileUse::PartialRevolve {
+                axis_segment, ..
+            }) => Some(axis_segment),
+            _ => None,
+        })
+        .expect("partial profile");
     assert_eq!(axis_line.is_some(), axis);
     // First step: the profile changes, leaving the user's file untouched.
     let mut vertices = opened.sketches[0].vertices.clone().expect("vertices");
@@ -391,8 +414,16 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     assert_eq!(
         read_extrude_source(&applied)
             .expect("reading")
-            .revolve_angles[0]
-            .axis_segment,
+            .constraint_sketches
+            .iter()
+            .find_map(|s| match s.profile_use {
+                Some(ferritecad_document::SketchProfileUse::PartialRevolve {
+                    axis_segment,
+                    ..
+                }) => Some(axis_segment),
+                _ => None,
+            })
+            .expect("partial profile"),
         axis_line
     );
     let (stl, fbx) = export_bytes(&applied, &source, root.path(), "unsaved");
@@ -443,7 +474,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     }
     move_native(&mut s, true);
     assert!(s.can_redo());
-    let stale = EditRevolveAngleRequest {
+    let stale = EditRequest {
         expected: opened.version,
         ..request(&s, 198.125)
     };
@@ -689,11 +720,22 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
         let profile = root.path().join(format!("{name}-profile.fcad"));
         sketch_peer(&source, &r, root.path(), &profile);
         let angle_reading = read_extrude_source(&profile).expect("profile");
-        let a = EditRevolveAngleRequest {
+        let a = EditRequest {
             source: profile.clone(),
             expected: angle_reading.version,
-            feature: angle_reading.revolve_angles[0].feature,
-            radians: 212.25_f64.to_radians(),
+
+            changes: vec![
+                ferritecad_document::ExpressionChange::constant(
+                    ferritecad_fixtures::expression_slot(
+                        &angle_reading,
+                        ferritecad_document::ExpressionSlot::RevolveAngle,
+                    )
+                    .object,
+                    ferritecad_document::ExpressionSlot::RevolveAngle,
+                    212.25_f64.to_radians(),
+                )
+                .expect("validated expression"),
+            ],
             destination: PathBuf::new(),
         };
         let expected = root.path().join(format!("{name}-angle.fcad"));
@@ -740,11 +782,22 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
     assert_eq!(bytes("radial-undo.stl"), stl);
     let reading = read_extrude_source(&radial_profile).expect("profile");
     let branch = root.path().join("branch.fcad");
-    let r = EditRevolveAngleRequest {
+    let r = EditRequest {
         source: radial_profile.clone(),
         expected: reading.version,
-        feature: reading.revolve_angles[0].feature,
-        radians: 198.125_f64.to_radians(),
+
+        changes: vec![
+            ferritecad_document::ExpressionChange::constant(
+                ferritecad_fixtures::expression_slot(
+                    &reading,
+                    ferritecad_document::ExpressionSlot::RevolveAngle,
+                )
+                .object,
+                ferritecad_document::ExpressionSlot::RevolveAngle,
+                198.125_f64.to_radians(),
+            )
+            .expect("validated expression"),
+        ],
         destination: PathBuf::new(),
     };
     peer(&radial_profile, &r, root.path(), &branch);
@@ -788,11 +841,22 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
     let cp = root.path().join("constrained.fcad");
     constraint_peer(&source, &r, root.path(), &cp);
     let reading = read_extrude_source(&cp).expect("constraint peer");
-    let a = EditRevolveAngleRequest {
+    let a = EditRequest {
         source: cp.clone(),
         expected: reading.version,
-        feature: reading.revolve_angles[0].feature,
-        radians: 212.25_f64.to_radians(),
+
+        changes: vec![
+            ferritecad_document::ExpressionChange::constant(
+                ferritecad_fixtures::expression_slot(
+                    &reading,
+                    ferritecad_document::ExpressionSlot::RevolveAngle,
+                )
+                .object,
+                ferritecad_document::ExpressionSlot::RevolveAngle,
+                212.25_f64.to_radians(),
+            )
+            .expect("validated expression"),
+        ],
         destination: PathBuf::new(),
     };
     let ca = root.path().join("constrained-angle.fcad");

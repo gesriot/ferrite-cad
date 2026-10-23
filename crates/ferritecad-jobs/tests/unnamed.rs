@@ -62,15 +62,27 @@ fn version_of(path: &Path) -> DocumentVersion {
 fn feature_of(session: &DocumentSession) -> ObjectId {
     read_extrude_source(session.current().path())
         .expect("reading")
-        .features[0]
-        .feature
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("height slot")
+        .object
 }
 
 fn apply(session: &mut DocumentSession, feature: ObjectId, millimetres: f64) {
-    let step = support::viewed(session.begin_step())
-        .edit_extrude_height(
-            feature,
-            millimetres,
+    let step = {
+        let ticket = support::viewed(session.begin_step());
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    millimetres,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -79,7 +91,8 @@ fn apply(session: &mut DocumentSession, feature: ObjectId, millimetres: f64) {
             },
             &OperationContext::default(),
         )
-        .expect("an edit");
+    }
+    .expect("an edit");
     session.commit_step(step).expect("accepted");
 }
 
@@ -209,7 +222,13 @@ fn edits_undo_and_redo_before_the_first_save_never_make_it_saved() {
     session.record_saved(&saved);
     assert!(!session.is_dirty());
     assert_eq!(
-        read_extrude_source(&file).expect("saved").features[0].feature,
+        read_extrude_source(&file)
+            .expect("saved")
+            .expression_slots
+            .iter()
+            .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+            .expect("height slot")
+            .object,
         feature
     );
     session
@@ -229,10 +248,19 @@ fn edits_undo_and_redo_before_the_first_save_never_make_it_saved() {
 
     // A no-op is still not a step.
     let generation = session.generation();
-    let step = support::viewed(session.begin_step())
-        .edit_extrude_height(
-            feature,
-            22.0,
+    let step = {
+        let ticket = support::viewed(session.begin_step());
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    22.0,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -241,7 +269,8 @@ fn edits_undo_and_redo_before_the_first_save_never_make_it_saved() {
             },
             &OperationContext::default(),
         )
-        .expect("an edit");
+    }
+    .expect("an edit");
     assert!(!session.changes_model(&step));
     drop(step);
     assert_eq!(session.generation(), generation);

@@ -4,6 +4,9 @@
 //! must turn into, the cache, reopen, an independent reading of the STL, and
 //! every refusal leaving storage untouched.
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
+
 use ferritecad_document::{
     Body, CacheStore, DatumPlane, Dependency, DependencyRole, Document, EntityKind,
     FullTurnRevolution, ObjectPayload, Point2, Revolve, RevolveAxis, RevolveExtent, SelectionRule,

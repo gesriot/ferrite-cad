@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
@@ -771,8 +773,11 @@ fn annulus_discovery_and_protocol_without_kernel() {
             .len(),
         2
     );
-    assert_eq!(f.catalog["edit_extrude"]["available"], true);
-    assert_eq!(f.catalog["features"][0]["distance_mm"], 15.0);
+    assert!(transaction::first_slot(&f.catalog, "extrude_distance")["refusal"].is_null());
+    assert_eq!(
+        transaction::first_slot(&f.catalog, "extrude_distance")["expression"]["value"],
+        15.0
+    );
 
     let annulus_edit = &sketch["annulus_edit"];
     assert_eq!(annulus_edit["available"], true);
@@ -829,7 +834,7 @@ fn annulus_discovery_and_protocol_without_kernel() {
         json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
                "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
                "outer_radius_mm":10}),
-        // The height belongs to edit-extrude, and a lone radius to edit-circle.
+        // The height belongs to edit, and a lone radius to edit-circle.
         json!({"request_version":1,"outer_curve_id":saved["outer_curve_id"],
                "inner_curve_id":saved["inner_curve_id"],"center_mm":[0,0],
                "outer_radius_mm":10,"inner_radius_mm":4,"height_mm":20}),
@@ -1218,18 +1223,21 @@ fn native_annulus_edit_moves_and_resizes_only_the_named_pair() {
         id
     };
     let taller = root.path().join("taller.fcad");
-    let r = cli()
-        .arg("edit-extrude")
-        .arg(all)
-        .arg("--feature")
-        .arg(extrude.to_string())
-        .arg("--distance-mm")
-        .arg("25")
-        .arg("-o")
-        .arg(&taller)
-        .arg("--json")
-        .output()
-        .expect("edit-extrude");
+    let r = transaction::constant(
+        all,
+        &Document::open_read_only(all)
+            .expect("document")
+            .content_version()
+            .expect("version")
+            .to_string(),
+        &extrude.to_string(),
+        "extrude_distance",
+        "25",
+        "mm",
+        &taller,
+    )
+    .output()
+    .expect("edit");
     assert!(r.status.success(), "{r:?}");
     let raised = stored(&taller);
     assert_eq!(raised.outer, all_stored.outer);

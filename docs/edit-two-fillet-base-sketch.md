@@ -140,6 +140,12 @@ measured mesh and exact volumes at each step.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28j-"))
+
+def edit_args(source, feature, height, version, out):
+    request = root / "expression.json"
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+    return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 OP = "edit-sketch-copy"
 
 def run(args, code=0):
@@ -324,13 +330,11 @@ vb, eb = measured(narrow, rect_b, [(at(rect_b, FIRST), R1), (at(rect_b, SECOND),
 (base,) = inspect(narrow)["features"]
 version = inspect(narrow)["content_version"]
 tall = root / "tall.fcad"
-run(["edit-extrude", narrow, "--feature", base["feature_id"], "--distance-mm", 9.5,
-     "--expect-version", version, "-o", tall, "--json"])
+run(edit_args(narrow, base["feature_id"], 9.5, version, tall))
 request = root / "radius.json"
-request.write_text(json.dumps({"request_version": 1, "radius_mm": 1.5}))
+request.write_text(json.dumps({"request_version": 1, "changes": [{"object": done2["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 1.5, "unit": "mm"}]}))
 small = root / "tall-f2.fcad"
-run(["edit-fillet-radius", tall, "--feature", done2["feature_id"], "--expect-version",
-     inspect(tall)["content_version"], "--request", request, "-o", small, "--json"])
+run(["edit", tall, "--expect-version", inspect(tall)["content_version"], "--request", request, "-o", small, "--json"])
 vc, ec = measured(small, rect_b, [(at(rect_b, FIRST), R1), (at(rect_b, SECOND), 1.5)], 9.5)
 
 # 6. Refusals write nothing: Lines that swap their sides, a plate under 2 * R2

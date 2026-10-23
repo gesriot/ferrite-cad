@@ -1,6 +1,6 @@
 # §28B — verification record
 
-[Contract and agent recipe](edit-fillet-radius.md).
+[Contract and agent recipe](numeric-fillet-radius.md).
 
 This records what was executed for this slice and where. It does not repeat
 §28A's evidence.

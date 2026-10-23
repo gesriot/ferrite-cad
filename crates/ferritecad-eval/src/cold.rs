@@ -147,30 +147,51 @@ impl RebuildResult {
     }
     /// Reject a candidate only when it introduces an unbuilt object.
     pub fn require_no_new_failures(
-        mut self,
+        self,
         baseline: &std::collections::BTreeSet<ObjectId>,
         kernel: &mut (impl GeometryKernel + ?Sized),
     ) -> Result<Self> {
-        let report = self.report();
-        if report.unbuilt().is_subset(baseline) {
+        self.require_preserved(baseline, BTreeMap::new(), kernel)
+    }
+
+    /// Decide only after collecting both feature failures and reference losses.
+    pub fn require_preserved(
+        mut self,
+        baseline: &std::collections::BTreeSet<ObjectId>,
+        lost_references: BTreeMap<ferritecad_types::StableEntityId, CadError>,
+        kernel: &mut (impl GeometryKernel + ?Sized),
+    ) -> Result<Self> {
+        let mut report = self.report();
+        report
+            .failed
+            .retain(|failure| !baseline.contains(&failure.id));
+        report
+            .skipped
+            .retain(|skipped| !baseline.contains(&skipped.id));
+        if report.all_built() && lost_references.is_empty() {
             return Ok(self);
         }
         let errors = std::mem::take(&mut self.statuses)
             .into_iter()
             .filter_map(|(id, status)| match status {
-                RebuildStatus::Failed { error } => Some((id, error)),
+                RebuildStatus::Failed { error } if !baseline.contains(&id) => Some((id, error)),
                 _ => None,
             })
             .collect();
         self.release_all(kernel);
-        let refusal = RebuildRefusal { report, errors };
-        let message = format!("edit would leave features unbuilt:\n{refusal}");
+        let refusal = RebuildRefusal {
+            report,
+            errors,
+            lost_references,
+        };
+        let message =
+            format!("edit would leave features unbuilt or lose topology references:\n{refusal}");
         let kind = refusal
             .errors
             .values()
             .next()
             .map(CadError::kind)
-            .unwrap_or(ferritecad_types::ErrorKind::Constraint);
+            .unwrap_or(ferritecad_types::ErrorKind::Topology);
         Err(CadError::Context {
             kind,
             message,

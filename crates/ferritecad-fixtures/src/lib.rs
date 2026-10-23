@@ -747,3 +747,15 @@ pub fn write_constrained_fillet_chain(
     document.close()?;
     Ok(chain)
 }
+
+/// Find the first slot of a known fixture without depending on catalogue row order.
+pub fn expression_slot(
+    source: &ferritecad_document::ExtrudeEditSource,
+    slot: ferritecad_document::ExpressionSlot,
+) -> &ferritecad_document::ExpressionSlotValue {
+    source
+        .expression_slots
+        .iter()
+        .find(|value| value.slot == slot)
+        .expect("fixture expression slot")
+}

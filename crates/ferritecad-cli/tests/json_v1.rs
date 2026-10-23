@@ -2,6 +2,9 @@
 //! Wire-contract gates invoke the public process, not its serializer in isolation.
 #![allow(clippy::panic)]
 
+#[path = "support/transaction.rs"]
+mod transaction;
+
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -75,14 +78,18 @@ fn inspect(path: &Path) -> Value {
         0,
     )["result"]
         .clone();
-    // Indexing a missing serde_json key also returns Null. Check presence
-    // explicitly so omission cannot accidentally satisfy the v1 null policy.
-    for field in ["available", "refusal", "document_refusal"] {
-        assert!(value["edit_extrude"].get(field).is_some(), "{field}");
-    }
-    for feature in value["features"].as_array().expect("catalog") {
-        for field in ["feature_id", "name", "distance_mm", "editable", "refusal"] {
-            assert!(feature.get(field).is_some(), "{field}");
+    for slot in value["expression_slots"].as_array().expect("slots") {
+        for field in [
+            "object",
+            "name",
+            "slot",
+            "expression",
+            "dimension",
+            "display_value",
+            "display_unit",
+            "refusal",
+        ] {
+            assert!(slot.get(field).is_some(), "{field}");
         }
     }
     for body in value["bodies"].as_array().expect("required Body catalog") {
@@ -152,38 +159,34 @@ fn plate_facts(path: &Path) -> (Vec<(f64, f64)>, f64, String, String) {
 }
 
 fn selected(catalog: &Value, name: &str) -> String {
-    // Deliberately explicit, including in the one-feature sample. Names may be
-    // duplicated, so the recipe refuses ambiguity before choosing a UUID.
-    let candidates: Vec<_> = catalog["features"]
+    let candidates: Vec<_> = catalog["expression_slots"]
         .as_array()
-        .expect("catalog")
+        .expect("slots")
         .iter()
-        .filter(|feature| feature["name"] == name && feature["editable"] == true)
+        .filter(|s| {
+            s["name"] == name && s["slot"]["kind"] == "extrude_distance" && s["refusal"].is_null()
+        })
         .collect();
-    assert_eq!(candidates.len(), 1, "choose one UUID explicitly: {catalog}");
-    candidates[0]["feature_id"]
-        .as_str()
-        .expect("UUID")
-        .to_owned()
+    assert_eq!(candidates.len(), 1, "select explicitly");
+    candidates[0]["object"].as_str().expect("UUID").to_owned()
 }
 
-fn edit(source: &Path, feature: &str, distance: &str, version: &str, output: &Path) -> Command {
-    let mut command = cli();
-    command
-        .arg("edit-extrude")
-        .arg(source)
-        .args([
-            "--json",
-            "--feature",
-            feature,
-            "--distance-mm",
-            distance,
-            "--expect-version",
-            version,
-            "-o",
-        ])
-        .arg(output);
-    command
+fn edit(
+    source: &Path,
+    feature: &str,
+    distance: &str,
+    version: &str,
+    output: &Path,
+) -> crate::transaction::RequestCommand {
+    crate::transaction::constant(
+        source,
+        version,
+        feature,
+        "extrude_distance",
+        distance,
+        "mm",
+        output,
+    )
 }
 
 fn entries(root: &Path) -> Vec<OsString> {
@@ -209,9 +212,7 @@ fn empty_inspect_is_a_read_with_an_unavailable_edit_and_no_sidecars() {
         catalog["display_units"],
         serde_json::json!({"length":"mm", "angle":"deg"})
     );
-    assert_eq!(catalog["edit_extrude"]["available"], false);
-    assert!(catalog["edit_extrude"]["refusal"].is_string());
-    assert!(catalog["edit_extrude"]["document_refusal"].is_null());
+    assert_eq!(catalog["expression_slots"], serde_json::json!([]));
     let document = Document::open_read_only(&source).expect("reading");
     assert_eq!(
         catalog["document_id"],
@@ -264,7 +265,7 @@ fn json_create_empty_and_sample_match_inspect_and_the_shared_operation() {
     assert_eq!(created["document_id"], reading["document_id"]);
     assert_eq!(reading["display_units"]["length"], "in");
     assert_eq!(reading["display_units"]["angle"], "rad");
-    assert_eq!(reading["features"][0]["distance_mm"], 12.0);
+    assert_eq!(reading["expression_slots"][0]["expression"]["value"], 12.0);
     assert_eq!(selected(&reading, "Extrude1").len(), 36);
 
     let jobs = root.path().join("jobs plate.fcad");
@@ -374,7 +375,10 @@ fn json_create_closed_pipes_keep_publication_and_structured_errors() {
         .stderr(closed_pipe()));
     assert_eq!(lost.status.code(), Some(7), "{lost:?}");
     assert!(lost.stdout.is_empty() && lost.stderr.is_empty());
-    assert_eq!(inspect(&silent)["features"][0]["distance_mm"], 12.0);
+    assert_eq!(
+        crate::transaction::first_slot(&inspect(&silent), "extrude_distance")["expression"]["value"],
+        12.0
+    );
     assert_eq!(entries(root.path()).len(), names.len() + 1);
 
     let note = root.path().join("noext");
@@ -511,59 +515,26 @@ fn mixed_catalog_matches_common_facts_order_optional_values_and_copy_access() {
         );
         assert_eq!(catalog["display_units"]["length"], "in");
         assert_eq!(catalog["distance_unit"], "mm");
-        let features = catalog["features"].as_array().expect("features");
-        assert_eq!(features.len(), 6);
-        assert_eq!(
-            features
-                .iter()
-                .map(|f| f["name"].clone())
-                .collect::<Vec<_>>(),
-            vec![
-                serde_json::json!("Плита \"А\"\nline\\two"),
-                serde_json::json!("Symmetric"),
-                serde_json::json!("Formula"),
-                serde_json::json!("Parameter"),
-                serde_json::json!("Through"),
-                Value::Null
-            ]
-        );
-        for (wire, fact) in features.iter().zip(&common.features) {
-            assert_eq!(wire["feature_id"], fact.feature.to_string());
+        let slots = catalog["expression_slots"].as_array().expect("slots");
+        assert_eq!(slots.len(), common.expression_slots.len());
+        for (wire, fact) in slots.iter().zip(&common.expression_slots) {
+            assert_eq!(wire["object"], fact.object.to_string());
+            assert_eq!(wire["slot"], serde_json::to_value(fact.slot).expect("slot"));
             assert_eq!(
                 wire["name"],
                 serde_json::to_value(&fact.name).expect("name")
             );
             assert_eq!(
-                wire["distance_mm"],
-                serde_json::to_value(fact.distance_mm).expect("distance")
+                wire["expression"],
+                serde_json::to_value(&fact.expression).expect("expression")
             );
             assert_eq!(
                 wire["refusal"],
-                serde_json::to_value(&fact.refusal).expect("refusal")
-            );
-            assert_eq!(
-                wire["editable"],
-                common.refusal.is_none() && fact.refusal.is_none()
+                serde_json::to_value(common.refusal.as_ref().or(fact.refusal.as_ref()))
+                    .expect("refusal")
             );
         }
-        assert!(features[4]["distance_mm"].is_null());
-        assert!(features[0]["refusal"].is_null());
-        assert_eq!(features[0]["distance_mm"], 12.0);
-        assert_eq!(catalog["edit_extrude"]["available"], guard == "none");
-        assert_eq!(
-            catalog["edit_extrude"]["refusal"],
-            serde_json::to_value(common.unavailable_reason()).expect("reason")
-        );
-        assert_eq!(
-            catalog["edit_extrude"]["document_refusal"],
-            serde_json::to_value(&common.refusal).expect("document refusal")
-        );
-        if guard != "none" {
-            assert!(
-                features.iter().all(|f| f["editable"] == false),
-                "copy access must not be hidden"
-            );
-        }
+        assert_eq!(slots[0]["expression"]["value"], 12.0);
         document.close().expect("close");
         assert_eq!(before, std::fs::read(&source).expect("unchanged"));
         assert_eq!(
@@ -626,35 +597,20 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
     for args in [
         vec!["inspect", "--json"],
         vec![
-            "edit-extrude",
+            "edit",
             "source.fcad",
             "--json",
-            "--feature",
-            "bad",
-            "--distance-mm",
-            "27",
+            "--request",
+            "request.json",
             "-o",
             "out.fcad",
         ],
         vec![
-            "edit-extrude",
+            "edit",
             "source.fcad",
             "--json",
-            "--feature",
-            &valid_feature,
-            "--distance-mm",
-            "not-number",
-            "-o",
-            "out.fcad",
-        ],
-        vec![
-            "edit-extrude",
-            "source.fcad",
-            "--json",
-            "--feature",
-            &valid_feature,
-            "--distance-mm",
-            "27",
+            "--request",
+            "request.json",
             "--expect-version",
             "short",
             "-o",
@@ -701,12 +657,7 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
         assert!(output.stdout.is_empty(), "clap usage belongs to stderr");
         let usage = String::from_utf8(output.stderr).expect("usage");
         assert!(usage.contains("error:"));
-        if args.contains(&"not-number") && args.contains(&"--distance-mm") {
-            assert!(
-                usage.contains("--distance-mm") && usage.contains("not-number"),
-                "{usage}"
-            );
-        }
+
         if args.contains(&"short") {
             assert!(
                 usage.contains("--expect-version") && usage.contains("short"),
@@ -722,7 +673,7 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
     }
     for args in [
         vec!["inspect", "--json", "--help"],
-        vec!["edit-extrude", "--json", "--help"],
+        vec!["edit", "--json", "--help"],
         vec!["create", "--json", "--help"],
         vec!["export-stl", "--json", "--help"],
         vec!["--version"],
@@ -772,15 +723,7 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
     );
     // A value of --feature likewise cannot activate serialization before clap
     // has parsed a valid command; it remains an ordinary usage error.
-    let output = run(cli().args([
-        "edit-extrude",
-        "source",
-        "--feature=--json",
-        "--distance-mm",
-        "27",
-        "-o",
-        "out",
-    ]));
+    let output = run(cli().args(["edit", "source", "--request=--json", "-o", "out"]));
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
 }
@@ -832,7 +775,7 @@ fn non_utf8_paths_refuse_before_reading_or_publishing() {
         (&invalid, &root.path().join("out.fcad")),
     ] {
         let output = run(&mut edit(from, &id, "27", version, to));
-        let value = reply(&output, "edit-extrude", 2);
+        let value = reply(&output, "edit", 2);
         assert_eq!(value["error"]["kind"], "input");
         assert!(
             value["error"]["message"]
@@ -875,10 +818,7 @@ fn no_native_inspection_succeeds_and_edit_reports_unavailable_without_publicatio
         reading["content_version"].as_str().expect("version"),
         &root.path().join("out.fcad"),
     ));
-    assert_eq!(
-        reply(&output, "edit-extrude", 2)["error"]["kind"],
-        "unsupported"
-    );
+    assert_eq!(reply(&output, "edit", 2)["error"]["kind"], "unsupported");
     let body = reading["bodies"][0]["body_id"]
         .as_str()
         .expect("discovered Body");
@@ -985,13 +925,15 @@ fn closed_stderr_does_not_prevent_structured_errors_or_delivery_exit() {
     let root = tempfile::tempdir().expect("dir");
     let missing = root.path().join("missing.fcad");
     let feature = ObjectId::new().to_string();
-    for operation in ["inspect", "edit-extrude", "export-stl"] {
+    for operation in ["inspect", "edit", "export-stl"] {
         let command = || {
             let mut command = cli();
             command.arg(operation).arg(&missing).arg("--json");
-            if operation == "edit-extrude" {
+            if operation == "edit" {
                 command
-                    .args(["--feature", &feature, "--distance-mm", "27", "-o"])
+                    .args(["--expect-version", &"0".repeat(64), "--request"])
+                    .arg(root.path().join("request.json"))
+                    .arg("-o")
                     .arg(root.path().join("output.fcad"));
             }
             if operation == "export-stl" {
@@ -1069,15 +1011,18 @@ fn native_json_inspect_edit_contract() {
         assert_eq!(version.len(), 64);
         let destination = root.path().join("Изменённая плита.fcad");
         let output = run(&mut edit(&source, &feature, "27", version, &destination));
-        let result = reply(&output, "edit-extrude", 0);
+        let result = reply(&output, "edit", 0);
         assert_eq!(
             result["result"],
-            serde_json::json!({"destination":destination,"document_id":reading["document_id"],"feature_id":feature,"rebuild":{"failed":[],"skipped":[],"degraded_bodies":[],"warnings":[]}})
+            serde_json::json!({"destination":destination,"document_id":reading["document_id"],"content_version":inspect(&destination)["content_version"],"rebuild":{"failed":[],"skipped":[],"degraded_bodies":[],"warnings":[]}})
         );
         let edited = inspect(&destination);
         assert_eq!(edited["document_id"], reading["document_id"]);
         assert_eq!(selected(&edited, "Extrude1"), feature);
-        assert_eq!(edited["features"][0]["distance_mm"], 27.0);
+        assert_eq!(
+            crate::transaction::first_slot(&edited, "extrude_distance")["expression"]["value"],
+            27.0
+        );
         assert_ne!(edited["content_version"], reading["content_version"]);
         assert_eq!(edited["display_units"]["length"], "in");
 
@@ -1085,15 +1030,22 @@ fn native_json_inspect_edit_contract() {
         // The eight viewer gates independently exercise its actual UI wiring.
         let jobs_output = root.path().join("jobs copy.fcad");
         let common = ferritecad_jobs::read_extrude_source(&source).expect("source");
-        let request = ferritecad_jobs::EditExtrudeRequest {
+        let request = ferritecad_jobs::EditRequest {
             source: source.clone(),
             expected: common.version,
-            feature: feature.parse().expect("UUID"),
-            distance_mm: 27.0,
+
+            changes: vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature.parse().expect("UUID"),
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    27.0,
+                )
+                .expect("test value"),
+            ],
             destination: jobs_output.clone(),
         };
         let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-        ferritecad_jobs::edit_extrude_copy(&request, &mut kernel, &OperationContext::default())
+        ferritecad_jobs::edit_copy(&request, &mut kernel, &OperationContext::default())
             .expect("shared operation");
         assert_eq!(
             tables(&destination),
@@ -1173,11 +1125,23 @@ fn native_json_inspect_edit_contract() {
         }
         // Text mode still has its old report and codes, and uses the same edit.
         let text_copy = root.path().join("text.fcad");
+        let text_request = tempfile::NamedTempFile::new().expect("request");
+        crate::transaction::write(
+            text_request.path(),
+            &feature,
+            "extrude_distance",
+            27.0,
+            "mm",
+        );
         let text = success(
             cli()
-                .arg("edit-extrude")
+                .arg("edit")
                 .arg(&source)
-                .args(["--feature", &feature, "--distance-mm", "27", "-o"])
+                .arg("--expect-version")
+                .arg(version)
+                .arg("--request")
+                .arg(text_request.path())
+                .arg("-o")
                 .arg(&text_copy),
         );
         assert!(
@@ -1203,12 +1167,12 @@ fn native_json_inspect_edit_contract() {
         ] {
             let names = entries(root.path());
             let error = run(&mut edit(&source, &id, distance, &token, &refused));
-            assert_eq!(reply(&error, "edit-extrude", 2)["error"]["kind"], kind);
+            assert_eq!(reply(&error, "edit", 2)["error"]["kind"], kind);
             assert_eq!(entries(root.path()), names);
         }
         std::fs::write(&refused, b"existing output").expect("sentinel");
         let error = run(&mut edit(&source, &feature, "27", version, &refused));
-        assert_eq!(reply(&error, "edit-extrude", 2)["error"]["kind"], "input");
+        assert_eq!(reply(&error, "edit", 2)["error"]["kind"], "input");
         assert_eq!(
             std::fs::read(&refused).expect("sentinel"),
             b"existing output"
@@ -1217,7 +1181,7 @@ fn native_json_inspect_edit_contract() {
         std::fs::hard_link(&source, &alias).expect("hard link");
         for to in [&source, &alias] {
             let error = run(&mut edit(&source, &feature, "27", version, to));
-            assert_eq!(reply(&error, "edit-extrude", 2)["error"]["kind"], "input");
+            assert_eq!(reply(&error, "edit", 2)["error"]["kind"], "input");
         }
         // Broken pipe after actual publication is delivery exit 7, not panic
         // exit 101, rollback, or a second edit attempt.
@@ -1231,7 +1195,11 @@ fn native_json_inspect_edit_contract() {
         assert!(!diagnostic.contains("panicked"));
         assert_eq!(tables(&destination), tables(&delivered));
         assert_eq!(entries(root.path()).len(), names.len() + 1);
-        assert_eq!(inspect(&delivered)["features"][0]["distance_mm"], 27.0);
+        assert_eq!(
+            crate::transaction::first_slot(&inspect(&delivered), "extrude_distance")["expression"]
+                ["value"],
+            27.0
+        );
         assert_eq!(before, std::fs::read(&source).expect("source unchanged"));
     }
     native_selection_and_stale_source();
@@ -1246,19 +1214,16 @@ fn native_structured_refusals() {
     let version = reading["content_version"].as_str().expect("version");
     let before = std::fs::read(&source).expect("source");
     let destination = root.path().join("refused.fcad");
-    for feature in reading["features"].as_array().expect("catalog") {
-        if feature["editable"] == false {
+    for feature in reading["expression_slots"].as_array().expect("catalog") {
+        if feature["slot"]["kind"] == "extrude_distance" && feature["refusal"].is_string() {
             let error = run(&mut edit(
                 &source,
-                feature["feature_id"].as_str().expect("UUID"),
+                feature["object"].as_str().expect("UUID"),
                 "27",
                 version,
                 &destination,
             ));
-            assert_eq!(
-                reply(&error, "edit-extrude", 2)["error"]["kind"],
-                "unsupported"
-            );
+            assert_eq!(reply(&error, "edit", 2)["error"]["kind"], "unsupported");
             assert!(!destination.exists());
             assert_eq!(before, std::fs::read(&source).expect("unchanged"));
         }
@@ -1275,21 +1240,17 @@ fn native_structured_refusals() {
             .expect("guard");
         let catalog = inspect(&source);
         let before = std::fs::read(&source).expect("guarded source");
-        assert!(catalog["edit_extrude"]["document_refusal"].is_string());
-        let feature = &catalog["features"][0];
-        assert!(feature["refusal"].is_null());
-        assert_eq!(feature["editable"], false);
+
+        let feature = crate::transaction::first_slot(&catalog, "extrude_distance");
+        assert!(feature["refusal"].is_string());
         let error = run(&mut edit(
             &source,
-            feature["feature_id"].as_str().expect("UUID"),
+            feature["object"].as_str().expect("UUID"),
             "27",
             catalog["content_version"].as_str().expect("version"),
             &destination,
         ));
-        assert_eq!(
-            reply(&error, "edit-extrude", 2)["error"]["kind"],
-            "unsupported"
-        );
+        assert_eq!(reply(&error, "edit", 2)["error"]["kind"], "unsupported");
         assert!(!destination.exists());
         assert_eq!(before, std::fs::read(&source).expect("unchanged"));
         assert_eq!(
@@ -1330,15 +1291,20 @@ fn native_selection_and_stale_source() {
     let destination = root.path().join("second changed.fcad");
     reply(
         &run(&mut edit(&source, &id, "29", version, &destination)),
-        "edit-extrude",
+        "edit",
         0,
     );
     let changed = inspect(&destination);
     assert_eq!(
-        changed["features"][0]["distance_mm"], 12.0,
+        crate::transaction::first_slot(&changed, "extrude_distance")["expression"]["value"],
+        12.0,
         "must not choose first"
     );
-    assert_eq!(changed["features"][1]["distance_mm"], 29.0);
+    assert_eq!(
+        crate::transaction::slot(&changed, &serde_json::json!(id), "extrude_distance")["expression"]
+            ["value"],
+        29.0
+    );
     // Change actual content, not mtime, after public discovery.
     let sql = rusqlite::Connection::open(&source).expect("fixture");
     let updated = sql
@@ -1354,7 +1320,7 @@ fn native_selection_and_stale_source() {
     let before = std::fs::read(&source).expect("changed source");
     let refused = root.path().join("stale.fcad");
     let error = run(&mut edit(&source, &id, "31", version, &refused));
-    assert_eq!(reply(&error, "edit-extrude", 2)["error"]["kind"], "input");
+    assert_eq!(reply(&error, "edit", 2)["error"]["kind"], "input");
     assert!(!refused.exists());
     assert_eq!(before, std::fs::read(&source).expect("unchanged"));
 }

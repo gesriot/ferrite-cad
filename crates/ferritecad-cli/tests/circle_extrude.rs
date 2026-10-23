@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{
     CapSide, Document, ObjectPayload, SemanticRole, SketchGeometry, TopologyRef,
 };
@@ -686,18 +688,21 @@ fn native_circle_height_copy_keeps_the_circle_and_every_identity() {
         id
     };
     let taller = d.path().join("taller.fcad");
-    let r = cli()
-        .arg("edit-extrude")
-        .arg(&source)
-        .arg("--feature")
-        .arg(extrude.to_string())
-        .arg("--distance-mm")
-        .arg("25")
-        .arg("-o")
-        .arg(&taller)
-        .arg("--json")
-        .output()
-        .expect("edit-extrude");
+    let r = transaction::constant(
+        &source,
+        &Document::open_read_only(&source)
+            .expect("document")
+            .content_version()
+            .expect("version")
+            .to_string(),
+        &extrude.to_string(),
+        "extrude_distance",
+        "25",
+        "mm",
+        &taller,
+    )
+    .output()
+    .expect("edit");
     assert!(r.status.success(), "{r:?}");
 
     // The circle, its identity and every other stored fact are the copy's too.

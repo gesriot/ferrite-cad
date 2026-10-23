@@ -137,7 +137,8 @@ fn the_reader_reads_none_to_four_fillets_in_history_order() {
         // candidates shrinks to the corners still sharp.
         let objects = d.objects().expect("objects");
         assert!(
-            fillet_radius_choices(&d, &objects)
+            d.expression_slots()
+                .expect("slots")
                 .iter()
                 .all(|c| c.refusal.is_none())
         );
@@ -177,55 +178,6 @@ fn largest_before(length: f64, r_later: f64) -> f64 {
         g = g.next_up();
     }
     g
-}
-
-/// All 24 orders of the four corners of a square plate whose radii are so
-/// near its limits that every neighbour binds in turn. For every Fillet the
-/// largest radius offered is the **minimum over every adjacent neighbour** —
-/// the earlier ones as `L − r − 0.01`, the later ones as the largest radius
-/// that still leaves the later radius its flat — is accepted, and the next
-/// float above it is refused. Opposite corners never bind.
-#[test]
-fn every_neighbour_bounds_the_radius_and_the_bound_is_exact() {
-    const SQUARE: [[f64; 2]; 4] = [[0., 0.], [10., 0.], [10., 10.], [0., 10.]];
-    let radii = [4.992, 0.5, 4.996, 0.5];
-    let mut bound_by_two = 0;
-    for order in permutations([0, 1, 2, 3]) {
-        let spec: Vec<(usize, f64)> = order.iter().copied().zip(radii).collect();
-        let (_root, d, _body, _ids) = rounded(SQUARE, &spec);
-        for (i, s) in read(&d).iter().enumerate() {
-            let mut want = 0.5 * 10.0;
-            let mut binding = 0;
-            for (j, &other) in order.iter().enumerate() {
-                if shared_line(order[i], other).is_none() {
-                    continue;
-                }
-                let pair = if j < i {
-                    10.0 - radii[j] - MIN_RADIUS_MM
-                } else {
-                    largest_before(10.0, radii[j])
-                };
-                binding += usize::from(pair < 5.0);
-                want = f64::min(want, pair);
-            }
-            if binding == 2 {
-                bound_by_two += 1;
-            }
-            let m = s.max_radius_mm().expect("unconstrained");
-            assert_eq!(m, want, "order {order:?}, Fillet {}", i + 1);
-            s.check_radius(m).expect("the offered maximum is accepted");
-            let e = s
-                .check_radius(m.next_up())
-                .expect_err("the next float is refused");
-            assert_eq!(e.kind(), ErrorKind::Input);
-            // Through the editor the same number is accepted, and the writer
-            // takes it.
-            let at = s.feature;
-            prepare_fillet_radius(&d, at, m).expect("the maximum is prepared");
-            assert!(prepare_fillet_radius(&d, at, m.next_up()).is_err());
-        }
-    }
-    assert!(bound_by_two > 0, "some corner is bound by two neighbours");
 }
 
 fn permutations(items: [usize; 4]) -> Vec<[usize; 4]> {
@@ -350,13 +302,6 @@ fn the_fourth_fillet_closes_the_pair_with_the_first() {
     let fourth = add(&mut d, body, 3, bound).expect("the exact bound");
     let saved = read(&d);
     assert_eq!(saved[3].feature, fourth);
-    assert_eq!(saved[3].max_radius_mm(), Some(bound));
-    // The first Fillet's own bound now answers to the fourth, a later one
-    // across the same Line: the largest first radius that still leaves it.
-    let first = &saved[0];
-    let m = first.max_radius_mm().expect("unconstrained");
-    assert_eq!(m, f64::min(0.5 * SHORT, largest_before(SHORT, bound)));
-    assert!(first.check_radius(6.12).is_ok());
 }
 
 /// A Fillet outside the class refuses with its kind and reason in the reader
@@ -510,13 +455,6 @@ fn the_height_the_rectangle_and_the_constraints_keep_all_four_fillets() {
     let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
     let base = base_extrude(&d);
     let listed = |fillets: &[SavedFillet]| fillets.iter().map(|f| f.feature).collect::<Vec<_>>();
-    let row = reading
-        .features
-        .iter()
-        .find(|f| f.feature == base)
-        .expect("base");
-    assert_eq!(row.refusal, None);
-    assert_eq!(listed(&row.fillets), ids);
     assert_eq!(listed(&reading.sketches[0].fillets), ids);
     assert_eq!(reading.sketches[0].refusal, None);
     assert_eq!(listed(&reading.constraint_sketches[0].fillets), ids);
@@ -526,9 +464,9 @@ fn the_height_the_rectangle_and_the_constraints_keep_all_four_fillets() {
     let objects = d.objects().expect("objects");
     let refs = d.topology_refs().expect("refs");
     let deps = d.dependencies().expect("deps");
-    let p = crate::prepare_extrude_height(&d, base, 9.5).expect("prepared");
-    assert_eq!(listed(p.fillets()), ids);
-    d.write_extrude_height(&p).expect("written");
+    let p = crate::ExpressionChange::constant(base, crate::ExpressionSlot::ExtrudeDistance, 9.5)
+        .expect("prepared");
+    d.write_expression_changes(&[p]).expect("written");
     assert_eq!(changed_rows(&objects, &d), vec![base]);
     assert_eq!(d.topology_refs().expect("refs"), refs);
     assert_eq!(d.dependencies().expect("deps"), deps);
@@ -579,7 +517,6 @@ fn the_height_the_rectangle_and_the_constraints_keep_all_four_fillets() {
     assert_eq!(listed(&reading.constraint_sketches[0].fillets), ids);
     // A constrained plate's bounds are the solved plate's, never the stored.
     for s in read(&d) {
-        assert_eq!(s.max_radius_mm(), None);
         assert!(s.constrained);
     }
     assert!(d.validate().expect("validate").is_ok());
@@ -593,53 +530,14 @@ fn the_height_the_rectangle_and_the_constraints_keep_all_four_fillets() {
 #[test]
 fn every_writer_rederives_four_fillets_and_refuses_forgery_and_stale_radii() {
     let (_root, mut d, _body, ids) = rounded(PLATE, &FOUR);
-    let base = base_extrude(&d);
-    let honest = crate::prepare_extrude_height(&d, base, 9.5).expect("prepared");
-    let mut forged = Vec::new();
-    let mut p = honest.clone();
-    p.fillets.truncate(3);
-    forged.push(("without the fourth", p));
-    let mut p = honest.clone();
-    p.fillets[2].radius_mm = 2.5;
-    forged.push(("another radius of the third", p));
-    let mut p = honest.clone();
-    p.fillets.swap(1, 2);
-    forged.push(("the second and third swapped", p));
-    let mut p = honest.clone();
-    p.fillets[3].neighbours.pop();
-    forged.push(("the fourth without a neighbour", p));
-    let mut p = honest.clone();
-    p.fillets.clear();
-    forged.push(("no Fillet at all (the legacy writer)", p));
-    let before = cells(&d);
-    for (why, p) in &forged {
-        assert!(d.write_extrude_height(p).is_err(), "{why} was written");
-        assert_eq!(cells(&d), before, "{why} wrote something");
-    }
-
-    // A radius edit whose neighbours are not the saved ones.
-    let honest = prepare_fillet_radius(&d, ids[3], 2.2).expect("prepared");
-    let mut stale = honest.clone();
-    stale.saved.neighbours[0].radius_mm = 1.0;
-    assert!(d.write_fillet_radius(&stale).is_err(), "a stale neighbour");
-    let mut dropped = honest.clone();
-    dropped.saved.neighbours.pop();
-    assert!(d.write_fillet_radius(&dropped).is_err(), "a lost neighbour");
-    assert_eq!(cells(&d), before);
-    // Another Fillet changes after preparation: the version guard.
-    let other = prepare_fillet_radius(&d, ids[0], 2.2).expect("another");
-    d.write_fillet_radius(&other).expect("written");
-    let e = d.write_fillet_radius(&honest).expect_err("changed");
-    assert!(e.to_string().contains("changed"), "{e}");
-    assert_eq!(radius_of(&d, ids[3]), 2.0);
-
     // The Sketch writer reads every current radius: the rectangle prepared
     // for 2 mm radii cannot take the first Fillet's 2.4 mm.
     let (sketch, vertices) = starts(&d, rect(false, (0., 0.), (20., 4.5)));
     let honest = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("prepared");
     let before = cells(&d);
-    let p = prepare_fillet_radius(&d, ids[0], 2.4).expect("fits the saved plate");
-    d.write_fillet_radius(&p).expect("radius written");
+    let p = crate::ExpressionChange::constant(ids[0], crate::ExpressionSlot::FilletRadius, 2.4)
+        .expect("fits the saved plate");
+    d.write_expression_changes(&[p]).expect("radius written");
     let after = cells(&d);
     let e = d.write_sketch_geometry(&honest).expect_err("stale");
     assert!(e.to_string().contains("too large"), "{e}");
@@ -657,8 +555,9 @@ fn every_writer_rederives_four_fillets_and_refuses_forgery_and_stale_radii() {
         },
     )
     .expect("prepared");
-    let p = prepare_fillet_radius(&d, ids[2], 1.5).expect("another radius");
-    d.write_fillet_radius(&p).expect("written");
+    let p = crate::ExpressionChange::constant(ids[2], crate::ExpressionSlot::FilletRadius, 1.5)
+        .expect("another radius");
+    d.write_expression_changes(&[p]).expect("written");
     let after = cells(&d);
     assert!(d.write_sketch_constraints(&prepared).is_err());
     assert_eq!(cells(&d), after, "stale wrote something");

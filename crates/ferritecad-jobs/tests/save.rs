@@ -41,7 +41,13 @@ fn fixture() -> Fixture {
     let root = tempfile::tempdir().expect("directory");
     let file = root.path().join("plate.fcad");
     make_plate(&file, 13.0);
-    let feature = read_extrude_source(&file).expect("reading").features[0].feature;
+    let feature = read_extrude_source(&file)
+        .expect("reading")
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("height slot")
+        .object;
     Fixture {
         root,
         sessions: tempfile::tempdir().expect("sessions"),
@@ -55,10 +61,19 @@ fn open(f: &Fixture) -> DocumentSession {
 }
 
 fn apply(session: &mut DocumentSession, feature: ObjectId, millimetres: f64) {
-    let step = support::viewed(session.begin_step())
-        .edit_extrude_height(
-            feature,
-            millimetres,
+    let step = {
+        let ticket = support::viewed(session.begin_step());
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    millimetres,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -67,14 +82,20 @@ fn apply(session: &mut DocumentSession, feature: ObjectId, millimetres: f64) {
             },
             &OperationContext::default(),
         )
-        .expect("an edit");
+    }
+    .expect("an edit");
     session.commit_step(step).expect("accepted");
 }
 
 fn height_of(path: &Path) -> f64 {
-    read_extrude_source(path).expect("reading").features[0]
-        .distance_mm
-        .expect("a height")
+    read_extrude_source(path)
+        .expect("reading")
+        .expression_slots
+        .iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("height slot")
+        .expression
+        .value()
 }
 
 fn bytes(path: &Path) -> Vec<u8> {
@@ -329,13 +350,20 @@ fn a_change_between_the_first_compare_and_the_lock_is_caught_by_the_second_compa
             std::fs::copy(&file, &other).expect("copy");
             let mut document = ferritecad_document::Document::open(&other).expect("open");
             let reading = read_extrude_source(&other).expect("reading");
-            let prepared = ferritecad_document::prepare_extrude_height(
-                &document,
-                reading.features[0].feature,
+            let prepared = ferritecad_document::ExpressionChange::constant(
+                reading
+                    .expression_slots
+                    .iter()
+                    .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+                    .expect("height slot")
+                    .object,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
                 17.0,
             )
             .expect("prepared");
-            document.write_extrude_height(&prepared).expect("written");
+            document
+                .write_expression_changes(&[prepared])
+                .expect("written");
             document.close().expect("closed");
             std::fs::rename(&other, &file).expect("lands");
         }),
@@ -407,13 +435,20 @@ fn a_writer_that_ignores_the_lock_can_win_the_instant_before_the_rename() {
             std::fs::copy(&file, &other).expect("copy");
             let mut document = ferritecad_document::Document::open(&other).expect("open");
             let reading = read_extrude_source(&other).expect("reading");
-            let prepared = ferritecad_document::prepare_extrude_height(
-                &document,
-                reading.features[0].feature,
+            let prepared = ferritecad_document::ExpressionChange::constant(
+                reading
+                    .expression_slots
+                    .iter()
+                    .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+                    .expect("height slot")
+                    .object,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
                 99.0,
             )
             .expect("prepared");
-            document.write_extrude_height(&prepared).expect("written");
+            document
+                .write_expression_changes(&[prepared])
+                .expect("written");
             document.close().expect("closed");
             std::fs::rename(&other, &file).expect("lands");
         }),

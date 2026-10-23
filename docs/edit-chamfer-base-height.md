@@ -147,6 +147,12 @@ import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29b-"))
 
+def edit_args(source, feature, height, version, out):
+    request = root / "expression.json"
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+    return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
+
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
     if p.returncode == 7:
@@ -270,15 +276,12 @@ geometry(["chamfer-edge-copy", plate, "--body", catalog["bodies"][0]["body_id"],
 saved = inspect(one)
 chamfer = saved["chamfers"][0]
 base = saved["features"][0]
-assert saved["edit_extrude"]["available"] is True
-assert base["editable"] is True and base["refusal"] is None and base["distance_mm"] == H
-assert base["chamfer_base"] == {"chamfer_feature_id": chamfer["feature_id"],
+assert saved["sketches"][0]["chamfer_base"] == {"chamfer_feature_id": chamfer["feature_id"],
                                 "body_id": saved["bodies"][0]["body_id"], "edge": chamfer["edge"],
                                 "corner_mm": CORNER, "distance_mm": d1, "distance_unit": "mm",
                                 "profile_constrained": False}
-for key in ("base_height_edit", "fillet_base", "fillet_history"):
-    assert base[key] is None, key
-assert inspect(plate)["features"][0]["chamfer_base"] is None
+assert next(s for s in saved["expression_slots"] if s["object"] == base["feature_id"])["refusal"] is None
+assert inspect(plate)["sketches"][0]["chamfer_base"] is None
 
 # 3. Taller and shorter (below the distance too): one row, one cell pair,
 #    the Chamfer and every name as they were, the plane at the chosen corner.
@@ -286,34 +289,30 @@ refs_before = [r[0] for r in tables(one)["topology_refs"][1]]
 copies = {}
 for h in (9.5, 0.4, 3.0):
     out = root / f"h{h}.fcad"
-    done = geometry(["edit-extrude", one, "--feature", base["feature_id"], "--distance-mm", str(h),
-                     "--expect-version", saved["content_version"], "-o", out, "--json"], out)["result"]
-    assert done["feature_id"] == base["feature_id"]
+    done = geometry(edit_args(one, base["feature_id"], str(h), saved["content_version"], out), out)["result"]
     assert only_row(one, out, base["feature_id"]) >= 2
     assert [r[0] for r in tables(out)["topology_refs"][1]] == refs_before, "every name keeps its UUID"
     after = inspect(out)
-    assert after["features"][0]["distance_mm"] == h
-    assert after["features"][0]["chamfer_base"] == base["chamfer_base"]
-    assert after["chamfers"][0]["feature_id"] == chamfer["feature_id"] and after["chamfers"][0]["distance_mm"] == d1
+    assert next(s for s in after["expression_slots"] if s["slot"]["kind"] == "extrude_distance")["expression"]["value"] == h
+    assert after["sketches"][0]["chamfer_base"] == saved["sketches"][0]["chamfer_base"]
+    assert after["chamfers"][0]["feature_id"] == chamfer["feature_id"] and after["chamfers"][0]["expression"]["value"] == d1
     exact = (W * D - d1 * d1 / 2) * h
     measured(out, d1, h)
     copies[h] = out
 
 # 4. The Chamfer's own distance edit still works on the edited plate.
 edited = inspect(copies[9.5])
-request.write_text(json.dumps({"request_version": 1, "distance_mm": D - 0.01}))
+request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": D - 0.01, "unit": "mm"}]}))
 far = root / "far.fcad"
-geometry(["edit-chamfer-distance", copies[9.5], "--feature", chamfer["feature_id"],
-          "--expect-version", edited["content_version"], "--request", request, "-o", far, "--json"], far)
+geometry(["edit", copies[9.5], "--expect-version", edited["content_version"], "--request", request, "-o", far, "--json"], far)
 measured(far, D - 0.01, 9.5)
 
 # 5. Refusals write nothing: the Chamfer itself, a non-number, and the height
 #    OCCT cannot chamfer (measured: 1e-5 mm and below), typed `kernel`.
 never = root / "never.fcad"
-for feature, height, kind in ((chamfer["feature_id"], "9", "unsupported"), (base["feature_id"], "0", "input"),
+for feature, height, kind in ((chamfer["feature_id"], "9", "input"), (base["feature_id"], "0", "input"),
                               (base["feature_id"], "1e-6", "kernel")):
-    p = run(["edit-extrude", one, "--feature", feature, "--distance-mm", height,
-             "--expect-version", saved["content_version"], "-o", never, "--json"], code=2)
+    p = run(edit_args(one, feature, height, saved["content_version"], never), code=2)
     assert p["error"]["kind"] == kind and not never.exists(), (height, p)
 (copies[9.5].with_suffix(".stl")).unlink()
 print("FCAD_29B_RECIPE_OK", f"d={d1} h=9.5 volume={measured(copies[9.5], d1, 9.5):.6f}/{(W * D - d1 * d1 / 2) * 9.5:.6f}")

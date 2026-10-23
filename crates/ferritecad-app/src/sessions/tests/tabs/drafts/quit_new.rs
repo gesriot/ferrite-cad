@@ -77,7 +77,15 @@ impl Window {
         let source = self.sessions.export_path().expect("created");
         let reading = read_extrude_source(&source).expect("created model");
         if content == NewContent::SamplePlate {
-            assert_eq!(reading.features[0].distance_mm, Some(7.));
+            assert_eq!(
+                ferritecad_fixtures::expression_slot(
+                    &reading,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance
+                )
+                .expression
+                .value(),
+                7.
+            );
             assert_eq!(
                 reading.sketches[0]
                     .vertices
@@ -89,7 +97,15 @@ impl Window {
                 vec![[0., 0.], [50., 0.], [50., 30.], [0., 30.]]
             );
         } else {
-            assert!(reading.features.is_empty());
+            assert!(
+                reading
+                    .expression_slots
+                    .iter()
+                    .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .is_empty()
+            );
         }
         self.wait_for_create_idle();
     }
@@ -237,7 +253,15 @@ fn finish_returned_drawing(w: &mut Window, before: &(Vec<[String; 2]>, usize, us
             .collect::<Vec<_>>(),
         vec![[0., 0.], [20., 0.], [20., 10.]]
     );
-    assert_eq!(reading.features[0].distance_mm, Some(10.));
+    assert_eq!(
+        ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance
+        )
+        .expression
+        .value(),
+        10.
+    );
     w.wait_for_create_idle();
 }
 
@@ -435,7 +459,11 @@ fn save_refusals_dialog_cancel_save_as_and_external_conflict_return_whole_new() 
     assert!(
         read_extrude_source(&root.path().join("saved.fcad"))
             .expect("saved accepted Empty")
-            .features
+            .expression_slots
+            .iter()
+            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+            .cloned()
+            .collect::<Vec<_>>()
             .is_empty()
     );
 }
@@ -979,18 +1007,29 @@ fn compare_new_outputs(root: &Path) {
     );
     let reading = read_extrude_source(&origin).expect("origin");
     let peer = peer_root.path().join("edited.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        origin.as_os_str(),
-        "--feature".as_ref(),
-        reading.features[0].feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        reading.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "7".as_ref(),
-        "-o".as_ref(),
-        peer.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
+            "extrude_distance",
+            "7",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            origin.as_os_str(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            peer.as_os_str(),
+        ])
+    };
     assert_eq!(
         all_sql(&saved, &[], false),
         all_sql(&peer, &[], false),

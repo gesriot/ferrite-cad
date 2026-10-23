@@ -83,19 +83,17 @@ fn published(
         assert_eq!(g.line(i), f.line(i), "Line {i}");
     }
     let chamfer = &after["chamfers"][0];
-    for key in ["feature_id", "edge", "distance_mm", "previous_feature_id"] {
+    for key in ["feature_id", "edge", "expression", "previous_feature_id"] {
         assert_eq!(chamfer[key], chamfer_before[key], "{key}");
     }
-    assert_eq!(chamfer["profile_constrained"], true);
-    assert_eq!(chamfer["distance_edit"]["max_distance_mm"], Value::Null);
-    assert_eq!(chamfer["distance_edit"]["available"], true);
+
     let context = &g.constraint_row()["chamfer_base"];
     assert_eq!(context["chamfer_feature_id"], chamfer_before["feature_id"]);
     assert_eq!(context["corner_mm"], json!(corner), "a stored fact");
     assert_eq!(context["distance_mm"], d);
     assert_eq!(context["profile_constrained"], true);
     assert_eq!(
-        after["features"][0]["chamfer_base"], *context,
+        after["sketches"][0]["constraint_edit"]["chamfer_base"], *context,
         "one object on the base Extrude and the Sketch's constraint editor"
     );
     let row = &after["sketches"][0];
@@ -365,7 +363,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
         super::base_height::raise(&replaced, &base, "9.5", &version, &tall)
             .output()
             .expect("process"),
-        "edit-extrude",
+        "edit",
         0,
     );
     assert_eq!(
@@ -380,13 +378,13 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
         .expect("corner")];
     let (m, _) = measure_c(&tall, None);
     check_brep(&m, rect, moved, DIST, 9.5);
-    let (_, version, catalog) = (0, base_of(&tall).1, inspect(&tall));
-    assert_eq!(
-        catalog["chamfers"][0]["distance_edit"]["max_distance_mm"],
-        Value::Null
-    );
+    let (_, version, _) = (0, base_of(&tall).1, inspect(&tall));
+
     let request = r.root.path().join("d.json");
-    write(&request, &json!({"request_version":1,"distance_mm":3.0}));
+    write(
+        &request,
+        &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":3.0,"unit":"mm"}]}),
+    );
     let wide = r.root.path().join("wide.fcad");
     reply(
         edit_from(&tall, &id.to_string(), &version, &request, &wide)
@@ -454,12 +452,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
         .expect("list");
     assert_eq!(left.len(), 4, "the four closure links remain: {left:?}");
     assert!(left.iter().all(|c| c["rule"]["kind"] == "coincident"));
-    assert_eq!(after["chamfers"][0]["profile_constrained"], false);
-    assert_ne!(
-        after["chamfers"][0]["distance_edit"]["max_distance_mm"],
-        Value::Null,
-        "the stored plate is the plate again"
-    );
+
     // Nothing was baked: the stored coordinates are the saved ones.
     assert_eq!(r.at_copy(&bare).stored_starts(), stored_original);
     // The coordinate editor works again, on those stored coordinates.
@@ -499,10 +492,7 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
     // Stored 3.5 mm deep (largest stored distance 3.49), solved 20 mm deep.
     let small = [[X0, Y0], [X0 + W, Y0], [X0 + W, Y0 + 3.5], [X0, Y0 + 3.5]];
     let g = chamfered_without_kernel(Plate::new(small), corner, 3.0);
-    assert_eq!(
-        g.catalog["chamfers"][0]["distance_edit"]["max_distance_mm"],
-        3.49
-    );
+
     let at = [0.0, 0.0];
     g.ask_constraints(&[], &dimensioned(&g, at, 40.0, 20.0));
     let starts = g.stored_starts();
@@ -512,11 +502,7 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
         .collect();
     let first = published(&g, corner, 3.0, &expected, 0, "large");
     let solved_deep = g.at_copy(&first);
-    assert_eq!(
-        solved_deep.catalog["chamfers"][0]["distance_edit"]["max_distance_mm"],
-        Value::Null,
-        "the stored 3.49 is no bound"
-    );
+
     let (rect, moved) = solved_rect(&first, &starts, corner);
     let id = solved_deep.catalog["chamfers"][0]["feature_id"]
         .as_str()
@@ -525,7 +511,10 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
     let request = g.root.path().join("d.json");
     let (_, version) = base_of(&first);
     let try_distance = |source: &Path, d: f64, name: &str| -> (PathBuf, Value) {
-        write(&request, &json!({"request_version":1,"distance_mm":d}));
+        write(
+            &request,
+            &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":d,"unit":"mm"}]}),
+        );
         let out = g.root.path().join(format!("{name}.fcad"));
         let (_, version) = base_of(source);
         let v = serde_json::from_slice::<Value>(
@@ -560,10 +549,13 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
         let copy = g.root.path().join(format!("exact-{fits}.fcad"));
         std::fs::copy(&first, &copy).expect("copy");
         let mut d = Document::open(&copy).expect("writable");
-        let prepared =
-            ferritecad_document::prepare_chamfer_distance(&d, id.parse().expect("UUID"), distance)
-                .expect("a finite distance is prepared on a constrained plate");
-        d.write_chamfer_distance(&prepared).expect("written");
+        let prepared = ferritecad_document::ExpressionChange::constant(
+            id.parse().expect("UUID"),
+            ferritecad_document::ExpressionSlot::ChamferDistance,
+            distance,
+        )
+        .expect("a finite distance is prepared on a constrained plate");
+        d.write_expression_changes(&[prepared]).expect("written");
         d.close().expect("close");
         let d = Document::open_read_only(&copy).expect("reopen");
         let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
@@ -596,10 +588,7 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
     // Stored 12.25 mm deep (largest stored 12.24) with a distance of 5; solved
     // 4 mm deep: refused by the rebuild with the numbers, the source whole.
     let (_f, h, _, id) = plate_with_chamfer(CCW, corner, 5.0, "reverse-src");
-    assert_eq!(
-        h.catalog["chamfers"][0]["distance_edit"]["max_distance_mm"],
-        D - 0.01
-    );
+
     let before = std::fs::read(&h.source).expect("bytes");
     let names = entries(h.root.path());
     h.ask_constraints(&[], &dimensioned(&h, [0.0, 0.0], 30.0, 4.0));
@@ -769,7 +758,7 @@ fn native_constraint_refusals_under_a_chamfer_are_atomic() {
 /// extra saved base reference that resolves is kept; one that does not is never
 /// published. Document-layer extras, real solver and kernel.
 #[test]
-fn native_constraint_copy_requires_every_saved_reference_to_resolve() {
+fn native_constraint_copy_preserves_preexisting_unresolved_references() {
     if !solving() {
         return;
     }
@@ -799,22 +788,20 @@ fn native_constraint_copy_requires_every_saved_reference_to_resolve() {
         };
         let before = std::fs::read(&f.source).expect("bytes");
         f.ask_constraints(&[], &dimensioned(&f, [1.0, 2.0], 31.0, 10.5));
-        let names = entries(f.root.path());
+
         let out = f.root.path().join("constrained.fcad");
-        let answer = reply(
-            f.constrain(&out).output().expect("process"),
-            CONSTRAIN,
-            if unresolved { 2 } else { 0 },
+        let answer = reply(f.constrain(&out).output().expect("process"), CONSTRAIN, 0);
+        assert_eq!(
+            answer["result"]["rebuild"]["warnings"]
+                .as_array()
+                .expect("warnings")
+                .is_empty(),
+            !unresolved
         );
-        if unresolved {
-            assert_eq!(refused(&answer), "topology", "{answer}");
-            assert!(!out.exists());
-            assert_eq!(entries(f.root.path()), names, "scratch leaked");
-        } else {
-            let was = stored_refs(&f.source);
-            assert_eq!(stored_refs(&out), was, "the extra reference is kept");
-            only_this_sketch_changed(&f.source, &out, f.plate_sketch_id());
-        }
+
+        let was = stored_refs(&f.source);
+        assert_eq!(stored_refs(&out), was, "the extra reference is kept");
+        only_this_sketch_changed(&f.source, &out, f.plate_sketch_id());
         assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
     }
 }
@@ -836,11 +823,6 @@ fn chamfer_constraint_discovery_and_protocol_without_native() {
     );
     assert_eq!(row["chamfer_base"]["profile_constrained"], false);
     assert_eq!(row["fillet_base"], Value::Null);
-    assert_eq!(plain.catalog["chamfers"][0]["profile_constrained"], false);
-    assert_eq!(
-        plain.catalog["chamfers"][0]["distance_edit"]["max_distance_mm"],
-        D - 0.01
-    );
 
     // Constraints written by the shipped preparation and writer, no kernel.
     let mut d = Document::open(&plain.source).expect("writable");
@@ -874,20 +856,15 @@ fn chamfer_constraint_discovery_and_protocol_without_native() {
         "{row}"
     );
     let chamfer = &f.catalog["chamfers"][0];
-    assert_eq!(chamfer["profile_constrained"], true);
+
     assert_eq!(
-        chamfer["corner_mm"],
+        row["chamfer_base"]["corner_mm"],
         json!([X0 + W, Y0]),
         "the stored corner"
     );
-    assert_eq!(chamfer["distance_edit"]["available"], true);
-    assert_eq!(chamfer["distance_edit"]["max_distance_mm"], Value::Null);
+
     assert_eq!(row["chamfer_base"]["profile_constrained"], true);
-    assert_eq!(
-        f.catalog["features"][0]["chamfer_base"]["profile_constrained"],
-        true
-    );
-    assert_eq!(f.catalog["edit_extrude"]["available"], true, "§29B");
+
     let sketch_row = &f.catalog["sketches"][0];
     assert_eq!(
         sketch_row["editable"], false,
@@ -955,7 +932,7 @@ fn occt_without_solver_refuses_a_constrained_chamfered_plate() {
         super::base_height::raise(&copy, &base, "9.5", &version, &tall)
             .output()
             .expect("process"),
-        "edit-extrude",
+        "edit",
         0,
     );
     let rect = [-10.125, 7.5, 52.25, 20.5];

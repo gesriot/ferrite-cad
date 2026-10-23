@@ -1,591 +1,310 @@
 // SPDX-License-Identifier: MIT
-//! §26G: absolute Cut depths under a changing plate height.
 use super::*;
-use ferritecad_document::{ExtrudeChoice, ExtrudeEditSource, TopologyRef, prepare_extrude_height};
-use ferritecad_types::ObjectId;
-const EDIT: &str = "edit-extrude";
-const BOUNDS: [[f64; 2]; 2] = [[0., 0.], [80., 50.]];
-
-fn choice(path: &Path) -> (ExtrudeEditSource, ExtrudeChoice) {
-    let d = Document::open_read_only(path).expect("snapshot");
-    let source = ExtrudeEditSource::read(&d).expect("catalogue");
-    let base = source
-        .features
-        .iter()
-        .find(|f| f.cut_history.is_some())
-        .expect("base")
-        .clone();
-    (source, base)
-}
-fn command(source: &Path, dest: &Path, feature: ObjectId, version: &str, height: &str) -> Command {
-    let mut c = cli();
-    c.arg(EDIT)
-        .arg(source)
-        .arg("--feature")
-        .arg(feature.to_string())
-        .arg("--expect-version")
-        .arg(version)
-        .arg("--distance-mm")
-        .arg(height)
-        .arg("-o")
-        .arg(dest)
-        .arg("--json");
-    c
-}
-fn ask(source: &Path, dest: &Path, height: f64, code: i32) -> Value {
-    let (reading, base) = choice(source);
-    reply(
-        command(
-            source,
-            dest,
-            base.feature,
-            &reading.version.content.to_string(),
-            &height.to_string(),
-        )
-        .output()
-        .expect("CLI"),
-        EDIT,
-        code,
-    )
-}
-fn only_height(source: &Path, copy: &Path, feature: ObjectId, changed: bool) -> Vec<TopologyRef> {
-    use rusqlite::types::Value as Sql;
-    let a = tables(source);
-    let b = tables(copy);
-    let old = Document::open_read_only(source)
-        .expect("doc")
-        .topology_refs()
-        .expect("refs");
-    let now = Document::open_read_only(copy)
-        .expect("doc")
-        .topology_refs()
-        .expect("refs");
-    let added: Vec<_> = now
-        .iter()
-        .filter(|r| !old.iter().any(|s| s.id == r.id))
-        .cloned()
-        .collect();
-    assert!(
-        old.iter().all(|r| now.contains(r)),
-        "old meanings remain under the same UUIDs"
-    );
-    assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
-    let mut payload_changed = false;
-    for (table, (cols, rows)) in a {
-        let (newcols, newrows) = &b[&table];
-        assert_eq!(&cols, newcols);
-        if table == "topology_refs" {
-            assert_eq!(newrows.len(), rows.len() + added.len());
-            assert!(
-                rows.iter().all(|r| newrows.contains(r)),
-                "every original ref SQL cell/rowid"
-            );
-            continue;
-        }
-        assert_eq!(rows.len(), newrows.len());
-        for (old, new) in rows.iter().zip(newrows) {
-            for (i, (x, y)) in old.iter().zip(new).enumerate() {
-                if x == y {
-                    continue;
-                }
-                assert!(
-                    (table == "meta" && cols[i] == "modified_at")
-                        || (table == "objects"
-                            && old[cols.iter().position(|c| c == "id").expect("id")]
-                                == Sql::Blob(feature.to_bytes().to_vec())
-                            && ["payload", "payload_hash"].contains(&cols[i].as_str())),
-                    "unexpected SQL {table}.{}",
-                    cols[i]
-                );
-                payload_changed |= table == "objects" && cols[i] == "payload";
-            }
-        }
-    }
-    assert_eq!(
-        payload_changed, changed,
-        "height payload must reflect the request"
-    );
-    added
-}
-fn check_added(source: &Path, copy: &Path, height: f64, changed: bool) {
-    let (_, base) = choice(source);
-    let h = base.cut_history.as_ref().expect("history");
-    let mut added = only_height(source, copy, base.feature, changed);
-    for (i, t) in h.tools.iter().enumerate() {
-        if t.leaves_a_floor || t.extent.blind_depth_mm().expect("blind") >= height {
-            continue;
-        }
-        for descendant in &h.tools[i..] {
-            let role = if descendant.feature == t.feature {
-                SemanticRole::ExtrudeCap { side: CapSide::End }
-            } else {
-                SemanticRole::OriginCap {
-                    origin_feature: t.feature,
-                    side: CapSide::End,
-                }
-            };
-            let at = added
-                .iter()
-                .position(|r| {
-                    r.owner == descendant.feature
-                        && r.producer_feature == descendant.feature
-                        && r.output_role == role
-                        && r.expected_kind == ferritecad_document::EntityKind::Face
-                        && r.selection == ferritecad_document::SelectionRule::Exact
-                        && r.fallback_signature.is_none()
-                })
-                .expect("every new own/descendant floor has exactly its required name");
-            added.remove(at);
-        }
-    }
-    assert!(added.is_empty(), "no other new refs");
-    let (after, now) = choice(copy);
-    assert_eq!(now.distance_mm, Some(height));
-    assert!(now.refusal.is_none());
-    assert!(
-        after
-            .sketches
-            .iter()
-            .any(|s| s.sketch == h.profile && s.refusal.is_none())
-    );
-    assert_eq!(
-        after
-            .cut_features
-            .iter()
-            .filter(|f| f.saved.is_some())
-            .count(),
-        h.tools.len()
-    );
-    assert_eq!(
-        after.cut_bodies.iter().any(|b| b.refusal.is_none()),
-        h.tools.len() < 16
-    );
-    let now = now.cut_history.expect("history");
-    for (old, new) in h.tools.iter().zip(&now.tools) {
-        let mut old = old.clone();
-        old.leaves_a_floor = old.extent.blind_depth_mm().expect("blind") < height;
-        assert_eq!(&old, new, "absolute tool data/UUIDs unchanged");
-    }
-    // The advertised catalogue is actionable for the next edit, not just labels.
-    let d = Document::open_read_only(copy).expect("reopen");
-    prepare_extrude_height(&d, base.feature, height + 1.).expect("next height");
-    let sketch = after
-        .sketches
-        .iter()
-        .find(|s| s.sketch == h.profile)
-        .expect("base sketch");
-    ferritecad_document::replace_sketch_coordinates(
-        &d,
-        h.profile,
-        sketch.vertices.as_ref().expect("vertices"),
-    )
-    .expect("next Sketch edit");
-    let t = &now.tools[0];
-    ferritecad_document::prepare_cut_parameters(
-        &d,
-        t.feature,
-        &ferritecad_document::CircularCutEdit {
-            tool_curve: t.tool_curve,
-            center_mm: t.center_mm,
-            radius_mm: t.radius_mm,
-            extent: CutExtent::Blind {
-                depth_mm: t.extent.blind_depth_mm().expect("blind"),
-            },
-            vocabulary: ExtentVocabulary::BlindOrThroughAll,
-        },
-    )
-    .expect("next Cut edit");
-}
+use ferritecad_document::ExpressionSlot;
 
 #[test]
-fn height_discovery_and_structural_refusals_without_kernel() {
-    for n in [1, 2, 4, 16] {
-        let root = tempfile::tempdir().expect("root");
-        let source = history::fixture(root.path(), &history::tools(n));
-        let (reading, base) = choice(&source);
-        let h = base.cut_history.as_ref().expect("history");
-        assert_eq!(h.tools.len(), n);
-        assert!(base.refusal.is_none());
-        let json = inspect(&source);
-        let row = json["features"]
-            .as_array()
-            .expect("features")
-            .iter()
-            .find(|f| f["feature_id"] == base.feature.to_string())
-            .expect("base");
-        assert_eq!(
-            row["base_height_edit"]["tools"]
-                .as_array()
-                .expect("tools")
-                .len(),
-            n
-        );
-        let d = Document::open(&source).expect("doc");
-        for bad in [0., -1., f64::NAN, f64::INFINITY, 1e6 + 1.] {
-            assert!(prepare_extrude_height(&d, base.feature, bad).is_err());
-        }
-        let error = prepare_extrude_height(&d, base.feature, 10.).expect_err("absolute depth");
-        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
-        assert!(error.to_string().contains(&h.tools[0].feature.to_string()));
-        assert!(prepare_extrude_height(&d, ObjectId::new(), 14.).is_err());
-        assert!(prepare_extrude_height(&d, h.tools[0].feature, 14.).is_err());
-        d.close().expect("close");
-        if !ferritecad_occt::is_available() {
-            let bytes = std::fs::read(&source).expect("source");
-            let never = root.path().join("never.fcad");
-            let error = reply(
-                command(
-                    &source,
-                    &never,
-                    base.feature,
-                    &reading.version.content.to_string(),
-                    "14",
-                )
-                .output()
-                .expect("CLI"),
-                EDIT,
-                2,
-            );
-            assert!(
-                error["error"]["message"]
-                    .as_str()
-                    .expect("message")
-                    .contains("Open CASCADE"),
-                "kernel-first refusal, not a late guard"
-            );
-            assert!(!never.exists());
-            assert_eq!(std::fs::read(&source).expect("bytes"), bytes);
-        }
-        for mode in 0..5 {
-            let bad = root.path().join(format!("invalid-{mode}.fcad"));
-            std::fs::copy(&source, &bad).expect("copy");
-            let sql = rusqlite::Connection::open(&bad).expect("SQL");
-            match mode {
-                0 => {
-                    sql.execute(
-                        "DELETE FROM deps WHERE role='predecessor' AND dependent_id=?1",
-                        [h.tools[n - 1].feature.to_bytes().to_vec()],
-                    )
-                    .expect("edge");
-                }
-                1 => {
-                    sql.execute(
-                        "DELETE FROM topology_refs WHERE id=?1",
-                        [h.protected_floors
-                            .iter()
-                            .flat_map(|p| &p.references)
-                            .next()
-                            .copied()
-                            .unwrap_or_else(|| {
-                                Document::open_read_only(&source)
-                                    .expect("doc")
-                                    .topology_refs()
-                                    .expect("refs")
-                                    .into_iter()
-                                    .find(|r| r.producer_feature == h.tools[0].feature)
-                                    .expect("cut ref")
-                                    .id
-                            })
-                            .to_bytes()
-                            .to_vec()],
-                    )
-                    .expect("ref");
-                }
-                2 => {
-                    sql.execute("INSERT INTO deps(dependent_id,dependency_id,role) VALUES(?1,?2,'predecessor')",rusqlite::params![base.feature.to_bytes().as_slice(),h.tools[n-1].feature.to_bytes().as_slice()]).expect("cycle edge");
-                }
-                3 => {
-                    sql.execute(
-                        "UPDATE objects SET parent_id=?1 WHERE id=?2",
-                        rusqlite::params![
-                            h.body.to_bytes().as_slice(),
-                            h.profile.to_bytes().as_slice()
-                        ],
-                    )
-                    .expect("unsupported parent");
-                }
-                4 => {
-                    // Even erased boolean payload/edge signals leave saved
-                    // carried names: this is not a free standalone history.
-                    let d = Document::open_read_only(&bad).expect("doc");
-                    let objects = d.objects().expect("objects");
-                    d.close()
-                        .expect("close pinned read before SQL fixture changes");
-                    for mut object in objects {
-                        let ObjectPayload::Extrude(e) = &mut object.payload else {
-                            continue;
-                        };
-                        e.operation = ferritecad_document::SolidOperation::NewBody;
-                        e.previous = None;
-
-                        let bytes = object.payload.to_storage_bytes().expect("payload");
-                        sql.execute(
-                            "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
-                            rusqlite::params![
-                                &bytes,
-                                ferritecad_types::ContentHash::of_bytes(&bytes)
-                                    .as_bytes()
-                                    .as_slice(),
-                                object.id.to_bytes().as_slice(),
-                            ],
-                        )
-                        .expect("erase boolean payload");
-                    }
-                    sql.execute("DELETE FROM deps WHERE role = 'predecessor'", [])
-                        .expect("erase history edges");
-                }
-                _ => unreachable!(),
-            }
-            drop(sql);
-            let d = Document::open(&bad).expect("damaged doc");
-            assert!(
-                prepare_extrude_height(&d, base.feature, 14.).is_err(),
-                "invalid history cannot fall back to standalone {mode}"
-            );
-            let seen = ExtrudeEditSource::read(&d).expect("catalogue");
-            assert!(
-                seen.features
-                    .iter()
-                    .find(|f| f.feature == base.feature)
-                    .expect("base")
-                    .refusal
-                    .is_some()
-            );
-        }
-    }
-}
-
-#[test]
-fn native_height_transitions_refs_sql_cache_and_mesh() {
+fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
     if !native() {
         return;
     }
-    use CacheOutcome::{Hit, Miss};
-    let mut artifact = 0;
-    for (n, pockets) in [
-        (1, false),
-        (2, false),
-        (4, false),
-        (16, false),
-        (4, true),
-        (16, true),
+    for (n, pockets, height, artifact) in [
+        (1, false, 14.0, None),
+        (4, false, 14.0, Some(0)),
+        (16, false, 14.0, None),
+        (4, true, 10.0, Some(1)),
+        (4, true, 14.0, Some(2)),
     ] {
         let root = tempfile::tempdir().expect("root");
         let mut tools = history::tools(n);
         if pockets {
-            for (i, t) in tools.iter_mut().enumerate() {
-                t.extent = CutExtent::Blind {
-                    depth_mm: 3. + (i % 7) as f64,
+            for (i, tool) in tools.iter_mut().enumerate() {
+                tool.extent = CutExtent::Blind {
+                    depth_mm: 3.0 + (i % 7) as f64,
                 };
             }
         }
-        let source = base_sketch::measured_fixture(root.path(), &tools);
-        let original = std::fs::read(&source).expect("bytes");
-        let (_, base) = choice(&source);
-        for height in if pockets {
-            vec![10., 14.]
-        } else if n == 1 {
-            vec![12., 14.]
-        } else {
-            vec![14.]
-        } {
-            let copy = root.path().join(format!("height-{height}.fcad"));
-            ask(&source, &copy, height, 0);
-            check_added(&source, &copy, height, height != 12.);
-            let cold = measure_history_at(&copy, &tools, BOUNDS, height, None);
-            assert_eq!(
-                cold,
-                measure_history_at(&copy, &tools, BOUNDS, height, Some(&vec![Miss; n + 1]))
-            );
-            assert_eq!(
-                cold,
-                measure_history_at(&copy, &tools, BOUNDS, height, Some(&vec![Hit; n + 1]))
-            );
-            let mesh = mesh(&copy, &root.path().join(format!("height-{height}.stl")));
-            check_history_mesh_at(&mesh, &tools, BOUNDS, height);
-            assert_eq!(std::fs::read(&source).expect("source"), original);
-            if n == 4 && artifact < 3 {
-                if let Some(dir) = std::env::var_os("FCAD_CUT_HEIGHT_ARTIFACTS") {
-                    let dir = Path::new(&dir);
-                    std::fs::create_dir_all(dir).expect("artifacts");
-                    let fbx = dir.join(format!("height-{artifact}.fbx"));
-                    reply(
-                        cli()
-                            .arg("export-fbx")
-                            .arg(&copy)
-                            .arg("-o")
-                            .arg(&fbx)
-                            .arg("--json")
-                            .output()
-                            .expect("fbx"),
-                        "export-fbx",
-                        0,
-                    );
-                }
-                artifact += 1;
+        let source = history::fixture(root.path(), &tools);
+        let original = std::fs::read(&source).expect("source");
+        let d = Document::open_read_only(&source).expect("document");
+        let base = d.objects().expect("objects").into_iter().find(|o|matches!(&o.payload,
+            ferritecad_document::ObjectPayload::Extrude(e) if e.operation == ferritecad_document::SolidOperation::NewBody && e.previous.is_none())).expect("base").id;
+        let refs = d.topology_refs().expect("refs");
+        let request = root.path().join("transaction.json");
+        std::fs::write(&request,serde_json::to_vec(&json!({"request_version":1,"changes":[{"object":base,"slot":ExpressionSlot::ExtrudeDistance,"value":height,"unit":"mm"}]})).expect("JSON")).expect("request");
+        let output = root.path().join("height.fcad");
+        reply(
+            cli()
+                .arg("edit")
+                .arg(&source)
+                .arg("--expect-version")
+                .arg(d.content_version().expect("version").to_string())
+                .arg("--request")
+                .arg(&request)
+                .arg("--output")
+                .arg(&output)
+                .arg("--json")
+                .output()
+                .expect("edit"),
+            "edit",
+            0,
+        );
+        let edited = Document::open_read_only(&output).expect("copy");
+        let after_refs = edited.topology_refs().expect("refs");
+        assert!(
+            refs.iter().all(|r| after_refs.contains(r)),
+            "existing references survive"
+        );
+        assert_eq!(
+            edited.dependencies().expect("deps"),
+            d.dependencies().expect("deps")
+        );
+        for old in d.objects().expect("objects") {
+            let now = edited
+                .object(old.id)
+                .expect("object")
+                .expect("same identity");
+            if old.id != base {
+                assert_eq!(old, now);
             }
         }
-        // An existing sidecar belongs to this same document, then the base changes.
-        measure_history_at(&source, &tools, BOUNDS, 12., Some(&vec![Miss; n + 1]));
-        measure_history_at(&source, &tools, BOUNDS, 12., Some(&vec![Hit; n + 1]));
-        let mut d = Document::open(&source).expect("doc");
-        let p = prepare_extrude_height(&d, base.feature, 14.).expect("height");
-        d.write_extrude_height(&p).expect("write");
-        d.close().expect("close");
-        let changed = measure_history_at(&source, &tools, BOUNDS, 14., Some(&vec![Miss; n + 1]));
-        assert_eq!(
-            changed,
-            measure_history_at(&source, &tools, BOUNDS, 14., Some(&vec![Hit; n + 1]))
-        );
-        assert_eq!(
-            changed,
-            measure_history_at(&source, &tools, BOUNDS, 14., None)
-        );
-        let next = root.path().join("next.fcad");
-        ask(&source, &next, 15., 0);
-        check_added(&source, &next, 15., true);
+        // New pocket floors must remain named so structural edits can follow.
+        let catalog = ferritecad_document::ExtrudeEditSource::read(&edited).expect("reading");
+        for choice in &catalog.cut_features {
+            if choice.feature != base {
+                assert!(
+                    choice.saved.is_some(),
+                    "Cut history must remain editable: {:?}",
+                    choice.refusal
+                );
+            }
+        }
+        let bounds = [[0., 0.], [SIZE[0], SIZE[1]]];
+        let cold = super::measure_history_at(&output, &tools, bounds, height, None);
+        for outcome in [CacheOutcome::Miss, CacheOutcome::Hit] {
+            assert_eq!(
+                cold,
+                super::measure_history_at(
+                    &output,
+                    &tools,
+                    bounds,
+                    height,
+                    Some(&vec![outcome; n + 1]),
+                )
+            );
+        }
+        let mesh = mesh(&output, &root.path().join("height.stl"));
+        check_history_mesh_at(&mesh, &tools, bounds, height);
+        if let (Some(artifact), Some(dir)) =
+            (artifact, std::env::var_os("FCAD_CUT_HEIGHT_ARTIFACTS"))
+        {
+            let dir = Path::new(&dir);
+            std::fs::create_dir_all(dir).expect("artifacts");
+            reply(
+                cli()
+                    .arg("export-fbx")
+                    .arg(&output)
+                    .arg("-o")
+                    .arg(dir.join(format!("height-{artifact}.fbx")))
+                    .arg("--json")
+                    .output()
+                    .expect("fbx"),
+                "export-fbx",
+                0,
+            );
+        }
+        assert_eq!(std::fs::read(&source).expect("unchanged"), original);
     }
-    assert_eq!(artifact, 3);
 }
 
 #[test]
-fn native_height_protected_floors_distant_depth_and_late_guards() {
-    if !native() {
+fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
     }
-    let root = tempfile::tempdir().expect("root");
-    let mut tools = history::tools(16);
-    for (i, t) in tools.iter_mut().enumerate() {
-        t.extent = CutExtent::Blind {
-            depth_mm: 3. + (i % 7) as f64,
-        };
-    }
-    tools[9].extent = CutExtent::Blind { depth_mm: 12. };
-    let source = history::fixture(root.path(), &tools);
-    let original = std::fs::read(&source).expect("source");
-    let (reading, base) = choice(&source);
-    let h = base.cut_history.as_ref().expect("history");
-    let never = root.path().join("never.fcad");
-    let error = ask(&source, &never, 11., 2);
-    assert!(
-        error["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains(&h.tools[9].feature.to_string()),
-        "distant depth guard"
-    );
-    for value in ["NaN", "inf", "1e999", "0", "-1", "1000001"] {
+    use ferritecad_document::{CapSide, ExpressionChange, SemanticRole};
+    for (height, depth, change_height, change_depth) in [
+        (14.0, 12.0, true, false),
+        (12.0, 10.0, false, true),
+        (14.0, 13.0, true, true),
+    ] {
+        let root = tempfile::tempdir().expect("root");
+        let mut tools = history::tools(4);
+        let source = history::fixture(root.path(), &tools);
+        let before = std::fs::read(&source).expect("source");
+        let saved = history::ordered(&source);
+        let first = &saved[0];
+        let mut changes = Vec::new();
+        if change_height {
+            changes.push(
+                ExpressionChange::constant(
+                    first.base_feature,
+                    ExpressionSlot::ExtrudeDistance,
+                    height,
+                )
+                .expect("height"),
+            );
+        }
+        if change_depth {
+            changes.push(
+                ExpressionChange::constant(first.feature, ExpressionSlot::ExtrudeDistance, depth)
+                    .expect("depth"),
+            );
+        }
+        let reading = ferritecad_jobs::read_extrude_source(&source).expect("source");
+        let request = root.path().join("changes.json");
+        write(
+            &request,
+            &json!({"request_version":1,"changes":changes.iter().map(|c|json!({"object":c.object,"slot":c.slot,"value":c.expression.value(),"unit":"mm"})).collect::<Vec<_>>()}),
+        );
+        let output = root.path().join("pocket.fcad");
         reply(
-            command(
+            crate::transaction::command(
                 &source,
-                &never,
-                base.feature,
                 &reading.version.content.to_string(),
-                value,
+                &request,
+                &output,
             )
             .output()
-            .expect("invalid value"),
-            EDIT,
+            .expect("CLI"),
+            "edit",
+            0,
+        );
+        let edited = Document::open_read_only(&output).expect("reopen");
+        let all_refs = edited.topology_refs().expect("names");
+        let floor_names: Vec<_> = all_refs
+            .iter()
+            .filter(|r| match r.output_role {
+                SemanticRole::ExtrudeCap { side: CapSide::End } => {
+                    r.producer_feature == first.feature
+                }
+                SemanticRole::OriginCap {
+                    origin_feature,
+                    side: CapSide::End,
+                } => origin_feature == first.feature,
+                _ => false,
+            })
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(
+            floor_names.len(),
+            saved.len(),
+            "own floor and every later origin"
+        );
+        tools[0].extent = CutExtent::Blind { depth_mm: depth };
+        let cold_volume = super::measure_history_at(
+            &output,
+            &tools,
+            [[0., 0.], [SIZE[0], SIZE[1]]],
+            height,
+            None,
+        );
+        let following = root.path().join("following.fcad");
+        let current = history::ordered(&output);
+        let mut tool = tools[0];
+        tool.radius_mm += 0.1;
+        super::edits::edit(&output, &following, &current[0], tool, 0);
+        tools[0] = tool;
+        super::measure_history_at(
+            &following,
+            &tools,
+            [[0., 0.], [SIZE[0], SIZE[1]]],
+            height,
+            None,
+        );
+
+        let context = OperationContext::default();
+        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+        let mut session = ferritecad_jobs::DocumentSession::open(&source).expect("session");
+        session
+            .current()
+            .load_scene(
+                &mut kernel,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &context,
+            )
+            .expect("baseline");
+        let step = session
+            .begin_step()
+            .edit(
+                changes,
+                reading.version,
+                &mut kernel,
+                |k, b| k.import_step(b),
+                &context,
+            )
+            .expect("session edit");
+        session.commit_step(step).expect("commit");
+        let reopened =
+            Document::open_read_only(session.current().path()).expect("session snapshot");
+        let built = ferritecad_eval::rebuild_cold(&reopened, &mut kernel, &context).expect("cold");
+        let volume = kernel
+            .shape_stats(built.shape(first.body).expect("body"))
+            .expect("stats")
+            .1;
+        assert!((volume - cold_volume).abs() < 1e-7);
+        built.release_all(&mut kernel);
+        let snapshot = std::fs::read(session.current().path()).expect("snapshot");
+        let session_refs = reopened.topology_refs().expect("refs");
+        let session_floor_names: Vec<_> = session_refs
+            .iter()
+            .filter(|r| match r.output_role {
+                SemanticRole::ExtrudeCap { side: CapSide::End } => {
+                    r.producer_feature == first.feature
+                }
+                SemanticRole::OriginCap {
+                    origin_feature,
+                    side: CapSide::End,
+                } => origin_feature == first.feature,
+                _ => false,
+            })
+            .map(|r| r.id)
+            .collect();
+        let losing =
+            ExpressionChange::constant(first.feature, ExpressionSlot::ExtrudeDistance, height)
+                .expect("through");
+        let error = session
+            .begin_step()
+            .edit(
+                vec![losing],
+                session.current().version(),
+                &mut kernel,
+                |k, b| k.import_step(b),
+                &context,
+            )
+            .expect_err("cannot lose names");
+        let refusal = ferritecad_eval::RebuildRefusal::from_error(&error).expect("generic gate");
+        for id in session_floor_names {
+            assert!(refusal.lost_references.contains_key(&id), "{error}");
+        }
+        assert_eq!(
+            std::fs::read(session.current().path()).expect("unchanged"),
+            snapshot
+        );
+
+        write(
+            &request,
+            &json!({"request_version":1,"changes":[{"object":first.feature,"slot":ExpressionSlot::ExtrudeDistance,"value":height,"unit":"mm"}]}),
+        );
+        let rejected = root.path().join("rejected.fcad");
+        let bytes = std::fs::read(&output).expect("copy bytes");
+        let failed = reply(
+            crate::transaction::command(
+                &output,
+                &edited.content_version().expect("version").to_string(),
+                &request,
+                &rejected,
+            )
+            .output()
+            .expect("CLI refusal"),
+            "edit",
             2,
         );
-        assert!(!never.exists());
-    }
-    let grown = root.path().join("grown.fcad");
-    ask(&source, &grown, 14., 0);
-    let (_, after) = choice(&grown);
-    let protected = &after
-        .cut_history
-        .as_ref()
-        .expect("context")
-        .protected_floors[9];
-    let refused = ask(&grown, &never, 12., 2);
-    let message = refused["error"]["message"].as_str().expect("message");
-    assert!(message.contains(&protected.feature.to_string()));
-    for id in &protected.references {
-        assert!(
-            message.contains(&id.to_string()),
-            "protected own/descendant floor {id}"
-        );
-    }
-    assert!(!never.exists());
-    for dest in [&source, &never] {
-        if *dest == never {
-            std::fs::write(&never, b"occupied").expect("occupied");
+        for id in floor_names {
+            assert!(failed.to_string().contains(&id.to_string()), "{failed}");
         }
-        ask(&source, dest, 14., 2);
+        assert!(!rejected.exists());
+        assert_eq!(std::fs::read(&output).expect("unchanged"), bytes);
+        assert_eq!(std::fs::read(&source).expect("unchanged source"), before);
     }
-    assert_eq!(std::fs::read(&never).expect("occupied"), b"occupied");
-    let alias = root.path().join("alias.fcad");
-    std::fs::hard_link(&source, &alias).expect("hardlink");
-    ask(&source, &alias, 14., 2);
-    #[cfg(unix)]
-    {
-        let link = root.path().join("link.fcad");
-        std::os::unix::fs::symlink(&source, &link).expect("symlink");
-        ask(&source, &link, 14., 2);
-    }
-    let clean = root.path().join("no-publication.fcad");
-    reply(
-        command(&source, &clean, base.feature, &"f".repeat(64), "14")
-            .output()
-            .expect("stale"),
-        EDIT,
-        2,
-    );
-    reply(
-        command(
-            &source,
-            &clean,
-            ObjectId::new(),
-            &reading.version.content.to_string(),
-            "14",
-        )
-        .output()
-        .expect("foreign"),
-        EDIT,
-        2,
-    );
-    assert_eq!(std::fs::read(&source).expect("source"), original);
-    // Closed stdout is a publication, never a retry instruction.
-    let delivered = root.path().join("lost-report.fcad");
-    let mut child = command(
-        &source,
-        &delivered,
-        base.feature,
-        &reading.version.content.to_string(),
-        "14",
-    )
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .spawn()
-    .expect("child");
-    drop(child.stdout.take());
-    assert_eq!(child.wait().expect("exit").code(), Some(7));
-    check_added(&source, &delivered, 14., true);
-    measure_history_at(&delivered, &tools, BOUNDS, 14., None);
-    let request = ferritecad_jobs::EditExtrudeRequest {
-        source: source.clone(),
-        expected: reading.version,
-        feature: base.feature,
-        distance_mm: 14.,
-        destination: clean.clone(),
-    };
-    edits::copy_late_guards(root.path(), &source, &original, &clean, |k, c| {
-        ferritecad_jobs::edit_extrude_copy(&request, k, c).map(|_| ())
-    });
-}
-
-#[cfg(not(feature = "planegcs"))]
-#[test]
-fn occt_without_solver_edits_cut_base_height() {
-    if !native() {
-        return;
-    }
-    let root = tempfile::tempdir().expect("root");
-    let tools = history::tools(4);
-    let source = history::fixture(root.path(), &tools);
-    let copy = root.path().join("mixed.fcad");
-    ask(&source, &copy, 14., 0);
-    check_added(&source, &copy, 14., true);
-    measure_history_at(&copy, &tools, BOUNDS, 14., None);
 }

@@ -263,11 +263,19 @@ fn orphan(f: &Fixture, store: &RecoveryStore, millimetres: f64) -> (RecordId, Do
     let mut session =
         crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
             .expect("session");
-    let step = session
-        .begin_step()
-        .edit_extrude_height(
-            f.feature,
-            millimetres,
+    let step = {
+        let ticket = session.begin_step();
+        let expected = ticket.source().version();
+        ticket.edit(
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    f.feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    millimetres,
+                )
+                .expect("test value"),
+            ],
+            expected,
             &mut MockKernel::new(),
             |_, _| {
                 Err(ferritecad_types::CadError::unsupported(
@@ -276,7 +284,8 @@ fn orphan(f: &Fixture, store: &RecoveryStore, millimetres: f64) -> (RecordId, Do
             },
             &OperationContext::default(),
         )
-        .expect("edit");
+    }
+    .expect("edit");
     session.commit_step(step).expect("accepted");
     let mut record = store.create_record().expect("record");
     record
@@ -438,7 +447,11 @@ fn recovery_child_entry() {
                     .expect("open"),
             );
             let opened = read_extrude_source(&file).expect("reading");
-            let feature = opened.features[0].feature;
+            let feature = ferritecad_fixtures::expression_slot(
+                &opened,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object;
             // Height (OCCT), constraints (PlaneGCS), Add Fillet (OCCT), Undo, Redo.
             apply_native(&mut s, feature, 21.5);
             let current = s.export_path().expect("current");
@@ -747,18 +760,29 @@ fn compare_gui(root: &Path) {
     let source = root.join("inputs/plate.fcad");
     let opened = read_extrude_source(&source).expect("reading");
     let peer = work.path().join("peer.fcad");
-    cli(&[
-        "edit-extrude".as_ref(),
-        source.as_os_str(),
-        "--feature".as_ref(),
-        opened.features[0].feature.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        opened.version.content.to_string().as_ref(),
-        "--distance-mm".as_ref(),
-        "21.5".as_ref(),
-        "-o".as_ref(),
-        peer.as_os_str(),
-    ]);
+    {
+        let request = crate::edits::tests::expression_request(
+            &ferritecad_fixtures::expression_slot(
+                &opened,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
+            "extrude_distance",
+            "21.5",
+            "mm",
+        );
+        cli(&[
+            "edit".as_ref(),
+            source.as_os_str(),
+            "--expect-version".as_ref(),
+            opened.version.content.to_string().as_ref(),
+            "--request".as_ref(),
+            request.path().as_os_str(),
+            "--output".as_ref(),
+            peer.as_os_str(),
+        ])
+    };
     assert!(
         sql(&root.join("recovered.fcad")) == sql(&peer),
         "the recovered file is the edited plate"
@@ -932,7 +956,11 @@ fn native_recovery_window_scenario_on_session_files_passes_the_comparator_and_it
         crate::sessions::test_open::open_in(private.path(), &plate, HistoryLimits::default())
             .expect("open"),
     );
-    let feature = read_extrude_source(&plate).expect("reading").features[0].feature;
+    let feature = ferritecad_fixtures::expression_slot(
+        &read_extrude_source(&plate).expect("reading"),
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
     apply_native(&mut a, feature, 21.5);
     written(&a);
     let alias = a.suggestion().expect("alias");

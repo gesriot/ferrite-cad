@@ -1006,7 +1006,7 @@ fn native_sector_constraints_measure_caps_names_angle_edit_and_exports() {
     // The angle edit writes only the Revolve row: the Sketch, constraints
     // included, is byte-identical, and the solved profile turns further.
     let (revolve, version, discovered) = target(&tall);
-    assert_eq!(discovered["angle_edit"]["available"], true, "{discovered}");
+
     assert_eq!(discovered["profile"]["available"], true, "{discovered}");
     let angle_request = root.join("angle.json");
     write_angle(&angle_request, 212.25);
@@ -1204,7 +1204,7 @@ fn revolve_constraint_discovery_writer_and_refusals_without_solver() {
         s.constraints.push(horizontal(sector_labels[0]))
     });
     let (_, _, discovered) = target(&constrained_sector);
-    assert_eq!(discovered["angle_edit"]["available"], true, "{discovered}");
+
     assert_eq!(discovered["profile"]["available"], true, "{discovered}");
     // Kept for a reader that is not this build (see the verification).
     if let Some(dir) = std::env::var_os("FCAD_REVOLVE_CONSTRAINT_FIXTURES") {

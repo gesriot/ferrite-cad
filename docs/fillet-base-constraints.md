@@ -1,7 +1,7 @@
 # §28E — dimension the rectangle under a Fillet, in a new copy
 
 [Executed verification and limitations](fillet-base-constraints-verification.md).
-[The Fillet this keeps](single-edge-fillet.md); [its radius](edit-fillet-radius.md),
+[The Fillet this keeps](single-edge-fillet.md); [its radius](numeric-fillet-radius.md),
 [its plate's height](edit-fillet-base-height.md) and
 [its rectangle's coordinates](edit-fillet-base-sketch.md).
 [The Line constraints themselves](sketch-constraints-copy.md).
@@ -196,6 +196,12 @@ prints `FCAD_28E_RECIPE_OK` with the measured and exact volumes.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28e-"))
+
+def edit_args(source, feature, height, version, out):
+    request = root / "expression.json"
+    request.write_text(json.dumps({"request_version": 1, "changes": [
+        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+    return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 OP = "edit-sketch-constraints-copy"
 
 def run(args, code=0):
@@ -319,7 +325,6 @@ context = editor["fillet_base"]
 assert context["fillet_feature_id"] == fillet["feature_id"], context
 assert context["edge"] == chosen["edge"] and context["radius_mm"] == r, context
 assert context["stored_corner_mm"] == corner, context
-assert fillet["profile_constrained"] is False, fillet
 lines = [c["curve_id"] for c in editor["curves"]]
 starts = [c["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
@@ -360,8 +365,6 @@ after = inspect(first)
 assert [c["start_mm"] for c in after["sketches"][0]["constraint_edit"]["curves"]] == starts
 (again,) = after["fillets"]
 assert again["feature_id"] == fillet["feature_id"] and again["edge"] == fillet["edge"], again
-assert again["radius_mm"] == r and again["profile_constrained"] is True, again
-assert again["radius_edit"]["max_radius_mm"] is None, again
 rect = [AT[0], AT[1], WIDTH, DEPTH]
 solved_corner = [AT[0] + WIDTH, AT[1]]
 v1, e1 = measured(first, rect, solved_corner, r, H)
@@ -381,15 +384,13 @@ v2, e2 = measured(replaced, rect2, [AT[0] + 30.25, AT[1]], r, H)
 #    rectangle's bound (6.125 mm) and within the solved one's (7.8125 mm).
 catalog2 = inspect(replaced)
 radius_req = root / "radius.json"
-radius_req.write_text(json.dumps({"request_version": 1, "radius_mm": 7.0}))
+radius_req.write_text(json.dumps({"request_version": 1, "changes": [{"object": fillet["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 7.0, "unit": "mm"}]}))
 rounder = root / "rounder.fcad"
-run(["edit-fillet-radius", replaced, "--feature", fillet["feature_id"], "--expect-version",
-     catalog2["content_version"], "--request", radius_req, "-o", rounder, "--json"])
+run(["edit", replaced, "--expect-version", catalog2["content_version"], "--request", radius_req, "-o", rounder, "--json"])
 v3, e3 = measured(rounder, rect2, [AT[0] + 30.25, AT[1]], 7.0, H)
 taller = root / "taller.fcad"
 catalog3 = inspect(rounder)
-run(["edit-extrude", rounder, "--feature", catalog3["features"][0]["feature_id"],
-     "--distance-mm", 9.75, "--expect-version", catalog3["content_version"], "-o", taller, "--json"])
+run(edit_args(rounder, catalog3["features"][0]["feature_id"], 9.75, catalog3["content_version"], taller))
 sketch_row = lambda p: next(r for r in tables(p)["objects"][1]
                             if r[0] == bytes.fromhex(sketch["sketch_id"].replace("-", "")))
 assert sketch_row(taller) == sketch_row(rounder), "the constraints are kept"
