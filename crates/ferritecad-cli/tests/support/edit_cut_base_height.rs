@@ -7,9 +7,22 @@ fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
     if !native() {
         return;
     }
-    for n in [1, 4, 16] {
+    for (n, pockets, height, artifact) in [
+        (1, false, 14.0, None),
+        (4, false, 14.0, Some(0)),
+        (16, false, 14.0, None),
+        (4, true, 10.0, Some(1)),
+        (4, true, 14.0, Some(2)),
+    ] {
         let root = tempfile::tempdir().expect("root");
-        let tools = history::tools(n);
+        let mut tools = history::tools(n);
+        if pockets {
+            for (i, tool) in tools.iter_mut().enumerate() {
+                tool.extent = CutExtent::Blind {
+                    depth_mm: 3.0 + (i % 7) as f64,
+                };
+            }
+        }
         let source = history::fixture(root.path(), &tools);
         let original = std::fs::read(&source).expect("source");
         let d = Document::open_read_only(&source).expect("document");
@@ -17,7 +30,7 @@ fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
             ferritecad_document::ObjectPayload::Extrude(e) if e.operation == ferritecad_document::SolidOperation::NewBody && e.previous.is_none())).expect("base").id;
         let refs = d.topology_refs().expect("refs");
         let request = root.path().join("transaction.json");
-        std::fs::write(&request,serde_json::to_vec(&json!({"request_version":1,"changes":[{"object":base,"slot":ExpressionSlot::ExtrudeDistance,"value":14.0,"unit":"mm"}]})).expect("JSON")).expect("request");
+        std::fs::write(&request,serde_json::to_vec(&json!({"request_version":1,"changes":[{"object":base,"slot":ExpressionSlot::ExtrudeDistance,"value":height,"unit":"mm"}]})).expect("JSON")).expect("request");
         let output = root.path().join("height.fcad");
         reply(
             cli()
@@ -65,7 +78,40 @@ fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
                 );
             }
         }
-        super::measure_history_at(&output, &tools, [[0., 0.], [SIZE[0], SIZE[1]]], 14.0, None);
+        let bounds = [[0., 0.], [SIZE[0], SIZE[1]]];
+        let cold = super::measure_history_at(&output, &tools, bounds, height, None);
+        for outcome in [CacheOutcome::Miss, CacheOutcome::Hit] {
+            assert_eq!(
+                cold,
+                super::measure_history_at(
+                    &output,
+                    &tools,
+                    bounds,
+                    height,
+                    Some(&vec![outcome; n + 1]),
+                )
+            );
+        }
+        let mesh = mesh(&output, &root.path().join("height.stl"));
+        check_history_mesh_at(&mesh, &tools, bounds, height);
+        if let (Some(artifact), Some(dir)) =
+            (artifact, std::env::var_os("FCAD_CUT_HEIGHT_ARTIFACTS"))
+        {
+            let dir = Path::new(&dir);
+            std::fs::create_dir_all(dir).expect("artifacts");
+            reply(
+                cli()
+                    .arg("export-fbx")
+                    .arg(&output)
+                    .arg("-o")
+                    .arg(dir.join(format!("height-{artifact}.fbx")))
+                    .arg("--json")
+                    .output()
+                    .expect("fbx"),
+                "export-fbx",
+                0,
+            );
+        }
         assert_eq!(std::fs::read(&source).expect("unchanged"), original);
     }
 }
