@@ -270,12 +270,15 @@ struct Fixture {
 }
 impl Fixture {
     fn slanted() -> Self {
+        Self::with_points([[-20., -10.], [40., -8.], [42., 30.], [-20., 30.]])
+    }
+    fn with_points(points: [[f64; 2]; 4]) -> Self {
         let root = tempfile::tempdir().expect("root");
         let source = root.path().join("контур space.fcad");
         let input = root.path().join("polygon.json");
         write(
             &input,
-            &json!({"request_version":1,"points_mm":[[-20,-10],[40,-8],[42,30],[-20,30]],"height_mm":10}),
+            &json!({"request_version":1,"points_mm":points,"height_mm":10}),
         );
         reply(
             cli()
@@ -339,6 +342,20 @@ impl Fixture {
             output,
         )
     }
+    fn apply(&self, source: &Path, name: &str, changes: &[EditChange]) -> PathBuf {
+        let output = self.root.path().join(format!("{name}.fcad"));
+        let before = std::fs::read(source).expect("source bytes");
+        reply(
+            self.command(source, &output, changes)
+                .output()
+                .expect("edit"),
+            OP,
+            0,
+        );
+        stored_same(source, &output);
+        assert_eq!(std::fs::read(source).expect("source bytes"), before);
+        output
+    }
 }
 fn constant(value: f64) -> Expression {
     Expression::constant(value).expect("constant")
@@ -348,6 +365,127 @@ fn changed_constraint(change: &EditChange) -> &SketchConstraint {
         panic!("addition")
     };
     constraint
+}
+
+fn direction(starts: &[[f64; 2]], ends: &[[f64; 2]], i: usize) -> [f64; 2] {
+    [ends[i][0] - starts[i][0], ends[i][1] - starts[i][1]]
+}
+
+fn check_rectangle(starts: &[[f64; 2]], ends: &[[f64; 2]], width: f64, height: f64) {
+    for i in 0..4 {
+        let d = direction(starts, ends, i);
+        let expected = if i % 2 == 0 { width } else { height };
+        assert!((d[0].hypot(d[1]) - expected).abs() < 1e-6);
+        assert!(d[if i % 2 == 0 { 1 } else { 0 }].abs() < 1e-6);
+    }
+}
+
+#[test]
+fn native_dimension_pin_and_equality_replacements_publish_the_solved_geometry() {
+    if !native() {
+        return;
+    }
+    let f = Fixture::with_points([[-40., -20.], [40., -20.], [40., 20.], [-40., 20.]]);
+    let distance = |i, value| SketchConstraintRule::Distance {
+        a: f.point(i, SketchPointSelector::Start),
+        b: f.point(i, SketchPointSelector::End),
+        distance: constant(value),
+    };
+    let add = |rule| EditChange::AddConstraint {
+        sketch: f.id,
+        constraint: SketchConstraint {
+            id: StableEntityId::new(),
+            rule,
+        },
+    };
+    let remove = |id| EditChange::RemoveConstraint {
+        sketch: f.id,
+        constraint: id,
+    };
+    let mut rules = (0..4)
+        .map(|i| {
+            let a = f.point(i, SketchPointSelector::Start);
+            let b = f.point(i, SketchPointSelector::End);
+            if i % 2 == 0 {
+                SketchConstraintRule::Horizontal { a, b }
+            } else {
+                SketchConstraintRule::Vertical { a, b }
+            }
+        })
+        .collect::<Vec<_>>();
+    rules.extend([distance(0, 60.), distance(1, 30.)]);
+    let changes = f.closed(rules);
+    let width_id = changed_constraint(&changes[8]).id;
+    let height_id = changed_constraint(&changes[9]).id;
+    let rectangle = f.apply(&f.source, "length-rectangle", &changes);
+    geometry_checked(&rectangle, Some(2), |starts, ends, _| {
+        check_rectangle(starts, ends, 60., 30.)
+    });
+    let replaced = f.apply(
+        &rectangle,
+        "length-replaced",
+        &[remove(width_id), add(distance(0, 55.))],
+    );
+    geometry_checked(&replaced, Some(2), |starts, ends, _| {
+        check_rectangle(starts, ends, 55., 30.)
+    });
+
+    let pin = add(SketchConstraintRule::Fixed {
+        point: f.point(0, SketchPointSelector::Start),
+        x: constant(10.),
+        y: constant(-5.),
+    });
+    let pinned = f.apply(&rectangle, "pinned", std::slice::from_ref(&pin));
+    geometry_checked(&pinned, Some(0), |starts, ends, _| {
+        check_rectangle(starts, ends, 60., 30.);
+        assert!((starts[0][0] - 10.).abs() < 1e-6 && (starts[0][1] + 5.).abs() < 1e-6);
+    });
+    let moved = f.apply(
+        &pinned,
+        "pin-moved",
+        &[
+            remove(changed_constraint(&pin).id),
+            add(SketchConstraintRule::Fixed {
+                point: f.point(0, SketchPointSelector::Start),
+                x: constant(-25.),
+                y: constant(40.),
+            }),
+        ],
+    );
+    geometry_checked(&moved, Some(0), |starts, ends, _| {
+        check_rectangle(starts, ends, 60., 30.);
+        assert!((starts[0][0] + 25.).abs() < 1e-6 && (starts[0][1] - 40.).abs() < 1e-6);
+    });
+    let equality = add(SketchConstraintRule::EqualLength {
+        a: f.segment(0),
+        b: f.segment(1),
+    });
+    let square = f.apply(&pinned, "square", &[remove(height_id), equality.clone()]);
+    let smaller = f.apply(
+        &square,
+        "smaller",
+        &[remove(width_id), add(distance(0, 45.))],
+    );
+    for (path, side) in [(&square, 60.), (&smaller, 45.)] {
+        geometry_checked(path, Some(0), |starts, ends, sketch| {
+            check_rectangle(starts, ends, side, side);
+            assert!((starts[0][0] - 10.).abs() < 1e-6 && (starts[0][1] + 5.).abs() < 1e-6);
+            assert!(sketch.constraints.contains(changed_constraint(&equality)));
+        });
+    }
+
+    let slanted = Fixture::slanted();
+    let changes = slanted.closed(vec![SketchConstraintRule::Distance {
+        a: slanted.point(0, SketchPointSelector::Start),
+        b: slanted.point(0, SketchPointSelector::End),
+        distance: constant(50.),
+    }]);
+    let output = slanted.apply(&slanted.source, "length-slanted", &changes);
+    geometry_checked(&output, Some(7), |starts, ends, _| {
+        let d = direction(starts, ends, 0);
+        assert!((d[0].hypot(d[1]) - 50.).abs() < 1e-6);
+        assert!((d[0].abs() - 50.).abs() > 0.01 && (d[1].abs() - 50.).abs() > 0.01);
+    });
 }
 
 #[test]
@@ -483,6 +621,58 @@ fn native_relations_lengths_pins_and_replacement_solve_without_changing_stored_c
             assert!((a[0] * b[0] + a[1] * b[1]).abs() < 1e-5);
         }
     });
+    let width_id = changed_constraint(&changes[7]).id;
+    let perpendicular_id = changed_constraint(&changes[6]).id;
+    let smaller = f.apply(
+        &rectangle,
+        "relations-smaller",
+        &[
+            EditChange::RemoveConstraint {
+                sketch: f.id,
+                constraint: width_id,
+            },
+            EditChange::AddConstraint {
+                sketch: f.id,
+                constraint: SketchConstraint {
+                    id: StableEntityId::new(),
+                    rule: SketchConstraintRule::Distance {
+                        a: f.point(0, SketchPointSelector::Start),
+                        b: f.point(0, SketchPointSelector::End),
+                        distance: constant(45.),
+                    },
+                },
+            },
+        ],
+    );
+    let freed = f.apply(
+        &smaller,
+        "relations-freed",
+        &[EditChange::RemoveConstraint {
+            sketch: f.id,
+            constraint: perpendicular_id,
+        }],
+    );
+    for (path, dof) in [(&smaller, 3), (&freed, 4)] {
+        geometry_checked(path, Some(dof), |starts, ends, sketch| {
+            for i in 0..4 {
+                let a = direction(starts, ends, i);
+                assert!((a[0].hypot(a[1]) - if i % 2 == 0 { 45. } else { 30. }).abs() < 1e-6);
+                let b = direction(starts, ends, (i + 2) % 4);
+                assert!((a[0] * b[1] - a[1] * b[0]).abs() < 1e-5);
+                if dof == 3 {
+                    let b = direction(starts, ends, (i + 1) % 4);
+                    assert!((a[0] * b[0] + a[1] * b[1]).abs() < 1e-5);
+                }
+            }
+            for change in &changes[4..6] {
+                assert!(sketch.constraints.contains(changed_constraint(change)));
+            }
+            assert_eq!(
+                sketch.constraints.iter().any(|c| c.id == perpendicular_id),
+                dof == 3
+            );
+        });
+    }
     let length = changed_constraint(changes.last().expect("length")).id;
     let equal = SketchConstraint {
         id: StableEntityId::new(),
