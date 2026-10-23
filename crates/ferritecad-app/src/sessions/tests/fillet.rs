@@ -12,14 +12,9 @@ fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<P
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_apply_fillet_radius(
-                t,
-                r.changes[0].object,
-                r.changes[0].expression.value(),
-                r.expected,
-                c.clone(),
-                move |v| tx.send(v).expect("deliver"),
-            )
+            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
+                tx.send(v).expect("deliver")
+            })
         })
         .expect("start");
     (g, rx)
@@ -326,7 +321,7 @@ fn gate(count: usize, name: &str) {
         let request = crate::edits::tests::expression_request(
             &base.to_string(),
             "extrude_distance",
-            &"9.25",
+            "9.25",
             "mm",
         );
         cli(&[

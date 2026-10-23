@@ -262,10 +262,10 @@ impl Editor {
             let response = ui.add_enabled(
                 (can_begin || self.can_begin_radius) && refusal.is_none(),
                 egui::Button::new(format!(
-                    "Edit Fillet radius {} — {}{}…",
+                    "Edit Fillet radius {} — {} (r{} mm)…",
                     choice.name.as_deref().unwrap_or("Unnamed fillet"),
                     choice.object,
-                    format!(" (r{} mm)", choice.expression.value())
+                    choice.expression.value()
                 )),
             );
             if response.clicked() {
@@ -670,7 +670,7 @@ pub(crate) fn finish_fillet_radius(
             }
         }
     }
-    edits.finish_fillet_radius(generation, result)
+    edits.finish(generation, result)
 }
 
 #[cfg(test)]
@@ -1713,10 +1713,15 @@ pub(crate) mod tests {
         let mut edits = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         edits
-            .start_fillet_radius(request, move |r, g, c| {
-                crate::edits::spawn_fillet_radius(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request, move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (generation, result) = rx
@@ -2040,10 +2045,15 @@ pub(crate) mod tests {
         let mut edits = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         edits
-            .start_fillet_radius(request, move |r, g, c| {
-                crate::edits::spawn_fillet_radius(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request, move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (generation, result) = rx

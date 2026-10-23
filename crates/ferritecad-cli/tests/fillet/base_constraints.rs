@@ -378,7 +378,7 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
         .expect("corner")];
     let (m, _) = measure_c(&tall, None);
     check_brep(&m, rect, moved, DIST, 9.5);
-    let (_, version, catalog) = (0, base_of(&tall).1, inspect(&tall));
+    let (_, version, _) = (0, base_of(&tall).1, inspect(&tall));
 
     let request = r.root.path().join("d.json");
     write(
@@ -788,7 +788,7 @@ fn native_constraint_copy_preserves_preexisting_unresolved_references() {
         };
         let before = std::fs::read(&f.source).expect("bytes");
         f.ask_constraints(&[], &dimensioned(&f, [1.0, 2.0], 31.0, 10.5));
-        let names = entries(f.root.path());
+
         let out = f.root.path().join("constrained.fcad");
         let answer = reply(f.constrain(&out).output().expect("process"), CONSTRAIN, 0);
         assert_eq!(
@@ -858,7 +858,7 @@ fn chamfer_constraint_discovery_and_protocol_without_native() {
     let chamfer = &f.catalog["chamfers"][0];
 
     assert_eq!(
-        chamfer["corner_mm"],
+        row["chamfer_base"]["corner_mm"],
         json!([X0 + W, Y0]),
         "the stored corner"
     );

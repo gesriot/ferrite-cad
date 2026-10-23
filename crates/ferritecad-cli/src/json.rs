@@ -131,11 +131,9 @@ pub struct Inspection {
     /// keeps listing Extrudes only, so no consumer of that array can take a
     /// Revolve for one.
     revolves: Vec<RevolveDiscovery>,
-    /// §28B, additive: every saved Fillet, with whether `edit-fillet-radius`
-    /// accepts it. Not a `features` entry, for the reason `revolves` is not.
+    /// Saved Fillet identity, edge and expression facts.
     fillets: Vec<serde_json::Value>,
-    /// §29A, additive: every saved Chamfer, with whether
-    /// `edit-chamfer-distance` accepts it. Not a `features` entry either.
+    /// Saved Chamfer identity, edge and expression facts.
     chamfers: Vec<serde_json::Value>,
 }
 
@@ -154,7 +152,7 @@ struct Slot {
 /// One saved Revolve, as the pinned reading found it. Its profile's
 /// coordinates are edited through `edit-sketch-copy` (§27B); whether that is
 /// allowed is the Sketch row's `editable`, not `profile.available`. Its angle
-/// is edited through `edit-revolve-angle` (§27E), as `angle_edit` says.
+/// is addressed by the `revolve_angle` expression slot.
 #[derive(Serialize)]
 struct RevolveDiscovery {
     feature_id: ObjectId,

@@ -205,13 +205,11 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
     let plate_path = root.path().join("plate.fcad");
     plate(&plate_path, 12.);
     w.open(&plate_path);
-    let accepted_id = source(&w)
-        .expression_slots
-        .iter()
-        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .object;
+    let accepted_id = ferritecad_fixtures::expression_slot(
+        source(&w),
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
     assert!(
         source(&w)
             .model_tree
@@ -226,14 +224,12 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
     w.step(true);
     w.step(false);
     assert_eq!(
-        source(&w)
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .expression
-            .value(),
+        ferritecad_fixtures::expression_slot(
+            source(&w),
+            ferritecad_document::ExpressionSlot::ExtrudeDistance
+        )
+        .expression
+        .value(),
         17.25
     );
     assert!(!open_action(&mut w, other));
@@ -600,22 +596,20 @@ fn native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes(
     for (path, id, edit) in [
         (
             &fp,
-            fs.expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::FilletRadius)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object,
+            ferritecad_fixtures::expression_slot(
+                &fs,
+                ferritecad_document::ExpressionSlot::FilletRadius,
+            )
+            .object,
             ModelEdit::Fillet,
         ),
         (
             &cp,
-            cs.expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ChamferDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object,
+            ferritecad_fixtures::expression_slot(
+                &cs,
+                ferritecad_document::ExpressionSlot::ChamferDistance,
+            )
+            .object,
             ModelEdit::Chamfer,
         ),
         (&rp, revolve, ModelEdit::RevolveAngle),

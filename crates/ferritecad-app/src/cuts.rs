@@ -303,7 +303,7 @@ impl Editor {
                 }
                 // And one per cut already in a history, with the reason on the features
                 // whose numbers this slice cannot change — which includes the
-                // extrusion that started the body, whose distance `edit-extrude` owns.
+                // extrusion that started the body, whose distance `edit with extrude_distance` owns.
                 for choice in &source.cut_features {
                     let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                     let response = ui.add_enabled(

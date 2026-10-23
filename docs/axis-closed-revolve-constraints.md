@@ -430,7 +430,6 @@ assert len(cells(shaft_wide)["topology_refs"]) == 5 + 2, "five faces and two cap
 SHAFT_WIDE = [[0, -2.25], [9.25, -2.25], [9.25, 3.5], [6.75, 3.5], [6.75, 12.75], [0, 12.75]]
 shaft_volume, shaft_r = exported(shaft_wide, SHAFT_WIDE, 137.5)
 revolve = inspect(shaft_wide)["revolves"][0]
-pass
 angle_request = root / "angle.json"
 angle_request.write_text(json.dumps({"request_version": 1, "changes": [{"object": revolve["feature_id"], "slot": {"kind": "revolve_angle"}, "value": 212.25, "unit": "deg"}]}))
 turned = root / "shaft-turned.fcad"

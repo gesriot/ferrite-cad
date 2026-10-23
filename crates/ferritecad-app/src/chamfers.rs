@@ -760,7 +760,7 @@ pub(crate) fn finish_chamfer_distance(
             }
         }
     }
-    edits.finish_chamfer_distance(generation, result)
+    edits.finish(generation, result)
 }
 
 #[cfg(test)]
@@ -1309,10 +1309,15 @@ pub(crate) mod tests {
         let mut edits = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         edits
-            .start_chamfer_distance(request, move |r, g, c| {
-                crate::edits::spawn_chamfer_distance(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request, move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (generation, result) = rx

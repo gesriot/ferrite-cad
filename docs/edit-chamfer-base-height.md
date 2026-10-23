@@ -276,14 +276,11 @@ geometry(["chamfer-edge-copy", plate, "--body", catalog["bodies"][0]["body_id"],
 saved = inspect(one)
 chamfer = saved["chamfers"][0]
 base = saved["features"][0]
-pass
-pass
-assert base["chamfer_base"] == {"chamfer_feature_id": chamfer["feature_id"],
+assert saved["sketches"][0]["chamfer_base"] == {"chamfer_feature_id": chamfer["feature_id"],
                                 "body_id": saved["bodies"][0]["body_id"], "edge": chamfer["edge"],
                                 "corner_mm": CORNER, "distance_mm": d1, "distance_unit": "mm",
                                 "profile_constrained": False}
-for key in ("base_height_edit", "fillet_base", "fillet_history"):
-    assert base[key] is None, key
+assert next(s for s in saved["expression_slots"] if s["object"] == base["feature_id"])["refusal"] is None
 assert inspect(plate)["sketches"][0]["chamfer_base"] is None
 
 # 3. Taller and shorter (below the distance too): one row, one cell pair,
@@ -293,12 +290,11 @@ copies = {}
 for h in (9.5, 0.4, 3.0):
     out = root / f"h{h}.fcad"
     done = geometry(edit_args(one, base["feature_id"], str(h), saved["content_version"], out), out)["result"]
-    pass
     assert only_row(one, out, base["feature_id"]) >= 2
     assert [r[0] for r in tables(out)["topology_refs"][1]] == refs_before, "every name keeps its UUID"
     after = inspect(out)
-    assert after["features"][0]["distance_mm"] == h
-    assert after["sketches"][0]["chamfer_base"] == base["chamfer_base"]
+    assert next(s for s in after["expression_slots"] if s["slot"]["kind"] == "extrude_distance")["expression"]["value"] == h
+    assert after["sketches"][0]["chamfer_base"] == saved["sketches"][0]["chamfer_base"]
     assert after["chamfers"][0]["feature_id"] == chamfer["feature_id"] and after["chamfers"][0]["expression"]["value"] == d1
     exact = (W * D - d1 * d1 / 2) * h
     measured(out, d1, h)
@@ -314,7 +310,7 @@ measured(far, D - 0.01, 9.5)
 # 5. Refusals write nothing: the Chamfer itself, a non-number, and the height
 #    OCCT cannot chamfer (measured: 1e-5 mm and below), typed `kernel`.
 never = root / "never.fcad"
-for feature, height, kind in ((chamfer["feature_id"], "9", "unsupported"), (base["feature_id"], "0", "input"),
+for feature, height, kind in ((chamfer["feature_id"], "9", "input"), (base["feature_id"], "0", "input"),
                               (base["feature_id"], "1e-6", "kernel")):
     p = run(edit_args(one, feature, height, saved["content_version"], never), code=2)
     assert p["error"]["kind"] == kind and not never.exists(), (height, p)

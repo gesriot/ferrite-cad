@@ -348,13 +348,11 @@ fn analytic_gate(
 ) {
     let original = std::fs::read(source).expect("source");
     let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
-    let feature = opened
-        .expression_slots
-        .iter()
-        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .object;
+    let feature = ferritecad_fixtures::expression_slot(
+        &opened,
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
     let private = tempfile::tempdir().expect("private root");
     let mut sessions = Sessions::default();
     sessions.adopt(

@@ -289,14 +289,11 @@ fn artifacts(name: &str, stl: &[u8], fbx: &[u8]) {
 }
 
 fn first_extrude(path: &Path) -> ObjectId {
-    ferritecad_jobs::read_extrude_source(path)
-        .expect("reading")
-        .expression_slots
-        .iter()
-        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .object
+    ferritecad_fixtures::expression_slot(
+        &ferritecad_jobs::read_extrude_source(path).expect("reading"),
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object
 }
 
 /// The matrix: each variant, created, edited where it has a height, exported
@@ -673,16 +670,14 @@ fn compare_gui(root: &Path) {
     let edited = peer.join("edited.fcad");
     {
         let request = crate::edits::tests::expression_request(
-            &reading
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object
-                .to_string(),
+            &ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
             "extrude_distance",
-            &"21.5",
+            "21.5",
             "mm",
         );
         cli(&[

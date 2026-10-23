@@ -181,14 +181,11 @@ impl Window {
     }
 
     fn feature(&self) -> ObjectId {
-        read_extrude_source(&self.sessions.export_path().expect("shown"))
-            .expect("reading")
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object
+        ferritecad_fixtures::expression_slot(
+            &read_extrude_source(&self.sessions.export_path().expect("shown")).expect("reading"),
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object
     }
 
     /// The shown tab's Apply of a height, through its edit worker, picture worker
@@ -203,8 +200,14 @@ impl Window {
                 Drawn::Native => spawn_apply(
                     ticket.source().version(),
                     ticket,
-                    feature,
-                    millimetres,
+                    vec![
+                        ferritecad_document::ExpressionChange::constant(
+                            feature,
+                            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                            millimetres,
+                        )
+                        .expect("height"),
+                    ],
                     cancel.clone(),
                     move |v| {
                         tx.send(v).expect("edit");
@@ -1024,14 +1027,11 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
             crate::sessions::test_open::open_in(other.path(), &b_file, HistoryLimits::default())
                 .expect("open");
         let mut lane = RecoveryRecorder::start(store.clone(), || {});
-        let feature = read_extrude_source(session.current().path())
-            .expect("reading")
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &read_extrude_source(session.current().path()).expect("reading"),
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         let step = {
             let ticket = session.begin_step();
             let expected = ticket.source().version();
@@ -1251,21 +1251,18 @@ fn native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_com
     );
 
     // The command line's copies of the final models, from the untouched files.
-    let a_feature = read_extrude_source(&a_file)
-        .expect("a")
-        .expression_slots
-        .iter()
-        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .object;
+    let a_feature = ferritecad_fixtures::expression_slot(
+        &read_extrude_source(&a_file).expect("a"),
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
     let a_version = read_extrude_source(&a_file).expect("a").version;
     let a_peer = user.join("a-peer.fcad");
     {
         let request = crate::edits::tests::expression_request(
             &a_feature.to_string(),
             "extrude_distance",
-            &"26",
+            "26",
             "mm",
         );
         cli(&[
@@ -1509,16 +1506,14 @@ fn peers(inputs: &Path, work: &Path) -> (PathBuf, PathBuf) {
     let a_peer = work.join("a-peer.fcad");
     {
         let request = crate::edits::tests::expression_request(
-            &reading
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object
-                .to_string(),
+            &ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
             "extrude_distance",
-            &"26",
+            "26",
             "mm",
         );
         cli(&[

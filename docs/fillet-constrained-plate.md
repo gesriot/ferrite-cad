@@ -3,7 +3,7 @@
 [Executed verification and limitations](fillet-constrained-plate-verification.md).
 [The Fillet this creates](single-edge-fillet.md);
 [the same Fillet dimensioned afterwards](fillet-base-constraints.md), whose
-stored/solved policy this reuses; [its radius](edit-fillet-radius.md),
+stored/solved policy this reuses; [its radius](numeric-fillet-radius.md),
 [its plate's height](edit-fillet-base-height.md).
 [The Line constraints themselves](sketch-constraints-copy.md).
 
@@ -390,7 +390,6 @@ assert done["edge"] == chosen["edge"] and done["radius_mm"] == r, done
 fillet_allowlist(dim, rounded, body["body_id"])
 after = inspect(rounded)
 (fillet,) = after["fillets"]
-pass
 assert after["sketches"][0]["editable"] is False, "the coordinate editor refuses"
 rect = [AT[0], AT[1], WIDTH, DEPTH]
 v1, e1 = measured(rounded, rect, solved, r, H)

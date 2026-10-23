@@ -172,6 +172,41 @@ pub(crate) struct CutHistory {
 }
 
 impl CutHistory {
+    /// Keep the saved output catalogue consistent until D3 derives names during rebuild.
+    pub(crate) fn missing_output_references(
+        &self,
+        document: &Document,
+    ) -> Result<Vec<TopologyRef>> {
+        let objects = document.objects()?;
+        let extrude = |id| match objects.iter().find(|o| o.id == id).map(|o| &o.payload) {
+            Some(ObjectPayload::Extrude(e)) => Ok(e),
+            _ => Err(CadError::input(format!("missing history extrusion {id}"))),
+        };
+        let height = blind_literal(extrude(self.target.base_feature)?, "base extrusion")?;
+        let stored = document.topology_refs()?;
+        let mut ancestors = Vec::new();
+        let mut missing = Vec::new();
+        for cut in &self.cuts {
+            let mut tool = cut.tool();
+            tool.extent = saved_extent(extrude(cut.feature)?, "cut")?;
+            tool.leaves_a_floor = tool.extent.leaves_a_floor(height);
+            missing.extend(
+                history_references(
+                    tool.feature,
+                    tool.tool_curve,
+                    &self.target.profile_segments,
+                    tool.leaves_a_floor,
+                    self.target.base_feature,
+                    &ancestors,
+                )
+                .into_iter()
+                .filter(|want| !stored.iter().any(|r| same_meaning(r, want))),
+            );
+            ancestors.push(tool);
+        }
+        Ok(missing)
+    }
+
     /// §28A: the plate a Fillet may round, which is this history with no Cut.
     pub(crate) fn target_for_fillet(&self, body: ObjectId) -> Result<SavedCutTarget> {
         if self.target.body != body {
@@ -983,7 +1018,7 @@ fn saved_extent(extrude: &Extrude, what: &str) -> Result<CutExtent> {
 fn require_cut_operation(object: &ObjectRecord) -> Result<()> {
     if !matches!(&object.payload, ObjectPayload::Extrude(e) if e.operation == SolidOperation::Cut) {
         return Err(unsupported(
-            "this edit changes a Cut's tool and depth; use edit-extrude for NewBody",
+            "this edit changes a Cut's tool and depth; use edit with extrude_distance for NewBody",
         ));
     }
     Ok(())
@@ -2490,7 +2525,7 @@ mod tests {
                 let refusal = saved_cut(&d, &objects, feature)
                     .expect_err("NewBody")
                     .to_string();
-                assert!(refusal.contains("use edit-extrude for NewBody"));
+                assert!(refusal.contains("use edit with extrude_distance for NewBody"));
                 assert_eq!(choice.refusal.as_deref(), Some(refusal.as_str()));
                 assert!(choice.saved.is_none());
             }
@@ -2836,7 +2871,7 @@ mod tests {
             assert!(c.saved.is_none());
             let reason = c.refusal.as_deref().expect("refused");
             if c.feature == h.target.base_feature {
-                assert!(reason.contains("use edit-extrude for NewBody"));
+                assert!(reason.contains("use edit with extrude_distance for NewBody"));
             } else {
                 assert!(reason.contains("reuses curve UUID"));
             }
@@ -2925,7 +2960,7 @@ mod tests {
             assert!(c.saved.is_none());
             let reason = c.refusal.as_deref().expect("refused");
             if c.feature == h.target.base_feature {
-                assert!(reason.contains("use edit-extrude for NewBody"));
+                assert!(reason.contains("use edit with extrude_distance for NewBody"));
             } else {
                 assert!(reason.contains("16"));
             }

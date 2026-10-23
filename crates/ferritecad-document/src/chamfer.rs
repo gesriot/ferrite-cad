@@ -143,14 +143,14 @@ pub(crate) fn refuse_chamfered(objects: &[ObjectRecord]) -> Result<()> {
     if chamfers.len() > 1 {
         return Err(unsupported(format!(
             "this document holds {} Chamfers, beginning with {} (§29A); this build holds one \
-             Chamfer on one plate, and only its distance (edit-chamfer-distance) can be edited",
+             Chamfer on one plate, and only its distance (edit with chamfer_distance) can be edited",
             chamfers.len(),
             first.id
         )));
     }
     Err(unsupported(format!(
-        "this Body ends in Chamfer {} (§29A); only its distance (edit-chamfer-distance), its plate's \
-         height (edit-extrude, §29B), its base Sketch's coordinates (edit-sketch-copy, \
+        "this Body ends in Chamfer {} (§29A); only its distance (edit with chamfer_distance), its plate's \
+         height (edit with extrude_distance, §29B), its base Sketch's coordinates (edit-sketch-copy, \
          §29C) and its base Sketch's Line constraints (edit-sketch-constraints-copy, §29D) \
          can be edited. A Fillet or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
          chamfered plate without knowing its Chamfer",

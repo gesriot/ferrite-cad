@@ -1114,13 +1114,11 @@ fn spawn<T: Send + 'static>(
     })
 }
 
-/// The edit: the reused `edit-extrude` copy operation on the worker that owns the
-/// kernel session.
+/// Apply one expression transaction on the worker that owns the kernel session.
 pub(crate) fn spawn_apply(
     expected: ferritecad_document::DocumentVersion,
     ticket: StepTicket,
-    feature: ObjectId,
-    distance_mm: f64,
+    changes: Vec<ferritecad_document::ExpressionChange>,
     cancel: CancelToken,
     deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
 ) -> JoinHandle<()> {
@@ -1129,11 +1127,7 @@ pub(crate) fn spawn_apply(
             let context = OperationContext::default().with_cancel(cancel);
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ticket.edit(
-                vec![ferritecad_document::ExpressionChange::constant(
-                    feature,
-                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                    distance_mm,
-                )?],
+                changes,
                 expected,
                 &mut kernel,
                 |kernel, source| kernel.import_step(source),
@@ -1258,37 +1252,6 @@ pub(crate) fn spawn_apply_annulus(
     )
 }
 
-/// The partial Revolve angle edit, through the existing copy job on the worker
-/// owning the kernel. `expected` is the version the form was opened from.
-pub(crate) fn spawn_apply_angle(
-    ticket: StepTicket,
-    feature: ObjectId,
-    radians: f64,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.edit(
-                vec![ferritecad_document::ExpressionChange::constant(
-                    feature,
-                    ferritecad_document::ExpressionSlot::RevolveAngle,
-                    radians,
-                )?],
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
 /// The existing circular Cut edit on the kernel-owning worker. Add has its own
 /// worker (`spawn_add_cut`).
 pub(crate) fn spawn_apply_cut(
@@ -1373,37 +1336,6 @@ pub(crate) fn spawn_add_fillet(
     )
 }
 
-/// The existing Fillet radius edit on its kernel-owning worker (§30G); the Add
-/// form has its own worker (`spawn_add_fillet`).
-pub(crate) fn spawn_apply_fillet_radius(
-    ticket: StepTicket,
-    feature: ObjectId,
-    radius_mm: f64,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.edit(
-                vec![ferritecad_document::ExpressionChange::constant(
-                    feature,
-                    ferritecad_document::ExpressionSlot::FilletRadius,
-                    radius_mm,
-                )?],
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
 /// §30K: a new Chamfer on the kernel-owning worker. `expected` is the version the
 /// Add form was opened on; the Body is its saved UUID.
 pub(crate) fn spawn_add_chamfer(
@@ -1421,37 +1353,6 @@ pub(crate) fn spawn_add_chamfer(
             ticket.add_edge_chamfer(
                 body,
                 chamfer,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
-/// The existing Chamfer distance edit on its kernel-owning worker (§30H); the Add
-/// form has its own worker (`spawn_add_chamfer`).
-pub(crate) fn spawn_apply_chamfer_distance(
-    ticket: StepTicket,
-    feature: ObjectId,
-    distance_mm: f64,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.edit(
-                vec![ferritecad_document::ExpressionChange::constant(
-                    feature,
-                    ferritecad_document::ExpressionSlot::ChamferDistance,
-                    distance_mm,
-                )?],
                 expected,
                 &mut kernel,
                 |kernel, source| kernel.import_step(source),
@@ -1688,14 +1589,11 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("a plate");
-        let feature = read_extrude_source(&file)
-            .expect("reading")
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &read_extrude_source(&file).expect("reading"),
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         Fixture {
             root,
             private: tempfile::tempdir().expect("private root"),
@@ -1718,7 +1616,7 @@ mod tests {
     }
 
     /// The edit as the window runs it, on a thread, with the mock kernel (the same
-    /// reused `edit-extrude` operation; geometry is measured by the native tests).
+    /// reused `edit with extrude_distance` operation; geometry is measured by the native tests).
     fn apply(sessions: &mut Sessions, feature: ObjectId, millimetres: f64) -> (Address, Edited) {
         let (tx, rx) = mpsc::channel();
         let generation = sessions
@@ -1795,15 +1693,12 @@ mod tests {
     }
 
     fn height_of(path: &Path) -> f64 {
-        read_extrude_source(path)
-            .expect("reading")
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .expression
-            .value()
+        ferritecad_fixtures::expression_slot(
+            &read_extrude_source(path).expect("reading"),
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .expression
+        .value()
     }
 
     #[test]
@@ -2783,8 +2678,14 @@ mod tests {
                 spawn_apply(
                     ticket.source().version(),
                     ticket,
-                    feature,
-                    millimetres,
+                    vec![
+                        ferritecad_document::ExpressionChange::constant(
+                            feature,
+                            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                            millimetres,
+                        )
+                        .expect("height"),
+                    ],
                     cancel.clone(),
                     move |result| tx.send(result).expect("deliver"),
                 )
@@ -2848,14 +2749,11 @@ mod tests {
                 kernel.release(shape);
             }
         }
-        let feature = read_extrude_source(&path)
-            .expect("reading")
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &read_extrude_source(&path).expect("reading"),
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         let private = tempfile::tempdir().expect("private");
         let mut sessions = Sessions::default();
         sessions.adopt(
@@ -2958,7 +2856,7 @@ mod tests {
         assert_eq!(sessions.title(), format!("{name} — {PRODUCT_NAME}"));
 
         // The same change through the command line, which is what the window must
-        // reach: the old `edit-extrude`, unchanged.
+        // reach: the old `edit with extrude_distance`, unchanged.
         let peer = root.join("cli-edit.fcad");
         {
             let request = crate::edits::tests::expression_request(
@@ -3172,13 +3070,11 @@ mod tests {
     ) {
         let original = std::fs::read(source).expect("source");
         let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
-        let feature = opened
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &opened,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         let sketch = opened
             .sketches
             .iter()
@@ -3403,13 +3299,11 @@ mod tests {
         );
         apply_native(
             &mut sessions,
-            opened
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object,
+            ferritecad_fixtures::expression_slot(
+                &opened,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object,
             9.5,
         );
         let accepted = sessions.export_path().expect("accepted");
@@ -3497,13 +3391,11 @@ mod tests {
             return;
         }
         let (root, path, source) = crate::fillets::tests::plate();
-        let feature = source
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &source,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         // A file whose name is not ASCII: the title and the dialogs keep it as it is.
         assert!(
             path.file_name()
@@ -3591,13 +3483,11 @@ mod tests {
             None,
             "the height editor accepts it"
         );
-        let feature = reading
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         let sketch_before = cells(&constrained)["objects"]
             .iter()
             .filter(|row| row.contains(&sketch.to_string()) || row.contains("Sketch"))
@@ -3879,13 +3769,11 @@ mod tests {
     ) {
         let original = std::fs::read(source).expect("source");
         let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
-        let feature = opened
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &opened,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         let sketch = opened.constraint_sketches[0].sketch;
         let private = tempfile::tempdir().expect("private root");
         let mut sessions = Sessions::default();
@@ -4638,13 +4526,11 @@ mod tests {
         );
         apply_native(
             &mut sessions,
-            opened
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object,
+            ferritecad_fixtures::expression_slot(
+                &opened,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object,
             9.5,
         );
         move_native(&mut sessions, true);
@@ -4786,21 +4672,25 @@ mod tests {
                 .expect("a document opens into a session without a kernel"),
         );
         let before = private_files(&sessions);
-        let feature = source
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &source,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         let (tx, rx) = mpsc::channel();
         let generation = sessions
             .begin_apply(|ticket, _, cancel| {
                 spawn_apply(
                     ticket.source().version(),
                     ticket,
-                    feature,
-                    30.0,
+                    vec![
+                        ferritecad_document::ExpressionChange::constant(
+                            feature,
+                            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                            30.0,
+                        )
+                        .expect("height"),
+                    ],
                     cancel.clone(),
                     move |result| tx.send(result).expect("deliver"),
                 )

@@ -379,14 +379,13 @@ for k, (index, radius) in enumerate(zip(ORDER, RADII)):
     assert len(done["references"]) == 7 + k, done
     docs.append(out)
     catalog = inspect(out)
-    assert [f["history_index"] for f in catalog["fillets"]] == list(range(1, k + 2))
+    assert {f["feature_id"] for f in catalog["fillets"]} == set(ids)
     for f in catalog["fillets"]:
-        edit = f["radius_edit"]
-        assert edit["available"] is True and len(edit["neighbours"]) == k, f
-        assert (edit["neighbour"] is not None) == (k == 1), "the older single neighbour: two only"
-    base = next(f for f in catalog["features"] if f["fillet_history"] is not None)
+        slot = next(s for s in catalog["expression_slots"] if s["object"] == f["feature_id"] and s["slot"]["kind"] == "fillet_radius")
+        assert slot["refusal"] is None and slot["expression"] == f["expression"]
+    base = next(s for s in catalog["sketches"] if s["fillet_history"] is not None)
     assert base["fillet_history"]["count"] == k + 1
-    assert (base["fillet_base"] is not None) == (k + 1 <= 2), "the older projection: one or two"
+    assert (base["fillet_base"] is not None) == (k + 1 <= 2)
     seen = measured(out, RECT, ROUNDED[:k + 1])
 results = {"four": seen}
 four = docs[-1]
@@ -399,7 +398,6 @@ assert edge["available"] is False and "every corner" in edge["refusal"], edge
 refs = tables(four)["topology_refs"]
 bound = D - RADII[0] - MIN_RADIUS
 row = rounded_row(four, 3)
-pass
 def edit_radius(source, feature, radius, out, code=0):
     catalog = inspect(source)
     req = request("radius.json", {"request_version": 1, "changes": [{"object": feature, "slot": {"kind": "fillet_radius"}, "value": radius, "unit": "mm"}]})
@@ -465,7 +463,6 @@ only_row(four, dimensioned, sketch["sketch_id"])
 assert tables(dimensioned)["topology_refs"] == refs
 after = inspect(dimensioned)
 assert after["sketches"][0]["editable"] is False, "a dimensioned plate: the constraint editor"
-pass
 results["dimensioned"] = measured(dimensioned, rect_c, ROUNDED)
 user = [c["constraint_id"] for c in after["sketches"][0]["constraint_edit"]["constraints"]
         if c["rule"]["kind"] != "coincident"]

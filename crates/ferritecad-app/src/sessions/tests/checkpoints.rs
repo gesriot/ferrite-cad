@@ -830,14 +830,12 @@ fn compare_gui(root: &Path) {
     assert_eq!(height_of(&cli_a), 12.0);
     let b_reading = read_extrude_source(&cli_b).expect("reading");
     assert_eq!(
-        b_reading
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .expression
-            .value(),
+        ferritecad_fixtures::expression_slot(
+            &b_reading,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance
+        )
+        .expression
+        .value(),
         20.0,
         "checkpoint B height"
     );

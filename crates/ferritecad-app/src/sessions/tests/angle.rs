@@ -10,14 +10,9 @@ fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<P
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_apply_angle(
-                t,
-                r.changes[0].object,
-                r.changes[0].expression.value(),
-                r.expected,
-                c.clone(),
-                move |v| tx.send(v).expect("deliver"),
-            )
+            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
+                tx.send(v).expect("deliver")
+            })
         })
         .expect("start");
     (g, rx)
@@ -82,13 +77,11 @@ fn request(s: &Sessions, degrees: f64) -> EditRequest {
 
         changes: vec![
             ferritecad_document::ExpressionChange::constant(
-                reading
-                    .expression_slots
-                    .iter()
-                    .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
-                    .cloned()
-                    .collect::<Vec<_>>()[0]
-                    .object,
+                ferritecad_fixtures::expression_slot(
+                    &reading,
+                    ferritecad_document::ExpressionSlot::RevolveAngle,
+                )
+                .object,
                 ferritecad_document::ExpressionSlot::RevolveAngle,
                 degrees.to_radians(),
             )
@@ -421,7 +414,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     assert_eq!(
         read_extrude_source(&applied)
             .expect("reading")
-            .sketches
+            .constraint_sketches
             .iter()
             .find_map(|s| match s.profile_use {
                 Some(ferritecad_document::SketchProfileUse::PartialRevolve {
@@ -733,13 +726,11 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
 
             changes: vec![
                 ferritecad_document::ExpressionChange::constant(
-                    angle_reading
-                        .expression_slots
-                        .iter()
-                        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
-                        .cloned()
-                        .collect::<Vec<_>>()[0]
-                        .object,
+                    ferritecad_fixtures::expression_slot(
+                        &angle_reading,
+                        ferritecad_document::ExpressionSlot::RevolveAngle,
+                    )
+                    .object,
                     ferritecad_document::ExpressionSlot::RevolveAngle,
                     212.25_f64.to_radians(),
                 )
@@ -797,13 +788,11 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
 
         changes: vec![
             ferritecad_document::ExpressionChange::constant(
-                reading
-                    .expression_slots
-                    .iter()
-                    .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
-                    .cloned()
-                    .collect::<Vec<_>>()[0]
-                    .object,
+                ferritecad_fixtures::expression_slot(
+                    &reading,
+                    ferritecad_document::ExpressionSlot::RevolveAngle,
+                )
+                .object,
                 ferritecad_document::ExpressionSlot::RevolveAngle,
                 198.125_f64.to_radians(),
             )
@@ -858,13 +847,11 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
 
         changes: vec![
             ferritecad_document::ExpressionChange::constant(
-                reading
-                    .expression_slots
-                    .iter()
-                    .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
-                    .cloned()
-                    .collect::<Vec<_>>()[0]
-                    .object,
+                ferritecad_fixtures::expression_slot(
+                    &reading,
+                    ferritecad_document::ExpressionSlot::RevolveAngle,
+                )
+                .object,
                 ferritecad_document::ExpressionSlot::RevolveAngle,
                 212.25_f64.to_radians(),
             )

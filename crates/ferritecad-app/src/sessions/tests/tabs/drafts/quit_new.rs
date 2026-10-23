@@ -78,14 +78,12 @@ impl Window {
         let reading = read_extrude_source(&source).expect("created model");
         if content == NewContent::SamplePlate {
             assert_eq!(
-                reading
-                    .expression_slots
-                    .iter()
-                    .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                    .cloned()
-                    .collect::<Vec<_>>()[0]
-                    .expression
-                    .value(),
+                ferritecad_fixtures::expression_slot(
+                    &reading,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance
+                )
+                .expression
+                .value(),
                 7.
             );
             assert_eq!(
@@ -256,14 +254,12 @@ fn finish_returned_drawing(w: &mut Window, before: &(Vec<[String; 2]>, usize, us
         vec![[0., 0.], [20., 0.], [20., 10.]]
     );
     assert_eq!(
-        reading
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .expression
-            .value(),
+        ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance
+        )
+        .expression
+        .value(),
         10.
     );
     w.wait_for_create_idle();
@@ -1013,16 +1009,14 @@ fn compare_new_outputs(root: &Path) {
     let peer = peer_root.path().join("edited.fcad");
     {
         let request = crate::edits::tests::expression_request(
-            &reading
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object
-                .to_string(),
+            &ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
             "extrude_distance",
-            &"7",
+            "7",
             "mm",
         );
         cli(&[

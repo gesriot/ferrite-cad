@@ -56,8 +56,6 @@ def main():
             current = out
         with sqlite3.connect(current) as db:
             db.executescript("UPDATE objects SET rowid=-rowid,ordinal=100-ordinal,name='same';"
-                             "UPDATE capabilities SET rowid=rowid+100;"
-                             "INSERT INTO capabilities(rowid,name,required) VALUES(900,'optional.extension',0);"
                              "CREATE TABLE extra_data(id INTEGER PRIMARY KEY,bytes BLOB);"
                              "INSERT INTO extra_data VALUES(91,x'010203');")
         shutil.copyfile(current, root / "work/fillets.fcad")
@@ -96,15 +94,25 @@ def main():
                 result[table] = (columns, sorted(rows, key=repr))
             return result
 
+    def ordered_fillets(catalog):
+        remaining = {f["feature_id"]: f for f in catalog["fillets"]}
+        ordered = []
+        while remaining:
+            next_feature = next(f for f in remaining.values() if f["previous_feature_id"] not in remaining)
+            ordered.append(remaining.pop(next_feature["feature_id"]))
+        return ordered
+
     with tempfile.TemporaryDirectory(prefix="ferrite-30g-gui-peer-") as tmp:
         peer_root = Path(tmp)
         catalog = inspect(source)
-        first = next(f for f in catalog["fillets"] if f["history_index"] == 1)
+        first = ordered_fillets(catalog)[0]
         # Every selection uses the saved UUID; duplicate names/ordinals are irrelevant.
         base = first["edge"]["feature_id"]
         current = peer_root / "height.fcad"
-        run("edit-extrude", source, "--feature", base, "--expect-version", catalog["content_version"],
-            "--distance-mm", 9.25, "-o", current, "--json")
+        request = peer_root / "height.json"
+        request.write_text(json.dumps({"request_version": 1, "changes": [{"object": base, "slot": {"kind": "extrude_distance"}, "value": 9.25, "unit": "mm"}]}))
+        run("edit", source, "--expect-version", catalog["content_version"], "--request", request,
+            "-o", current, "--json")
         catalog = inspect(current)
         sketch = next(s for s in catalog["sketches"] if s["editable"] and s.get("vertices"))
         vertices = sketch["vertices"]
@@ -120,11 +128,11 @@ def main():
 
         def radius_edit(current, index, radius, name):
             catalog = inspect(current)
-            chosen = next(f for f in catalog["fillets"] if f["history_index"] == index)
+            chosen = ordered_fillets(catalog)[index - 1]
             request = peer_root / f"{name}.json"
-            request.write_text(json.dumps({"request_version": 1, "radius_mm": radius}))
+            request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chosen["feature_id"], "slot": {"kind": "fillet_radius"}, "value": radius, "unit": "mm"}]}))
             out = peer_root / f"{name}.fcad"
-            run("edit-fillet-radius", current, "--feature", chosen["feature_id"], "--expect-version",
+            run("edit", current, "--expect-version",
                 catalog["content_version"], "--request", request, "-o", out, "--json")
             return out
 

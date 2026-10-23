@@ -209,8 +209,6 @@ mod old_rectangle {
     pub struct Feature {
         pub circular_cut_edit: Edit,
         pub circular_cut_edit_v2: Edit,
-        pub base_height_edit: Option<Part>,
-        pub base_height_edit_v2: Option<Part>,
     }
     #[derive(Deserialize)]
     pub struct Sketch {
@@ -244,9 +242,6 @@ mod old_rectangle {
             for edit in [&f.circular_cut_edit, &f.circular_cut_edit_v2] {
                 parts.extend(edit.saved.as_ref().map(|t| t.extents_mm));
                 reasons.extend(edit.refusal.clone());
-            }
-            for h in [&f.base_height_edit, &f.base_height_edit_v2] {
-                parts.extend(h.as_ref().map(|t| t.extents_mm));
             }
         }
         let histories = old

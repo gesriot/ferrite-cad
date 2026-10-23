@@ -9,6 +9,8 @@
 //! back: the geometry from the kernel, the solid from the exported bytes, the
 //! identities and the SQL from the file.
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{CutExtent, Document, ObjectPayload, SemanticRole, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
@@ -874,7 +876,10 @@ fn cut_edit_discovery_and_protocol_without_native() {
         .iter()
         .find(|x| x["circular_cut_edit"]["available"] == json!(false))
         .expect("the base extrusion");
-    assert_eq!(base["editable"], json!(true), "edit still owns it");
+    assert!(
+        transaction::slot(&f.catalog, &base["feature_id"], "extrude_distance")["refusal"].is_null(),
+        "edit still owns it"
+    );
     assert!(
         base["circular_cut_edit"]["refusal"]
             .as_str()
@@ -883,7 +888,10 @@ fn cut_edit_discovery_and_protocol_without_native() {
         "the refusal must say where that distance is edited"
     );
     assert!(base["circular_cut_edit"]["saved"].is_null());
-    assert_eq!(f.cut()["editable"], json!(false), "a Cut is not edit");
+    assert!(
+        transaction::slot(&f.catalog, &f.cut()["feature_id"], "extrude_distance")["refusal"].is_null(),
+        "edit also owns the Cut depth"
+    );
 
     let saved = f.saved();
     let s = stored(&f.source);

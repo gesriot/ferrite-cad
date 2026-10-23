@@ -331,7 +331,7 @@ for name, rect in rects.items():
     assert only_row(one, out, sketch["sketch_id"]) >= 2
     assert [r[0] for r in tables(out)["topology_refs"][1]] == refs_before, "every name keeps its UUID"
     after = inspect(out)
-    assert after["features"][0]["distance_mm"] == H, "the height is kept"
+    assert next(s for s in after["expression_slots"] if s["slot"]["kind"] == "extrude_distance")["expression"]["value"] == H, "the height is kept"
     assert after["chamfers"][0]["feature_id"] == chamfer["feature_id"]
     assert after["chamfers"][0]["edge"] == chamfer["edge"], "the same two Lines meet"
     assert after["chamfers"][0]["expression"]["value"] == d1, "the distance is kept, not reduced"
@@ -345,7 +345,6 @@ edited = inspect(copies["big"])
 taller = root / "taller.fcad"
 geometry(edit_args(copies["big"], edited["features"][0]["feature_id"], "9.5", edited["content_version"], taller), taller)
 measured(taller, rects["big"], d1, 9.5)
-pass
 request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": rects["big"][3] - 0.01, "unit": "mm"}]}))
 far = root / "far.fcad"
 geometry(["edit", copies["big"], "--expect-version", edited["content_version"], "--request", request, "-o", far, "--json"], far)

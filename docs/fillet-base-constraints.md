@@ -1,7 +1,7 @@
 # §28E — dimension the rectangle under a Fillet, in a new copy
 
 [Executed verification and limitations](fillet-base-constraints-verification.md).
-[The Fillet this keeps](single-edge-fillet.md); [its radius](edit-fillet-radius.md),
+[The Fillet this keeps](single-edge-fillet.md); [its radius](numeric-fillet-radius.md),
 [its plate's height](edit-fillet-base-height.md) and
 [its rectangle's coordinates](edit-fillet-base-sketch.md).
 [The Line constraints themselves](sketch-constraints-copy.md).
@@ -325,7 +325,6 @@ context = editor["fillet_base"]
 assert context["fillet_feature_id"] == fillet["feature_id"], context
 assert context["edge"] == chosen["edge"] and context["radius_mm"] == r, context
 assert context["stored_corner_mm"] == corner, context
-pass
 lines = [c["curve_id"] for c in editor["curves"]]
 starts = [c["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
@@ -366,8 +365,6 @@ after = inspect(first)
 assert [c["start_mm"] for c in after["sketches"][0]["constraint_edit"]["curves"]] == starts
 (again,) = after["fillets"]
 assert again["feature_id"] == fillet["feature_id"] and again["edge"] == fillet["edge"], again
-pass
-pass
 rect = [AT[0], AT[1], WIDTH, DEPTH]
 solved_corner = [AT[0] + WIDTH, AT[1]]
 v1, e1 = measured(first, rect, solved_corner, r, H)

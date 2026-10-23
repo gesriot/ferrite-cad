@@ -69,7 +69,7 @@ fn result(args: &EditArgs) -> Result<EditedDocument> {
             let unit: Unit = change.unit.parse()?;
             if unit.dimension() != change.slot.dimension() {
                 return Err(CadError::input(format!(
-                    "slot {:?} requires {}, got {}",
+                    "slot {} requires {}, got {}",
                     change.slot,
                     change.slot.dimension(),
                     unit.dimension()

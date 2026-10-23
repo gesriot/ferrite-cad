@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#![allow(clippy::panic)]
 use ferritecad_document::*;
 use ferritecad_types::{ObjectId, StableEntityId, Transform};
 use serde_json::{Value, json};

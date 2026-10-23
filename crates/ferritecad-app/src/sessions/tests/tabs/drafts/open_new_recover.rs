@@ -245,14 +245,11 @@ pub(super) fn orphan(
 ) -> RecordId {
     let mut session = crate::sessions::test_open::open_in(private, file, HistoryLimits::default())
         .expect("session");
-    let feature = read_extrude_source(session.current().path())
-        .expect("reading")
-        .expression_slots
-        .iter()
-        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .object;
+    let feature = ferritecad_fixtures::expression_slot(
+        &read_extrude_source(session.current().path()).expect("reading"),
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
     let step = {
         let ticket = session.begin_step();
         let expected = ticket.source().version();
@@ -1222,16 +1219,14 @@ fn recovered_peer(inputs: &Path, work: &Path) -> PathBuf {
     let peer = work.join("c-peer.fcad");
     {
         let request = crate::edits::tests::expression_request(
-            &reading
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object
-                .to_string(),
+            &ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
             "extrude_distance",
-            &"22",
+            "22",
             "mm",
         );
         cli(&[

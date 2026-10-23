@@ -1214,11 +1214,11 @@ fn native_structured_refusals() {
     let version = reading["content_version"].as_str().expect("version");
     let before = std::fs::read(&source).expect("source");
     let destination = root.path().join("refused.fcad");
-    for feature in reading["features"].as_array().expect("catalog") {
-        if feature["editable"] == false {
+    for feature in reading["expression_slots"].as_array().expect("catalog") {
+        if feature["slot"]["kind"] == "extrude_distance" && feature["refusal"].is_string() {
             let error = run(&mut edit(
                 &source,
-                feature["feature_id"].as_str().expect("UUID"),
+                feature["object"].as_str().expect("UUID"),
                 "27",
                 version,
                 &destination,
@@ -1241,12 +1241,11 @@ fn native_structured_refusals() {
         let catalog = inspect(&source);
         let before = std::fs::read(&source).expect("guarded source");
 
-        let feature = &catalog["features"][0];
-        assert!(feature["refusal"].is_null());
-        assert_eq!(feature["editable"], false);
+        let feature = crate::transaction::first_slot(&catalog, "extrude_distance");
+        assert!(feature["refusal"].is_string());
         let error = run(&mut edit(
             &source,
-            feature["feature_id"].as_str().expect("UUID"),
+            feature["object"].as_str().expect("UUID"),
             "27",
             catalog["content_version"].as_str().expect("version"),
             &destination,

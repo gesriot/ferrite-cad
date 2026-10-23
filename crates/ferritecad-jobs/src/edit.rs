@@ -769,8 +769,11 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     let baseline = &facts.resolved;
     context.progress().report(0.4);
     context.check_cancelled()?;
+    let mut expression_minted = Vec::new();
     match &prepared {
-        CopyWrite::Expressions(changes) => document.write_expression_changes(changes)?,
+        CopyWrite::Expressions(changes) => {
+            expression_minted = document.write_expression_changes(changes)?
+        }
         CopyWrite::Coordinates(prepared) => document.write_sketch_geometry(prepared)?,
         CopyWrite::Constraints(p) => document.write_sketch_constraints(p)?,
         CopyWrite::Circle(prepared) => document.write_circle_geometry(prepared)?,
@@ -800,6 +803,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     // comparison below can only speak about names that already existed, so a
     // feature that published geometry nothing could point at would pass it.
     let minted: BTreeSet<StableEntityId> = match &prepared {
+        CopyWrite::Expressions(_) => expression_minted.into_iter().collect(),
         CopyWrite::Cut(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::Fillet(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::Chamfer(p) => p.references().iter().map(|r| r.id).collect(),

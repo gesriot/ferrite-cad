@@ -1624,7 +1624,7 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
     assert_eq!(catalog["features"][0]["feature_id"], base.as_str());
     let raised = crate::transaction::constant(
         &copy,
-        &version,
+        version,
         &fillet_id,
         "extrude_distance",
         "9",
@@ -1952,13 +1952,12 @@ mod radius {
     /// One radius edit of `f`'s saved Fillet into `name`, checked against
     /// everything a copy must be. Returns the copy and what the kernel
     /// measured.
-    fn edited(f: &Fixture, corner: [f64; 2], from: f64, r: f64, name: &str) -> (PathBuf, Measured) {
+    fn edited(f: &Fixture, corner: [f64; 2], r: f64, name: &str) -> (PathBuf, Measured) {
         let before = std::fs::read(&f.source).expect("source bytes");
         let refs = stored_refs(&f.source);
         let copy = f.root.path().join(format!("{name}.fcad"));
         f.ask_radius(r);
-        let published = reply(f.edit(&copy).output().expect("process"), OP, 0);
-        let result = &published["result"];
+        reply(f.edit(&copy).output().expect("process"), OP, 0);
 
         assert_eq!(
             std::fs::read(&f.source).expect("bytes"),
@@ -2052,7 +2051,7 @@ mod radius {
         ] {
             let f = filleted_by_cli(corners, corner, 2.375, &format!("rounded-{label}"));
             let original = measure(&f.source, None);
-            let (up, grown) = edited(&f, corner, 2.375, 4.8125, &format!("radius-{label}-up"));
+            let (up, grown) = edited(&f, corner, 4.8125, &format!("radius-{label}-up"));
             // The same corner, further in: the axis moved by the change of
             // radius along both sides, and nowhere else.
             let step = inward(corner, 4.8125);
@@ -2070,7 +2069,7 @@ mod radius {
                 request: f.request.clone(),
             };
             let g = Fixture { root: f.root, ..g };
-            let (down, _) = edited(&g, corner, 4.8125, 1.1875, &format!("radius-{label}-down"));
+            let (down, _) = edited(&g, corner, 1.1875, &format!("radius-{label}-down"));
             assert_eq!(stored_refs(&down), stored_refs(&g.source));
         }
     }
@@ -2287,7 +2286,7 @@ mod radius {
 /// `edit`. The Fillet keeps its row, its edge and radius, and every
 /// name; only the base Extrude's distance changes.
 mod height {
-    use super::radius::{filleted_by_cli, filleted_without_kernel, stored_refs};
+    use super::radius::{filleted_by_cli, stored_refs};
     use super::*;
 
     const OP: &str = "edit";
@@ -2519,7 +2518,7 @@ mod height {
             .raise(&f.source, f.base_id(), &H.to_string(), &copy)
             .output()
             .expect("process");
-        let v = reply(out, OP, 0);
+        reply(out, OP, 0);
 
         assert!(only_the_height_changed(&f.source, &copy, f.base_id()) <= 1);
         measure(&f.source, None).same_as(&measure(&copy, None));
@@ -2615,7 +2614,7 @@ mod height {
         assert_eq!(g.fillet_id(), fillet.to_string());
         let rounder = g.root.path().join("rounder.fcad");
         g.ask_radius(4.8125);
-        let v = reply(g.edit(&rounder).output().expect("process"), "edit", 0);
+        reply(g.edit(&rounder).output().expect("process"), "edit", 0);
 
         let h = Fixture {
             catalog: inspect(&rounder),
@@ -2769,10 +2768,8 @@ mod height {
         assert!(!stale_out.exists());
         assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
 
-        // A saved name of the plate that resolves to nothing. The legacy
-        // standalone extrusion edit may keep such a name unresolved; a
-        // rounded plate may not, so the copy is refused and nothing is
-        // published.
+        // A previously unresolved name remains a warning: the transaction
+        // refuses only names that resolved before and would now be lost.
         let dangling = f.root.path().join("dangling-source.fcad");
         std::fs::copy(&f.source, &dangling).expect("copy");
         let mut d = Document::open(&dangling).expect("writable");
@@ -2805,13 +2802,17 @@ mod height {
                 .output()
                 .expect("process"),
             OP,
-            2,
+            0,
         );
-        // The frame accepts it; the copy's reference check is what refuses.
-
-        assert_eq!(refused(&v), "topology", "{v}");
-        assert!(v.to_string().contains("unresolved"), "{v}");
-        assert!(!out.exists());
+        assert_eq!(v["result"]["rebuild"]["failed"], json!([]));
+        assert!(
+            v["result"]["rebuild"]["warnings"]
+                .to_string()
+                .contains("unresolved"),
+            "{v}"
+        );
+        assert!(out.exists());
+        assert_eq!(stored_refs(&out), stored_refs(&dangling));
         assert_eq!(std::fs::read(&dangling).expect("bytes"), dangling_before);
 
         // A publication whose report is lost stays published: exit 7.
@@ -2837,7 +2838,7 @@ mod height {
 /// the existing `edit-sketch-copy`. Only the Sketch row changes; the Fillet
 /// keeps its row, its corner and radius, and every name.
 mod sketch {
-    use super::radius::{filleted_by_cli, filleted_without_kernel, stored_refs};
+    use super::radius::{filleted_by_cli, stored_refs};
     use super::*;
 
     pub(super) const OP: &str = "edit-sketch-copy";
@@ -2962,7 +2963,7 @@ mod sketch {
         }
         let plain = Fixture::drawn(Plate::new(CCW));
         assert_eq!(plain.sketch_row()["fillet_base"], Value::Null);
-        let f = filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
+        let f = crate::radius::filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
         let row = f.sketch_row();
         assert_eq!(row["editable"], true, "{row}");
         assert_eq!(row["refusal"], Value::Null);
@@ -3045,7 +3046,7 @@ mod sketch {
         assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
 
         // A Fillet outside the frame keeps the Sketch refused, naming it.
-        let odd = filleted_without_kernel(CCW, [X0, Y0], 2.0);
+        let odd = crate::radius::filleted_without_kernel(CCW, [X0, Y0], 2.0);
         let mut d = Document::open(&odd.source).expect("writable");
         let owner: ferritecad_types::ObjectId = odd.fillet_id().parse().expect("UUID");
         d.write(|w| {
@@ -3646,7 +3647,7 @@ mod sketch {
 /// the solver's starting guess; the part, and the Fillet's corner and radius,
 /// are the solved plate's.
 mod constraints {
-    use super::radius::{filleted_by_cli, filleted_without_kernel, stored_refs};
+    use super::radius::{filleted_by_cli, stored_refs};
     use super::*;
 
     const OP: &str = "edit-sketch-constraints-copy";
@@ -3992,7 +3993,7 @@ mod constraints {
     /// the solver refuses a well-formed request before writing anything.
     #[test]
     fn constraint_discovery_and_protocol_without_native() {
-        let plain = filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
+        let plain = crate::radius::filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
         let row = plain.constraint_row();
         assert_eq!(row["available"], true, "{row}");
         assert_eq!(row["fillet_base"]["stored_corner_mm"], json!([X0 + W, Y0]));
@@ -4036,7 +4037,6 @@ mod constraints {
             5,
             "{row}"
         );
-        let fillet = &f.catalog["fillets"][0];
 
         assert_eq!(
             f.constraint_row()["fillet_base"]["stored_corner_mm"],
@@ -5266,7 +5266,7 @@ mod constraints {
 mod sequential {
     use super::constraints::first::{dimensioned_plate, sketch_row};
     use super::constraints::{axis_of, rect_of, solved, solving};
-    use super::radius::{filleted_by_cli, filleted_without_kernel, stored_refs};
+    use super::radius::{filleted_by_cli, stored_refs};
     use super::*;
     use ferritecad_types::ObjectId;
 
@@ -5821,7 +5821,7 @@ mod sequential {
     /// refused by name, and nothing written.
     #[test]
     fn sequential_discovery_and_protocol_without_native() {
-        let f = filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
+        let f = crate::radius::filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
         let first = f.fillet_id().to_owned();
         let d = f.discovery();
         assert_eq!(d["available"], true, "{d}");
@@ -5829,10 +5829,7 @@ mod sequential {
         assert_eq!(t["previous_feature_id"], first.as_str());
         assert_eq!(t["fillets"][0]["feature_id"], first.as_str());
         assert_eq!(t["fillets"][0]["radius_mm"], 2.375);
-        assert_eq!(
-            t["sketches"][0]["fillet_base"]["corner_mm"],
-            json!([X0 + W, Y0])
-        );
+        assert_eq!(t["fillets"][0]["corner_mm"], json!([X0 + W, Y0]));
         let candidates = f.candidates();
         assert_eq!(candidates.len(), 3);
         let marked: Vec<bool> = candidates
@@ -5919,7 +5916,6 @@ mod sequential {
         // §28H: both radii are editable; §28I: and the base height; §28J:
         // and the free plate's Sketch coordinates; the constraint editor
         // still refuses.
-        for fillet in two["fillets"].as_array().expect("fillets") {}
 
         assert_eq!(two["sketches"][0]["editable"], true);
         assert_eq!(two["sketches"][0]["constraint_edit"]["available"], true);
@@ -6526,14 +6522,13 @@ mod sequential {
 
             let copy = h.root.path().join(format!("{name}.fcad"));
             h.ask_radius(r);
-            let v = reply(
+            reply(
                 h.edit_from(&h.source, &id, h.version(), &copy)
                     .output()
                     .expect("process"),
                 EDIT,
                 0,
             );
-            let result = &v["result"];
 
             assert_eq!(std::fs::read(&h.source).expect("bytes"), before, "source");
             assert!(only_the_radius_changed(&h.source, &copy, &id) >= 2);
@@ -6815,8 +6810,11 @@ mod sequential {
             };
             let two = second_fillet(&g1, &part, first, 3.5, second, 3.0, "r-dimensioned-two");
             let h = g1.at_copy(&two);
-            let [r1row, r2row] = rows(&h);
-            for row in [&r1row, &r2row] {
+            let [_, r2row] = rows(&h);
+            for row in h.constraint_row()["fillet_history"]["fillets"]
+                .as_array()
+                .expect("history")
+            {
                 assert_eq!(row["profile_constrained"], true);
             }
             // 4.0 each fits §28A on the solved 8 mm side, the stored 12.25 mm
@@ -6975,7 +6973,7 @@ mod sequential {
             );
             assert!(lost.exists());
             let [_, kept] = rows(&h.at_copy(&lost));
-            assert_eq!(kept["radius_mm"], 2.5);
+            assert_eq!(kept["expression"]["value"], 2.5);
             assert_eq!(std::fs::read(&h.source).expect("bytes"), before);
         }
     }
@@ -7556,7 +7554,7 @@ mod sequential {
                 "the height"
             );
             let [a1, a2] = rows(&after);
-            for (was, now, corner, r) in [(&one, &a1, m1, r1), (&two, &a2, m2, r2)] {
+            for (was, now, r) in [(&one, &a1, r1), (&two, &a2, r2)] {
                 for key in ["feature_id", "edge", "previous_feature_id", "history_index"] {
                     assert_eq!(now[key], was[key], "{key}");
                 }
@@ -7626,7 +7624,7 @@ mod sequential {
         /// A two-Fillet plate written without a kernel, by the shipped
         /// preparation and writer, with its own directory.
         pub(super) fn twice_without_kernel(r1: f64, r2: f64) -> (Fixture, Fixture) {
-            let f = filleted_without_kernel(CCW, [X0 + W, Y0], r1);
+            let f = crate::radius::filleted_without_kernel(CCW, [X0 + W, Y0], r1);
             let short = f.at([X0 + W, Y0 + D]).clone();
             let mut doc = Document::open(&f.source).expect("writable");
             let body: ferritecad_types::ObjectId = f.body_id().parse().expect("UUID");

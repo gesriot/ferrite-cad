@@ -260,10 +260,8 @@ twice = root / "twice.fcad"
 # 2. Discovery: the base row is editable and names both Fillets in history
 #    order; Fillet 2 rounds Fillet 1's result, not the base.
 catalog = inspect(twice)
-pass
 (base,) = catalog["features"]
 BASE = base["feature_id"]
-pass
 ctx = catalog["sketches"][0]["fillet_base"]
 assert ctx["fillet_feature_id"] == done1["feature_id"] and ctx["radius_mm"] == R1, ctx
 two = ctx["second_fillet"]
@@ -277,12 +275,10 @@ def raised(source, h, name):
     out = root / name
     before = source.read_bytes()
     result = run(edit_args(source, BASE, h, version, out))["result"]
-    pass
     assert source.read_bytes() == before, "the source is untouched"
     allowlist(source, out, BASE)
     assert tables(out)["topology_refs"] == refs, "a name moved"
     (row,) = inspect(out)["features"]
-    pass
     return out
 
 # 3. Up, then down: only the base row moves; both Fillets stay, measured.
@@ -293,7 +289,7 @@ vd, ed = measured(down, [(FIRST, R1), (SECOND, R2)], 2.25)
 
 # 4. Each radius stays editable on the lowered plate.
 request = root / "radius.json"
-request.write_text(json.dumps({"request_version": 1, "changes": [{"object": done2["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 4.25, "unit": "mm"}]}))
+request.write_text(json.dumps({"request_version": 1, "changes": [{"object": done1["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 4.25, "unit": "mm"}]}))
 f1 = root / "down-f1.fcad"
 run(["edit", down, "--expect-version", inspect(down)["content_version"], "--request", request, "-o", f1, "--json"])
 v1, e1 = measured(f1, [(FIRST, 4.25), (SECOND, R2)], 2.25)

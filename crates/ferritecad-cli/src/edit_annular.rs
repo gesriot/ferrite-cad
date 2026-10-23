@@ -34,7 +34,7 @@ pub struct EditAnnularArgs {
 ///
 /// `request_version` is this command's only version field, spelled the way the
 /// circle and sketch edits beside it spell one; there is no synonym. There is no
-/// height here either: the saved extrusion keeps it, and `edit-extrude` changes
+/// height here either: the saved extrusion keeps it, and `edit with extrude_distance` changes
 /// it. There is one centre, because the class this edits is concentric.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

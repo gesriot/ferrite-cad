@@ -339,7 +339,6 @@ context = editor["chamfer_base"]
 assert context == catalog["sketches"][0]["chamfer_base"], context
 assert context["chamfer_feature_id"] == chamfer["feature_id"] and context["edge"] == chamfer["edge"]
 assert context["corner_mm"] == CORNER and context["distance_mm"] == d1, context
-pass
 lines = [c["curve_id"] for c in editor["curves"]]
 starts = [c["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
@@ -384,8 +383,6 @@ after = inspect(first)
 assert [c["start_mm"] for c in after["sketches"][0]["constraint_edit"]["curves"]] == starts
 (again,) = after["chamfers"]
 assert again["feature_id"] == chamfer["feature_id"] and again["edge"] == chamfer["edge"], again
-pass
-pass
 assert after["sketches"][0]["editable"] is False
 assert chamfer["feature_id"] in after["sketches"][0]["refusal"], after["sketches"][0]
 rect = [AT[0], AT[1], WIDTH, DEPTH]
@@ -447,9 +444,8 @@ catalog6 = inspect(bare)
 left = catalog6["sketches"][0]["constraint_edit"]["constraints"]
 assert len(left) == 4 and all(c["rule"]["kind"] == "coincident" for c in left), left
 assert [c["start_mm"] for c in catalog6["sketches"][0]["constraint_edit"]["curves"]] == starts
-assert catalog6["chamfers"][0]["profile_constrained"] is False
+assert catalog6["sketches"][0]["chamfer_base"]["profile_constrained"] is False
 assert catalog6["sketches"][0]["editable"] is True
-pass
 rect3 = [-10.125, 7.5, 52.25, 20.5]
 x0, y0, w3, d3 = rect3
 new = [[x0 + w3, y0 + d3], [x0 + w3, y0], [x0, y0], [x0, y0 + d3]]

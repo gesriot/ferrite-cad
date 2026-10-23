@@ -9,6 +9,8 @@
 //! it always was, and the boundary and the bore are still the circles they were
 //! before the solve.
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{
     Document, ObjectPayload, SemanticRole, SketchConstraintRule, SketchGeometry,
     SketchPointSelector,
@@ -1230,19 +1232,27 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         .as_str()
         .expect("feature")
         .to_owned();
-    let raised = cli()
-        .arg("edit")
-        .arg(&sized)
-        .args(["--feature", &feature])
-        .args(["--distance-mm", "25"])
-        .arg("-o")
-        .arg(&taller)
-        .arg("--json")
-        .output()
-        .expect("edit");
+    let raised = transaction::constant(
+        &sized,
+        &Document::open_read_only(&sized)
+            .expect("document")
+            .content_version()
+            .expect("version")
+            .to_string(),
+        &feature,
+        "extrude_distance",
+        "25",
+        "mm",
+        &taller,
+    )
+    .output()
+    .expect("edit");
     assert!(raised.status.success(), "{raised:?}");
     let up = inspect(&taller);
-    assert_eq!(up["features"][0]["distance_mm"], 25.0);
+    assert_eq!(
+        transaction::first_slot(&up, "extrude_distance")["expression"]["value"],
+        25.0
+    );
     assert_eq!(
         up["sketches"][0]["constraint_edit"]["constraints"]
             .as_array()

@@ -461,7 +461,6 @@ constrain(sector_rigid, {"request_version": 1,
 TALL = [[2.75, -3.25], [7.5, -3.25], [7.5, 3.75], [4.25, 9.5], [2.75, 9.5]]
 sector_volume, _ = exported(tall, TALL, 137.5)
 revolve = inspect(tall)["revolves"][0]
-pass
 angle_request = root / "angle.json"
 angle_request.write_text(json.dumps({"request_version": 1, "changes": [{"object": revolve["feature_id"], "slot": {"kind": "revolve_angle"}, "value": 212.25, "unit": "deg"}]}))
 turned = root / "sector-turned.fcad"

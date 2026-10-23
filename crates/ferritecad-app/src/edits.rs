@@ -186,16 +186,8 @@ impl Edits {
     /// What Apply asks the session for: the chosen extrusion and its validated new
     /// height. `None` (and the reason on the form) when the draft is not a request.
     /// The draft is not consumed: a failed Apply leaves it as it was typed.
-    pub(crate) fn apply_request(
-        &mut self,
-    ) -> Option<(
-        ferritecad_types::ObjectId,
-        f64,
-        ferritecad_document::DocumentVersion,
-    )> {
-        let form = self.form.as_mut()?;
-        let distance = Self::validate_form(form)?;
-        Some((form.shown.selected?, distance, form.reading.version))
+    pub(crate) fn apply_request(&mut self) -> Option<EditRequest> {
+        self.request(PathBuf::new())
     }
 
     pub(crate) fn cancel(&mut self) {
@@ -318,16 +310,6 @@ impl Edits {
     ) -> Option<PathBuf> {
         self.finish_path(generation, result.map(|r| r.destination))
     }
-    pub(crate) fn start_revolve_angle(
-        &mut self,
-        request: ferritecad_jobs::EditRequest,
-        spawn: impl FnOnce(ferritecad_jobs::EditRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
     pub(crate) fn start_cut(
         &mut self,
         request: ferritecad_jobs::CircularCutRequest,
@@ -362,23 +344,6 @@ impl Edits {
     ) -> Option<PathBuf> {
         self.finish_path(generation, result.map(|r| r.destination))
     }
-    pub(crate) fn start_fillet_radius(
-        &mut self,
-        request: ferritecad_jobs::EditRequest,
-        spawn: impl FnOnce(ferritecad_jobs::EditRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn finish_fillet_radius(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedDocument>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
     pub(crate) fn start_chamfer(
         &mut self,
         request: ferritecad_jobs::EdgeChamferRequest,
@@ -393,23 +358,6 @@ impl Edits {
         &mut self,
         generation: u64,
         result: Result<ferritecad_jobs::AddedEdgeChamfer>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
-    pub(crate) fn start_chamfer_distance(
-        &mut self,
-        request: ferritecad_jobs::EditRequest,
-        spawn: impl FnOnce(ferritecad_jobs::EditRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn finish_chamfer_distance(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedDocument>,
     ) -> Option<PathBuf> {
         self.finish_path(generation, result.map(|r| r.destination))
     }
@@ -535,10 +483,19 @@ pub(crate) fn run_edit(
 }
 
 pub(crate) fn spawn_edit(
-    request: EditRequest,
+    source: PathBuf,
+    expected: ferritecad_document::DocumentVersion,
+    changes: Vec<ferritecad_document::ExpressionChange>,
+    destination: PathBuf,
     cancel: CancelToken,
     deliver: impl FnOnce(Result<EditedDocument>) + Send + 'static,
 ) -> JoinHandle<()> {
+    let request = EditRequest {
+        source,
+        expected,
+        changes,
+        destination,
+    };
     spawn_job(cancel, move |context| run_edit(&request, context), deliver)
 }
 
@@ -584,20 +541,6 @@ pub(crate) fn spawn_annulus_edit(
         deliver,
     )
 }
-pub(crate) fn spawn_revolve_angle_edit(
-    request: ferritecad_jobs::EditRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<EditedDocument>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::edit_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
 pub(crate) fn spawn_cut(
     request: ferritecad_jobs::CircularCutRequest,
     cancel: CancelToken,
@@ -626,20 +569,6 @@ pub(crate) fn spawn_fillet(
         deliver,
     )
 }
-pub(crate) fn spawn_fillet_radius(
-    request: ferritecad_jobs::EditRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::EditedDocument>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::edit_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
 pub(crate) fn spawn_chamfer(
     request: ferritecad_jobs::EdgeChamferRequest,
     cancel: CancelToken,
@@ -650,20 +579,6 @@ pub(crate) fn spawn_chamfer(
         move |context| {
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ferritecad_jobs::chamfer_edge_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
-pub(crate) fn spawn_chamfer_distance(
-    request: ferritecad_jobs::EditRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::EditedDocument>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::edit_copy(&request, &mut kernel, context)
         },
         deliver,
     )
@@ -811,9 +726,16 @@ pub(crate) mod tests {
         let (send, receive) = mpsc::channel();
         edits
             .start(request, move |request, generation, cancel| {
-                spawn_edit(request, cancel, move |result| {
-                    send.send((generation, result)).expect("deliver");
-                })
+                spawn_edit(
+                    request.source,
+                    request.expected,
+                    request.changes,
+                    request.destination,
+                    cancel,
+                    move |result| {
+                        send.send((generation, result)).expect("deliver");
+                    },
+                )
             })
             .expect("start UI command");
         let (generation, result) = receive.recv().expect("worker reply");
@@ -913,7 +835,7 @@ pub(crate) mod tests {
                 let request = crate::edits::tests::expression_request(
                     &feature.to_string(),
                     "extrude_distance",
-                    &"27",
+                    "27",
                     "mm",
                 );
                 run(&[
@@ -1141,7 +1063,7 @@ pub(crate) mod tests {
                 let request = crate::edits::tests::expression_request(
                     &feature.to_string(),
                     "extrude_distance",
-                    &"27",
+                    "27",
                     "mm",
                 );
                 cli(&[
@@ -1231,7 +1153,7 @@ pub(crate) mod tests {
                 let request = crate::edits::tests::expression_request(
                     &feature.to_string(),
                     "extrude_distance",
-                    &"27",
+                    "27",
                     "mm",
                 );
                 cli(&[
@@ -1378,17 +1300,12 @@ pub(crate) mod tests {
             accepted.expect("old version").version
         );
         assert_eq!(
-            scene
-                .edit_source
-                .as_ref()
-                .expect("edited reading")
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .expression
-                .value(),
+            ferritecad_fixtures::expression_slot(
+                scene.edit_source.as_ref().expect("edited reading"),
+                ferritecad_document::ExpressionSlot::ExtrudeDistance
+            )
+            .expression
+            .value(),
             27.0
         );
     }
@@ -1614,13 +1531,11 @@ pub(crate) mod tests {
     #[test]
     fn the_height_form_offers_apply_and_withholds_the_copy_workflow_while_dirty() {
         let (_root, path, reading) = crate::fillets::tests::plate();
-        let feature = reading
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         let mut e = Edits::default();
         assert!(e.begin(&path, &reading));
         let ctx = egui::Context::default();
@@ -1696,15 +1611,13 @@ pub(crate) mod tests {
         };
         // Choose the extrusion; type a height.
         height_click(&ctx, &mut e, &path, &reading, &label);
-        let current = reading
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .expression
-            .value()
-            .to_string();
+        let current = ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .expression
+        .value()
+        .to_string();
         type_height(&ctx, &mut e, &path, &reading, &current, "27.5");
 
         // Apply is its own choice, and asks for no destination.
@@ -1712,7 +1625,19 @@ pub(crate) mod tests {
             press(&mut e, "Apply", open),
             ferritecad_ui::EditChoice::Apply
         );
-        assert_eq!(e.apply_request(), Some((feature, 27.5, reading.version)));
+        let request = e.apply_request().expect("Apply request");
+        assert_eq!(request.expected, reading.version);
+        assert_eq!(
+            request.changes,
+            vec![
+                ferritecad_document::ExpressionChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    27.5
+                )
+                .expect("height")
+            ]
+        );
         assert!(
             e.form.is_some(),
             "Apply leaves the draft for the caller to close"
@@ -1749,7 +1674,7 @@ pub(crate) mod tests {
 
         // A draft that is not a request is refused with its reason and kept.
         type_height(&ctx, &mut e, &path, &reading, "27.5", "-3");
-        assert_eq!(e.apply_request(), None);
+        assert!(e.apply_request().is_none());
         let shown = e.form.as_ref().expect("form").shown.refusal.clone();
         assert!(shown.is_some(), "the form says why");
         assert_eq!(e.form.as_ref().expect("form").shown.distance, "-3");

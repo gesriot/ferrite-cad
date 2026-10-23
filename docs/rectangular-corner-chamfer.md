@@ -2,7 +2,7 @@
 
 [Executed verification and limitations](rectangular-corner-chamfer-verification.md).
 [History decision](decisions/0004-feature-predecessor.md); the stack it parallels is
-[§28A](single-edge-fillet.md) (create) and [§28B](edit-fillet-radius.md) (edit the one number).
+[§28A](single-edge-fillet.md) (create) and [§28B](numeric-fillet-radius.md) (edit the one number).
 
 A person or an agent opens a saved rectangular plate, picks one of its four
 vertical edges and a distance, and publishes a new `.fcad` whose Body ends in a
@@ -428,11 +428,8 @@ exact_one = measured(one, d1)
 saved = inspect(one)
 chamfer = saved["chamfers"][0]
 assert chamfer["feature_id"] == done["feature_id"] and chamfer["expression"]["value"] == d1
-pass
-pass
 assert saved["bodies"][0]["chamfer_edge"]["available"] is False, "a second Chamfer"
 # §29B: the plate's height is edited through the base Extrude, with the Chamfer as context.
-pass
 assert saved["sketches"][0]["chamfer_base"]["chamfer_feature_id"] == chamfer["feature_id"]
 assert saved["bodies"][0]["fillet_edge"]["available"] is False
 request.write_text(json.dumps({"request_version": 1, "radius_mm": 1.0, "edge": edge}))
@@ -447,8 +444,7 @@ for d2 in (4.5, D - 0.01):
     request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": d2, "unit": "mm"}]}))
     two = root / f"two-{d2}.fcad"
     edited = geometry(["edit", one, "--expect-version", version, "--request", request, "-o", two, "--json"], two)["result"]
-    pass
-    assert edited["feature_id"] == chamfer["feature_id"]
+    assert inspect(two)["chamfers"][0]["feature_id"] == chamfer["feature_id"]
     only_row(one, two, chamfer["feature_id"])
     assert [r[0] for r in tables(two)["topology_refs"][1]] == [r[0] for r in tables(one)["topology_refs"][1]], \
         "every name keeps its UUID"

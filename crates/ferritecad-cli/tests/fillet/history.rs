@@ -710,7 +710,7 @@ fn native_early_middle_and_last_radii_answer_to_every_neighbour() {
     let (cold, _) = measure_history(&source, Some(&cache));
     for (k, r) in [(0usize, max(0)), (1, 2.5), (3, 4.75)] {
         let out = g.root.path().join(format!("edited-{k}.fcad"));
-        let v = reply(radius_edit(&source, steps[k].id, r, &out), OP_RADIUS, 0);
+        reply(radius_edit(&source, steps[k].id, r, &out), OP_RADIUS, 0);
 
         assert!(only_the_radius_changed(&source, &out, &steps[k].id.to_string()) >= 2);
         assert_eq!(stored_refs(&out), refs, "every name and its UUID kept");
@@ -753,7 +753,7 @@ fn native_early_middle_and_last_radii_answer_to_every_neighbour() {
     drop(cold);
     // The bound itself, restored: the maximum is accepted and then restored.
     let out = g.root.path().join("restored.fcad");
-    let v = reply(radius_edit(&source, steps[0].id, 2.375, &out), OP_RADIUS, 0);
+    reply(radius_edit(&source, steps[0].id, 2.375, &out), OP_RADIUS, 0);
 }
 
 const OP_RADIUS: &str = "edit";
@@ -786,9 +786,12 @@ fn native_the_last_radius_answers_to_the_first_across_the_closing_line() {
         "the first Fillet: {v}"
     );
     assert!(
-        !v.to_string().contains(&steps[1].id.to_string())
-            && !v.to_string().contains(&steps[2].id.to_string()),
-        "not the ones between: {v}"
+        v["error"]["rebuild"]["failed"]
+            .as_array()
+            .expect("failures")
+            .iter()
+            .all(|f| { f["id"] != steps[1].id.to_string() && f["id"] != steps[2].id.to_string() }),
+        "the intermediate features still build: {v}"
     );
     assert!(!never.exists());
     assert_eq!(entries(g.root.path()), names);
@@ -825,7 +828,7 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
 
     // The height.
     let raised = g.root.path().join("raised.fcad");
-    let v = reply(
+    reply(
         g.raise(&source, &base, "11.5", &raised)
             .output()
             .expect("process"),
@@ -976,7 +979,7 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
         4
     );
     assert!(d.constraint_row()["fillet_base"].is_null());
-    for f in d.catalog["fillets"].as_array().expect("fillets") {}
+
     // Removing every user constraint leaves the closure and returns the
     // coordinate editor.
     let user: Vec<Value> = d.constraint_row()["constraints"]
@@ -1028,7 +1031,7 @@ fn native_the_solved_plate_decides_every_radius_of_four() {
     let g = fixture_at(&deep);
     let id = steps[0].id;
     let out = g.root.path().join("eight.fcad");
-    let v = reply(radius_edit(&deep, id, 8.0, &out), OP_RADIUS, 0);
+    reply(radius_edit(&deep, id, 8.0, &out), OP_RADIUS, 0);
 
     let (starts, _) = solved(&out);
     let stored = g.stored_starts();

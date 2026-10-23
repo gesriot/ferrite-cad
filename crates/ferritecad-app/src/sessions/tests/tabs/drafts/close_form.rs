@@ -499,13 +499,11 @@ pub(super) fn form_families(quit: bool) {
                     path,
                     &reading,
                     &w.sessions,
-                    reading
-                        .expression_slots
-                        .iter()
-                        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::FilletRadius)
-                        .cloned()
-                        .collect::<Vec<_>>()[0]
-                        .object,
+                    ferritecad_fixtures::expression_slot(
+                        &reading,
+                        ferritecad_document::ExpressionSlot::FilletRadius,
+                    )
+                    .object,
                     " 2.0 ",
                 )
                 .0;
@@ -522,13 +520,11 @@ pub(super) fn form_families(quit: bool) {
                     path,
                     &reading,
                     &w.sessions,
-                    reading
-                        .expression_slots
-                        .iter()
-                        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ChamferDistance)
-                        .cloned()
-                        .collect::<Vec<_>>()[0]
-                        .object,
+                    ferritecad_fixtures::expression_slot(
+                        &reading,
+                        ferritecad_document::ExpressionSlot::ChamferDistance,
+                    )
+                    .object,
                     " 2.0 ",
                 )
                 .0;
@@ -887,16 +883,14 @@ pub(super) fn compare_close(root: &Path) {
     let peer = work.path().join("peer.fcad");
     {
         let request = crate::edits::tests::expression_request(
-            &reading
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object
-                .to_string(),
+            &ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
             "extrude_distance",
-            &"26",
+            "26",
             "mm",
         );
         cli(&[

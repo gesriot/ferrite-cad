@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! §29A: what `chamfer-edge-copy` and `edit-chamfer-distance` would accept,
+//! §29A: what `chamfer-edge-copy` and `edit with chamfer_distance` would accept,
 //! from the same pinned reading `inspect --json` gives everything else.
 //! Additive: nothing here changes a field, type or code of an older answer.
 use ferritecad_types::ObjectId;

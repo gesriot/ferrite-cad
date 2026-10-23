@@ -375,7 +375,7 @@ fn native_axis_closed_sector_caps_names_angle_edit_and_exports() {
     exports(&wide, &grown, Some(SHAFT_DEG), "axis-constraints-sector");
 
     // The angle edit writes only the Revolve row and keeps the constraints.
-    let (revolve, version, discovered) = target(&wide);
+    let (revolve, version, _) = target(&wide);
 
     let angle_request = root.join("angle.json");
     write_angle(&angle_request, 212.25);

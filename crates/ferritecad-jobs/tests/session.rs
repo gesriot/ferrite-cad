@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! The document session's state machine, with real documents and no window.
 //!
-//! No Open CASCADE: the copy operation under test is the real `edit-extrude`
+//! No Open CASCADE: the copy operation under test is the real `edit with extrude_distance`
 //! (`StepTicket::edit_extrude_height`) run on the mock kernel, which is enough
 //! for a plate and exercises the same prepare, cold rebuild, strict reference
 //! check, version re-check and publication the command line uses. Geometry is

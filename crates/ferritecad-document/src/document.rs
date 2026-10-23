@@ -1152,10 +1152,26 @@ impl Document {
         self.write_checked_transaction(|_| Ok(()), edit, stamp)
     }
 
+    pub(crate) fn write_reading<T>(
+        &mut self,
+        edit: impl FnOnce(&Self, &mut DocumentWriter<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.write_reading_checked(|_| Ok(()), edit, true)
+    }
+
     fn write_checked_transaction<T>(
         &mut self,
         check: impl FnOnce(&Self) -> Result<()>,
         edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,
+        stamp: bool,
+    ) -> Result<T> {
+        self.write_reading_checked(check, |_, writer| edit(writer), stamp)
+    }
+
+    fn write_reading_checked<T>(
+        &mut self,
+        check: impl FnOnce(&Self) -> Result<()>,
+        edit: impl FnOnce(&Self, &mut DocumentWriter<'_>) -> Result<T>,
         stamp: bool,
     ) -> Result<T> {
         if let Access::ReadOnly { reason } = &self.access {
@@ -1179,7 +1195,7 @@ impl Document {
         check(self)?;
         let outcome = {
             let mut writer = DocumentWriter { tx: &tx };
-            edit(&mut writer)
+            edit(self, &mut writer)
         };
 
         match outcome {

@@ -2,7 +2,7 @@
 
 [Executed verification and limitations](edit-sequential-fillet-radii-verification.md).
 [Two sequential Fillets](sequential-edge-fillets.md);
-[the one-Fillet radius edit](edit-fillet-radius.md).
+[the one-Fillet radius edit](numeric-fillet-radius.md).
 
 A person opens a plate that §28G rounded twice — Extrude → Fillet 1 →
 Fillet 2 → Body tip — and changes the radius of **either** Fillet, named by
@@ -281,9 +281,6 @@ def edited(source, feature, r, name, previous, index):
     out = root / name
     before = source.read_bytes()
     result = run(["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"])["result"]
-    pass
-    pass
-    pass
     assert source.read_bytes() == before, "the source is untouched"
     moved = allowlist(source, out, feature)
     assert tables(out)["topology_refs"] == refs, "a name moved"

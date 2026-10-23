@@ -79,13 +79,11 @@ def main():
                        "expected_kind,payload,payload_hash FROM topology_refs WHERE owner_id=? LIMIT 1",
                        (uuid7(), base))
             db.executescript("UPDATE objects SET rowid=-rowid,ordinal=100-ordinal,name='same';"
-                             "UPDATE capabilities SET rowid=rowid+100;"
-                             "INSERT INTO capabilities(rowid,name,required) VALUES(900,'optional.extension',0);"
                              "CREATE TABLE extra_data(id INTEGER PRIMARY KEY,bytes BLOB);"
                              "INSERT INTO extra_data VALUES(91,x'010203');")
         resolved(current)
         saved = inspect(current)["chamfers"][0]
-        assert saved["corner_mm"] == CORNER and saved["distance_mm"] == 2.375
+        assert inspect(current)["sketches"][0]["chamfer_base"]["corner_mm"] == CORNER and saved["expression"]["value"] == 2.375
         shutil.copyfile(current, root / "work/chamfer.fcad")
         (root / "facts.json").write_text(json.dumps({"sha256": hashlib.sha256(current.read_bytes()).hexdigest(),
                                                     "chamfer_uuid": saved["feature_id"],
@@ -131,8 +129,10 @@ def main():
         assert chamfer["feature_id"] == facts["chamfer_uuid"]
         base = chamfer["edge"]["feature_id"]
         current = peer_root / "height.fcad"
-        run("edit-extrude", source, "--feature", base, "--expect-version", catalog["content_version"],
-            "--distance-mm", 9.25, "-o", current, "--json")
+        request = peer_root / "height.json"
+        request.write_text(json.dumps({"request_version": 1, "changes": [{"object": base, "slot": {"kind": "extrude_distance"}, "value": 9.25, "unit": "mm"}]}))
+        run("edit", source, "--expect-version", catalog["content_version"], "--request", request,
+            "-o", current, "--json")
         catalog = inspect(current)
         sketch = next(s for s in catalog["sketches"] if s["editable"] and s.get("vertices"))
         vertices = sketch["vertices"]
@@ -149,9 +149,9 @@ def main():
         def distance_edit(current, distance, name):
             catalog = inspect(current)
             request = peer_root / f"{name}.json"
-            request.write_text(json.dumps({"request_version": 1, "distance_mm": distance}))
+            request.write_text(json.dumps({"request_version": 1, "changes": [{"object": facts["chamfer_uuid"], "slot": {"kind": "chamfer_distance"}, "value": distance, "unit": "mm"}]}))
             out = peer_root / f"{name}.fcad"
-            run("edit-chamfer-distance", current, "--feature", facts["chamfer_uuid"], "--expect-version",
+            run("edit", current, "--expect-version",
                 catalog["content_version"], "--request", request, "-o", out, "--json")
             return out
 

@@ -237,7 +237,7 @@ fn gate(name: &str) {
         let request = crate::edits::tests::expression_request(
             &base.to_string(),
             "extrude_distance",
-            &"9.25",
+            "9.25",
             "mm",
         );
         cli(&[
@@ -873,7 +873,7 @@ fn compare_gui(root: &Path) {
         let request = crate::edits::tests::expression_request(
             &target.base_feature.to_string(),
             "extrude_distance",
-            &"9.25",
+            "9.25",
             "mm",
         );
         cli(&[

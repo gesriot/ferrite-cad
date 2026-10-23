@@ -409,7 +409,7 @@ fn gate(count: usize, height: bool, name: &str) {
             let request = crate::edits::tests::expression_request(
                 &selected(&opened, 0).base_feature.to_string(),
                 "extrude_distance",
-                &"15.25",
+                "15.25",
                 "mm",
             );
             cli(&[
@@ -830,7 +830,7 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
         let request = crate::edits::tests::expression_request(
             &selected(&reading, 0).base_feature.to_string(),
             "extrude_distance",
-            &"15.25",
+            "15.25",
             "mm",
         );
         cli(&[

@@ -64,16 +64,15 @@ impl Window {
         if !offer.apply {
             return false;
         }
-        let Some((feature, millimetres, expected)) = self.edits.apply_request() else {
+        let Some(request) = self.edits.apply_request() else {
             return false;
         };
         let drawn = self.drawn;
         self.accept(move |ticket, cancel, tx| match drawn {
             Drawn::Native => spawn_apply(
-                expected,
+                request.expected,
                 ticket,
-                feature,
-                millimetres,
+                request.changes,
                 cancel.clone(),
                 move |v| {
                     tx.send(v).expect("edit");
@@ -84,14 +83,7 @@ impl Window {
                     let ticket = ticket;
                     let expected = ticket.source().version();
                     ticket.edit(
-                        vec![
-                            ferritecad_document::ExpressionChange::constant(
-                                feature,
-                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                millimetres,
-                            )
-                            .expect("test value"),
-                        ],
+                        request.changes,
                         expected,
                         &mut MockKernel::new(),
                         |_, _| {
@@ -1268,13 +1260,11 @@ fn a_draft_made_on_another_version_comes_back_held_and_is_never_applied() {
 #[test]
 fn the_same_control_in_two_tabs_shares_no_focus_or_text() {
     let (_root, path, reading) = crate::fillets::tests::plate();
-    let feature = reading
-        .expression_slots
-        .iter()
-        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .object;
+    let feature = ferritecad_fixtures::expression_slot(
+        &reading,
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
     let mut a = crate::edits::Edits::default();
     let mut b = crate::edits::Edits::default();
     for edits in [&mut a, &mut b] {
@@ -1670,13 +1660,11 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
         super::super::checkpoints::ids_and_refs(&b_file),
     );
     let a_reading = read_extrude_source(&a_file).expect("a");
-    let feature = a_reading
-        .expression_slots
-        .iter()
-        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .object;
+    let feature = ferritecad_fixtures::expression_slot(
+        &a_reading,
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
     let sketch = a_reading
         .sketches
         .iter()
@@ -1745,7 +1733,7 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
         let request = crate::edits::tests::expression_request(
             &feature.to_string(),
             "extrude_distance",
-            &"9.5",
+            "9.5",
             "mm",
         );
         cli(&[
@@ -2073,16 +2061,14 @@ fn compare_drafts_with_controls(root: &Path) {
             let applied = work.path().join("a-30.fcad");
             {
                 let request = crate::edits::tests::expression_request(
-                    &reading
-                        .expression_slots
-                        .iter()
-                        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                        .cloned()
-                        .collect::<Vec<_>>()[0]
-                        .object
-                        .to_string(),
+                    &ferritecad_fixtures::expression_slot(
+                        &reading,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    )
+                    .object
+                    .to_string(),
                     "extrude_distance",
-                    &"30",
+                    "30",
                     "mm",
                 );
                 cli(&[

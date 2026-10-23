@@ -63,6 +63,12 @@ pub(crate) fn saved_of(reading: &ExtrudeEditSource) -> ferritecad_document::Save
         .sketches
         .iter()
         .find_map(|s| s.chamfer.as_ref())
+        .or_else(|| {
+            reading
+                .constraint_sketches
+                .iter()
+                .find_map(|s| s.chamfer.as_ref())
+        })
         .expect("saved Chamfer")
         .clone()
 }
@@ -338,7 +344,7 @@ fn distance_dirty_discovery_copy_reason_refusal_retains_text_and_acceptance_clos
     let mut s = opened(&path);
     let chosen = saved_of(&reading);
     assert!(
-        !crate::refuse_unsaved_distance_copy(&mut s),
+        !crate::numeric::refuse_unsaved_copy(&mut s),
         "a clean copy is offered"
     );
     let (tx, rx) = std::sync::mpsc::channel();
@@ -461,7 +467,7 @@ fn distance_dirty_discovery_copy_reason_refusal_retains_text_and_acceptance_clos
     assert!(e.take_distance_request().is_none(), "dirty copy");
     assert!(painted(&frame(&ctx, e, false), "unsaved changes"));
     // The handler refuses it again before any dialog, in words.
-    assert!(crate::refuse_unsaved_distance_copy(&mut s));
+    assert!(crate::numeric::refuse_unsaved_copy(&mut s));
     assert!(s.status.contains("unsaved changes"), "{}", s.status);
     e.set_outcome("Could not apply the change: Chamfer UUID solved bound");
     assert!(painted(&frame(&ctx, e, false), "Chamfer UUID solved bound"));

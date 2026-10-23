@@ -727,14 +727,9 @@ mod old_v1 {
         pub saved: Option<Saved>,
     }
     #[derive(Deserialize)]
-    pub struct BaseHeight {
-        pub tools: Vec<Tool>,
-    }
-    #[derive(Deserialize)]
     pub struct Feature {
         pub name: Option<String>,
         pub circular_cut_edit: CircularCutEdit,
-        pub base_height_edit: Option<BaseHeight>,
     }
     #[derive(Deserialize)]
     pub struct History {
@@ -814,7 +809,7 @@ fn native_new_consumer_routes_add_edit_height_and_sketch_through_v2() {
         EDIT,
         0,
     );
-    // Height, from `base_height_edit_v2`.
+    // Height, from its expression slot.
     let grown = root.path().join("v2-grown.fcad");
     height(&source, &grown, 14.25, 0);
     // Base Sketch coordinates, from `cut_history_v2` and the vertices.
@@ -967,7 +962,6 @@ fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
                 .contains("circular_cut_edit_v2")
         );
     }
-    assert!(old.features.iter().all(|f| f.base_height_edit.is_none()));
     assert!(old.sketches.iter().all(|s| s.cut_history.is_none()));
     // The new form describes the same history and every operation on it.
     assert_eq!(json["bodies"][0]["cut_edit_v2"]["available"], json!(true));

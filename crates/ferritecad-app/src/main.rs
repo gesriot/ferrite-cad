@@ -41,6 +41,7 @@ mod last_tabs;
 #[cfg(target_os = "macos")]
 mod macos_quit;
 mod model_tree;
+mod numeric;
 mod recoveries;
 mod restores;
 mod sessions;
@@ -1468,17 +1469,6 @@ fn refuse_unsaved_chamfer_copy(sessions: &mut sessions::Sessions) -> bool {
     if sessions.dirty() {
         sessions.status = "Saving a Chamfer copy is unavailable while the document has unsaved \
                            changes: Save or Undo them first, or use Add chamfer."
-            .to_owned();
-    }
-    sessions.dirty()
-}
-
-/// §30H: the distance copy reads a file and writes a new one; with unsaved
-/// changes that would drop them, so it is refused in words before any dialog.
-fn refuse_unsaved_distance_copy(sessions: &mut sessions::Sessions) -> bool {
-    if sessions.dirty() {
-        sessions.status = "Saving a distance copy is unavailable while the document has unsaved \
-                           changes: Save or Undo them first."
             .to_owned();
     }
     sessions.dirty()
@@ -4364,8 +4354,21 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         match chosen.edit {
                             ferritecad_ui::EditChoice::Begin => self.begin_edit(),
-                            ferritecad_ui::EditChoice::Apply => self.apply_height(),
-                            ferritecad_ui::EditChoice::Save => self.ask_where_to_edit(),
+                            ferritecad_ui::EditChoice::Apply => {
+                                if let Some(request) = self.edits.apply_request() {
+                                    self.apply_expressions(request.expected, request.changes);
+                                }
+                            }
+                            ferritecad_ui::EditChoice::Save => {
+                                if let Some(request) = self.edits.request(PathBuf::new()) {
+                                    self.ask_where_to_edit(
+                                        numeric::Form::Height,
+                                        request.source,
+                                        request.expected,
+                                        request.changes,
+                                    );
+                                }
+                            }
                             ferritecad_ui::EditChoice::Cancel => {
                                 self.edits.cancel();
                                 self.input.request_redraw();
@@ -4389,7 +4392,7 @@ impl ApplicationHandler<AppEvent> for App {
                             self.apply_annulus(request);
                         }
                         if let Some(request) = self.creates.sketch.take_apply_angle_request() {
-                            self.apply_angle(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_edit_request() {
                             self.ask_where_to_edit_sketch(request);
@@ -4401,7 +4404,12 @@ impl ApplicationHandler<AppEvent> for App {
                             self.ask_where_to_edit_annulus(request);
                         }
                         if let Some(request) = self.creates.sketch.take_angle_edit_request() {
-                            self.ask_where_to_edit_revolve_angle(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Angle,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.take_cut_request() {
                             self.ask_where_to_cut(request);
@@ -4419,10 +4427,15 @@ impl ApplicationHandler<AppEvent> for App {
                             self.ask_where_to_fillet(request);
                         }
                         if let Some(request) = self.creates.sketch.take_fillet_radius_request() {
-                            self.ask_where_to_edit_fillet_radius(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Radius,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.fillets.take_apply_request() {
-                            self.apply_fillet_radius(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.fillets.take_add_request() {
                             self.add_fillet(request);
@@ -4431,10 +4444,15 @@ impl ApplicationHandler<AppEvent> for App {
                             self.ask_where_to_chamfer(request);
                         }
                         if let Some(request) = self.creates.sketch.take_chamfer_distance_request() {
-                            self.ask_where_to_edit_chamfer_distance(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Distance,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.chamfers.take_apply_request() {
-                            self.apply_chamfer_distance(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.chamfers.take_add_request() {
                             self.add_chamfer(request);
@@ -5644,36 +5662,6 @@ impl App {
         )
     }
 
-    /// Apply the height typed in the form to the open document. No file dialog: the
-    /// change is accepted into the session when its picture is ready, and the file
-    /// on disk is written only by Save.
-    fn apply_height(&mut self) {
-        if !self.settled() || !self.sessions.takes_form_apply() {
-            return;
-        }
-        let Some((feature, distance_mm, expected)) = self.edits.apply_request() else {
-            self.input.request_redraw();
-            return;
-        };
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply(
-                expected,
-                ticket,
-                feature,
-                distance_mm,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
     /// Apply the vertices of the saved Sketch form to the open document. No file
     /// dialog; the same session step and two-phase scene as Apply height. A refusal,
     /// a cancellation or a stale form leaves the draft where it is.
@@ -5802,37 +5790,6 @@ impl App {
         self.input.request_redraw();
     }
 
-    /// Apply the saved partial Revolve angle to the accepted document, no dialog.
-    fn apply_angle(&mut self, request: ferritecad_jobs::EditRequest) {
-        if !can_apply_angle(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply_angle(
-                ticket,
-                request.changes[0].object,
-                request.changes[0].expression.value(),
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
     /// Apply one existing circular Cut to the accepted snapshot, without a dialog.
     fn apply_cut(&mut self, request: ferritecad_jobs::EditCircularCutRequest) {
         if !can_apply_cut(
@@ -5926,36 +5883,6 @@ impl App {
         self.input.request_redraw();
     }
 
-    fn apply_fillet_radius(&mut self, request: ferritecad_jobs::EditRequest) {
-        if !can_apply_fillet_radius(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply_fillet_radius(
-                ticket,
-                request.changes[0].object,
-                request.changes[0].expression.value(),
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
     /// §30K: add one Chamfer to the accepted snapshot, without a dialog.
     fn add_chamfer(&mut self, request: ferritecad_jobs::EdgeChamferRequest) {
         if !can_add_chamfer(
@@ -5974,36 +5901,6 @@ impl App {
                 ticket,
                 request.body,
                 request.chamfer,
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
-    fn apply_chamfer_distance(&mut self, request: ferritecad_jobs::EditRequest) {
-        if !can_apply_chamfer_distance(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply_chamfer_distance(
-                ticket,
-                request.changes[0].object,
-                request.changes[0].expression.value(),
                 request.expected,
                 cancel.clone(),
                 move |result| {
@@ -6268,36 +6165,6 @@ impl App {
         self.input.request_redraw();
     }
 
-    fn ask_where_to_edit_revolve_angle(&mut self, mut request: ferritecad_jobs::EditRequest) {
-        if self.edits.running() {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("edited-revolve.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_revolve_angle(request, move |request, generation, cancel| {
-                edits::spawn_revolve_angle_edit(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::RevolveAngleEdited { generation, result });
-                })
-            });
-        self.input.request_redraw();
-    }
-
     fn ask_where_to_edit_annulus(&mut self, mut request: ferritecad_jobs::EditAnnulusRequest) {
         if self.edits.running() {
             return;
@@ -6396,44 +6263,6 @@ impl App {
         self.input.request_redraw();
     }
 
-    fn ask_where_to_edit_fillet_radius(&mut self, mut request: ferritecad_jobs::EditRequest) {
-        if self.sessions.dirty() {
-            self.sessions.status = "Saving a radius copy is unavailable while the document has unsaved changes: Save or Undo them first.".to_owned();
-            self.input.request_redraw();
-            return;
-        }
-        if self.edits.running()
-            || self.sessions.busy()
-            || !document_io_idle(&self.loads, &self.exports)
-        {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("edited-fillet.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_fillet_radius(request, move |request, generation, cancel| {
-                edits::spawn_fillet_radius(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::FilletRadiusEdited { generation, result });
-                })
-            });
-        self.input.request_redraw();
-    }
-
     fn ask_where_to_chamfer(&mut self, mut request: ferritecad_jobs::EdgeChamferRequest) {
         if refuse_unsaved_chamfer_copy(&mut self.sessions) {
             self.input.request_redraw();
@@ -6468,44 +6297,6 @@ impl App {
         self.input.request_redraw();
     }
 
-    fn ask_where_to_edit_chamfer_distance(&mut self, mut request: ferritecad_jobs::EditRequest) {
-        if refuse_unsaved_distance_copy(&mut self.sessions) {
-            self.input.request_redraw();
-            return;
-        }
-        if self.edits.running()
-            || self.sessions.busy()
-            || !document_io_idle(&self.loads, &self.exports)
-        {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("edited-chamfer.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_chamfer_distance(request, move |request, generation, cancel| {
-                edits::spawn_chamfer_distance(request, cancel, move |result| {
-                    let _ =
-                        proxy.send_event(AppEvent::ChamferDistanceEdited { generation, result });
-                })
-            });
-        self.input.request_redraw();
-    }
-
     fn ask_where_to_edit_cut(&mut self, mut request: ferritecad_jobs::EditCircularCutRequest) {
         if self.sessions.dirty() || self.sessions.busy() || self.edits.running() {
             return;
@@ -6531,43 +6322,6 @@ impl App {
             .start_cut_edit(request, move |request, generation, cancel| {
                 edits::spawn_cut_edit(request, cancel, move |result| {
                     let _ = proxy.send_event(AppEvent::CutEdited { generation, result });
-                })
-            });
-        self.input.request_redraw();
-    }
-
-    fn ask_where_to_edit(&mut self) {
-        // The copy workflow opens its output as the document; with unsaved changes
-        // that would drop them (ADR 0005).
-        if self.sessions.dirty() || self.sessions.busy() {
-            self.input.request_redraw();
-            return;
-        }
-        let Some(mut request) = self.edits.request(PathBuf::new()) else {
-            self.input.request_redraw();
-            return;
-        };
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("edited.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start(request, move |request, generation, cancel| {
-                edits::spawn_edit(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::Edited { generation, result });
                 })
             });
         self.input.request_redraw();
@@ -20754,13 +20508,11 @@ mod tests {
 
         // Unsaved changes: the copy workflow goes, with the reason.
         let (tx, rx) = std::sync::mpsc::channel();
-        let feature = reading
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-            .cloned()
-            .collect::<Vec<_>>()[0]
-            .object;
+        let feature = ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::ExtrudeDistance,
+        )
+        .object;
         let generation = sessions
             .begin_apply(|ticket, _, _| {
                 std::thread::spawn(move || {

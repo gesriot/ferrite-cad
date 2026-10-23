@@ -192,7 +192,7 @@ fn native_the_height_of_a_chamfered_plate_changes_at_every_corner_in_three_order
 
             // The Chamfer's own distance edit still works on the edited plate,
             // and its bound does not depend on the height.
-            let (_, version, catalog) = base_and_version(&shorter);
+            let (_, version, _) = base_and_version(&shorter);
             let max = D - 0.01;
             assert_eq!(max, D - 0.01);
             let request = f.root.path().join(format!("{tag}-d.json"));
@@ -310,14 +310,14 @@ fn native_height_refusals_races_and_guards_are_atomic_under_a_chamfer() {
             "the Chamfer itself",
             id.to_string(),
             "9",
-            "unsupported",
+            "input",
             Some(id.to_string()),
         ),
         (
             "the Sketch",
             sketch.clone(),
             "9",
-            "unsupported",
+            "input",
             Some(sketch.clone()),
         ),
         ("a foreign UUID", foreign.clone(), "9", "input", None),
@@ -456,7 +456,7 @@ fn native_chamfer_height_preserves_preexisting_unresolved_references() {
         );
         let (base, version, _) = base_and_version(&f.source);
         let before = std::fs::read(&f.source).expect("bytes");
-        let names = entries(f.root.path());
+
         let output = f.root.path().join("height.fcad");
         let answer = reply(
             raise(&f.source, &base, "9.5", &version, &output)

@@ -203,7 +203,7 @@ Extract it from this file and run it:
 ```sh
 python3 - <<'EXTRACT'
 from pathlib import Path
-text = Path("docs/edit-fillet-radius.md").read_text(encoding="utf-8")
+text = Path("docs/numeric-fillet-radius.md").read_text(encoding="utf-8")
 code = text.split("# FCAD_28B_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
 Path("ferrite-28b-recipe.py").write_text(code, encoding="utf-8")
 EXTRACT
@@ -339,9 +339,6 @@ def edited(source, version, r, name, previous):
     out = root / name
     before = source.read_bytes()
     result = run(["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"])["result"]
-    pass
-    pass
-    pass
     assert source.read_bytes() == before
     moved = allowlist(source, out, feature)
     assert tables(out)["topology_refs"] == refs, "a name moved"

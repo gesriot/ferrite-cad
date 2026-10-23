@@ -190,7 +190,7 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
         let source = d.path().join(format!("{name}-137.5.fcad"));
         request_v2(&input, &points, angle(137.5));
         reply(create(&input, &source).output().expect("create"), 0);
-        let (feature, _, row) = target(&source);
+        let (feature, _, _) = target(&source);
 
         let saved_refs = refs(&source);
         let first_payload = revolve_payload(&source);
@@ -446,7 +446,7 @@ fn native_revolve_angle_edit_refusals_preserve_every_file() {
         assert_eq!(entries(d.path()), names, "{why}: nothing written");
         (
             v["error"]["kind"].as_str().expect("kind").to_owned(),
-            v["error"]["message"].as_str().expect("message").to_owned(),
+            v["error"].to_string(),
         )
     };
     // Identities: unknown, and objects that are not a Revolve.

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
 use ferritecad_kernel::{FaceSurface, GeometryKernel, OperationContext, TessellationParams};
 use serde_json::{Value, json};
@@ -1028,18 +1030,21 @@ fn native_circle_edit_moves_and_resizes_only_the_named_circle() {
         .as_str()
         .expect("feature")
         .to_owned();
-    let r = cli()
-        .arg("edit")
-        .arg(&both)
-        .arg("--feature")
-        .arg(&feature)
-        .arg("--distance-mm")
-        .arg("25")
-        .arg("-o")
-        .arg(&taller)
-        .arg("--json")
-        .output()
-        .expect("edit");
+    let r = transaction::constant(
+        &both,
+        &Document::open_read_only(&both)
+            .expect("document")
+            .content_version()
+            .expect("version")
+            .to_string(),
+        &feature,
+        "extrude_distance",
+        "25",
+        "mm",
+        &taller,
+    )
+    .output()
+    .expect("edit");
     assert!(r.status.success(), "{r:?}");
     let grown = stored(&taller);
     assert_eq!(grown.curve, original.curve, "the circle keeps its UUID");

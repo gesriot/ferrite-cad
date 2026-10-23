@@ -447,13 +447,11 @@ fn recovery_child_entry() {
                     .expect("open"),
             );
             let opened = read_extrude_source(&file).expect("reading");
-            let feature = opened
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object;
+            let feature = ferritecad_fixtures::expression_slot(
+                &opened,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object;
             // Height (OCCT), constraints (PlaneGCS), Add Fillet (OCCT), Undo, Redo.
             apply_native(&mut s, feature, 21.5);
             let current = s.export_path().expect("current");
@@ -764,16 +762,14 @@ fn compare_gui(root: &Path) {
     let peer = work.path().join("peer.fcad");
     {
         let request = crate::edits::tests::expression_request(
-            &opened
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object
-                .to_string(),
+            &ferritecad_fixtures::expression_slot(
+                &opened,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object
+            .to_string(),
             "extrude_distance",
-            &"21.5",
+            "21.5",
             "mm",
         );
         cli(&[
@@ -960,14 +956,11 @@ fn native_recovery_window_scenario_on_session_files_passes_the_comparator_and_it
         crate::sessions::test_open::open_in(private.path(), &plate, HistoryLimits::default())
             .expect("open"),
     );
-    let feature = read_extrude_source(&plate)
-        .expect("reading")
-        .expression_slots
-        .iter()
-        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .object;
+    let feature = ferritecad_fixtures::expression_slot(
+        &read_extrude_source(&plate).expect("reading"),
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .object;
     apply_native(&mut a, feature, 21.5);
     written(&a);
     let alias = a.suggestion().expect("alias");

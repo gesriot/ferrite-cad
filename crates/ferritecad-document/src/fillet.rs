@@ -488,7 +488,7 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
     if fillets.len() > 1 {
         return Err(unsupported(format!(
             "this Body ends in Fillet {} after {} Fillets in all (§28G, §28L); only the radius \
-             of any Fillet (edit-fillet-radius, §28H), the plate's height (edit-extrude, \
+             of any Fillet (edit with fillet_radius, §28H), the plate's height (edit with extrude_distance, \
              §28I), the base Sketch's Line coordinates (edit-sketch-copy, §28J) and its Line \
              constraints (edit-sketch-constraints-copy, §28K) can be edited, and a Fillet added \
              on another corner (fillet-edge-copy) while fewer than {MAX_PLATE_FILLETS} are \
@@ -498,8 +498,8 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
         )));
     }
     Err(unsupported(format!(
-        "this Body ends in Fillet {} (§28A); only its radius (edit-fillet-radius, §28B), the \
-         rounded plate's height (edit-extrude, §28C), its base Sketch's coordinates \
+        "this Body ends in Fillet {} (§28A); only its radius (edit with fillet_radius, §28B), the \
+         rounded plate's height (edit with extrude_distance, §28C), its base Sketch's coordinates \
          (edit-sketch-copy, §28D) and that Sketch's Line constraints \
          (edit-sketch-constraints-copy, §28E) can be edited, and another Fillet added on \
          another corner (fillet-edge-copy, §28G, up to four, §28L). Editing the rest of a \

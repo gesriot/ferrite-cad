@@ -33,6 +33,27 @@ impl ExpressionSlot {
     }
 }
 
+impl std::fmt::Display for ExpressionSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (kind, constraint) = match self {
+            Self::ExtrudeDistance => ("extrude_distance", None),
+            Self::FilletRadius => ("fillet_radius", None),
+            Self::ChamferDistance => ("chamfer_distance", None),
+            Self::RevolveAngle => ("revolve_angle", None),
+            Self::Distance { constraint } => ("distance", Some(constraint)),
+            Self::Radius { constraint } => ("radius", Some(constraint)),
+            Self::DirectedAngle { constraint } => ("directed_angle", Some(constraint)),
+            Self::FixedX { constraint } => ("fixed_x", Some(constraint)),
+            Self::FixedY { constraint } => ("fixed_y", Some(constraint)),
+        };
+        f.write_str(kind)?;
+        if let Some(id) = constraint {
+            write!(f, " ({id})")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpressionChange {
     pub object: ObjectId,
@@ -131,7 +152,7 @@ fn set_expression(
     });
     if !found {
         return Err(CadError::input(format!(
-            "object has no expression slot {slot:?}"
+            "object has no expression slot {slot}"
         )));
     }
     Ok(())
@@ -173,36 +194,38 @@ impl Document {
     }
 
     /// Apply in request order and write each changed object once in one SQLite transaction.
-    pub fn write_expression_changes(&mut self, changes: &[ExpressionChange]) -> Result<()> {
-        let parameters = parameter_dependents(self)?;
-        let mut changed = BTreeMap::<ObjectId, ObjectRecord>::new();
-        for change in changes {
-            if parameters.contains(&change.object) {
-                return Err(CadError::unsupported(parameter_reason(change.object)));
-            }
-            if let std::collections::btree_map::Entry::Vacant(entry) = changed.entry(change.object)
-            {
-                entry.insert(
-                    self.object(change.object)?.ok_or_else(|| {
+    pub fn write_expression_changes(
+        &mut self,
+        changes: &[ExpressionChange],
+    ) -> Result<Vec<StableEntityId>> {
+        self.write_reading(|document, writer| {
+            let history = crate::cut_edit::saved_history(document, &document.objects()?).ok();
+            let parameters = parameter_dependents(document)?;
+            let mut changed = BTreeMap::<ObjectId, ObjectRecord>::new();
+            for change in changes {
+                if parameters.contains(&change.object) {
+                    return Err(CadError::unsupported(parameter_reason(change.object)));
+                }
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    changed.entry(change.object)
+                {
+                    entry.insert(document.object(change.object)?.ok_or_else(|| {
                         CadError::input(format!("unknown object {}", change.object))
-                    })?,
-                );
+                    })?);
+                }
+                let object = changed
+                    .get_mut(&change.object)
+                    .expect("changed object was inserted");
+                set_expression(&mut object.payload, change.slot, change.expression.clone())
+                    .map_err(|source| CadError::Context {
+                        kind: source.kind(),
+                        message: format!("cannot edit object {} ({})", change.object, change.slot),
+                        source: Box::new(source),
+                    })?;
             }
-            let object = changed
-                .get_mut(&change.object)
-                .expect("changed object was inserted");
-            set_expression(&mut object.payload, change.slot, change.expression.clone()).map_err(
-                |source| CadError::Context {
-                    kind: source.kind(),
-                    message: format!("cannot edit object {} ({:?})", change.object, change.slot),
-                    source: Box::new(source),
-                },
-            )?;
-        }
-        for object in changed.values() {
-            object.payload.validate()?;
-        }
-        self.write(|writer| {
+            for object in changed.values() {
+                object.payload.validate()?;
+            }
             for object in changed.values() {
                 writer.put_object(
                     object.id,
@@ -212,7 +235,14 @@ impl Document {
                     &object.payload,
                 )?;
             }
-            Ok(())
+            let mut minted = Vec::new();
+            if let Some(history) = history {
+                for reference in history.missing_output_references(document)? {
+                    writer.put_topology_ref(&reference)?;
+                    minted.push(reference.id);
+                }
+            }
+            Ok(minted)
         })
     }
 }

@@ -635,7 +635,7 @@ fn native_sketch_refusals_races_and_guards_are_atomic_under_a_chamfer() {
         let kept = std::fs::read(&h.source).expect("bytes");
         let output = h.root.path().join("sketch.fcad");
         ask_rect(&h, BIG);
-        let names = entries(h.root.path());
+
         let answer = reply(
             h.redraw(&h.source, &version, &output)
                 .output()

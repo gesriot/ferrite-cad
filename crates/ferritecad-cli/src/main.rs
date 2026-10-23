@@ -117,7 +117,7 @@ enum Command {
     /// Create two concentric analytic XY circles - a hollow part - with a positive
     /// Blind extrusion from JSON request v1.
     CreateAnnularExtrude(annulus::AnnulusArgs),
-    /// Change one constant Blind extrusion and save a new .fcad of the same model.
+    /// Apply an ordered transaction of expression changes to a new .fcad copy.
     /// Preserves identities; never overwrites source or output. Requires a kernel.
     Edit(edit::EditArgs),
     /// Change saved Line coordinates in a new identity-preserving FCAD copy.
@@ -125,7 +125,7 @@ enum Command {
     /// Change a saved Circle's centre and radius in a new identity-preserving FCAD copy.
     EditCircle(edit_circle::EditCircleArgs),
     /// Change a saved annular profile's shared centre and both radii in a new
-    /// identity-preserving FCAD copy. Height is unchanged; use edit-extrude.
+    /// identity-preserving FCAD copy. Height is unchanged; use edit with extrude_distance.
     EditAnnular(edit_annular::EditAnnularArgs),
     /// Add/remove persisted Line H/V constraints, solving and publishing a new FCAD copy.
     EditSketchConstraintsCopy(edit_constraints::EditConstraintsArgs),
@@ -135,19 +135,13 @@ enum Command {
     /// Change a saved circular Cut's tool centre, radius and depth in a new
     /// identity-preserving FCAD copy. The history and every UUID are kept.
     EditCircularCut(edit_cut::EditCutArgs),
-    /// Change the stated angle of a saved partial Revolve in a new
-    /// identity-preserving FCAD copy. Profile, axis and direction are kept.
     /// Round one vertical edge of a saved rectangular plate to a constant
     /// radius, publishing a new FCAD copy whose Body ends in a named Fillet.
     FilletEdgeCopy(fillet::FilletArgs),
-    /// Change the radius of the saved Fillet in a new identity-preserving
-    /// FCAD copy. The edge, every UUID and every name are kept.
     /// Cut one vertical edge of a saved rectangular plate away at one equal
     /// distance (millimetres along each of its two faces), publishing a new
     /// FCAD copy whose Body ends in a named Chamfer.
     ChamferEdgeCopy(chamfer::ChamferArgs),
-    /// Change the distance of the saved Chamfer in a new identity-preserving
-    /// FCAD copy. The edge, every UUID and every name are kept.
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes or a geometry kernel.

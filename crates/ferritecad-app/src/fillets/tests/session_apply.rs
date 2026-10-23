@@ -32,6 +32,7 @@ pub(crate) fn selected(
         .sketches
         .iter()
         .flat_map(|s| &s.fillets)
+        .chain(reading.constraint_sketches.iter().flat_map(|s| &s.fillets))
         .find(|s| s.history_index == index + 1)
         .expect("history UUID")
         .clone()

@@ -174,13 +174,11 @@ impl Window {
         let reading = read_extrude_source(&current).expect("reading");
         assert!(self.edits.begin(&current, &reading));
         self.edits.type_height(
-            reading
-                .expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
-                .cloned()
-                .collect::<Vec<_>>()[0]
-                .object,
+            ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+            )
+            .object,
             text,
         );
     }

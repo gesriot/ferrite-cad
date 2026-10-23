@@ -5933,10 +5933,15 @@ pub(crate) mod tests {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let generation = edits
-                .start_revolve_angle(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_revolve_angle_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
+                .start(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_edit(
+                        r.source,
+                        r.expected,
+                        r.changes,
+                        r.destination,
+                        c,
+                        move |result| tx.send((g, result)).expect("reply"),
+                    )
                 })
                 .expect("worker");
             assert!(

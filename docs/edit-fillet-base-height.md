@@ -2,7 +2,7 @@
 
 [Executed verification and limitations](edit-fillet-base-height-verification.md).
 [The Fillet this keeps](single-edge-fillet.md);
-[its radius edit](edit-fillet-radius.md).
+[its radius edit](numeric-fillet-radius.md).
 
 A person opens a saved rounded plate — the §28A Fillet on one vertical edge —
 changes the plate's Blind height in the existing **Edit extrusion** form, and
@@ -318,11 +318,8 @@ geometry(["fillet-edge-copy", plate, "--body", body["body_id"], "--expect-versio
 # 2. Discovery: the base Extrude under the Fillet, editable, with the Fillet
 #    as context. It is no Cut history.
 catalog = inspect(rounded)
-pass
 (fillet,) = catalog["fillets"]
 base = catalog["features"][0]
-pass
-pass
 context = catalog["sketches"][0]["fillet_base"]
 assert context["fillet_feature_id"] == fillet["feature_id"], context
 assert context["edge"] == chosen["edge"] and context["corner_mm"] == corner, context
@@ -333,7 +330,6 @@ def raised(source, version, h, name):
     out = root / name
     before = source.read_bytes()
     result = run(edit_args(source, base["feature_id"], h, version, out))["result"]
-    pass
     assert result["document_id"] == catalog["document_id"], result
     assert source.read_bytes() == before
     moved = allowlist(source, out, base["feature_id"])
@@ -341,7 +337,6 @@ def raised(source, version, h, name):
     assert tables(out)["topology_refs"] == refs, "a name moved"
     after = inspect(out)
     (row,) = [f for f in after["features"] if f["feature_id"] == base["feature_id"]]
-    pass
     (again,) = after["fillets"]
     assert again["feature_id"] == fillet["feature_id"] and again["expression"]["value"] == r, again
     assert again["edge"] == fillet["edge"], again

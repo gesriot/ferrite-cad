@@ -791,17 +791,13 @@ fn chamfer_discovery_and_protocol_without_native() {
     assert_eq!(saved.len(), 1);
     let row = &saved[0];
     assert_eq!(row["name"], "Chamfer");
-    assert_eq!(
-        f.catalog["sketches"][0]["chamfer_base"]["corner_mm"],
-        json!([X0 + W, Y0])
-    );
-    assert_eq!(row["distance_mm"], 2.375);
-    assert_eq!(row["distance_unit"], "mm");
-    let edit = &row["distance_edit"];
-    assert_eq!(edit["available"], true, "{edit}");
-    assert_eq!(edit["request_versions"], json!([1]));
-    assert_eq!(edit["min_distance_mm"], 0.001);
-    assert_eq!(edit["max_distance_mm"], D - 0.01);
+    let context = c.catalog["sketches"][0]["chamfer_base"].clone();
+    assert_eq!(context["corner_mm"], json!([X0 + W, Y0]));
+    assert_eq!(row["expression"]["value"], 2.375);
+    let slot = crate::transaction::slot(&c.catalog, &row["feature_id"], "chamfer_distance");
+    assert!(slot["refusal"].is_null());
+    assert_eq!(slot["display_unit"], "mm");
+    assert_eq!(slot["expression"], row["expression"]);
     let feature = row["feature_id"].as_str().expect("feature").to_owned();
     assert_eq!(c.catalog["bodies"][0]["chamfer_edge"]["available"], false);
     assert!(
@@ -815,10 +811,13 @@ fn chamfer_discovery_and_protocol_without_native() {
     // context on the base Extrude.
 
     let base = &c.catalog["features"][0];
-    assert_eq!(base["editable"], true, "{base}");
-    assert_eq!(base["chamfer_base"]["chamfer_feature_id"], feature);
-    assert_eq!(base["chamfer_base"]["distance_mm"], row["distance_mm"]);
-    assert_eq!(base["chamfer_base"]["corner_mm"], row["corner_mm"]);
+    assert!(
+        crate::transaction::slot(&c.catalog, &base["feature_id"], "extrude_distance")["refusal"]
+            .is_null()
+    );
+    assert_eq!(context["chamfer_feature_id"], feature);
+    assert_eq!(context["distance_mm"], row["expression"]["value"]);
+    assert_eq!(context["corner_mm"], json!([X0 + W, Y0]));
     assert!(base["fillet_base"].is_null() && base["fillet_history"].is_null());
     // The other editors keep saying so by name: none offers an edit.
     assert_eq!(c.catalog["bodies"][0]["fillet_edge"]["available"], false);
@@ -829,10 +828,10 @@ fn chamfer_discovery_and_protocol_without_native() {
     );
     for sketch in c.catalog["sketches"].as_array().expect("sketches") {
         assert_eq!(sketch["editable"], true, "{sketch}");
-        assert_eq!(sketch["chamfer_base"], base["chamfer_base"], "{sketch}");
+        assert_eq!(sketch["chamfer_base"], context, "{sketch}");
         assert_eq!(sketch["constraint_edit"]["available"], true, "{sketch}");
         assert_eq!(
-            sketch["constraint_edit"]["chamfer_base"], base["chamfer_base"],
+            sketch["constraint_edit"]["chamfer_base"], context,
             "{sketch}"
         );
     }
@@ -850,8 +849,8 @@ fn chamfer_discovery_and_protocol_without_native() {
         ),
         (
             "request_version 2",
-            json!({"request_version":2,"distance_mm":3.0}),
-            "unsupported",
+            json!({"request_version":2,"changes":[]}),
+            "input",
         ),
         ("no distance", json!({"request_version":1}), "input"),
         ("an array", json!([1, 3.0]), "input"),
@@ -1116,7 +1115,7 @@ fn native_the_distance_edit_changes_one_number_and_keeps_every_identity() {
                 .as_str()
                 .expect("version")
                 .to_owned();
-            let v = reply(
+            reply(
                 edit_from(source, &id.to_string(), &version, &request, &out)
                     .output()
                     .expect("process"),
@@ -1710,8 +1709,8 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         .expect("branched");
     });
     refused_everywhere("two Chamfers over one plate", &branch, 2);
-    // Geometry failures can be repaired. A missing joint and a forked history
-    // still fail the existing edit preflight.
+    // Repairable geometry clears its failures; an unchanged missing joint
+    // can remain failed, while a forked history fails document validation.
     for (path, repairable) in [
         (&wide, true),
         (&thin, true),
@@ -1734,6 +1733,14 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         let v = edit_from(path, &id.to_string(), &version, &request, &out)
             .output()
             .expect("process");
+        if path == &branch {
+            let result = reply(v, "edit", 2);
+            assert_eq!(refused(&result), "input");
+            assert!(result.to_string().contains("forked-history"));
+            assert!(!out.exists());
+            assert_eq!(std::fs::read(path).expect("source bytes"), before);
+            continue;
+        }
         let result = reply(v, "edit", 0);
         if repairable {
             assert_eq!(result["result"]["rebuild"]["failed"], json!([]));

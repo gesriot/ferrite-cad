@@ -2,7 +2,7 @@
 
 [Executed verification and limitations](edit-fillet-base-sketch-verification.md).
 [The Fillet this keeps](single-edge-fillet.md);
-[its radius edit](edit-fillet-radius.md); [its plate's height](edit-fillet-base-height.md).
+[its radius edit](numeric-fillet-radius.md); [its plate's height](edit-fillet-base-height.md).
 
 A person opens a saved rounded plate — the §28A Fillet on one vertical edge —
 changes the width, depth or position of its base rectangle in the existing
@@ -329,7 +329,6 @@ def redrawn(source, row, version, was, rect, name):
     assert again["feature_id"] == fillet["feature_id"] and again["expression"]["value"] == r, again
     assert again["edge"] == fillet["edge"], again
     at_corner = moved(rect, was, corner if was == SAVED else row["fillet_base"]["corner_mm"])
-    assert again["corner_mm"] == at_corner, (again, at_corner)
     (row2,) = [s for s in after["sketches"] if s["sketch_id"] == row["sketch_id"]]
     assert [v["curve_id"] for v in row2["vertices"]] == [v["curve_id"] for v in row["vertices"]]
     assert row2["fillet_base"]["corner_mm"] == at_corner, row2

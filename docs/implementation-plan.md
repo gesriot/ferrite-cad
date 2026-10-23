@@ -3859,7 +3859,7 @@ implementation:
 - Nothing new is keyed: `eval.fillet.named` already holds the radius bits,
   so the Fillet misses and the plate is reused.
 
-[Contract and executable recipe](edit-fillet-radius.md),
+[Contract and executable recipe](numeric-fillet-radius.md),
 [verification](edit-fillet-radius-verification.md).
 
 **§28C — change the height of a rounded plate, in a new copy.** The plate
