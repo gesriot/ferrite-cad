@@ -7,6 +7,9 @@ use ferritecad_jobs::EditRequest;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Form {
+    Cut,
+    Fillet,
+    Chamfer,
     Height,
     Angle,
     Radius,
@@ -62,6 +65,9 @@ impl App {
             return;
         };
         let name = match form {
+            Form::Cut => "cut.fcad",
+            Form::Fillet => "fillet.fcad",
+            Form::Chamfer => "chamfer.fcad",
             Form::Sketch => "edited-sketch.fcad",
             Form::Circle => "edited-circle.fcad",
             Form::Annulus => "edited-annulus.fcad",
@@ -100,6 +106,9 @@ impl App {
                     cancel,
                     move |result| {
                         let event = match form {
+                            Form::Cut => AppEvent::SketchEdited { generation, result },
+                            Form::Fillet => AppEvent::SketchEdited { generation, result },
+                            Form::Chamfer => AppEvent::SketchEdited { generation, result },
                             Form::Sketch => AppEvent::SketchEdited { generation, result },
                             Form::Circle => AppEvent::CircleEdited { generation, result },
                             Form::Annulus => AppEvent::AnnulusEdited { generation, result },

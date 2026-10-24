@@ -9,9 +9,12 @@
 //! back: the geometry from the kernel, the solid from the exported bytes, the
 //! identities and the SQL from the file.
 #![allow(clippy::panic)]
+#[path = "support/cut_facts.rs"]
+mod cut_facts;
 #[path = "support/transaction.rs"]
 mod transaction;
-use ferritecad_document::{CutExtent, Document, ObjectPayload, SemanticRole, SketchGeometry};
+use crate::cut_facts::CutDepth;
+use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
 use std::{
@@ -23,7 +26,7 @@ use std::{
 #[path = "support/pipe.rs"]
 mod pipe;
 
-const OP: &str = "edit-circular-cut";
+const OP: &str = "edit";
 const LINEAR_MM: f64 = 0.05;
 const ANGULAR_RAD: f64 = 0.1;
 /// Single-precision STL coordinates land a few parts in 10^7 from the number
@@ -96,41 +99,6 @@ struct Fixture {
     catalog: Value,
 }
 impl Fixture {
-    /// The same six objects, written without a kernel, so discovery and the
-    /// request protocol are testable in a build that has none.
-    ///
-    /// Not a second definition of what a cut is: the plate is written straight
-    /// into a document and the cut is then prepared and written by the same
-    /// `prepare_circular_cut`/`write_circular_cut` the shipped command uses.
-    /// Only the boolean needs a kernel, and nothing here asks for one.
-    fn drawn(depth: f64) -> Self {
-        let root = tempfile::tempdir().expect("directory");
-        let source = root.path().join("плита space.fcad");
-        write_cut_document(&source, depth);
-        let catalog = inspect(&source);
-        // The request file exists from the start, exactly as it does for the
-        // built fixture, so "a refusal left nothing new" is a statement about
-        // refusals rather than about which fixture made the directory.
-        let request = root.path().join("request.json");
-        let curve = catalog["features"]
-            .as_array()
-            .expect("features")
-            .iter()
-            .find_map(|f| f["circular_cut_edit"]["saved"]["tool_curve_id"].as_str())
-            .expect("the tool curve");
-        write(
-            &request,
-            &json!({"request_version":1,"tool_curve_id":curve,"center_mm":CENTER,
-                    "radius_mm":RADIUS,"depth_mm":depth}),
-        );
-        Self {
-            request,
-            root,
-            source,
-            catalog,
-        }
-    }
-
     /// The part and the cut the shipped commands really make.
     fn built(depth: f64) -> Self {
         let root = tempfile::tempdir().expect("directory");
@@ -154,25 +122,23 @@ impl Fixture {
         let catalog = inspect(&plate);
         let cut = root.path().join("saved.fcad");
         let request = root.path().join("request.json");
-        write(
+        cut_facts::write_add(
+            &plate,
             &request,
-            &json!({"request_version":1,"center_mm":CENTER,"radius_mm":RADIUS,
-                    "depth_mm":depth}),
+            cut_facts::CutSpec {
+                center_mm: CENTER,
+                radius_mm: RADIUS,
+                extent: CutDepth::Blind { depth_mm: depth },
+            },
         );
-        let out = cli()
-            .arg("cut-circular-copy")
-            .arg(&plate)
-            .arg("--body")
-            .arg(catalog["bodies"][0]["body_id"].as_str().expect("body"))
-            .arg("--expect-version")
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&cut)
-            .arg("--json")
-            .output()
-            .expect("cut");
+        let out = transaction::command(
+            &plate,
+            catalog["content_version"].as_str().expect("version"),
+            &request,
+            &cut,
+        )
+        .output()
+        .expect("Cut");
         assert!(out.status.success(), "{out:?}");
         // Neither the plate nor the request it was cut with is part of what is
         // being edited; leaving them would make "a refusal added nothing" a
@@ -193,37 +159,46 @@ impl Fixture {
             .as_array()
             .expect("features")
             .iter()
-            .find(|f| f["circular_cut_edit"]["available"] == json!(true))
+            .find(|f| !f["previous_feature_id"].is_null())
             .expect("one editable cut")
     }
-    fn saved(&self) -> &Value {
-        &self.cut()["circular_cut_edit"]["saved"]
+    fn saved(&self) -> cut_facts::CutObservation {
+        cut_facts::observed(&self.source).remove(0)
     }
     fn feature_id(&self) -> &str {
         self.cut()["feature_id"].as_str().expect("feature UUID")
     }
     fn curve_id(&self) -> &str {
-        self.saved()["tool_curve_id"].as_str().expect("curve UUID")
+        self.catalog["sketches"]
+            .as_array()
+            .expect("sketches")
+            .iter()
+            .find(|s| s["sketch_id"] == self.cut()["profile_sketch_id"])
+            .expect("tool")["curves"][0]["curve_id"]
+            .as_str()
+            .expect("curve")
     }
     fn version(&self) -> &str {
         self.catalog["content_version"].as_str().expect("version")
     }
     fn ask(&self, center: [f64; 2], radius: f64, depth: f64) {
-        write(
+        cut_facts::write_edit(
             &self.request,
-            &json!({"request_version":1,"tool_curve_id":self.curve_id(),
-                    "center_mm":center,"radius_mm":radius,"depth_mm":depth}),
+            &self.saved(),
+            cut_facts::CutSpec {
+                center_mm: center,
+                radius_mm: radius,
+                extent: CutDepth::Blind { depth_mm: depth },
+            },
         );
     }
     fn edit(&self, output: &Path) -> Command {
         self.edit_from(&self.source, self.feature_id(), self.version(), output)
     }
-    fn edit_from(&self, source: &Path, feature: &str, version: &str, output: &Path) -> Command {
+    fn edit_from(&self, source: &Path, _feature: &str, version: &str, output: &Path) -> Command {
         let mut c = cli();
         c.arg(OP)
             .arg(source)
-            .arg("--feature")
-            .arg(feature)
             .arg("--expect-version")
             .arg(version)
             .arg("--request")
@@ -239,141 +214,31 @@ impl Fixture {
         self.ask(center, radius, depth);
         let reported = reply(self.edit(&out).output().expect("process"), OP, 0);
         let result = &reported["result"];
-        // The identities are the source's, which is the whole point.
-        assert_eq!(result["feature_id"], json!(self.feature_id()));
-        assert_eq!(result["tool_curve_id"], json!(self.curve_id()));
-        assert_eq!(result["body_id"], self.saved()["body_id"]);
-        assert_eq!(result["sketch_id"], self.saved()["tool_sketch_id"]);
+        assert_eq!(result["content_version"], inspect(&out)["content_version"]);
+        let saved = self.saved();
+        let now = cut_facts::observed(&out).remove(0);
         assert_eq!(
-            result["previous_feature_id"],
-            self.saved()["previous_feature_id"]
+            (
+                saved.feature,
+                saved.tool_sketch,
+                saved.tool_curve,
+                saved.body,
+                saved.previous_feature
+            ),
+            (
+                now.feature,
+                now.tool_sketch,
+                now.tool_curve,
+                now.body,
+                now.previous_feature
+            )
         );
-        assert_eq!(result["leaves_a_floor"], json!(depth < HEIGHT));
+        assert_eq!(
+            (now.center_mm, now.radius_mm, now.extent),
+            (center, radius, CutDepth::Blind { depth_mm: depth })
+        );
         out
     }
-}
-
-/// The plate and the cut in it, written with no kernel anywhere.
-fn write_cut_document(path: &Path, depth: f64) {
-    use ferritecad_document::{
-        Body, CapSide, CircularCut, DatumPlane, Dependency, DependencyRole, EndCondition,
-        EntityKind, Expression, Extrude, Point2, SelectionRule, Sketch, SketchCurve,
-        SolidOperation, TopologyRef, prepare_circular_cut,
-    };
-    use ferritecad_types::{ObjectId, StableEntityId, Transform};
-    let mut d = Document::create(path).expect("document");
-    let [plane, sketch, extrude, body] = std::array::from_fn(|_| ObjectId::new());
-    let corners = [[0.0, 0.0], [WIDTH, 0.0], [WIDTH, DEPTH], [0.0, DEPTH]];
-    let segments: Vec<StableEntityId> = (0..4).map(|_| StableEntityId::new()).collect();
-    d.write(|w| {
-        w.put_object(
-            plane,
-            None,
-            0,
-            Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
-                placement: Transform::IDENTITY,
-            }),
-        )?;
-        let curves = segments
-            .iter()
-            .enumerate()
-            .map(|(i, id)| {
-                Ok(SketchCurve {
-                    id: *id,
-                    construction: false,
-                    geometry: SketchGeometry::Line {
-                        start: Point2::new(corners[i][0], corners[i][1])?,
-                        end: Point2::new(corners[(i + 1) % 4][0], corners[(i + 1) % 4][1])?,
-                    },
-                })
-            })
-            .collect::<ferritecad_types::Result<Vec<_>>>()?;
-        w.put_object(
-            sketch,
-            None,
-            1,
-            Some("Profile"),
-            &ObjectPayload::Sketch(Sketch {
-                plane,
-                curves,
-                constraints: Vec::new(),
-            }),
-        )?;
-        w.put_object(
-            extrude,
-            None,
-            2,
-            Some("Extrude1"),
-            &ObjectPayload::Extrude(Extrude {
-                profile: sketch,
-                end_condition: EndCondition::Blind {
-                    distance: Expression::constant(HEIGHT)?,
-                },
-                reversed: false,
-                operation: SolidOperation::NewBody,
-                previous: None,
-            }),
-        )?;
-        w.put_object(
-            body,
-            None,
-            3,
-            Some("Body"),
-            &ObjectPayload::Body(Body {
-                tip_feature: Some(extrude),
-            }),
-        )?;
-        for (dependent, dependency, role) in [
-            (sketch, plane, DependencyRole::Plane),
-            (extrude, sketch, DependencyRole::Profile),
-            (body, extrude, DependencyRole::BodyTip),
-        ] {
-            w.add_dependency(Dependency {
-                dependent,
-                dependency,
-                role,
-            })?;
-        }
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        w.put_topology_ref(&TopologyRef {
-            id: StableEntityId::new(),
-            owner: extrude,
-            producer_feature: extrude,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::ExtrudeSide {
-                profile_segment: segments[0],
-            },
-            selection: SelectionRule::AllDerivedFrom {
-                ancestor: segments[0],
-            },
-            fallback_signature: None,
-        })?;
-        Ok(())
-    })
-    .expect("plate document");
-    let prepared = prepare_circular_cut(
-        &d,
-        body,
-        &CircularCut {
-            center_mm: CENTER,
-            radius_mm: RADIUS,
-            extent: CutExtent::Blind { depth_mm: depth },
-        },
-    )
-    .expect("the cut this build would make");
-    d.write_circular_cut(&prepared).expect("the cut");
-    d.close().expect("close");
 }
 
 /// What a document stores about the cut and everything it is made of.
@@ -861,217 +726,6 @@ fn identities_survived(source: &Path, copy: &Path, added_refs: usize) -> Value {
     inspect(copy)
 }
 
-/// Discovery, the request protocol and every structural refusal, with no kernel.
-#[test]
-fn cut_edit_discovery_and_protocol_without_native() {
-    let f = Fixture::drawn(4.0);
-    let before = std::fs::read(&f.source).expect("source bytes");
-    let names = entries(f.root.path());
-
-    // The cut says what it is; the extrusion that started the body says why it
-    // is not this operation's business, and keeps its own distance edit.
-    let features = f.catalog["features"].as_array().expect("features");
-    assert_eq!(features.len(), 2);
-    let base = features
-        .iter()
-        .find(|x| x["circular_cut_edit"]["available"] == json!(false))
-        .expect("the base extrusion");
-    assert!(
-        transaction::slot(&f.catalog, &base["feature_id"], "extrude_distance")["refusal"].is_null(),
-        "edit still owns it"
-    );
-    assert!(
-        base["circular_cut_edit"]["refusal"]
-            .as_str()
-            .expect("a reason")
-            .contains("edit"),
-        "the refusal must say where that distance is edited"
-    );
-    assert!(base["circular_cut_edit"]["saved"].is_null());
-    assert!(
-        transaction::slot(&f.catalog, &f.cut()["feature_id"], "extrude_distance")["refusal"]
-            .is_null(),
-        "edit also owns the Cut depth"
-    );
-
-    let saved = f.saved();
-    let s = stored(&f.source);
-    assert_eq!(saved["center_mm"], json!(CENTER));
-    assert_eq!(saved["radius_mm"], json!(RADIUS));
-    assert_eq!(saved["depth_mm"], json!(4.0));
-    assert_eq!(saved["height_mm"], json!(HEIGHT));
-    assert_eq!(saved["extents_mm"], json!([[0.0, 0.0], [WIDTH, DEPTH]]));
-    assert_eq!(saved["direction"], json!("+z along the plane normal"));
-    assert!(saved["wall_clearance_mm"].as_f64().expect("clearance") > 0.0);
-    assert_eq!(saved["leaves_a_floor"], json!(true));
-    assert_eq!(
-        saved["through_allowed"],
-        json!(false),
-        "a floor is at stake"
-    );
-    assert!(saved["floor_reference_id"].is_string());
-    assert_eq!(
-        saved["previous_feature_id"],
-        json!(
-            s.features
-                .iter()
-                .find(|(_, previous, _)| previous.is_none())
-                .expect("the base")
-                .0
-                .to_string()
-        )
-    );
-    // The circle the request must name is the one the document holds, and it is
-    // the only one in the document.
-    assert_eq!(s.circles.len(), 1);
-    assert_eq!(
-        saved["tool_curve_id"],
-        json!(s.circles.keys().next().expect("a circle").to_string())
-    );
-
-    // Both the part and tool expose their exact saved geometry for a transaction.
-    let sketches = f.catalog["sketches"].as_array().expect("sketches");
-    assert_eq!(sketches.len(), 2);
-    let base = sketches
-        .iter()
-        .find(|s| s["sketch_id"] == saved["profile_sketch_id"])
-        .expect("base");
-    assert_eq!(base["curves"].as_array().expect("base Lines").len(), 4);
-    let tool = sketches
-        .iter()
-        .find(|s| s["sketch_id"] == saved["tool_sketch_id"])
-        .expect("tool");
-    assert_eq!(tool["curves"].as_array().expect("tool Circle").len(), 1);
-    assert_eq!(tool["curves"][0]["curve_id"], saved["tool_curve_id"]);
-    assert_eq!(tool["curves"][0]["geometry"]["kind"], "circle");
-    // Adding a second cut is available; both history links then become editable.
-    assert_eq!(f.catalog["bodies"][0]["cut_edit"]["available"], json!(true));
-
-    // Every refusal, with everything else about the call correct.
-    let never = f.root.path().join("never.fcad");
-    let curve = f.curve_id().to_owned();
-    for bad in [
-        json!({"request_version":2,"tool_curve_id":curve,"center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":4.0}),
-        json!({"schema_version":1,"tool_curve_id":curve,"center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":4.0}),
-        json!({"request_version":1,"center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":4.0}),
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[20.0,15.0],"radius_mm":5.0}),
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":4.0,"plane_id":"x"}),
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[20.0,15.0,0.0],"radius_mm":5.0,"depth_mm":4.0}),
-        json!({"request_version":1,"tool_curve_id":"not-a-uuid","center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":4.0}),
-        json!({"request_version":1,"tool_curve_id":"00000000-0000-7000-8000-000000000000","center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":4.0}),
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[20.0,15.0],"radius_mm":0.0,"depth_mm":4.0}),
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[20.0,15.0],"radius_mm":-5.0,"depth_mm":4.0}),
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":0.0}),
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":11.0}),
-        // Exactly touching the wall, and past it.
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[5.0,15.0],"radius_mm":5.0,"depth_mm":4.0}),
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[2.0,15.0],"radius_mm":5.0,"depth_mm":4.0}),
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[200.0,200.0],"radius_mm":5.0,"depth_mm":4.0}),
-        // The pocket floor this document names may not be cut away.
-        json!({"request_version":1,"tool_curve_id":curve,"center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":10.0}),
-    ] {
-        write(&f.request, &bad);
-        let refused = reply(f.edit(&never).output().expect("process"), OP, 2);
-        assert!(
-            ["input", "unsupported"].contains(&refused["error"]["kind"].as_str().expect("kind")),
-            "{refused}"
-        );
-    }
-    // Non-finite numbers do not survive JSON at all, and are refused as text.
-    std::fs::write(
-        &f.request,
-        format!(
-            r#"{{"request_version":1,"tool_curve_id":"{curve}","center_mm":[20.0,15.0],"radius_mm":1e999,"depth_mm":4.0}}"#
-        ),
-    )
-    .expect("request");
-    reply(f.edit(&never).output().expect("process"), OP, 2);
-    // A request larger than the bound is refused before it is parsed.
-    std::fs::write(&f.request, vec![b' '; 65537]).expect("request");
-    reply(f.edit(&never).output().expect("process"), OP, 2);
-
-    // A feature UUID that is not a cut, and one that is not in the document.
-    f.ask(CENTER, RADIUS, 4.0);
-    for feature in [
-        s.features
-            .iter()
-            .find(|(_, previous, _)| previous.is_none())
-            .expect("the base")
-            .0
-            .to_string(),
-        ferritecad_types::ObjectId::new().to_string(),
-    ] {
-        let refused = reply(
-            f.edit_from(&f.source, &feature, f.version(), &never)
-                .output()
-                .expect("process"),
-            OP,
-            2,
-        );
-        assert!(
-            ["input", "unsupported"].contains(&refused["error"]["kind"].as_str().expect("kind"))
-        );
-    }
-    // A version that is no longer this document's.
-    let refused = reply(
-        f.edit_from(
-            &f.source,
-            f.feature_id(),
-            "0000000000000000000000000000000000000000000000000000000000000000",
-            &never,
-        )
-        .output()
-        .expect("process"),
-        OP,
-        2,
-    );
-    // The wording is the version guard's, and the guard lives inside the job.
-    // This command opens its kernel session before calling the job, so a build
-    // with no kernel refuses earlier and for a different reason — which is a
-    // fact about the command rather than about the guard, and is reported as
-    // one rather than asserted away.
-    if ferritecad_occt::is_available() {
-        assert!(
-            refused["error"]["message"]
-                .as_str()
-                .expect("message")
-                .contains("changed since it was read"),
-            "{refused}"
-        );
-    } else {
-        assert_eq!(refused["error"]["kind"], json!("unsupported"), "{refused}");
-    }
-    // The source as its own destination, and an output that already exists.
-    reply(f.edit(&f.source).output().expect("process"), OP, 2);
-    let taken = f.root.path().join("taken.fcad");
-    std::fs::write(&taken, b"not a document").expect("occupied");
-    reply(f.edit(&taken).output().expect("process"), OP, 2);
-    assert_eq!(
-        std::fs::read(&taken).expect("occupied"),
-        b"not a document",
-        "an occupied destination was overwritten"
-    );
-    std::fs::remove_file(&taken).expect("tidy");
-
-    // A refused operation whose report cannot be written is still a refusal.
-    f.ask(CENTER, 0.0, 4.0);
-    assert_eq!(
-        f.edit(&never)
-            .stdout(pipe::closed_pipe())
-            .stderr(pipe::closed_pipe())
-            .status()
-            .expect("pipes")
-            .code(),
-        Some(7)
-    );
-    assert_eq!(entries(f.root.path()), names, "a refusal left something");
-    assert_eq!(
-        std::fs::read(&f.source).expect("source bytes"),
-        before,
-        "the source was touched"
-    );
-}
-
 /// A publication whose report is lost is still a publication.
 #[test]
 fn native_a_lost_report_after_publication_leaves_the_copy_whole() {
@@ -1091,17 +745,11 @@ fn native_a_lost_report_after_publication_leaves_the_copy_whole() {
         Some(7)
     );
     assert!(out.exists(), "exit 7 must not undo the publication");
-    let after = inspect(&out);
-    let saved = &after["features"]
-        .as_array()
-        .expect("features")
-        .iter()
-        .find(|x| x["circular_cut_edit"]["available"] == json!(true))
-        .expect("the cut")["circular_cut_edit"]["saved"];
-    assert_eq!(saved["center_mm"], json!([30.0, 20.0]));
-    assert_eq!(saved["radius_mm"], json!(7.5));
-    assert_eq!(saved["depth_mm"], json!(6.0));
-    assert_eq!(saved["tool_curve_id"], json!(f.curve_id()));
+    let saved = cut_facts::observed(&out).remove(0);
+    assert_eq!(saved.center_mm, [30., 20.]);
+    assert_eq!(saved.radius_mm, 7.5);
+    assert_eq!(saved.extent, CutDepth::Blind { depth_mm: 6. });
+    assert_eq!(saved.tool_curve.to_string(), f.curve_id());
 }
 
 /// The measured slice: each number alone, then all three, then again on the
@@ -1148,15 +796,10 @@ fn native_the_centre_radius_and_depth_move_alone_and_together() {
             .0;
         only_the_numbers_moved(&f.source, &copy, &[tool, cut], 0);
         let catalog = identities_survived(&f.source, &copy, 0);
-        let saved = &catalog["features"]
-            .as_array()
-            .expect("features")
-            .iter()
-            .find(|x| x["circular_cut_edit"]["available"] == json!(true))
-            .expect("the cut")["circular_cut_edit"]["saved"];
-        assert_eq!(saved["center_mm"], json!(center));
-        assert_eq!(saved["radius_mm"], json!(radius));
-        assert_eq!(saved["depth_mm"], json!(depth));
+        let saved = cut_facts::observed(&copy).remove(0);
+        assert_eq!(saved.center_mm, center);
+        assert_eq!(saved.radius_mm, radius);
+        assert_eq!(saved.extent, CutDepth::Blind { depth_mm: depth });
 
         // Cold: the real solid, measured by the kernel through the document's
         // own names.
@@ -1196,9 +839,15 @@ fn native_the_centre_radius_and_depth_move_alone_and_together() {
         };
         let twice = f.root.path().join(format!("{name}-twice.fcad"));
         again.ask(CENTER, RADIUS, 4.0);
-        let reported = reply(again.edit(&twice).output().expect("process"), OP, 0);
-        assert_eq!(reported["result"]["feature_id"], json!(f.feature_id()));
-        assert_eq!(reported["result"]["tool_curve_id"], json!(f.curve_id()));
+        let _reported = reply(again.edit(&twice).output().expect("process"), OP, 0);
+        assert_eq!(
+            cut_facts::observed(&copy)[0].feature.to_string(),
+            f.feature_id()
+        );
+        assert_eq!(
+            cut_facts::observed(&copy)[0].tool_curve.to_string(),
+            f.curve_id()
+        );
         identities_survived(&copy, &twice, 0);
         let back = analytic(&twice);
         assert!(
@@ -1224,9 +873,8 @@ fn native_a_hole_may_be_shortened_and_a_pocket_may_not_be_cut_through() {
     // A cut that already runs through the part: shortening it adds the floor's
     // name and loses nothing, which is why it is supported.
     let hole = Fixture::built(HEIGHT);
-    assert_eq!(hole.saved()["leaves_a_floor"], json!(false));
-    assert_eq!(hole.saved()["through_allowed"], json!(true));
-    assert!(hole.saved()["floor_reference_id"].is_null());
+    assert!(!hole.saved().extent.leaves_a_floor(HEIGHT));
+    assert!(hole.saved().protected_floor_references.is_empty());
     let before = analytic(&hole.source);
     assert_eq!(before.faces, 7, "a through hole");
 
@@ -1289,14 +937,11 @@ fn native_a_hole_may_be_shortened_and_a_pocket_may_not_be_cut_through() {
 
     // And the refused direction, with everything else about the call valid.
     let p = Fixture::built(4.0);
-    let floor = p.saved()["floor_reference_id"]
-        .as_str()
-        .expect("a floor reference")
-        .to_owned();
+    let floor = p.saved().protected_floor_references[0].to_string();
     p.ask(CENTER, RADIUS, HEIGHT);
     let never = p.root.path().join("never.fcad");
     let refused = reply(p.edit(&never).output().expect("process"), OP, 2);
-    assert_eq!(refused["error"]["kind"], json!("unsupported"));
+    assert_eq!(refused["error"]["kind"], json!("topology"));
     assert!(
         refused["error"]["message"]
             .as_str()
@@ -1575,24 +1220,9 @@ fn native_unknown_tables_survive_and_a_stored_trigger_stops_the_edit() {
         .iter()
         .find(|x| x["feature_id"] == json!(cut.to_string()))
         .expect("the cut");
-    let discovery = &cut_row["circular_cut_edit"];
-    assert_eq!(discovery["available"], json!(false));
-    assert!(
-        discovery["document_refusal"]
-            .as_str()
-            .expect("a document refusal")
-            .contains("meddle"),
-        "{discovery}"
-    );
-    // The facts about the cut are still reported; only editing is refused.
-    assert_eq!(discovery["saved"]["tool_curve_id"], json!(curve));
-    // The request is built from what was read before the trigger, so the call
-    // is correct in every other respect and only the document is the reason.
-    write(
-        &f.request,
-        &json!({"request_version":1,"tool_curve_id":curve,
-                "center_mm":[30.0,20.0],"radius_mm":7.5,"depth_mm":6.0}),
-    );
+    assert_eq!(cut_row["profile_sketch_id"], json!(tool));
+    assert_eq!(f.saved().tool_curve.to_string(), curve);
+    f.ask([30., 20.], 7.5, 6.);
     let never = f.root.path().join("never.fcad");
     let version = after["content_version"]
         .as_str()

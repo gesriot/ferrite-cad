@@ -13,6 +13,7 @@ pub struct Case {
     pub extrude: Option<ObjectId>,
     pub fillet: Option<ObjectId>,
     pub revolve: Option<ObjectId>,
+    pub additions: Vec<(&'static str, Vec<EditChange>)>,
     pub vertex: Option<(ObjectId, Sketch, Vec<SketchVertex>)>,
 }
 
@@ -38,16 +39,14 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
             let mut document = Document::open(&seed)?;
             let body = body_of(&document)?;
             for cut in 0..cuts {
-                let prepared = prepare_circular_cut(
+                let tool = ferritecad_fixtures::feature_changes::circular_tool(
                     &document,
                     body,
-                    &CircularCut {
-                        center_mm: [6.0 + (cut % 4) as f64 * 12.0, 5.0 + (cut / 4) as f64 * 8.0],
-                        radius_mm: 1.0,
-                        extent: CutExtent::ThroughAll,
-                    },
+                    [6.0 + (cut % 4) as f64 * 12.0, 5.0 + (cut / 4) as f64 * 8.0],
+                    1.0,
+                    EndCondition::ThroughAll,
                 )?;
-                document.write_circular_cut(&prepared)?;
+                document.write_changes(&tool.changes)?;
             }
             let objects = document.objects()?;
             let dependencies = document.dependencies()?;
@@ -99,23 +98,18 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
         let path = root.join("plate_4_fillets_constraints.fcad");
         let chain = ferritecad_fixtures::write_constrained_fillet_chain(&path, 2.0, 60.0, 40.0)?;
         let mut document = Document::open(&path)?;
-        for _ in 0..2 {
-            let target = fillet_choices(&document, &document.objects()?)
-                .into_iter()
-                .find_map(|choice| choice.target)
-                .expect("fixture has sharp corners");
-            let prepared = prepare_edge_fillet(
-                &document,
-                chain.body,
-                &EdgeFillet {
-                    edge: FilletEdge {
-                        feature: target.corners[0].feature,
-                        joint: target.corners[0].joint,
-                    },
-                    radius_mm: 2.0,
+        for corner in [1, 3] {
+            let edge =
+                ferritecad_fixtures::feature_changes::swept_edge(&document, chain.body, corner)?;
+            document.write_changes(&[EditChange::AddFeature {
+                object: ObjectId::new(),
+                body: chain.body,
+                name: Some("Fillet".into()),
+                feature: FeatureAddition::Fillet {
+                    edge,
+                    radius_mm: Expression::constant(2.0)?,
                 },
-            )?;
-            document.write_edge_fillet(&prepared)?;
+            }])?;
         }
         document.close()?;
         cases.push(describe("plate_4_fillets_constraints", path, 1)?);
@@ -208,7 +202,31 @@ fn describe(name: &str, path: PathBuf, bodies: usize) -> Result<Case> {
                 && slot.refusal.is_none()
         })
         .map(|slot| slot.object);
+    let additions = if name == "plate" {
+        vec![
+            (
+                "apply_add_cut",
+                ferritecad_fixtures::feature_changes::circular_tool(
+                    &document,
+                    body,
+                    [20., 20.],
+                    2.,
+                    EndCondition::ThroughAll,
+                )?
+                .changes,
+            ),
+            (
+                "apply_add_fillet",
+                vec![ferritecad_fixtures::feature_changes::edge_addition(
+                    &document, body, 0, 2., false,
+                )?],
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
     Ok(Case {
+        additions,
         vertex: if name == "plate" {
             objects.iter().find_map(|o| {
                 let ObjectPayload::Sketch(sketch) = &o.payload else {

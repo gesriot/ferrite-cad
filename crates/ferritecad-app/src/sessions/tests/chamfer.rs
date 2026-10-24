@@ -515,7 +515,12 @@ fn gate(name: &str) {
         "stale form guard"
     );
     // The exact bound of the stored plate, and the next number refused whole.
-    let max = chosen.corner.max_distance_mm;
+    let max = chosen
+        .corner
+        .adjacent_lengths_mm
+        .into_iter()
+        .fold(f64::INFINITY, f64::min)
+        - MIN_FLAT_MM;
     assert_eq!(max, 12.25 - MIN_FLAT_MM);
     let past = request(&s, max.next_up());
     let (g, rx) = start(&mut s, &past);
@@ -735,7 +740,12 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
     let stored = saved_of(&current);
     assert!(stored.constrained);
     assert_eq!(stored.corner.corner_mm, CORNER, "a stored fact");
-    let stored_max = stored.corner.max_distance_mm;
+    let stored_max = stored
+        .corner
+        .adjacent_lengths_mm
+        .into_iter()
+        .fold(f64::INFINITY, f64::min)
+        - MIN_FLAT_MM;
     assert_eq!(stored_max, 12.25 - MIN_FLAT_MM);
     let solved_max = 14.25 - MIN_FLAT_MM;
     // Above the stored bound, below the solved one; both routes read the same

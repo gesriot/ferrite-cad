@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use ferritecad_document::{Access, Document, DocumentVersion, ObjectPayload};
+use ferritecad_document::{Access, Document, DocumentVersion};
 use ferritecad_eval::rebuild_cold;
 use ferritecad_kernel::{GeometryKernel, OperationContext, ProgressSink};
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
@@ -48,8 +48,8 @@ pub(crate) fn edit_copy_with<K: GeometryKernel + ?Sized>(
         kernel,
         context,
         run,
-        |_| Ok(CopyWrite::Changes(request.changes.clone())),
-        |_, checked| {
+        &request.changes,
+        |checked| {
             Ok(EditedDocument {
                 rebuild: checked.rebuild,
                 destination: request.destination.clone(),
@@ -61,360 +61,6 @@ pub(crate) fn edit_copy_with<K: GeometryKernel + ?Sized>(
     )
 }
 
-/// What one published circular cut is, in identities.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CircularCutRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub body: ObjectId,
-    pub cut: ferritecad_document::CircularCut,
-    pub destination: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AddedCircularCut {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    /// The body that gained the feature. Its identity is the source's.
-    pub body: ObjectId,
-    /// The feature the body's tip now is.
-    pub feature: ObjectId,
-    /// The sketch the tool was drawn on.
-    pub sketch: ObjectId,
-    /// The circle inside it, so a caller can name the bore it made.
-    pub tool_curve: StableEntityId,
-    /// The feature the new one modifies, which was the tip before.
-    pub previous: ObjectId,
-    /// The intent the new Cut stores: a stated depth or ThroughAll.
-    pub extent: ferritecad_document::CutExtent,
-}
-
-/// Adds one circular cut to a saved body, publishing a new copy.
-///
-/// The same snapshot, version guard, read-only source, baseline rebuild,
-/// reference check, SQLite close and atomic no-clobber publication every other
-/// copy operation uses. What differs is only what is written.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn circular_cut_copy<K: GeometryKernel + ?Sized>(
-    request: &CircularCutRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<AddedCircularCut> {
-    circular_cut_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn circular_cut_copy_with<K: GeometryKernel + ?Sized>(
-    request: &CircularCutRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<AddedCircularCut> {
-    context.check_cancelled()?;
-    edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::prepare_circular_cut(source, request.body, &request.cut)
-                .map(Box::new)
-                .map(CopyWrite::Cut)
-        },
-        |prepared, checked| {
-            let CopyWrite::Cut(prepared) = prepared else {
-                return Err(CadError::input("missing prepared cut"));
-            };
-            Ok(AddedCircularCut {
-                rebuild: checked.rebuild,
-                destination: request.destination.clone(),
-                document_id: request.expected.document_id,
-                body: request.body,
-                feature: prepared.feature().id,
-                sketch: prepared.sketch().id,
-                tool_curve: prepared.tool_curve(),
-                previous: prepared.previous(),
-                extent: prepared.extent(),
-            })
-        },
-    )
-}
-
-/// What one fillet asks for, in identities (§28A).
-#[derive(Debug, Clone, PartialEq)]
-pub struct EdgeFilletRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub body: ObjectId,
-    pub fillet: ferritecad_document::EdgeFillet,
-    pub destination: PathBuf,
-}
-
-/// What one published fillet is, in identities.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AddedEdgeFillet {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    /// The Body whose tip the Fillet now is; its identity is the source's.
-    pub body: ObjectId,
-    pub feature: ObjectId,
-    /// The feature rounded, which was the tip before.
-    pub previous: ObjectId,
-    /// The corner rounded, with its labels, read from the stored Lines.
-    pub corner: ferritecad_document::FilletCorner,
-    /// §28F: the same corner of the plate the published copy was built from,
-    /// as the rebuild before publication found it — the solved plate's for a
-    /// constrained Sketch, `corner` itself for an unconstrained one.
-    pub built_corner: ferritecad_document::FilletCorner,
-    /// §28F: whether the plate's Sketch carries constraints.
-    pub profile_constrained: bool,
-    pub radius_mm: f64,
-    /// The new references the Fillet persisted, by role, for a report.
-    pub references: Vec<ferritecad_document::TopologyRef>,
-}
-
-/// Rounds one vertical edge of a saved plate, publishing a new copy (§28A).
-///
-/// The same snapshot, version guard, read-only source, baseline rebuild,
-/// reference check (every baseline and every minted name must resolve),
-/// SQLite close and atomic no-clobber publication every copy operation uses.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn fillet_edge_copy<K: GeometryKernel + ?Sized>(
-    request: &EdgeFilletRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<AddedEdgeFillet> {
-    fillet_edge_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn fillet_edge_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EdgeFilletRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<AddedEdgeFillet> {
-    context.check_cancelled()?;
-    edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::prepare_edge_fillet(source, request.body, &request.fillet)
-                .map(Box::new)
-                .map(CopyWrite::Fillet)
-        },
-        |prepared, checked| {
-            let CopyWrite::Fillet(prepared) = prepared else {
-                return Err(CadError::input("missing prepared fillet"));
-            };
-            let built_corner = checked.fillet_corner.ok_or_else(|| {
-                CadError::input("the rebuilt copy reported no corner for the new Fillet")
-            })?;
-            Ok(AddedEdgeFillet {
-                rebuild: checked.rebuild,
-                destination: request.destination.clone(),
-                document_id: request.expected.document_id,
-                body: request.body,
-                feature: prepared.feature().id,
-                previous: prepared.previous(),
-                corner: prepared.corner(),
-                built_corner,
-                profile_constrained: prepared.profile_constrained(),
-                radius_mm: prepared.radius_mm(),
-                references: prepared.references().to_vec(),
-            })
-        },
-    )
-}
-
-/// What one chamfer asks for, in identities (§29A).
-#[derive(Debug, Clone, PartialEq)]
-pub struct EdgeChamferRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    pub body: ObjectId,
-    pub chamfer: ferritecad_document::EdgeChamfer,
-    pub destination: PathBuf,
-}
-
-/// What one published chamfer is, in identities.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AddedEdgeChamfer {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    /// The Body whose tip the Chamfer now is; its identity is the source's.
-    pub body: ObjectId,
-    pub feature: ObjectId,
-    /// The feature cut, which was the tip before.
-    pub previous: ObjectId,
-    /// The corner cut, with its labels, read from the stored Lines (which are
-    /// exactly the Lines the plate was built from: the profile is free or
-    /// closure-only).
-    pub corner: ferritecad_document::ChamferCorner,
-    pub distance_mm: f64,
-    /// The new references the Chamfer persisted, by role, for a report.
-    pub references: Vec<ferritecad_document::TopologyRef>,
-}
-
-/// Cuts one vertical edge of a saved plate away, publishing a new copy (§29A).
-///
-/// The same snapshot, version guard, read-only source, baseline rebuild,
-/// reference check (every baseline and every minted name must resolve),
-/// SQLite close and atomic no-clobber publication every copy operation uses.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn chamfer_edge_copy<K: GeometryKernel + ?Sized>(
-    request: &EdgeChamferRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<AddedEdgeChamfer> {
-    chamfer_edge_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn chamfer_edge_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EdgeChamferRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<AddedEdgeChamfer> {
-    context.check_cancelled()?;
-    edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::prepare_edge_chamfer(source, request.body, &request.chamfer)
-                .map(Box::new)
-                .map(CopyWrite::Chamfer)
-        },
-        |prepared, checked| {
-            let CopyWrite::Chamfer(prepared) = prepared else {
-                return Err(CadError::input("missing prepared chamfer"));
-            };
-            Ok(AddedEdgeChamfer {
-                rebuild: checked.rebuild,
-                destination: request.destination.clone(),
-                document_id: request.expected.document_id,
-                body: request.body,
-                feature: prepared.feature().id,
-                previous: prepared.previous(),
-                corner: prepared.corner(),
-                distance_mm: prepared.distance_mm(),
-                references: prepared.references().to_vec(),
-            })
-        },
-    )
-}
-
-/// What one published parameter edit of a saved cut is, in identities.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EditCircularCutRequest {
-    pub source: PathBuf,
-    pub expected: DocumentVersion,
-    /// The saved Cut feature whose tool and depth change. Its identity is kept.
-    pub cut: ObjectId,
-    pub edit: ferritecad_document::CircularCutEdit,
-    pub destination: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct EditedCircularCut {
-    pub rebuild: ferritecad_eval::RebuildReport,
-    pub destination: PathBuf,
-    pub document_id: ferritecad_types::DocumentId,
-    /// The body whose history contains the cut; unchanged by this edit.
-    pub body: ObjectId,
-    /// The edited feature, under the identity it already had.
-    pub feature: ObjectId,
-    /// The sketch the tool is drawn on, under the identity it already had.
-    pub sketch: ObjectId,
-    /// The circle inside it, which keeps its identity across the edit.
-    pub tool_curve: StableEntityId,
-    /// The feature the cut modifies; unchanged by this edit.
-    pub previous: ObjectId,
-    /// Whether the published cut stops inside the part.
-    pub leaves_a_floor: bool,
-    /// The intent the edited Cut stores: a stated depth or ThroughAll.
-    pub extent: ferritecad_document::CutExtent,
-}
-
-/// Changes the tool and depth of one saved circular cut, publishing a new copy.
-///
-/// The same snapshot, version guard, read-only source, baseline rebuild,
-/// reference check, SQLite close and atomic no-clobber publication every other
-/// copy operation uses. What differs is only what is written: two payloads that
-/// already existed, and the floor names gained by stopping inside the part:
-/// its own historical name, plus a final origin name when editing the first
-/// of two cuts.
-/// Standalone copy jobs rebuild the baseline and candidate (two rebuilds).
-pub fn edit_circular_cut_copy<K: GeometryKernel + ?Sized>(
-    request: &EditCircularCutRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-) -> Result<EditedCircularCut> {
-    edit_circular_cut_copy_with(request, kernel, context, &mut EditRun::standalone())
-}
-
-pub(crate) fn edit_circular_cut_copy_with<K: GeometryKernel + ?Sized>(
-    request: &EditCircularCutRequest,
-    kernel: &mut K,
-    context: &OperationContext,
-    run: &mut EditRun<'_, K>,
-) -> Result<EditedCircularCut> {
-    context.check_cancelled()?;
-    edit_object_copy(
-        &request.source,
-        request.expected,
-        &request.destination,
-        kernel,
-        context,
-        run,
-        |source| {
-            ferritecad_document::prepare_cut_parameters(source, request.cut, &request.edit)
-                .map(Box::new)
-                .map(CopyWrite::CutParameters)
-        },
-        |prepared, checked| {
-            let CopyWrite::CutParameters(prepared) = prepared else {
-                return Err(CadError::input("missing prepared cut edit"));
-            };
-            Ok(EditedCircularCut {
-                rebuild: checked.rebuild,
-                destination: request.destination.clone(),
-                document_id: request.expected.document_id,
-                body: prepared.body(),
-                feature: prepared.feature().id,
-                sketch: prepared.tool_sketch().id,
-                tool_curve: prepared.tool_curve(),
-                previous: prepared.previous(),
-                leaves_a_floor: prepared.leaves_a_floor(),
-                extent: prepared.extent(),
-            })
-        },
-    )
-}
-
-enum CopyWrite {
-    Changes(Vec<ferritecad_document::EditChange>),
-    /// Boxed: this variant is much larger than the others, and an enum sized
-    /// for it would make every copy operation carry the difference.
-    Cut(Box<ferritecad_document::PreparedCircularCut>),
-    /// Boxed for the same reason as the one above it.
-    CutParameters(Box<ferritecad_document::PreparedCutParameters>),
-    /// §28A; boxed for the reason Cut is.
-    Fillet(Box<ferritecad_document::PreparedEdgeFillet>),
-    /// §29A; boxed for the reason Cut is.
-    Chamfer(Box<ferritecad_document::PreparedEdgeChamfer>),
-}
 pub(crate) type Observe<'a, K> = dyn FnMut(
         &Document,
         &ferritecad_eval::RebuildResult,
@@ -449,8 +95,8 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     kernel: &mut K,
     context: &OperationContext,
     run: &mut EditRun<'_, K>,
-    prepare: impl FnOnce(&Document) -> Result<CopyWrite>,
-    complete: impl FnOnce(&CopyWrite, Checked) -> Result<T>,
+    changes: &[ferritecad_document::EditChange],
+    complete: impl FnOnce(Checked) -> Result<T>,
 ) -> Result<T> {
     refuse_source_as_destination(
         source_path,
@@ -469,7 +115,6 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
             "document cannot be edited: {reason}"
         )));
     }
-    let prepared = prepare(&source)?;
     let temporary = Temporary::beside(destination)?;
     source.snapshot_to(temporary.path())?;
     source.close()?;
@@ -491,7 +136,6 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
                 None,
                 None,
                 None,
-                None,
             )?
             .0;
             &computed
@@ -501,42 +145,18 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     let baseline = &facts.resolved;
     context.progress().report(0.4);
     context.check_cancelled()?;
-    let mut expression_minted = Vec::new();
-    match &prepared {
-        CopyWrite::Changes(changes) => expression_minted = document.write_changes(changes)?,
-        CopyWrite::Cut(prepared) => document.write_circular_cut(prepared)?,
-        CopyWrite::CutParameters(prepared) => document.write_cut_parameters(prepared)?,
-        CopyWrite::Fillet(p) => document.write_edge_fillet(p)?,
-        CopyWrite::Chamfer(p) => document.write_edge_chamfer(p)?,
-    }
-    // Every name the edit *added* has to resolve as well. The baseline
-    // comparison below can only speak about names that already existed, so a
-    // feature that published geometry nothing could point at would pass it.
-    let minted: BTreeSet<StableEntityId> = match &prepared {
-        CopyWrite::Changes(_) => expression_minted.into_iter().collect(),
-        CopyWrite::Cut(p) => p.references().iter().map(|r| r.id).collect(),
-        CopyWrite::Fillet(p) => p.references().iter().map(|r| r.id).collect(),
-        CopyWrite::Chamfer(p) => p.references().iter().map(|r| r.id).collect(),
-        CopyWrite::CutParameters(p) => p.added_references().iter().map(|r| r.id).collect(),
-    };
-    let required: BTreeSet<StableEntityId> = baseline.union(&minted).copied().collect();
-    // A new Fillet's corner is read from the plate this very rebuild built
-    // it on (§28F), by the evaluator's own policy: no second rebuild or solve.
-    let fillet = match &prepared {
-        CopyWrite::Fillet(p) => Some(p.feature().id),
-        _ => None,
-    };
+    let minted: BTreeSet<_> = document.write_changes(changes)?.into_iter().collect();
+    let required: BTreeSet<_> = baseline.union(&minted).copied().collect();
     let (_, mut checked) = checked_rebuild(
         &document,
         kernel,
         &phase(context, 0.4, 0.9),
         Some(&required),
-        fillet,
         Some(baseline_unbuilt),
         run.observe.as_deref_mut(),
     )?;
     run.scene = checked.scene.take();
-    let completed = complete(&prepared, checked)?;
+    let completed = complete(checked)?;
     document.close()?;
     context.progress().report(0.95);
     context.check_cancelled()?;
@@ -578,8 +198,6 @@ struct Checked {
     version: Option<DocumentVersion>,
     scene: Option<ferritecad_scene::LoadedScene>,
     rebuild: ferritecad_eval::RebuildReport,
-    /// The corner of a new Fillet, on the plate the rebuild built.
-    fillet_corner: Option<ferritecad_document::FilletCorner>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -588,7 +206,6 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     context: &OperationContext,
     baseline: Option<&BTreeSet<StableEntityId>>,
-    fillet: Option<ObjectId>,
     baseline_unbuilt: Option<&BTreeSet<ObjectId>>,
     observe: Option<&mut Observe<'_, K>>,
 ) -> Result<(ferritecad_eval::RebuildFacts, Checked)> {
@@ -655,10 +272,6 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
         None => built,
     };
     let result = (|| {
-        let fillet_corner = match fillet {
-            Some(id) => Some(built_fillet_corner(document, &built, id)?),
-            None => None,
-        };
         Ok((
             ferritecad_eval::RebuildFacts {
                 model: document.model_without_checkpoints()?,
@@ -674,49 +287,11 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                     .map(|observe| observe(document, &built, kernel, &phase(context, 0.7, 1.0)))
                     .transpose()?,
                 rebuild,
-                fillet_corner,
             },
         ))
     })();
     built.release_all(kernel);
     result
-}
-
-/// The corner the evaluator judged a saved Fillet by, asked of the Lines this
-/// rebuild built its predecessor from: the same call, on the same drawing, the
-/// evaluator made while building it.
-fn built_fillet_corner(
-    document: &Document,
-    built: &ferritecad_eval::RebuildResult,
-    id: ObjectId,
-) -> Result<ferritecad_document::FilletCorner> {
-    let objects = document.objects()?;
-    let fillet = objects
-        .iter()
-        .find_map(|o| match &o.payload {
-            ObjectPayload::Fillet(f) if o.id == id => Some(f),
-            _ => None,
-        })
-        .ok_or_else(|| CadError::input("the written Fillet is missing from the copy"))?;
-    let profile = objects
-        .iter()
-        .find_map(|o| match &o.payload {
-            ObjectPayload::Extrude(e) if o.id == fillet.edge.feature => Some(e.profile),
-            _ => None,
-        })
-        .ok_or_else(|| CadError::input("the written Fillet rounds no Extrude"))?;
-    let curves: Option<Vec<ferritecad_document::SketchCurve>> =
-        built.sketch_presentation(profile).map(|p| {
-            p.curves()
-                .iter()
-                .map(|c| ferritecad_document::SketchCurve {
-                    id: c.id(),
-                    construction: c.is_construction(),
-                    geometry: c.geometry().clone(),
-                })
-                .collect()
-        });
-    ferritecad_document::evaluable_fillet(&objects, fillet, curves.as_deref())
 }
 
 fn phase(context: &OperationContext, start: f64, end: f64) -> OperationContext {
@@ -742,7 +317,8 @@ mod tests {
     use super::*;
     use crate::{CreateDocumentRequest, NewDocument, PlateSize, create_document};
     use ferritecad_document::{
-        Dependency, DependencyRole, EndCondition, Expression, ExtrudeEditSource, ObjectRecord,
+        Dependency, DependencyRole, EndCondition, Expression, ExtrudeEditSource, ObjectPayload,
+        ObjectRecord,
     };
     use ferritecad_kernel::{mock::MockKernel, *};
 

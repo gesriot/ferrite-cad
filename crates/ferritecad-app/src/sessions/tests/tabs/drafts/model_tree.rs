@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! §31A: real projection, tab/form owners and egui; no window or device.
 use super::*;
+use crate::feature_tests::RequestFacts;
 use crate::model_tree::{actions, availability, open};
 use ferritecad_document::{Dependency, DependencyRole, ObjectPayload};
 use ferritecad_ui::{ModelAction, ModelEdit, ModelKey};
@@ -169,7 +170,7 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
             .cuts
             .take_apply_request()
             .expect("actual editor request")
-            .cut,
+            .cut_id(),
         early,
         "navigation must open exactly the selected UUID"
     );
@@ -421,15 +422,14 @@ fn native_early_cut_navigation_apply_history_save_matches_existing_cli() {
         .cuts
         .take_apply_request()
         .expect("real editor request");
-    assert_eq!(r.cut, early);
+    assert_eq!(r.cut_id(), early);
     assert_eq!(r.expected, source(&w).version);
     let request = r.clone();
     w.accept(move |ticket, cancel, tx| {
-        spawn_apply_cut(
-            ticket,
-            request.cut,
-            request.edit,
+        spawn_apply(
             request.expected,
+            ticket,
+            request.changes,
             cancel.clone(),
             move |v| tx.send(v).expect("edit"),
         )
@@ -530,18 +530,18 @@ fn native_early_cut_navigation_apply_history_save_matches_existing_cli() {
     w.checkpoint(CheckpointAction::Create("three cuts".to_owned()));
     let checkpoint = w.listed()[0].id;
     let reading = source(&w).clone();
-    let body = reading.cut_bodies[0].body;
     let expected = reading.version;
     w.accept(move |ticket, cancel, tx| {
-        crate::sessions::spawn_add_cut(
+        crate::sessions::spawn_apply(
+            expected,
             ticket,
-            body,
-            ferritecad_document::CircularCut {
+            (crate::feature_facts::CircularCut {
                 center_mm: [20., 20.],
                 radius_mm: 1.,
-                extent: ferritecad_document::CutExtent::ThroughAll,
-            },
-            expected,
+                extent: crate::feature_facts::CutExtent::ThroughAll,
+            })
+            .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
+            .expect("changes"),
             cancel.clone(),
             move |v| tx.send(v).expect("Add"),
         )
@@ -651,17 +651,16 @@ fn compare_cut_files(before: &Path, saved: &Path, stl: &Path, fbx: &Path, undo: 
     let peer_root = tempfile::tempdir().expect("peer");
     let reading = crate::sketch_facts::read(before).expect("source reading");
     let early = crate::cuts::tests::session_apply::selected(&reading, 0);
-    let request = ferritecad_jobs::EditCircularCutRequest {
+    let request = ferritecad_jobs::EditRequest {
         source: before.to_path_buf(),
         expected: reading.version,
-        cut: early.feature,
-        edit: ferritecad_document::CircularCutEdit {
-            tool_curve: early.tool_curve,
+        changes: (crate::feature_facts::CircularCut {
             center_mm: early.center_mm,
             radius_mm: 1.625,
             extent: early.extent,
-            vocabulary: ferritecad_document::ExtentVocabulary::BlindOrThroughAll,
-        },
+        })
+        .changes(&early)
+        .expect("Cut changes"),
         destination: PathBuf::new(),
     };
     let peer = peer_root.path().join("early.fcad");

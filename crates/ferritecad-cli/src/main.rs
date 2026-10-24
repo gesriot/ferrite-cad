@@ -7,16 +7,12 @@
 //! here first.
 
 mod annulus;
-mod chamfer;
 mod checkpoint;
 mod circle;
-mod cut;
 mod edit;
-mod edit_cut;
 mod edit_input;
 mod export;
 mod export_fbx;
-mod fillet;
 mod import;
 mod json;
 mod rebuild;
@@ -114,22 +110,10 @@ enum Command {
     /// Create two concentric analytic XY circles - a hollow part - with a positive
     /// Blind extrusion from JSON request v1.
     CreateAnnularExtrude(annulus::AnnulusArgs),
-    /// Apply an ordered transaction of expression, curve and constraint changes to a new .fcad copy.
+    /// Apply an ordered transaction of number, curve, constraint and end changes and of sketch
+    /// and feature additions to a new .fcad copy.
     /// Preserves identities; never overwrites source or output. Requires a kernel.
     Edit(edit::EditArgs),
-    /// Cut a circular tool into a saved Body to a stated depth, publishing a new
-    /// FCAD copy. The body keeps its identity and the cut becomes its tip.
-    CutCircularCopy(cut::CutArgs),
-    /// Change a saved circular Cut's tool centre, radius and depth in a new
-    /// identity-preserving FCAD copy. The history and every UUID are kept.
-    EditCircularCut(edit_cut::EditCutArgs),
-    /// Round one vertical edge of a saved rectangular plate to a constant
-    /// radius, publishing a new FCAD copy whose Body ends in a named Fillet.
-    FilletEdgeCopy(fillet::FilletArgs),
-    /// Cut one vertical edge of a saved rectangular plate away at one equal
-    /// distance (millimetres along each of its two faces), publishing a new
-    /// FCAD copy whose Body ends in a named Chamfer.
-    ChamferEdgeCopy(chamfer::ChamferArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes or a geometry kernel.
@@ -353,10 +337,6 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Command::FilletEdgeCopy(args) => fillet::run(args),
-        Command::ChamferEdgeCopy(args) => chamfer::run(args),
-        Command::CutCircularCopy(args) => cut::run(args),
-        Command::EditCircularCut(args) => edit_cut::run(args),
         Command::CreateSketchExtrude(args) => sketch::run(args),
         Command::CreateSketchRevolve(args) => revolve::run(args),
         Command::CreateCircleExtrude(args) => circle::run(args),

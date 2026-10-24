@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! §26F: move the plate's boundaries while every absolute tool stays put.
+
 use super::*;
 use ferritecad_document::{ExtrudeEditSource, SketchVertex};
 use ferritecad_types::{ObjectId, StableEntityId};
@@ -8,13 +9,13 @@ const EDIT: &str = "edit";
 struct BaseFacts {
     sketch: ObjectId,
     vertices: Option<Vec<SketchVertex>>,
-    cut_history: Option<ferritecad_document::SavedCircularCut>,
+    cut_history: Option<crate::cut_facts::CutObservation>,
 }
 const EXPANDED: [[f64; 2]; 2] = [[-4., -3.], [86., 56.]];
 
 /// Name all six native base faces as well as all historical carried/origin faces.
 /// The two-Cut case stores the opposite winding, without changing curve identity.
-pub(super) fn measured_fixture(root: &Path, tools: &[CircularCut]) -> PathBuf {
+pub(super) fn measured_fixture(root: &Path, tools: &[CutSpec]) -> PathBuf {
     let path = history::fixture(root, tools);
     let mut d = Document::open(&path).expect("doc");
     let (_, selected) = choice(&path);
@@ -249,18 +250,11 @@ fn native_base_bounds_refs_sql_cache_and_mesh() {
             check_history_mesh_in(&mesh(&dest, &dest.with_extension("stl")), &tools, bounds);
             let (_, edited) = choice(&dest);
             assert_eq!(edited.vertices, Some(vertices(&base, bounds)));
-            let context = |c: &BaseFacts| {
-                let h = c.cut_history.as_ref().expect("context");
-                (h.body, h.base_feature, h.tools.clone())
-            };
             assert_eq!(
-                context(&edited),
-                context(&base),
-                "absolute tools did not move"
+                history::ordered(&dest),
+                history::ordered(&path),
+                "absolute tool payloads and IDs did not move"
             );
-            // The boundary is the edited Lines, under their saved UUIDs.
-            let boundary = &edited.cut_history.as_ref().expect("context").boundary;
-            assert_eq!(boundary.rectangle_mm(), Some(bounds));
             assert_eq!(std::fs::read(&path).expect("bytes"), before);
             if n == 4 {
                 let fbx = dest.with_extension("fbx");
@@ -299,7 +293,7 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
         let (catalog, base) = choice(&path);
         let before = std::fs::read(&path).expect("bytes");
         let dest = root.path().join("never.fcad");
-        let feature = base.cut_history.as_ref().expect("context").tools[selected].feature;
+        let feature = history::ordered(&path)[selected].feature;
         for gap in [0., 0.5 * ferritecad_document::WALL_CLEARANCE_MM] {
             let v = vertices(
                 &base,
@@ -341,7 +335,7 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
                 v[2].start_mm = a;
             }
             4 => v[1].start_mm = v[0].start_mm,
-            6 => id = base.cut_history.as_ref().expect("context").tools[0].tool_sketch,
+            6 => id = history::ordered(&path)[0].tool_sketch,
             7 => id = ObjectId::new(),
             _ => unreachable!("listed invalid case"),
         }

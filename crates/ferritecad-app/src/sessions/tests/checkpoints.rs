@@ -6,7 +6,8 @@
 use super::fillet::saved;
 use super::*;
 use crate::checkpoints::availability;
-use ferritecad_document::{CheckpointEntry, CircularCut, CutExtent};
+use crate::feature_facts::{CircularCut, CutExtent};
+use ferritecad_document::CheckpointEntry;
 use ferritecad_jobs::{RecoveryRecorder, RecoveryStatus, RecoveryStore, SaveTarget, Snapshot};
 use ferritecad_types::CheckpointId;
 use std::collections::BTreeMap;
@@ -424,19 +425,19 @@ fn restore_native(s: &mut Sessions, id: CheckpointId) {
 
 fn add_cut_native(s: &mut Sessions) {
     let reading = crate::sketch_facts::read(&s.export_path().expect("current")).expect("reading");
-    let body = reading.cut_bodies[0].body;
     let (tx, rx) = mpsc::channel();
     let generation = s
         .begin_apply(|ticket, _, cancel| {
-            spawn_add_cut(
-                ticket,
-                body,
-                CircularCut {
-                    center_mm: [40.0, 20.0],
-                    radius_mm: 5.0,
-                    extent: CutExtent::ThroughAll,
-                },
+            spawn_apply(
                 reading.version,
+                ticket,
+                (CircularCut {
+                    center_mm: [40., 20.],
+                    radius_mm: 5.,
+                    extent: CutExtent::ThroughAll,
+                })
+                .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
+                .expect("changes"),
                 cancel.clone(),
                 move |v| tx.send(v).expect("deliver"),
             )

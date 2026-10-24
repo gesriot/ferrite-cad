@@ -2,26 +2,26 @@
 //! §26H: an explicit ThroughAll Cut stays through across height edits, reopen,
 //! cold rebuilds and cache hits; mode transitions keep, add or refuse names.
 use super::*;
-use ferritecad_document::{SavedCircularCut, TopologyRef, prepare_cut_parameters};
+use crate::cut_facts::CutObservation;
+use ferritecad_document::TopologyRef;
 use ferritecad_types::ObjectId;
 
 const BOUNDS: [[f64; 2]; 2] = [[0., 0.], [80., 50.]];
-const EDIT: &str = "edit-circular-cut";
 
 /// Mixed ends at fractional, off-axis positions in a history order that is not
 /// the geometric order: ThroughAll, a Blind cut exactly as deep as the plate,
 /// and a pocket, repeating.
-fn tools(n: usize) -> Vec<CircularCut> {
+fn tools(n: usize) -> Vec<CutSpec> {
     history::tools(n)
         .into_iter()
         .enumerate()
-        .map(|(i, t)| CircularCut {
+        .map(|(i, t)| CutSpec {
             center_mm: [t.center_mm[0] + 0.125, t.center_mm[1] - 0.375],
             radius_mm: t.radius_mm + 0.0625,
             extent: match i % 3 {
-                0 => CutExtent::ThroughAll,
-                1 => CutExtent::Blind { depth_mm: SIZE[2] },
-                _ => CutExtent::Blind {
+                0 => CutDepth::ThroughAll,
+                1 => CutDepth::Blind { depth_mm: SIZE[2] },
+                _ => CutDepth::Blind {
                     depth_mm: 3.5 + (i % 7) as f64,
                 },
             },
@@ -29,51 +29,36 @@ fn tools(n: usize) -> Vec<CircularCut> {
         .collect()
 }
 
-fn extent_json(extent: CutExtent) -> Value {
-    match extent {
-        CutExtent::Blind { depth_mm } => json!({"kind":"blind","depth_mm":depth_mm}),
-        CutExtent::ThroughAll => json!({"kind":"through_all"}),
-    }
-}
-
-fn add(source: &Path, destination: &Path, cut: CircularCut, code: i32) -> Value {
-    let catalog = inspect(source);
-    let request = source.with_extension("add.json");
-    write(
-        &request,
-        &json!({"request_version":2,"center_mm":cut.center_mm,"radius_mm":cut.radius_mm,
-                "extent":extent_json(cut.extent)}),
-    );
+fn add(source: &Path, destination: &Path, cut: CutSpec, code: i32) -> Value {
+    let request = source.with_extension("request.json");
+    crate::cut_facts::write_add(source, &request, cut);
     reply(
-        cli()
-            .arg(OP)
-            .arg(source)
-            .args([
-                "--body",
-                catalog["bodies"][0]["body_id"].as_str().expect("body"),
-                "--expect-version",
-                catalog["content_version"].as_str().expect("version"),
-                "--request",
-            ])
-            .arg(request)
-            .arg("-o")
-            .arg(destination)
-            .arg("--json")
-            .output()
-            .expect("cut"),
-        OP,
+        transaction::command(
+            source,
+            inspect(source)["content_version"]
+                .as_str()
+                .expect("version"),
+            &request,
+            destination,
+        )
+        .output()
+        .expect("edit"),
+        "edit",
         code,
     )
 }
 
 /// A plate built through the real CLI, one request v2 per link.
-fn build(root: &Path, tools: &[CircularCut]) -> PathBuf {
+fn build(root: &Path, tools: &[CutSpec]) -> PathBuf {
     let mut source = root.join("plate.fcad");
     write_plate_document(&source, SIZE[0], SIZE[1], SIZE[2]);
     for (i, tool) in tools.iter().enumerate() {
         let next = root.join(format!("link-{}.fcad", i + 1));
-        let result = add(&source, &next, *tool, 0);
-        assert_eq!(result["result"]["extent"], extent_json(tool.extent));
+        add(&source, &next, *tool, 0);
+        assert_eq!(
+            history::ordered(&next).last().expect("Cut").extent,
+            tool.extent
+        );
         source = next;
     }
     source
@@ -82,36 +67,24 @@ fn build(root: &Path, tools: &[CircularCut]) -> PathBuf {
 fn edit(
     source: &Path,
     destination: &Path,
-    saved: &SavedCircularCut,
-    cut: CircularCut,
-    version: u32,
+    saved: &CutObservation,
+    cut: CutSpec,
     code: i32,
 ) -> Value {
-    let catalog = inspect(source);
     let request = source.with_extension("edit.json");
-    let mut body = json!({"request_version":version,"tool_curve_id":saved.tool_curve,
-        "center_mm":cut.center_mm,"radius_mm":cut.radius_mm});
-    match version {
-        1 => body["depth_mm"] = json!(cut.extent.blind_depth_mm().expect("v1 is Blind")),
-        _ => body["extent"] = extent_json(cut.extent),
-    }
-    write(&request, &body);
+    crate::cut_facts::write_edit(&request, saved, cut);
     reply(
-        cli()
-            .arg(EDIT)
-            .arg(source)
-            .arg("--feature")
-            .arg(saved.feature.to_string())
-            .arg("--expect-version")
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(request)
-            .arg("-o")
-            .arg(destination)
-            .arg("--json")
-            .output()
-            .expect("edit"),
-        EDIT,
+        transaction::command(
+            source,
+            inspect(source)["content_version"]
+                .as_str()
+                .expect("version"),
+            &request,
+            destination,
+        )
+        .output()
+        .expect("edit"),
+        "edit",
         code,
     )
 }
@@ -166,7 +139,7 @@ fn floor_names(path: &Path, feature: ObjectId) -> Vec<TopologyRef> {
 /// the Cut's `schema_version` column when its end changes layout, the one
 /// `feature.through-all.v1` index row when first needed, the added refs and
 /// `meta.modified_at`. Every other cell and every rowid is unchanged.
-fn only_the_cut(source: &Path, copy: &Path, saved: &SavedCircularCut, added: usize) {
+fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation, added: usize) {
     use rusqlite::types::Value as Sql;
     let a = tables(source);
     let b = tables(copy);
@@ -216,156 +189,6 @@ fn only_the_cut(source: &Path, copy: &Path, saved: &SavedCircularCut, added: usi
 }
 
 #[test]
-fn through_all_discovery_and_requests_without_kernel() {
-    let root = tempfile::tempdir().expect("root");
-    let tools = tools(4);
-    let path = history::fixture(root.path(), &tools);
-    let before = std::fs::read(&path).expect("bytes");
-    let catalog = inspect(&path);
-    let target = &catalog["bodies"][0]["cut_edit_v2"]["target"];
-    assert_eq!(target["request_versions"], json!([1, 2]));
-    let listed = target["tools"].as_array().expect("tools");
-    assert_eq!(listed.len(), 4);
-    for (tool, listed) in tools.iter().zip(listed) {
-        assert_eq!(listed["extent"], extent_json(tool.extent));
-        assert!(
-            listed.get("depth_mm").is_none(),
-            "_v2 has only the explicit end"
-        );
-    }
-    let saved: Vec<_> = catalog["features"]
-        .as_array()
-        .expect("features")
-        .iter()
-        .filter(|f| !f["circular_cut_edit_v2"]["saved"].is_null())
-        .map(|f| f["circular_cut_edit_v2"]["saved"].clone())
-        .collect();
-    assert_eq!(saved.len(), 4);
-    for s in &saved {
-        let through = s["extent"]["kind"] == "through_all";
-        assert_eq!(
-            s["request_versions"],
-            if through { json!([2]) } else { json!([1, 2]) }
-        );
-        assert!(s.get("depth_mm").is_none());
-        if through {
-            assert_eq!(s["leaves_a_floor"], json!(false));
-            assert!(s["floor_reference_id"].is_null());
-            assert_eq!(s["through_allowed"], json!(true));
-        }
-    }
-    let valid = reply(
-        cli()
-            .arg("validate")
-            .arg(&path)
-            .arg("--json")
-            .output()
-            .expect("validate"),
-        "validate",
-        0,
-    );
-    assert_eq!(valid["result"]["valid"], json!(true));
-
-    // Request forms refused before any kernel or document work, in any build.
-    let never = root.path().join("never.fcad");
-    let first = history::ordered(&path).remove(0);
-    let body = catalog["bodies"][0]["body_id"]
-        .as_str()
-        .expect("body")
-        .to_owned();
-    let version = catalog["content_version"]
-        .as_str()
-        .expect("version")
-        .to_owned();
-    let curve = first.tool_curve.to_string();
-    for (op, bad) in [
-        (
-            OP,
-            json!({"request_version":3,"center_mm":[20,15],"radius_mm":1,"extent":{"kind":"through_all"}}),
-        ),
-        (
-            OP,
-            json!({"request_version":2,"center_mm":[20,15],"radius_mm":1,"depth_mm":4}),
-        ),
-        (
-            OP,
-            json!({"request_version":2,"center_mm":[20,15],"radius_mm":1,"extent":{"kind":"through_all","depth_mm":4}}),
-        ),
-        (
-            OP,
-            json!({"request_version":2,"center_mm":[20,15],"radius_mm":1,"extent":{"kind":"blind"}}),
-        ),
-        (
-            OP,
-            json!({"request_version":2,"center_mm":[20,15],"radius_mm":1,"extent":{"kind":"through"}}),
-        ),
-        (
-            OP,
-            json!({"request_version":1,"center_mm":[20,15],"radius_mm":1,"extent":{"kind":"through_all"}}),
-        ),
-        (
-            EDIT,
-            json!({"request_version":2,"tool_curve_id":curve,"center_mm":[20,15],"radius_mm":1}),
-        ),
-        (
-            EDIT,
-            json!({"request_version":2,"tool_curve_id":curve,"center_mm":[20,15],"radius_mm":1,"extent":{"kind":"through_all"},"depth_mm":4}),
-        ),
-        (
-            EDIT,
-            json!({"request_version":0,"tool_curve_id":curve,"center_mm":[20,15],"radius_mm":1,"depth_mm":4}),
-        ),
-    ] {
-        let request = root.path().join("bad.json");
-        write(&request, &bad);
-        let mut c = cli();
-        c.arg(op).arg(&path);
-        if op == OP {
-            c.args(["--body", &body]);
-        } else {
-            c.args(["--feature", &first.feature.to_string()]);
-        }
-        let refused = reply(
-            c.args(["--expect-version", &version, "--request"])
-                .arg(&request)
-                .arg("-o")
-                .arg(&never)
-                .arg("--json")
-                .output()
-                .expect("refusal"),
-            op,
-            2,
-        );
-        assert!(
-            ["input", "unsupported"].contains(&refused["error"]["kind"].as_str().expect("kind")),
-            "{bad}: {refused}"
-        );
-        assert!(!never.exists());
-    }
-    // Request v1 aimed at a ThroughAll Cut: refused. A stub refuses on its
-    // kernel first, which the job constructs before preparation.
-    assert_eq!(first.extent, CutExtent::ThroughAll);
-    let refused = edit(
-        &path,
-        &never,
-        &first,
-        CircularCut {
-            extent: CutExtent::Blind { depth_mm: 4. },
-            ..tools[0]
-        },
-        1,
-        2,
-    );
-    if native() {
-        let message = refused["error"]["message"].as_str().expect("message");
-        assert!(message.contains(&first.feature.to_string()), "{message}");
-        assert!(message.contains("request_version 2"), "{message}");
-    }
-    assert!(!never.exists());
-    assert_eq!(std::fs::read(&path).expect("bytes"), before);
-}
-
-#[test]
 fn native_through_all_survives_height_reopen_cold_and_cache() {
     if !native() {
         return;
@@ -380,7 +203,7 @@ fn native_through_all_survives_height_reopen_cold_and_cache() {
         let ordered = history::ordered(&source);
         let through: Vec<_> = ordered
             .iter()
-            .filter(|s| s.extent == CutExtent::ThroughAll)
+            .filter(|s| s.extent == CutDepth::ThroughAll)
             .map(|s| s.feature)
             .collect();
         assert!(!through.is_empty());
@@ -408,7 +231,7 @@ fn native_through_all_survives_height_reopen_cold_and_cache() {
                 assert!(floor_names(&copy, *feature).is_empty(), "no floor at {h}");
             }
             for (tool, saved) in tools.iter().zip(&ordered) {
-                if tool.extent == (CutExtent::Blind { depth_mm: SIZE[2] }) {
+                if tool.extent == (CutDepth::Blind { depth_mm: SIZE[2] }) {
                     let later = ordered
                         .iter()
                         .skip_while(|s| s.feature != saved.feature)
@@ -435,16 +258,15 @@ fn native_through_all_survives_height_reopen_cold_and_cache() {
                 BOUNDS,
                 h,
             );
-            // The reopened copy advertises exactly what can still be done.
             let next = inspect(&copy);
-            assert_eq!(next["bodies"][0]["cut_edit_v2"]["available"], json!(n < 16));
-            let editable = next["features"]
-                .as_array()
-                .expect("features")
-                .iter()
-                .filter(|f| f["circular_cut_edit_v2"]["available"] == json!(true))
-                .count();
-            assert_eq!(editable, n, "every link stays editable");
+            assert_eq!(
+                next["bodies"][0]["history"]
+                    .as_array()
+                    .expect("history")
+                    .len(),
+                n + 1
+            );
+            assert_eq!(history::ordered(&copy).len(), n);
 
             if n == 4 && artifact < 2 {
                 if let Some(dir) = std::env::var_os("FCAD_CUT_THROUGH_ALL_ARTIFACTS") {
@@ -506,19 +328,7 @@ fn native_through_all_survives_height_reopen_cold_and_cache() {
         let first = history::ordered(&source).remove(0);
         let mut moved = tools.clone();
         moved[0].center_mm[0] += 0.25;
-        let p = prepare_cut_parameters(
-            &d,
-            first.feature,
-            &ferritecad_document::CircularCutEdit {
-                tool_curve: first.tool_curve,
-                center_mm: moved[0].center_mm,
-                radius_mm: moved[0].radius_mm,
-                extent: moved[0].extent,
-                vocabulary: ExtentVocabulary::BlindOrThroughAll,
-            },
-        )
-        .expect("first link");
-        d.write_cut_parameters(&p).expect("write");
+        d.write_changes(&moved[0].changes(&first)).expect("write");
         d.close().expect("close");
         let mut expected = vec![Miss; n + 1];
         expected[0] = Hit;
@@ -548,18 +358,18 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
             let tool = tools[index];
             let later = n - index;
             match tool.extent {
-                CutExtent::ThroughAll => {
+                CutDepth::ThroughAll => {
                     // ThroughAll -> pocket: its own floor and one origin floor
                     // at every later producer, and back to payload v2.
                     let copy = root.path().join(format!("pocket-{index}.fcad"));
-                    let changed = CircularCut {
+                    let changed = CutSpec {
                         center_mm: [tool.center_mm[0] - 0.25, tool.center_mm[1] + 0.125],
                         radius_mm: tool.radius_mm + 0.125,
-                        extent: CutExtent::Blind { depth_mm: 2.75 },
+                        extent: CutDepth::Blind { depth_mm: 2.75 },
                     };
-                    let out = edit(&source, &copy, saved, changed, 2, 0);
-                    assert_eq!(out["result"]["extent"], extent_json(changed.extent));
-                    assert_eq!(out["result"]["leaves_a_floor"], json!(true));
+                    edit(&source, &copy, saved, changed, 0);
+                    assert_eq!(history::ordered(&copy)[index].extent, changed.extent);
+                    assert!(!floor_names(&copy, saved.feature).is_empty());
                     only_the_cut(&source, &copy, saved, later);
                     assert_eq!(floor_names(&copy, saved.feature).len(), later);
                     let mut all = tools.clone();
@@ -571,34 +381,26 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                         BOUNDS,
                         SIZE[2],
                     );
-                    // Request v1 cannot state this Cut's intent.
-                    let refused = edit(&source, &never, saved, changed, 1, 2);
-                    let message = refused["error"]["message"].as_str().expect("message");
-                    assert!(
-                        message.contains(&saved.feature.to_string())
-                            && message.contains("request_version 2"),
-                        "{message}"
-                    );
-                    assert!(!never.exists());
+
                     // Numbers only, intent kept: nothing added, layout unchanged.
                     let copy = root.path().join(format!("moved-{index}.fcad"));
-                    let moved = CircularCut {
+                    let moved = CutSpec {
                         radius_mm: tool.radius_mm - 0.25,
                         ..tool
                     };
-                    edit(&source, &copy, saved, moved, 2, 0);
+                    edit(&source, &copy, saved, moved, 0);
                     only_the_cut(&source, &copy, saved, 0);
                 }
-                CutExtent::Blind { depth_mm } if depth_mm == SIZE[2] => {
+                CutDepth::Blind { depth_mm } if depth_mm == SIZE[2] => {
                     // Blind through -> ThroughAll keeps every name; it stays
                     // through after the base grows; and back again keeps them.
                     let copy = root.path().join(format!("intent-{index}.fcad"));
-                    let changed = CircularCut {
-                        extent: CutExtent::ThroughAll,
+                    let changed = CutSpec {
+                        extent: CutDepth::ThroughAll,
                         ..tool
                     };
-                    let out = edit(&source, &copy, saved, changed, 2, 0);
-                    assert_eq!(out["result"]["leaves_a_floor"], json!(false));
+                    edit(&source, &copy, saved, changed, 0);
+                    assert!(floor_names(&copy, saved.feature).is_empty());
                     only_the_cut(&source, &copy, saved, 0);
                     let mut all = tools.clone();
                     all[index] = changed;
@@ -613,22 +415,21 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                         14.25,
                     );
                     let back = root.path().join(format!("back-{index}.fcad"));
-                    edit(&copy, &back, &history::ordered(&copy)[index], tool, 2, 0);
+                    edit(&copy, &back, &history::ordered(&copy)[index], tool, 0);
                     only_the_cut(&copy, &back, &history::ordered(&copy)[index], 0);
                 }
-                CutExtent::Blind { .. } => {
+                CutDepth::Blind { .. } => {
                     // A pocket whose floor is named refuses ThroughAll during
-                    // preparation, naming the Cut and every protected UUID.
+                    // rebuild, naming the Cut and every protected UUID.
                     assert!(!saved.protected_floor_references.is_empty());
                     let refused = edit(
                         &source,
                         &never,
                         saved,
-                        CircularCut {
-                            extent: CutExtent::ThroughAll,
+                        CutSpec {
+                            extent: CutDepth::ThroughAll,
                             ..tool
                         },
-                        2,
                         2,
                     );
                     let message = refused["error"]["message"].as_str().expect("message");
@@ -644,8 +445,8 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
         let blind_root = tempfile::tempdir().expect("root");
         let blind = build(
             blind_root.path(),
-            &[CircularCut {
-                extent: CutExtent::Blind { depth_mm: SIZE[2] },
+            &[CutSpec {
+                extent: CutDepth::Blind { depth_mm: SIZE[2] },
                 ..tools[0]
             }],
         );
@@ -655,11 +456,10 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
             &blind,
             &copy,
             saved,
-            CircularCut {
-                extent: CutExtent::ThroughAll,
+            CutSpec {
+                extent: CutDepth::ThroughAll,
                 ..tools[0]
             },
-            2,
             0,
         );
         only_the_cut(&blind, &copy, saved, 0);
@@ -686,265 +486,5 @@ fn occt_without_solver_keeps_through_all_through() {
         &tools,
         BOUNDS,
         14.25,
-    );
-}
-
-/// The pre-§26H v1 discovery, as a consumer written against it reads it:
-/// `depth_mm` is a required number, unknown fields are ignored.
-mod old_v1 {
-    use serde::Deserialize;
-    #[derive(Deserialize, Debug, PartialEq)]
-    pub struct Tool {
-        pub feature_id: String,
-        pub center_mm: [f64; 2],
-        pub radius_mm: f64,
-        pub depth_mm: f64,
-    }
-    #[derive(Deserialize)]
-    pub struct Target {
-        pub tools: Vec<Tool>,
-        pub existing_cut: Option<Tool>,
-        pub height_mm: f64,
-    }
-    #[derive(Deserialize)]
-    pub struct CutEdit {
-        pub available: bool,
-        pub refusal: Option<String>,
-        pub target: Option<Target>,
-    }
-    #[derive(Deserialize)]
-    pub struct Saved {
-        pub feature_id: String,
-        pub tools: Vec<Tool>,
-        pub neighboring_tool: Option<Tool>,
-        pub depth_mm: f64,
-        pub leaves_a_floor: bool,
-    }
-    #[derive(Deserialize)]
-    pub struct CircularCutEdit {
-        pub available: bool,
-        pub refusal: Option<String>,
-        pub saved: Option<Saved>,
-    }
-    #[derive(Deserialize)]
-    pub struct Feature {
-        pub name: Option<String>,
-        pub circular_cut_edit: CircularCutEdit,
-    }
-    #[derive(Deserialize)]
-    pub struct Body {
-        pub cut_edit: CutEdit,
-    }
-    #[derive(Deserialize)]
-    pub struct Inspection {
-        pub features: Vec<Feature>,
-        pub bodies: Vec<Body>,
-    }
-}
-
-/// A consumer that reads only `_v2` blocks performs the whole route: add,
-/// edit, base height and base Sketch coordinates.
-#[test]
-fn native_new_consumer_routes_add_edit_height_and_sketch_through_v2() {
-    if !native() {
-        return;
-    }
-    let root = tempfile::tempdir().expect("root");
-    let plate = root.path().join("plate.fcad");
-    write_plate_document(&plate, SIZE[0], SIZE[1], SIZE[2]);
-    let mut source = plate;
-    for (i, tool) in tools(3).into_iter().enumerate() {
-        let c = inspect(&source);
-        let target = &c["bodies"][0]["cut_edit_v2"];
-        assert_eq!(target["available"], json!(true));
-        assert_eq!(target["target"]["request_versions"], json!([1, 2]));
-        let next = root.path().join(format!("v2-{i}.fcad"));
-        add(&source, &next, tool, 0);
-        source = next;
-    }
-    // Edit: the saved ThroughAll Cut, from its `_v2` block, back to a pocket.
-    let c = inspect(&source);
-    let saved = c["features"]
-        .as_array()
-        .expect("features")
-        .iter()
-        .map(|f| &f["circular_cut_edit_v2"]["saved"])
-        .find(|s| s["extent"]["kind"] == "through_all")
-        .expect("ThroughAll saved")
-        .clone();
-    assert_eq!(saved["request_versions"], json!([2]));
-    let request = root.path().join("v2-edit.json");
-    write(
-        &request,
-        &json!({"request_version":2,"tool_curve_id":saved["tool_curve_id"],
-            "center_mm":saved["center_mm"],"radius_mm":saved["radius_mm"],
-            "extent":{"kind":"blind","depth_mm":2.5}}),
-    );
-    let edited = root.path().join("v2-edited.fcad");
-    reply(
-        cli()
-            .arg(EDIT)
-            .arg(&source)
-            .args(["--feature", saved["feature_id"].as_str().expect("id")])
-            .args([
-                "--expect-version",
-                c["content_version"].as_str().expect("v"),
-            ])
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&edited)
-            .arg("--json")
-            .output()
-            .expect("edit"),
-        EDIT,
-        0,
-    );
-    // Height, from its expression slot.
-    let grown = root.path().join("v2-grown.fcad");
-    height(&source, &grown, 14.25, 0);
-    // Move the base's saved Lines while the structural Cut reader keeps its tools.
-    let c = inspect(&grown);
-    let saved = history::ordered(&grown);
-    assert_eq!(saved.len(), 3);
-    let base = c["sketches"]
-        .as_array()
-        .expect("sketches")
-        .iter()
-        .find(|s| s["sketch_id"] == saved[0].profile_sketch.to_string())
-        .expect("base");
-    let points: Vec<[f64; 2]> = base["curves"]
-        .as_array()
-        .expect("curves")
-        .iter()
-        .map(|v| {
-            let [x, y] = [0, 1].map(|a| v["geometry"]["start_mm"][a].as_f64().expect("mm"));
-            [
-                if x == 0. { -2.5 } else { 81.25 },
-                if y == 0. { -1.5 } else { 52. },
-            ]
-        })
-        .collect();
-    let request = root.path().join("v2-sketch.json");
-    write(&request, &transaction::line_changes(base, &points));
-    let moved = root.path().join("v2-sketch.fcad");
-    reply(
-        transaction::command(
-            &grown,
-            c["content_version"].as_str().expect("version"),
-            &request,
-            &moved,
-        )
-        .output()
-        .expect("sketch"),
-        "edit",
-        0,
-    );
-    measure_history_at(&moved, &tools(3), [[-2.5, -1.5], [81.25, 52.]], 14.25, None);
-    check_history_mesh_at(
-        &mesh(&moved, &root.path().join("v2-sketch.stl")),
-        &tools(3),
-        [[-2.5, -1.5], [81.25, 52.]],
-        14.25,
-    );
-}
-
-#[test]
-fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
-    let root = tempfile::tempdir().expect("root");
-    // Blind only: every v1 block is present, typed and exact.
-    let blind = history::tools(4);
-    let blind_path = history::fixture(root.path(), &blind);
-    let json = inspect(&blind_path);
-    let old: old_v1::Inspection = serde_json::from_value(json.clone()).expect("old DTO");
-    let expected: Vec<(f64, f64)> = blind
-        .iter()
-        .map(|t| (t.radius_mm, t.extent.blind_depth_mm().expect("blind")))
-        .collect();
-    let read = |tools: &[old_v1::Tool]| -> Vec<(f64, f64)> {
-        tools.iter().map(|t| (t.radius_mm, t.depth_mm)).collect()
-    };
-    let target = old.bodies[0]
-        .cut_edit
-        .target
-        .as_ref()
-        .expect("v1 add target");
-    assert!(old.bodies[0].cut_edit.available);
-    assert_eq!(read(&target.tools), expected);
-    assert_eq!(target.height_mm, SIZE[2]);
-    assert!(target.existing_cut.is_none(), "N>1");
-    let cuts: Vec<_> = old
-        .features
-        .iter()
-        .filter_map(|f| f.circular_cut_edit.saved.as_ref())
-        .collect();
-    assert_eq!(cuts.len(), 4);
-    for saved in &cuts {
-        assert_eq!(read(&saved.tools), expected);
-        assert!(saved.neighboring_tool.is_none(), "N≠2");
-        let tool = saved
-            .tools
-            .iter()
-            .find(|t| t.feature_id == saved.feature_id)
-            .expect("self");
-        assert_eq!(saved.depth_mm, tool.depth_mm);
-        assert_eq!(saved.leaves_a_floor, tool.depth_mm < SIZE[2]);
-    }
-    // The v1 blocks carry nothing new, and `_v2` says the same thing explicitly.
-    let v1_tool = &json["bodies"][0]["cut_edit"]["target"]["tools"][0];
-    assert!(v1_tool.get("extent").is_none() && v1_tool["depth_mm"].is_f64());
-    assert!(
-        json["bodies"][0]["cut_edit"]["target"]
-            .get("request_versions")
-            .is_none()
-    );
-    let v2 = &json["bodies"][0]["cut_edit_v2"]["target"]["tools"];
-    for (i, tool) in v2.as_array().expect("v2").iter().enumerate() {
-        assert_eq!(tool["extent"], extent_json(blind[i].extent));
-    }
-
-    // With a ThroughAll Cut: the old DTO still deserialises, and every block
-    // that would need a depth is unavailable, never a height posing as Blind.
-    let root = tempfile::tempdir().expect("root");
-    let mixed = tools(4);
-    let mixed_path = history::fixture(root.path(), &mixed);
-    let json = inspect(&mixed_path);
-    let old: old_v1::Inspection =
-        serde_json::from_value(json.clone()).expect("old DTO still reads");
-    let body = &old.bodies[0].cut_edit;
-    assert!(!body.available && body.target.is_none());
-    assert!(
-        body.refusal
-            .as_deref()
-            .expect("reason")
-            .contains("cut_edit_v2")
-    );
-    for feature in old
-        .features
-        .iter()
-        .filter(|f| f.name.as_deref() == Some("Cut"))
-    {
-        let edit = &feature.circular_cut_edit;
-        assert!(
-            !edit.available && edit.saved.is_none(),
-            "every link of the history"
-        );
-        assert!(
-            edit.refusal
-                .as_deref()
-                .expect("reason")
-                .contains("circular_cut_edit_v2")
-        );
-    }
-    // The new form describes the same history and every operation on it.
-    assert_eq!(json["bodies"][0]["cut_edit_v2"]["available"], json!(true));
-    assert_eq!(
-        json["features"]
-            .as_array()
-            .expect("features")
-            .iter()
-            .filter(|f| f["circular_cut_edit_v2"]["available"] == json!(true))
-            .count(),
-        4
     );
 }

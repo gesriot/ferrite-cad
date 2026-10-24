@@ -133,10 +133,36 @@ Python with the same float expression, not trusted from the report.
 
 ```python
 # FCAD_28H_AGENT_RECIPE
-import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid, time
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28h-"))
 OP = "edit"
+
+def new_id():
+    raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
+    raw[6] = (raw[6] & 15) | 112
+    raw[8] = (raw[8] & 63) | 128
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+def edge_at(catalog, corner):
+    body = catalog["bodies"][0]
+    base = next(f for f in catalog["features"] if f["feature_id"] == body["history"][0])
+    sketch = next(s for s in catalog["sketches"] if s["sketch_id"] == base["profile_sketch_id"])
+    joint = sorted(c["curve_id"] for c in sketch["curves"] if not c["construction"]
+                   and c["geometry"]["kind"] == "line"
+                   and corner in [c["geometry"]["start_mm"], c["geometry"]["end_mm"]])
+    assert len(joint) == 2, (corner, joint)
+    return {"edge": {"feature_id": base["feature_id"], "joint": joint}}
+
+def addition(catalog, kind, edge, value):
+    field = "radius" if kind == "fillet" else "distance"
+    return {"request_version": 1, "changes": [{"kind": "add_feature", "object": new_id(),
+        "body": catalog["bodies"][0]["body_id"], "name": kind.title(),
+        "feature": {"kind": kind, "edge": {"feature": edge["feature_id"], "joint": edge["joint"]},
+                    field: {"value": value, "unit": "mm"}}}]}
+
+def tip(catalog, kind="fillets"):
+    return next(f for f in catalog[kind] if f["feature_id"] == catalog["bodies"][0]["history"][-1])
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -244,14 +270,12 @@ def measured(copy, rounded):
 def fillet(source, corner, radius, out):
     catalog = inspect(source)
     body = catalog["bodies"][0]
-    chosen = next(c for c in body["fillet_edge"]["target"]["candidates"]
-                  if c["stored_corner_mm"] == corner)
+    chosen = edge_at(catalog, corner)
     request = root / "fillet.json"
-    request.write_text(json.dumps({"request_version": 1, "edge": chosen["edge"],
-                                   "radius_mm": radius}))
-    return geometry(["fillet-edge-copy", source, "--body", body["body_id"], "--expect-version",
-                     catalog["content_version"], "--request", request, "-o", out, "--json"],
+    request.write_text(json.dumps(addition(catalog, "fillet", chosen["edge"], radius)))
+    geometry(["edit", source, "--expect-version", catalog["content_version"], "--request", request, "-o", out, "--json"],
                     out)["result"]
+    return tip(inspect(out))
 
 # 1. A plate rounded twice (§28G): Extrude → Fillet 1 → Fillet 2 → Body tip.
 create = root / "create.json"

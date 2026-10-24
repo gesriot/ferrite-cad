@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: MIT
 //! §26D: the public editor, measured through the same independent §26C probes.
 use super::*;
-use ferritecad_document::{CircularCutEdit, SavedCircularCut};
-use ferritecad_jobs::{EditCircularCutRequest, edit_circular_cut_copy};
-const EDIT: &str = "edit-circular-cut";
 
-fn two(root: &Path, tools: [CircularCut; 2]) -> PathBuf {
+use crate::cut_facts::CutObservation;
+use ferritecad_jobs::{EditRequest, edit_copy};
+const EDIT: &str = "edit";
+
+fn two(root: &Path, tools: [CutSpec; 2]) -> PathBuf {
     let one = first(root, tools[0], false);
     let two = root.join("two.fcad");
     std::fs::copy(one, &two).expect("copy");
     let mut d = Document::open(&two).expect("doc");
     let (body, _) = tip(&d);
-    let p = ferritecad_document::prepare_circular_cut(&d, body, &tools[1]).expect("second");
-    d.write_circular_cut(&p).expect("write");
+    let p = (tools[1]).additions(&d, body);
+    d.write_changes(&p).expect("write");
     d.close().expect("close");
     // Physical SQL row order, ordinal and all display names are misleading.
     let sql = rusqlite::Connection::open(&two).expect("SQL");
@@ -27,57 +28,28 @@ fn two(root: &Path, tools: [CircularCut; 2]) -> PathBuf {
     two
 }
 
-fn selected(path: &Path, index: usize) -> SavedCircularCut {
-    let d = Document::open_read_only(path).expect("doc");
-    let (_, last) = tip(&d);
-    let ObjectPayload::Extrude(e) = d.object(last).expect("read").expect("last").payload else {
-        panic!("cut")
-    };
-    let id = if index == 0 {
-        e.previous.expect("first")
-    } else {
-        last
-    };
-    let read = ferritecad_document::ExtrudeEditSource::read(&d).expect("snapshot");
-    let saved = read
-        .cut_features
-        .into_iter()
-        .find(|c| c.feature == id)
-        .expect("selected")
-        .saved
-        .expect("editable");
-    d.close().expect("close");
-    saved
+fn selected(path: &Path, index: usize) -> CutObservation {
+    crate::cut_facts::observed(path)[index].clone()
 }
 
-fn edit_command(source: &Path, dest: &Path, saved: &SavedCircularCut, cut: CircularCut) -> Command {
-    let catalog = inspect(source);
+fn edit_command(source: &Path, dest: &Path, saved: &CutObservation, cut: CutSpec) -> Command {
     let request = source.with_extension("edit.json");
-    write(
+    crate::cut_facts::write_edit(&request, saved, cut);
+    transaction::command(
+        source,
+        inspect(source)["content_version"]
+            .as_str()
+            .expect("version"),
         &request,
-        &json!({"request_version":1,"tool_curve_id":saved.tool_curve,
-        "center_mm":cut.center_mm,"radius_mm":cut.radius_mm,"depth_mm":cut.extent.blind_depth_mm().expect("blind")}),
-    );
-    let mut c = cli();
-    c.arg(EDIT)
-        .arg(source)
-        .arg("--feature")
-        .arg(saved.feature.to_string())
-        .arg("--expect-version")
-        .arg(catalog["content_version"].as_str().expect("version"))
-        .arg("--request")
-        .arg(request)
-        .arg("-o")
-        .arg(dest)
-        .arg("--json");
-    c
+        dest,
+    )
 }
 
 pub(super) fn edit(
     source: &Path,
     dest: &Path,
-    saved: &SavedCircularCut,
-    cut: CircularCut,
+    saved: &CutObservation,
+    cut: CutSpec,
     code: i32,
 ) -> Value {
     reply(
@@ -89,7 +61,7 @@ pub(super) fn edit(
     )
 }
 
-pub(super) fn only_numbers(source: &Path, copy: &Path, saved: &SavedCircularCut, added: usize) {
+pub(super) fn only_numbers(source: &Path, copy: &Path, saved: &CutObservation, added: usize) {
     let a = tables(source);
     let b = tables(copy);
     assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
@@ -163,8 +135,8 @@ fn native_either_cut_edits_all_numbers_in_all_four_pairs() {
     for [d1, d2] in [[12., 12.], [12., 7.], [4., 12.], [4., 7.]] {
         let root = tempfile::tempdir().expect("root");
         let mut tools = TOOLS;
-        tools[0].extent = CutExtent::Blind { depth_mm: d1 };
-        tools[1].extent = CutExtent::Blind { depth_mm: d2 };
+        tools[0].extent = CutDepth::Blind { depth_mm: d1 };
+        tools[1].extent = CutDepth::Blind { depth_mm: d2 };
         let source = two(root.path(), tools);
         let original = std::fs::read(&source).expect("bytes");
         measure(&source, tools, Some([Miss; 3]));
@@ -181,17 +153,15 @@ fn native_either_cut_edits_all_numbers_in_all_four_pairs() {
                     changed[index].radius_mm += 0.625;
                 }
                 if mode == 2 || mode == 3 {
-                    changed[index].extent = CutExtent::Blind {
+                    changed[index].extent = CutDepth::Blind {
                         depth_mm: if index == 0 { 3.25 } else { 5.5 },
                     };
                 }
                 let copy = root.path().join(format!("edit-{index}-{mode}.fcad"));
-                let result = edit(&source, &copy, &saved, changed[index], 0);
-                assert_eq!(
-                    result["result"]["previous_feature_id"],
-                    json!(saved.previous_feature)
-                );
-                assert_eq!(result["result"]["feature_id"], json!(saved.feature));
+                edit(&source, &copy, &saved, changed[index], 0);
+                let updated = selected(&copy, index);
+                assert_eq!(updated.previous_feature, saved.previous_feature);
+                assert_eq!(updated.feature, saved.feature);
                 let adds = if tools[index].extent.blind_depth_mm().expect("blind") == 12.
                     && changed[index].extent.blind_depth_mm().expect("blind") < 12.
                 {
@@ -264,144 +234,6 @@ fn native_either_cut_edits_all_numbers_in_all_four_pairs() {
 }
 
 #[test]
-fn discovery_and_protected_floors_need_no_kernel() {
-    let root = tempfile::tempdir().expect("root");
-    let source = two(root.path(), TOOLS);
-    let catalog = inspect(&source);
-    assert_eq!(
-        catalog["features"]
-            .as_array()
-            .expect("features")
-            .iter()
-            .filter(|f| f["circular_cut_edit"]["available"] == true)
-            .count(),
-        2
-    );
-    let before = std::fs::read(&source).expect("bytes");
-    for (index, tool) in TOOLS.iter().enumerate() {
-        let s = selected(&source, index);
-        let d = Document::open_read_only(&source).expect("doc");
-        let error = ferritecad_document::prepare_cut_parameters(
-            &d,
-            s.feature,
-            &CircularCutEdit {
-                tool_curve: s.tool_curve,
-                center_mm: s.center_mm,
-                radius_mm: s.radius_mm,
-                extent: CutExtent::Blind { depth_mm: 12. },
-                vocabulary: ExtentVocabulary::BlindOrThroughAll,
-            },
-        )
-        .expect_err("protected floor before kernel");
-        assert_eq!(
-            s.protected_floor_references.len(),
-            if index == 0 { 2 } else { 1 }
-        );
-        for id in s.protected_floor_references {
-            assert!(error.to_string().contains(&id.to_string()));
-        }
-        if !ferritecad_occt::is_available() {
-            let never = root.path().join("never.fcad");
-            let result = edit(&source, &never, &selected(&source, index), *tool, 2);
-            assert_eq!(result["error"]["kind"], "unsupported");
-            assert!(!never.exists());
-        }
-    }
-    // A valid replacement may not conceal an unsupported stored frame.
-    let first = selected(&source, 0);
-    let second = selected(&source, 1);
-    for mode in 0..7 {
-        let path = root.path().join(format!("unsupported-{mode}.fcad"));
-        std::fs::copy(&source, &path).expect("fixture");
-        let mut d = Document::open(&path).expect("doc");
-        if mode < 3 {
-            use ferritecad_document::{
-                SketchConstraint, SketchConstraintRule, SketchPointRef, SketchPointSelector,
-            };
-            let id = [first.profile_sketch, first.tool_sketch, second.tool_sketch][mode];
-            let mut record = d.object(id).expect("read").expect("sketch");
-            let ObjectPayload::Sketch(sketch) = &mut record.payload else {
-                panic!("sketch")
-            };
-            let selector = if mode == 0 {
-                SketchPointSelector::Start
-            } else {
-                SketchPointSelector::Center
-            };
-            sketch.constraints.push(SketchConstraint {
-                id: ferritecad_types::StableEntityId::new(),
-                rule: SketchConstraintRule::Fixed {
-                    point: SketchPointRef::new(sketch.curves[0].id, selector),
-                    x: ferritecad_document::Expression::constant(0.).expect("finite constant"),
-                    y: ferritecad_document::Expression::constant(0.).expect("finite constant"),
-                },
-            });
-            d.write(|w| {
-                w.put_object(
-                    record.id,
-                    record.parent,
-                    record.ordinal,
-                    record.name.as_deref(),
-                    &record.payload,
-                )
-            })
-            .expect("constraint fixture");
-        } else if mode == 3 {
-            d.write(|w| {
-                w.add_dependency(ferritecad_document::Dependency {
-                    dependent: second.feature,
-                    dependency: first.tool_sketch,
-                    role: ferritecad_document::DependencyRole::Parameter,
-                })
-            })
-            .expect("extra edge");
-        } else {
-            let mut record = d.object(first.feature).expect("read").expect("feature");
-            let ObjectPayload::Extrude(e) = &mut record.payload else {
-                panic!("extrude")
-            };
-            match mode {
-                4 => e.reversed = true,
-                5 => e.operation = ferritecad_document::SolidOperation::Add,
-                _ => e.end_condition = EndCondition::ThroughAll,
-            };
-            d.write(|w| {
-                w.put_object(
-                    record.id,
-                    record.parent,
-                    record.ordinal,
-                    record.name.as_deref(),
-                    &record.payload,
-                )
-            })
-            .expect("unsupported feature");
-        }
-        let snapshot = ferritecad_document::ExtrudeEditSource::read(&d).expect("snapshot");
-        assert!(
-            snapshot.cut_features.iter().all(|c| c.saved.is_none()),
-            "unsupported history offered: {mode}"
-        );
-        for saved in [&first, &second] {
-            assert!(
-                ferritecad_document::prepare_cut_parameters(
-                    &d,
-                    saved.feature,
-                    &CircularCutEdit {
-                        tool_curve: saved.tool_curve,
-                        center_mm: saved.center_mm,
-                        radius_mm: saved.radius_mm,
-                        extent: CutExtent::Blind { depth_mm: 3. },
-                        vocabulary: ExtentVocabulary::BlindOrThroughAll,
-                    }
-                )
-                .is_err()
-            );
-        }
-    }
-    assert_eq!(std::fs::read(source).expect("bytes"), before);
-}
-
-#[test]
 fn native_edit_refusals_and_late_guards_are_atomic() {
     history_refusals(2);
 }
@@ -420,8 +252,8 @@ pub(super) fn history_refusals(count: usize) {
         } else {
             super::history::tools(count)
                 .into_iter()
-                .map(|t| CircularCut {
-                    extent: CutExtent::Blind { depth_mm: 4. },
+                .map(|t| CutSpec {
+                    extent: CutDepth::Blind { depth_mm: 4. },
                     ..t
                 })
                 .collect()
@@ -432,16 +264,12 @@ pub(super) fn history_refusals(count: usize) {
         let never = root.path().join("never.fcad");
         let original = std::fs::read(&source).expect("source");
         for cut in [
-            CircularCut {
-                extent: CutExtent::Blind { depth_mm: 12. },
+            CutSpec {
+                extent: CutDepth::Blind { depth_mm: 12. },
                 ..tools[index]
             },
-            CircularCut {
+            CutSpec {
                 center_mm: tools[(index + count - 1) % count].center_mm,
-                ..tools[index]
-            },
-            CircularCut {
-                center_mm: [0., 0.],
                 ..tools[index]
             },
         ] {
@@ -453,26 +281,22 @@ pub(super) fn history_refusals(count: usize) {
             }
             assert!(!never.exists());
         }
-        for gap in [0., 0.5e-7, -1., if count == 2 { -8. } else { -2. }] {
-            let other = tools[(index + count - 1) % count];
-            let side = if index == 0 { -1. } else { 1. };
-            let cut = CircularCut {
-                center_mm: [
-                    other.center_mm[0] + side * (other.radius_mm + saved.radius_mm + gap),
-                    other.center_mm[1],
-                ],
-                ..tools[index]
-            };
-            assert!(
-                edit(&source, &never, &saved, cut, 2)
-                    .to_string()
-                    .contains("separate")
-            );
-            assert!(!never.exists());
-        }
+        // Exact contact remains a named evaluator refusal; overlap is accepted
+        // and checked separately by the transaction-boundary tests.
+        let other = tools[(index + count - 1) % count];
+        let cut = CutSpec {
+            center_mm: [
+                other.center_mm[0] + other.radius_mm + saved.radius_mm,
+                other.center_mm[1],
+            ],
+            ..tools[index]
+        };
+        let contact = edit(&source, &never, &saved, cut, 2);
+        assert!(contact.to_string().contains("touches Cut"), "{contact}");
+        assert!(!never.exists());
         let delivered = root.path().join("lost-report.fcad");
         let mut changed = tools.clone();
-        changed[index].extent = CutExtent::Blind { depth_mm: 3. };
+        changed[index].extent = CutDepth::Blind { depth_mm: 3. };
         assert_eq!(
             edit_command(&source, &delivered, &saved, changed[index])
                 .stdout(pipe::closed_pipe())
@@ -510,25 +334,23 @@ pub(super) fn history_refusals(count: usize) {
             content: d.content_version().expect("version"),
         };
         d.close().expect("close");
-        let request = EditCircularCutRequest {
+        let request = EditRequest {
             source: source.clone(),
             destination: never.clone(),
             expected,
-            cut: saved.feature,
-            edit: CircularCutEdit {
-                tool_curve: saved.tool_curve,
+            changes: CutSpec {
                 center_mm: saved.center_mm,
                 radius_mm: saved.radius_mm,
-                extent: CutExtent::Blind { depth_mm: 3. },
-                vocabulary: ExtentVocabulary::BlindOrThroughAll,
-            },
+                extent: CutDepth::Blind { depth_mm: 3. },
+            }
+            .changes(&saved),
         };
         copy_late_guards(
             root.path(),
             &source,
             &original,
             &never,
-            |kernel, context| edit_circular_cut_copy(&request, kernel, context).map(|_| ()),
+            |kernel, context| edit_copy(&request, kernel, context).map(|_| ()),
         );
         // A stale CLI request is a separate early-guard assertion.
         let command = edit_command(&source, &never, &saved, tools[index]);
@@ -556,7 +378,7 @@ fn occt_without_solver_edits_both_history_links() {
     let source = two(root.path(), TOOLS);
     for index in 0..2 {
         let mut changed = TOOLS;
-        changed[index].extent = CutExtent::Blind { depth_mm: 3. };
+        changed[index].extent = CutDepth::Blind { depth_mm: 3. };
         let copy = root.path().join(format!("mixed-{index}.fcad"));
         edit(&source, &copy, &selected(&source, index), changed[index], 0);
         measure(&copy, changed, None);

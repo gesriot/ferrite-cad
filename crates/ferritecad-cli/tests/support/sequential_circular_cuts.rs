@@ -1,56 +1,46 @@
 // SPDX-License-Identifier: MIT
 //! §26C. Process, SQL, semantic geometry and independent STL evidence.
 use super::*;
-use ferritecad_document::{CapSide, CircularCut, EndCondition, Expression};
+use crate::cut_facts::CutSpec;
+use ferritecad_document::{CapSide, EndCondition, Expression};
 use ferritecad_eval::CacheOutcome;
 use ferritecad_kernel::{FaceSurface, TessellationParams};
 use ferritecad_types::ObjectId;
 
 const SIZE: [f64; 3] = [80., 50., 12.];
-const TOOLS: [CircularCut; 2] = [
-    CircularCut {
+const TOOLS: [CutSpec; 2] = [
+    CutSpec {
         center_mm: [20., 20.],
         radius_mm: 5.,
-        extent: CutExtent::Blind { depth_mm: 4. },
+        extent: CutDepth::Blind { depth_mm: 4. },
     },
-    CircularCut {
+    CutSpec {
         center_mm: [55., 30.],
         radius_mm: 7.,
-        extent: CutExtent::Blind { depth_mm: 7. },
+        extent: CutDepth::Blind { depth_mm: 7. },
     },
 ];
 
-fn ask(source: &Path, destination: &Path, cut: CircularCut, code: i32) -> Value {
-    let catalog = inspect(source);
+fn ask(source: &Path, destination: &Path, cut: CutSpec, code: i32) -> Value {
     let request = source.with_extension("request.json");
-    write(
-        &request,
-        &json!({"request_version":1,"center_mm":cut.center_mm,
-        "radius_mm":cut.radius_mm,"depth_mm":cut.extent.blind_depth_mm().expect("blind")}),
-    );
+    crate::cut_facts::write_add(source, &request, cut);
     reply(
-        cli()
-            .arg(OP)
-            .arg(source)
-            .args([
-                "--body",
-                catalog["bodies"][0]["body_id"].as_str().expect("body"),
-                "--expect-version",
-                catalog["content_version"].as_str().expect("version"),
-                "--request",
-            ])
-            .arg(request)
-            .arg("-o")
-            .arg(destination)
-            .arg("--json")
-            .output()
-            .expect("cut"),
-        OP,
+        transaction::command(
+            source,
+            inspect(source)["content_version"]
+                .as_str()
+                .expect("version"),
+            &request,
+            destination,
+        )
+        .output()
+        .expect("edit"),
+        "edit",
         code,
     )
 }
 
-fn first(root: &Path, tool: CircularCut, native_build: bool) -> PathBuf {
+fn first(root: &Path, tool: CutSpec, native_build: bool) -> PathBuf {
     let plate = root.join("plate.fcad");
     write_plate_document(&plate, SIZE[0], SIZE[1], SIZE[2]);
     let source = root.join("first.fcad");
@@ -66,8 +56,8 @@ fn first(root: &Path, tool: CircularCut, native_build: bool) -> PathBuf {
             .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
             .expect("body")
             .id;
-        let p = ferritecad_document::prepare_circular_cut(&d, body, &tool).expect("prepare");
-        d.write_circular_cut(&p).expect("write");
+        let p = (tool).additions(&d, body);
+        d.write_changes(&p).expect("write");
         d.close().expect("close");
     }
     source
@@ -86,17 +76,17 @@ fn tip(d: &Document) -> (ObjectId, ObjectId) {
 
 /// Read the triangles of the *resolved handle*. Their position/normal is an
 /// assertion about the name, never a way of finding or assigning that name.
-fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]>) -> f64 {
+fn measure(path: &Path, tools: [CutSpec; 2], cache: Option<[CacheOutcome; 3]>) -> f64 {
     measure_history(path, &tools, cache.as_ref().map(|v| v.as_slice()))
 }
 
-fn measure_history(path: &Path, tools: &[CircularCut], cache: Option<&[CacheOutcome]>) -> f64 {
+fn measure_history(path: &Path, tools: &[CutSpec], cache: Option<&[CacheOutcome]>) -> f64 {
     measure_history_in(path, tools, [[0., 0.], [SIZE[0], SIZE[1]]], cache)
 }
 
 fn measure_history_in(
     path: &Path,
-    tools: &[CircularCut],
+    tools: &[CutSpec],
     bounds: [[f64; 2]; 2],
     cache: Option<&[CacheOutcome]>,
 ) -> f64 {
@@ -105,7 +95,7 @@ fn measure_history_in(
 
 fn measure_history_at(
     path: &Path,
-    tools: &[CircularCut],
+    tools: &[CutSpec],
     bounds: [[f64; 2]; 2],
     height: f64,
     cache: Option<&[CacheOutcome]>,
@@ -164,7 +154,7 @@ fn outward(points: &[[f64; 2]], start: [f64; 2], end: [f64; 2]) -> [f64; 2] {
 /// tools, and every saved name resolved to exactly the face it means.
 fn measure_part_at(
     path: &Path,
-    tools: &[CircularCut],
+    tools: &[CutSpec],
     points: &[[f64; 2]],
     height: f64,
     cache: Option<&[CacheOutcome]>,
@@ -514,8 +504,8 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
         for [d1, d2] in [[12., 12.], [12., 7.], [4., 12.], [4., 7.]] {
             let root = tempfile::tempdir().expect("root");
             let mut tools = TOOLS;
-            tools[0].extent = CutExtent::Blind { depth_mm: d1 };
-            tools[1].extent = CutExtent::Blind { depth_mm: d2 };
+            tools[0].extent = CutDepth::Blind { depth_mm: d1 };
+            tools[1].extent = CutDepth::Blind { depth_mm: d2 };
             if alternate {
                 tools[0].center_mm = [58., 17.];
                 tools[0].radius_mm = 3.5;
@@ -531,17 +521,10 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
             drop(sql);
             let original = std::fs::read(&source).expect("bytes");
             let copy = root.path().join("two.fcad");
-            let before = inspect(&source);
-            assert_eq!(before["bodies"][0]["cut_edit"]["available"], true);
-            assert_eq!(
-                before["bodies"][0]["cut_edit"]["target"]["existing_cut"]["depth_mm"],
-                d1
-            );
-            let result = ask(&source, &copy, tools[1], 0);
-            assert_eq!(
-                result["result"]["previous_feature_id"],
-                before["bodies"][0]["cut_edit"]["target"]["tip_feature_id"]
-            );
+            let before = history::ordered(&source).remove(0);
+            assert_eq!(before.extent, CutDepth::Blind { depth_mm: d1 });
+            ask(&source, &copy, tools[1], 0);
+            assert_eq!(history::ordered(&copy)[1].previous_feature, before.feature);
             let doc = Document::open_read_only(&copy).expect("doc");
             let (body, _) = tip(&doc);
             assert_eq!(doc.objects().expect("objects").len(), 8);
@@ -578,15 +561,14 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
                 assert!((measure(&copy, tools, Some(mode)) - volume).abs() < 1e-8);
             }
             let catalog = inspect(&copy);
-            assert_eq!(catalog["bodies"][0]["cut_edit"]["available"], true);
-            assert!(
-                catalog["features"]
-                    .as_array()
-                    .expect("features")
-                    .iter()
-                    .filter(|f| f["circular_cut_edit"]["available"] == true)
-                    .count()
-                    == 2
+            let history = history::ordered(&copy);
+            assert_eq!(
+                catalog["bodies"][0]["history"],
+                json!([
+                    history[0].base_feature,
+                    history[0].feature,
+                    history[1].feature
+                ])
             );
             let stl = copy.with_extension("stl");
             check_two_mesh(&mesh(&copy, &stl), tools);
@@ -647,7 +629,7 @@ fn native_each_tool_invalidates_only_its_dependent_chain() {
             e.previous.expect("first")
         };
         let mut changed = d.object(id).expect("read").expect("cut");
-        tools[index].extent = CutExtent::Blind {
+        tools[index].extent = CutDepth::Blind {
             depth_mm: tools[index].extent.blind_depth_mm().expect("blind") - 1.,
         };
         let ObjectPayload::Extrude(e) = &mut changed.payload else {
@@ -684,49 +666,6 @@ fn native_each_tool_invalidates_only_its_dependent_chain() {
 }
 
 #[test]
-fn sequential_discovery_and_refusals_without_native() {
-    let root = tempfile::tempdir().expect("root");
-    let source = first(root.path(), TOOLS[0], false);
-    let catalog = inspect(&source);
-    assert_eq!(catalog["bodies"][0]["cut_edit"]["available"], true);
-    let d = Document::open_read_only(&source).expect("doc");
-    let (body, _) = tip(&d);
-    for bad in [
-        CircularCut {
-            center_mm: [20., 20.],
-            ..TOOLS[1]
-        }, // overlap / nesting
-        CircularCut {
-            center_mm: [32., 20.],
-            ..TOOLS[1]
-        }, // tangent
-        CircularCut {
-            center_mm: [32. + 0.5e-7, 20.],
-            ..TOOLS[1]
-        },
-        CircularCut {
-            center_mm: [7., 30.],
-            ..TOOLS[1]
-        }, // external wall
-        CircularCut {
-            extent: CutExtent::Blind { depth_mm: 13. },
-            ..TOOLS[1]
-        },
-    ] {
-        assert!(ferritecad_document::prepare_circular_cut(&d, body, &bad).is_err());
-    }
-    ferritecad_document::prepare_circular_cut(&d, body, &TOOLS[1]).expect("separate");
-    d.close().expect("close");
-    if !ferritecad_occt::is_available() {
-        let before = std::fs::read(&source).expect("bytes");
-        let never = root.path().join("never.fcad");
-        ask(&source, &never, TOOLS[1], 2);
-        assert!(!never.exists());
-        assert_eq!(std::fs::read(source).expect("bytes"), before);
-    }
-}
-
-#[test]
 fn native_sequential_refusals_publish_nothing() {
     if !native() {
         return;
@@ -736,38 +675,30 @@ fn native_sequential_refusals_publish_nothing() {
     let never = root.path().join("never.fcad");
     let before = std::fs::read(&source).expect("bytes");
     for bad in [
-        CircularCut {
-            center_mm: [20., 20.],
-            ..TOOLS[1]
-        },
-        CircularCut {
-            center_mm: [30., 20.],
-            ..TOOLS[1]
-        },
-        CircularCut {
+        CutSpec {
             center_mm: [32., 20.],
             ..TOOLS[1]
         },
-        CircularCut {
+        CutSpec {
             center_mm: [32. + 0.5e-7, 20.],
             ..TOOLS[1]
         },
-        CircularCut {
-            radius_mm: 2.,
-            center_mm: [20., 20.],
-            ..TOOLS[1]
-        },
-        CircularCut {
+        CutSpec {
             center_mm: [7., 30.],
-            ..TOOLS[1]
-        },
-        CircularCut {
-            extent: CutExtent::Blind { depth_mm: 13. },
             ..TOOLS[1]
         },
     ] {
         let result = ask(&source, &never, bad, 2);
-        assert_eq!(result["error"]["kind"], "input");
+        let request: Value = serde_json::from_slice(
+            &std::fs::read(source.with_extension("request.json")).expect("request"),
+        )
+        .expect("JSON");
+        assert!(
+            result
+                .to_string()
+                .contains(request["changes"][1]["object"].as_str().expect("new Cut")),
+            "{result}"
+        );
         assert!(!never.exists());
         assert_eq!(std::fs::read(&source).expect("bytes"), before);
         assert!(
@@ -789,19 +720,12 @@ fn native_sequential_refusals_publish_nothing() {
         std::os::unix::fs::symlink(&source, &link).expect("symlink");
         ask(&source, &link, TOOLS[1], 2);
     }
-    let catalog = inspect(&source);
     let request = source.with_extension("request.json");
     let stale = reply(
         cli()
             .arg(OP)
             .arg(&source)
-            .args([
-                "--body",
-                catalog["bodies"][0]["body_id"].as_str().expect("body"),
-                "--expect-version",
-                &"0".repeat(64),
-                "--request",
-            ])
+            .args(["--expect-version", &"0".repeat(64), "--request"])
             .arg(request)
             .arg("-o")
             .arg(root.path().join("stale.fcad"))
@@ -817,10 +741,10 @@ fn native_sequential_refusals_publish_nothing() {
     let third = ask(
         &copy,
         &root.path().join("three.fcad"),
-        CircularCut {
+        CutSpec {
             center_mm: [40., 15.],
             radius_mm: 2.,
-            extent: CutExtent::Blind { depth_mm: 3. },
+            extent: CutDepth::Blind { depth_mm: 3. },
         },
         0,
     );
@@ -841,19 +765,19 @@ fn occt_without_solver_builds_two_unconstrained_cuts() {
     measure(&copy, TOOLS, None);
 }
 
-fn check_two_mesh(m: &Mesh, tools: [CircularCut; 2]) {
+fn check_two_mesh(m: &Mesh, tools: [CutSpec; 2]) {
     check_history_mesh(m, &tools)
 }
 
-fn check_history_mesh(m: &Mesh, tools: &[CircularCut]) {
+fn check_history_mesh(m: &Mesh, tools: &[CutSpec]) {
     check_history_mesh_in(m, tools, [[0., 0.], [SIZE[0], SIZE[1]]]);
 }
 
-fn check_history_mesh_in(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2]) {
+fn check_history_mesh_in(m: &Mesh, tools: &[CutSpec], bounds: [[f64; 2]; 2]) {
     check_history_mesh_at(m, tools, bounds, SIZE[2]);
 }
 
-fn check_history_mesh_at(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2], height: f64) {
+fn check_history_mesh_at(m: &Mesh, tools: &[CutSpec], bounds: [[f64; 2]; 2], height: f64) {
     check_part_mesh_at(m, tools, &rectangle(bounds), height);
 }
 
@@ -861,7 +785,7 @@ fn check_history_mesh_at(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2],
 /// independently of the kernel: closed and oriented, every bore where it was
 /// asked for, caps only over the part, and a volume inside what tessellation
 /// of that part can give.
-fn check_part_mesh_at(m: &Mesh, tools: &[CircularCut], points: &[[f64; 2]], height: f64) {
+fn check_part_mesh_at(m: &Mesh, tools: &[CutSpec], points: &[[f64; 2]], height: f64) {
     let plate_volume = polygon_area(points) * height;
     let bounds = {
         let mut b = [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]];
@@ -913,7 +837,7 @@ fn check_part_mesh_at(m: &Mesh, tools: &[CircularCut], points: &[[f64; 2]], heig
     }
 
     for tool in tools {
-        let CircularCut {
+        let CutSpec {
             center_mm: center,
             radius_mm: radius,
             extent,
@@ -1030,12 +954,11 @@ fn native_second_cut_cancellation_and_late_version_guard_are_atomic() {
     let (body, _) = tip(&d);
     d.close().expect("close");
     let destination = root.path().join("never.fcad");
-    let request = ferritecad_jobs::CircularCutRequest {
+    let request = ferritecad_jobs::EditRequest {
         source: source.clone(),
         destination: destination.clone(),
         expected: read.version,
-        body,
-        cut: TOOLS[1],
+        changes: TOOLS[1].additions(&Document::open_read_only(&source).expect("source"), body),
     };
     let before = std::fs::read(&source).expect("bytes");
     let files = entries(root.path());
@@ -1049,7 +972,7 @@ fn native_second_cut_cancellation_and_late_version_guard_are_atomic() {
             }
         }));
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-    let error = ferritecad_jobs::circular_cut_copy(&request, &mut kernel, &context)
+    let error = ferritecad_jobs::edit_copy(&request, &mut kernel, &context)
         .expect_err("cancel after both builds");
     assert_eq!(error.kind(), ferritecad_types::ErrorKind::Cancellation);
     assert!(!destination.exists());
@@ -1068,7 +991,7 @@ fn native_second_cut_cancellation_and_late_version_guard_are_atomic() {
             .expect("change source version");
         }
     }));
-    let error = ferritecad_jobs::circular_cut_copy(&request, &mut kernel, &context)
+    let error = ferritecad_jobs::edit_copy(&request, &mut kernel, &context)
         .expect_err("late source change");
     assert!(reached.load(std::sync::atomic::Ordering::SeqCst));
     assert!(error.to_string().contains("source has changed"), "{error}");

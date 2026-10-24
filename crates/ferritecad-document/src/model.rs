@@ -1587,6 +1587,31 @@ pub enum ObjectPayload {
 }
 
 impl ObjectPayload {
+    /// References implied by the payload, independent of modelling policy.
+    pub fn dependencies(&self, object: ObjectId) -> Vec<crate::Dependency> {
+        use crate::DependencyRole as R;
+        let mut references = Vec::new();
+        match self {
+            Self::Sketch(s) => references.push((s.plane, R::Plane)),
+            Self::Extrude(e) => references.push((e.profile, R::Profile)),
+            Self::Revolve(r) => references.push((r.profile, R::Profile)),
+            Self::Body(b) => references.extend(b.tip_feature.map(|tip| (tip, R::BodyTip))),
+            _ => {}
+        }
+        references.extend(
+            self.previous_feature()
+                .map(|previous| (previous, R::Predecessor)),
+        );
+        references
+            .into_iter()
+            .map(|(dependency, role)| crate::Dependency {
+                dependent: object,
+                dependency,
+                role,
+            })
+            .collect()
+    }
+
     /// The discriminator to store.
     pub fn type_name(&self) -> &str {
         match self {

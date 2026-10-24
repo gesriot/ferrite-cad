@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """§30F inputs and comparison for real window artifacts. Never creates outputs."""
+from feature_requests import circular_cut
 import hashlib
 import json
 import os
@@ -52,12 +53,9 @@ def main():
         catalog = run("inspect", current, "--json")
         slot = i * 7 % 16
         request = root / f"cut-{i}.json"
-        request.write_text(json.dumps({"request_version": 2,
-            "center_mm": [7.125 + slot % 4 * 12, 6.375 + slot // 4 * 12],
-            "radius_mm": 1.375 + i % 3 * 0.25,
-            "extent": {"kind": "through_all"} if i % 2 == 0 else {"kind": "blind", "depth_mm": 4.375 + i % 3}}))
+        request.write_text(json.dumps(circular_cut(catalog, [7.125 + slot % 4 * 12, 6.375 + slot // 4 * 12], 1.375 + i % 3 * 0.25, None if i % 2 == 0 else 4.375 + i % 3)))
         out = root / "source" / ("cuts.fcad" if i == 2 else f"cuts-{i}.fcad")
-        run("cut-circular-copy", current, "--body", catalog["bodies"][0]["body_id"],
+        run("edit", current,
             "--expect-version", catalog["content_version"], "--request", request, "-o", out, "--json")
         current = out
     shutil.copyfile(current, root / "work/cuts.fcad")

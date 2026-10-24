@@ -162,42 +162,23 @@ fn native_feature_slots_round_trip_and_the_second_body_is_editable() {
                 ExpressionSlot::ExtrudeDistance
             }
             "fillet" | "chamfer" => {
-                let target = ExtrudeEditSource::read(&d).expect("reading").fillet_bodies[0]
-                    .target
-                    .clone()
-                    .expect("target");
-                let edge = SweptEdge {
-                    feature: base.id,
-                    joint: target.corners[0].joint,
-                };
+                let change = ferritecad_fixtures::feature_changes::edge_addition(
+                    &d,
+                    body.id,
+                    0,
+                    2.,
+                    mode == "chamfer",
+                )
+                .expect("addition");
+                chosen = change.object();
+                d.write_changes(&[change]).expect("write");
                 if mode == "fillet" {
-                    let p = prepare_edge_fillet(
-                        &d,
-                        body.id,
-                        &EdgeFillet {
-                            edge,
-                            radius_mm: 2.0,
-                        },
-                    )
-                    .expect("fillet");
-                    d.write_edge_fillet(&p).expect("write");
-                    chosen = p.feature().id;
                     ExpressionSlot::FilletRadius
                 } else {
-                    let p = prepare_edge_chamfer(
-                        &d,
-                        body.id,
-                        &EdgeChamfer {
-                            edge,
-                            distance_mm: 2.0,
-                        },
-                    )
-                    .expect("chamfer");
-                    d.write_edge_chamfer(&p).expect("write");
-                    chosen = p.feature().id;
                     ExpressionSlot::ChamferDistance
                 }
             }
+
             "revolve" => {
                 // Build a separate radial-clear profile, with no extrusion references.
                 d.close().expect("close");

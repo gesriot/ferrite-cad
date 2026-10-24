@@ -2,26 +2,23 @@
 //! §30F: existing Cut workers, all SQL cells and independent native geometry.
 use super::*;
 use crate::cuts::tests::session_apply::{draft_state, fixture, selected, typed_cut};
-use ferritecad_document::{
-    CircularCutEdit, CutExtent, ExtentVocabulary, ObjectPayload, TopologyRef,
-};
-use ferritecad_jobs::EditCircularCutRequest;
+use crate::feature_facts::CutExtent;
+use crate::feature_tests::RequestFacts;
+use ferritecad_document::{ObjectPayload, TopologyRef};
+use ferritecad_jobs::EditRequest;
 
-fn start(
-    s: &mut Sessions,
-    r: &EditCircularCutRequest,
-) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_apply_cut(t, r.cut, r.edit, r.expected, c.clone(), move |v| {
+            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
                 tx.send(v).expect("deliver")
             })
         })
         .expect("start");
     (g, rx)
 }
-pub(super) fn apply(s: &mut Sessions, r: &EditCircularCutRequest) -> Edited {
+pub(super) fn apply(s: &mut Sessions, r: &EditRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(
         g,
@@ -41,37 +38,34 @@ pub(super) fn apply(s: &mut Sessions, r: &EditCircularCutRequest) -> Edited {
     }
     edited
 }
-fn request(s: &Sessions, index: usize) -> EditCircularCutRequest {
+fn request(s: &Sessions, index: usize) -> EditRequest {
     let source = s.export_path().expect("current");
     let reading = crate::sketch_facts::read(&source).expect("reading");
     let saved = selected(&reading, index);
-    EditCircularCutRequest {
+    EditRequest {
         source,
         expected: reading.version,
-        cut: saved.feature,
-        edit: CircularCutEdit {
-            tool_curve: saved.tool_curve,
+        changes: (crate::feature_facts::CircularCut {
             center_mm: saved.center_mm,
             radius_mm: saved.radius_mm,
             extent: saved.extent,
-            vocabulary: ExtentVocabulary::BlindOrThroughAll,
-        },
+        })
+        .changes(&saved)
+        .expect("Cut changes"),
         destination: PathBuf::new(),
     }
 }
-pub(super) fn peer(source: &Path, r: &EditCircularCutRequest, root: &Path, out: &Path) {
+pub(super) fn peer(source: &Path, r: &EditRequest, root: &Path, out: &Path) {
     let file = out.with_extension("json");
-    let extent = match r.edit.extent {
-        CutExtent::ThroughAll => r#"{"kind":"through_all"}"#.into(),
-        CutExtent::Blind { depth_mm } => format!(r#"{{"kind":"blind","depth_mm":{depth_mm}}}"#),
-    };
-    std::fs::write(&file, format!(r#"{{"request_version":2,"tool_curve_id":"{}","center_mm":[{},{}],"radius_mm":{},"extent":{extent}}}"#, r.edit.tool_curve, r.edit.center_mm[0], r.edit.center_mm[1], r.edit.radius_mm)).expect("request");
     assert!(file.starts_with(root));
+    std::fs::write(
+        &file,
+        ferritecad_fixtures::edit_request_json(&r.changes).to_string(),
+    )
+    .expect("request");
     cli(&[
-        "edit-circular-cut".as_ref(),
+        "edit".as_ref(),
         source.as_os_str(),
-        "--feature".as_ref(),
-        r.cut.to_string().as_ref(),
         "--expect-version".as_ref(),
         crate::sketch_facts::read(source)
             .expect("reading")
@@ -222,7 +216,7 @@ pub(super) fn saved(s: &mut Sessions, target: SaveTarget) {
     );
     assert!(!s.dirty());
 }
-fn refuse(s: &mut Sessions, r: &EditCircularCutRequest) -> String {
+fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     let state = (
         s.export_path(),
         s.dirty(),
@@ -259,12 +253,14 @@ pub(super) fn cold(path: &Path) -> f64 {
     }
     let reading = crate::sketch_facts::Source::read(&d).expect("reading");
     let selected = selected(&reading, 0);
-    let exact = selected.boundary.area_mm2() * selected.height_mm
+    let exact = crate::feature_tests::area(&selected.boundary) * selected.height_mm
         - selected
             .tools
             .iter()
             .map(|t| {
-                std::f64::consts::PI * t.radius_mm.powi(2) * t.extent.reach_mm(selected.height_mm)
+                std::f64::consts::PI
+                    * t.radius_mm.powi(2)
+                    * crate::feature_tests::reach(t.extent, selected.height_mm)
             })
             .sum::<f64>();
     let body = d
@@ -315,16 +311,22 @@ pub(super) fn mesh(stl: &[u8], path: &Path) -> f64 {
     volume /= 6.;
     let reading = crate::sketch_facts::read(path).expect("reading");
     let s = selected(&reading, 0);
-    let exact = s.boundary.area_mm2() * s.height_mm
-        - s.tools
-            .iter()
-            .map(|t| std::f64::consts::PI * t.radius_mm.powi(2) * t.extent.reach_mm(s.height_mm))
-            .sum::<f64>();
-    let upper = s.boundary.area_mm2() * s.height_mm
+    let exact = crate::feature_tests::area(&s.boundary) * s.height_mm
         - s.tools
             .iter()
             .map(|t| {
-                std::f64::consts::PI * (t.radius_mm - 0.05).powi(2) * t.extent.reach_mm(s.height_mm)
+                std::f64::consts::PI
+                    * t.radius_mm.powi(2)
+                    * crate::feature_tests::reach(t.extent, s.height_mm)
+            })
+            .sum::<f64>();
+    let upper = crate::feature_tests::area(&s.boundary) * s.height_mm
+        - s.tools
+            .iter()
+            .map(|t| {
+                std::f64::consts::PI
+                    * (t.radius_mm - 0.05).powi(2)
+                    * crate::feature_tests::reach(t.extent, s.height_mm)
             })
             .sum::<f64>();
     assert!(
@@ -354,7 +356,8 @@ pub(super) fn mesh(stl: &[u8], path: &Path) -> f64 {
             .map(|p| p[2])
             .fold(f64::NEG_INFINITY, f64::max);
         assert!(
-            lo.abs() < 1e-4 && (hi - tool.extent.reach_mm(s.height_mm)).abs() < 1e-4,
+            lo.abs() < 1e-4
+                && (hi - crate::feature_tests::reach(tool.extent, s.height_mm)).abs() < 1e-4,
             "absolute reach"
         );
         for [a, b, c] in &wall {
@@ -380,9 +383,10 @@ pub(super) fn mesh(stl: &[u8], path: &Path) -> f64 {
                 signs.iter().all(|s| *s >= -1e-9) || signs.iter().all(|s| *s <= 1e-9)
             })
         };
-        if tool.extent.leaves_a_floor(s.height_mm) {
+        if crate::feature_tests::reach(tool.extent, s.height_mm) < s.height_mm {
             assert!(
-                covers(tool.extent.reach_mm(s.height_mm)) && covers(s.height_mm),
+                covers(crate::feature_tests::reach(tool.extent, s.height_mm))
+                    && covers(s.height_mm),
                 "floor and far cap"
             );
         } else {
@@ -490,8 +494,8 @@ fn gate(count: usize, height: bool, name: &str) {
             &(chosen.radius_mm + 0.125).to_string(),
             None,
         );
-        assert_eq!(r.cut, chosen.feature);
-        assert_eq!(r.edit.tool_curve, chosen.tool_curve);
+        assert_eq!(r.cut_id(), chosen.feature);
+        assert_eq!(r.curve_id(), chosen.tool_curve);
         let exact = root.path().join(format!("exact-{step}.fcad"));
         peer(&current, &r, root.path(), &exact);
         let independent = root.path().join(format!("independent-{step}.fcad"));
@@ -508,9 +512,9 @@ fn gate(count: usize, height: bool, name: &str) {
                 .into_iter()
                 .find(|t| t.feature == old.feature)
                 .expect("identity");
-            if old.feature == r.cut {
-                assert_eq!(new.center_mm, r.edit.center_mm);
-                assert_eq!(new.radius_mm, r.edit.radius_mm);
+            if old.feature == r.cut_id() {
+                assert_eq!(new.center_mm, r.circle().center_mm);
+                assert_eq!(new.radius_mm, r.circle().radius_mm);
             } else {
                 assert_eq!(new, old);
             }
@@ -572,7 +576,15 @@ fn gate(count: usize, height: bool, name: &str) {
     assert!(s.can_redo());
     let mut stale = request(&s, 0);
     stale.expected = opened.version;
-    stale.edit.radius_mm += 0.25;
+    if let ferritecad_document::EditChange::SetCurveGeometry {
+        geometry: ferritecad_document::SketchGeometry::Circle { radius, .. },
+        ..
+    } = &mut stale.changes[0]
+    {
+        *radius += 0.25;
+    } else {
+        panic!("circle change")
+    }
     assert!(
         refuse(&mut s, &stale).contains("document changed after this form was opened"),
         "stale form was not refused"
@@ -688,11 +700,23 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     // Blind-through <-> ThroughAll preserves expressed intent; then through -> pocket.
     let mut r = request(&s, 0);
-    r.edit.extent = CutExtent::Blind { depth_mm: 12.75 };
+    if let ferritecad_document::EditChange::SetEndCondition { end_condition, .. } =
+        &mut r.changes[1]
+    {
+        *end_condition = (CutExtent::Blind { depth_mm: 12.75 }).end().expect("end");
+    } else {
+        panic!("end change")
+    }
     assert!(matches!(apply(&mut s, &r), Edited::Show(_)));
     assert_eq!(refs(&s.export_path().expect("current")), refs(&source));
     r = request(&s, 0);
-    r.edit.extent = CutExtent::ThroughAll;
+    if let ferritecad_document::EditChange::SetEndCondition { end_condition, .. } =
+        &mut r.changes[1]
+    {
+        *end_condition = (CutExtent::ThroughAll).end().expect("end");
+    } else {
+        panic!("end change")
+    }
     assert!(matches!(apply(&mut s, &r), Edited::Show(_)));
     let before = s.export_path().expect("before floor");
     let reading = crate::sketch_facts::read(&before).expect("reading");
@@ -722,7 +746,13 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
         "Redo must restore exact new floor UUIDs"
     );
     let mut r = request(&s, 0);
-    r.edit.extent = CutExtent::ThroughAll;
+    if let ferritecad_document::EditChange::SetEndCondition { end_condition, .. } =
+        &mut r.changes[1]
+    {
+        *end_condition = (CutExtent::ThroughAll).end().expect("end");
+    } else {
+        panic!("end change")
+    }
     let refusal = refuse(&mut s, &r);
     for id in added.iter().map(|r| r.id) {
         assert!(
@@ -731,23 +761,56 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
         );
     }
     r = request(&s, 0);
-    r.edit.center_mm = [70., 40.];
+    if let ferritecad_document::EditChange::SetCurveGeometry {
+        geometry: ferritecad_document::SketchGeometry::Circle { center, .. },
+        ..
+    } = &mut r.changes[0]
+    {
+        let [x, y] = [70., 40.];
+        *center = ferritecad_document::Point2::new(x, y).expect("point");
+    } else {
+        panic!("circle change")
+    }
+    let outside = refuse(&mut s, &r);
     assert!(
-        refuse(&mut s, &r).contains("stay inside"),
-        "actual concave outline, not bbox"
+        outside.contains(&selected(&opened, 0).feature.to_string()),
+        "{outside}"
     );
     r = request(&s, 0);
-    r.edit.center_mm = selected(&opened, 2).center_mm;
+    if let ferritecad_document::EditChange::SetCurveGeometry {
+        geometry: ferritecad_document::SketchGeometry::Circle { center, .. },
+        ..
+    } = &mut r.changes[0]
+    {
+        let [x, y] = selected(&opened, 2).center_mm;
+        *center = ferritecad_document::Point2::new(x, y).expect("point");
+    } else {
+        panic!("circle change")
+    }
     let error = refuse(&mut s, &r);
     assert!(
         error.contains(&selected(&opened, 2).feature.to_string()),
         "far Cut overlap"
     );
     r = request(&s, 0);
-    r.edit.tool_curve = selected(&opened, 1).tool_curve;
-    assert!(refuse(&mut s, &r).contains("names a curve"));
+    if let ferritecad_document::EditChange::SetCurveGeometry { curve, .. } = &mut r.changes[0] {
+        *curve = selected(&opened, 1).tool_curve;
+    } else {
+        panic!("curve change")
+    }
+    let unknown_curve = refuse(&mut s, &r);
+    assert!(
+        unknown_curve.contains(&r.changes[0].object().to_string()),
+        "{unknown_curve}"
+    );
     r = request(&s, 0);
-    r.edit.extent = CutExtent::Blind { depth_mm: 13. };
+    if let ferritecad_document::EditChange::SetEndCondition { end_condition, .. } =
+        &mut r.changes[1]
+    {
+        *end_condition = (CutExtent::Blind { depth_mm: 13. }).end().expect("end");
+    } else {
+        panic!("end change")
+    }
     refuse(&mut s, &r);
     assert_eq!(std::fs::read(&source).expect("source"), original);
     let (stl, fbx) = export_bytes(&accepted, &source, root.path(), "floor");
@@ -880,17 +943,16 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
     let make = |src: &Path, index: usize, x: f64, radius: f64, depth: Option<f64>, out: &Path| {
         let reading = crate::sketch_facts::read(src).expect("reading");
         let s = selected(&reading, index);
-        let r = EditCircularCutRequest {
+        let r = EditRequest {
             source: src.into(),
             expected: reading.version,
-            cut: s.feature,
-            edit: CircularCutEdit {
-                tool_curve: s.tool_curve,
+            changes: (crate::feature_facts::CircularCut {
                 center_mm: [x, s.center_mm[1]],
                 radius_mm: radius,
                 extent: depth.map_or(s.extent, |depth_mm| CutExtent::Blind { depth_mm }),
-                vocabulary: ExtentVocabulary::BlindOrThroughAll,
-            },
+            })
+            .changes(&s)
+            .expect("Cut changes"),
             destination: PathBuf::new(),
         };
         peer(src, &r, tmp.path(), out);
@@ -972,4 +1034,70 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
     drop(db);
     control("new ref owner", &|| same_sql(&corrupt_ref, &last, &source));
     println!("FCAD_30F_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
+}
+
+#[test]
+fn native_open_slot_radius_form_applies_and_survives_history_and_save() {
+    if !native() {
+        return;
+    }
+    let (root, source, reading) = fixture(1);
+    let original = std::fs::read(&source).expect("source");
+    let mut s = Sessions::default();
+    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
+    let base = reading
+        .sketches
+        .iter()
+        .find(|c| c.vertices.is_some())
+        .expect("base");
+    let mut vertices = base.vertices.clone().expect("vertices");
+    for v in &mut vertices {
+        if v.start_mm[0] == -2.5 {
+            v.start_mm[0] = 6.5;
+        }
+    }
+    let wall = EditRequest {
+        source: source.clone(),
+        expected: reading.version,
+        changes: crate::transaction_tests::vertex_changes(&source, base.sketch, &vertices),
+        destination: PathBuf::new(),
+    };
+    apply_sketch_native(&mut s, wall);
+    let slot = s.export_path().expect("slot");
+    let reading = crate::sketch_facts::read(&slot).expect("reading");
+    let (_, r) = typed_cut(&slot, &reading, &s, 0, "7.125", "2", None);
+    assert!(matches!(apply(&mut s, &r), Edited::Show(_)), "{}", s.status);
+    let applied = s.export_path().expect("radius");
+    let names = refs(&applied);
+    move_native(&mut s, true);
+    assert_eq!(s.export_path().as_ref(), Some(&slot));
+    move_native(&mut s, false);
+    assert_eq!(refs(&s.export_path().expect("redo")), names);
+    let target = root.path().join("saved-slot.fcad");
+    saved(&mut s, SaveTarget::As(target.clone()));
+    let d = Document::open_read_only(&target).expect("reopen");
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let built =
+        ferritecad_eval::rebuild_cold(&d, &mut kernel, &OperationContext::default()).expect("cold");
+    assert!(built.all_built(), "{:?}", built.report());
+    for r in names {
+        assert!(!built.resolve(&r).expect("resolved").is_empty());
+    }
+    let body = ferritecad_fixtures::feature_changes::body(&d).expect("body");
+    let volume = kernel
+        .shape_stats(built.shape(body).expect("body"))
+        .expect("volume")
+        .1;
+    built.release_all(&mut kernel);
+    let mut outline = crate::cuts::tests::session_apply::OUTLINE;
+    for p in &mut outline {
+        if p[0] == -2.5 {
+            p[0] = 6.5;
+        }
+    }
+    let offset = 0.625_f64;
+    let removed = 4. * (-offset / 2.).acos() + offset * (4. - offset * offset).sqrt();
+    let expected = (crate::feature_tests::area(&outline) - removed) * 12.75;
+    assert!((volume - expected).abs() < 1e-6, "{volume} vs {expected}");
+    assert_eq!(std::fs::read(&source).expect("source"), original);
 }

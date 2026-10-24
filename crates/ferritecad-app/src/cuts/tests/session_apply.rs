@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! §30F: real egui widgets and the same predicate the window handler uses.
 use super::*;
+use crate::feature_tests::RequestFacts;
 use crate::{Loads, can_apply_cut, creates, edits, exports, sessions};
 
 pub(crate) const OUTLINE: [[f64; 2]; 6] = [
@@ -50,8 +51,16 @@ pub(crate) fn fixture(count: usize) -> (tempfile::TempDir, PathBuf, ExtrudeEditS
                 }
             },
         };
-        let prepared = ferritecad_document::prepare_circular_cut(&d, body, &cut).expect("cut");
-        d.write_circular_cut(&prepared).expect("write");
+        let changes = ferritecad_fixtures::feature_changes::circular_tool(
+            &d,
+            body,
+            cut.center_mm,
+            cut.radius_mm,
+            cut.extent.end().expect("end"),
+        )
+        .expect("tool")
+        .changes;
+        d.write_changes(&changes).expect("write");
     }
     d.close().expect("close");
     let db = rusqlite::Connection::open(&path).expect("fixture SQL");
@@ -67,22 +76,36 @@ pub(crate) fn fixture(count: usize) -> (tempfile::TempDir, PathBuf, ExtrudeEditS
     let reading = crate::sketch_facts::read(&path).expect("reading");
     (root, path, reading)
 }
-pub(crate) fn selected(
-    reading: &ExtrudeEditSource,
-    index: usize,
-) -> ferritecad_document::SavedCircularCut {
-    let any = reading
+#[derive(Debug, Clone)]
+pub(crate) struct CutObservation {
+    pub stored: crate::feature_facts::SavedCut,
+    pub tools: Vec<crate::feature_facts::SavedCut>,
+    pub base_feature: ObjectId,
+    pub profile_sketch: ObjectId,
+}
+impl std::ops::Deref for CutObservation {
+    type Target = crate::feature_facts::SavedCut;
+    fn deref(&self) -> &Self::Target {
+        &self.stored
+    }
+}
+pub(crate) fn selected(reading: &ExtrudeEditSource, index: usize) -> CutObservation {
+    let tools: Vec<_> = reading
         .cut_features
         .iter()
-        .find_map(|c| c.saved.as_ref())
-        .expect("Cut");
-    let id = any.tools[index].feature;
-    reading
-        .cut_features
-        .iter()
-        .find_map(|c| c.saved.as_ref().filter(|s| s.feature == id))
-        .expect("selected UUID")
-        .clone()
+        .filter_map(|c| c.saved.clone())
+        .collect();
+    let base_feature=reading.objects.iter().find(|o|matches!(&o.payload,ferritecad_document::ObjectPayload::Extrude(e) if e.previous.is_none())).expect("base").id;
+    CutObservation {
+        profile_sketch: reading.fillet_bodies[0]
+            .target
+            .as_ref()
+            .expect("base")
+            .profile,
+        stored: tools[index].clone(),
+        tools,
+        base_feature,
+    }
 }
 fn ready(c: &creates::Creates, s: &sessions::Sessions) -> bool {
     can_apply_cut(
@@ -111,7 +134,7 @@ pub(crate) fn typed_cut(
     x: &str,
     radius: &str,
     depth: Option<&str>,
-) -> (crate::sketch::Editor, EditCircularCutRequest) {
+) -> (crate::sketch::Editor, EditRequest) {
     let mut c = creates::Creates::default();
     assert!(
         c.sketch
@@ -160,11 +183,11 @@ fn cut_apply_current_fields_draft_history_noop_and_add_exclusion() {
     enter_field(&ctx, e, "Centre X (mm):", "7.500");
     click(&ctx, e, "Apply cut");
     let r = e.take_apply_request().expect("unconfirmed fields");
-    assert_eq!(r.edit.center_mm[0], 7.5);
-    assert_eq!(r.cut, saved.feature);
-    assert_eq!(r.edit.tool_curve, saved.tool_curve);
+    assert_eq!(r.circle().center_mm[0], 7.5);
+    assert_eq!(r.cut_id(), saved.feature);
+    assert_eq!(r.curve_id(), saved.tool_curve);
     assert_eq!(r.expected, reading.version);
-    assert_eq!(r.edit.extent, CutExtent::ThroughAll);
+    assert_eq!(r.circle().extent, CutExtent::ThroughAll);
     assert!(e.draft.as_ref().expect("draft").history.undo.is_empty());
     click(&ctx, e, "Confirm draft numbers");
     assert!(e.take_apply_request().is_none());
@@ -407,7 +430,10 @@ fn cut_apply_dirty_discovery_copy_refusals_status_and_scene_dismissal() {
     ] {
         fill(&ctx, e, x, "42.375", radius, "");
         click(&ctx, e, "Apply cut");
-        assert!(e.take_apply_request().is_none());
+        assert_eq!(
+            e.take_apply_request().is_some(),
+            radius != "-1" && radius != "NaN"
+        );
         assert_eq!(e.draft.as_ref().expect("draft").typed.center_x, x);
     }
     fill(&ctx, e, "7.5", "6.375", "1.625", "");

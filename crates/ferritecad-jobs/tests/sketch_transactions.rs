@@ -168,7 +168,7 @@ fn construction_axis(sketch: &Sketch) -> SketchCurve {
 }
 
 #[test]
-fn a_cut_base_moves_and_remains_editable_by_the_structural_reader() {
+fn a_cut_base_moves_and_remains_editable_through_the_transaction() {
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
     }
@@ -184,18 +184,15 @@ fn a_cut_base_moves_and_remains_editable_by_the_structural_reader() {
         .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
         .expect("body")
         .id;
-    let cut = prepare_circular_cut(
+    let cut = ferritecad_fixtures::feature_changes::circular_tool(
         &document,
         body,
-        &CircularCut {
-            center_mm: [20.0, 20.0],
-            radius_mm: 2.0,
-            extent: CutExtent::ThroughAll,
-        },
+        [20., 20.],
+        2.,
+        EndCondition::ThroughAll,
     )
-    .expect("cut");
-    let feature = cut.feature().id;
-    document.write_circular_cut(&cut).expect("write cut");
+    .expect("tool");
+    document.write_changes(&cut.changes).expect("write cut");
     let refs = document.topology_refs().expect("references");
     let moves = sketch
         .curves
@@ -229,33 +226,24 @@ fn a_cut_base_moves_and_remains_editable_by_the_structural_reader() {
     }
     built.release_all(&mut kernel);
     let source = ExtrudeEditSource::read(&reopened).expect("reading");
-    let saved = source
-        .cut_features
-        .iter()
-        .find(|c| c.feature == feature)
-        .expect("cut")
-        .saved
-        .as_ref()
-        .expect("structural Cut reader accepts moved base");
-    let edit = CircularCutEdit {
-        tool_curve: saved.tool_curve,
-        center_mm: [21.0, 20.0],
-        radius_mm: 2.0,
-        extent: CutExtent::ThroughAll,
-        vocabulary: ExtentVocabulary::BlindOrThroughAll,
-    };
-    ferritecad_jobs::edit_circular_cut_copy(
-        &ferritecad_jobs::EditCircularCutRequest {
+    edit_copy(
+        &EditRequest {
             source: request.destination,
             expected: source.version,
-            cut: feature,
-            edit,
+            changes: vec![EditChange::SetCurveGeometry {
+                sketch: cut.sketch,
+                curve: cut.curve,
+                geometry: SketchGeometry::Circle {
+                    center: Point2::new(21., 20.).expect("point"),
+                    radius: 2.,
+                },
+            }],
             destination: root.path().join("following.fcad"),
         },
         &mut kernel,
         &context,
     )
-    .expect("following structural edit");
+    .expect("following transaction");
     assert_eq!(
         std::fs::read(&request.source).expect("unchanged source"),
         before

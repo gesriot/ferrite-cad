@@ -266,74 +266,6 @@ impl Edits {
         })
     }
 
-    pub(crate) fn start_cut(
-        &mut self,
-        request: ferritecad_jobs::CircularCutRequest,
-        spawn: impl FnOnce(ferritecad_jobs::CircularCutRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn finish_cut(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::AddedCircularCut>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
-    pub(crate) fn start_fillet(
-        &mut self,
-        request: ferritecad_jobs::EdgeFilletRequest,
-        spawn: impl FnOnce(ferritecad_jobs::EdgeFilletRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn finish_fillet(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::AddedEdgeFillet>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
-    pub(crate) fn start_chamfer(
-        &mut self,
-        request: ferritecad_jobs::EdgeChamferRequest,
-        spawn: impl FnOnce(ferritecad_jobs::EdgeChamferRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn finish_chamfer(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::AddedEdgeChamfer>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
-    pub(crate) fn start_cut_edit(
-        &mut self,
-        request: ferritecad_jobs::EditCircularCutRequest,
-        spawn: impl FnOnce(ferritecad_jobs::EditCircularCutRequest, u64, CancelToken) -> JoinHandle<()>,
-    ) -> Option<u64> {
-        let destination = request.destination.clone();
-        self.start_at(&destination, |generation, cancel| {
-            spawn(request, generation, cancel)
-        })
-    }
-    pub(crate) fn finish_cut_edit(
-        &mut self,
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedCircularCut>,
-    ) -> Option<PathBuf> {
-        self.finish_path(generation, result.map(|r| r.destination))
-    }
     fn start_at(
         &mut self,
         destination: &Path,
@@ -427,62 +359,6 @@ pub(crate) fn spawn_edit(
     spawn_job(cancel, move |context| run_edit(&request, context), deliver)
 }
 
-pub(crate) fn spawn_cut(
-    request: ferritecad_jobs::CircularCutRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::AddedCircularCut>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::circular_cut_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
-pub(crate) fn spawn_fillet(
-    request: ferritecad_jobs::EdgeFilletRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::AddedEdgeFillet>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::fillet_edge_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
-pub(crate) fn spawn_chamfer(
-    request: ferritecad_jobs::EdgeChamferRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::AddedEdgeChamfer>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::chamfer_edge_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
-pub(crate) fn spawn_cut_edit(
-    request: ferritecad_jobs::EditCircularCutRequest,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ferritecad_jobs::EditedCircularCut>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn_job(
-        cancel,
-        move |context| {
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ferritecad_jobs::edit_circular_cut_copy(&request, &mut kernel, context)
-        },
-        deliver,
-    )
-}
 fn spawn_job<T: Send + 'static>(
     cancel: CancelToken,
     job: impl FnOnce(&OperationContext) -> Result<T> + Send + 'static,

@@ -33,6 +33,8 @@
 mod edit_request;
 pub use edit_request::edit_request_json;
 
+pub mod feature_changes;
+
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
