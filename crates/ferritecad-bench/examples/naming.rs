@@ -110,7 +110,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 features
                     .push(json!({"feature": id, "faces": n[0], "edges": n[1], "vertices": n[2]}));
                 for (name, count, reason) in result.ambiguous() {
-                    ambiguous.push(json!({"feature": id, "kind": name.kind.as_str(), "name": name.digest, "count": count, "reason": reason}));
+                    ambiguous.push(json!({
+                        "feature": id,
+                        "kind": name.kind.as_str(),
+                        "name": name.digest,
+                        "count": count,
+                        "reason": reason,
+                    }));
                 }
             }
             let mut compared = 0;
@@ -144,14 +150,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 swept += 1;
             }
-            report = json!({"faces": counts[0], "edges": counts[1], "vertices": counts[2], "features": features,
-                "ambiguous": ambiguous, "compared_refs": compared, "compared_swept_edges": swept});
+            report = json!({
+                "faces": counts[0],
+                "edges": counts[1],
+                "vertices": counts[2],
+                "features": features,
+                "ambiguous": ambiguous,
+                "compared_refs": compared,
+                "compared_swept_edges": swept,
+            });
             rebuild_samples.push(rebuild_ms);
             naming_samples.push(naming_ms);
             total_samples.push(total_ms);
             built.release_all(&mut kernel);
         }
-        rows.push(json!({"case": case, "rebuild_ms": rebuild_samples, "naming_ms": naming_samples, "total_ms": total_samples, "report": report}));
+        rows.push(json!({
+            "case": case,
+            "rebuild_ms": rebuild_samples,
+            "naming_ms": naming_samples,
+            "total_ms": total_samples,
+            "report": report,
+        }));
     }
     serde_json::to_writer_pretty(std::fs::File::create(out)?, &rows)?;
     Ok(())

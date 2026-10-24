@@ -61,9 +61,12 @@ impl FeatureNaming {
     }
 
     pub fn ambiguous(&self) -> impl Iterator<Item = (Name, usize, &'static str)> + '_ {
-        self.bindings.iter().filter(|(_, entities)| entities.len() > 1)
-            .map(|(name, entities)| (*name, entities.len(),
-                "identical input provenance and named face incidence; no history witness separates the descendants"))
+        const REASON: &str = "identical input provenance and named face incidence; \
+                              no history witness separates the descendants";
+        self.bindings
+            .iter()
+            .filter(|(_, entities)| entities.len() > 1)
+            .map(|(name, entities)| (*name, entities.len(), REASON))
     }
 }
 
@@ -213,6 +216,14 @@ fn derive(
             }
         }
     }
+    // An entity modified into exactly one output keeps its name, so names born later do not
+    // depend on how many unrelated features touched their neighbours.
+    let mut modified = BTreeMap::<NamingInput, usize>::new();
+    for (input, relation, _) in &history.relations {
+        if *relation == NamingRelation::Modified {
+            *modified.entry(*input).or_default() += 1;
+        }
+    }
     let mut ancestry: BTreeMap<Name, BTreeSet<SubShapeHandle>> = BTreeMap::new();
     let mut terms: BTreeMap<SubShapeHandle, BTreeSet<Name>> = BTreeMap::new();
     let mut kept = BTreeMap::new();
@@ -251,19 +262,19 @@ fn derive(
             NamingInput::Cap { end } => (cap_root(owner, *end, planes.get(&owner).copied()), None),
         };
         let term = match relation {
-            NamingRelation::Kept => {
-                kept.entry(*output)
-                    .or_insert_with(BTreeSet::new)
-                    .insert(root);
-                root
-            }
-            NamingRelation::Modified => hash_name(
+            NamingRelation::Modified if modified[input] > 1 => hash_name(
                 output.kind(),
                 "modified",
                 Some(owner),
                 [root],
                 operation.tag(),
             ),
+            NamingRelation::Kept | NamingRelation::Modified => {
+                kept.entry(*output)
+                    .or_insert_with(BTreeSet::new)
+                    .insert(root);
+                root
+            }
             NamingRelation::Generated => generated(owner, operation, root, output.kind()),
             NamingRelation::Deleted => {
                 return Err(CadError::topology("deleted history has an output"));

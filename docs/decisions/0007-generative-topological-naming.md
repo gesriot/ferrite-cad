@@ -1,6 +1,6 @@
 # 7. Derive topology names from operation provenance and named face incidence
 
-**Status:** proposed. Implements the design work required by ADR 0006 D3;
+**Status:** accepted, 2026-10-24. Implements the design work required by ADR 0006 D3;
 production integration belongs to task 08.
 
 ## Evidence and scope
@@ -24,7 +24,16 @@ Choose UUID roots for sketch curves, oriented curve ends and support planes.
 An operation output is `(operation kind, feature, generated|modified, input names, entity kind)`;
 a cap without a curve input is `(feature, start|end cap, plane)`. Sets are
 canonical, order-independent sets. Keep names unchanged when history says
-**kept**. Include all inputs when an output has several parents.
+**kept**, and when it says **modified** into exactly one output: a trimmed face,
+edge or vertex is the same entity. Only the pieces of a split take a `modified`
+name under the splitting feature. Include all inputs when an output has several
+parents.
+
+Reject a new name on every modification. Edges and vertices are born from the
+names of their incident faces, so a later hole's rim would be renamed whenever an
+unrelated earlier Cut started or stopped modifying the top face. The
+upstream-change test switches one hole between ThroughAll and Blind and pins the
+other hole's face, edge and vertex names.
 
 Represent a node by a domain-separated BLAKE3-256 digest of its tagged operands.
 The model reconstructs the graph; a reference never embeds its ancestry.
@@ -44,8 +53,8 @@ four-Fillet histories with the same derivation rules.
 
 Choose the canonical set of incident face names as the birth identity of an
 edge or vertex. Add the operation's input provenance as a witness when present.
-Once born, propagate the name through kept/modified/generated history; do not
-rename a kept edge merely because an incident face acquired a modified name.
+Once born, a name survives kept and single-output modified history; a later
+split of an incident face does not rename an edge that survived it.
 A seam is an ordinary edge with one incident face, not an invented second face.
 Curve-end history distinguishes vertices when face incidence alone repeats.
 
@@ -65,8 +74,9 @@ the periodic-wall classes. No tolerance or geometry metric breaks a tie.
 
 ### 3. Splits, merges and deletion retain the complete relation
 
-Choose a set-valued graph. A split has one parent and several descendants;
-historical boundary witnesses may distinguish them as above. A merge has the
+Choose a set-valued graph. A split has one parent and several descendants,
+each `modified` from the parent under the splitting feature; historical boundary
+witnesses may distinguish them as above. A merge has the
 canonical union of all parent terms, not one arbitrarily preferred parent.
 Keep ancestry sets so a deliberately requested descendant family reaches all
 its members. A removed input has an explicit deleted survival relation; it can

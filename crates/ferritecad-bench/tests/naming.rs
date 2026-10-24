@@ -385,6 +385,52 @@ fn name_boolean_intersections_pocket_births_and_periodic_seams() {
 }
 
 #[test]
+fn keep_downstream_names_when_an_unrelated_upstream_cut_changes() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    use ferritecad_document::EndCondition;
+    use ferritecad_fixtures::feature_changes::{base_profile, body, circular_tool};
+    use ferritecad_topology::generative::curve_root;
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("two-holes.fcad");
+    ferritecad_fixtures::write_plate(&path).expect("plate");
+    let mut doc = Document::open(&path).expect("open");
+    let b = body(&doc).expect("body");
+    let first = circular_tool(&doc, b, [10., 20.], 2., EndCondition::ThroughAll).expect("first");
+    doc.write_changes(&first.changes).expect("first hole");
+    let second = circular_tool(&doc, b, [45., 20.], 2., EndCondition::ThroughAll).expect("second");
+    doc.write_changes(&second.changes).expect("second hole");
+    let (_, _, sketch) = base_profile(&doc, b).expect("base");
+    let rim = |model: &ModelNaming| -> BTreeSet<_> {
+        let result = &model.features[&second.feature];
+        let wall = &result.ancestry[&curve_root(second.feature, second.curve, Some(sketch.plane))];
+        result
+            .entities
+            .iter()
+            .filter(|(entity, _)| {
+                wall.contains(entity) || !result.topology.adjacent_faces[entity].is_disjoint(wall)
+            })
+            .map(|(_, name)| *name)
+            .collect()
+    };
+    let through = rim(&names(&doc));
+    // The first hole stops short of the top face, which it then no longer modifies.
+    doc.write_changes(&[EditChange::SetEndCondition {
+        object: first.feature,
+        end_condition: EndCondition::Blind {
+            distance: Expression::constant(4.).expect("depth"),
+        },
+    }])
+    .expect("blind first hole");
+    assert_eq!(
+        through,
+        rim(&names(&doc)),
+        "the second hole's rim keeps its names"
+    );
+}
+
+#[test]
 fn keep_a_reference_compact_after_fifty_generations() {
     use ciborium::value::Value;
     use ferritecad_topology::generative::{curve_root, generated};
