@@ -440,14 +440,31 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .map(RevolveDiscovery::new)
         .collect();
     let edge_features = |fillet: bool| -> Result<Vec<serde_json::Value>> {
-        Ok(document.objects()?.into_iter().filter_map(|o| {
-            let (previous, edge, value) = match o.payload {
-                ferritecad_document::ObjectPayload::Fillet(f) if fillet => (f.previous, f.edge, f.radius_mm),
-                ferritecad_document::ObjectPayload::Chamfer(c) if !fillet => (c.previous, c.edge, c.distance_mm),
-                _ => return None,
-            };
-            Some(serde_json::json!({"feature_id":o.id,"name":o.name,"previous_feature_id":previous,"edge":{"feature_id":edge.feature,"joint":edge.joint.segments()},"display_value":value.value() * document.meta().display_length_unit.per_base_unit(),"display_unit":document.meta().display_length_unit.symbol(),"expression":value}))
-        }).collect())
+        Ok(document
+            .objects()?
+            .into_iter()
+            .filter_map(|o| {
+                let (previous, edge, value) = match o.payload {
+                    ferritecad_document::ObjectPayload::Fillet(f) if fillet => {
+                        (f.previous, f.edge, f.radius_mm)
+                    }
+                    ferritecad_document::ObjectPayload::Chamfer(c) if !fillet => {
+                        (c.previous, c.edge, c.distance_mm)
+                    }
+                    _ => return None,
+                };
+                let unit = document.meta().display_length_unit;
+                Some(serde_json::json!({
+                    "feature_id": o.id,
+                    "name": o.name,
+                    "previous_feature_id": previous,
+                    "edge": {"feature_id": edge.feature, "joint": edge.joint.segments()},
+                    "display_value": value.value() * unit.per_base_unit(),
+                    "display_unit": unit.symbol(),
+                    "expression": value,
+                }))
+            })
+            .collect())
     };
     let fillets = edge_features(true)?;
     let chamfers = edge_features(false)?;

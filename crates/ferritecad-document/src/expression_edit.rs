@@ -166,11 +166,6 @@ impl EditChange {
 
     pub(crate) fn apply(&self, payload: &mut ObjectPayload) -> Result<()> {
         if let Self::SetEndCondition { end_condition, .. } = self {
-            if matches!(end_condition, EndCondition::Symmetric { .. }) {
-                return Err(CadError::input(
-                    "set_end_condition accepts Blind or ThroughAll",
-                ));
-            }
             let ObjectPayload::Extrude(extrude) = payload else {
                 return Err(CadError::input(format!(
                     "object {} is not an Extrude or Cut",
@@ -399,15 +394,6 @@ impl Document {
                         let previous = body_payload.tip_feature.ok_or_else(|| {
                             CadError::input(format!("Body {body} has no current feature"))
                         })?;
-                        if matches!(
-                            feature,
-                            FeatureAddition::Cut {
-                                end_condition: EndCondition::Symmetric { .. },
-                                ..
-                            }
-                        ) {
-                            return Err(CadError::input("a new Cut accepts Blind or ThroughAll"));
-                        }
                         insert_candidate(
                             document,
                             &mut changed,

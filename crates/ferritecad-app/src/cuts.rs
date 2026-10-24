@@ -99,6 +99,17 @@ struct Draft {
     refusal: Option<String>,
 }
 
+impl Draft {
+    fn request(&self, cut: CircularCut) -> EditRequest {
+        EditRequest {
+            source: self.source.clone(),
+            expected: self.version,
+            changes: self.subject.changes(cut).expect("validated draft"),
+            destination: PathBuf::new(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     draft: Option<Draft>,
@@ -450,10 +461,7 @@ impl Editor {
                         if ui.add_enabled(self.can_apply && differs && valid.is_ok(),
                             egui::Button::new("Apply cut")).clicked() {
                             let cut = parsed.expect("validated fields");
-                            self.pending_apply = Some(EditRequest {
-                source:draft.source.clone(), expected:draft.version,
-                changes:draft.subject.changes(cut).expect("validated draft"), destination:PathBuf::new(),
-            });
+                            self.pending_apply = Some(draft.request(cut));
                         }
                         if let Err(error) = valid {
                             ui.colored_label(ui.visuals().error_fg_color, error.to_string());
@@ -470,10 +478,7 @@ impl Editor {
                             .clicked()
                         {
                             let cut = numbers(&draft.typed).expect("validated fields");
-                            self.pending_add = Some(EditRequest {
-                source:draft.source.clone(), expected:draft.version,
-                changes:draft.subject.changes(cut).expect("validated draft"), destination:PathBuf::new(),
-            });
+                            self.pending_add = Some(draft.request(cut));
                         }
                         if let Err(error) = valid {
                             ui.colored_label(ui.visuals().error_fg_color, error.to_string());
@@ -518,19 +523,13 @@ impl Editor {
                             if ui.add_enabled(!self.unsaved, egui::Button::new("Save cut copy…")).clicked() {
                                 match &shown.editing {
                                     None => {
-                                        self.pending = Some(EditRequest {
-                source:draft.source.clone(), expected:draft.version,
-                changes:draft.subject.changes(cut).expect("validated draft"), destination:PathBuf::new(),
-            })
+                                        self.pending = Some(draft.request(cut))
                                     }
                                     // The saved identity, never the text of a
                                     // field: the form sends back the curve the
                                     // document told it about.
                                     Some(_) => {
-                                        self.pending_edit = Some(EditRequest {
-                source:draft.source.clone(), expected:draft.version,
-                changes:draft.subject.changes(cut).expect("validated draft"), destination:PathBuf::new(),
-            })
+                                        self.pending_edit = Some(draft.request(cut))
                                     }
                                 }
                             }

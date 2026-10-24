@@ -57,7 +57,6 @@ use crate::checkpoint::{
     delete_checkpoint_copy, restore_checkpoint_copy,
 };
 use crate::create::{CreateDocumentRequest, NewDocument, create_document_with_kernel};
-
 use crate::save::{SavePlan, SaveTarget, Saved};
 
 /// What a person reads for a document that has not been saved yet. A name, not a

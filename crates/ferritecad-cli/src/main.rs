@@ -110,10 +110,10 @@ enum Command {
     /// Create two concentric analytic XY circles - a hollow part - with a positive
     /// Blind extrusion from JSON request v1.
     CreateAnnularExtrude(annulus::AnnulusArgs),
-    /// Apply an ordered transaction of expression, curve and constraint changes to a new .fcad copy.
+    /// Apply an ordered transaction of number, curve, constraint and end changes and of sketch
+    /// and feature additions to a new .fcad copy.
     /// Preserves identities; never overwrites source or output. Requires a kernel.
     Edit(edit::EditArgs),
-
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes or a geometry kernel.
