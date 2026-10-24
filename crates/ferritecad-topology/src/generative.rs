@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-//! Isolated generative naming experiment; no document writer or evaluator hook.
+//! Eager names derived from complete operation provenance.
 use std::collections::{BTreeMap, BTreeSet};
 
-use ferritecad_document::{Document, ObjectPayload};
+use ferritecad_document::{ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
     GeometryKernel, NamingInput, NamingOperation, NamingRelation, ShapeHandle, ShapeTopology,
     SubShapeHandle, SubShapeKind,
@@ -78,134 +78,94 @@ pub struct ModelNaming {
     pub features: BTreeMap<ObjectId, FeatureNaming>,
 }
 
-/// Names the feature results of an already rebuilt document. The caller supplies
-/// its session's feature handles; no geometry is rebuilt or policy re-evaluated.
-pub fn name_rebuilt(
-    document: &Document,
-    shapes: &BTreeMap<ObjectId, ShapeHandle>,
-    kernel: &mut impl GeometryKernel,
-) -> Result<ModelNaming> {
-    let objects = document.objects()?;
-    let mut owners = BTreeMap::new();
-    let mut planes = BTreeMap::new();
-    for object in &objects {
-        let profile = match &object.payload {
-            ObjectPayload::Extrude(e) => Some(e.profile),
-            ObjectPayload::Revolve(r) => Some(r.profile),
-            _ => None,
-        };
-        if let Some(profile) = profile {
-            let plane = objects
-                .iter()
-                .find_map(|o| match &o.payload {
-                    ObjectPayload::Sketch(s) if o.id == profile => Some(s.plane),
-                    _ => None,
-                })
-                .ok_or_else(|| CadError::input("feature profile has no plane"))?;
-            planes.insert(object.id, plane);
-        }
-        if matches!(
-            object.payload,
-            ObjectPayload::Extrude(_)
-                | ObjectPayload::Revolve(_)
-                | ObjectPayload::Fillet(_)
-                | ObjectPayload::Chamfer(_)
-        ) && let Some(shape) = shapes.get(&object.id)
-        {
-            owners.insert(*shape, object.id);
-        }
+impl ModelNaming {
+    pub fn new() -> Self {
+        Self::default()
     }
-    let mut derived = BTreeMap::new();
-    for (shape, owner) in &owners {
+
+    pub fn prepare(&mut self, objects: &BTreeMap<ObjectId, ObjectRecord>) -> Result<()> {
+        for object in objects.values() {
+            let profile = match &object.payload {
+                ObjectPayload::Extrude(e) => Some(e.profile),
+                ObjectPayload::Revolve(r) => Some(r.profile),
+                _ => None,
+            };
+            if let Some(profile) = profile {
+                let Some(ObjectPayload::Sketch(sketch)) = objects.get(&profile).map(|o| &o.payload)
+                else {
+                    return Err(CadError::input("feature profile has no plane"));
+                };
+                self.planes.insert(object.id, sketch.plane);
+            }
+            let operation = match &object.payload {
+                ObjectPayload::Extrude(e) if e.previous.is_some() => NamingOperation::Cut,
+                ObjectPayload::Extrude(_) => NamingOperation::Extrude,
+                ObjectPayload::Revolve(_) => NamingOperation::Revolve,
+                ObjectPayload::Fillet(_) => NamingOperation::Fillet,
+                ObjectPayload::Chamfer(_) => NamingOperation::Chamfer,
+                _ => continue,
+            };
+            self.operations.insert(object.id, operation);
+            if let Some(previous) = object.payload.previous_feature() {
+                self.previous.insert(object.id, previous);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn feature(&self, id: ObjectId) -> Option<&FeatureNaming> {
+        self.features.get(&id)
+    }
+    pub fn producers(&self) -> impl ExactSizeIterator<Item = ObjectId> + '_ {
+        self.features.keys().copied()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.features.is_empty()
+    }
+    pub fn remove_feature(&mut self, id: ObjectId) {
+        self.features.remove(&id);
+    }
+
+    pub fn name_operation(
+        &self,
+        owner: ObjectId,
+        shape: ShapeHandle,
+        inputs: &[&FeatureNaming],
+        kernel: &mut (impl GeometryKernel + ?Sized),
+    ) -> Result<FeatureNaming> {
         derive(
-            *shape,
-            *owner,
-            &owners,
-            &planes,
+            shape,
+            owner,
+            self.planes.get(&owner).copied(),
+            inputs,
             kernel,
-            &mut derived,
-            &mut BTreeSet::new(),
-        )?;
+        )
     }
-    Ok(ModelNaming {
-        operations: objects
-            .iter()
-            .filter_map(|o| {
-                Some((
-                    o.id,
-                    match &o.payload {
-                        ObjectPayload::Extrude(e) if e.previous.is_some() => NamingOperation::Cut,
-                        ObjectPayload::Extrude(_) => NamingOperation::Extrude,
-                        ObjectPayload::Revolve(_) => NamingOperation::Revolve,
-                        ObjectPayload::Fillet(_) => NamingOperation::Fillet,
-                        ObjectPayload::Chamfer(_) => NamingOperation::Chamfer,
-                        _ => return None,
-                    },
-                ))
-            })
-            .collect(),
-        planes,
-        previous: objects
-            .iter()
-            .filter_map(|o| o.payload.previous_feature().map(|p| (o.id, p)))
-            .collect(),
-        features: owners
-            .into_iter()
-            .map(|(shape, owner)| {
-                Ok((
-                    owner,
-                    derived
-                        .remove(&shape)
-                        .ok_or_else(|| CadError::topology("feature has no naming result"))?,
-                ))
-            })
-            .collect::<Result<_>>()?,
-    })
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the recursive pass shares one rebuild scope and session"
-)]
+impl FeatureNaming {
+    pub fn named_face_count(&self) -> usize {
+        self.topology.entities(SubShapeKind::Face).count()
+    }
+    pub fn shape(&self) -> Option<ShapeHandle> {
+        self.entities.keys().next().map(|s| s.shape())
+    }
+}
+
 fn derive(
     shape: ShapeHandle,
     owner: ObjectId,
-    owners: &BTreeMap<ShapeHandle, ObjectId>,
-    planes: &BTreeMap<ObjectId, ObjectId>,
-    kernel: &mut impl GeometryKernel,
-    derived: &mut BTreeMap<ShapeHandle, FeatureNaming>,
-    visiting: &mut BTreeSet<ShapeHandle>,
-) -> Result<()> {
-    if derived.contains_key(&shape) {
-        return Ok(());
-    }
-    if !visiting.insert(shape) {
-        return Err(CadError::topology("cyclic operation provenance"));
-    }
+    plane: Option<ObjectId>,
+    inputs: &[&FeatureNaming],
+    kernel: &mut (impl GeometryKernel + ?Sized),
+) -> Result<FeatureNaming> {
     let topology = kernel.shape_topology(shape)?;
     let history = kernel.naming_history(shape)?;
     let operation = history
         .operation
         .ok_or_else(|| CadError::topology("operation history has no operator identity"))?;
-    let inputs: BTreeSet<_> = history
-        .relations
-        .iter()
-        .filter_map(|(input, _, _)| match input {
-            NamingInput::SubShape(s) => Some(s.shape()),
-            _ => None,
-        })
-        .collect();
-    for input in &inputs {
-        derive(
-            *input,
-            owners.get(input).copied().unwrap_or(owner),
-            owners,
-            planes,
-            kernel,
-            derived,
-            visiting,
-        )?;
-        let source = &derived[input];
+    let derived: BTreeMap<_, _> = inputs.iter().map(|f| (f.shape(), *f)).collect();
+    for source in inputs {
         for sub in source.entities.keys() {
             if !history
                 .relations
@@ -224,7 +184,11 @@ fn derive(
             *modified.entry(*input).or_default() += 1;
         }
     }
-    let mut ancestry: BTreeMap<Name, BTreeSet<SubShapeHandle>> = BTreeMap::new();
+    let mut ancestry: BTreeMap<Name, BTreeSet<SubShapeHandle>> = inputs
+        .iter()
+        .flat_map(|source| source.ancestry.keys().copied())
+        .map(|name| (name, BTreeSet::new()))
+        .collect();
     let mut terms: BTreeMap<SubShapeHandle, BTreeSet<Name>> = BTreeMap::new();
     let mut kept = BTreeMap::new();
     for (input, relation, output) in &history.relations {
@@ -236,18 +200,18 @@ fn derive(
         }
         let (root, source) = match input {
             NamingInput::SubShape(sub) => {
-                let source = &derived[&sub.shape()];
+                let source = derived
+                    .get(&Some(sub.shape()))
+                    .ok_or_else(|| CadError::topology("history names an unknown input shape"))?;
                 let root = *source
                     .entities
                     .get(sub)
                     .ok_or_else(|| CadError::topology("history names an unknown input entity"))?;
                 (root, Some((source, sub)))
             }
-            NamingInput::Curve(curve) => {
-                (curve_root(owner, *curve, planes.get(&owner).copied()), None)
-            }
+            NamingInput::Curve(curve) => (curve_root(owner, *curve, plane), None),
             NamingInput::CurveEnd { curve, end } => {
-                let root = curve_root(owner, *curve, planes.get(&owner).copied());
+                let root = curve_root(owner, *curve, plane);
                 (
                     hash_name(
                         SubShapeKind::Vertex,
@@ -259,7 +223,7 @@ fn derive(
                     None,
                 )
             }
-            NamingInput::Cap { end } => (cap_root(owner, *end, planes.get(&owner).copied()), None),
+            NamingInput::Cap { end } => (cap_root(owner, *end, plane), None),
         };
         let term = match relation {
             NamingRelation::Modified if modified[input] > 1 => hash_name(
@@ -283,9 +247,6 @@ fn derive(
         terms.entry(*output).or_default().insert(term);
         if *relation == NamingRelation::Generated {
             ancestry.entry(term).or_default().insert(*output);
-            if source.is_none() {
-                ancestry.entry(root).or_default().insert(*output);
-            }
         } else if let Some((source, sub)) = source {
             for (ancestor, members) in &source.ancestry {
                 if members.contains(sub) {
@@ -372,17 +333,12 @@ fn derive(
         bindings.entry(*name).or_default().insert(*entity);
         ancestry.entry(*name).or_default().insert(*entity);
     }
-    visiting.remove(&shape);
-    derived.insert(
-        shape,
-        FeatureNaming {
-            topology,
-            entities,
-            bindings,
-            ancestry,
-        },
-    );
-    Ok(())
+    Ok(FeatureNaming {
+        topology,
+        entities,
+        bindings,
+        ancestry,
+    })
 }
 
 pub fn curve_root(feature: ObjectId, curve: StableEntityId, plane: Option<ObjectId>) -> Name {

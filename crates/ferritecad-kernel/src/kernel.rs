@@ -7,10 +7,7 @@ use crate::identity::KernelIdentity;
 use crate::request::{
     ChamferRequest, CutRequest, ExtrudeRequest, FilletRequest, RevolveRequest, TessellationParams,
 };
-use crate::result::{
-    ArchiveSlot, BrepBlob, ChamferResult, CutResult, ExtrudeResult, FilletResult, Mesh,
-    OperationResult, RevolveResult,
-};
+use crate::result::{ArchiveSlot, BrepBlob, Mesh, OperationResult};
 
 /// The operations FerriteCAD needs from a geometry kernel.
 ///
@@ -62,7 +59,7 @@ pub trait GeometryKernel {
         &mut self,
         request: &ExtrudeRequest,
         context: &OperationContext,
-    ) -> Result<ExtrudeResult>;
+    ) -> Result<OperationResult>;
 
     /// Turns a planar profile about an axis in its plane into a solid.
     ///
@@ -75,7 +72,7 @@ pub trait GeometryKernel {
         &mut self,
         request: &RevolveRequest,
         context: &OperationContext,
-    ) -> Result<RevolveResult> {
+    ) -> Result<OperationResult> {
         let _ = (request, context);
         Err(ferritecad_types::CadError::unsupported(format!(
             "the {} kernel does not build revolutions",
@@ -99,12 +96,7 @@ pub trait GeometryKernel {
     /// what a face of the target became is a fact the boolean knows, and a
     /// caller that had to work it out from the result would be matching
     /// geometry rather than reading history.
-    fn cut(
-        &mut self,
-        request: &CutRequest,
-        track: &[SubShapeHandle],
-        context: &OperationContext,
-    ) -> Result<CutResult>;
+    fn cut(&mut self, request: &CutRequest, context: &OperationContext) -> Result<OperationResult>;
 
     /// Rounds exactly one edge of a shape to one constant radius (§28A).
     ///
@@ -120,10 +112,9 @@ pub trait GeometryKernel {
     fn fillet_edge(
         &mut self,
         request: &FilletRequest,
-        track: &[SubShapeHandle],
         context: &OperationContext,
-    ) -> Result<FilletResult> {
-        let _ = (request, track, context);
+    ) -> Result<OperationResult> {
+        let _ = (request, context);
         Err(ferritecad_types::CadError::unsupported(format!(
             "the {} kernel does not round edges",
             self.identity().id()
@@ -141,10 +132,9 @@ pub trait GeometryKernel {
     fn chamfer_edge(
         &mut self,
         request: &ChamferRequest,
-        track: &[SubShapeHandle],
         context: &OperationContext,
-    ) -> Result<ChamferResult> {
-        let _ = (request, track, context);
+    ) -> Result<OperationResult> {
+        let _ = (request, context);
         Err(ferritecad_types::CadError::unsupported(format!(
             "the {} kernel does not chamfer edges",
             self.identity().id()

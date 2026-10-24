@@ -43,9 +43,6 @@ const SURFACE_CONE: i32 = 3;
 const NO_AXIS_SEGMENT: usize = usize::MAX;
 
 /// Must match the `FC_OCCT_CARRIED_*` constants in `ferritecad_occt.h`.
-pub(crate) const CARRIED_KEPT: i32 = 0;
-pub(crate) const CARRIED_MODIFIED: i32 = 1;
-pub(crate) const CARRIED_DELETED: i32 = 2;
 
 /// Must match the `FC_OCCT_SUB_SHAPE_*` constants in `ferritecad_occt.h`.
 const SUB_SHAPE_FACE: i32 = 0;
@@ -197,15 +194,7 @@ unsafe extern "C" {
         out_shape: *mut u64,
         out_error: *mut RawError,
     ) -> i32;
-    fn fc_occt_revolve_faces(
-        session: *mut RawSession,
-        shape: u64,
-        segment_index: usize,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
-        out_error: *mut RawError,
-    ) -> i32;
+
     #[allow(clippy::too_many_arguments)]
     fn fc_occt_revolve_partial(
         session: *mut RawSession,
@@ -221,15 +210,7 @@ unsafe extern "C" {
         out_shape: *mut u64,
         out_error: *mut RawError,
     ) -> i32;
-    fn fc_occt_revolve_caps(
-        session: *mut RawSession,
-        shape: u64,
-        which: i32,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
-        out_error: *mut RawError,
-    ) -> i32;
+
     fn fc_occt_face_plane(
         session: *mut RawSession,
         shape: u64,
@@ -257,70 +238,14 @@ unsafe extern "C" {
         out_removed_volume: *mut f64,
         out_error: *mut RawError,
     ) -> i32;
-    fn fc_occt_cut_carried(
-        session: *mut RawSession,
-        result: u64,
-        input: u64,
-        input_sub: u64,
-        out_kind: *mut i32,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
-        out_error: *mut RawError,
-    ) -> i32;
+
     fn fc_occt_sub_shape_count(
         session: *mut RawSession,
         shape: u64,
         out_count: *mut usize,
         out_error: *mut RawError,
     ) -> i32;
-    fn fc_occt_extrude_side_faces(
-        session: *mut RawSession,
-        shape: u64,
-        segment_index: usize,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
-        out_error: *mut RawError,
-    ) -> i32;
-    fn fc_occt_extrude_cap_edges(
-        session: *mut RawSession,
-        shape: u64,
-        segment_index: usize,
-        which: i32,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
-        out_error: *mut RawError,
-    ) -> i32;
-    fn fc_occt_extrude_sweep_edges(
-        session: *mut RawSession,
-        shape: u64,
-        joint_index: usize,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
-        out_error: *mut RawError,
-    ) -> i32;
-    fn fc_occt_extrude_cap_vertices(
-        session: *mut RawSession,
-        shape: u64,
-        joint_index: usize,
-        which: i32,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
-        out_error: *mut RawError,
-    ) -> i32;
-    fn fc_occt_extrude_cap_faces(
-        session: *mut RawSession,
-        shape: u64,
-        which: i32,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
-        out_error: *mut RawError,
-    ) -> i32;
+
     fn fc_occt_shape_stats(
         session: *mut RawSession,
         shape: u64,
@@ -381,14 +306,6 @@ unsafe extern "C" {
         out_removed_volume: *mut f64,
         out_error: *mut RawError,
     ) -> i32;
-    fn fc_occt_fillet_faces(
-        session: *mut RawSession,
-        shape: u64,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
-        out_error: *mut RawError,
-    ) -> i32;
 
     #[allow(clippy::too_many_arguments)]
     fn fc_occt_chamfer_edge(
@@ -400,14 +317,6 @@ unsafe extern "C" {
         cancel_context: *mut c_void,
         out_shape: *mut u64,
         out_removed_volume: *mut f64,
-        out_error: *mut RawError,
-    ) -> i32;
-    fn fc_occt_chamfer_faces(
-        session: *mut RawSession,
-        shape: u64,
-        out_ids: *mut u64,
-        capacity: usize,
-        out_count: *mut usize,
         out_error: *mut RawError,
     ) -> i32;
 
@@ -828,27 +737,8 @@ impl Session {
     }
 
     /// The start (`end == false`) or end face of a partial revolution.
-    pub(crate) fn revolve_caps(&mut self, shape: u64, end: bool) -> Result<Vec<u64>> {
-        let which = i32::from(end);
-        self.collect_ids(
-            "reading an end face of a partial revolution",
-            |s, ids, cap, count, err| {
-                // SAFETY: pointers are valid for the call; see `collect_ids`.
-                unsafe { fc_occt_revolve_caps(s, shape, which, ids, cap, count, err) }
-            },
-        )
-    }
 
     /// The face of revolution one profile segment raised.
-    pub(crate) fn revolve_faces(&mut self, shape: u64, segment_index: usize) -> Result<Vec<u64>> {
-        self.collect_ids(
-            "reading the face a profile segment raised by revolution",
-            |s, ids, cap, count, err| {
-                // SAFETY: pointers are valid for the call; see `collect_ids`.
-                unsafe { fc_occt_revolve_faces(s, shape, segment_index, ids, cap, count, err) }
-            },
-        )
-    }
 
     /// The analytic plane of one named planar face (§29A): a point on it, its
     /// outward unit normal and its area.
@@ -977,134 +867,22 @@ impl Session {
     }
 
     /// What a cut did to one named sub-shape of one of its inputs.
-    pub(crate) fn cut_carried(
-        &mut self,
-        result: u64,
-        input: u64,
-        input_sub: u64,
-    ) -> Result<(i32, Vec<u64>)> {
-        const WHAT: &str = "reading what a cut did to one of its inputs";
-        let mut kind = 0i32;
-        let mut count = 0usize;
-        let mut error = RawError::empty();
-        // SAFETY: a null buffer with zero capacity is the documented way to
-        // ask for the count; the out-parameters are valid for the call.
-        let status = unsafe {
-            fc_occt_cut_carried(
-                self.raw,
-                result,
-                input,
-                input_sub,
-                &mut kind,
-                std::ptr::null_mut(),
-                0,
-                &mut count,
-                &mut error,
-            )
-        };
-        interpret(status, &error, WHAT)?;
-        if count == 0 {
-            return Ok((kind, Vec::new()));
-        }
-        let mut ids = vec![0u64; count];
-        let mut written = 0usize;
-        // SAFETY: the buffer holds exactly the reported count.
-        let status = unsafe {
-            fc_occt_cut_carried(
-                self.raw,
-                result,
-                input,
-                input_sub,
-                &mut kind,
-                ids.as_mut_ptr(),
-                ids.len(),
-                &mut written,
-                &mut error,
-            )
-        };
-        interpret(status, &error, WHAT)?;
-        if written != ids.len() {
-            return Err(CadError::kernel(format!(
-                "the bridge reported {} sub-shapes and then wrote {written}",
-                ids.len()
-            )));
-        }
-        Ok((kind, ids))
-    }
-
-    pub(crate) fn side_faces(&mut self, shape: u64, segment_index: usize) -> Result<Vec<u64>> {
-        self.collect_ids(
-            "reading the faces raised from a profile segment",
-            |s, ids, cap, count, err| {
-                // SAFETY: pointers are valid for the call; see `collect_ids`.
-                unsafe { fc_occt_extrude_side_faces(s, shape, segment_index, ids, cap, count, err) }
-            },
-        )
-    }
 
     /// The edge one profile segment left where a cap meets its swept face.
     ///
     /// Zero or one identifier: the bridge reports none for a segment that
     /// produced no such edge rather than offering a neighbour.
-    pub(crate) fn cap_edges(
-        &mut self,
-        shape: u64,
-        segment_index: usize,
-        which: i32,
-    ) -> Result<Vec<u64>> {
-        self.collect_ids(
-            "reading the edge where an extrusion cap meets a swept face",
-            |s, ids, cap, count, err| {
-                // SAFETY: pointers are valid for the call; see `collect_ids`.
-                unsafe {
-                    fc_occt_extrude_cap_edges(s, shape, segment_index, which, ids, cap, count, err)
-                }
-            },
-        )
-    }
 
     /// The edge swept from one corner of the profile.
     ///
     /// Everything the bridge recorded there, so a count other than one is the
     /// caller's to refuse rather than something silently trimmed here.
-    pub(crate) fn sweep_edges(&mut self, shape: u64, joint_index: usize) -> Result<Vec<u64>> {
-        self.collect_ids(
-            "reading the edge swept from a corner of an extrusion profile",
-            |s, ids, cap, count, err| {
-                // SAFETY: pointers are valid for the call; see `collect_ids`.
-                unsafe { fc_occt_extrude_sweep_edges(s, shape, joint_index, ids, cap, count, err) }
-            },
-        )
-    }
 
     /// The vertex one corner of the profile reaches on one cap.
     ///
     /// Positional, as the bridge reports it. Everything recorded at that
     /// corner comes back, so a count other than one is the caller's to refuse
     /// rather than something quietly trimmed here.
-    pub(crate) fn cap_vertices(
-        &mut self,
-        shape: u64,
-        joint_index: usize,
-        which: i32,
-    ) -> Result<Vec<u64>> {
-        self.collect_ids(
-            "reading the vertex where a profile corner reaches a cap",
-            |s, ids, cap, count, err| {
-                // SAFETY: pointers are valid for the call; see `collect_ids`.
-                unsafe {
-                    fc_occt_extrude_cap_vertices(s, shape, joint_index, which, ids, cap, count, err)
-                }
-            },
-        )
-    }
-
-    pub(crate) fn cap_faces(&mut self, shape: u64, which: i32) -> Result<Vec<u64>> {
-        self.collect_ids("reading an extrusion cap", |s, ids, cap, count, err| {
-            // SAFETY: pointers are valid for the call; see `collect_ids`.
-            unsafe { fc_occt_extrude_cap_faces(s, shape, which, ids, cap, count, err) }
-        })
-    }
 
     pub(crate) fn shape_stats(&mut self, shape: u64) -> Result<(u64, f64)> {
         let mut faces = 0u64;
@@ -1310,15 +1088,6 @@ impl Session {
     }
 
     /// The faces the fillet generated from the rounded edge.
-    pub(crate) fn fillet_faces(&mut self, shape: u64) -> Result<Vec<u64>> {
-        self.collect_ids(
-            "reading the face a fillet generated from its edge",
-            |s, ids, cap, count, err| {
-                // SAFETY: pointers are valid for the call; see `collect_ids`.
-                unsafe { fc_occt_fillet_faces(s, shape, ids, cap, count, err) }
-            },
-        )
-    }
 
     /// Cuts exactly one edge of `target` away at one equal distance (§29A):
     /// the new shape and the volume removed, measured by the bridge as a
@@ -1354,15 +1123,6 @@ impl Session {
     }
 
     /// The faces the chamfer generated from the cut edge.
-    pub(crate) fn chamfer_faces(&mut self, shape: u64) -> Result<Vec<u64>> {
-        self.collect_ids(
-            "reading the face a chamfer generated from its edge",
-            |s, ids, cap, count, err| {
-                // SAFETY: pointers are valid for the call; see `collect_ids`.
-                unsafe { fc_occt_chamfer_faces(s, shape, ids, cap, count, err) }
-            },
-        )
-    }
 
     /// Rounds every edge of a shape to one radius.
     pub(crate) fn fillet_all(

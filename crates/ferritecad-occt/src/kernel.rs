@@ -3,14 +3,13 @@ use std::collections::BTreeMap;
 
 use ferritecad_exchange::Import;
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, CarriedOutcome, ChamferRequest, ChamferResult, CutRequest, CutResult,
-    ExtrudeExtent, ExtrudeRequest, ExtrudeResult, FaceSurface, FilletRequest, FilletResult,
-    GeometryKernel, History, HistoryInput, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges,
-    MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext, ProfileLoop, ProfileSegment,
-    RevolveAxis, RevolveRequest, RevolveResult, RevolveTurn, SegmentGeometry, SessionId,
-    ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind, TessellationParams,
+    ArchiveSlot, BrepBlob, ChamferRequest, CutRequest, ExtrudeExtent, ExtrudeRequest, FaceSurface,
+    FilletRequest, GeometryKernel, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange,
+    MeshVertexRange, MeshVertices, OperationContext, OperationResult, ProfileLoop, ProfileSegment,
+    RevolveAxis, RevolveRequest, RevolveTurn, SegmentGeometry, SessionId, ShapeHandle, SketchPlane,
+    SubShapeHandle, SubShapeKind, TessellationParams,
 };
-use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, Transform};
+use ferritecad_types::{CadError, ContentHash, Result, Transform};
 
 use crate::ffi;
 
@@ -114,11 +113,10 @@ impl OcctKernel {
         request_target: ShapeHandle,
         target: u64,
         edge: SubShapeHandle,
-        track: &[SubShapeHandle],
         what: &str,
         verb: &str,
     ) -> Result<()> {
-        for sub in track.iter().chain(std::iter::once(&edge)) {
+        for sub in [edge] {
             if sub.shape() != request_target {
                 return Err(CadError::input(format!(
                     "{sub} is not a sub-shape of the shape this {what} {verb}"
@@ -131,50 +129,6 @@ impl OcctKernel {
             }
         }
         Ok(())
-    }
-
-    /// What became of every name asked about (and of the edge), read from the
-    /// operation's own history, in the same four-fact vocabulary a Cut uses.
-    #[allow(clippy::too_many_arguments)]
-    fn account_for_edge_operation(
-        &mut self,
-        raw: u64,
-        target: u64,
-        shape: ShapeHandle,
-        edge: SubShapeHandle,
-        track: &[SubShapeHandle],
-        what: &str,
-        context: &OperationContext,
-    ) -> Result<(History, BTreeMap<SubShapeHandle, CarriedOutcome>)> {
-        context.check_cancelled()?;
-        let mut history = History::new();
-        let mut carried = BTreeMap::new();
-        let mut asked: Vec<SubShapeHandle> = track.to_vec();
-        if !asked.contains(&edge) {
-            asked.push(edge);
-        }
-        for sub in &asked {
-            let (kind, ids) = self.session.cut_carried(raw, target, sub.index())?;
-            let outcome = match kind {
-                ffi::CARRIED_KEPT => CarriedOutcome::Kept,
-                ffi::CARRIED_MODIFIED => CarriedOutcome::Modified,
-                ffi::CARRIED_DELETED => CarriedOutcome::Deleted,
-                other => {
-                    return Err(CadError::kernel(format!(
-                        "the bridge described a {what} outcome as {other}, which this build \
-                         has no reading of"
-                    )));
-                }
-            };
-            for id in ids {
-                history.record_modified(
-                    HistoryInput::SubShape(*sub),
-                    SubShapeHandle::new(shape, sub.kind(), id),
-                );
-            }
-            carried.insert(*sub, outcome);
-        }
-        Ok((history, carried))
     }
 
     /// Rounds every edge of a shape to one radius.
@@ -478,7 +432,7 @@ impl GeometryKernel for OcctKernel {
         &mut self,
         request: &RevolveRequest,
         context: &OperationContext,
-    ) -> Result<RevolveResult> {
+    ) -> Result<OperationResult> {
         context.check_cancelled()?;
         let profile = request.profile();
         if !profile.inner().is_empty() || profile.outer().is_closed_curve() {
@@ -562,38 +516,12 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, ferritecad_kernel::NamingOperation::Revolve);
         self.naming_curves
             .insert(shape, drawn.iter().map(|s| s.label).collect());
-        let assembled = (|| -> Result<RevolveResult> {
-            // The completion report may cancel; the shape is ours to release.
+        let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
-            let mut history = History::new();
-            for (index, segment) in drawn.iter().enumerate() {
-                for face in self.session.revolve_faces(raw, index)? {
-                    history.record_generated(
-                        HistoryInput::Segment(segment.label),
-                        self.face(shape, face),
-                    );
-                }
-            }
-            // A sector's two end faces, from the bridge's own history; a full
-            // turn has none and is never asked.
-            let (start_cap, end_cap) = if partial.is_some() {
-                let start = self.session.revolve_caps(raw, false)?;
-                let end = self.session.revolve_caps(raw, true)?;
-                (
-                    start.into_iter().map(|f| self.face(shape, f)).collect(),
-                    end.into_iter().map(|f| self.face(shape, f)).collect(),
-                )
-            } else {
-                (Vec::new(), Vec::new())
-            };
-            let result = RevolveResult {
+            Ok(OperationResult {
                 shape,
-                history,
-                start_cap,
-                end_cap,
-            };
-            result.validate()?;
-            Ok(result)
+                removed_volume: 0.0,
+            })
         })();
         if assembled.is_err() {
             self.release(shape);
@@ -605,7 +533,7 @@ impl GeometryKernel for OcctKernel {
         &mut self,
         request: &ExtrudeRequest,
         context: &OperationContext,
-    ) -> Result<ExtrudeResult> {
+    ) -> Result<OperationResult> {
         context.check_cancelled()?;
 
         let profile = request.profile();
@@ -663,166 +591,12 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
         self.naming_curves
             .insert(shape, drawn.iter().map(|s| s.label).collect());
-        let assembled = (|| -> Result<ExtrudeResult> {
-            // A progress callback may cancel at the completion report. The
-            // bridge has already handed us a shape at that point, so the error
-            // path below must release it rather than returning a cancelled
-            // operation with a live, unreachable solid.
+        let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
-
-            let mut history = History::new();
-            for (index, segment) in drawn.iter().enumerate() {
-                for face in self.session.side_faces(raw, index)? {
-                    history.record_generated(
-                        HistoryInput::Segment(segment.label),
-                        self.face(shape, face),
-                    );
-                }
-            }
-
-            let start_cap = self
-                .session
-                .cap_faces(raw, 0)?
-                .into_iter()
-                .map(|id| self.face(shape, id))
-                .collect();
-            let end_cap = self
-                .session
-                .cap_faces(raw, 1)?
-                .into_iter()
-                .map(|id| self.face(shape, id))
-                .collect();
-
-            // Where each cap meets the face raised from a segment. Read from
-            // the sweep's own history, segment by segment, and filed under the
-            // label the caller gave that segment rather than under its
-            // position: a profile that gains or loses a segment must not
-            // rename the edges of the ones that stayed.
-            let mut start_cap_edges = BTreeMap::new();
-            let mut end_cap_edges = BTreeMap::new();
-            for (index, segment) in drawn.iter().enumerate() {
-                for (which, into) in [(0, &mut start_cap_edges), (1, &mut end_cap_edges)] {
-                    let mut named = self.session.cap_edges(raw, index, which)?.into_iter();
-                    let Some(id) = named.next() else {
-                        continue;
-                    };
-                    if named.next().is_some() {
-                        return Err(CadError::kernel(
-                            "the sweep named more than one cap edge for one profile segment, \
-                             and there is no way to choose between them",
-                        ));
-                    }
-                    if into
-                        .insert(
-                            segment.label,
-                            SubShapeHandle::new(shape, SubShapeKind::Edge, id),
-                        )
-                        .is_some()
-                    {
-                        return Err(CadError::kernel(format!(
-                            "profile segment {} appears twice, so its cap edge would be named \
-                             twice",
-                            segment.label
-                        )));
-                    }
-                }
-            }
-
-            // The edge along the sweep at each corner of the profile, filed
-            // under the pair of segments that meet there.
-            //
-            // Joint `index` is where the segment before it meets the segment
-            // at it, which is the corner the two share. The pair is the name;
-            // nothing about where either segment sits in the loop is kept, so
-            // walking the profile from a different segment, or editing an
-            // unrelated part of it, leaves this joint called what it was.
-            //
-            // A pair that arises at more than one corner names neither of
-            // them. On a loop of two segments both corners are where the same
-            // two segments meet, and there is no honest way to say which is
-            // meant, so both are left unnamed rather than one being chosen.
-            //
-            // Collected loop by loop, in the same order the segments were
-            // sent, so joint `j` here is the corner the bridge answers about
-            // for `j`. A loop that is one closed curve contributes none, which
-            // is why a pair of circles reports no corners at all rather than a
-            // seam nobody drew.
-            let joints: Vec<ProfileJoint> = loops.iter().flat_map(|entry| entry.joints()).collect();
-            let mut seen: BTreeMap<ProfileJoint, usize> = BTreeMap::new();
-            for joint in &joints {
-                *seen.entry(*joint).or_insert(0) += 1;
-            }
-
-            let mut sweep_edges = BTreeMap::new();
-            for (index, joint) in joints.iter().enumerate() {
-                if seen.get(joint).copied().unwrap_or(0) != 1 {
-                    continue;
-                }
-                let mut named = self.session.sweep_edges(raw, index)?.into_iter();
-                let Some(id) = named.next() else {
-                    continue;
-                };
-                if named.next().is_some() {
-                    return Err(CadError::kernel(format!(
-                        "the sweep named more than one edge for {joint}, and there is no way to \
-                         choose between them"
-                    )));
-                }
-                sweep_edges.insert(*joint, SubShapeHandle::new(shape, SubShapeKind::Edge, id));
-            }
-
-            // Where each corner of the profile reaches each cap, filed under
-            // the same pair and by the same rule. The occurrence count above
-            // is consulted before anything is filed: a map that merely
-            // overwrote on insert would turn the two corners of a two-segment
-            // loop into one entry and call the ambiguity resolved.
-            let mut start_cap_vertices = BTreeMap::new();
-            let mut end_cap_vertices = BTreeMap::new();
-            for (index, joint) in joints.iter().enumerate() {
-                // Read the positional answers before deciding whether the
-                // durable pair is unique. Otherwise the two corners of a
-                // two-segment loop would never cross the FFI boundary at all,
-                // and the bridge's promise to preserve the ambiguity would be
-                // decorative rather than consumed.
-                let mut on_caps = [None, None];
-                for (which, into) in [0_i32, 1].into_iter().zip(on_caps.iter_mut()) {
-                    let mut named = self.session.cap_vertices(raw, index, which)?.into_iter();
-                    *into = named.next();
-                    if named.next().is_some() {
-                        return Err(CadError::kernel(format!(
-                            "the sweep named more than one cap vertex for {joint}, and there is \
-                             no way to choose between them"
-                        )));
-                    }
-                }
-                if seen.get(joint).copied().unwrap_or(0) != 1 {
-                    continue;
-                }
-                if let Some(id) = on_caps[0] {
-                    start_cap_vertices
-                        .insert(*joint, SubShapeHandle::new(shape, SubShapeKind::Vertex, id));
-                }
-                if let Some(id) = on_caps[1] {
-                    end_cap_vertices
-                        .insert(*joint, SubShapeHandle::new(shape, SubShapeKind::Vertex, id));
-                }
-            }
-
-            let result = ExtrudeResult {
-                start_cap_vertices,
-                end_cap_vertices,
+            Ok(OperationResult {
                 shape,
-                history,
-                start_cap,
-                end_cap,
-                start_cap_edges,
-                end_cap_edges,
-                sweep_edges,
-            };
-            // Checked here rather than trusted: a name pointing at another
-            // shape or at a face resolves, and resolves to the wrong thing.
-            result.validate()?;
-            Ok(result)
+                removed_volume: 0.0,
+            })
         })();
 
         if assembled.is_err() {
@@ -831,33 +605,10 @@ impl GeometryKernel for OcctKernel {
         assembled
     }
 
-    fn cut(
-        &mut self,
-        request: &CutRequest,
-        track: &[SubShapeHandle],
-        context: &OperationContext,
-    ) -> Result<CutResult> {
+    fn cut(&mut self, request: &CutRequest, context: &OperationContext) -> Result<OperationResult> {
         context.check_cancelled()?;
         let target = self.raw(request.target())?;
         let tool = self.raw(request.tool())?;
-
-        // Every tracked sub-shape must belong to one of the two inputs. A
-        // handle from a third shape would be answered about by index — the
-        // bridge keys its history by (shape, index) — and would silently
-        // describe somebody else's face.
-        for sub in track {
-            if sub.shape() != request.target() && sub.shape() != request.tool() {
-                return Err(CadError::input(format!(
-                    "{sub} belongs to neither input of this cut"
-                )));
-            }
-            let owner = self.raw(sub.shape())?;
-            if sub.index() >= self.session.sub_shape_count(owner)? as u64 {
-                return Err(CadError::input(format!(
-                    "{sub} was never handed out by this session"
-                )));
-            }
-        }
 
         context.progress().report(0.0);
         let (raw, removed_volume) = self.session.cut(target, tool, context.cancel())?;
@@ -866,48 +617,12 @@ impl GeometryKernel for OcctKernel {
         let shape = ShapeHandle::new(self.session_id, raw);
         self.naming_operations
             .insert(shape, ferritecad_kernel::NamingOperation::Cut);
-        let assembled = (|| -> Result<CutResult> {
-            // A progress callback may cancel at the completion report, by which
-            // point the bridge has already handed over a shape.
+        let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
-
-            let mut history = History::new();
-            let mut carried = BTreeMap::new();
-            for sub in track {
-                let owner = self.raw(sub.shape())?;
-                let (kind, ids) = self.session.cut_carried(raw, owner, sub.index())?;
-                let outcome = match kind {
-                    ffi::CARRIED_KEPT => CarriedOutcome::Kept,
-                    ffi::CARRIED_MODIFIED => CarriedOutcome::Modified,
-                    ffi::CARRIED_DELETED => CarriedOutcome::Deleted,
-                    other => {
-                        return Err(CadError::kernel(format!(
-                            "the bridge described a boolean outcome as {other}, which this build                              has no reading of"
-                        )));
-                    }
-                };
-                // The kind travels with the sub-shape it is about: a face of
-                // the target stays a face of the result, and an edge an edge.
-                // The bridge answers with identifiers into the result's own
-                // table, and nothing here re-decides what sort of geometry one
-                // of them is.
-                for id in ids {
-                    history.record_modified(
-                        HistoryInput::SubShape(*sub),
-                        SubShapeHandle::new(shape, sub.kind(), id),
-                    );
-                }
-                carried.insert(*sub, outcome);
-            }
-
-            let result = CutResult {
+            Ok(OperationResult {
                 shape,
-                history,
-                carried,
-                removed_volume,
-            };
-            result.validate(request.target(), request.tool())?;
-            Ok(result)
+                removed_volume: removed_volume,
+            })
         })();
 
         match assembled {
@@ -922,13 +637,12 @@ impl GeometryKernel for OcctKernel {
     fn fillet_edge(
         &mut self,
         request: &FilletRequest,
-        track: &[SubShapeHandle],
         context: &OperationContext,
-    ) -> Result<FilletResult> {
+    ) -> Result<OperationResult> {
         context.check_cancelled()?;
         let target = self.raw(request.target())?;
         let edge = request.edge();
-        self.check_edge_operation_names(request.target(), target, edge, track, "fillet", "rounds")?;
+        self.check_edge_operation_names(request.target(), target, edge, "fillet", "rounds")?;
 
         context.progress().report(0.0);
         let (raw, removed_volume) = self.session.fillet_edge(
@@ -942,27 +656,12 @@ impl GeometryKernel for OcctKernel {
         let shape = ShapeHandle::new(self.session_id, raw);
         self.naming_operations
             .insert(shape, ferritecad_kernel::NamingOperation::Fillet);
-        let assembled = (|| -> Result<FilletResult> {
-            let (history, carried) = self
-                .account_for_edge_operation(raw, target, shape, edge, track, "fillet", context)?;
-            let fillet_faces = self
-                .session
-                .fillet_faces(raw)?
-                .into_iter()
-                .map(|id| SubShapeHandle::new(shape, SubShapeKind::Face, id))
-                .collect::<Vec<_>>();
-            // Kept beside the history, not in it: the edge is reported
-            // gone, and the face that replaced it is a separate fact the
-            // naming layer files under the edge's meaning.
-            let result = FilletResult {
+        let assembled = (|| -> Result<OperationResult> {
+            context.check_cancelled()?;
+            Ok(OperationResult {
                 shape,
-                history,
-                carried,
-                fillet_faces,
-                removed_volume,
-            };
-            result.validate(request.target(), edge)?;
-            Ok(result)
+                removed_volume: removed_volume,
+            })
         })();
 
         match assembled {
@@ -977,13 +676,12 @@ impl GeometryKernel for OcctKernel {
     fn chamfer_edge(
         &mut self,
         request: &ChamferRequest,
-        track: &[SubShapeHandle],
         context: &OperationContext,
-    ) -> Result<ChamferResult> {
+    ) -> Result<OperationResult> {
         context.check_cancelled()?;
         let target = self.raw(request.target())?;
         let edge = request.edge();
-        self.check_edge_operation_names(request.target(), target, edge, track, "chamfer", "cuts")?;
+        self.check_edge_operation_names(request.target(), target, edge, "chamfer", "cuts")?;
 
         context.progress().report(0.0);
         let (raw, removed_volume) = self.session.chamfer_edge(
@@ -997,24 +695,12 @@ impl GeometryKernel for OcctKernel {
         let shape = ShapeHandle::new(self.session_id, raw);
         self.naming_operations
             .insert(shape, ferritecad_kernel::NamingOperation::Chamfer);
-        let assembled = (|| -> Result<ChamferResult> {
-            let (history, carried) = self
-                .account_for_edge_operation(raw, target, shape, edge, track, "chamfer", context)?;
-            let chamfer_faces = self
-                .session
-                .chamfer_faces(raw)?
-                .into_iter()
-                .map(|id| SubShapeHandle::new(shape, SubShapeKind::Face, id))
-                .collect::<Vec<_>>();
-            let result = ChamferResult {
+        let assembled = (|| -> Result<OperationResult> {
+            context.check_cancelled()?;
+            Ok(OperationResult {
                 shape,
-                history,
-                carried,
-                chamfer_faces,
-                removed_volume,
-            };
-            result.validate(request.target(), edge)?;
-            Ok(result)
+                removed_volume: removed_volume,
+            })
         })();
 
         match assembled {

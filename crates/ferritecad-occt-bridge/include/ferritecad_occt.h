@@ -326,10 +326,7 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
  * protocol, as for the extrusion queries. Refused for a shape that is not a
  * fresh revolution, including one decoded from a cache blob.
  */
-FcOcctStatus fc_occt_revolve_faces(FcOcctSession *session, uint64_t shape,
-                                   size_t segment_index, uint64_t *out_ids,
-                                   size_t capacity, size_t *out_count,
-                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 
 /*
  * §27D: turn the same profile through a partial angle: a sector with a start
@@ -361,10 +358,7 @@ FcOcctStatus fc_occt_revolve_partial(
  * for a full turn, which has none, and for a shape that is not a fresh
  * revolution, including one decoded from a cache blob.
  */
-FcOcctStatus fc_occt_revolve_caps(FcOcctSession *session, uint64_t shape,
-                                  int32_t which, uint64_t *out_ids,
-                                  size_t capacity, size_t *out_count,
-                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 
 /*
  * The faces the sweep raised from one profile segment.
@@ -375,11 +369,7 @@ FcOcctStatus fc_occt_revolve_caps(FcOcctSession *session, uint64_t shape,
  * Call with `capacity` 0 to learn the count, then again with a buffer. The
  * two-call shape keeps allocation on the caller's side.
  */
-FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
-                                        size_t segment_index,
-                                        uint64_t *out_ids, size_t capacity,
-                                        size_t *out_count,
-                                        FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 
 /*
  * The edge one profile segment left where a cap meets the face swept from it.
@@ -396,11 +386,7 @@ FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
  * and every named edge was one the tessellation walk also reaches, so a name
  * and a drawn line are the same sub-shape.
  */
-FcOcctStatus fc_occt_extrude_cap_edges(FcOcctSession *session, uint64_t shape,
-                                       size_t segment_index, int32_t which,
-                                       uint64_t *out_ids, size_t capacity,
-                                       size_t *out_count,
-                                       FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 
 /*
  * The edge swept from one corner of the profile.
@@ -422,11 +408,7 @@ FcOcctStatus fc_occt_extrude_cap_edges(FcOcctSession *session, uint64_t shape,
  * never shared with another corner, and is one the tessellation walk reaches.
  * Rebuilding a profile from a different starting segment moved no association.
  */
-FcOcctStatus fc_occt_extrude_sweep_edges(FcOcctSession *session, uint64_t shape,
-                                         size_t joint_index, uint64_t *out_ids,
-                                         size_t capacity, size_t *out_count,
-                                         FcOcctError *out_error)
-    FC_OCCT_NOEXCEPT;
+
 
 /*
  * The vertex one corner of the profile reaches on one cap.
@@ -455,18 +437,10 @@ FcOcctStatus fc_occt_extrude_sweep_edges(FcOcctSession *session, uint64_t shape,
  * edge swept from the same corner, and reached by the tessellation
  * association.
  */
-FcOcctStatus fc_occt_extrude_cap_vertices(FcOcctSession *session,
-                                          uint64_t shape, size_t joint_index,
-                                          int32_t which, uint64_t *out_ids,
-                                          size_t capacity, size_t *out_count,
-                                          FcOcctError *out_error)
-    FC_OCCT_NOEXCEPT;
+
 
 /* The cap faces. `which` is 0 for the start cap and 1 for the end cap. */
-FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
-                                       int32_t which, uint64_t *out_ids,
-                                       size_t capacity, size_t *out_count,
-                                       FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 
 /*
  * Removes the material of `tool` from `target`.
@@ -527,11 +501,7 @@ enum {
  * Call with `capacity` 0 to learn the count, then again with a buffer, exactly
  * as the extrusion queries do.
  */
-FcOcctStatus fc_occt_cut_carried(FcOcctSession *session, uint64_t result,
-                                 uint64_t input, uint64_t input_sub,
-                                 int32_t *out_kind, uint64_t *out_ids,
-                                 size_t capacity, size_t *out_count,
-                                 FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 
 /*
  * Complete naming data; capacity/count are uint64_t words, not row counts.
@@ -775,10 +745,7 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
  * as sub-shape identifiers of `shape`. Refuses a shape that is not the fresh
  * result of fc_occt_fillet_edge. Count-then-buffer, as the other queries.
  */
-FcOcctStatus fc_occt_fillet_faces(FcOcctSession *session, uint64_t shape,
-                                  uint64_t *out_ids, size_t capacity,
-                                  size_t *out_count,
-                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 
 /*
  * Cuts exactly one edge of a shape away at one equal distance along both of
@@ -803,10 +770,7 @@ FcOcctStatus fc_occt_chamfer_edge(FcOcctSession *session, uint64_t target,
  * sub-shape identifiers of `shape`. Refuses a shape that is not the fresh
  * result of fc_occt_chamfer_edge. Count-then-buffer, as the other queries.
  */
-FcOcctStatus fc_occt_chamfer_faces(FcOcctSession *session, uint64_t shape,
-                                   uint64_t *out_ids, size_t capacity,
-                                   size_t *out_count,
-                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 
 /*
  * Rounds every edge of a shape to one radius.

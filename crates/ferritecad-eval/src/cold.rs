@@ -32,9 +32,7 @@ use ferritecad_kernel::{
     ChamferRequest, CutRequest, FilletRequest, GeometryKernel, OperationContext, Profile,
     ProgressSink, ShapeHandle, SketchPlane, SubShapeHandle,
 };
-use ferritecad_topology::{
-    CarriedName, FeatureNames, TopologyMap, archive_feature, restore_feature,
-};
+use ferritecad_topology::{TopologyMap, archive_feature, restore_feature};
 use ferritecad_types::{CadError, ObjectId, Result};
 
 use crate::{
@@ -70,7 +68,7 @@ use crate::solve::SketchSolveReport;
 /// # What a face is called lives in one place
 ///
 /// [`topology`][Self::topology] is the only account of what this rebuild
-/// produced. Raw [`History`][ferritecad_kernel::History] and cap handles are
+/// produced. Complete operation provenance is
 /// used while building that account and then dropped: they describe an
 /// operation, and a feature restored from a cache had no operation. Anything a
 /// caller needs about a face it must ask for by name.
@@ -370,6 +368,7 @@ fn run<K: GeometryKernel + ?Sized>(
         .map(|object| (object.id, object))
         .collect();
 
+    state.topology.prepare(&objects)?;
     let mut planes: BTreeMap<ObjectId, SketchPlane> = BTreeMap::new();
     // Recorded before any cache lookup, from the stored inputs alone, so a
     // restored feature says exactly what a rebuilt one would.
@@ -521,14 +520,13 @@ fn run<K: GeometryKernel + ?Sized>(
                                 state.owned.push(result.shape);
                                 context.check_cancelled()?;
 
-                                // Named while the result is still whole. The
-                                // correspondence between a segment and the face it
-                                // raised lives across the history and the caps, and
-                                // reassembling it from those parts afterwards would
-                                // be inventing it rather than recording it.
-                                state
-                                    .topology
-                                    .record_extrude(*id, request.profile(), &result)?;
+                                let names = state.topology.name_operation(
+                                    *id,
+                                    result.shape,
+                                    &[],
+                                    kernel,
+                                )?;
+                                state.topology.features.insert(*id, names);
                                 state.shapes.insert(*id, result.shape);
 
                                 if let Some(cache) = cache.as_deref_mut() {
@@ -591,54 +589,28 @@ fn run<K: GeometryKernel + ?Sized>(
                                 state.owned.push(tool.shape);
                                 context.check_cancelled()?;
 
-                                // The tool's own names, recorded under a producer
-                                // the document does not hold. They live only long
-                                // enough for the boolean to be asked about them;
-                                // see `record_cut`.
-                                let mut tool_names = TopologyMap::new();
-                                let tool_producer = *id;
-                                tool_names.record_extrude(
-                                    tool_producer,
-                                    tool_request.profile(),
-                                    &tool,
-                                )?;
-                                let tool_names = tool_names
-                                    .feature(tool_producer)
-                                    .cloned()
-                                    .expect("just recorded");
-
+                                let tool_names =
+                                    state
+                                        .topology
+                                        .name_operation(*id, tool.shape, &[], kernel)?;
                                 let previous_names =
-                                    state.topology.feature(previous).cloned().ok_or_else(|| {
+                                    state.topology.feature(previous).ok_or_else(|| {
                                         CadError::topology(format!(
                                             "feature {id} modifies {previous}, which named nothing"
                                         ))
                                     })?;
-                                let target_shape = previous_names.shape().ok_or_else(|| {
-                                    CadError::topology(format!(
-                                        "feature {id} modifies {previous}, which built no shape"
-                                    ))
-                                })?;
-
-                                // Everything either input is called, so the kernel
-                                // answers about every name the document could ask
-                                // after. Which of those answers matter is decided
-                                // above this call, from the names — never from the
-                                // geometry.
-                                let track = tracked(&previous_names, &tool_names);
+                                let target_shape = state.shapes[&previous];
                                 let request = CutRequest::new(target_shape, tool.shape)?;
-                                let result = kernel.cut(&request, &track, &scoped)?;
+                                let result = kernel.cut(&request, &scoped)?;
                                 state.owned.push(result.shape);
                                 context.check_cancelled()?;
-
-                                state.topology.record_cut(
+                                let names = state.topology.name_operation(
                                     *id,
-                                    previous,
-                                    tool_request.profile(),
-                                    tool.shape,
-                                    &tool_names,
-                                    &previous_names,
-                                    &result,
+                                    result.shape,
+                                    &[previous_names, &tool_names],
+                                    kernel,
                                 )?;
+                                state.topology.features.insert(*id, names);
                                 state.shapes.insert(*id, result.shape);
 
                                 if let Some(cache) = cache.as_deref_mut() {
@@ -676,13 +648,11 @@ fn run<K: GeometryKernel + ?Sized>(
                         let result = kernel.revolve(&request, &scoped)?;
                         state.owned.push(result.shape);
                         context.check_cancelled()?;
-                        state.topology.record_revolve(
-                            *id,
-                            request.profile(),
-                            request.axis_segment(),
-                            request.turn(),
-                            &result,
-                        )?;
+                        let names =
+                            state
+                                .topology
+                                .name_operation(*id, result.shape, &[], kernel)?;
+                        state.topology.features.insert(*id, names);
                         state.shapes.insert(*id, result.shape);
                         if let Some(cache) = cache.as_deref_mut() {
                             store(kernel, cache, key, *id, state, events);
@@ -780,71 +750,27 @@ fn run<K: GeometryKernel + ?Sized>(
                         None => false,
                     };
                     if !restored {
-                        let previous_names =
-                            state.topology.feature(previous).cloned().ok_or_else(|| {
-                                CadError::topology(format!(
-                                    "fillet {id} rounds an edge of {previous}, which named nothing"
-                                ))
-                            })?;
-                        let target_shape = previous_names.shape().ok_or_else(|| {
+                        let previous_names = state.topology.feature(previous).ok_or_else(|| {
                             CadError::topology(format!(
-                                "fillet {id} rounds an edge of {previous}, which built no shape"
+                                "fillet {id} consumes {previous}, which named nothing"
                             ))
                         })?;
-                        // Exactly the edge the payload means, found by its name
-                        // in the predecessor's own output: its own sweep edge,
-                        // or (§28G) the plate's edge as the earlier Fillet's
-                        // history carried it. None, or more than one, is a
-                        // refusal: never the nearest edge.
-                        let edge_feature = fillet.edge.feature;
-                        let edges: Vec<_> = if edge_feature == previous {
-                            previous_names.sweep_edge(joint).collect()
-                        } else {
-                            let carried = CarriedName::SweepEdge(joint);
-                            if previous_names.origin_is_deleted(edge_feature, carried) {
-                                return Err(CadError::topology(format!(
-                                    "fillet {id} rounds the edge {edge_feature} swept at {joint}, \
-                                 and {previous} already removed it"
-                                )));
-                            }
-                            previous_names
-                                .origin_sweep_edge(edge_feature, joint)
-                                .collect()
-                        };
-                        let [edge] = edges.as_slice() else {
-                            return Err(CadError::topology(format!(
-                                "fillet {id} rounds the edge {edge_feature} swept at {joint} on the \
-                             result of {previous}, and that name matches {} edges; it must \
-                             match exactly one",
-                                edges.len()
-                            )));
-                        };
-                        let mut track = tracked(&previous_names, &FeatureNames::default());
-                        // §28G: the predecessor's sweep edges and its own fillet
-                        // faces too, so the history says what became of each.
-                        for joint in previous_names.named_joints() {
-                            track.extend(previous_names.sweep_edge(joint));
-                        }
-                        for (made_from, rounded) in previous_names.named_fillet_edges() {
-                            track.extend(previous_names.fillet_face(made_from, rounded));
-                        }
-                        if !track.contains(edge) {
-                            track.push(*edge);
-                        }
-                        let request =
-                            FilletRequest::new(target_shape, *edge, fillet.radius_mm.value())?;
-                        let result = kernel.fillet_edge(&request, &track, &scoped)?;
+                        let edge = state.topology.swept_edge(previous, fillet.edge)?;
+                        let request = FilletRequest::new(
+                            state.shapes[&previous],
+                            edge,
+                            fillet.radius_mm.value(),
+                        )?;
+                        let result = kernel.fillet_edge(&request, &scoped)?;
                         state.owned.push(result.shape);
                         context.check_cancelled()?;
-                        state.topology.record_fillet(
+                        let names = state.topology.name_operation(
                             *id,
-                            previous,
-                            fillet.edge.feature,
-                            joint,
-                            &previous_names,
-                            *edge,
-                            &result,
+                            result.shape,
+                            &[previous_names],
+                            kernel,
                         )?;
+                        state.topology.features.insert(*id, names);
                         state.shapes.insert(*id, result.shape);
                         if let Some(cache) = cache.as_deref_mut() {
                             store(kernel, cache, key, *id, state, events);
@@ -906,49 +832,27 @@ fn run<K: GeometryKernel + ?Sized>(
                         None => false,
                     };
                     if !restored {
-                        let previous_names =
-                            state.topology.feature(previous).cloned().ok_or_else(|| {
-                                CadError::topology(format!(
-                                    "chamfer {id} cuts an edge of {previous}, which named nothing"
-                                ))
-                            })?;
-                        let target_shape = previous_names.shape().ok_or_else(|| {
+                        let previous_names = state.topology.feature(previous).ok_or_else(|| {
                             CadError::topology(format!(
-                                "chamfer {id} cuts an edge of {previous}, which built no shape"
+                                "chamfer {id} consumes {previous}, which named nothing"
                             ))
                         })?;
-                        // Exactly the edge the payload means, found by its name in
-                        // the plate's own output: none, or more than one, is a
-                        // refusal, never the nearest edge.
-                        let edges: Vec<_> = previous_names.sweep_edge(joint).collect();
-                        let [edge] = edges.as_slice() else {
-                            return Err(CadError::topology(format!(
-                                "chamfer {id} cuts the edge {previous} swept at {joint}, and that \
-                             name matches {} edges; it must match exactly one",
-                                edges.len()
-                            )));
-                        };
-                        let mut track = tracked(&previous_names, &FeatureNames::default());
-                        for joint in previous_names.named_joints() {
-                            track.extend(previous_names.sweep_edge(joint));
-                        }
-                        if !track.contains(edge) {
-                            track.push(*edge);
-                        }
-                        let request =
-                            ChamferRequest::new(target_shape, *edge, chamfer.distance_mm.value())?;
-                        let result = kernel.chamfer_edge(&request, &track, &scoped)?;
+                        let edge = state.topology.swept_edge(previous, chamfer.edge)?;
+                        let request = ChamferRequest::new(
+                            state.shapes[&previous],
+                            edge,
+                            chamfer.distance_mm.value(),
+                        )?;
+                        let result = kernel.chamfer_edge(&request, &scoped)?;
                         state.owned.push(result.shape);
                         context.check_cancelled()?;
-                        state.topology.record_chamfer(
+                        let names = state.topology.name_operation(
                             *id,
-                            previous,
-                            chamfer.edge.feature,
-                            joint,
-                            &previous_names,
-                            *edge,
-                            &result,
+                            result.shape,
+                            &[previous_names],
+                            kernel,
                         )?;
+                        state.topology.features.insert(*id, names);
                         state.shapes.insert(*id, result.shape);
                         if let Some(cache) = cache.as_deref_mut() {
                             store(kernel, cache, key, *id, state, events);
@@ -1075,25 +979,6 @@ impl CacheEvent {
 /// Gathered from the two feature name tables and from nothing else. A list
 /// built by walking the geometry would be asking the boolean about faces
 /// nobody named, and the answers would have nowhere to go.
-fn tracked(previous: &FeatureNames, tool: &FeatureNames) -> Vec<SubShapeHandle> {
-    let mut track = Vec::new();
-    for names in [previous, tool] {
-        for side in [
-            ferritecad_document::CapSide::Start,
-            ferritecad_document::CapSide::End,
-        ] {
-            track.extend(names.cap(side).into_iter().flatten());
-        }
-        for segment in names.named_segments() {
-            track.extend(names.side(segment));
-        }
-        for (origin, name) in names.origins() {
-            track.extend(names.origin_faces(origin, name));
-        }
-    }
-    track
-}
-
 fn restore<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     cache: &CacheStore,

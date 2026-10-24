@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Experimental translation of the existing meanings, independent of their resolver.
+//! Temporary translation of document roles through typed generative ancestry.
 use std::collections::BTreeSet;
 
 use ferritecad_document::{
@@ -53,7 +53,17 @@ impl ModelNaming {
             .joint
             .segments()
             .into_iter()
-            .map(|curve| self.family(at, curve_root(edge.feature, curve, Some(plane))))
+            .map(|curve| {
+                self.family(
+                    at,
+                    generated(
+                        edge.feature,
+                        NamingOperation::Extrude,
+                        curve_root(edge.feature, curve, Some(plane)),
+                        SubShapeKind::Face,
+                    ),
+                )
+            })
             .collect();
         let found = self.boundary(at, SubShapeKind::Edge, &faces);
         one(found, &format!("swept edge {edge:?} at {at}"))
@@ -63,6 +73,26 @@ impl ModelNaming {
     /// does not consult TopologyMap, resolve(), geometry or traversal positions.
     pub fn resolve_legacy(&self, reference: &TopologyRef) -> Result<BTreeSet<SubShapeHandle>> {
         let at = reference.producer_feature;
+        let role_kind = match reference.output_role {
+            SemanticRole::ExtrudeCapEdge { .. }
+            | SemanticRole::ExtrudeSweepEdge { .. }
+            | SemanticRole::SketchSegment { .. } => EntityKind::Edge,
+            SemanticRole::ExtrudeCapVertex { .. } => EntityKind::Vertex,
+            _ => EntityKind::Face,
+        };
+        if reference.expected_kind != role_kind {
+            return Err(CadError::input(format!(
+                "topology reference {} expects {} but its role names {}",
+                reference.id,
+                reference.expected_kind.as_str(),
+                role_kind.as_str()
+            )));
+        }
+        if !self.features.contains_key(&at) {
+            return Err(CadError::topology(format!(
+                "feature {at} produced no named geometry"
+            )));
+        }
         if let SelectionRule::AllDerivedFrom { ancestor } = reference.selection {
             let segment = match &reference.output_role {
                 SemanticRole::ExtrudeSide { profile_segment }
@@ -103,12 +133,33 @@ impl ModelNaming {
         }
 
         let curve = |origin, id| -> Result<_> {
-            Ok(self.family(at, curve_root(origin, id, Some(self.plane_of(origin)?))))
+            Ok(self.family(
+                at,
+                generated(
+                    origin,
+                    if self.operations.get(&origin) == Some(&NamingOperation::Revolve) {
+                        NamingOperation::Revolve
+                    } else {
+                        NamingOperation::Extrude
+                    },
+                    curve_root(origin, id, Some(self.plane_of(origin)?)),
+                    SubShapeKind::Face,
+                ),
+            ))
         };
         let cap = |origin, side| -> Result<_> {
             Ok(self.family(
                 at,
-                cap_root(origin, end(side)?, Some(self.plane_of(origin)?)),
+                generated(
+                    origin,
+                    if self.operations.get(&origin) == Some(&NamingOperation::Revolve) {
+                        NamingOperation::Revolve
+                    } else {
+                        NamingOperation::Extrude
+                    },
+                    cap_root(origin, end(side)?, Some(self.plane_of(origin)?)),
+                    SubShapeKind::Face,
+                ),
             ))
         };
         let previous = |id| {

@@ -1,0 +1,736 @@
+{
+  "baseline_commit": "c2bd99d05b66e7e9e74e3fb0b4fba749219d8293",
+  "status": "Stopped at the required cold rebuild performance gate; not accepted",
+  "platform": "Darwin arm64",
+  "toolchain": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "recorded_at_utc": "2026-10-24T22:32:14.809019+00:00",
+  "configuration": "release; native OCCT 8.0.1 and PlaneGCS; all features",
+  "method": "Same persisted documents, same machine and session. Build both binaries before measuring. Sequential before/after runs, one untimed cold warmup per document, five cold samples, cache priming, five cached samples. No overlapping builds or tests during measurement. Kernel session creation and result release are outside timed intervals.",
+  "baseline_cache_limitations": "The old cache refuses split role families for open_slot and overlapping_tools; cached timings include its cold fallback. Every after cached feature event is Hit.",
+  "cases": [
+    {
+      "case": "plate",
+      "document_sha256": "fcb7cd9abd21e5147d73d88ccac9ad18ddbfc9a84c8177d7d6ab13199ac0dcf4",
+      "before": {
+        "cold_ms": [
+          0.204125,
+          0.17683400000000002,
+          0.19162500000000002,
+          0.179083,
+          0.185583
+        ],
+        "cached_ms": [
+          0.207959,
+          0.177625,
+          0.161917,
+          0.16712500000000002,
+          0.167458
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          0.407875,
+          0.3675,
+          0.346125,
+          0.357667,
+          0.35312499999999997
+        ],
+        "cached_ms": [
+          0.331,
+          0.30104200000000003,
+          0.290333,
+          0.287,
+          0.286084
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "plate_16_cuts",
+      "document_sha256": "a326255283be328a9928aae2ae9d5d411c53c94656290faf883aa677eba02006",
+      "before": {
+        "cold_ms": [
+          81.517167,
+          81.559083,
+          81.26825,
+          81.826666,
+          81.413
+        ],
+        "cached_ms": [
+          3.500667,
+          3.375125,
+          3.3782080000000003,
+          3.3065830000000003,
+          3.325917
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 17
+          },
+          {
+            "Hit": 17
+          },
+          {
+            "Hit": 17
+          },
+          {
+            "Hit": 17
+          },
+          {
+            "Hit": 17
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          99.490542,
+          98.348542,
+          99.199208,
+          98.522583,
+          98.283084
+        ],
+        "cached_ms": [
+          20.175917000000002,
+          19.927958,
+          20.008084,
+          20.026083,
+          20.031042
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 17
+          },
+          {
+            "Hit": 17
+          },
+          {
+            "Hit": 17
+          },
+          {
+            "Hit": 17
+          },
+          {
+            "Hit": 17
+          }
+        ]
+      }
+    },
+    {
+      "case": "10_bodies",
+      "document_sha256": "d6e27c3e3605e025d4e9ba944bcb47820db4b7bebc21e14df7d9bd1849e8337e",
+      "before": {
+        "cold_ms": [
+          109.8025,
+          112.360375,
+          111.046708,
+          112.999084,
+          110.222083
+        ],
+        "cached_ms": [
+          6.494792,
+          6.178249999999999,
+          6.334958,
+          6.17425,
+          6.182125
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 50
+          },
+          {
+            "Hit": 50
+          },
+          {
+            "Hit": 50
+          },
+          {
+            "Hit": 50
+          },
+          {
+            "Hit": 50
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          126.94629199999999,
+          126.74037499999999,
+          126.492167,
+          126.719208,
+          126.571833
+        ],
+        "cached_ms": [
+          20.174,
+          19.899167,
+          20.078458,
+          20.1375,
+          19.836125
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 50
+          },
+          {
+            "Hit": 50
+          },
+          {
+            "Hit": 50
+          },
+          {
+            "Hit": 50
+          },
+          {
+            "Hit": 50
+          }
+        ]
+      }
+    },
+    {
+      "case": "50_bodies",
+      "document_sha256": "7f8ec8337383e8bd99978475238528ac8a041dcf96457803c92e2b9dc6f247c6",
+      "before": {
+        "cold_ms": [
+          555.8125,
+          553.475625,
+          554.3243329999999,
+          555.630583,
+          555.003916
+        ],
+        "cached_ms": [
+          31.852584000000004,
+          31.459417000000002,
+          31.279584,
+          31.394625,
+          31.201084
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 250
+          },
+          {
+            "Hit": 250
+          },
+          {
+            "Hit": 250
+          },
+          {
+            "Hit": 250
+          },
+          {
+            "Hit": 250
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          634.3830409999999,
+          634.493334,
+          635.000584,
+          637.568792,
+          633.9194160000001
+        ],
+        "cached_ms": [
+          108.495166,
+          99.70237499999999,
+          100.080583,
+          99.89425,
+          100.36654200000001
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 250
+          },
+          {
+            "Hit": 250
+          },
+          {
+            "Hit": 250
+          },
+          {
+            "Hit": 250
+          },
+          {
+            "Hit": 250
+          }
+        ]
+      }
+    },
+    {
+      "case": "plate_4_fillets_constraints",
+      "document_sha256": "441f792968a8aeabf30c7bee230e72c4934ae9b415dc107019bdfafab1af067c",
+      "before": {
+        "cold_ms": [
+          9.874791,
+          9.724625000000001,
+          9.610375000000001,
+          9.889417,
+          9.930665999999999
+        ],
+        "cached_ms": [
+          0.874583,
+          0.841291,
+          0.90825,
+          0.834125,
+          0.826209
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 5
+          },
+          {
+            "Hit": 5
+          },
+          {
+            "Hit": 5
+          },
+          {
+            "Hit": 5
+          },
+          {
+            "Hit": 5
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          11.554834,
+          11.193541,
+          11.204291,
+          11.542042,
+          11.604167
+        ],
+        "cached_ms": [
+          2.2613339999999997,
+          2.241666,
+          2.2214169999999998,
+          2.1635,
+          2.1485
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 5
+          },
+          {
+            "Hit": 5
+          },
+          {
+            "Hit": 5
+          },
+          {
+            "Hit": 5
+          },
+          {
+            "Hit": 5
+          }
+        ]
+      }
+    },
+    {
+      "case": "revolve",
+      "document_sha256": "45fcbed21b804c1c911590b5db9bfd84d83325c85c4f8ae95df82305aef56614",
+      "before": {
+        "cold_ms": [
+          0.75975,
+          0.743042,
+          0.734583,
+          0.73325,
+          0.722291
+        ],
+        "cached_ms": [
+          0.17775000000000002,
+          0.171958,
+          0.1665,
+          0.16574999999999998,
+          0.16525
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          0.935417,
+          0.9153749999999999,
+          0.879833,
+          0.86925,
+          0.861167
+        ],
+        "cached_ms": [
+          0.32370800000000005,
+          0.309917,
+          0.354042,
+          0.31920800000000005,
+          0.301375
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          },
+          {
+            "Hit": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "chamfer",
+      "document_sha256": "d719c0ab1346037464dc31caff390fe62d362a9db02f7351214824595da4edc2",
+      "before": {
+        "cold_ms": [
+          2.377084,
+          2.352417,
+          2.287208,
+          2.29725,
+          2.274416
+        ],
+        "cached_ms": [
+          0.29875,
+          0.272542,
+          0.268334,
+          0.266334,
+          0.265333
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          2.6836249999999997,
+          2.724917,
+          2.671958,
+          2.6782500000000002,
+          2.7941670000000003
+        ],
+        "cached_ms": [
+          0.6239159999999999,
+          0.592208,
+          0.594709,
+          0.579792,
+          0.5745
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "open_slot",
+      "document_sha256": "0c50f40c4a81df2cb649401fb70049f9fe9a7d9ebef3e86e3c569b3daf065a22",
+      "before": {
+        "cold_ms": [
+          4.378667,
+          4.384084,
+          4.2625,
+          4.304333,
+          4.30925
+        ],
+        "cached_ms": [
+          4.405125,
+          4.319125,
+          4.309292,
+          4.289167,
+          4.31975
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 1,
+            "Miss": 1,
+            "WriteFailed": 1
+          },
+          {
+            "Hit": 1,
+            "Miss": 1,
+            "WriteFailed": 1
+          },
+          {
+            "Hit": 1,
+            "Miss": 1,
+            "WriteFailed": 1
+          },
+          {
+            "Hit": 1,
+            "Miss": 1,
+            "WriteFailed": 1
+          },
+          {
+            "Hit": 1,
+            "Miss": 1,
+            "WriteFailed": 1
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          5.075166,
+          5.001208,
+          4.9185419999999995,
+          4.87925,
+          4.860958
+        ],
+        "cached_ms": [
+          0.822584,
+          0.7791669999999999,
+          0.757834,
+          0.7575000000000001,
+          0.7423339999999999
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "overlapping_tools",
+      "document_sha256": "70948dab8fcfa8d8e20cdf43c4c7e6ee2fb961399a6abcba87ffb6baa50d1137",
+      "before": {
+        "cold_ms": [
+          7.5821250000000004,
+          7.704042,
+          7.527958000000001,
+          7.491042,
+          7.504708
+        ],
+        "cached_ms": [
+          5.543625,
+          5.516708,
+          5.474042,
+          5.4236249999999995,
+          5.4847079999999995
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 2,
+            "Miss": 1,
+            "WriteFailed": 1
+          },
+          {
+            "Hit": 2,
+            "Miss": 1,
+            "WriteFailed": 1
+          },
+          {
+            "Hit": 2,
+            "Miss": 1,
+            "WriteFailed": 1
+          },
+          {
+            "Hit": 2,
+            "Miss": 1,
+            "WriteFailed": 1
+          },
+          {
+            "Hit": 2,
+            "Miss": 1,
+            "WriteFailed": 1
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          8.416042000000001,
+          8.678375,
+          8.430042,
+          8.393875,
+          8.359292
+        ],
+        "cached_ms": [
+          1.133125,
+          1.063125,
+          1.055,
+          1.044416,
+          1.038875
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 3
+          },
+          {
+            "Hit": 3
+          },
+          {
+            "Hit": 3
+          },
+          {
+            "Hit": 3
+          },
+          {
+            "Hit": 3
+          }
+        ]
+      }
+    },
+    {
+      "case": "pocket",
+      "document_sha256": "ad18fc37ad610b7e68320f25be56efb12510e1f09db9a8339c3d451293d34d98",
+      "before": {
+        "cold_ms": [
+          2.075875,
+          2.085708,
+          2.008791,
+          1.997875,
+          1.9868329999999998
+        ],
+        "cached_ms": [
+          0.34216599999999997,
+          0.3005,
+          0.276833,
+          0.276875,
+          0.279
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          }
+        ]
+      },
+      "after": {
+        "cold_ms": [
+          2.4775,
+          2.439167,
+          2.456583,
+          2.4074999999999998,
+          2.392708
+        ],
+        "cached_ms": [
+          0.663084,
+          0.614167,
+          0.6057499999999999,
+          0.604333,
+          0.603583
+        ],
+        "cache_events_per_sample": [
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          },
+          {
+            "Hit": 2
+          }
+        ]
+      }
+    }
+  ],
+  "binaries_sha256": {
+    "before": "fcd3a7195e0e1440dd095aff66f8a7a3331ec9103fa0d021aa252956717d0d26",
+    "after": "182a745c537aa8b3c9a1d15bcc07a1d99d1733658e89c8c8b6c163f044a6082a"
+  }
+}

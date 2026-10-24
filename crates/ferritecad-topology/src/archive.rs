@@ -1,812 +1,182 @@
 // SPDX-License-Identifier: MIT
-//! Carrying names across a session boundary.
-//!
-//! A [`TopologyMap`] is session-local by construction, and a cached B-Rep
-//! carries geometry with no history. Neither alone survives the trip: the map
-//! names handles that die with their session, and the blob restores faces that
-//! answer to nothing.
-//!
-//! What travels is a small table of *slots*. An archive holds the shape
-//! together with the sub-shapes worth keeping, and a slot says which of those
-//! a name refers to. The table is meaningless without its blob and says
-//! nothing about geometry on its own — which is exactly the property that lets
-//! it be written down, where a handle could not be.
-
 use std::collections::{BTreeMap, BTreeSet};
 
-use ferritecad_document::CapSide;
-use ferritecad_kernel::{ArchiveSlot, BrepBlob, GeometryKernel, SubShapeKind};
-use ferritecad_types::{CadError, ContentHash, ObjectId, ProfileJoint, Result, StableEntityId};
+use ferritecad_kernel::{ArchiveSlot, BrepBlob, GeometryKernel, ShapeTopology, SubShapeHandle};
+use ferritecad_types::{CadError, ObjectId, Result};
 
-use crate::map::TopologyMap;
+use crate::TopologyMap;
+use crate::generative::{FeatureNaming, Name};
 
-/// A name an archive can carry, in a form that can be ordered and stored.
-///
-/// Deliberately narrower than
-/// [`SemanticRole`][ferritecad_document::SemanticRole]: it holds the roles
-/// this slice can actually archive, so a role with no geometry behind it
-/// cannot be written into a table and found missing later.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[non_exhaustive]
-pub enum BoundName {
-    /// The face closing the start of a sweep.
-    StartCap,
-    /// The face closing the end of a sweep.
-    EndCap,
-    /// A face raised from one profile segment.
-    Side { profile_segment: StableEntityId },
-    /// The edge where the start cap meets the face raised from one segment.
-    StartCapEdge { profile_segment: StableEntityId },
-    /// The same, at the end cap.
-    EndCapEdge { profile_segment: StableEntityId },
-    /// The edge running along the sweep where two profile segments meet.
-    SweepEdge { joint: ProfileJoint },
-    /// The vertex where two profile segments reach the start of the sweep.
-    StartCapVertex { joint: ProfileJoint },
-    /// The same, at the end cap.
-    EndCapVertex { joint: ProfileJoint },
-    /// The cap an earlier feature made, as this feature leaves it.
-    CarriedStartCap,
-    /// The same, at the end cap.
-    CarriedEndCap,
-    /// The face an earlier feature raised from one segment, as this feature
-    /// leaves it.
-    CarriedSide { profile_segment: StableEntityId },
-    OriginCap {
-        origin_feature: ObjectId,
-        side: CapSide,
-    },
-    OriginSide {
-        origin_feature: ObjectId,
-        profile_segment: StableEntityId,
-    },
-    /// The face of revolution one profile Line raised.
-    RevolvedFace { profile_segment: StableEntityId },
-    /// §27D: the face closing the start of a partial revolution. Its own
-    /// name, never [`Self::StartCap`]: an extrusion cap and a sector's end
-    /// face are different meanings.
-    RevolvedStartCap,
-    /// The face closing the end of a partial revolution.
-    RevolvedEndCap,
-    /// §28A: the face a Fillet made by rounding the edge `edge_feature`
-    /// swept at `joint`.
-    EdgeFilletFace {
-        edge_feature: ObjectId,
-        joint: ProfileJoint,
-    },
-    /// §29A: the planar face a Chamfer made by cutting the edge
-    /// `edge_feature` swept at `joint`. Its own name, never
-    /// [`Self::EdgeFilletFace`]: a plane and a cylinder are different meanings.
-    EdgeChamferFace {
-        edge_feature: ObjectId,
-        joint: ProfileJoint,
-    },
-    /// §28G: the edge `origin_feature` swept at `joint`, as this feature
-    /// leaves it. What a second Fillet rounds, restored with the geometry.
-    OriginSweepEdge {
-        origin_feature: ObjectId,
-        joint: ProfileJoint,
-    },
-    /// §28G: the face the Fillet `origin_feature` made by rounding the edge
-    /// `edge_feature` swept at `joint`, as this feature leaves it.
-    OriginFilletFace {
-        origin_feature: ObjectId,
-        edge_feature: ObjectId,
-        joint: ProfileJoint,
-    },
-}
-
-impl BoundName {
-    /// The carried cap name for a side this build understands.
-    pub fn carried_cap(side: CapSide) -> Option<Self> {
-        match side {
-            CapSide::Start => Some(Self::CarriedStartCap),
-            CapSide::End => Some(Self::CarriedEndCap),
-            _ => None,
-        }
-    }
-
-    /// The cap name for a side this build understands.
-    ///
-    /// `CapSide` is non-exhaustive; a future side has no name here rather than
-    /// being folded into one of the two known ends.
-    pub fn cap(side: CapSide) -> Option<Self> {
-        match side {
-            CapSide::Start => Some(Self::StartCap),
-            CapSide::End => Some(Self::EndCap),
-            _ => None,
-        }
-    }
-
-    /// The cap-edge name for a side this build understands.
-    pub fn cap_edge(side: CapSide, profile_segment: StableEntityId) -> Option<Self> {
-        match side {
-            CapSide::Start => Some(Self::StartCapEdge { profile_segment }),
-            CapSide::End => Some(Self::EndCapEdge { profile_segment }),
-            _ => None,
-        }
-    }
-
-    /// The cap-vertex name for a side this build understands.
-    ///
-    /// `None` for a future side, on the same terms as the two above. Folding
-    /// one into `Start` would archive a corner's far end under its near end's
-    /// name, which no later check could notice.
-    pub fn cap_vertex(side: CapSide, joint: ProfileJoint) -> Option<Self> {
-        match side {
-            CapSide::Start => Some(Self::StartCapVertex { joint }),
-            CapSide::End => Some(Self::EndCapVertex { joint }),
-            _ => None,
-        }
-    }
-
-    /// What sort of geometry this name refers to.
-    ///
-    /// One statement, read when archiving and again when restoring, so a name
-    /// cannot be written down as a face and read back as an edge.
-    pub fn kind(self) -> SubShapeKind {
-        match self {
-            Self::StartCap
-            | Self::EndCap
-            | Self::Side { .. }
-            | Self::CarriedStartCap
-            | Self::CarriedEndCap
-            | Self::CarriedSide { .. }
-            | Self::OriginCap { .. }
-            | Self::OriginSide { .. }
-            | Self::RevolvedFace { .. }
-            | Self::RevolvedStartCap
-            | Self::RevolvedEndCap
-            | Self::EdgeFilletFace { .. }
-            | Self::EdgeChamferFace { .. }
-            | Self::OriginFilletFace { .. } => SubShapeKind::Face,
-            Self::StartCapEdge { .. }
-            | Self::EndCapEdge { .. }
-            | Self::SweepEdge { .. }
-            | Self::OriginSweepEdge { .. } => SubShapeKind::Edge,
-            Self::StartCapVertex { .. } | Self::EndCapVertex { .. } => SubShapeKind::Vertex,
-        }
-    }
-}
-
-/// One feature's geometry and the names that reach into it.
-///
-/// The blob and the table are one thing and must stay together: a slot without
-/// its archive addresses nothing, and an archive without its table restores
-/// faces nobody can name. The payload checksum is carried so a table paired
-/// with the wrong blob is refused rather than resolved.
+/// One atomic B-Rep and complete typed naming graph. Slots have no meaning outside this blob.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArchivedFeature {
-    producer: ObjectId,
-    pub(crate) previous: Option<ObjectId>,
-    blob: BrepBlob,
-    blob_hash: ContentHash,
-    /// Ordered so two archives of the same rebuild compare equal.
-    bindings: BTreeMap<BoundName, ArchiveSlot>,
-    /// The names this feature was asked about and answered "gone".
-    ///
-    /// Recorded rather than left out. A name a boolean removed and a name the
-    /// feature never had are different facts about the model, and a restored
-    /// archive that could not tell them apart would make a warm rebuild answer
-    /// a lost reference differently from a cold one.
-    removed: BTreeSet<BoundName>,
+    pub(crate) producer: ObjectId,
+    pub(crate) blob: BrepBlob,
+    pub(crate) entities: BTreeMap<ArchiveSlot, Name>,
+    pub(crate) ancestry: BTreeMap<Name, BTreeSet<ArchiveSlot>>,
+    pub(crate) incidence: BTreeMap<ArchiveSlot, BTreeSet<ArchiveSlot>>,
 }
 
 impl ArchivedFeature {
     pub fn producer(&self) -> ObjectId {
         self.producer
     }
-
     pub fn blob(&self) -> &BrepBlob {
         &self.blob
     }
 
-    /// The checksum the table was recorded against.
-    ///
-    /// Equal to the payload's own hash while the archive is in memory, since
-    /// nothing may construct one where they disagree. It is carried separately
-    /// so it can be written down and checked again after a round trip through
-    /// storage, where the two can drift apart.
-    pub fn blob_hash(&self) -> ContentHash {
-        self.blob_hash
-    }
-
-    /// The names this archive carries, in a deterministic order.
-    pub fn bindings(&self) -> impl ExactSizeIterator<Item = (BoundName, ArchiveSlot)> + '_ {
-        self.bindings.iter().map(|(name, slot)| (*name, *slot))
-    }
-
-    pub fn slot(&self, name: BoundName) -> Option<ArchiveSlot> {
-        self.bindings.get(&name).copied()
-    }
-
-    /// Rebuilds an archive from parts that were stored separately.
-    ///
-    /// Refuses a table that cannot describe anything: an empty one, a slot
-    /// naming the archived shape itself, two names sharing a slot, or a
-    /// checksum that does not match the blob it arrived with.
-    pub fn from_parts(
-        producer: ObjectId,
-        blob: BrepBlob,
-        blob_hash: ContentHash,
-        bindings: impl IntoIterator<Item = (BoundName, ArchiveSlot)>,
-    ) -> Result<Self> {
-        let mut table = BTreeMap::new();
-        let mut taken = BTreeSet::new();
-
-        for (name, slot) in bindings {
-            if slot.is_root() {
-                return Err(CadError::topology(format!(
-                    "the binding for feature {producer} points {name:?} at the archived shape \
-                     itself, which is not a sub-shape"
-                )));
+    pub(crate) fn validate(&self) -> Result<()> {
+        let bad = || CadError::topology("incomplete or contradictory generative archive");
+        if self.entities.is_empty()
+            || self.entities.keys().any(|s| s.is_root())
+            || self.entities.keys().ne(self.incidence.keys())
+        {
+            return Err(bad());
+        }
+        for (slot, name) in &self.entities {
+            if !self
+                .ancestry
+                .get(name)
+                .is_some_and(|members| members.contains(slot))
+            {
+                return Err(bad());
             }
-            if !taken.insert(slot) {
-                // Two names on one face is not a resolvable ambiguity; it is a
-                // table that was built wrong, and using it would give one of
-                // the two names the other's geometry.
-                return Err(CadError::topology(format!(
-                    "the binding for feature {producer} gives slot {} to more than one name",
-                    slot.index()
-                )));
+            let faces = &self.incidence[slot];
+            if (name.kind != ferritecad_kernel::SubShapeKind::Face && faces.is_empty())
+                || faces.iter().any(|face| {
+                    self.entities
+                        .get(face)
+                        .is_none_or(|n| n.kind != ferritecad_kernel::SubShapeKind::Face)
+                })
+            {
+                return Err(bad());
             }
-            if table.insert(name, slot).is_some() {
-                return Err(CadError::topology(format!(
-                    "the binding for feature {producer} names {name:?} twice"
-                )));
+            if name.kind == ferritecad_kernel::SubShapeKind::Face && !faces.is_empty() {
+                return Err(bad());
             }
         }
-
-        if table.is_empty() {
-            return Err(CadError::topology(format!(
-                "the binding for feature {producer} names nothing"
-            )));
-        }
-
-        if blob.content_hash() != blob_hash {
-            return Err(CadError::topology(format!(
-                "the binding for feature {producer} was recorded against a different archive; \
-                 discard the pair rather than resolving it"
-            )));
-        }
-
-        Ok(Self {
-            producer,
-            previous: None,
-            blob,
-            blob_hash,
-            bindings: table,
-            removed: BTreeSet::new(),
-        })
-    }
-
-    /// The same, with the names this feature removed recorded beside them.
-    pub fn from_parts_with_removed(
-        producer: ObjectId,
-        blob: BrepBlob,
-        blob_hash: ContentHash,
-        bindings: impl IntoIterator<Item = (BoundName, ArchiveSlot)>,
-        removed: impl IntoIterator<Item = BoundName>,
-    ) -> Result<Self> {
-        let mut archived = Self::from_parts(producer, blob, blob_hash, bindings)?;
-        for name in removed {
-            if archived.bindings.contains_key(&name) {
-                return Err(CadError::topology(format!(
-                    "the binding for feature {producer} calls {name:?} both present and removed"
-                )));
+        for (name, members) in &self.ancestry {
+            if members
+                .iter()
+                .any(|slot| self.entities.get(slot).is_none_or(|n| n.kind != name.kind))
+            {
+                return Err(bad());
             }
-            archived.removed.insert(name);
         }
-        Ok(archived)
-    }
-
-    /// The names this feature was asked about and answered "gone".
-    pub fn removed(&self) -> impl ExactSizeIterator<Item = BoundName> + '_ {
-        self.removed.iter().copied()
-    }
-
-    pub(crate) fn removed_set(&self) -> &BTreeSet<BoundName> {
-        &self.removed
+        Ok(())
     }
 }
 
-/// Archives what one feature produced, together with the names for it.
-///
-/// The order the sub-shapes are handed to the kernel is the order of
-/// [`BoundName`], so two runs of the same rebuild archive the same way.
 pub fn archive_feature<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     map: &TopologyMap,
     producer: ObjectId,
 ) -> Result<ArchivedFeature> {
-    let names = map.feature(producer).ok_or_else(|| {
-        CadError::topology(format!(
-            "feature {producer} produced no named geometry to archive"
-        ))
-    })?;
-    let shape = names.shape().ok_or_else(|| {
-        CadError::topology(format!("feature {producer} produced no shape to archive"))
-    })?;
-
-    // Gathered through the ordered map so the sequence is the same every run.
-    let mut wanted = Vec::new();
-    for side in [CapSide::Start, CapSide::End] {
-        let Some(name) = BoundName::cap(side) else {
-            continue;
-        };
-        let faces: Vec<_> = names.cap(side).into_iter().flatten().collect();
-        match faces.len() {
-            0 => {}
-            1 => wanted.push((name, faces[0])),
-            found => {
-                return Err(CadError::topology(format!(
-                    "feature {producer} produced {found} faces for {name:?}; a cap is one face, \
-                     and archiving an ambiguous name would hand back the wrong one"
-                )));
-            }
-        }
+    let named = map
+        .feature(producer)
+        .ok_or_else(|| CadError::topology("feature has no naming result"))?;
+    let shape = named
+        .shape()
+        .ok_or_else(|| CadError::topology("feature has no shape"))?;
+    let entities: Vec<_> = named.entities.keys().copied().collect();
+    let (blob, slots) = kernel.encode_shape_with(shape, &entities)?;
+    if slots.len() != entities.len() || slots.iter().collect::<BTreeSet<_>>().len() != slots.len() {
+        return Err(CadError::topology(
+            "kernel returned incomplete archive slots",
+        ));
     }
-    for segment in names.named_segments() {
-        for face in names.side(segment) {
-            wanted.push((
-                BoundName::Side {
-                    profile_segment: segment,
-                },
-                face,
-            ));
-        }
-    }
-    // Faces of revolution, by the Line that raised them, through the same
-    // ordered map: the sequence is the same on every machine and says nothing
-    // about the order Open CASCADE traversed the faces in.
-    for segment in names.named_revolved_segments() {
-        for face in names.revolved_face(segment) {
-            wanted.push((
-                BoundName::RevolvedFace {
-                    profile_segment: segment,
-                },
-                face,
-            ));
-        }
-    }
-    // A sector's two end faces (§27D); a full turn and an extrusion have none.
-    for (side, name) in [
-        (CapSide::Start, BoundName::RevolvedStartCap),
-        (CapSide::End, BoundName::RevolvedEndCap),
-    ] {
-        for face in names.revolved_cap(side).into_iter().flatten() {
-            wanted.push((name, face));
-        }
-    }
-    // The cap edges, gathered through the same ordered map for the same
-    // reason. A segment with no such edge contributes nothing rather than an
-    // entry pointing nowhere.
-    for segment in names.named_cap_edge_segments() {
-        for side in [CapSide::Start, CapSide::End] {
-            let Some(name) = BoundName::cap_edge(side, segment) else {
-                continue;
-            };
-            for edge in names.cap_edge(side, segment).into_iter().flatten() {
-                wanted.push((name, edge));
-            }
-        }
-    }
-
-    // §28A: the faces a Fillet made, by the edge each replaced.
-    for (edge_feature, joint) in names.named_fillet_edges() {
-        for face in names.fillet_face(edge_feature, joint) {
-            wanted.push((
-                BoundName::EdgeFilletFace {
-                    edge_feature,
-                    joint,
-                },
-                face,
-            ));
-        }
-    }
-
-    // §29A: the faces a Chamfer made, by the edge each replaced.
-    for (edge_feature, joint) in names.named_chamfer_edges() {
-        for face in names.chamfer_face(edge_feature, joint) {
-            wanted.push((
-                BoundName::EdgeChamferFace {
-                    edge_feature,
-                    joint,
-                },
-                face,
-            ));
-        }
-    }
-
-    // The edges along the sweep, by the joint that names them.
-    for joint in names.named_joints() {
-        for edge in names.sweep_edge(joint) {
-            wanted.push((BoundName::SweepEdge { joint }, edge));
-        }
-    }
-
-    // What this feature left of the feature it consumed, and what it removed.
-    // Both are walked through the ordered set the map keeps, so the sequence is
-    // the same on every machine.
-    let mut removed = Vec::new();
-    for (origin, carried) in names.origins() {
-        let name = match (Some(origin) == names.previous(), carried) {
-            (true, crate::CarriedName::Cap(side)) => BoundName::carried_cap(side)
-                .ok_or_else(|| CadError::unsupported("unknown carried cap"))?,
-            (true, crate::CarriedName::Side(profile_segment)) => {
-                BoundName::CarriedSide { profile_segment }
-            }
-            (false, crate::CarriedName::Cap(side)) => BoundName::OriginCap {
-                origin_feature: origin,
-                side,
-            },
-            (false, crate::CarriedName::Side(profile_segment)) => BoundName::OriginSide {
-                origin_feature: origin,
-                profile_segment,
-            },
-            // §28G names have no legacy predecessor-relative form: always
-            // qualified by their origin.
-            (_, crate::CarriedName::SweepEdge(joint)) => BoundName::OriginSweepEdge {
-                origin_feature: origin,
-                joint,
-            },
-            (
-                _,
-                crate::CarriedName::FilletFace {
-                    edge_feature,
-                    joint,
-                },
-            ) => BoundName::OriginFilletFace {
-                origin_feature: origin,
-                edge_feature,
-                joint,
-            },
-        };
-        if names.origin_is_deleted(origin, carried) {
-            removed.push(name);
-        } else {
-            wanted.extend(names.origin_faces(origin, carried).map(|face| (name, face)));
-        }
-    }
-
-    // The vertices where those same corners reach each cap, walked through the
-    // ordered joint set so the sequence is the same on every machine. A corner
-    // with no vertex on a side contributes nothing rather than an entry
-    // pointing nowhere.
-    for joint in names.named_cap_vertex_joints() {
-        for side in [CapSide::Start, CapSide::End] {
-            let Some(name) = BoundName::cap_vertex(side, joint) else {
-                continue;
-            };
-            for vertex in names.cap_vertex(side, joint).into_iter().flatten() {
-                wanted.push((name, vertex));
-            }
-        }
-    }
-
-    // A side that raised several faces cannot be archived under one slot in
-    // this slice; the family rule needs several, and one slot names one.
-    let mut seen = BTreeSet::new();
-    for (name, _) in &wanted {
-        if !seen.insert(*name) {
-            return Err(CadError::topology(format!(
-                "feature {producer} raised more than one face for {name:?}; archiving a family of \
-                 faces is not implemented"
-            )));
-        }
-    }
-
-    // Distinct names must not be smuggled past `ArchivedFeature` by assigning
-    // the same face two distinct slots. The table can see slot identity only;
-    // this is the last point that can still compare the live handles.
-    let mut claimed = BTreeMap::new();
-    for (name, face) in &wanted {
-        if face.kind() != name.kind() {
-            return Err(CadError::topology(format!(
-                "feature {producer} names {name:?} as a {}, which is not a {}",
-                face.kind(),
-                name.kind()
-            )));
-        }
-        if face.shape() != shape {
-            return Err(CadError::topology(format!(
-                "feature {producer} names {name:?} on a shape it did not build"
-            )));
-        }
-        if let Some(previous) = claimed.insert(*face, *name) {
-            return Err(CadError::topology(format!(
-                "feature {producer} gives both {previous:?} and {name:?} to the same face; \
-                 refusing rather than archiving a silent alias"
-            )));
-        }
-    }
-
-    let subs: Vec<_> = wanted.iter().map(|(_, sub)| *sub).collect();
-    let (blob, slots) = kernel.encode_shape_with(shape, &subs)?;
-
-    if slots.len() != wanted.len() {
-        return Err(CadError::kernel(format!(
-            "archiving feature {producer} asked for {} slots and received {}",
-            wanted.len(),
-            slots.len()
-        )));
-    }
-
-    let blob_hash = blob.content_hash();
-    let mut archived = ArchivedFeature::from_parts_with_removed(
+    let slots: BTreeMap<_, _> = entities.into_iter().zip(slots).collect();
+    let members = |set: &BTreeSet<SubShapeHandle>| -> Result<BTreeSet<ArchiveSlot>> {
+        set.iter()
+            .map(|s| {
+                slots
+                    .get(s)
+                    .copied()
+                    .ok_or_else(|| CadError::topology("name lies outside archived topology"))
+            })
+            .collect()
+    };
+    let archived = ArchivedFeature {
         producer,
         blob,
-        blob_hash,
-        wanted.into_iter().map(|(name, _)| name).zip(slots),
-        removed,
-    )?;
-    archived.previous = names.previous();
+        entities: named.entities.iter().map(|(s, n)| (slots[s], *n)).collect(),
+        ancestry: named
+            .ancestry
+            .iter()
+            .map(|(n, set)| Ok((*n, members(set)?)))
+            .collect::<Result<_>>()?,
+        incidence: named
+            .topology
+            .adjacent_faces
+            .iter()
+            .map(|(s, set)| Ok((slots[s], members(set)?)))
+            .collect::<Result<_>>()?,
+    };
+    archived.validate()?;
     Ok(archived)
 }
 
-/// Restores a feature's geometry and its names into a fresh map.
-///
-/// The kernel that reads the archive need not be the one that wrote it — that
-/// is the point — but it must agree about identity, format and checksum, which
-/// the kernel checks before any geometry is decoded.
-///
-/// On success, the caller owns the restored root shape reachable through
-/// `into.feature(archived.producer())` and must eventually release it through
-/// the same kernel session. On failure, this function releases any shape that
-/// it decoded before returning.
 pub fn restore_feature<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     archived: &ArchivedFeature,
     into: &mut TopologyMap,
 ) -> Result<()> {
-    let names: Vec<BoundName> = archived.bindings.keys().copied().collect();
-    let slots: Vec<ArchiveSlot> = archived.bindings.values().copied().collect();
-
-    let (shape, faces) = kernel.decode_shape_with(&archived.blob, &slots)?;
-    let restored = (|| -> Result<()> {
-        if faces.len() != names.len() {
-            return Err(CadError::kernel(format!(
-                "restoring feature {} asked for {} sub-shapes and received {}",
-                archived.producer,
-                names.len(),
-                faces.len()
-            )));
+    archived.validate()?;
+    let slots: Vec<_> = archived.entities.keys().copied().collect();
+    let (shape, restored) = kernel.decode_shape_with(&archived.blob, &slots)?;
+    let result = (|| {
+        if restored.len() != slots.len()
+            || restored.iter().collect::<BTreeSet<_>>().len() != slots.len()
+        {
+            return Err(CadError::topology(
+                "kernel restored incomplete or aliased topology",
+            ));
         }
-
-        let mut start_cap = Vec::new();
-        let mut end_cap = Vec::new();
-        let mut sides: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
-        let mut start_cap_edges: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
-        let mut end_cap_edges: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
-        let mut sweep_edges: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
-        let mut start_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
-        let mut end_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
-        let mut carried: BTreeMap<(ObjectId, crate::CarriedName), Vec<_>> = BTreeMap::new();
-        let mut revolved: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
-        let mut revolved_start_cap = Vec::new();
-        let mut revolved_end_cap = Vec::new();
-        let mut fillet_faces: BTreeMap<(ObjectId, ProfileJoint), Vec<_>> = BTreeMap::new();
-        let mut chamfer_faces: BTreeMap<(ObjectId, ProfileJoint), Vec<_>> = BTreeMap::new();
-        let mut claimed = BTreeMap::new();
-
-        for (name, face) in names.into_iter().zip(faces) {
-            if face.kind() != name.kind() {
-                return Err(CadError::topology(format!(
-                    "the archive of feature {} restored {name:?} as a {}, which is not a {}",
-                    archived.producer,
-                    face.kind(),
-                    name.kind()
-                )));
+        let rebinding: BTreeMap<_, _> = slots.into_iter().zip(restored).collect();
+        let mut entities = BTreeMap::new();
+        let mut bindings = BTreeMap::<_, BTreeSet<_>>::new();
+        for (slot, name) in &archived.entities {
+            let sub = rebinding[slot];
+            if sub.shape() != shape || sub.kind() != name.kind {
+                return Err(CadError::topology(
+                    "archive slot restored with another shape or kind",
+                ));
             }
-            if face.shape() != shape {
-                return Err(CadError::topology(format!(
-                    "the archive of feature {} restored {name:?} on another shape",
-                    archived.producer
-                )));
-            }
-            if let Some(previous) = claimed.insert(face, name) {
-                return Err(CadError::topology(format!(
-                    "the archive of feature {} restored both {previous:?} and {name:?} as the \
-                     same face; refusing rather than accepting a silent alias",
-                    archived.producer
-                )));
-            }
-
-            match name {
-                BoundName::StartCap => start_cap.push(face),
-                BoundName::EndCap => end_cap.push(face),
-                BoundName::Side { profile_segment } => {
-                    sides.entry(profile_segment).or_default().push(face)
-                }
-                BoundName::StartCapEdge { profile_segment } => start_cap_edges
-                    .entry(profile_segment)
-                    .or_default()
-                    .push(face),
-                BoundName::EndCapEdge { profile_segment } => {
-                    end_cap_edges.entry(profile_segment).or_default().push(face)
-                }
-                BoundName::SweepEdge { joint } => sweep_edges.entry(joint).or_default().push(face),
-                BoundName::StartCapVertex { joint } => {
-                    start_cap_vertices.entry(joint).or_default().push(face)
-                }
-                BoundName::EndCapVertex { joint } => {
-                    end_cap_vertices.entry(joint).or_default().push(face)
-                }
-                BoundName::RevolvedFace { profile_segment } => {
-                    revolved.entry(profile_segment).or_default().push(face)
-                }
-                BoundName::RevolvedStartCap => revolved_start_cap.push(face),
-                BoundName::RevolvedEndCap => revolved_end_cap.push(face),
-                BoundName::EdgeFilletFace {
-                    edge_feature,
-                    joint,
-                } => fillet_faces
-                    .entry((edge_feature, joint))
-                    .or_default()
-                    .push(face),
-                BoundName::EdgeChamferFace {
-                    edge_feature,
-                    joint,
-                } => chamfer_faces
-                    .entry((edge_feature, joint))
-                    .or_default()
-                    .push(face),
-                carried_name => {
-                    let origin = carried_origin(carried_name, archived.previous)?;
-                    carried.entry(origin).or_default().push(face);
-                }
-            }
+            entities.insert(sub, *name);
+            bindings.entry(*name).or_default().insert(sub);
         }
-
-        // What the feature removed, restored as removed. A name that came back
-        // absent because the boolean deleted it and a name nobody ever gave
-        // this feature are answered differently by the resolver, so the archive
-        // has to carry the difference rather than let it be inferred.
-        let mut carried_deleted = BTreeSet::new();
-        for name in archived.removed_set() {
-            carried_deleted.insert(carried_origin(*name, archived.previous)?);
+        let rebind = |set: &BTreeSet<ArchiveSlot>| set.iter().map(|slot| rebinding[slot]).collect();
+        let topology = ShapeTopology {
+            adjacent_faces: archived
+                .incidence
+                .iter()
+                .map(|(slot, faces)| (rebinding[slot], rebind(faces)))
+                .collect(),
+        };
+        if kernel.shape_topology(shape)?.adjacent_faces != topology.adjacent_faces {
+            return Err(CadError::topology(
+                "archive incidence disagrees with restored B-Rep",
+            ));
         }
-
-        into.record_restored(
-            archived.producer,
-            shape,
-            &crate::RestoredNames {
-                start_cap,
-                end_cap,
-                sides,
-                start_cap_edges,
-                end_cap_edges,
-                sweep_edges,
-                start_cap_vertices,
-                end_cap_vertices,
-                previous: archived.previous,
-                carried,
-                carried_deleted,
-                revolved,
-                revolved_start_cap,
-                revolved_end_cap,
-                fillet_faces,
-                chamfer_faces,
-            },
-        )
+        Ok(FeatureNaming {
+            topology,
+            entities,
+            bindings,
+            ancestry: archived
+                .ancestry
+                .iter()
+                .map(|(name, set)| (*name, rebind(set)))
+                .collect(),
+        })
     })();
-
-    if restored.is_err() {
-        kernel.release(shape);
-    }
-    restored
-}
-
-fn carried_origin(
-    name: BoundName,
-    previous: Option<ObjectId>,
-) -> Result<(ObjectId, crate::CarriedName)> {
-    let legacy = |name| {
-        previous
-            .map(|id| (id, name))
-            .ok_or_else(|| CadError::topology("carried archive name has no predecessor"))
-    };
-    match name {
-        BoundName::CarriedStartCap => legacy(crate::CarriedName::Cap(CapSide::Start)),
-        BoundName::CarriedEndCap => legacy(crate::CarriedName::Cap(CapSide::End)),
-        BoundName::CarriedSide { profile_segment } => {
-            legacy(crate::CarriedName::Side(profile_segment))
+    match result {
+        Ok(named) => {
+            into.features.insert(archived.producer, named);
+            Ok(())
         }
-        BoundName::OriginCap {
-            origin_feature,
-            side,
-        } => Ok((origin_feature, crate::CarriedName::Cap(side))),
-        BoundName::OriginSide {
-            origin_feature,
-            profile_segment,
-        } => Ok((origin_feature, crate::CarriedName::Side(profile_segment))),
-        BoundName::OriginSweepEdge {
-            origin_feature,
-            joint,
-        } => Ok((origin_feature, crate::CarriedName::SweepEdge(joint))),
-        BoundName::OriginFilletFace {
-            origin_feature,
-            edge_feature,
-            joint,
-        } => Ok((
-            origin_feature,
-            crate::CarriedName::FilletFace {
-                edge_feature,
-                joint,
-            },
-        )),
-        _ => Err(CadError::topology("only a carried name may be removed")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ferritecad_kernel::mock::MockKernel;
-
-    #[test]
-    fn a_table_naming_the_archived_shape_itself_is_refused() {
-        let kernel = MockKernel::new();
-        let blob = BrepBlob::new(kernel.identity().clone(), vec![1, 2, 3]);
-        let hash = blob.content_hash();
-
-        let err = ArchivedFeature::from_parts(
-            ObjectId::new(),
-            blob,
-            hash,
-            [(BoundName::StartCap, ArchiveSlot::ROOT)],
-        )
-        .expect_err("slot zero is the shape");
-        assert_eq!(err.kind(), ferritecad_types::ErrorKind::Topology);
-    }
-
-    #[test]
-    fn two_names_on_one_slot_are_refused() {
-        let kernel = MockKernel::new();
-        let blob = BrepBlob::new(kernel.identity().clone(), vec![1, 2, 3]);
-        let hash = blob.content_hash();
-
-        let err = ArchivedFeature::from_parts(
-            ObjectId::new(),
-            blob,
-            hash,
-            [
-                (BoundName::StartCap, ArchiveSlot::new(1)),
-                (BoundName::EndCap, ArchiveSlot::new(1)),
-            ],
-        )
-        .expect_err("one face cannot answer to two names");
-        assert_eq!(err.kind(), ferritecad_types::ErrorKind::Topology);
-    }
-
-    #[test]
-    fn an_empty_table_is_refused() {
-        let kernel = MockKernel::new();
-        let blob = BrepBlob::new(kernel.identity().clone(), vec![1, 2, 3]);
-        let hash = blob.content_hash();
-
-        assert!(ArchivedFeature::from_parts(ObjectId::new(), blob, hash, []).is_err());
-    }
-
-    #[test]
-    fn a_table_recorded_against_another_archive_is_refused() {
-        let kernel = MockKernel::new();
-        let blob = BrepBlob::new(kernel.identity().clone(), vec![1, 2, 3]);
-        let wrong = ContentHash::of_bytes(b"some other archive");
-
-        let err = ArchivedFeature::from_parts(
-            ObjectId::new(),
-            blob,
-            wrong,
-            [(BoundName::StartCap, ArchiveSlot::new(1))],
-        )
-        .expect_err("the checksum does not match");
-        assert!(err.to_string().contains("different archive"));
-    }
-
-    #[test]
-    fn an_unknown_cap_side_has_no_name() {
-        assert_eq!(BoundName::cap(CapSide::Start), Some(BoundName::StartCap));
-        assert_eq!(BoundName::cap(CapSide::End), Some(BoundName::EndCap));
+        Err(error) => {
+            kernel.release(shape);
+            Err(error)
+        }
     }
 }
