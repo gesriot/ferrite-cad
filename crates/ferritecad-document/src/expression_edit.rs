@@ -289,11 +289,16 @@ impl Document {
                     return Err(CadError::unsupported(parameter_reason(id)));
                 }
                 if let std::collections::btree_map::Entry::Vacant(entry) = changed.entry(id) {
-                    entry.insert(
-                        document
-                            .object(id)?
-                            .ok_or_else(|| CadError::input(format!("unknown object {id}")))?,
-                    );
+                    let object = document
+                        .object(id)?
+                        .ok_or_else(|| CadError::input(format!("unknown object {id}")))?;
+                    // Rewriting a payload this build reads only in part would drop the rest.
+                    if object.payload.to_storage_bytes()?.as_slice() != object.storage_bytes() {
+                        return Err(CadError::unsupported(format!(
+                            "object {id}'s saved payload cannot be rewritten losslessly by this build"
+                        )));
+                    }
+                    entry.insert(object);
                 }
                 let object = changed.get_mut(&id).expect("changed object was inserted");
                 change

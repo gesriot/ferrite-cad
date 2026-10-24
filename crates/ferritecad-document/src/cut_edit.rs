@@ -171,7 +171,10 @@ pub(crate) struct CutHistory {
     pub(crate) cuts: Vec<SavedCircularCut>,
 }
 
-/// Reconcile the recorded candidate; bodies outside the circular Cut history structure need no names here.
+/// The output names the written candidate's Cut histories give and the saved
+/// catalogue lacks, so the catalogue stays consistent with the numbers until
+/// generative naming (ADR 0006 D3) derives names during rebuild and removes
+/// this step. Bodies outside the circular Cut history structure need none here.
 pub(crate) fn candidate_output_references(document: &Document) -> Result<Vec<TopologyRef>> {
     let objects = document.objects()?;
     let stored = document.topology_refs()?;
@@ -203,7 +206,7 @@ fn candidate_history_references(
     let mut cursor = tip;
     let mut seen = BTreeSet::new();
     let mut chain = Vec::new();
-    let base = loop {
+    let (base_id, base) = loop {
         if !seen.insert(cursor) {
             return None;
         }
@@ -214,7 +217,7 @@ fn candidate_history_references(
             return None;
         }
         match (extrude.operation, extrude.previous) {
-            (SolidOperation::NewBody, None) => break extrude,
+            (SolidOperation::NewBody, None) => break (cursor, extrude),
             (SolidOperation::Cut, Some(previous)) => {
                 chain.push((cursor, extrude));
                 cursor = previous;
@@ -262,7 +265,7 @@ fn candidate_history_references(
         };
         let floor = extent.leaves_a_floor(distance.value());
         wanted.extend(history_references(
-            feature, curve.id, &segments, floor, cursor, &ancestors,
+            feature, curve.id, &segments, floor, base_id, &ancestors,
         ));
         ancestors.push(SavedCutTool {
             feature,
@@ -1085,16 +1088,31 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
     // part is not its target rather than reporting a shape mismatch.
     crate::fillet::refuse_filleted(objects)?;
     read_history(document, objects, &[], false).map_err(|source| {
-        let cuts: Vec<_> = objects.iter()
-            .filter(|o| matches!(&o.payload, ObjectPayload::Extrude(e) if e.operation == SolidOperation::Cut))
-            .map(|o| o.id.to_string()).collect();
-        if cuts.is_empty() { return source; }
+        let has_cut = objects.iter().any(|o| {
+            matches!(&o.payload, ObjectPayload::Extrude(e) if e.operation == SolidOperation::Cut)
+        });
+        if !has_cut {
+            return source;
+        }
         CadError::Context {
             kind: source.kind(),
-            message: format!("saved Cut {} cannot be read: {source}; this command edits only Cuts with a tool inside the part; use edit to change the part or tool", cuts.join(", ")),
+            message: format!(
+                "{source}; this command edits only the saved Cut histories it can read; use edit \
+                 to change the part or tool"
+            ),
             source: Box::new(source),
         }
     })
+}
+
+/// A reader refusal about one saved Cut, naming it: the document, not the
+/// request, is what this command cannot read.
+fn saved_cut_refusal(cut: ObjectId, source: CadError) -> CadError {
+    CadError::Context {
+        kind: source.kind(),
+        message: format!("saved Cut {cut}: {source}"),
+        source: Box::new(source),
+    }
 }
 
 /// §28F: the same reader, asked about the plate a new Fillet would round.
@@ -1326,19 +1344,22 @@ fn read_history(
         let ObjectPayload::Sketch(sketch) = &tool.payload else {
             return Err(unsupported("the Cut's profile is not a Sketch"));
         };
+        let refusal = |source| saved_cut_refusal(record.id, source);
         if sketch.plane != plane.id || !sketch.constraints.is_empty() {
-            return Err(unsupported(
+            return Err(refusal(unsupported(
                 "this slice edits an unconstrained tool on the part's base datum",
-            ));
+            )));
         }
         let [curve] = sketch.curves.as_slice() else {
-            return Err(unsupported("the Cut's tool Sketch draws one circle"));
+            return Err(refusal(unsupported(
+                "the Cut's tool Sketch draws one circle",
+            )));
         };
         if curve.construction {
-            return Err(unsupported("construction geometry cuts nothing"));
+            return Err(refusal(unsupported("construction geometry cuts nothing")));
         }
         let SketchGeometry::Circle { center, radius } = curve.geometry else {
-            return Err(unsupported("this slice edits a circular tool"));
+            return Err(refusal(unsupported("this slice edits a circular tool")));
         };
         let extent = saved_extent(cut, "cut")?;
         let numbers = CircularCut {
@@ -1346,9 +1367,9 @@ fn read_history(
             radius_mm: radius,
             extent,
         };
-        validate(height_mm, &boundary, &numbers)?;
+        validate(height_mm, &boundary, &numbers).map_err(refusal)?;
         for previous in &saved {
-            validate_disks(&numbers, &previous.tool())?;
+            validate_disks(&numbers, &previous.tool()).map_err(refusal)?;
         }
         let previous = cut.previous.expect("checked history link");
         expected.extend([
@@ -1380,14 +1401,21 @@ fn read_history(
         );
         let mut remaining = stored.clone();
         for want in wanted {
-            let position = remaining.iter().position(|r| same_meaning(r, &want)).ok_or_else(||
-                unsupported("the saved Cut does not name the faces this build gives a cut of its numbers"))?;
+            let position = remaining
+                .iter()
+                .position(|r| same_meaning(r, &want))
+                .ok_or_else(|| {
+                    refusal(unsupported(
+                        "the saved Cut does not name the faces this build gives a cut of its \
+                         numbers",
+                    ))
+                })?;
             remaining.remove(position);
         }
         if !remaining.is_empty() {
-            return Err(unsupported(
+            return Err(refusal(unsupported(
                 "the saved Cut names more faces than a cut of its numbers gives",
-            ));
+            )));
         }
         let floor_reference = stored
             .iter()

@@ -334,3 +334,53 @@ fn quantities_reject_nonfinite_values_and_lengths_require_positive_values() {
         SketchCoordinateMm::new(0.).expect("zero")
     );
 }
+#[test]
+fn a_payload_this_build_reads_only_in_part_is_refused_instead_of_losing_the_rest() {
+    let (root, d, id) = fixture();
+    let path = root.path().join("source.fcad");
+    let sketch = stored(&d, id);
+    d.close().expect("close");
+    let mut envelope = Envelope::from_bytes(
+        &ObjectPayload::Sketch(sketch.clone())
+            .to_storage_bytes()
+            .expect("bytes"),
+    )
+    .expect("envelope");
+    let mut value: ciborium::value::Value =
+        ciborium::from_reader(envelope.payload.as_slice()).expect("CBOR");
+    value
+        .as_map_mut()
+        .expect("map")
+        .push(("future_detail".into(), "must not disappear".into()));
+    envelope.payload.clear();
+    ciborium::into_writer(&value, &mut envelope.payload).expect("CBOR");
+    let bytes = envelope.to_bytes().expect("envelope");
+    let raw = Connection::open(&path).expect("SQL");
+    raw.execute(
+        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+        rusqlite::params![
+            bytes,
+            ferritecad_types::ContentHash::of_bytes(&bytes)
+                .as_bytes()
+                .as_slice(),
+            id.to_bytes().as_slice()
+        ],
+    )
+    .expect("future field");
+    drop(raw);
+    let rows = cells(&path);
+    let mut d = Document::open(&path).expect("still readable");
+    // The same geometry: only the unread field could change, so only it is at stake.
+    let curve = &sketch.curves[0];
+    let error = d
+        .write_changes(&[EditChange::SetCurveGeometry {
+            sketch: id,
+            curve: curve.id,
+            geometry: curve.geometry.clone(),
+        }])
+        .expect_err("must refuse loss");
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(error.to_string().contains("losslessly"), "{error}");
+    d.close().expect("close");
+    assert_eq!(cells(&path), rows);
+}

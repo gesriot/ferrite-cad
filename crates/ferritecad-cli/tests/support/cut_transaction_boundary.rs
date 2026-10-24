@@ -133,7 +133,7 @@ impl Pair {
             for fragment in [
                 saved.feature.to_string(),
                 "saved Cut".into(),
-                "only Cuts with a tool inside the part".into(),
+                "only the saved Cut histories it can read".into(),
                 "use edit to change the part or tool".into(),
             ] {
                 assert!(output.to_string().contains(&fragment), "{output}");
