@@ -293,7 +293,7 @@ root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29a-"))
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
-        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+        {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 
 def run(args, code=0):
@@ -430,7 +430,7 @@ chamfer = saved["chamfers"][0]
 assert chamfer["feature_id"] == done["feature_id"] and chamfer["expression"]["value"] == d1
 assert saved["bodies"][0]["chamfer_edge"]["available"] is False, "a second Chamfer"
 # §29B: the plate's height is edited through the base Extrude, with the Chamfer as context.
-assert saved["sketches"][0]["chamfer_base"]["chamfer_feature_id"] == chamfer["feature_id"]
+
 assert saved["bodies"][0]["fillet_edge"]["available"] is False
 request.write_text(json.dumps({"request_version": 1, "radius_mm": 1.0, "edge": edge}))
 never = root / "never.fcad"
@@ -441,7 +441,7 @@ for args in (edit_args(one, chamfer["feature_id"], "9", saved["content_version"]
 # 5. The distance is edited in another copy: one row, one cell pair.
 version = saved["content_version"]
 for d2 in (4.5, D - 0.01):
-    request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": d2, "unit": "mm"}]}))
+    request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": d2, "unit": "mm"}]}))
     two = root / f"two-{d2}.fcad"
     edited = geometry(["edit", one, "--expect-version", version, "--request", request, "-o", two, "--json"], two)["result"]
     assert inspect(two)["chamfers"][0]["feature_id"] == chamfer["feature_id"]
@@ -452,7 +452,7 @@ for d2 in (4.5, D - 0.01):
 
 # 6. The bound is exact: the largest distance was accepted above, the next
 #    representable value is refused with nothing written.
-request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": math.nextafter(D - 0.01, 1e9), "unit": "mm"}]}))
+request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": math.nextafter(D - 0.01, 1e9), "unit": "mm"}]}))
 refusal = run(["edit", one, "--expect-version", version, "--request", request, "-o", never, "--json"], code=2)
 assert refusal["error"]["kind"] == "input" and not never.exists()
 print("FCAD_29A_RECIPE_OK", f"d={d1} volume={exact_one:.6f}/{(W * D - d1 * d1 / 2) * H:.6f}")

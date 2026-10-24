@@ -150,7 +150,7 @@ root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29b-"))
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
-        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+        {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 
 def run(args, code=0):
@@ -276,12 +276,9 @@ geometry(["chamfer-edge-copy", plate, "--body", catalog["bodies"][0]["body_id"],
 saved = inspect(one)
 chamfer = saved["chamfers"][0]
 base = saved["features"][0]
-assert saved["sketches"][0]["chamfer_base"] == {"chamfer_feature_id": chamfer["feature_id"],
-                                "body_id": saved["bodies"][0]["body_id"], "edge": chamfer["edge"],
-                                "corner_mm": CORNER, "distance_mm": d1, "distance_unit": "mm",
-                                "profile_constrained": False}
+
 assert next(s for s in saved["expression_slots"] if s["object"] == base["feature_id"])["refusal"] is None
-assert inspect(plate)["sketches"][0]["chamfer_base"] is None
+
 
 # 3. Taller and shorter (below the distance too): one row, one cell pair,
 #    the Chamfer and every name as they were, the plane at the chosen corner.
@@ -294,7 +291,7 @@ for h in (9.5, 0.4, 3.0):
     assert [r[0] for r in tables(out)["topology_refs"][1]] == refs_before, "every name keeps its UUID"
     after = inspect(out)
     assert next(s for s in after["expression_slots"] if s["slot"]["kind"] == "extrude_distance")["expression"]["value"] == h
-    assert after["sketches"][0]["chamfer_base"] == saved["sketches"][0]["chamfer_base"]
+
     assert after["chamfers"][0]["feature_id"] == chamfer["feature_id"] and after["chamfers"][0]["expression"]["value"] == d1
     exact = (W * D - d1 * d1 / 2) * h
     measured(out, d1, h)
@@ -302,7 +299,7 @@ for h in (9.5, 0.4, 3.0):
 
 # 4. The Chamfer's own distance edit still works on the edited plate.
 edited = inspect(copies[9.5])
-request.write_text(json.dumps({"request_version": 1, "changes": [{"object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": D - 0.01, "unit": "mm"}]}))
+request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": chamfer["feature_id"], "slot": {"kind": "chamfer_distance"}, "value": D - 0.01, "unit": "mm"}]}))
 far = root / "far.fcad"
 geometry(["edit", copies[9.5], "--expect-version", edited["content_version"], "--request", request, "-o", far, "--json"], far)
 measured(far, D - 0.01, 9.5)

@@ -52,12 +52,14 @@ pub fn run(root: &Path, runs: usize, smoke: bool) -> Result<Vec<Measurement>> {
             "warm_rebuild_cached",
             "open",
             "apply_height",
+            "apply_vertex",
             "apply_fillet",
             "apply_angle",
             "undo",
             "export_stl",
         ] {
-            if (operation == "apply_height" && case.extrude.is_none())
+            if (operation == "apply_vertex" && case.vertex.is_none())
+                || (operation == "apply_height" && case.extrude.is_none())
                 || (operation == "apply_fillet" && case.fillet.is_none())
                 || (operation == "apply_angle" && case.revolve.is_none())
                 || (operation == "undo" && case.extrude.is_none() && case.revolve.is_none())
@@ -197,6 +199,16 @@ fn apply(
 ) -> Result<ferritecad_jobs::ProducedStep> {
     let expected = session.current().version();
     let ticket = session.begin_step();
+    if operation == "apply_vertex" {
+        let (id, sketch, vertices) = case.vertex.as_ref().expect("vertex fixture");
+        return ticket.edit(
+            ferritecad_document::move_sketch_vertices(*id, sketch, vertices)?,
+            expected,
+            kernel,
+            |k, bytes| k.import_step(bytes),
+            context,
+        );
+    }
     let (object, slot, value) = match operation {
         "apply_height" => (
             case.extrude.expect("extrude"),
@@ -216,7 +228,7 @@ fn apply(
         _ => return Err(CadError::input("unknown benchmark operation")),
     };
     ticket.edit(
-        vec![ferritecad_document::ExpressionChange::constant(
+        vec![ferritecad_document::EditChange::constant(
             object, slot, value,
         )?],
         expected,

@@ -335,7 +335,7 @@ feature = row["feature_id"]
 refs = tables(rounded)["topology_refs"]
 
 def edited(source, version, r, name, previous):
-    request.write_text(json.dumps({"request_version": 1, "changes": [{"object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
+    request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
     out = root / name
     before = source.read_bytes()
     result = run(["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"])["result"]
@@ -359,7 +359,7 @@ down_volume, down_exact = measured(down, 1.1875)
 # A failed rebuild and invalid payload publish nothing.
 for value in [D / 2 + 0.5, 0]:
     request.write_text(json.dumps({"request_version": 1, "changes": [
-        {"object": feature, "slot": {"kind": "fillet_radius"}, "value": value, "unit": "mm"}]}))
+        {"kind": "set_expression", "object": feature, "slot": {"kind": "fillet_radius"}, "value": value, "unit": "mm"}]}))
     never = root / "never.fcad"
     run(["edit", up, "--expect-version", up_version, "--request", request, "-o", never, "--json"], 2)
     assert not never.exists()

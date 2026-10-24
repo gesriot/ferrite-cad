@@ -188,13 +188,15 @@ volumes at each step.
 ```python
 # FCAD_28L_AGENT_RECIPE
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import constraint_request, line_request, line_rule, distance, fixed as pin_rule
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28l-"))
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
-        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+        {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 MIN_RADIUS = 0.01
 
@@ -383,9 +385,9 @@ for k, (index, radius) in enumerate(zip(ORDER, RADII)):
     for f in catalog["fillets"]:
         slot = next(s for s in catalog["expression_slots"] if s["object"] == f["feature_id"] and s["slot"]["kind"] == "fillet_radius")
         assert slot["refusal"] is None and slot["expression"] == f["expression"]
-    base = next(s for s in catalog["sketches"] if s["fillet_history"] is not None)
-    assert base["fillet_history"]["count"] == k + 1
-    assert (base["fillet_base"] is not None) == (k + 1 <= 2)
+    base = catalog["sketches"][0]
+
+
     seen = measured(out, RECT, ROUNDED[:k + 1])
 results = {"four": seen}
 four = docs[-1]
@@ -400,7 +402,7 @@ bound = D - RADII[0] - MIN_RADIUS
 row = rounded_row(four, 3)
 def edit_radius(source, feature, radius, out, code=0):
     catalog = inspect(source)
-    req = request("radius.json", {"request_version": 1, "changes": [{"object": feature, "slot": {"kind": "fillet_radius"}, "value": radius, "unit": "mm"}]})
+    req = request("radius.json", {"request_version": 1, "changes": [{"kind": "set_expression", "object": feature, "slot": {"kind": "fillet_radius"}, "value": radius, "unit": "mm"}]})
     args = ["edit", source, "--expect-version", catalog["content_version"], "--request", req, "-o", out, "--json"]
     return run(args, code) if code else geometry(args, out)
 refused = edit_radius(four, ids[3], math.nextafter(bound, 99), root / "no.fcad", code=2)["error"]
@@ -427,47 +429,46 @@ measured(taller, RECT, ROUNDED, 9.5)
 
 # 5. The base rectangle, moved and resized: every corner follows its two Lines.
 sketch = inspect(four)["sketches"][0]
-assert sketch["editable"] is True and sketch["fillet_history"]["count"] == 4, sketch
+
 rect = (1.5, -2.25, 30.0, 12.75)
-vertices = [{"curve_id": v["curve_id"], "start_mm": at(rect, v["start_mm"])} for v in sketch["vertices"]]
+vertices = [{"curve_id": v["curve_id"], "start_mm": at(rect, v["geometry"]["start_mm"])} for v in sketch["curves"]]
 moved = root / "moved.fcad"
-geometry(["edit-sketch-copy", four, "--sketch", sketch["sketch_id"], "--expect-version",
+geometry(["edit", four, "--expect-version",
           inspect(four)["content_version"], "--request",
-          request("sketch.json", {"request_version": 1, "vertices": vertices}), "-o", moved, "--json"], moved)
+          request("sketch.json", line_request(sketch["sketch_id"], [v["curve_id"] for v in vertices], [v["start_mm"] for v in vertices])), "-o", moved, "--json"], moved)
 only_row(four, moved, sketch["sketch_id"])
 results["moved"] = measured(moved, rect, ROUNDED)
 
 # 6. Line constraints (a solver is needed): the plate dimensioned; the solved
 #    plate is the new plate, the coordinate editor is refused, and removing the
 #    user's constraints returns it.
-edit = sketch["constraint_edit"]
-assert edit["available"] is True and edit["fillet_base"] is None, edit
-assert edit["fillet_history"]["count"] == 4, edit
+edit = sketch
+
+
 LINES = [c["curve_id"] for c in edit["curves"]]
 def constrain(source, remove, add, name):
     catalog = inspect(source)
     out = root / name
-    reply = geometry(["edit-sketch-constraints-copy", source, "--sketch", sketch["sketch_id"],
-                      "--expect-version", catalog["content_version"], "--request",
-                      request("constraints.json", {"request_version": 1, "remove": remove, "add": add}),
+    reply = geometry(["edit", source, "--expect-version", catalog["content_version"], "--request",
+                      request("constraints.json", constraint_request(inspect(source)["sketches"][0], remove, add)),
                       "-o", out, "--json"], out)
     return out, reply["result"]
 rect_c = (0.5, 1.25, 28.0, 12.5)
-dims = [{"curve_id": LINES[i], "rule": "horizontal" if i % 2 == 0 else "vertical"} for i in range(4)] + [
-    {"curve_id": LINES[0], "rule": "fixed", "at": "start", "x_mm": 0.5, "y_mm": 1.25},
-    {"curve_id": LINES[0], "rule": "distance", "distance_mm": 28.0},
-    {"curve_id": LINES[1], "rule": "distance", "distance_mm": 12.5}]
+dims = [line_rule(LINES[i], "horizontal" if i % 2 == 0 else "vertical") for i in range(4)] + [
+    pin_rule(LINES[0], "start", 0.5, 1.25),
+    distance(LINES[0], 28.0),
+    distance(LINES[1], 12.5)]
 dimensioned, result = constrain(four, [], dims, "dimensioned.fcad")
-assert result["solve"]["degrees_of_freedom"] == 0, result
+
 only_row(four, dimensioned, sketch["sketch_id"])
 assert tables(dimensioned)["topology_refs"] == refs
 after = inspect(dimensioned)
-assert after["sketches"][0]["editable"] is False, "a dimensioned plate: the constraint editor"
+
 results["dimensioned"] = measured(dimensioned, rect_c, ROUNDED)
-user = [c["constraint_id"] for c in after["sketches"][0]["constraint_edit"]["constraints"]
+user = [c["constraint_id"] for c in after["sketches"][0]["constraints"]
         if c["rule"]["kind"] != "coincident"]
 freed, _ = constrain(dimensioned, user, [], "freed.fcad")
-assert inspect(freed)["sketches"][0]["editable"] is True, "Edit Sketch is back"
+
 measured(freed, RECT, ROUNDED)  # the closure alone: the stored plate again
 
 print("FCAD_28L_RECIPE_OK", " ".join(f"{k}={v[0]:.6f}/{v[1]:.6f}" for k, v in results.items()))

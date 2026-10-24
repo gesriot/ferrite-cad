@@ -1255,7 +1255,7 @@ fn write_annular_fixture(path: &Path) {
 }
 
 #[test]
-fn annulus_discovery_refuses_both_earlier_editors_and_says_so() {
+fn annulus_discovery_lists_both_saved_circles_with_their_identities() {
     let d = tempfile::tempdir().expect("dir");
     let input = d.path().join("request.json");
     let source = d.path().join("source.fcad");
@@ -1279,91 +1279,18 @@ fn annulus_discovery_refuses_both_earlier_editors_and_says_so() {
     assert_eq!(sketches.len(), 1);
     let sketch = &sketches[0];
 
-    // The Line editor: not editable, with a reason, and no invented contour.
-    assert_eq!(sketch["editable"], false);
-    assert!(sketch["vertices"].is_null(), "no invented polygon");
-    assert!(
-        sketch["refusal"]
-            .as_str()
-            .expect("a reason")
-            .contains("Line"),
-        "{}",
-        sketch["refusal"]
+    let saved = stored(&source);
+    assert_eq!(sketch["constraints"], json!([]));
+    assert_eq!(
+        sketch["curves"],
+        json!([
+            {"curve_id":saved.outer.0,"construction":false,"geometry":{"kind":"circle","center_mm":[12.,-7.],"radius_mm":10.}},
+            {"curve_id":saved.inner.0,"construction":false,"geometry":{"kind":"circle","center_mm":[12.,-7.],"radius_mm":4.}}
+        ])
     );
-
-    // The §25K circle editor: not available, with a reason, and no circle.
-    let circle = &sketch["circle_edit"];
-    assert_eq!(circle["available"], false);
-    assert!(circle["circle"].is_null(), "no invented circle");
-    assert!(
-        circle["refusal"]
-            .as_str()
-            .expect("a reason")
-            .contains("exactly one unconstrained Circle"),
-        "{}",
-        circle["refusal"]
-    );
-
-    // The height, which this slice does leave editable, is still offered.
-    assert!(transaction::first_slot(&v["result"], "extrude_distance")["refusal"].is_null());
     assert_eq!(
         transaction::first_slot(&v["result"], "extrude_distance")["expression"]["value"],
         15.0
     );
-
-    // An attempted Circle edit is refused and writes nothing. With a kernel,
-    // it reaches the structural refusal; without one, the existing CLI kernel
-    // availability check has priority. Discovery above executes in both builds.
-    let names = entries(d.path());
-    let edit = d.path().join("edited.fcad");
-    let request = d.path().join("edit.json");
-    let saved = stored(&source);
-    std::fs::write(
-        &request,
-        json!({"request_version":1,"curve_id":saved.inner.0.to_string(),
-               "center_mm":[12.0,-7.0],"radius_mm":3.0})
-        .to_string(),
-    )
-    .expect("edit request");
-    let content_version = v["result"]["content_version"]
-        .as_str()
-        .expect("a content version")
-        .to_owned();
-    let sketch_id = sketch["sketch_id"]
-        .as_str()
-        .expect("a sketch UUID")
-        .to_owned();
-    let r = cli()
-        .arg("edit-circle")
-        .arg(&source)
-        .args(["--sketch", &sketch_id])
-        .args(["--expect-version", &content_version])
-        .arg("--request")
-        .arg(&request)
-        .arg("-o")
-        .arg(&edit)
-        .arg("--json")
-        .output()
-        .expect("edit-circle");
-    assert_eq!(r.status.code(), Some(2), "{r:?}");
-    let refusal: Value = serde_json::from_slice(&r.stdout).expect("JSON");
-    assert_eq!(refusal["ok"], false);
-    assert_eq!(refusal["error"]["kind"], "unsupported");
-    assert!(
-        refusal["error"]["message"]
-            .as_str()
-            .expect("a reason")
-            .contains(if ferritecad_occt::is_available() {
-                "exactly one unconstrained Circle"
-            } else {
-                "this build has no Open CASCADE"
-            }),
-        "{}",
-        refusal["error"]["message"]
-    );
     assert_eq!(std::fs::read(&source).expect("source"), bytes);
-    let mut still = names;
-    still.push("edit.json".into());
-    still.sort();
-    assert_eq!(entries(d.path()), still, "nothing published, no scratch");
 }

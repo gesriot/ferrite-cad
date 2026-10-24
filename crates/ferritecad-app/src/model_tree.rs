@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! §31A: one addressed navigation route to the pre-existing form owners.
 
-use ferritecad_document::ExtrudeEditSource;
+use crate::sketch_facts::Source as ExtrudeEditSource;
 use ferritecad_ui::{ModelAction, ModelEdit, ModelKey};
 
 use crate::{

@@ -75,7 +75,7 @@ fn apply(session: &mut DocumentSession, feature: ObjectId, millimetres: f64) {
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     millimetres,
@@ -253,7 +253,7 @@ fn edits_undo_and_redo_before_the_first_save_never_make_it_saved() {
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     22.0,

@@ -114,7 +114,7 @@ fn a_broken_history_opens_exports_partially_and_can_be_repaired_and_undone() {
         .begin_step()
         .edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     chain.first,
                     ferritecad_document::ExpressionSlot::FilletRadius,
                     2.0,
@@ -201,12 +201,12 @@ fn shrinking_a_constrained_plate_lists_both_fillets_and_publishes_nothing() {
     };
     let destination = root.path().join("refused.fcad");
     let before = std::fs::read(&path).expect("bytes");
-    let error = ferritecad_jobs::edit_sketch_constraints_copy(
-        &ferritecad_jobs::EditSketchConstraintsRequest {
+    let error = ferritecad_jobs::edit_copy(
+        &ferritecad_jobs::EditRequest {
             source: path.clone(),
             expected: version(&path),
-            sketch: chain.sketch,
-            edits: edits.clone(),
+            changes: ferritecad_document::sketch_constraint_changes(chain.sketch, sketch, &edits)
+                .expect("changes"),
             destination: destination.clone(),
         },
         &mut OcctKernel::new().expect("kernel"),
@@ -245,9 +245,9 @@ fn shrinking_a_constrained_plate_lists_both_fillets_and_publishes_nothing() {
     let ticket = session.begin_step();
     let output = ticket.destination().to_path_buf();
     let error = ticket
-        .edit_sketch_constraints(
-            chain.sketch,
-            edits,
+        .edit(
+            ferritecad_document::sketch_constraint_changes(chain.sketch, sketch, &edits)
+                .expect("changes"),
             expected,
             &mut kernel,
             |k, bytes| k.import_step(bytes),

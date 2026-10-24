@@ -171,7 +171,7 @@ impl Window {
     /// The height form of the shown tab, opened and typed into, not applied.
     fn type_height(&mut self, text: &str) {
         let current = self.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         assert!(self.edits.begin(&current, &reading));
         self.edits.type_height(
             ferritecad_fixtures::expression_slot(

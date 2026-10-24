@@ -182,7 +182,8 @@ impl Window {
 
     fn feature(&self) -> ObjectId {
         ferritecad_fixtures::expression_slot(
-            &read_extrude_source(&self.sessions.export_path().expect("shown")).expect("reading"),
+            &crate::sketch_facts::read(&self.sessions.export_path().expect("shown"))
+                .expect("reading"),
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
         )
         .object
@@ -201,7 +202,7 @@ impl Window {
                     ticket.source().version(),
                     ticket,
                     vec![
-                        ferritecad_document::ExpressionChange::constant(
+                        ferritecad_document::EditChange::constant(
                             feature,
                             ferritecad_document::ExpressionSlot::ExtrudeDistance,
                             millimetres,
@@ -219,7 +220,7 @@ impl Window {
                         let expected = ticket.source().version();
                         ticket.edit(
                             vec![
-                                ferritecad_document::ExpressionChange::constant(
+                                ferritecad_document::EditChange::constant(
                                     feature,
                                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                     millimetres,
@@ -927,7 +928,7 @@ fn late_cancelled_or_foreign_answers_change_no_tab_and_release_no_slot() {
                     let expected = ticket.source().version();
                     ticket.edit(
                         vec![
-                            ferritecad_document::ExpressionChange::constant(
+                            ferritecad_document::EditChange::constant(
                                 feature,
                                 ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                 17.0,
@@ -1028,7 +1029,7 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
                 .expect("open");
         let mut lane = RecoveryRecorder::start(store.clone(), || {});
         let feature = ferritecad_fixtures::expression_slot(
-            &read_extrude_source(session.current().path()).expect("reading"),
+            &crate::sketch_facts::read(session.current().path()).expect("reading"),
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
         )
         .object;
@@ -1037,7 +1038,7 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
             let expected = ticket.source().version();
             ticket.edit(
                 vec![
-                    ferritecad_document::ExpressionChange::constant(
+                    ferritecad_document::EditChange::constant(
                         feature,
                         ferritecad_document::ExpressionSlot::ExtrudeDistance,
                         33.0,
@@ -1186,21 +1187,20 @@ fn stub_switching_is_refused_at_the_picture_and_keeps_the_shown_tab() {
 impl Window {
     /// The shown tab's Circle Apply, through the window's circle worker.
     fn apply_circle(&mut self, center: [f64; 2], radius: f64) {
-        let reading =
-            read_extrude_source(&self.sessions.export_path().expect("shown")).expect("reading");
+        let reading = crate::sketch_facts::read(&self.sessions.export_path().expect("shown"))
+            .expect("reading");
         let choice = &reading.circle_sketches[0];
         let circle = choice.circle.as_ref().expect("a supported circle");
-        let edit = ferritecad_document::CircleEdit {
-            curve_id: circle.curve_id,
-            center_mm: center,
-            radius_mm: radius,
-        };
         let (sketch, expected) = (choice.sketch, reading.version);
+        let changes = vec![
+            crate::sketch_transactions::circle_change(sketch, circle.curve_id, center, radius)
+                .expect("circle"),
+        ];
         let (tx, rx) = mpsc::channel();
         let generation = self
             .sessions
             .begin_apply(|ticket, _, cancel| {
-                spawn_apply_circle(ticket, sketch, edit, expected, cancel.clone(), move |v| {
+                spawn_apply(expected, ticket, changes, cancel.clone(), move |v| {
                     tx.send(v).expect("edit");
                 })
             })
@@ -1214,12 +1214,16 @@ impl Window {
 
 /// The circle's own numbers as the document stores them.
 fn circle_of(path: &Path) -> ([f64; 2], f64, f64) {
-    let reading = read_extrude_source(path).expect("reading");
+    let reading = crate::sketch_facts::read(path).expect("reading");
     let circle = reading.circle_sketches[0]
         .circle
         .clone()
         .expect("a supported circle");
-    (circle.center_mm, circle.radius_mm, circle.height_mm)
+    (
+        circle.center_mm,
+        circle.radius_mm,
+        circle.height_mm.expect("extrusion height"),
+    )
 }
 
 /// Two small real models in two tabs: Apply alternates between them, Undo, Redo
@@ -1252,11 +1256,11 @@ fn native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_com
 
     // The command line's copies of the final models, from the untouched files.
     let a_feature = ferritecad_fixtures::expression_slot(
-        &read_extrude_source(&a_file).expect("a"),
+        &crate::sketch_facts::read(&a_file).expect("a"),
         ferritecad_document::ExpressionSlot::ExtrudeDistance,
     )
     .object;
-    let a_version = read_extrude_source(&a_file).expect("a").version;
+    let a_version = crate::sketch_facts::read(&a_file).expect("a").version;
     let a_peer = user.join("a-peer.fcad");
     {
         let request = crate::edits::tests::expression_request(
@@ -1276,7 +1280,7 @@ fn native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_com
             a_peer.as_os_str(),
         ])
     };
-    let b_reading = read_extrude_source(&b_file).expect("b");
+    let b_reading = crate::sketch_facts::read(&b_file).expect("b");
     let b_curve = b_reading.circle_sketches[0]
         .circle
         .as_ref()
@@ -1285,17 +1289,20 @@ fn native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_com
     let request = user.join("b-request.json");
     std::fs::write(
         &request,
-        format!(
-            r#"{{"request_version":1,"curve_id":"{b_curve}","center_mm":[-3.5,4.25],"radius_mm":8}}"#
-        ),
+        ferritecad_fixtures::edit_request_json(&[crate::sketch_transactions::circle_change(
+            b_reading.circle_sketches[0].sketch,
+            b_curve,
+            [-3.5, 4.25],
+            8.0,
+        )
+        .expect("geometry")])
+        .to_string(),
     )
     .expect("request");
     let b_peer = user.join("b-peer.fcad");
     cli(&[
-        "edit-circle".as_ref(),
+        "edit".as_ref(),
         b_file.as_os_str(),
-        "--sketch".as_ref(),
-        b_reading.circle_sketches[0].sketch.to_string().as_ref(),
         "--expect-version".as_ref(),
         b_reading.version.content.to_string().as_ref(),
         "--request".as_ref(),
@@ -1502,7 +1509,7 @@ fn make_inputs(root: &Path) {
 /// The command line's copies of what the recipe makes of each input.
 fn peers(inputs: &Path, work: &Path) -> (PathBuf, PathBuf) {
     let a = inputs.join("a.fcad");
-    let reading = read_extrude_source(&a).expect("a");
+    let reading = crate::sketch_facts::read(&a).expect("a");
     let a_peer = work.join("a-peer.fcad");
     {
         let request = crate::edits::tests::expression_request(
@@ -1528,23 +1535,26 @@ fn peers(inputs: &Path, work: &Path) -> (PathBuf, PathBuf) {
         ])
     };
     let b = inputs.join("b.fcad");
-    let reading = read_extrude_source(&b).expect("b");
+    let reading = crate::sketch_facts::read(&b).expect("b");
     let choice = &reading.circle_sketches[0];
     let curve = choice.circle.as_ref().expect("circle").curve_id;
     let request = work.join("b-request.json");
     std::fs::write(
         &request,
-        format!(
-            r#"{{"request_version":1,"curve_id":"{curve}","center_mm":[-3.5,4.25],"radius_mm":8}}"#
-        ),
+        ferritecad_fixtures::edit_request_json(&[crate::sketch_transactions::circle_change(
+            choice.sketch,
+            curve,
+            [-3.5, 4.25],
+            8.0,
+        )
+        .expect("geometry")])
+        .to_string(),
     )
     .expect("request");
     let b_peer = work.join("b-peer.fcad");
     cli(&[
-        "edit-circle".as_ref(),
+        "edit".as_ref(),
         b.as_os_str(),
-        "--sketch".as_ref(),
-        choice.sketch.to_string().as_ref(),
         "--expect-version".as_ref(),
         reading.version.content.to_string().as_ref(),
         "--request".as_ref(),
@@ -1880,7 +1890,7 @@ fn quit_waits_for_open_forms_and_foreground_work_even_when_tabs_are_clean() {
         match held {
             "new" => assert!(crate::creates::open_form(&mut creates, &mut w.input)),
             "edit" => {
-                let reading = read_extrude_source(&current).expect("facts");
+                let reading = crate::sketch_facts::read(&current).expect("facts");
                 assert!(edits.begin(&current, &reading));
             }
             "load" => {
@@ -1981,7 +1991,7 @@ fn a_cancelled_switch_reply_is_ignored_while_an_apply_runs() {
                     let expected = ticket.source().version();
                     ticket.edit(
                         vec![
-                            ferritecad_document::ExpressionChange::constant(
+                            ferritecad_document::EditChange::constant(
                                 feature,
                                 ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                 19.0,

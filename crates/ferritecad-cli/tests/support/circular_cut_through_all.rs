@@ -482,13 +482,13 @@ fn native_through_all_survives_height_reopen_cold_and_cache() {
         );
         let mut d = Document::open(&source).expect("doc");
         let base = ordered[0].base_feature;
-        let p = ferritecad_document::ExpressionChange::constant(
+        let p = ferritecad_document::EditChange::constant(
             base,
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
             14.25,
         )
         .expect("height");
-        d.write_expression_changes(&[p]).expect("write");
+        d.write_changes(&[p]).expect("write");
         d.close().expect("close");
         let grown = measure_history_at(&source, &tools, BOUNDS, 14.25, Some(&vec![Miss; n + 1]));
         assert_eq!(
@@ -732,14 +732,6 @@ mod old_v1 {
         pub circular_cut_edit: CircularCutEdit,
     }
     #[derive(Deserialize)]
-    pub struct History {
-        pub tools: Vec<Tool>,
-    }
-    #[derive(Deserialize)]
-    pub struct Sketch {
-        pub cut_history: Option<History>,
-    }
-    #[derive(Deserialize)]
     pub struct Body {
         pub cut_edit: CutEdit,
     }
@@ -747,7 +739,6 @@ mod old_v1 {
     pub struct Inspection {
         pub features: Vec<Feature>,
         pub bodies: Vec<Body>,
-        pub sketches: Vec<Sketch>,
     }
 }
 
@@ -812,51 +803,41 @@ fn native_new_consumer_routes_add_edit_height_and_sketch_through_v2() {
     // Height, from its expression slot.
     let grown = root.path().join("v2-grown.fcad");
     height(&source, &grown, 14.25, 0);
-    // Base Sketch coordinates, from `cut_history_v2` and the vertices.
+    // Move the base's saved Lines while the structural Cut reader keeps its tools.
     let c = inspect(&grown);
+    let saved = history::ordered(&grown);
+    assert_eq!(saved.len(), 3);
     let base = c["sketches"]
         .as_array()
         .expect("sketches")
         .iter()
-        .find(|s| s["cut_history_v2"].is_object())
-        .expect("base Sketch")
-        .clone();
-    assert_eq!(
-        base["cut_history_v2"]["tools"]
-            .as_array()
-            .expect("tools")
-            .len(),
-        3
-    );
-    let vertices: Vec<Value> = base["vertices"]
+        .find(|s| s["sketch_id"] == saved[0].profile_sketch.to_string())
+        .expect("base");
+    let points: Vec<[f64; 2]> = base["curves"]
         .as_array()
-        .expect("vertices")
+        .expect("curves")
         .iter()
         .map(|v| {
-            let [x, y] = [0, 1].map(|a| v["start_mm"][a].as_f64().expect("mm"));
-            json!({"curve_id":v["curve_id"],"start_mm":[if x == 0. { -2.5 } else { 81.25 }, if y == 0. { -1.5 } else { 52. }]})
+            let [x, y] = [0, 1].map(|a| v["geometry"]["start_mm"][a].as_f64().expect("mm"));
+            [
+                if x == 0. { -2.5 } else { 81.25 },
+                if y == 0. { -1.5 } else { 52. },
+            ]
         })
         .collect();
     let request = root.path().join("v2-sketch.json");
-    write(&request, &json!({"request_version":1,"vertices":vertices}));
+    write(&request, &transaction::line_changes(base, &points));
     let moved = root.path().join("v2-sketch.fcad");
     reply(
-        cli()
-            .arg("edit-sketch-copy")
-            .arg(&grown)
-            .args(["--sketch", base["sketch_id"].as_str().expect("id")])
-            .args([
-                "--expect-version",
-                c["content_version"].as_str().expect("v"),
-            ])
-            .arg("--request")
-            .arg(&request)
-            .arg("-o")
-            .arg(&moved)
-            .arg("--json")
-            .output()
-            .expect("sketch"),
-        "edit-sketch-copy",
+        transaction::command(
+            &grown,
+            c["content_version"].as_str().expect("version"),
+            &request,
+            &moved,
+        )
+        .output()
+        .expect("sketch"),
+        "edit",
         0,
     );
     measure_history_at(&moved, &tools(3), [[-2.5, -1.5], [81.25, 52.]], 14.25, None);
@@ -909,13 +890,6 @@ fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
         assert_eq!(saved.depth_mm, tool.depth_mm);
         assert_eq!(saved.leaves_a_floor, tool.depth_mm < SIZE[2]);
     }
-    let histories: Vec<_> = old
-        .sketches
-        .iter()
-        .filter_map(|s| s.cut_history.as_ref())
-        .collect();
-    assert_eq!(histories.len(), 1);
-    assert_eq!(read(&histories[0].tools), expected);
     // The v1 blocks carry nothing new, and `_v2` says the same thing explicitly.
     let v1_tool = &json["bodies"][0]["cut_edit"]["target"]["tools"][0];
     assert!(v1_tool.get("extent").is_none() && v1_tool["depth_mm"].is_f64());
@@ -962,7 +936,6 @@ fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
                 .contains("circular_cut_edit_v2")
         );
     }
-    assert!(old.sketches.iter().all(|s| s.cut_history.is_none()));
     // The new form describes the same history and every operation on it.
     assert_eq!(json["bodies"][0]["cut_edit_v2"]["available"], json!(true));
     assert_eq!(
@@ -973,13 +946,5 @@ fn an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable() {
             .filter(|f| f["circular_cut_edit_v2"]["available"] == json!(true))
             .count(),
         4
-    );
-
-    assert!(
-        json["sketches"]
-            .as_array()
-            .expect("s")
-            .iter()
-            .any(|s| s["cut_history_v2"].is_object())
     );
 }

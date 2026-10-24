@@ -34,10 +34,6 @@ const EXIT_REPORT_DELIVERY: u8 = 7;
 pub enum Operation {
     Inspect,
     Edit,
-    EditSketchCopy,
-    EditCircle,
-    EditAnnular,
-    EditSketchConstraintsCopy,
     CutCircularCopy,
     EditCircularCut,
     FilletEdgeCopy,
@@ -150,7 +146,7 @@ struct Slot {
 }
 
 /// One saved Revolve, as the pinned reading found it. Its profile's
-/// coordinates are edited through `edit-sketch-copy` (§27B); whether that is
+/// coordinates are edited through `edit` (§27B); whether that is
 /// allowed is the Sketch row's `editable`, not `profile.available`. Its angle
 /// is addressed by the `revolve_angle` expression slot.
 #[derive(Serialize)]
@@ -250,270 +246,8 @@ impl RevolveDiscovery {
 struct Sketch {
     sketch_id: ObjectId,
     name: Option<String>,
-    vertices: Option<Vec<SketchVertex>>,
-    /// v1: `null` also when the history holds a ThroughAll Cut; see `cut_history_v2`.
-    /// v1 and `_v2`: `null` unless the part is an axis-aligned rectangle; see `_v3`.
-    cut_history: Option<SketchCutHistory<BlindDepth, RectangleOnly>>,
-    cut_history_v2: Option<SketchCutHistory<ExplicitEnd, RectangleOnly>>,
-    /// Any supported polygon, with its real boundary (§26I).
-    cut_history_v3: Option<SketchCutHistory<ExplicitEnd, PolygonBoundary>>,
-    constraint_edit: constraints::Discovery,
-    /// Whether this Sketch's analytic circle can be moved or resized, and the
-    /// circle itself. Its own answer: `editable`/`vertices` keep meaning what
-    /// they always did, which is whether the Line editor accepts this Sketch.
-    circle_edit: CircleDiscovery,
-    /// Whether this Sketch's pair of analytic circles can be moved or resized,
-    /// and the pair itself. Its own answer beside the others: `editable`,
-    /// `vertices`, `constraint_edit` and `circle_edit` keep meaning exactly what
-    /// they always did about their own editors.
-    annulus_edit: AnnulusDiscovery,
-    editable: bool,
-    refusal: Option<String>,
-    document_refusal: Option<String>,
-    /// §27B, additive: which saved feature turns `vertices` into a solid, and
-    /// so which policy `edit-sketch-copy` applies. Null exactly when
-    /// `vertices` is.
-    profile_feature: Option<ProfileFeature>,
-    /// §28D, additive: the saved Fillet over the plate this Sketch profiles,
-    /// when `edit-sketch-copy` may move or resize it; the same object
-    /// `features[].fillet_base` carries. The Fillet keeps its corner and
-    /// radius. `null` on every other row, and (§28L) for a history of three or
-    /// four Fillets, which `fillet_history` describes.
-    fillet_base: Option<FilletBaseDiscovery>,
-    /// §28L, additive: every saved Fillet over this plate in history order,
-    /// one to four; `null` on every other row.
-    fillet_history: Option<FilletHistoryDiscovery>,
-    /// §29C, additive: the saved Chamfer over the plate this Sketch profiles,
-    /// when `edit-sketch-copy` may move or resize it; the same object
-    /// `features[].chamfer_base` carries. The Chamfer keeps its corner and
-    /// distance. `null` on every other row.
-    chamfer_base: Option<chamfer::ChamferBaseDiscovery>,
-}
-
-/// The feature a coordinate-editable profile feeds, stated by kind.
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum ProfileFeature {
-    BlindExtrude {
-        feature_id: ObjectId,
-        height_mm: f64,
-    },
-    /// Every profile point strictly off the axis, by more than the clearance.
-    FullTurnRevolve {
-        feature_id: ObjectId,
-        body_id: ObjectId,
-        axis: &'static str,
-        extent: &'static str,
-        axis_clearance_mm: f64,
-    },
-    /// §27C: a solid part closed on the axis along `axis_curve_id`, whose two
-    /// ends are exactly on it; every other point beyond the clearance. A kind
-    /// of its own, so a client that knows only the one above stops here
-    /// rather than reading it as a profile strictly off the axis.
-    FullTurnRevolveAxisClosed {
-        feature_id: ObjectId,
-        body_id: ObjectId,
-        axis: &'static str,
-        extent: &'static str,
-        axis_curve_id: StableEntityId,
-        off_axis_clearance_mm: f64,
-    },
-    /// §27F: a sector with a bore, edited as a full turn with a bore is, and
-    /// turned through the saved `angle_deg`, which the edit keeps. Kinds of
-    /// their own, so a client that knows only the full-turn ones stops here
-    /// rather than reading a sector as a full turn.
-    PartialTurnRevolve {
-        feature_id: ObjectId,
-        body_id: ObjectId,
-        axis: &'static str,
-        extent: &'static str,
-        angle_deg: f64,
-        axis_clearance_mm: f64,
-    },
-    /// §27F: a solid sector closed on the axis along `axis_curve_id`.
-    PartialTurnRevolveAxisClosed {
-        feature_id: ObjectId,
-        body_id: ObjectId,
-        axis: &'static str,
-        extent: &'static str,
-        angle_deg: f64,
-        axis_curve_id: StableEntityId,
-        off_axis_clearance_mm: f64,
-    },
-}
-
-impl ProfileFeature {
-    fn of(profile_use: ferritecad_document::SketchProfileUse) -> Self {
-        match profile_use {
-            ferritecad_document::SketchProfileUse::BlindExtrude { feature, height_mm } => {
-                Self::BlindExtrude {
-                    feature_id: feature,
-                    height_mm,
-                }
-            }
-            ferritecad_document::SketchProfileUse::FullTurnRevolve {
-                feature,
-                body,
-                axis_segment: None,
-            } => Self::FullTurnRevolve {
-                feature_id: feature,
-                body_id: body,
-                axis: "sketch_y",
-                extent: "full_turn",
-                axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
-            },
-            ferritecad_document::SketchProfileUse::FullTurnRevolve {
-                feature,
-                body,
-                axis_segment: Some(axis),
-            } => Self::FullTurnRevolveAxisClosed {
-                feature_id: feature,
-                body_id: body,
-                axis: "sketch_y",
-                extent: "full_turn",
-                axis_curve_id: axis,
-                off_axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
-            },
-            ferritecad_document::SketchProfileUse::PartialRevolve {
-                feature,
-                body,
-                axis_segment: None,
-                radians: angle,
-            } => Self::PartialTurnRevolve {
-                feature_id: feature,
-                body_id: body,
-                axis: "sketch_y",
-                extent: "partial_turn",
-                angle_deg: ferritecad_types::display_degrees(angle.radians()),
-                axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
-            },
-            ferritecad_document::SketchProfileUse::PartialRevolve {
-                feature,
-                body,
-                axis_segment: Some(axis),
-                radians: angle,
-            } => Self::PartialTurnRevolveAxisClosed {
-                feature_id: feature,
-                body_id: body,
-                axis: "sketch_y",
-                extent: "partial_turn",
-                angle_deg: ferritecad_types::display_degrees(angle.radians()),
-                axis_curve_id: axis,
-                off_axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
-            },
-        }
-    }
-}
-/// Additional coordinate policy for the base of a supported nonempty history.
-#[derive(Serialize)]
-struct SketchCutHistory<E, P> {
-    body_id: ObjectId,
-    base_feature_id: ObjectId,
-    tools: Vec<ExistingCut<E>>,
-    wall_clearance_mm: f64,
-    #[serde(flatten)]
-    profile: P,
-}
-impl<E: EndForm, P: ProfileForm> SketchCutHistory<E, P> {
-    /// `None` when this form cannot describe every tool or the part; see
-    /// [`EndForm`] and [`ProfileForm`].
-    fn of(h: &ferritecad_document::SketchCutHistory) -> Option<Self> {
-        Some(Self {
-            profile: P::of(&h.boundary)?,
-            body_id: h.body,
-            base_feature_id: h.base_feature,
-            tools: ExistingCut::all(&h.tools)?,
-            wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
-        })
-    }
-}
-#[derive(Serialize)]
-struct SketchVertex {
-    curve_id: ferritecad_types::StableEntityId,
-    start_mm: [f64; 2],
-}
-
-/// What `edit-circle` would accept about one Sketch, from the same reading.
-///
-/// `available` folds in the document-wide refusal, which keeps its priority;
-/// `refusal` is this Sketch's own reason and `document_refusal` the shared
-/// one, exactly as `constraint_edit` reports them. `circle` is present for a
-/// supported Sketch and null otherwise — never an invented circle.
-#[derive(Serialize)]
-struct CircleDiscovery {
-    available: bool,
-    refusal: Option<String>,
-    document_refusal: Option<String>,
-    circle: Option<SavedCircle>,
-}
-#[derive(Serialize)]
-struct SavedCircle {
-    curve_id: ferritecad_types::StableEntityId,
-    center_mm: [f64; 2],
-    radius_mm: f64,
-    height_mm: f64,
-}
-impl CircleDiscovery {
-    fn new(choice: ferritecad_document::CircleChoice, document_refusal: Option<String>) -> Self {
-        Self {
-            available: choice.refusal.is_none() && document_refusal.is_none(),
-            refusal: choice.refusal,
-            document_refusal,
-            circle: choice.circle.map(|c| SavedCircle {
-                curve_id: c.curve_id,
-                center_mm: c.center_mm,
-                radius_mm: c.radius_mm,
-                height_mm: c.height_mm,
-            }),
-        }
-    }
-}
-
-/// What `edit-annular` would accept about one Sketch, from the same reading.
-///
-/// `available` folds in the document-wide refusal, which keeps its priority;
-/// `refusal` is this Sketch's own reason and `document_refusal` the shared one,
-/// exactly as the two discoveries beside it report them. `annulus` is present
-/// for a supported Sketch and null otherwise — never an invented pair.
-#[derive(Serialize)]
-struct AnnulusDiscovery {
-    available: bool,
-    refusal: Option<String>,
-    document_refusal: Option<String>,
-    annulus: Option<SavedAnnulus>,
-}
-/// Both circles as stored, each named in the role the radii give it.
-///
-/// Both centres are reported because concentric means "within the kernel's
-/// linear tolerance", not "bit-identical": a caller that showed one of them as
-/// the pair's centre would be saying something the document does not.
-#[derive(Serialize)]
-struct SavedAnnulus {
-    outer_curve_id: ferritecad_types::StableEntityId,
-    inner_curve_id: ferritecad_types::StableEntityId,
-    center_mm: [f64; 2],
-    inner_center_mm: [f64; 2],
-    outer_radius_mm: f64,
-    inner_radius_mm: f64,
-    height_mm: f64,
-}
-impl AnnulusDiscovery {
-    fn new(choice: ferritecad_document::AnnulusChoice, document_refusal: Option<String>) -> Self {
-        Self {
-            available: choice.refusal.is_none() && document_refusal.is_none(),
-            refusal: choice.refusal,
-            document_refusal,
-            annulus: choice.annulus.map(|a| SavedAnnulus {
-                outer_curve_id: a.outer_curve_id,
-                inner_curve_id: a.inner_curve_id,
-                center_mm: a.center_mm,
-                inner_center_mm: a.inner_center_mm,
-                outer_radius_mm: a.outer_radius_mm,
-                inner_radius_mm: a.inner_radius_mm,
-                height_mm: a.height_mm,
-            }),
-        }
-    }
+    curves: Vec<constraints::Curve>,
+    constraints: Vec<constraints::Constraint>,
 }
 
 #[derive(Serialize)]
@@ -850,16 +584,6 @@ impl ProfileForm for RectangleExtents {
 
 /// v1/`_v2` blocks that never stated the part: present only for a rectangle.
 #[derive(Serialize)]
-struct RectangleOnly {}
-
-impl ProfileForm for RectangleOnly {
-    fn of(boundary: &ferritecad_document::CutBoundary) -> Option<Self> {
-        boundary.rectangle_mm().map(|_| Self {})
-    }
-}
-
-/// `_v3`: the real outer wall, and its bounding box named as bounds only.
-#[derive(Serialize)]
 struct PolygonBoundary {
     /// `[[min_x, min_y], [max_x, max_y]]`. A range, never proof of containment.
     bounds_mm: [[f64; 2]; 2],
@@ -1083,132 +807,6 @@ struct Feature {
     circular_cut_edit: CutParameterDiscovery<BlindDepth>,
     circular_cut_edit_v2: CutParameterDiscovery<ExplicitEnd>,
     circular_cut_edit_v3: CutParameterDiscovery<ExplicitEnd, PolygonBoundary>,
-}
-
-/// The whole Fillet history a base edit keeps (§28L), additive: every saved
-/// Fillet in history order, one to four, whatever the count. `fillet_base`
-/// below is the older projection of one or two of them and is `null` for three
-/// or four, so this is the form that never describes a plate falsely.
-#[derive(Serialize)]
-struct FilletHistoryDiscovery {
-    count: usize,
-    fillets: Vec<FilletHistoryEntry>,
-}
-
-#[derive(Serialize)]
-struct FilletHistoryEntry {
-    fillet_feature_id: ObjectId,
-    /// The feature whose result this Fillet rounds: the base Extrude for the
-    /// first, the Fillet before it otherwise.
-    previous_feature_id: ObjectId,
-    history_index: usize,
-    edge: FilletEdgeDto,
-    /// The corner in the stored coordinates; the solved plate's when
-    /// `profile_constrained` is false only.
-    corner_mm: [f64; 2],
-    radius_mm: f64,
-    profile_constrained: bool,
-}
-
-impl FilletHistoryDiscovery {
-    pub(crate) fn of(fillets: &[ferritecad_document::SavedFillet]) -> Option<Self> {
-        (!fillets.is_empty()).then(|| Self {
-            count: fillets.len(),
-            fillets: fillets
-                .iter()
-                .map(|f| FilletHistoryEntry {
-                    fillet_feature_id: f.feature,
-                    previous_feature_id: f.previous,
-                    history_index: f.history_index,
-                    edge: FilletEdgeDto {
-                        feature_id: f.edge.feature,
-                        joint: f.edge.joint.segments(),
-                    },
-                    corner_mm: f.corner.corner_mm,
-                    radius_mm: f.radius_mm,
-                    profile_constrained: f.constrained,
-                })
-                .collect(),
-        })
-    }
-}
-
-/// The Fillet a height edit keeps, as the pinned reading found it (§28C).
-#[derive(Serialize)]
-struct FilletBaseDiscovery {
-    fillet_feature_id: ObjectId,
-    body_id: ObjectId,
-    edge: FilletEdgeDto,
-    corner_mm: [f64; 2],
-    radius_mm: f64,
-    /// §28E, additive: whether the base Sketch carries constraints; then
-    /// `corner_mm` is in the stored coordinates, not the solved part's.
-    profile_constrained: bool,
-    /// §28I, additive: the second Fillet of a history of exactly two (§28G), which rounds this
-    /// Fillet's result (not the base Extrude) and which the height edit also
-    /// keeps; `null` for a plate with one Fillet. §28J: the base Sketch's `sketches[]`
-    /// row carries it too.
-    second_fillet: Option<SecondFilletDiscovery>,
-}
-
-/// §28I: Fillet 2 of Extrude -> Fillet 1 -> Fillet 2, as the height edit keeps it.
-#[derive(Serialize)]
-struct SecondFilletDiscovery {
-    fillet_feature_id: ObjectId,
-    /// Fillet 1: the feature whose result this Fillet rounds.
-    previous_feature_id: ObjectId,
-    history_index: usize,
-    edge: FilletEdgeDto,
-    corner_mm: [f64; 2],
-    radius_mm: f64,
-}
-
-impl FilletBaseDiscovery {
-    /// The older projection of a history of one or two Fillets; `None` for
-    /// none, and for three or four, which it cannot describe (§28L): those are
-    /// `fillet_history`'s.
-    pub(crate) fn of_history(fillets: &[ferritecad_document::SavedFillet]) -> Option<Self> {
-        match fillets {
-            [one] => Some(Self::of(one)),
-            [one, two] => Some(Self::with_second(one, Some(two))),
-            _ => None,
-        }
-    }
-
-    fn with_second(
-        saved: &ferritecad_document::SavedFillet,
-        second: Option<&ferritecad_document::SavedFillet>,
-    ) -> Self {
-        Self {
-            second_fillet: second.map(|s| SecondFilletDiscovery {
-                fillet_feature_id: s.feature,
-                previous_feature_id: s.previous,
-                history_index: s.history_index,
-                edge: FilletEdgeDto {
-                    feature_id: s.edge.feature,
-                    joint: s.edge.joint.segments(),
-                },
-                corner_mm: s.corner.corner_mm,
-                radius_mm: s.radius_mm,
-            }),
-            ..Self::of(saved)
-        }
-    }
-
-    fn of(saved: &ferritecad_document::SavedFillet) -> Self {
-        Self {
-            fillet_feature_id: saved.feature,
-            body_id: saved.body,
-            edge: FilletEdgeDto {
-                feature_id: saved.edge.feature,
-                joint: saved.edge.joint.segments(),
-            },
-            corner_mm: saved.corner.corner_mm,
-            radius_mm: saved.radius_mm,
-            profile_constrained: saved.constrained,
-            second_fillet: None,
-        }
-    }
 }
 
 /// What `edit-circular-cut` would accept about one feature, from the same
@@ -1440,21 +1038,6 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     } else {
         (None, None)
     };
-    let mut constraint_choices: std::collections::BTreeMap<_, _> = source
-        .constraint_sketches
-        .into_iter()
-        .map(|c| (c.sketch, c))
-        .collect();
-    let mut circle_choices: std::collections::BTreeMap<_, _> = source
-        .circle_sketches
-        .into_iter()
-        .map(|c| (c.sketch, c))
-        .collect();
-    let mut annulus_choices: std::collections::BTreeMap<_, _> = source
-        .annulus_sketches
-        .into_iter()
-        .map(|c| (c.sketch, c))
-        .collect();
     let mut cut_choices: std::collections::BTreeMap<_, _> =
         source.cut_bodies.into_iter().map(|c| (c.body, c)).collect();
     let mut fillet_choices: std::collections::BTreeMap<_, _> = source
@@ -1516,48 +1099,29 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 }
             })
             .collect(),
-        sketches: source
-            .sketches
+        sketches: document
+            .objects()?
             .into_iter()
-            .map(|s| Sketch {
-                constraint_edit: constraints::Discovery::new(
-                    constraint_choices
-                        .remove(&s.sketch)
-                        .expect("same snapshot Sketch catalogue"),
-                    source.refusal.clone(),
-                ),
-                circle_edit: CircleDiscovery::new(
-                    circle_choices
-                        .remove(&s.sketch)
-                        .expect("same snapshot Sketch catalogue"),
-                    source.refusal.clone(),
-                ),
-                annulus_edit: AnnulusDiscovery::new(
-                    annulus_choices
-                        .remove(&s.sketch)
-                        .expect("same snapshot Sketch catalogue"),
-                    source.refusal.clone(),
-                ),
-                sketch_id: s.sketch,
-                name: s.name,
-                editable: source.refusal.is_none() && s.refusal.is_none(),
-                refusal: s.refusal,
-                document_refusal: source.refusal.clone(),
-                cut_history: s.cut_history.as_ref().and_then(SketchCutHistory::of),
-                cut_history_v2: s.cut_history.as_ref().and_then(SketchCutHistory::of),
-                cut_history_v3: s.cut_history.as_ref().and_then(SketchCutHistory::of),
-                profile_feature: s.profile_use.map(ProfileFeature::of),
-                fillet_base: FilletBaseDiscovery::of_history(&s.fillets),
-                fillet_history: FilletHistoryDiscovery::of(&s.fillets),
-                chamfer_base: chamfer::ChamferBaseDiscovery::of(s.chamfer.as_ref()),
-                vertices: s.vertices.map(|vs| {
-                    vs.into_iter()
-                        .map(|v| SketchVertex {
-                            curve_id: v.curve_id,
-                            start_mm: v.start_mm,
+            .filter_map(|object| {
+                let ferritecad_document::ObjectPayload::Sketch(sketch) = object.payload else {
+                    return None;
+                };
+                Some(Sketch {
+                    sketch_id: object.id,
+                    name: object.name,
+                    curves: sketch.curves.iter().map(constraints::Curve::from).collect(),
+                    constraints: sketch
+                        .constraints
+                        .iter()
+                        .map(|c| {
+                            constraints::Constraint::display(
+                                c,
+                                document.meta().display_length_unit,
+                                document.meta().display_angle_unit,
+                            )
                         })
-                        .collect()
-                }),
+                        .collect(),
+                })
             })
             .collect(),
         features: cut_parameter_choices
@@ -1641,7 +1205,7 @@ pub fn emit_with_exit<T: Serialize>(operation: Operation, result: Result<(T, u8)
                     ok: false,
                     error: {
                         let mut failure = Failure::from(&error);
-                        if matches!(operation, Operation::EditSketchConstraintsCopy) {
+                        if matches!(operation, Operation::Edit) {
                             failure.constraint_conflict =
                                 ferritecad_eval::SketchConflict::of(&error)
                                     .map(constraints::Conflict::from);

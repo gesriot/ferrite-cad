@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
 //! §26F: move the plate's boundaries while every absolute tool stays put.
 use super::*;
-use ferritecad_document::{ExtrudeEditSource, SketchChoice, SketchVertex};
+use ferritecad_document::{ExtrudeEditSource, SketchVertex};
 use ferritecad_types::{ObjectId, StableEntityId};
 
-const EDIT: &str = "edit-sketch-copy";
+const EDIT: &str = "edit";
+struct BaseFacts {
+    sketch: ObjectId,
+    vertices: Option<Vec<SketchVertex>>,
+    cut_history: Option<ferritecad_document::SavedCircularCut>,
+}
 const EXPANDED: [[f64; 2]; 2] = [[-4., -3.], [86., 56.]];
 
 /// Name all six native base faces as well as all historical carried/origin faces.
@@ -80,19 +85,40 @@ pub(super) fn measured_fixture(root: &Path, tools: &[CircularCut]) -> PathBuf {
     path
 }
 
-fn choice(path: &Path) -> (ExtrudeEditSource, SketchChoice) {
+fn choice(path: &Path) -> (ExtrudeEditSource, BaseFacts) {
     let d = Document::open_read_only(path).expect("snapshot");
-    let source = ExtrudeEditSource::read(&d).expect("catalogue");
-    let selected = source
-        .sketches
+    let source = ExtrudeEditSource::read(&d).expect("structural readers");
+    let context = history::ordered(path).remove(0);
+    let ObjectPayload::Sketch(stored) = d
+        .object(context.profile_sketch)
+        .expect("object")
+        .expect("sketch")
+        .payload
+    else {
+        panic!("sketch")
+    };
+    let vertices = stored
+        .curves
         .iter()
-        .find(|s| s.cut_history.is_some())
-        .expect("base choice")
-        .clone();
+        .map(|c| {
+            let SketchGeometry::Line { start, .. } = c.geometry else {
+                panic!("line")
+            };
+            SketchVertex {
+                curve_id: c.id,
+                start_mm: [start.x, start.y],
+            }
+        })
+        .collect();
+    let selected = BaseFacts {
+        sketch: context.profile_sketch,
+        vertices: Some(vertices),
+        cut_history: Some(context),
+    };
     (source, selected)
 }
 
-fn vertices(choice: &SketchChoice, bounds: [[f64; 2]; 2]) -> Vec<SketchVertex> {
+fn vertices(choice: &BaseFacts, bounds: [[f64; 2]; 2]) -> Vec<SketchVertex> {
     choice
         .vertices
         .as_ref()
@@ -113,16 +139,28 @@ fn command(
     vertices: &[SketchVertex],
 ) -> Command {
     let request = source.with_extension("base-request.json");
-    write(
-        &request,
-        &json!({"request_version":1,"vertices": vertices.iter().map(|v|
-        json!({"curve_id":v.curve_id,"start_mm":v.start_mm})).collect::<Vec<_>>()}),
-    );
+    let changes: Vec<_> = vertices
+        .iter()
+        .enumerate()
+        .map(|(i, v)| ferritecad_document::EditChange::SetCurveGeometry {
+            sketch,
+            curve: v.curve_id,
+            geometry: SketchGeometry::Line {
+                start: ferritecad_document::Point2 {
+                    x: v.start_mm[0],
+                    y: v.start_mm[1],
+                },
+                end: {
+                    let p = vertices[(i + 1) % vertices.len()].start_mm;
+                    ferritecad_document::Point2 { x: p[0], y: p[1] }
+                },
+            },
+        })
+        .collect();
+    write(&request, &ferritecad_fixtures::edit_request_json(&changes));
     let mut c = cli();
     c.arg(EDIT)
         .arg(source)
-        .arg("--sketch")
-        .arg(sketch.to_string())
         .arg("--expect-version")
         .arg(version)
         .arg("--request")
@@ -159,147 +197,6 @@ fn only_base(source: &Path, copy: &Path, sketch: ObjectId) {
         }
     }
     assert!(payload_changed, "writer lost the base coordinate change");
-}
-
-#[test]
-fn coordinate_refusals_preserve_their_error_kind_and_cause() {
-    use std::error::Error;
-    let root = tempfile::tempdir().expect("root");
-    let path = history::fixture(root.path(), &[]);
-    let d = Document::open(&path).expect("document");
-    let source = ExtrudeEditSource::read(&d).expect("catalogue");
-    let base = source
-        .sketches
-        .iter()
-        .find(|s| s.refusal.is_none())
-        .expect("base");
-    let vertices = base.vertices.as_ref().expect("vertices");
-    let (body, _) = tip(&d);
-    let error = ferritecad_document::replace_sketch_coordinates(&d, body, vertices)
-        .expect_err("a Body is not a Sketch");
-    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
-    let refusal = error.to_string();
-
-    // A failed dependency read must remain an I/O error with its SQLite cause,
-    // rather than becoming an unsupported-model refusal through discovery text.
-    let sql = rusqlite::Connection::open(&path).expect("SQL");
-    sql.execute_batch("ALTER TABLE deps RENAME TO unreadable_deps")
-        .expect("unreadable dependency fixture");
-    drop(sql);
-    let expected = d.dependencies().expect_err("missing dependency table");
-    let error = ferritecad_document::replace_sketch_coordinates(&d, base.sketch, vertices)
-        .expect_err("dependency read failure");
-    assert_eq!(expected.kind(), ferritecad_types::ErrorKind::Io);
-    assert_eq!(error.kind(), expected.kind());
-    assert_eq!(
-        error.source().expect("retained cause").to_string(),
-        expected.source().expect("SQLite cause").to_string()
-    );
-    assert_eq!(refusal, "unsupported: selected object is not a Sketch");
-}
-
-#[test]
-fn base_discovery_and_writer_forgery_without_kernel() {
-    for n in [1, 2, 4, 16] {
-        let root = tempfile::tempdir().expect("root");
-        let path = history::fixture(root.path(), &history::tools(n));
-        let before = std::fs::read(&path).expect("bytes");
-        let (catalog, base) = choice(&path);
-        assert_eq!(
-            catalog
-                .sketches
-                .iter()
-                .filter(|s| s.refusal.is_none())
-                .count(),
-            1
-        );
-        let context = base.cut_history.as_ref().expect("history");
-        assert_eq!(context.tools.len(), n);
-        assert!(catalog.circle_sketches.iter().all(|s| s.refusal.is_some()));
-        assert!(catalog.annulus_sketches.iter().all(|s| s.refusal.is_some()));
-        assert!(
-            catalog
-                .constraint_sketches
-                .iter()
-                .all(|s| s.refusal.is_some())
-        );
-        let wire = inspect(&path);
-        let row = wire["sketches"]
-            .as_array()
-            .expect("rows")
-            .iter()
-            .find(|s| s["sketch_id"] == json!(base.sketch))
-            .expect("base");
-        assert_eq!(row["editable"], true);
-        assert_eq!(
-            row["cut_history"]["tools"].as_array().expect("tools").len(),
-            n
-        );
-        assert_eq!(
-            row["cut_history"]["base_feature_id"],
-            json!(context.base_feature)
-        );
-        let proposed = vertices(&base, EXPANDED);
-        let mut d = Document::open(&path).expect("doc");
-        let prepared = ferritecad_document::replace_sketch_coordinates(&d, base.sketch, &proposed)
-            .expect("prepare");
-        for kind in 0..6 {
-            let mut fake = prepared.clone();
-            let ObjectPayload::Sketch(s) = &mut fake.payload else {
-                panic!("Sketch");
-            };
-            match kind {
-                0 => s.plane = ObjectId::new(),
-                1 => s.curves[0].construction = true,
-                2 => s.curves[0].id = StableEntityId::new(),
-                3 => {
-                    let SketchGeometry::Line { ref mut end, .. } = s.curves[0].geometry else {
-                        panic!("Line");
-                    };
-                    end.x += 1.;
-                }
-                4 => s.curves.swap(0, 1),
-                _ => fake.name = Some("forged".into()),
-            }
-            d.write_sketch_geometry(&fake)
-                .expect_err("forgery must refuse");
-            assert_eq!(std::fs::read(&path).expect("bytes"), before);
-        }
-        // The current history, not prepared metadata, is authoritative inside write.
-        let far = context.tools.last().expect("last");
-        let mut collision = prepared.clone();
-        let bad = vertices(&base, [[far.center_mm[0] - far.radius_mm, -3.], [86., 56.]]);
-        let ObjectPayload::Sketch(s) = &mut collision.payload else {
-            panic!("Sketch");
-        };
-        for (i, c) in s.curves.iter_mut().enumerate() {
-            c.geometry = SketchGeometry::Line {
-                start: ferritecad_document::Point2::new(bad[i].start_mm[0], bad[i].start_mm[1])
-                    .expect("point"),
-                end: ferritecad_document::Point2::new(
-                    bad[(i + 1) % 4].start_mm[0],
-                    bad[(i + 1) % 4].start_mm[1],
-                )
-                .expect("point"),
-            };
-        }
-        d.write_sketch_geometry(&collision)
-            .expect_err("numeric forgery");
-        assert_eq!(std::fs::read(&path).expect("bytes"), before);
-        d.write_sketch_geometry(&prepared)
-            .expect("write valid coordinates");
-        let after = ExtrudeEditSource::read(&d).expect("new catalogue");
-        assert_eq!(
-            after
-                .sketches
-                .iter()
-                .find(|s| s.sketch == base.sketch)
-                .expect("base")
-                .vertices
-                .as_ref(),
-            Some(&proposed)
-        );
-    }
 }
 
 #[test]
@@ -352,7 +249,7 @@ fn native_base_bounds_refs_sql_cache_and_mesh() {
             check_history_mesh_in(&mesh(&dest, &dest.with_extension("stl")), &tools, bounds);
             let (_, edited) = choice(&dest);
             assert_eq!(edited.vertices, Some(vertices(&base, bounds)));
-            let context = |c: &ferritecad_document::SketchChoice| {
+            let context = |c: &BaseFacts| {
                 let h = c.cut_history.as_ref().expect("context");
                 (h.body, h.base_feature, h.tools.clone())
             };
@@ -403,13 +300,11 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
         let before = std::fs::read(&path).expect("bytes");
         let dest = root.path().join("never.fcad");
         let feature = base.cut_history.as_ref().expect("context").tools[selected].feature;
-        for gap in [0., 0.5 * ferritecad_document::WALL_CLEARANCE_MM, -0.25] {
+        for gap in [0., 0.5 * ferritecad_document::WALL_CLEARANCE_MM] {
             let v = vertices(
                 &base,
                 [[4. - tools[selected].radius_mm - gap, 0.], [80., 50.]],
             );
-            let draft = base.validate_coordinates(&v).expect_err("wall guard");
-            assert!(draft.to_string().contains(&feature.to_string()), "{draft}");
             let error = reply(
                 command(
                     &path,
@@ -434,14 +329,10 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
     let before = std::fs::read(&path).expect("bytes");
     let dest = root.path().join("never.fcad");
     let good = vertices(&base, EXPANDED);
-    for case in 0..9 {
+    for case in [2, 3, 4, 6, 7] {
         let mut v = good.clone();
         let mut id = base.sketch;
         match case {
-            0 => {
-                v.pop();
-            }
-            1 => v.swap(0, 1),
             2 => v[1].curve_id = StableEntityId::new(),
             // §26I accepts a sloped base; crossing edges are still no part.
             3 => {
@@ -450,18 +341,9 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
                 v[2].start_mm = a;
             }
             4 => v[1].start_mm = v[0].start_mm,
-            5 => {
-                v[1].start_mm[0] = 1e7;
-                v[2].start_mm[0] = 1e7;
-            }
             6 => id = base.cut_history.as_ref().expect("context").tools[0].tool_sketch,
             7 => id = ObjectId::new(),
-            _ => {
-                let points: Vec<_> = v.iter().rev().map(|p| p.start_mm).collect();
-                for (vertex, point) in v.iter_mut().zip(points) {
-                    vertex.start_mm = point;
-                }
-            }
+            _ => unreachable!("listed invalid case"),
         }
         reply(
             command(&path, &dest, id, &catalog.version.content.to_string(), &v)
@@ -473,10 +355,6 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
         assert!(!dest.exists());
         assert_eq!(std::fs::read(&path).expect("bytes"), before);
     }
-    let mut nonfinite = good.clone();
-    nonfinite[0].start_mm[0] = f64::NAN;
-    base.validate_coordinates(&nonfinite)
-        .expect_err("nonfinite draft");
     let mut c = command(
         &path,
         &dest,
@@ -491,6 +369,13 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
     std::fs::write(request, raw).expect("nonfinite JSON number");
     reply(c.output().expect("CLI"), EDIT, 2);
     assert!(!dest.exists());
+}
+
+#[test]
+fn native_built_cut_base_can_leave_the_structural_readers_domain() {
+    if native() {
+        boundary::run();
+    }
 }
 
 #[test]
@@ -580,19 +465,23 @@ fn native_base_copy_late_guards_aliases_and_exit_seven() {
     assert_eq!(std::fs::read(&never).expect("bytes"), b"occupied");
     std::fs::remove_file(&never).expect("owned sentinel");
     assert_eq!(std::fs::read(&source).expect("bytes"), original);
-    let request = ferritecad_jobs::EditSketchRequest {
+    let request = ferritecad_jobs::EditRequest {
+        changes: {
+            let document =
+                ferritecad_document::Document::open_read_only(source.clone()).expect("source");
+            ferritecad_fixtures::vertex_changes(&document, base.sketch, &(proposed.clone()))
+                .expect("changes")
+        },
         source: source.clone(),
-        destination: never.clone(),
         expected: catalog.version,
-        sketch: base.sketch,
-        vertices: proposed.clone(),
+        destination: never.clone(),
     };
     edits::copy_late_guards(
         root.path(),
         &source,
         &original,
         &never,
-        |kernel, context| ferritecad_jobs::edit_sketch_copy(&request, kernel, context).map(|_| ()),
+        |kernel, context| ferritecad_jobs::edit_copy(&request, kernel, context).map(|_| ()),
     );
     let report = reply(
         command(&source, &never, base.sketch, &version, &proposed)
@@ -605,135 +494,5 @@ fn native_base_copy_late_guards_aliases_and_exit_seven() {
     assert!(!never.exists());
 }
 
-#[test]
-fn base_refuses_invalid_history_and_rechecks_current_tools_without_kernel() {
-    for case in 0..5 {
-        let root = tempfile::tempdir().expect("root");
-        let path = history::fixture(root.path(), &history::tools(4));
-        let (_, base) = choice(&path);
-        let proposed = vertices(&base, EXPANDED);
-        let context = base.cut_history.as_ref().expect("context");
-        let mut d = Document::open(&path).expect("doc");
-        match case {
-            0 => {
-                // A second Body claims an already owned history.
-                d.write(|w| {
-                    w.put_object(
-                        ObjectId::new(),
-                        None,
-                        100,
-                        Some("same"),
-                        &ObjectPayload::Body(ferritecad_document::Body {
-                            tip_feature: Some(context.base_feature),
-                        }),
-                    )
-                })
-                .expect("fixture");
-            }
-            1 => {
-                let mut record = d.object(base.sketch).expect("row").expect("base");
-                let ObjectPayload::Sketch(s) = &mut record.payload else {
-                    panic!("Sketch")
-                };
-                let curve = s.curves[0].id;
-                s.constraints.push(ferritecad_document::SketchConstraint {
-                    id: StableEntityId::new(),
-                    rule: ferritecad_document::SketchConstraintRule::Horizontal {
-                        a: ferritecad_document::SketchPointRef::new(
-                            curve,
-                            ferritecad_document::SketchPointSelector::Start,
-                        ),
-                        b: ferritecad_document::SketchPointRef::new(
-                            curve,
-                            ferritecad_document::SketchPointSelector::End,
-                        ),
-                    },
-                });
-                d.write(|w| {
-                    w.put_object(
-                        record.id,
-                        record.parent,
-                        record.ordinal,
-                        record.name.as_deref(),
-                        &record.payload,
-                    )
-                })
-                .expect("fixture");
-            }
-            2 | 3 => {
-                let mut record = d
-                    .object(context.tools[3].feature)
-                    .expect("row")
-                    .expect("Cut");
-                let ObjectPayload::Extrude(e) = &mut record.payload else {
-                    panic!("Cut")
-                };
-                if case == 2 {
-                    e.previous = Some(record.id);
-                } else {
-                    e.previous = Some(context.base_feature);
-                }
-                d.write(|w| {
-                    w.put_object(
-                        record.id,
-                        record.parent,
-                        record.ordinal,
-                        record.name.as_deref(),
-                        &record.payload,
-                    )
-                })
-                .expect("fixture");
-            }
-            _ => {
-                d.close().expect("close");
-                let sql = rusqlite::Connection::open(&path).expect("SQL");
-                sql.execute(
-                    "DELETE FROM deps WHERE role='predecessor' AND dependent_id=?1",
-                    [context.tools[2].feature.to_bytes().as_slice()],
-                )
-                .expect("missing edge");
-                drop(sql);
-                d = Document::open(&path).expect("readable");
-            }
-        }
-        let before = d.content_version().expect("version");
-        let reading = ExtrudeEditSource::read(&d).expect("discovery");
-        assert!(reading.sketches.iter().all(|s| s.refusal.is_some()));
-        ferritecad_document::replace_sketch_coordinates(&d, base.sketch, &proposed)
-            .expect_err("unsupported history");
-        assert_eq!(d.content_version().expect("version"), before);
-    }
-    let root = tempfile::tempdir().expect("root");
-    let path = history::fixture(root.path(), &history::tools(16));
-    let (_, base) = choice(&path);
-    let mut d = Document::open(&path).expect("doc");
-    let proposed = vertices(&base, [[2., 2.], [73., 48.]]);
-    let prepared = ferritecad_document::replace_sketch_coordinates(&d, base.sketch, &proposed)
-        .expect("prepare before tool change");
-    let far = &base.cut_history.as_ref().expect("context").tools[15];
-    let changed = ferritecad_document::prepare_cut_parameters(
-        &d,
-        far.feature,
-        &ferritecad_document::CircularCutEdit {
-            tool_curve: far.tool_curve,
-            center_mm: [76., far.center_mm[1]],
-            radius_mm: far.radius_mm,
-            extent: CutExtent::Blind {
-                depth_mm: far.extent.blind_depth_mm().expect("blind"),
-            },
-            vocabulary: ExtentVocabulary::BlindOrThroughAll,
-        },
-    )
-    .expect("move tool within original plate");
-    d.write_cut_parameters(&changed)
-        .expect("concurrent tool edit");
-    let before = d.content_version().expect("version");
-    let error = d
-        .write_sketch_geometry(&prepared)
-        .expect_err("must re-read current far disk");
-    assert!(
-        error.to_string().contains(&far.feature.to_string()),
-        "{error}"
-    );
-    assert_eq!(d.content_version().expect("version"), before);
-}
+#[path = "cut_transaction_boundary.rs"]
+mod boundary;

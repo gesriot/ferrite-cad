@@ -33,7 +33,7 @@ impl Window {
     /// `App::begin_edit`: the height form on the shown tab's accepted version.
     pub(in crate::sessions::tests::tabs) fn open_height_form(&mut self) {
         let current = self.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         assert!(self.edits.begin(&current, &reading));
     }
 
@@ -147,17 +147,16 @@ impl Window {
     }
 
     /// **Apply vertices** pressed on the shown tab's form and run as `App::apply_sketch`.
-    fn apply_vertices_form(&mut self) -> ferritecad_jobs::EditSketchRequest {
+    fn apply_vertices_form(&mut self) -> ferritecad_jobs::EditRequest {
         self.tell_forms();
         crate::sketch::tests::press(&mut self.creates.sketch, "Apply vertices");
         let request = self.creates.sketch.take_apply_request().expect("asked");
         let asked = request.clone();
         self.accept(move |ticket, cancel, tx| {
-            spawn_apply_sketch(
-                ticket,
-                asked.sketch,
-                asked.vertices,
+            spawn_apply(
                 asked.expected,
+                ticket,
+                asked.changes.clone(),
                 cancel.clone(),
                 move |v| tx.send(v).expect("edit"),
             )
@@ -166,7 +165,7 @@ impl Window {
     }
 
     /// **Apply circle** pressed on the shown tab's form and run as `App::apply_circle`.
-    fn apply_circle_form(&mut self) -> ferritecad_jobs::EditCircleRequest {
+    fn apply_circle_form(&mut self) -> ferritecad_jobs::EditRequest {
         self.tell_forms();
         crate::sketch::tests::press(&mut self.creates.sketch, "Apply circle");
         let request = self
@@ -176,11 +175,10 @@ impl Window {
             .expect("asked");
         let asked = request.clone();
         self.accept(move |ticket, cancel, tx| {
-            spawn_apply_circle(
-                ticket,
-                asked.sketch,
-                asked.edit,
+            spawn_apply(
                 asked.expected,
+                ticket,
+                asked.changes.clone(),
                 cancel.clone(),
                 move |v| tx.send(v).expect("edit"),
             )
@@ -190,7 +188,7 @@ impl Window {
 
     /// **Apply constraints** pressed on the shown tab's form and run as
     /// `App::apply_constraints`.
-    fn apply_constraints_form(&mut self) -> ferritecad_jobs::EditSketchConstraintsRequest {
+    fn apply_constraints_form(&mut self) -> ferritecad_jobs::EditRequest {
         self.tell_forms();
         crate::constraints::tests::session_apply::press(
             &mut self.creates.sketch.constraints,
@@ -204,11 +202,10 @@ impl Window {
             .expect("asked");
         let asked = request.clone();
         self.accept(move |ticket, cancel, tx| {
-            spawn_apply_constraints(
-                ticket,
-                asked.sketch,
-                asked.edits,
+            spawn_apply(
                 asked.expected,
+                ticket,
+                asked.changes.clone(),
                 cancel.clone(),
                 move |v| tx.send(v).expect("edit"),
             )
@@ -220,7 +217,7 @@ impl Window {
     /// one Parallel pair of `a` and `b`, as `typed_parallel` presses it.
     fn constraints_draft(&mut self, a: usize, b: usize) {
         let current = self.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let sketch = reading.constraint_sketches[0].sketch;
         let (editor, _asked) = crate::constraints::tests::session_apply::typed_parallel(
             &current, &reading, sketch, a, b,
@@ -232,7 +229,7 @@ impl Window {
     /// through the widgets and, if asked, added.
     fn diameter_draft(&mut self, text: &str, add: bool) {
         let current = self.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         self.creates.sketch.constraints =
             crate::constraints::tests::diameter::typed_diameter(&current, &reading, text, add);
     }
@@ -242,14 +239,14 @@ impl Window {
     /// added.
     fn angle_draft(&mut self, text: &str, add: bool) {
         let current = self.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         self.creates.sketch.constraints =
             crate::constraints::tests::angle::typed_angle(&current, &reading, text, add);
     }
 
     fn collinear_draft(&mut self, pair: (usize, usize), add: bool) {
         let current = self.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         self.creates.sketch.constraints =
             crate::constraints::tests::collinear::typed_collinear(&current, &reading, pair, add);
     }
@@ -730,7 +727,7 @@ fn the_canvas_view_its_dragged_numbers_and_their_history_follow_their_tab() {
     std::fs::copy(&a_file, &b_file).expect("copy");
     let open_form = |w: &mut Window| {
         let current = w.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let sketch = reading.annulus_sketches[0].sketch;
         assert!(
             w.creates
@@ -816,7 +813,7 @@ fn the_canvas_zoom_and_pan_follow_their_tab_and_a_held_pan_holds_the_window() {
     std::fs::copy(&a_file, &b_file).expect("copy");
     let open_form = |w: &mut Window| {
         let current = w.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let sketch = reading.annulus_sketches[0].sketch;
         assert!(
             w.creates
@@ -929,7 +926,7 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
     let mut copying = crate::edits::Edits::default();
     let request = {
         let current = w.sessions.export_path().expect("A");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         assert!(copying.begin(&current, &reading));
         copying.type_height(feature_a, "20");
         copying
@@ -949,7 +946,7 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
     let mut held = crate::creates::Creates::default();
     let (current, reading) = {
         let current = w.sessions.export_path().expect("A");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         (current, reading)
     };
     assert!(
@@ -1039,7 +1036,7 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
                     let expected = ticket.source().version();
                     ticket.edit(
                         vec![
-                            ferritecad_document::ExpressionChange::constant(
+                            ferritecad_document::EditChange::constant(
                                 feature_b,
                                 ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                 16.0,
@@ -1205,7 +1202,7 @@ fn a_draft_made_on_another_version_comes_back_held_and_is_never_applied() {
                     let expected = ticket.source().version();
                     ticket.edit(
                         vec![
-                            ferritecad_document::ExpressionChange::constant(
+                            ferritecad_document::EditChange::constant(
                                 feature,
                                 ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                 20.0,
@@ -1341,7 +1338,7 @@ fn vertex_drafts_of_two_copies_keep_their_own_text_and_draft_history() {
     let mut w = Window::new(Drawn::Mock, None);
     let draft = |w: &mut Window, to: &str| {
         let current = w.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let sketch = reading.sketches[0].sketch;
         let (editor, _asked) =
             crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", to);
@@ -1395,7 +1392,7 @@ fn object_snap_and_its_snapped_draft_follow_their_tab() {
     let mut w = Window::new(Drawn::Mock, None);
     let draft = |w: &mut Window, to: &str| {
         let current = w.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let sketch = reading.sketches[0].sketch;
         let (editor, _asked) =
             crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", to);
@@ -1457,7 +1454,7 @@ fn guides_a_typed_length_and_the_guided_draft_follow_their_tab() {
     let mut w = Window::new(Drawn::Mock, None);
     let draft = |w: &mut Window, to: &str| {
         let current = w.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let sketch = reading.sketches[0].sketch;
         let (editor, _asked) =
             crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", to);
@@ -1514,7 +1511,7 @@ fn the_anchor_mode_follows_its_tab_and_the_resting_anchor_follows_nobody() {
     let mut w = Window::new(Drawn::Mock, None);
     let draft = |w: &mut Window, to: &str| {
         let current = w.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let sketch = reading.sketches[0].sketch;
         let (editor, _asked) =
             crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", to);
@@ -1659,7 +1656,7 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
         super::super::checkpoints::ids_and_refs(&a_file),
         super::super::checkpoints::ids_and_refs(&b_file),
     );
-    let a_reading = read_extrude_source(&a_file).expect("a");
+    let a_reading = crate::sketch_facts::read(&a_file).expect("a");
     let feature = ferritecad_fixtures::expression_slot(
         &a_reading,
         ferritecad_document::ExpressionSlot::ExtrudeDistance,
@@ -1682,7 +1679,7 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
     w.edits.type_height(feature, "9.5x");
     w.round(b);
     let current = w.sessions.export_path().expect("B");
-    let reading = read_extrude_source(&current).expect("B");
+    let reading = crate::sketch_facts::read(&current).expect("B");
     let (editor, first) = crate::sketch::tests::analytic_apply::typed_circle(
         &current,
         &reading,
@@ -1698,14 +1695,14 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
     assert!(w.apply_height_form());
     assert_eq!(height_in(&w.sessions), 9.5);
     let current = w.sessions.export_path().expect("A");
-    let reading = read_extrude_source(&current).expect("A");
+    let reading = crate::sketch_facts::read(&current).expect("A");
     let (editor, _) = crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", "41.25");
     w.creates.sketch = editor;
     let polygon = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A");
     w.round(b);
     assert!(!w.sessions.dirty(), "B's draft is not a change");
     let circle = w.apply_circle_form();
-    assert_eq!(circle.edit, first.edit, "B's own draft, as left");
+    assert_eq!(circle.changes, first.changes, "B's own draft, as left");
     assert_eq!(circle_of(&w.sessions.export_path().expect("B")).1, 8.0);
     w.round(a);
     assert_eq!(
@@ -1749,22 +1746,17 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
     };
     let a_peer = user.join("a-peer.fcad");
     sketch_peer(&a_height, &vertices, user, &a_peer);
-    let b_reading = read_extrude_source(&b_file).expect("b");
+    let b_reading = crate::sketch_facts::read(&b_file).expect("b");
     let request = user.join("b-request.json");
     std::fs::write(
         &request,
-        format!(
-            r#"{{"request_version":1,"curve_id":"{}","center_mm":[-3.5,4.25],"radius_mm":8}}"#,
-            circle.edit.curve_id
-        ),
+        ferritecad_fixtures::edit_request_json(&circle.changes).to_string(),
     )
     .expect("request");
     let b_peer = user.join("b-peer.fcad");
     cli(&[
-        "edit-circle".as_ref(),
+        "edit".as_ref(),
         b_file.as_os_str(),
-        "--sketch".as_ref(),
-        b_reading.circle_sketches[0].sketch.to_string().as_ref(),
         "--expect-version".as_ref(),
         b_reading.version.content.to_string().as_ref(),
         "--request".as_ref(),
@@ -1791,6 +1783,7 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
     let (b_peer_stl, b_peer_fbx) = peer_bytes(&b_peer, work.path(), "b");
     assert_eq!((&b_stl, &b_fbx), (&b_peer_stl, &b_peer_fbx), "B unsaved");
     assert!(w.save(SaveTarget::InPlace).published);
+    let drafted_vertices = crate::transaction_tests::vertices(&vertices);
     w.sessions.stop_all();
     w.tabs.stop_all();
 
@@ -1819,7 +1812,7 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
         (b_stl.clone(), b_fbx.clone())
     );
     let area = {
-        let p: Vec<[f64; 2]> = vertices.vertices.iter().map(|v| v.start_mm).collect();
+        let p: Vec<[f64; 2]> = drafted_vertices.iter().map(|v| v.start_mm).collect();
         (0..p.len())
             .map(|i| {
                 let (s, e) = (p[i], p[(i + 1) % p.len()]);
@@ -1870,7 +1863,7 @@ fn native_replace_length_drafts_of_two_copies_apply_to_their_own_tab_like_the_co
     let mut w = Window::new(Drawn::Native, None);
     let draft = |w: &mut Window, length: &str| {
         let current = w.sessions.export_path().expect("shown");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let (editor, _) = crate::constraints::tests::session_apply::typed_replace_length(
             &current, &reading, sketch, 2, length,
         );
@@ -1922,7 +1915,7 @@ fn native_replace_length_drafts_of_two_copies_apply_to_their_own_tab_like_the_co
 /// height 26 with its two `80` vertex coordinates made `90`; B's circle as §30O's.
 fn draft_peers(inputs: &Path, work: &Path) -> (PathBuf, PathBuf) {
     let (a_height, b_peer) = super::peers(inputs, work);
-    let reading = read_extrude_source(&a_height).expect("a");
+    let reading = crate::sketch_facts::read(&a_height).expect("a");
     let choice = reading
         .sketches
         .iter()
@@ -1934,11 +1927,14 @@ fn draft_peers(inputs: &Path, work: &Path) -> (PathBuf, PathBuf) {
             vertex.start_mm[0] = 90.0;
         }
     }
-    let request = ferritecad_jobs::EditSketchRequest {
+    let request = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(a_height.clone()),
+            choice.sketch,
+            &(vertices),
+        ),
         source: a_height.clone(),
         expected: reading.version,
-        sketch: choice.sketch,
-        vertices,
         destination: PathBuf::new(),
     };
     let a_peer = work.join("a-draft-peer.fcad");
@@ -2057,7 +2053,7 @@ fn compare_drafts_with_controls(root: &Path) {
         &|r| {
             let work = tempfile::tempdir().expect("work");
             let (a_peer, _) = draft_peers(&r.join("inputs"), work.path());
-            let reading = read_extrude_source(&a_peer).expect("peer");
+            let reading = crate::sketch_facts::read(&a_peer).expect("peer");
             let applied = work.path().join("a-30.fcad");
             {
                 let request = crate::edits::tests::expression_request(
@@ -2150,7 +2146,7 @@ fn native_tab_drafts_scenario_on_session_files_passes_the_comparator_and_its_con
     // 3: B's circle form: centre −3.5, 4.25, radius 8, not applied.
     w.round(b);
     let current = w.sessions.export_path().expect("B");
-    let reading = read_extrude_source(&current).expect("B");
+    let reading = crate::sketch_facts::read(&current).expect("B");
     let (editor, _) = crate::sketch::tests::analytic_apply::typed_circle(
         &current,
         &reading,
@@ -2166,7 +2162,7 @@ fn native_tab_drafts_scenario_on_session_files_passes_the_comparator_and_its_con
     assert!(w.apply_height_form());
     // 5: A's vertices: both `80` made `90`, not applied.
     let current = w.sessions.export_path().expect("A");
-    let reading = read_extrude_source(&current).expect("A");
+    let reading = crate::sketch_facts::read(&current).expect("A");
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,

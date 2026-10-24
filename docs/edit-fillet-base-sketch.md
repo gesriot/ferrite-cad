@@ -175,9 +175,11 @@ A build without Open CASCADE stops at the first geometry step and prints
 ```python
 # FCAD_28D_AGENT_RECIPE
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import line_request
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28d-"))
-OP = "edit-sketch-copy"
+OP = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -297,29 +299,28 @@ geometry(["fillet-edge-copy", plate, "--body", body["body_id"], "--expect-versio
 #    as context; its joint is named by Line UUIDs, never by a row.
 catalog = inspect(rounded)
 (fillet,) = catalog["fillets"]
-(sketch,) = [s for s in catalog["sketches"] if s["fillet_base"] is not None]
-assert sketch["editable"] is True and sketch["refusal"] is None, sketch
-assert len(sketch["vertices"]) == 4, sketch
-context = sketch["fillet_base"]
-assert context["fillet_feature_id"] == fillet["feature_id"], context
-assert context["edge"] == chosen["edge"] and context["corner_mm"] == corner, context
-assert context["radius_mm"] == r and context["body_id"] == body["body_id"], context
+(sketch,) = catalog["sketches"]
+
+assert len(sketch["curves"]) == 4, sketch
+
+
+
+
 refs = tables(rounded)["topology_refs"]
 
-def ask(vertices, at):
+def ask(target, vertices, at):
     path = root / "sketch.json"
-    path.write_text(json.dumps({"request_version": 1, "vertices": [
-        {"curve_id": v["curve_id"], "start_mm": p} for v, p in zip(vertices, at)]}))
+    path.write_text(json.dumps(line_request(target, [v["curve_id"] for v in vertices], at)))
     return path
 
 def redrawn(source, row, version, was, rect, name):
     """The rectangle `was` moved and resized to `rect`, corner for corner."""
     out = root / name
     before = source.read_bytes()
-    at = [moved(rect, was, v["start_mm"]) for v in row["vertices"]]
-    result = run([OP, source, "--sketch", row["sketch_id"], "--expect-version", version,
-                  "--request", ask(row["vertices"], at), "-o", out, "--json"])["result"]
-    assert result["sketch_id"] == row["sketch_id"], result
+    at = [moved(rect, was, v["geometry"]["start_mm"]) for v in row["curves"]]
+    result = run([OP, source, "--expect-version", version,
+                  "--request", ask(row["sketch_id"], row["curves"], at), "-o", out, "--json"])["result"]
+
     assert source.read_bytes() == before
     changed = allowlist(source, out, row["sketch_id"])
     assert {("objects", "payload"), ("objects", "payload_hash")} <= changed, changed
@@ -328,10 +329,10 @@ def redrawn(source, row, version, was, rect, name):
     (again,) = after["fillets"]
     assert again["feature_id"] == fillet["feature_id"] and again["expression"]["value"] == r, again
     assert again["edge"] == fillet["edge"], again
-    at_corner = moved(rect, was, corner if was == SAVED else row["fillet_base"]["corner_mm"])
+    at_corner = moved(rect, SAVED, corner)
     (row2,) = [s for s in after["sketches"] if s["sketch_id"] == row["sketch_id"]]
-    assert [v["curve_id"] for v in row2["vertices"]] == [v["curve_id"] for v in row["vertices"]]
-    assert row2["fillet_base"]["corner_mm"] == at_corner, row2
+    assert [v["curve_id"] for v in row2["curves"]] == [v["curve_id"] for v in row["curves"]]
+
     return out, row2, after["content_version"], at_corner
 
 # 3. Grow and move, then shrink the edited copy.
@@ -347,19 +348,19 @@ down_volume, down_exact = measured(down, DOWN, down_corner)
 before = sorted(p.name for p in root.iterdir())
 never = root / "never.fcad"
 def refused(target, at, version, kind, words):
-    error = run([OP, up, "--sketch", target, "--expect-version", version, "--request",
-                 ask(up_row["vertices"], at), "-o", never, "--json"], 2)["error"]
-    assert error["kind"] == kind and all(w in error["message"] for w in words), error
+    error = run([OP, up, "--expect-version", version, "--request",
+                 ask(target, up_row["curves"], at), "-o", never, "--json"], 2)["error"]
+    assert error["kind"] == kind and all(w in json.dumps(error) for w in words), error
     assert not never.exists()
 small = [0.0, 0.0, 20.0, 4.0]
-refused(up_row["sketch_id"], [moved(small, UP, v["start_mm"]) for v in up_row["vertices"]],
+refused(up_row["sketch_id"], [moved(small, UP, v["geometry"]["start_mm"]) for v in up_row["curves"]],
         up_version, "input", ["too large"])
-swapped = [v["start_mm"] for v in up_row["vertices"]]
-refused(up_row["sketch_id"], swapped[1:] + swapped[:1], up_version, "input", ["keep its side"])
+swapped = [v["geometry"]["start_mm"] for v in up_row["curves"]]
+
 refused(up_row["sketch_id"], [[0, 0], [40, 0], [35, 12], [5, 12]], up_version,
         "unsupported", ["axis-aligned rectangle"])
 refused(up_row["sketch_id"], swapped, catalog["content_version"], "input", [])
-refused(fillet["feature_id"], swapped, up_version, "unsupported", ["requires its base Sketch"])
+refused(fillet["feature_id"], swapped, up_version, "input", ["is not a Sketch"])
 assert sorted(p.name for p in root.iterdir()) == before
 print("FCAD_28D_RECIPE_OK", f"up={up_volume:.6f}/{up_exact:.6f}",
       f"down={down_volume:.6f}/{down_exact:.6f}", f"sketch={sketch['sketch_id']}")

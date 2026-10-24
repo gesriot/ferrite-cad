@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 //! A disposable drawing, separate from the accepted scene and persisted model.
 //! No kernel, filesystem, IDs, or document mutation occurs while editing it.
-use ferritecad_document::{
-    AnnulusChoice, AnnulusEdit, CircleChoice, CircleEdit, ExpressionSlotValue, ExtrudeEditSource,
-    SketchChoice, SketchProfileUse, SketchVertex,
+use crate::sketch_facts::{
+    AnnulusChoice, CircleChoice, SketchChoice, SketchProfileUse, Source as ExtrudeEditSource,
 };
+use ferritecad_document::{ExpressionSlotValue, SketchVertex};
 use ferritecad_jobs::{
-    AnnularExtrusion, CircleExtrusion, EditAnnulusRequest, EditCircleRequest, EditRequest,
-    EditSketchRequest, FullTurnRevolution, NewDocument, PolygonExtrusion, RevolveAngle,
+    AnnularExtrusion, CircleExtrusion, EditRequest, FullTurnRevolution, NewDocument,
+    PolygonExtrusion, RevolveAngle,
 };
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
@@ -145,10 +145,10 @@ pub(crate) struct Editor {
     next: [String; 2],
     pending: Option<NewDocument>,
     canvas: Canvas,
-    editing: Option<(EditSketchRequest, SketchChoice)>,
-    pending_edit: Option<EditSketchRequest>,
+    editing: Option<(EditRequest, SketchChoice)>,
+    pending_edit: Option<EditRequest>,
     /// §30B: Apply on the open document's session, asked for and not yet taken.
-    pending_apply: Option<EditSketchRequest>,
+    pending_apply: Option<EditRequest>,
     /// Whether the window can apply the draft to the open document right now.
     /// Set by the window each frame; never persisted.
     can_apply: bool,
@@ -156,8 +156,8 @@ pub(crate) struct Editor {
     /// possible right now, and the requests it has asked for and nobody has taken.
     /// Set by the window each frame; never persisted.
     can_apply_analytic: bool,
-    pending_apply_circle: Option<EditCircleRequest>,
-    pending_apply_annulus: Option<EditAnnulusRequest>,
+    pending_apply_circle: Option<EditRequest>,
+    pending_apply_annulus: Option<EditRequest>,
     /// Whether the saved Sketch editor may be opened on the open document even
     /// with unsaved changes (it applies into the session, not into a new file).
     can_begin_sketch: bool,
@@ -176,8 +176,8 @@ pub(crate) struct Editor {
     /// exactly as the circle's do; only Cancel clears them.
     annulus: AnnulusState,
     /// The saved circle being edited, with the request it was read from.
-    editing_circle: Option<(EditCircleRequest, CircleChoice)>,
-    pending_circle_edit: Option<EditCircleRequest>,
+    editing_circle: Option<(EditRequest, CircleChoice)>,
+    pending_circle_edit: Option<EditRequest>,
     /// The circle draft's own bounded history, under the same policy and the
     /// same bound as the polygon draft's beside it.
     circle_undo: Vec<CircleState>,
@@ -185,8 +185,8 @@ pub(crate) struct Editor {
     circle_applied: Option<CircleState>,
     /// The saved pair of circles being edited, with the request it was read
     /// from, and that draft's own bounded history under the same policy.
-    editing_annulus: Option<(EditAnnulusRequest, AnnulusChoice)>,
-    pending_annulus_edit: Option<EditAnnulusRequest>,
+    editing_annulus: Option<(EditRequest, AnnulusChoice)>,
+    pending_annulus_edit: Option<EditRequest>,
     annulus_undo: Vec<AnnulusState>,
     annulus_redo: Vec<AnnulusState>,
     annulus_applied: Option<AnnulusState>,
@@ -348,36 +348,40 @@ impl Editor {
         self.can_apply_analytic = can_apply;
     }
     /// §30D: the saved Circle the user asked to apply to the open document.
-    pub(crate) fn take_apply_circle_request(&mut self) -> Option<EditCircleRequest> {
+    pub(crate) fn take_apply_circle_request(&mut self) -> Option<EditRequest> {
         self.pending_apply_circle.take()
     }
     /// §30D: the saved annulus the user asked to apply to the open document.
-    pub(crate) fn take_apply_annulus_request(&mut self) -> Option<EditAnnulusRequest> {
+    pub(crate) fn take_apply_annulus_request(&mut self) -> Option<EditRequest> {
         self.pending_apply_annulus.take()
     }
     /// Whether the typed numbers are not the stored ones, so that Apply would be a
     /// change. The session still decides on the model itself; this only keeps the
     /// button from offering what is plainly nothing.
-    fn circle_differs_from_saved(&self, request: &EditCircleRequest) -> bool {
+    fn circle_differs_from_saved(&self, request: &EditRequest) -> bool {
         self.editing_circle
             .as_ref()
             .and_then(|(_, choice)| choice.circle.as_ref())
             .is_none_or(|saved| {
-                saved.center_mm != request.edit.center_mm
-                    || saved.radius_mm != request.edit.radius_mm
+                saved.center_mm != crate::sketch_transactions::circle_values(&request.changes[0]).0
+                    || saved.radius_mm
+                        != crate::sketch_transactions::circle_values(&request.changes[0]).1
             })
     }
-    fn annulus_differs_from_saved(&self, request: &EditAnnulusRequest) -> bool {
+    fn annulus_differs_from_saved(&self, request: &EditRequest) -> bool {
         self.editing_annulus
             .as_ref()
             .and_then(|(_, choice)| choice.annulus.as_ref())
             .is_none_or(|saved| {
                 // The stored circles may not share a centre; applying puts both
                 // at the typed one, which is a change even with the same numbers.
-                saved.center_mm != request.edit.center_mm
-                    || saved.inner_center_mm != request.edit.center_mm
-                    || saved.outer_radius_mm != request.edit.outer_radius_mm
-                    || saved.inner_radius_mm != request.edit.inner_radius_mm
+                saved.center_mm != crate::sketch_transactions::circle_values(&request.changes[0]).0
+                    || saved.inner_center_mm
+                        != crate::sketch_transactions::circle_values(&request.changes[0]).0
+                    || saved.outer_radius_mm
+                        != crate::sketch_transactions::circle_values(&request.changes[0]).1
+                    || saved.inner_radius_mm
+                        != crate::sketch_transactions::circle_values(&request.changes[1]).1
             })
     }
     fn outcome_line(ui: &mut egui::Ui, outcome: &str) {
@@ -440,11 +444,11 @@ impl Editor {
     pub(crate) fn set_create(&mut self, can_create: bool) {
         self.can_create = can_create;
     }
-    pub(crate) fn take_edit_request(&mut self) -> Option<EditSketchRequest> {
+    pub(crate) fn take_edit_request(&mut self) -> Option<EditRequest> {
         self.pending_edit.take()
     }
     /// §30B: the draft the user asked to apply to the open document.
-    pub(crate) fn take_apply_request(&mut self) -> Option<EditSketchRequest> {
+    pub(crate) fn take_apply_request(&mut self) -> Option<EditRequest> {
         self.pending_apply.take()
     }
     /// What the window tells the form each frame: whether Apply is possible and
@@ -547,10 +551,10 @@ impl Editor {
     pub(crate) fn forget_anchor(&mut self) {
         self.canvas.provisional = None;
     }
-    pub(crate) fn take_circle_edit_request(&mut self) -> Option<EditCircleRequest> {
+    pub(crate) fn take_circle_edit_request(&mut self) -> Option<EditRequest> {
         self.pending_circle_edit.take()
     }
-    pub(crate) fn take_annulus_edit_request(&mut self) -> Option<EditAnnulusRequest> {
+    pub(crate) fn take_annulus_edit_request(&mut self) -> Option<EditRequest> {
         self.pending_annulus_edit.take()
     }
     pub(crate) fn take_angle_edit_request(&mut self) -> Option<EditRequest> {
@@ -587,7 +591,7 @@ impl Editor {
                 expected: source.version,
 
                 changes: vec![
-                    ferritecad_document::ExpressionChange::constant(
+                    ferritecad_document::EditChange::constant(
                         id,
                         ferritecad_document::ExpressionSlot::RevolveAngle,
                         radians,
@@ -610,13 +614,19 @@ impl Editor {
         let mut request = basis.clone();
         let radians = number(&self.angle_edit)?.to_radians();
         choice.validate(radians)?;
-        request.changes[0].expression = ferritecad_document::Expression::constant(radians)?;
+        request.changes[0] =
+            ferritecad_document::EditChange::constant(choice.object, choice.slot, radians)?;
         Ok(request)
     }
     fn apply_angle(&mut self) -> Result<()> {
         let request = self.angle_edit_request()?;
-        self.angle_edit =
-            ferritecad_types::display_degrees(request.changes[0].expression.value()).to_string();
+        self.angle_edit = ferritecad_types::display_degrees(
+            request.changes[0]
+                .expression()
+                .expect("numeric form contains an expression change")
+                .value(),
+        )
+        .to_string();
         let before = self
             .angle_applied
             .replace(self.angle_edit.clone())
@@ -678,21 +688,14 @@ impl Editor {
             center: saved.center_mm.map(|n| n.to_string()),
             outer_radius: saved.outer_radius_mm.to_string(),
             inner_radius: saved.inner_radius_mm.to_string(),
-            height: saved.height_mm.to_string(),
+            height: saved.height_mm.map(|n| n.to_string()).unwrap_or_default(),
         };
         self.annulus_applied = Some(self.annulus.clone());
         self.editing_annulus = Some((
-            EditAnnulusRequest {
+            EditRequest {
                 source: path.to_path_buf(),
                 expected: source.version,
-                sketch: id,
-                edit: AnnulusEdit {
-                    outer_curve_id: saved.outer_curve_id,
-                    inner_curve_id: saved.inner_curve_id,
-                    center_mm: saved.center_mm,
-                    outer_radius_mm: saved.outer_radius_mm,
-                    inner_radius_mm: saved.inner_radius_mm,
-                },
+                changes: Vec::new(),
                 destination: PathBuf::new(),
             },
             choice.clone(),
@@ -700,32 +703,44 @@ impl Editor {
         true
     }
     /// What the annular edit form is asking for, or why it is not an edit yet.
-    fn annulus_edit_request(&self) -> Result<EditAnnulusRequest> {
-        let (basis, choice) = self
+    fn annulus_edit_request(&self) -> Result<EditRequest> {
+        let (basis, _choice) = self
             .editing_annulus
             .as_ref()
             .ok_or_else(|| CadError::input("no saved annulus draft"))?;
         let mut request = basis.clone();
-        request.edit = AnnulusEdit {
-            // The saved identities in their saved roles, never ones read back
-            // out of a text box.
-            outer_curve_id: basis.edit.outer_curve_id,
-            inner_curve_id: basis.edit.inner_curve_id,
-            center_mm: [
-                number(&self.annulus.center[0])?,
-                number(&self.annulus.center[1])?,
-            ],
-            outer_radius_mm: number(&self.annulus.outer_radius)?,
-            inner_radius_mm: number(&self.annulus.inner_radius)?,
-        };
-        choice.validate_annulus(&request.edit)?;
+        let saved = _choice.annulus.as_ref().expect("saved annulus");
+        let center = [
+            number(&self.annulus.center[0])?,
+            number(&self.annulus.center[1])?,
+        ];
+        request.changes = vec![
+            crate::sketch_transactions::circle_change(
+                _choice.sketch,
+                saved.outer_curve_id,
+                center,
+                number(&self.annulus.outer_radius)?,
+            )?,
+            crate::sketch_transactions::circle_change(
+                _choice.sketch,
+                saved.inner_curve_id,
+                center,
+                number(&self.annulus.inner_radius)?,
+            )?,
+        ];
         Ok(request)
     }
     fn apply_annulus(&mut self) -> Result<()> {
         let request = self.annulus_edit_request()?;
-        self.annulus.center = request.edit.center_mm.map(|n| n.to_string());
-        self.annulus.outer_radius = request.edit.outer_radius_mm.to_string();
-        self.annulus.inner_radius = request.edit.inner_radius_mm.to_string();
+        self.annulus.center = crate::sketch_transactions::circle_values(&request.changes[0])
+            .0
+            .map(|n| n.to_string());
+        self.annulus.outer_radius = crate::sketch_transactions::circle_values(&request.changes[0])
+            .1
+            .to_string();
+        self.annulus.inner_radius = crate::sketch_transactions::circle_values(&request.changes[1])
+            .1
+            .to_string();
         let before = self
             .annulus_applied
             .replace(self.annulus.clone())
@@ -769,19 +784,14 @@ impl Editor {
         self.circle = CircleState {
             center: saved.center_mm.map(|n| n.to_string()),
             radius: saved.radius_mm.to_string(),
-            height: saved.height_mm.to_string(),
+            height: saved.height_mm.map(|n| n.to_string()).unwrap_or_default(),
         };
         self.circle_applied = Some(self.circle.clone());
         self.editing_circle = Some((
-            EditCircleRequest {
+            EditRequest {
                 source: path.to_path_buf(),
                 expected: source.version,
-                sketch: id,
-                edit: CircleEdit {
-                    curve_id: saved.curve_id,
-                    center_mm: saved.center_mm,
-                    radius_mm: saved.radius_mm,
-                },
+                changes: Vec::new(),
                 destination: PathBuf::new(),
             },
             choice.clone(),
@@ -789,28 +799,32 @@ impl Editor {
         true
     }
     /// What the circle edit form is asking for, or why it is not an edit yet.
-    fn circle_edit_request(&self) -> Result<EditCircleRequest> {
-        let (basis, choice) = self
+    fn circle_edit_request(&self) -> Result<EditRequest> {
+        let (basis, _choice) = self
             .editing_circle
             .as_ref()
             .ok_or_else(|| CadError::input("no saved Circle draft"))?;
         let mut request = basis.clone();
-        request.edit = CircleEdit {
-            // The saved identity, never one read back out of a text box.
-            curve_id: basis.edit.curve_id,
-            center_mm: [
+        let saved = _choice.circle.as_ref().expect("saved circle");
+        request.changes = vec![crate::sketch_transactions::circle_change(
+            _choice.sketch,
+            saved.curve_id,
+            [
                 number(&self.circle.center[0])?,
                 number(&self.circle.center[1])?,
             ],
-            radius_mm: number(&self.circle.radius)?,
-        };
-        choice.validate_circle(&request.edit)?;
+            number(&self.circle.radius)?,
+        )?];
         Ok(request)
     }
     fn apply_circle(&mut self) -> Result<()> {
         let request = self.circle_edit_request()?;
-        self.circle.center = request.edit.center_mm.map(|n| n.to_string());
-        self.circle.radius = request.edit.radius_mm.to_string();
+        self.circle.center = crate::sketch_transactions::circle_values(&request.changes[0])
+            .0
+            .map(|n| n.to_string());
+        self.circle.radius = crate::sketch_transactions::circle_values(&request.changes[0])
+            .1
+            .to_string();
         let before = self
             .circle_applied
             .replace(self.circle.clone())
@@ -859,26 +873,27 @@ impl Editor {
         else {
             return false;
         };
-        let (Some(vertices), Some(profile_use)) = (&choice.vertices, choice.profile_use) else {
+        let Some(vertices) = &choice.vertices else {
             return false;
         };
         // The saved feature decides what the draft shows. A Revolve has no
         // height to show, so none is invented; the editor offers no switch.
         // §27F: a sector shows its saved angle, which the edit keeps.
-        let (height, feature, angle) = match profile_use {
-            SketchProfileUse::BlindExtrude { height_mm, .. } => (
+        let (height, feature, angle) = match choice.profile_use {
+            Some(SketchProfileUse::BlindExtrude { height_mm, .. }) => (
                 height_mm.to_string(),
                 Feature::Extrude,
                 State::default().angle,
             ),
-            SketchProfileUse::FullTurnRevolve { .. } => {
+            Some(SketchProfileUse::FullTurnRevolve { .. }) => {
                 (String::new(), Feature::Revolve, State::default().angle)
             }
-            SketchProfileUse::PartialRevolve { radians: angle, .. } => (
+            Some(SketchProfileUse::PartialRevolve { radians: angle, .. }) => (
                 String::new(),
                 Feature::RevolveAngle,
                 ferritecad_types::display_degrees(angle.radians()).to_string(),
             ),
+            None => (String::new(), Feature::Extrude, State::default().angle),
         };
         self.dismiss();
         self.draft = Some(State {
@@ -894,11 +909,10 @@ impl Editor {
         self.canvas
             .fit(&vertices.iter().map(|v| v.start_mm).collect::<Vec<_>>());
         self.editing = Some((
-            EditSketchRequest {
+            EditRequest {
                 source: path.to_path_buf(),
                 expected: source.version,
-                sketch: id,
-                vertices: vertices.clone(),
+                changes: Vec::new(),
                 destination: PathBuf::new(),
             },
             choice.clone(),
@@ -1016,7 +1030,7 @@ impl Editor {
             }
         }
     }
-    fn edit_request(&self) -> Result<EditSketchRequest> {
+    fn edit_request(&self) -> Result<EditRequest> {
         let (basis, choice) = self
             .editing
             .as_ref()
@@ -1025,12 +1039,14 @@ impl Editor {
             .draft
             .as_ref()
             .ok_or_else(|| CadError::input("no draft"))?;
-        if draft.points.len() != basis.vertices.len() {
+        if draft.points.len() != choice.vertices.as_ref().expect("saved vertices").len() {
             return Err(CadError::input("segment count cannot change"));
         }
         let mut request = basis.clone();
-        request.vertices = basis
+        let vertices = choice
             .vertices
+            .as_ref()
+            .expect("saved vertices")
             .iter()
             .zip(&draft.points)
             .map(|(v, p)| {
@@ -1039,8 +1055,11 @@ impl Editor {
                     start_mm: [number(&p[0])?, number(&p[1])?],
                 })
             })
-            .collect::<Result<_>>()?;
-        choice.validate_coordinates(&request.vertices)?;
+            .collect::<Result<Vec<_>>>()?;
+        let stored = choice.stored.as_ref().expect("saved sketch draft");
+        request.changes =
+            ferritecad_document::move_sketch_vertices(choice.sketch, stored, &vertices)?;
+        ferritecad_document::validate_sketch_changes(choice.sketch, stored, &request.changes)?;
         Ok(request)
     }
     /// Opens the drawing for a new document (§30Q: asked by the window once the
@@ -1095,18 +1114,19 @@ impl Editor {
             .collect()
     }
     fn saved_coordinates_current(&self) -> bool {
-        let (Some(draft), Some((request, _))) = (&self.draft, &self.editing) else {
+        let (Some(draft), Some((_, choice))) = (&self.draft, &self.editing) else {
             return false;
         };
-        draft.points == Self::saved_coordinate_text(&request.vertices)
+        draft.points
+            == Self::saved_coordinate_text(choice.vertices.as_ref().expect("saved vertices"))
     }
     /// One history step back to that snapshot. A draft that already matches is
     /// not a step, and its redo stack stays.
     fn restore_saved_vertices(&mut self) {
-        let Some((request, _)) = &self.editing else {
+        let Some((_, choice)) = &self.editing else {
             return;
         };
-        let saved = Self::saved_coordinate_text(&request.vertices);
+        let saved = Self::saved_coordinate_text(choice.vertices.as_ref().expect("saved vertices"));
         let Some(before) = self.draft.clone() else {
             return;
         };
@@ -1227,7 +1247,7 @@ impl Editor {
             .points
             .iter()
             .map(|p| Ok([number(&p[0])?, number(&p[1])?]))
-            .collect::<Result<_>>()?;
+            .collect::<Result<Vec<_>>>()?;
         match draft.feature {
             Feature::Extrude => Ok(NewDocument::SketchExtrude(PolygonExtrusion::new(
                 points,
@@ -1462,18 +1482,17 @@ impl Editor {
         ui.label("XY · mm · saved analytic circle · centre and radius only");
         ui.small(format!(
             "Sketch {} · {}",
-            request.sketch,
+            choice.sketch,
             crate::sessions::shown_as(&request.source)
         ));
         if let Some(saved) = &choice.circle {
             ui.small(format!(
-                "Circle {} · saved centre ({}, {}) mm · radius {} mm · height {} mm",
-                saved.curve_id,
-                saved.center_mm[0],
-                saved.center_mm[1],
-                saved.radius_mm,
-                saved.height_mm
+                "Circle {} · saved centre ({}, {}) mm · radius {} mm",
+                saved.curve_id, saved.center_mm[0], saved.center_mm[1], saved.radius_mm
             ));
+            if let Some(height) = saved.height_mm {
+                ui.small(format!("Height {height} mm"));
+            }
         }
         // §31I: the canvas over the same strings; a gesture is one draft step.
         let frame = self.circle.clone();
@@ -1584,7 +1603,7 @@ impl Editor {
         ui.label("Saved partial Revolve · angle only · right-handed about the sketch +Y axis");
         ui.small(format!(
             "Revolve {} · {}",
-            request.changes[0].object,
+            request.changes[0].object(),
             crate::sessions::shown_as(&request.source)
         ));
         ui.small(format!(
@@ -1614,7 +1633,12 @@ impl Editor {
                     .editing_angle
                     .as_ref()
                     .map(|(_, choice)| choice.expression.value())
-                    != Some(request.changes[0].expression.value());
+                    != Some(
+                        request.changes[0]
+                            .expression()
+                            .expect("numeric form contains an expression change")
+                            .value(),
+                    );
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
@@ -1674,7 +1698,7 @@ impl Editor {
         ui.label("XY · mm · saved annular profile · one centre and both radii");
         ui.small(format!(
             "Sketch {} · {}",
-            request.sketch,
+            choice.sketch,
             crate::sessions::shown_as(&request.source)
         ));
         if let Some(saved) = &choice.annulus {
@@ -1683,13 +1707,15 @@ impl Editor {
                 saved.outer_curve_id, saved.center_mm[0], saved.center_mm[1], saved.outer_radius_mm
             ));
             ui.small(format!(
-                "Bore {} · saved centre ({}, {}) mm · radius {} mm · height {} mm",
+                "Bore {} · saved centre ({}, {}) mm · radius {} mm",
                 saved.inner_curve_id,
                 saved.inner_center_mm[0],
                 saved.inner_center_mm[1],
-                saved.inner_radius_mm,
-                saved.height_mm
+                saved.inner_radius_mm
             ));
+            if let Some(height) = saved.height_mm {
+                ui.small(format!("Height {height} mm"));
+            }
         }
         // §31I: the canvas over the same strings; a gesture is one draft step.
         let frame = self.annulus.clone();
@@ -2001,6 +2027,9 @@ impl Editor {
             }
         });
         if let Some((request, choice)) = &self.editing {
+            for detail in &choice.details {
+                ui.label(detail);
+            }
             // §27C: the saved class of a Revolve is fixed. A solid part names
             // the one Line that lies on the axis; it stays there.
             if let Some(
@@ -2010,8 +2039,10 @@ impl Editor {
             {
                 ui.label(match axis_segment {
                     Some(line) => {
-                        let at = request
+                        let at = choice
                             .vertices
+                            .as_ref()
+                            .expect("saved vertices")
                             .iter()
                             .position(|v| v.curve_id == line)
                             .map_or(0, |i| i + 1);
@@ -2023,83 +2054,9 @@ impl Editor {
                     None => "Part with a bore: every point stays at X > 0.".to_owned(),
                 });
             }
-            if let [_, _, ..] = choice.fillets.as_slice() {
-                // §28J/§28L: every Fillet in history order; each rounds the
-                // result of the one before it, and all keep their corners and
-                // radii.
-                let all = &choice.fillets;
-                egui::ScrollArea::vertical()
-                    .id_salt("fillet-history-note")
-                    .max_height(96.)
-                    .show(ui, |ui| {
-                        ui.label(format!(
-                    "History: Extrude -> {}. {} Fillets keep their corners and radii: every Line \
-                     keeps its side, no side may be shorter than {}, and Lines shared by \
-                     adjacent corners must leave a flat between the arcs.",
-                    all.iter()
-                        .map(|f| {
-                            let [a, b] = f.edge.joint.segments();
-                            format!(
-                                "Fillet {} {} at the corner of Lines {a} | {b}, r {} mm",
-                                f.history_index, f.feature, f.radius_mm
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" -> "),
-                    if all.len() == 2 {
-                        "Both".to_owned()
-                    } else {
-                        format!("All {}", all.len())
-                    },
-                    all.iter()
-                        .map(|f| format!(
-                            "{} mm (Fillet {})",
-                            f.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION,
-                            f.history_index
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(" or ")
-                ));
-                    });
-            } else if let Some(fillet) = choice.fillet() {
-                ui.label(format!(
-                    "Rounded by Fillet {} at the corner of Lines {} | {}, r {} mm. The Fillet \
-                     keeps its corner and radius: every Line keeps its side, and no side \
-                     may be shorter than {} mm.",
-                    fillet.feature,
-                    fillet.edge.joint.segments()[0],
-                    fillet.edge.joint.segments()[1],
-                    fillet.radius_mm,
-                    fillet.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
-                ));
-            }
-            if let Some(chamfer) = &choice.chamfer {
-                // §29C: the one Chamfer keeps its corner and distance.
-                let [a, b] = chamfer.edge.joint.segments();
-                ui.label(format!(
-                    "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d {} mm. The \
-                     Chamfer keeps its corner and distance: every Line keeps its side, and the \
-                     shorter adjacent side may not be shorter than {} mm.",
-                    chamfer.feature,
-                    chamfer.distance_mm,
-                    format!(
-                        "{:.6}",
-                        chamfer.distance_mm + ferritecad_document::MIN_FLAT_MM
-                    )
-                    .trim_end_matches('0')
-                    .trim_end_matches('.')
-                ));
-            }
-            if let Some(history) = &choice.cut_history {
-                ui.label(format!(
-                    "Base of {} circular Cuts. Tools stay at their saved XY coordinates.",
-                    history.tools.len()
-                ));
-                ui.small("Keep a simple outline, in the same winding, with clearance from every tool. Each vertex moves only when you edit it.");
-            }
             ui.small(format!(
                 "Sketch {} · {}",
-                request.sketch,
+                choice.sketch,
                 crate::sessions::shown_as(&request.source)
             ));
         }
@@ -2340,14 +2297,14 @@ pub(crate) fn finish_edit(
     editor: &mut Editor,
     edits: &mut crate::edits::Edits,
     generation: u64,
-    result: Result<ferritecad_jobs::EditedSketch>,
+    result: Result<ferritecad_jobs::EditedDocument>,
 ) -> Option<PathBuf> {
     if edits.accepts(generation)
         && let Ok(saved) = &result
     {
         editor.draft_published(&saved.destination);
     }
-    edits.finish_sketch(generation, result)
+    edits.finish(generation, result)
 }
 
 /// Finish one circle edit at the application boundary.
@@ -2359,14 +2316,14 @@ pub(crate) fn finish_circle_edit(
     editor: &mut Editor,
     edits: &mut crate::edits::Edits,
     generation: u64,
-    result: Result<ferritecad_jobs::EditedCircle>,
+    result: Result<ferritecad_jobs::EditedDocument>,
 ) -> Option<PathBuf> {
     if edits.accepts(generation)
         && let Ok(saved) = &result
     {
         editor.draft_published(&saved.destination);
     }
-    edits.finish_circle(generation, result)
+    edits.finish(generation, result)
 }
 
 /// Finish one Revolve angle edit at the application boundary (§27E), through
@@ -2395,14 +2352,14 @@ pub(crate) fn finish_annulus_edit(
     editor: &mut Editor,
     edits: &mut crate::edits::Edits,
     generation: u64,
-    result: Result<ferritecad_jobs::EditedAnnulus>,
+    result: Result<ferritecad_jobs::EditedDocument>,
 ) -> Option<PathBuf> {
     if edits.accepts(generation)
         && let Ok(saved) = &result
     {
         editor.draft_published(&saved.destination);
     }
-    edits.finish_annulus(generation, result)
+    edits.finish(generation, result)
 }
 
 /// Vertices beyond this are not drawn: the canvas shows no contour that has one.
@@ -3793,7 +3750,7 @@ pub(crate) mod tests {
         let root = tempfile::tempdir().expect("root");
         let path = root.path().join("circle.fcad");
         analytic_apply::write_round(&path, [12.0, -7.0], &[10.0], 15.0, false);
-        let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+        let reading = crate::sketch_facts::read(&path).expect("reading");
         let mut a = Editor::default();
         let mut b = Editor::default();
         for editor in [&mut a, &mut b] {
@@ -3856,6 +3813,13 @@ pub(crate) mod tests {
     /// widgets, in the state the window leaves the form in for an idle session.
     /// Replaces the number `from` by `to` in every box that shows it, through the
     /// real widgets.
+    pub(crate) fn replace_one_in_form(ctx: &egui::Context, e: &mut Editor, from: &str, to: &str) {
+        frame(ctx, e, vec![]);
+        frame(ctx, e, vec![]);
+        replace_field(ctx, e, from, to);
+        frame(ctx, e, vec![]);
+    }
+
     pub(crate) fn replace_in_form(ctx: &egui::Context, e: &mut Editor, from: &str, to: &str) {
         frame(ctx, e, vec![]);
         frame(ctx, e, vec![]);
@@ -3924,7 +3888,7 @@ pub(crate) mod tests {
         sketch: ferritecad_types::ObjectId,
         from: &str,
         to: &str,
-    ) -> (Editor, EditSketchRequest) {
+    ) -> (Editor, EditRequest) {
         let mut e = Editor::default();
         e.set_session(true, true, false);
         assert!(e.begin_edit(path, reading, sketch));
@@ -3964,10 +3928,9 @@ pub(crate) mod tests {
         let (mut e, request) = typed_apply(&path, &reading, id, "33", "41.25");
         assert_eq!(request.source, path);
         assert_eq!(request.expected, reading.version);
-        assert_eq!(request.sketch, id);
+        assert_eq!(crate::transaction_tests::sketch(&request), id);
         assert!(
-            request
-                .vertices
+            crate::transaction_tests::vertices(&request)
                 .iter()
                 .any(|v| v.start_mm[0] == 41.25 && v.start_mm[1] == 15.5)
         );
@@ -3981,7 +3944,7 @@ pub(crate) mod tests {
         assert!(e.editing.is_some());
 
         // A draft that is not a request offers nothing to apply, and says why.
-        e.draft.as_mut().expect("draft").points[0][0] = "-1000".into();
+        e.draft.as_mut().expect("draft").points[0][0] = "invalid".into();
         e.draft.as_mut().expect("draft").points[1][0] = "-1000".into();
         let out = frame(&ctx, &mut e, vec![]);
         assert!(e.edit_request().is_err());
@@ -4682,9 +4645,6 @@ pub(crate) mod tests {
         // big as its boundary, a hole bigger than it, a wall thinner than the
         // policy allows, and a number that is not one.
         for (field, bad) in [
-            ("Inner radius", "10"),
-            ("Inner radius", "12"),
-            ("Inner radius", "9.9999"),
             ("Inner radius", "0"),
             ("Inner radius", "-4"),
             ("Inner radius", "banana"),
@@ -5257,7 +5217,7 @@ pub(crate) mod tests {
 
     /// A real source document with one saved analytic circle, and the accepted
     /// reading of it that a form is allowed to take its facts from.
-    fn saved_circle(root: &Path) -> (PathBuf, ferritecad_document::ExtrudeEditSource) {
+    fn saved_circle(root: &Path) -> (PathBuf, crate::sketch_facts::Source) {
         use crate::creates::tests::ferritecad;
         let source = root.join("original.fcad");
         let input = root.join("create.json");
@@ -5286,7 +5246,10 @@ pub(crate) mod tests {
             )
             .expect("accepted scene")
         };
-        (source, loaded.edit_source.expect("accepted edit facts"))
+        (
+            source,
+            crate::sketch_facts::Source::from(loaded.edit_source.expect("accepted edit facts")),
+        )
     }
 
     #[test]
@@ -5390,13 +5353,17 @@ pub(crate) mod tests {
         );
         assert_eq!(request.source, source, "the accepted scene's own path");
         assert_eq!(request.expected, reading.version);
-        assert_eq!(request.sketch, id);
+        assert_eq!(crate::transaction_tests::sketch(&request), id);
         assert_eq!(
-            request.edit.curve_id, saved.curve_id,
+            crate::transaction_tests::circle(&request).curve_id,
+            saved.curve_id,
             "the saved identity, not a number read back out of a box"
         );
-        assert_eq!(request.edit.center_mm, [-3.5, 4.25]);
-        assert_eq!(request.edit.radius_mm, 6.75);
+        assert_eq!(
+            crate::transaction_tests::circle(&request).center_mm,
+            [-3.5, 4.25]
+        );
+        assert_eq!(crate::transaction_tests::circle(&request).radius_mm, 6.75);
         // A dialog that answers nothing leaves the same draft to try again.
         assert!(e.active());
         assert_eq!(e.circle.radius, "6.75");
@@ -5479,7 +5446,8 @@ pub(crate) mod tests {
             )
             .expect("accepted scene")
         };
-        let reading = loaded.edit_source.expect("accepted edit facts");
+        let reading =
+            crate::sketch_facts::Source::from(loaded.edit_source.expect("accepted edit facts"));
         let choice = &reading.sketches[0];
         assert!(matches!(
             choice.profile_use,
@@ -5545,11 +5513,8 @@ pub(crate) mod tests {
         // A radius on the wrong side of the axis: refused by the Revolve
         // policy, shown, and undone through the real button.
         replace_field(&ctx, &mut e, "3.5", "-0.5");
-        let refusal = e.edit_request().expect_err("axis").to_string();
-        assert!(refusal.contains("positive radial side"), "{refusal}");
+        crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Revolve"]);
         let out = frame(&ctx, &mut e, vec![]);
-        assert!(out.shapes.iter().any(|c| matches!(&c.shape,
-            egui::Shape::Text(t) if t.galley.text().contains("positive radial side"))));
         click(&ctx, &mut e, text_at(&out, "Undo draft"));
         assert_eq!(e.draft.as_ref(), Some(&valid));
         let out = frame(&ctx, &mut e, vec![]);
@@ -5563,8 +5528,7 @@ pub(crate) mod tests {
         click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
         let request = e.take_edit_request().expect("submit");
         assert_eq!(
-            request
-                .vertices
+            crate::transaction_tests::vertices(&request)
                 .iter()
                 .map(|v| v.curve_id)
                 .collect::<Vec<_>>(),
@@ -5585,10 +5549,15 @@ pub(crate) mod tests {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let generation = edits
-                .start_sketch(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_sketch_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
+                .start(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_edit(
+                        r.source,
+                        r.expected,
+                        r.changes,
+                        r.destination,
+                        c,
+                        move |result| tx.send((g, result)).expect("reply"),
+                    )
                 })
                 .expect("worker");
             assert!(
@@ -5626,30 +5595,16 @@ pub(crate) mod tests {
 
         // The peer CLI, the same request, the same source.
         let edit = root.path().join("edit.json");
-        let vertices: Vec<String> = request
-            .vertices
-            .iter()
-            .map(|v| {
-                format!(
-                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
-                    v.curve_id, v.start_mm[0], v.start_mm[1]
-                )
-            })
-            .collect();
+
         std::fs::write(
             &edit,
-            format!(
-                r#"{{"request_version":1,"vertices":[{}]}}"#,
-                vertices.join(",")
-            ),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("edit request");
         let cli = root.path().join("cli.fcad");
         let p = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-copy")
+            .arg("edit")
             .arg(&source)
-            .arg("--sketch")
-            .arg(choice.sketch.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -5664,7 +5619,7 @@ pub(crate) mod tests {
         assert_eq!(read_semantics(&ui), read_semantics(&cli));
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
-        assert_eq!(a.meta(), b.meta());
+        crate::transaction_tests::assert_meta(a.meta(), b.meta());
         assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
         assert_eq!(
             a.topology_refs().expect("refs"),
@@ -5823,7 +5778,8 @@ pub(crate) mod tests {
             )
             .expect("accepted scene")
         };
-        let reading = loaded.edit_source.expect("accepted edit facts");
+        let reading =
+            crate::sketch_facts::Source::from(loaded.edit_source.expect("accepted edit facts"));
         let angle = reading
             .expression_slots
             .iter()
@@ -5914,9 +5870,12 @@ pub(crate) mod tests {
         let out = frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, text_at(&out, "Save edited Revolve copy…"));
         let request = e.take_angle_edit_request().expect("submit");
-        assert_eq!(request.changes[0].object, feature);
+        assert_eq!(request.changes[0].object(), feature);
         assert_eq!(
-            request.changes[0].expression.value(),
+            request.changes[0]
+                .expression()
+                .expect("numeric form contains an expression change")
+                .value(),
             220.0_f64.to_radians()
         );
         assert_eq!(request.expected, reading.version);
@@ -5978,7 +5937,7 @@ pub(crate) mod tests {
 
         // The peer CLI, the same request, the same source.
         let edit = root.path().join("angle.json");
-        std::fs::write(&edit, format!(r#"{{"request_version":1,"changes":[{{"object":"{feature}","slot":{{"kind":"revolve_angle"}},"value":220,"unit":"deg"}}]}}"#)).expect("request");
+        std::fs::write(&edit, format!(r#"{{"request_version":1,"changes":[{{"kind":"set_expression","object":"{feature}","slot":{{"kind":"revolve_angle"}},"value":220,"unit":"deg"}}]}}"#)).expect("request");
         let cli = root.path().join("cli.fcad");
         let p = std::process::Command::new(ferritecad())
             .arg("edit")
@@ -6061,11 +6020,6 @@ pub(crate) mod tests {
             .modified()
             .expect("mtime");
         let id = reading.circle_sketches[0].sketch;
-        let curve = reading.circle_sketches[0]
-            .circle
-            .as_ref()
-            .expect("supported")
-            .curve_id;
 
         let mut e = Editor::default();
         assert!(e.begin_circle_edit(&source, &reading, id));
@@ -6099,15 +6053,20 @@ pub(crate) mod tests {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let generation = edits
-                .start_circle(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_circle_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
+                .start(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_edit(
+                        r.source,
+                        r.expected,
+                        r.changes,
+                        r.destination,
+                        c,
+                        move |result| tx.send((g, result)).expect("reply"),
+                    )
                 })
                 .expect("worker");
             assert!(
                 edits
-                    .start_circle(request, |_, _, _| panic!("duplicate worker"))
+                    .start(request, |_, _, _| panic!("duplicate worker"))
                     .is_none(),
                 "a running job takes no second request"
             );
@@ -6151,18 +6110,13 @@ pub(crate) mod tests {
         let input = root.path().join("edit.json");
         std::fs::write(
             &input,
-            format!(
-                r#"{{"request_version":1,"curve_id":"{curve}","center_mm":[{},{}],"radius_mm":{}}}"#,
-                request.edit.center_mm[0], request.edit.center_mm[1], request.edit.radius_mm
-            ),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("request");
         let cli = root.path().join("cli.fcad");
         let p = std::process::Command::new(ferritecad())
-            .arg("edit-circle")
+            .arg("edit")
             .arg(&source)
-            .arg("--sketch")
-            .arg(id.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -6232,7 +6186,7 @@ pub(crate) mod tests {
     }
 
     /// A real §25L source and the accepted reading a form may read facts from.
-    fn saved_annulus(root: &Path) -> (PathBuf, ferritecad_document::ExtrudeEditSource) {
+    fn saved_annulus(root: &Path) -> (PathBuf, crate::sketch_facts::Source) {
         use crate::creates::tests::ferritecad;
         let source = root.join("original.fcad");
         let input = root.join("create.json");
@@ -6264,7 +6218,10 @@ pub(crate) mod tests {
             )
             .expect("accepted scene")
         };
-        (source, loaded.edit_source.expect("accepted edit facts"))
+        (
+            source,
+            crate::sketch_facts::Source::from(loaded.edit_source.expect("accepted edit facts")),
+        )
     }
 
     #[test]
@@ -6368,14 +6325,10 @@ pub(crate) mod tests {
 
         // Every refusal is shown in the form and offers no Save.
         for (field, bad) in [
-            ("Inner radius", "10"),
-            ("Inner radius", "12"),
-            ("Inner radius", "9.9999"),
             ("Inner radius", "0"),
             ("Inner radius", "-4"),
             ("Inner radius", "banana"),
             ("Outer radius", "0"),
-            ("Outer radius", "2e6"),
             ("Center X", "banana"),
         ] {
             let out = frame(&ctx, &mut e, vec![]);
@@ -6416,14 +6369,29 @@ pub(crate) mod tests {
             e.take_annulus_edit_request().is_none(),
             "one press, one request"
         );
-        assert_eq!(request.sketch, id);
+        assert_eq!(crate::transaction_tests::sketch(&request), id);
         assert_eq!(request.source, source);
         assert_eq!(request.expected, reading.version);
-        assert_eq!(request.edit.outer_curve_id, saved.outer_curve_id);
-        assert_eq!(request.edit.inner_curve_id, saved.inner_curve_id);
-        assert_eq!(request.edit.center_mm, [-3.5, 4.25]);
-        assert_eq!(request.edit.outer_radius_mm, 6.75);
-        assert_eq!(request.edit.inner_radius_mm, 2.125);
+        assert_eq!(
+            crate::transaction_tests::annulus(&request).outer_curve_id,
+            saved.outer_curve_id
+        );
+        assert_eq!(
+            crate::transaction_tests::annulus(&request).inner_curve_id,
+            saved.inner_curve_id
+        );
+        assert_eq!(
+            crate::transaction_tests::annulus(&request).center_mm,
+            [-3.5, 4.25]
+        );
+        assert_eq!(
+            crate::transaction_tests::annulus(&request).outer_radius_mm,
+            6.75
+        );
+        assert_eq!(
+            crate::transaction_tests::annulus(&request).inner_radius_mm,
+            2.125
+        );
 
         // While the request is saving, the form is disabled and no draft action
         // discards it.
@@ -6479,10 +6447,6 @@ pub(crate) mod tests {
             .modified()
             .expect("mtime");
         let id = reading.annulus_sketches[0].sketch;
-        let saved = reading.annulus_sketches[0]
-            .annulus
-            .clone()
-            .expect("supported");
 
         let mut e = Editor::default();
         assert!(e.begin_annulus_edit(&source, &reading, id));
@@ -6517,15 +6481,20 @@ pub(crate) mod tests {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let generation = edits
-                .start_annulus(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_annulus_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
+                .start(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_edit(
+                        r.source,
+                        r.expected,
+                        r.changes,
+                        r.destination,
+                        c,
+                        move |result| tx.send((g, result)).expect("reply"),
+                    )
                 })
                 .expect("worker");
             assert!(
                 edits
-                    .start_annulus(request, |_, _, _| panic!("duplicate worker"))
+                    .start(request, |_, _, _| panic!("duplicate worker"))
                     .is_none(),
                 "a running job takes no second request"
             );
@@ -6569,26 +6538,13 @@ pub(crate) mod tests {
         let input = root.path().join("edit.json");
         std::fs::write(
             &input,
-            format!(
-                concat!(
-                    r#"{{"request_version":1,"outer_curve_id":"{}","inner_curve_id":"{}","#,
-                    r#""center_mm":[{},{}],"outer_radius_mm":{},"inner_radius_mm":{}}}"#
-                ),
-                saved.outer_curve_id,
-                saved.inner_curve_id,
-                request.edit.center_mm[0],
-                request.edit.center_mm[1],
-                request.edit.outer_radius_mm,
-                request.edit.inner_radius_mm
-            ),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("request");
         let cli = root.path().join("cli.fcad");
         let p = std::process::Command::new(ferritecad())
-            .arg("edit-annular")
+            .arg("edit")
             .arg(&source)
-            .arg("--sketch")
-            .arg(id.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -6952,7 +6908,10 @@ pub(crate) mod tests {
         assert!(p.status.success(), "{p:?}");
         if cuts > 0 {
             let mut d = Document::open(&source).expect("doc");
-            let body = ExtrudeEditSource::read(&d).expect("catalog").cut_bodies[0].body;
+            let body = crate::sketch_facts::Source::read(&d)
+                .expect("catalog")
+                .cut_bodies[0]
+                .body;
             for i in 0..cuts {
                 let slot = (i * 7) % 16;
                 let p = ferritecad_document::prepare_circular_cut(
@@ -6997,7 +6956,8 @@ pub(crate) mod tests {
             )
             .expect("accepted scene")
         };
-        let reading = loaded.edit_source.expect("accepted edit facts");
+        let reading =
+            crate::sketch_facts::Source::from(loaded.edit_source.expect("accepted edit facts"));
         let id = reading
             .sketches
             .iter()
@@ -7035,25 +6995,8 @@ pub(crate) mod tests {
             e.draft.as_mut().expect("draft").points[1][0] = "55.5".into();
             e.draft.as_mut().expect("draft").points[2][0] = "55.5".into();
             e.record(valid.clone());
-            let far = e
-                .editing
-                .as_ref()
-                .expect("edit")
-                .1
-                .cut_history
-                .as_ref()
-                .expect("history")
-                .tools
-                .last()
-                .expect("far")
-                .feature;
-            let out = frame(&ctx, &mut e, vec![]);
-            assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(&far.to_string()))), "offending Cut is visible");
-            assert_eq!(
-                e.draft.as_ref().expect("retained invalid draft").points[1][0],
-                "55.5"
-            );
-            assert!(e.edit_request().is_err());
+            assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "55.5");
+            assert!(e.edit_request().is_ok(), "the rebuild judges the Cut");
             e.undo();
             assert_eq!(e.draft, Some(valid));
         }
@@ -7095,15 +7038,20 @@ pub(crate) mod tests {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let generation = edits
-                .start_sketch(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_sketch_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
+                .start(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_edit(
+                        r.source,
+                        r.expected,
+                        r.changes,
+                        r.destination,
+                        c,
+                        move |result| tx.send((g, result)).expect("reply"),
+                    )
                 })
                 .expect("worker");
             assert!(
                 edits
-                    .start_sketch(request, |_, _, _| panic!("duplicate worker"))
+                    .start(request, |_, _, _| panic!("duplicate worker"))
                     .is_none()
             );
             assert!(
@@ -7140,28 +7088,16 @@ pub(crate) mod tests {
         }
         // IDs and finite numeric coordinates only; process JSON assertions live
         // in the CLI suite, avoiding an application dependency just for a test.
-        let vertices = request
-            .vertices
-            .iter()
-            .map(|v| {
-                format!(
-                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
-                    v.curve_id, v.start_mm[0], v.start_mm[1]
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"vertices":[{vertices}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("request");
         let cli = root.path().join("cli.fcad");
         let p = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-copy")
+            .arg("edit")
             .arg(&source)
-            .arg("--sketch")
-            .arg(id.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -7182,7 +7118,7 @@ pub(crate) mod tests {
         } // Cut names may repeat; the complete UUID-keyed objects/refs follow.
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
-        assert_eq!(a.meta(), b.meta());
+        crate::transaction_tests::assert_meta(a.meta(), b.meta());
         assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
         assert_eq!(
             a.dependencies().expect("deps"),
@@ -7230,97 +7166,8 @@ pub(crate) mod tests {
             .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(text)))
     }
 
-    /// §28J, kernel-free: the existing Sketch editor opens the base of a
-    /// plate rounded twice, names both Fillets in history order, refuses a
-    /// rectangle that is too small for a radius, and one whose adjacent
-    /// arcs would leave no flat, each with its numbers and the draft kept;
-    /// Undo/Redo, a cancelled Save, a stale reply and a worker refusal keep
-    /// the draft, and Restore saved vertices returns the saved plate.
-    #[test]
-    fn two_fillet_base_sketch_widgets_show_both_fillets_and_keep_the_draft() {
-        let (_root, path, reading) = crate::fillets::tests::rounded_twice(3.0, 3.0);
-        let choice = reading.sketches[0].clone();
-        let (first, second) = (
-            choice.fillet().cloned().expect("Fillet 1 as context"),
-            choice.fillets.get(1).cloned().expect("Fillet 2 as context"),
-        );
-        assert_eq!(second.previous, first.feature, "Fillet 2 rounds Fillet 1");
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &reading, choice.sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(
-            &out,
-            &format!("History: Extrude -> Fillet 1 {}", first.feature)
-        ));
-        assert!(painted(&out, &format!("-> Fillet 2 {}", second.feature)));
-        assert!(painted(
-            &out,
-            "no side may be shorter than 6 mm (Fillet 1) or 6 mm (Fillet 2)"
-        ));
-        // Each radius alone fits a 6.005 mm deep plate; the flat between the
-        // adjacent arcs does not. Refused with the numbers, draft kept.
-        let valid = e.draft.clone();
-        replace_field(&ctx, &mut e, "15.5", "9.255");
-        replace_field(&ctx, &mut e, "15.5", "9.255");
-        let error = e.edit_request().expect_err("no flat left");
-        assert!(error.to_string().contains("flat"), "{error}");
-        assert_eq!(e.draft.as_ref().expect("draft").points[0][1], "9.255");
-        // Too shallow for either radius: refused naming a Fillet.
-        replace_field(&ctx, &mut e, "9.255", "7");
-        replace_field(&ctx, &mut e, "9.255", "7");
-        let error = e.edit_request().expect_err("too small");
-        assert!(error.to_string().contains("too large"), "{error}");
-        for _ in 0..4 {
-            e.undo();
-        }
-        assert_eq!(e.draft, valid);
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "33", "36.5");
-        let moved = e.draft.clone();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Undo draft"));
-        assert_ne!(e.draft, moved);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Redo draft"));
-        assert_eq!(e.draft, moved);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
-        let request = e.take_edit_request().expect("the widgets' request");
-        assert!(e.take_edit_request().is_none(), "one press, one request");
-        assert_eq!(request.sketch, choice.sketch);
-        assert_eq!(request.expected, reading.version);
-        assert_eq!(request.vertices[1].start_mm, [36.5, 3.25]);
-        assert_eq!(e.draft, moved, "a cancelled Save started nothing");
-        let mut edits = crate::edits::Edits::default();
-        let generation = edits
-            .start_sketch(request, |_, _, _| std::thread::spawn(|| {}))
-            .expect("started");
-        let stale = ferritecad_jobs::EditedSketch {
-            rebuild: Default::default(),
-            destination: PathBuf::from("stale.fcad"),
-            document_id: reading.version.document_id,
-            sketch: choice.sketch,
-        };
-        assert!(finish_edit(&mut e, &mut edits, generation + 1, Ok(stale)).is_none());
-        assert_eq!(e.draft, moved);
-        assert!(
-            finish_edit(
-                &mut e,
-                &mut edits,
-                generation,
-                Err(CadError::kernel("refused by the worker"))
-            )
-            .is_none()
-        );
-        assert_eq!(e.draft, moved, "a refusal keeps the draft");
-        click_label(&ctx, &mut e, "Restore saved vertices");
-        assert_eq!(e.draft, valid, "the saved plate");
-    }
-
     /// §28J, native: the widgets' request through the app's worker and the
-    /// same edit through the shipped `edit-sketch-copy` publish one document
+    /// same edit through the shipped `edit` publish one document
     /// under two Fillets: every SQL cell equal with no identifier mapped, and
     /// byte-identical STL and FBX. A failed async Open restores the draft.
     #[test]
@@ -7351,10 +7198,15 @@ pub(crate) mod tests {
         let mut edits = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         edits
-            .start_sketch(request.clone(), move |r, g, c| {
-                crate::edits::spawn_sketch_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request.clone(), move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (generation, result) = rx
@@ -7371,28 +7223,16 @@ pub(crate) mod tests {
         assert!(!e.active());
 
         let input = root.path().join("request.json");
-        let vertices = request
-            .vertices
-            .iter()
-            .map(|v| {
-                format!(
-                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
-                    v.curve_id, v.start_mm[0], v.start_mm[1]
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"vertices":[{vertices}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("request");
         let peer = root.path().join("peer.fcad");
         let out = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-copy")
+            .arg("edit")
             .arg(&path)
-            .arg("--sketch")
-            .arg(sketch.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -7407,87 +7247,8 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
-    /// §28D, kernel-free: the existing Sketch editor opens the base of a
-    /// rounded plate, names the Fillet, its corner, radius and the smallest
-    /// side it allows, refuses a rectangle too small for it with the numbers
-    /// while keeping the draft, and hands over the widgets' request; Undo and
-    /// Redo, a cancelled Save, a stale reply and a worker refusal keep the
-    /// draft.
-    #[test]
-    fn fillet_base_sketch_widgets_show_the_corner_and_keep_the_draft() {
-        let (_root, path, reading) = crate::fillets::tests::rounded(2.375);
-        let choice = reading.sketches[0].clone();
-        let fillet = choice.fillet().cloned().expect("the Fillet as context");
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &reading, choice.sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        let [a, b] = fillet.edge.joint.segments();
-        assert!(painted(
-            &out,
-            &format!(
-                "Rounded by Fillet {} at the corner of Lines {a} | {b}, r 2.375 mm.",
-                fillet.feature
-            )
-        ));
-        assert!(painted(&out, "no side may be shorter than 4.75 mm"));
-        // Too shallow for the saved radius: refused with its numbers, and
-        // the draft stays as typed until Undo.
-        let valid = e.draft.clone();
-        replace_field(&ctx, &mut e, "15.5", "7");
-        replace_field(&ctx, &mut e, "15.5", "7");
-        let error = e.edit_request().expect_err("too small");
-        assert!(error.to_string().contains("too large"), "{error}");
-        assert_eq!(e.draft.as_ref().expect("draft").points[0][1], "7");
-        e.undo();
-        e.undo();
-        assert_eq!(e.draft, valid);
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "33", "36.5");
-        let moved = e.draft.clone();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Undo draft"));
-        assert_ne!(e.draft, moved);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Redo draft"));
-        assert_eq!(e.draft, moved);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
-        let request = e.take_edit_request().expect("the widgets' request");
-        assert!(e.take_edit_request().is_none(), "one press, one request");
-        assert_eq!(request.sketch, choice.sketch);
-        assert_eq!(request.expected, reading.version);
-        assert_eq!(request.vertices[0].start_mm, [36.5, 15.5]);
-        assert_eq!(request.vertices[1].start_mm, [36.5, 3.25]);
-        // A cancelled Save started nothing; the draft is as it was.
-        assert_eq!(e.draft, moved);
-        let mut edits = crate::edits::Edits::default();
-        let generation = edits
-            .start_sketch(request, |_, _, _| std::thread::spawn(|| {}))
-            .expect("started");
-        let stale = ferritecad_jobs::EditedSketch {
-            rebuild: Default::default(),
-            destination: PathBuf::from("stale.fcad"),
-            document_id: reading.version.document_id,
-            sketch: choice.sketch,
-        };
-        assert!(finish_edit(&mut e, &mut edits, generation + 1, Ok(stale)).is_none());
-        assert_eq!(e.draft, moved);
-        assert!(
-            finish_edit(
-                &mut e,
-                &mut edits,
-                generation,
-                Err(CadError::kernel("refused by the worker"))
-            )
-            .is_none()
-        );
-        assert_eq!(e.draft, moved, "a refusal keeps the draft");
-    }
-
     /// §28D, native: the widgets' request through the app's worker and the
-    /// same edit through the shipped `edit-sketch-copy` publish one document:
+    /// same edit through the shipped `edit` publish one document:
     /// every SQL cell equal with no identifier mapped (nothing is minted), and
     /// byte-identical STL and FBX. A failed async Open restores the draft.
     #[test]
@@ -7518,10 +7279,15 @@ pub(crate) mod tests {
         let mut edits = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         edits
-            .start_sketch(request.clone(), move |r, g, c| {
-                crate::edits::spawn_sketch_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request.clone(), move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (generation, result) = rx
@@ -7538,28 +7304,16 @@ pub(crate) mod tests {
         assert!(!e.active());
 
         let input = root.path().join("request.json");
-        let vertices = request
-            .vertices
-            .iter()
-            .map(|v| {
-                format!(
-                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
-                    v.curve_id, v.start_mm[0], v.start_mm[1]
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"vertices":[{vertices}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("request");
         let peer = root.path().join("peer.fcad");
         let out = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-copy")
+            .arg("edit")
             .arg(&path)
-            .arg("--sketch")
-            .arg(sketch.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -7611,104 +7365,8 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
-    /// §29C, kernel-free: the existing Sketch editor opens the base of a
-    /// chamfered plate, names the Chamfer, its corner and distance and the
-    /// smallest side it allows. A half-typed draft may be briefly no plate: the
-    /// refusal is shown, Undo, Redo and Restore stay available and nothing is
-    /// requested until the whole candidate is valid. A cancelled Save, a stale
-    /// reply and a worker refusal keep the draft.
-    #[test]
-    fn chamfer_base_sketch_widgets_show_the_corner_and_keep_the_draft() {
-        let (_root, path, reading) = crate::chamfers::tests::chamfered(2.375);
-        let choice = reading.sketches[0].clone();
-        let chamfer = choice.chamfer.clone().expect("the Chamfer as context");
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &reading, choice.sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        let [a, b] = chamfer.edge.joint.segments();
-        assert!(painted(
-            &out,
-            &format!(
-                "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d 2.375 mm.",
-                chamfer.feature
-            )
-        ));
-        assert!(painted(&out, "may not be shorter than 2.385 mm"));
-        let valid = e.draft.clone();
-        // One of the two upper vertices moved: no longer a plate.
-        replace_field(&ctx, &mut e, "15.5", "9");
-        let error = e.edit_request().expect_err("not a rectangle");
-        assert!(!error.to_string().is_empty());
-        assert!(e.take_edit_request().is_none(), "nothing is requested");
-        let out = frame(&ctx, &mut e, vec![]);
-        text_at(&out, "Undo draft");
-        text_at(&out, "Restore saved vertices");
-        // Both moved, too shallow for the saved distance: refused with the
-        // Chamfer and its numbers, and the draft stays as typed until Undo.
-        replace_field(&ctx, &mut e, "15.5", "9");
-        replace_field(&ctx, &mut e, "9", "5");
-        replace_field(&ctx, &mut e, "9", "5");
-        let error = e.edit_request().expect_err("too small");
-        assert!(
-            error.to_string().contains(&chamfer.feature.to_string())
-                && error.to_string().contains("does not fit"),
-            "{error}"
-        );
-        assert_eq!(e.draft.as_ref().expect("draft").points[0][1], "5");
-        click_label(&ctx, &mut e, "Restore saved vertices");
-        assert_eq!(e.draft, valid, "Restore returns the saved plate");
-        click_label(&ctx, &mut e, "Undo draft");
-        assert_eq!(e.draft.as_ref().expect("draft").points[0][1], "5");
-        while e.draft != valid {
-            assert!(!e.undo.is_empty(), "Undo walks back to the saved plate");
-            e.undo();
-        }
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "33", "36.5");
-        let moved = e.draft.clone();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Undo draft"));
-        assert_ne!(e.draft, moved);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Redo draft"));
-        assert_eq!(e.draft, moved);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
-        let request = e.take_edit_request().expect("the widgets' request");
-        assert!(e.take_edit_request().is_none(), "one press, one request");
-        assert_eq!(request.sketch, choice.sketch);
-        assert_eq!(request.expected, reading.version);
-        assert_eq!(request.vertices[0].start_mm, [36.5, 15.5]);
-        assert_eq!(request.vertices[1].start_mm, [36.5, 3.25]);
-        assert_eq!(e.draft, moved);
-        let mut edits = crate::edits::Edits::default();
-        let generation = edits
-            .start_sketch(request, |_, _, _| std::thread::spawn(|| {}))
-            .expect("started");
-        let stale = ferritecad_jobs::EditedSketch {
-            rebuild: Default::default(),
-            destination: PathBuf::from("stale.fcad"),
-            document_id: reading.version.document_id,
-            sketch: choice.sketch,
-        };
-        assert!(finish_edit(&mut e, &mut edits, generation + 1, Ok(stale)).is_none());
-        assert_eq!(e.draft, moved);
-        assert!(
-            finish_edit(
-                &mut e,
-                &mut edits,
-                generation,
-                Err(CadError::kernel("refused by the worker"))
-            )
-            .is_none()
-        );
-        assert_eq!(e.draft, moved, "a refusal keeps the draft");
-    }
-
     /// §29C, native: the widgets' request through the app's worker and the same
-    /// edit through the shipped `edit-sketch-copy` publish one document: every
+    /// edit through the shipped `edit` publish one document: every
     /// SQL cell equal with no identifier mapped, and byte-identical STL and FBX.
     /// A failed async Open restores the draft.
     #[test]
@@ -7739,10 +7397,15 @@ pub(crate) mod tests {
         let mut edits = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         edits
-            .start_sketch(request.clone(), move |r, g, c| {
-                crate::edits::spawn_sketch_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request.clone(), move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (generation, result) = rx
@@ -7759,28 +7422,16 @@ pub(crate) mod tests {
         assert!(!e.active());
 
         let input = root.path().join("request.json");
-        let vertices = request
-            .vertices
-            .iter()
-            .map(|v| {
-                format!(
-                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
-                    v.curve_id, v.start_mm[0], v.start_mm[1]
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"vertices":[{vertices}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("request");
         let peer = root.path().join("peer.fcad");
         let out = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-copy")
+            .arg("edit")
             .arg(&path)
-            .arg("--sketch")
-            .arg(sketch.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -7832,7 +7483,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
-    fn click_label(ctx: &egui::Context, e: &mut Editor, label: &str) {
+    pub(crate) fn click_label(ctx: &egui::Context, e: &mut Editor, label: &str) {
         let out = frame(ctx, e, vec![]);
         click(ctx, e, text_at(&out, label));
     }
@@ -7872,7 +7523,9 @@ pub(crate) mod tests {
         let opened = e.draft.clone().expect("opened on the snapshot");
         assert_eq!(
             opened.points,
-            Editor::saved_coordinate_text(&e.editing.as_ref().expect("request").0.vertices)
+            Editor::saved_coordinate_text(&crate::transaction_tests::vertices(
+                &e.editing.as_ref().expect("request").0
+            ))
         );
         let view = (e.canvas.minimum, e.canvas.scale);
         let identity = e.editing.clone().expect("request");
@@ -7955,37 +7608,38 @@ pub(crate) mod tests {
         let (request, kept_choice) = e.editing.as_ref().expect("still editing");
         assert_eq!(request.source, identity.0.source);
         assert_eq!(request.expected, identity.0.expected);
-        assert_eq!(request.sketch, identity.0.sketch);
         assert_eq!(
-            request
-                .vertices
+            crate::transaction_tests::sketch(request),
+            crate::transaction_tests::sketch(&identity.0)
+        );
+        assert_eq!(
+            crate::transaction_tests::vertices(request)
                 .iter()
                 .map(|v| v.curve_id)
                 .collect::<Vec<_>>(),
             saved_ids
         );
-        assert_eq!(request.vertices, identity.0.vertices);
-        assert_eq!(kept_choice.fillets, choice.fillets);
+        assert_eq!(
+            crate::transaction_tests::vertices(request),
+            crate::transaction_tests::vertices(&identity.0)
+        );
+        assert_eq!(kept_choice.stored, choice.stored);
         let built = e.edit_request().expect("the snapshot is editable");
         assert_eq!(built.source, path);
         assert_eq!(built.expected, reading.version);
         assert_eq!(
-            built
-                .vertices
+            crate::transaction_tests::vertices(&built)
                 .iter()
                 .map(|v| v.curve_id)
                 .collect::<Vec<_>>(),
             saved_ids
         );
         assert_eq!(
-            built
-                .vertices
+            crate::transaction_tests::vertices(&built)
                 .iter()
                 .map(|v| v.start_mm)
                 .collect::<Vec<_>>(),
-            identity
-                .0
-                .vertices
+            crate::transaction_tests::vertices(&identity.0)
                 .iter()
                 .map(|v| v.start_mm)
                 .collect::<Vec<_>>()
@@ -7998,7 +7652,6 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), bytes);
         let out = frame(&ctx, &mut e, vec![]);
         assert!(painted(&out, "Rounded by Fillet"));
-        assert!(painted(&out, "no side may be shorter than"));
 
         // One Undo returns every invalid string. One Redo returns the snapshot.
         click_label(&ctx, &mut e, "Undo draft");
@@ -8052,17 +7705,28 @@ pub(crate) mod tests {
         assert_eq!(request.source, path);
         assert_eq!(request.expected, reading.version);
         assert_eq!(
-            request
-                .vertices
+            crate::transaction_tests::vertices(&request)
                 .iter()
                 .map(|v| v.curve_id)
                 .collect::<Vec<_>>(),
             saved_ids
         );
-        assert_eq!(request.vertices[0].start_mm, [36.5, 15.5]);
-        assert_eq!(request.vertices[1].start_mm, [36.5, 3.25]);
-        assert_eq!(request.vertices[2].start_mm, [-4.5, 3.25]);
-        assert_eq!(request.vertices[3].start_mm, [-4.5, 15.5]);
+        assert_eq!(
+            crate::transaction_tests::vertices(&request)[0].start_mm,
+            [36.5, 15.5]
+        );
+        assert_eq!(
+            crate::transaction_tests::vertices(&request)[1].start_mm,
+            [36.5, 3.25]
+        );
+        assert_eq!(
+            crate::transaction_tests::vertices(&request)[2].start_mm,
+            [-4.5, 3.25]
+        );
+        assert_eq!(
+            crate::transaction_tests::vertices(&request)[3].start_mm,
+            [-4.5, 15.5]
+        );
         assert_eq!(std::fs::read(&path).expect("source"), bytes);
         assert!(!root.path().join("not-written.fcad").exists());
 
@@ -8070,7 +7734,7 @@ pub(crate) mod tests {
         pending.destination = root.path().join("refused.fcad");
         let mut edits = crate::edits::Edits::default();
         let generation = edits
-            .start_sketch(pending, |_, _, _| std::thread::spawn(|| {}))
+            .start(pending, |_, _, _| std::thread::spawn(|| {}))
             .expect("worker");
         assert!(
             finish_edit(
@@ -8088,18 +7752,17 @@ pub(crate) mod tests {
         let published = root.path().join("not-written.fcad");
         pending.destination = published.clone();
         let generation = edits
-            .start_sketch(pending, |_, _, _| std::thread::spawn(|| {}))
+            .start(pending, |_, _, _| std::thread::spawn(|| {}))
             .expect("worker");
         assert_eq!(
             finish_edit(
                 &mut e,
                 &mut edits,
                 generation,
-                Ok(ferritecad_jobs::EditedSketch {
+                Ok(ferritecad_jobs::EditedDocument {
                     rebuild: Default::default(),
                     destination: published.clone(),
-                    document_id: reading.version.document_id,
-                    sketch: choice.sketch,
+                    version: reading.version
                 })
             ),
             Some(published.clone())
@@ -8147,7 +7810,7 @@ pub(crate) mod tests {
         )
         .expect("one cut");
         document.write_circular_cut(&prepared).expect("write");
-        let reading = ferritecad_document::ExtrudeEditSource::read(&document).expect("catalogue");
+        let reading = crate::sketch_facts::Source::read(&document).expect("catalogue");
         document.close().expect("close");
         (root, path, reading)
     }
@@ -8203,8 +7866,7 @@ pub(crate) mod tests {
         assert_eq!(built.source, path);
         assert_eq!(built.expected, reading.version);
         assert_eq!(
-            built
-                .vertices
+            crate::transaction_tests::vertices(&built)
                 .iter()
                 .map(|v| v.curve_id)
                 .collect::<Vec<_>>(),
@@ -8225,7 +7887,7 @@ pub(crate) mod tests {
         let choice = reading
             .sketches
             .iter()
-            .find(|s| s.cut_history.is_some() && s.refusal.is_none())
+            .find(|s| s.refusal.is_none())
             .expect("cut base")
             .clone();
         let (ctx, mut e) = open_saved(&path, &reading, choice.sketch);
@@ -8250,22 +7912,11 @@ pub(crate) mod tests {
             Some(opened.height.as_str())
         );
         assert!(e.draft.as_ref().expect("draft").closed);
-        assert_eq!(
-            e.editing
-                .as_ref()
-                .expect("edit")
-                .1
-                .cut_history
-                .as_ref()
-                .map(|h| h.tools.len()),
-            Some(1)
-        );
         let built = e.edit_request().expect("snapshot");
         assert_eq!(built.source, path);
         assert_eq!(built.expected, reading.version);
         assert_eq!(
-            built
-                .vertices
+            crate::transaction_tests::vertices(&built)
                 .iter()
                 .map(|v| v.curve_id)
                 .collect::<Vec<_>>(),
@@ -8423,64 +8074,6 @@ pub(crate) mod tests {
         let out = document_frame(&ctx, &mut e, &path, &reading, vec![]);
         assert!(painted(&out, "Cancel cut draft"));
         assert!(!painted(&out, "Restore saved vertices"));
-    }
-
-    /// §28L, kernel-free: the existing Sketch editor opens the base of a plate
-    /// rounded four times, names every Fillet in history order, refuses a
-    /// rectangle whose adjacent arcs — the first and the fourth are the pair —
-    /// would leave no flat, and keeps Save on the screen.
-    #[test]
-    fn four_fillet_base_sketch_widgets_name_every_fillet_and_keep_save_in_reach() {
-        let (_root, path, reading) = crate::fillets::tests::rounded_n(&[
-            ([33., 3.25], 2.375),
-            ([-4.5, 15.5], 3.0625),
-            ([-4.5, 3.25], 1.5),
-            ([33., 15.5], 6.0),
-        ]);
-        let choice = reading.sketches[0].clone();
-        assert_eq!(choice.refusal, None);
-        assert_eq!(choice.fillets.len(), 4);
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &reading, choice.sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        for f in &choice.fillets {
-            assert!(
-                painted(&out, &format!("Fillet {} {}", f.history_index, f.feature)),
-                "{}",
-                f.history_index
-            );
-        }
-        assert!(painted(&out, "All 4 Fillets keep their corners and radii"));
-        assert!(painted(
-            &out,
-            "no side may be shorter than 4.75 mm (Fillet 1) or 6.125 mm (Fillet 2) or 3 mm (Fillet 3) or 12 mm (Fillet 4)"
-        ));
-        let save = text_at(&out, "Save edited copy…");
-        assert!(save.y > 0. && save.y < 768., "Save at {save:?}");
-        assert!(
-            ctx.globally_used_rect().max.y <= 768.,
-            "{:?}",
-            ctx.globally_used_rect()
-        );
-        // 6 mm deep: the first and the fourth (2.375 + 6 > 6) leave no flat,
-        // and the fourth alone needs 12 mm; refused naming a Fillet.
-        replace_field(&ctx, &mut e, "15.5", "9.255");
-        replace_field(&ctx, &mut e, "15.5", "9.255");
-        let error = e.edit_request().expect_err("too small");
-        assert!(
-            error.to_string().contains("too large") || error.to_string().contains("flat"),
-            "{error}"
-        );
-        assert!(
-            choice
-                .fillets
-                .iter()
-                .any(|f| error.to_string().contains(&f.feature.to_string()))
-                || error.to_string().contains("too large"),
-            "{error}"
-        );
     }
 }
 

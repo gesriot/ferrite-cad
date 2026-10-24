@@ -274,7 +274,7 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
     let mut s = opened(&path);
     dirty(&mut s, selected(&reading, 0).base_feature);
     let current = s.export_path().expect("current");
-    let reading = ferritecad_jobs::read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let choice = &reading.fillet_bodies[0];
     let label = format!(
         "Fillet edge of {} — {}…",
@@ -340,7 +340,7 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
     let e = &mut c.sketch.fillets;
     settle(&ctx, e);
     // The rounded corner is not offered again.
-    let rounded = selected(&reading, 0).corner.joint;
+    let rounded = selected(&reading, 0).joint;
     assert!(
         e.draft
             .as_ref()

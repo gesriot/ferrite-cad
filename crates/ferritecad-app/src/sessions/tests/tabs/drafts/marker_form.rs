@@ -247,7 +247,7 @@ fn a_rule_form_held_on_another_version_loses_its_markers_and_keeps_its_rows_sele
                     let expected = ticket.source().version();
                     ticket.edit(
                         vec![
-                            ferritecad_document::ExpressionChange::constant(
+                            ferritecad_document::EditChange::constant(
                                 feature,
                                 ferritecad_document::ExpressionSlot::ExtrudeDistance,
                                 20.0,

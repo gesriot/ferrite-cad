@@ -32,6 +32,7 @@
 mod cache;
 mod cold;
 mod convert;
+mod cut_contact;
 mod dirty;
 mod document_graph;
 mod plan;

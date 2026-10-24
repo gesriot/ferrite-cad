@@ -1158,7 +1158,7 @@ pub(super) fn polygon_fixture(
             unreachable!()
         };
         let last = sketch.curves.last().expect("curve").id;
-        let prepared = ferritecad_document::prepare_sketch_constraints(
+        let prepared = ferritecad_fixtures::constraint_changes(
             &document,
             object.id,
             &SketchConstraintEdits {
@@ -1176,11 +1176,9 @@ pub(super) fn polygon_fixture(
             },
         )
         .expect("persisted H and all closure links");
-        document
-            .write_sketch_constraints(&prepared)
-            .expect("constraints");
+        document.write_changes(&prepared).expect("constraints");
     }
-    let source = ExtrudeEditSource::read(&document).expect("discovery");
+    let source = crate::sketch_facts::Source::read(&document).expect("discovery");
     document.close().expect("close");
     (root, path, source)
 }
@@ -1485,7 +1483,7 @@ pub(super) fn by_lists(
     source: &ExtrudeEditSource,
     sketch: ObjectId,
     script: impl FnOnce(&egui::Context, &mut Editor),
-) -> EditSketchConstraintsRequest {
+) -> EditRequest {
     let mut e = Editor::default();
     e.set_session(true, true, true);
     assert!(e.begin(path, source, sketch));
@@ -1521,7 +1519,7 @@ pub(crate) fn write_guessed_rectangle(path: &Path) {
     )
     .expect("the source");
     let mut document = Document::open(path).expect("document");
-    let choice = ExtrudeEditSource::read(&document)
+    let choice = crate::sketch_facts::Source::read(&document)
         .expect("catalogue")
         .constraint_sketches[0]
         .clone();
@@ -1540,7 +1538,7 @@ pub(crate) fn write_guessed_rectangle(path: &Path) {
             kind,
         })
     };
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         choice.sketch,
         &SketchConstraintEdits {
@@ -1555,7 +1553,7 @@ pub(crate) fn write_guessed_rectangle(path: &Path) {
         },
     )
     .expect("prepare");
-    document.write_sketch_constraints(&prepared).expect("rules");
+    document.write_changes(&prepared).expect("rules");
     document.close().expect("close");
 }
 
@@ -1574,7 +1572,7 @@ pub(crate) fn native_rectangle(
     path: &Path,
     source: &ExtrudeEditSource,
     sketch: ObjectId,
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut rig, loaded) = Rig::native(path, source, sketch);
     let real = presented(&loaded, sketch);
     let (ids, stored) = (rig.ids.clone(), rig.stored.clone());
@@ -1698,15 +1696,28 @@ pub(crate) fn native_rectangle(
     rig.press("Apply constraints");
     let request = rig.e.take_apply_request().expect("Apply asked");
     assert_eq!(
-        request.edits, lists.edits,
+        crate::transaction_tests::constraints(&request),
+        crate::transaction_tests::constraints(&lists),
         "the canvas and the lists asked for different things"
     );
     assert_eq!(
-        (request.expected, request.sketch, &request.source),
-        (lists.expected, lists.sketch, &lists.source)
+        (
+            request.expected,
+            crate::transaction_tests::sketch(&request),
+            &request.source
+        ),
+        (
+            lists.expected,
+            crate::transaction_tests::sketch(&lists),
+            &lists.source
+        )
     );
-    assert_eq!(request.edits.remove.len(), 1, "the replaced length");
-    assert_eq!(request.edits.add.len(), 3);
+    assert_eq!(
+        crate::transaction_tests::constraints(&request).remove.len(),
+        1,
+        "the replaced length"
+    );
+    assert_eq!(crate::transaction_tests::constraints(&request).add.len(), 3);
     println!(
         "\nFCAD_31K_NATIVE_RECTANGLE_REQUEST stored_apart_mm={apart:.3} solved_width=60 adds=3 removes=1"
     );
@@ -1736,12 +1747,12 @@ pub(crate) fn write_guessed_circle(path: &Path) {
     )
     .expect("the source");
     let mut document = Document::open(path).expect("document");
-    let choice = ExtrudeEditSource::read(&document)
+    let choice = crate::sketch_facts::Source::read(&document)
         .expect("catalogue")
         .constraint_sketches[0]
         .clone();
     let circle = choice.stored.as_ref().expect("stored").curves[0].id;
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         choice.sketch,
         &SketchConstraintEdits {
@@ -1762,7 +1773,7 @@ pub(crate) fn write_guessed_circle(path: &Path) {
         },
     )
     .expect("prepare");
-    document.write_sketch_constraints(&prepared).expect("rules");
+    document.write_changes(&prepared).expect("rules");
     document.close().expect("close");
 }
 
@@ -1773,7 +1784,7 @@ pub(crate) fn native_circle(
     path: &Path,
     source: &ExtrudeEditSource,
     sketch: ObjectId,
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut rig, loaded) = Rig::native(path, source, sketch);
     let real = presented(&loaded, sketch);
     let (circle, stored) = (rig.ids[0], rig.stored.clone());
@@ -1857,11 +1868,15 @@ pub(crate) fn native_circle(
     rig.press("Apply constraints");
     let request = rig.e.take_apply_request().expect("Apply asked");
     assert_eq!(
-        request.edits, lists.edits,
+        crate::transaction_tests::constraints(&request),
+        crate::transaction_tests::constraints(&lists),
         "the canvas and the lists asked for different things"
     );
-    assert_eq!(request.edits.remove.len(), 2);
-    assert_eq!(request.edits.add.len(), 2);
+    assert_eq!(
+        crate::transaction_tests::constraints(&request).remove.len(),
+        2
+    );
+    assert_eq!(crate::transaction_tests::constraints(&request).add.len(), 2);
     println!(
         "\nFCAD_31K_NATIVE_CIRCLE_REQUEST stored=(4.5,0,1.2) solved=(0,0,10) adds=2 removes=2"
     );
@@ -1884,8 +1899,11 @@ pub(crate) fn saved_rectangle_is_what_the_rules_ask(saved: &Path, stl: &[u8], he
         .edit_source
         .as_ref()
         .expect("facts")
-        .constraint_sketches[0]
-        .sketch;
+        .objects
+        .iter()
+        .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Sketch(_)))
+        .expect("sketch")
+        .id;
     let lines: Vec<_> = presented(&loaded, sketch)
         .iter()
         .map(|(_, g)| line_numbers(g))
@@ -1929,8 +1947,11 @@ pub(crate) fn saved_circle_is_what_the_rules_ask(saved: &Path, stl: &[u8], heigh
         .edit_source
         .as_ref()
         .expect("facts")
-        .constraint_sketches[0]
-        .sketch;
+        .objects
+        .iter()
+        .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Sketch(_)))
+        .expect("sketch")
+        .id;
     let SketchGeometry::Circle { center, radius } = presented(&loaded, sketch)[0].1 else {
         panic!("a Circle")
     };

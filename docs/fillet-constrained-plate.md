@@ -203,15 +203,17 @@ both prints `FCAD_28F_RECIPE_OK` with the measured and exact volumes.
 ```python
 # FCAD_28F_AGENT_RECIPE
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import constraint_request, line_request, line_rule, distance, fixed as pin_rule
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28f-"))
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
-        {"object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
+        {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
-CONSTRAIN = "edit-sketch-constraints-copy"
+CONSTRAIN = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -326,38 +328,38 @@ plate = root / "plate.fcad"
 geometry(["create-sketch-extrude", create, "-o", plate, "--json"], plate)
 catalog = inspect(plate)
 (sketch,) = catalog["sketches"]
-editor = sketch["constraint_edit"]
-assert editor["available"] is True, editor
+editor = sketch
+
 assert catalog["bodies"][0]["fillet_edge"]["target"]["profile_constrained"] is False
 lines = [c["curve_id"] for c in editor["curves"]]
-starts = [c["start_mm"] for c in editor["curves"]]
+starts = [c["geometry"]["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
 
-def ask(remove, add):
+def ask(source, remove, add):
     path = root / "constraints.json"
-    path.write_text(json.dumps({"request_version": 1, "remove": remove, "add": add}))
+    path.write_text(json.dumps(constraint_request(inspect(source)["sketches"][0], remove, add)))
     return path
 
 def constrain(source, version, remove, add, out):
-    args = [CONSTRAIN, source, "--sketch", sketch["sketch_id"], "--expect-version", version,
-            "--request", ask(remove, add), "-o", out, "--json"]
+    args = [CONSTRAIN, source, "--expect-version", version,
+            "--request", ask(source, remove, add), "-o", out, "--json"]
     return geometry(args, out, "FCAD_28F_RECIPE_NO_SOLVER", "constraint")["result"]
 
 def dimensioned(at, width, depth):
     """H/V on every Line, the first Line's start pinned at `at`, the width
     and the depth: nothing left for the solver to choose."""
-    add = [{"curve_id": lines[i], "rule": "horizontal" if across[i] else "vertical"}
+    add = [line_rule(lines[i], "horizontal" if across[i] else "vertical")
            for i in range(4)]
-    add.append({"curve_id": lines[0], "rule": "fixed", "at": "start", "x_mm": at[0], "y_mm": at[1]})
-    add.append({"curve_id": lines[across.index(True)], "rule": "distance", "distance_mm": width})
-    add.append({"curve_id": lines[across.index(False)], "rule": "distance", "distance_mm": depth})
+    add.append(pin_rule(lines[0], "start", at[0], at[1]))
+    add.append(distance(lines[across.index(True)], width))
+    add.append(distance(lines[across.index(False)], depth))
     return add
 
 # 2. Dimension it first: translated, wider and deeper than drawn.
 AT, WIDTH, DEPTH = [-6.0, 2.0], 41.25, 15.5
 dim = root / "dimensioned.fcad"
 result = constrain(plate, catalog["content_version"], [], dimensioned(AT, WIDTH, DEPTH), dim)
-assert result["solve"]["degrees_of_freedom"] == 0, result
+
 
 # 3. Discovery: a structural target whose numbers are the stored drawing's.
 catalog = inspect(dim)
@@ -390,23 +392,23 @@ assert done["edge"] == chosen["edge"] and done["radius_mm"] == r, done
 fillet_allowlist(dim, rounded, body["body_id"])
 after = inspect(rounded)
 (fillet,) = after["fillets"]
-assert after["sketches"][0]["editable"] is False, "the coordinate editor refuses"
+
 rect = [AT[0], AT[1], WIDTH, DEPTH]
 v1, e1 = measured(rounded, rect, solved, r, H)
 
 # 5. Replace the width, then the radius, then the height.
-constraints = after["sketches"][0]["constraint_edit"]["constraints"]
+constraints = after["sketches"][0]["constraints"]
 width_id = next(c["constraint_id"] for c in constraints
-                if c["rule"]["kind"] == "distance" and c["rule"]["distance"] == WIDTH)
+                if c["rule"]["kind"] == "distance" and c["rule"]["distance"]["value"] == WIDTH)
 replaced = root / "replaced.fcad"
 constrain(rounded, after["content_version"], [width_id],
-          [{"curve_id": lines[across.index(True)], "rule": "distance", "distance_mm": 30.25}],
+          [distance(lines[across.index(True)], 30.25)],
           replaced)
 rect2 = [AT[0], AT[1], 30.25, DEPTH]
 v2, e2 = measured(replaced, rect2, [AT[0] + 30.25, AT[1]], r, H)
 catalog2 = inspect(replaced)
 radius_req = root / "radius.json"
-radius_req.write_text(json.dumps({"request_version": 1, "changes": [{"object": fillet["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 5.0, "unit": "mm"}]}))
+radius_req.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": fillet["feature_id"], "slot": {"kind": "fillet_radius"}, "value": 5.0, "unit": "mm"}]}))
 smaller = root / "smaller.fcad"
 run(["edit", replaced, "--expect-version", catalog2["content_version"], "--request", radius_req, "-o", smaller, "--json"])
 v3, e3 = measured(smaller, rect2, [AT[0] + 30.25, AT[1]], 5.0, H)

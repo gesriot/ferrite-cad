@@ -830,7 +830,7 @@ if [ -n "${FCAD_FILLET_FBX_DIR:-}" ]; then
     done
     echo "FCAD_CHAMFER_HEIGHT_UFBX_EXECUTED"
     # §29C: the chamfered plate made larger, smaller and only moved through
-    # edit-sketch-copy, in three drawing orders, each read the same two ways
+    # edit, in three drawing orders, each read the same two ways
     # and joined against the STL of the same copy.
     for name in sketch-0-big sketch-0-small sketch-0-shifted sketch-1-big sketch-1-small \
         sketch-1-shifted sketch-2-big sketch-2-small sketch-2-shifted; do
@@ -850,7 +850,7 @@ if [ -n "${FCAD_FILLET_FBX_DIR:-}" ]; then
         grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
     done
     echo "FCAD_CHAMFER_SKETCH_UFBX_EXECUTED"
-    # §29D: the chamfered plate dimensioned through edit-sketch-constraints-copy,
+    # §29D: the chamfered plate dimensioned through edit,
     # in three drawing orders, each read the same two ways and joined against
     # the STL of the same copy.
     for name in cons-0-solved cons-1-solved cons-2-solved; do

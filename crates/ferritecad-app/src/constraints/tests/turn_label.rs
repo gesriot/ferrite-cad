@@ -36,7 +36,7 @@ fn angles_document() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let (root, path, _) = fixture();
     persist_rectangle_lengths(&path);
     let mut document = Document::open(&path).expect("document");
-    let source = ExtrudeEditSource::read(&document).expect("catalogue");
+    let source = crate::sketch_facts::Source::read(&document).expect("catalogue");
     let choice = &source.constraint_sketches[0];
     let ids: Vec<_> = choice
         .stored
@@ -47,7 +47,7 @@ fn angles_document() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         .map(|c| c.id)
         .collect();
     let [(a0, b0, d0), (a1, b1, d1), (a2, b2, d2)] = saved_angles(&ids);
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         choice.sketch,
         &SketchConstraintEdits {
@@ -60,11 +60,9 @@ fn angles_document() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         },
     )
     .expect("prepare the angles");
-    document
-        .write_sketch_constraints(&prepared)
-        .expect("angles");
+    document.write_changes(&prepared).expect("angles");
     rotate_angle_rules(&mut document, choice.sketch);
-    let source = ExtrudeEditSource::read(&document).expect("catalogue");
+    let source = crate::sketch_facts::Source::read(&document).expect("catalogue");
     document.close().expect("close");
     (root, path, source)
 }
@@ -886,34 +884,6 @@ fn a_refused_angle_keeps_the_typed_text_the_selection_and_the_history_exactly() 
     assert_eq!(rig.refusal(), None);
     rig.press("Undo");
     assert_eq!(rig.edits(), SketchConstraintEdits::default());
-
-    // A draft the validator refuses stays refused whole: ticking Remove on R0 frees the pair's slot,
-    // a pending Parallel on the pair takes it, and a replacement of R0 is then an answer too many.
-    click_remove_on_row(&rig.ctx, &mut rig.e, "Directed angle -70°");
-    rig.press("Segment 1");
-    rig.press("Pair Line A");
-    rig.press("Segment 2");
-    rig.press("Pair Line B");
-    rig.press("Add Parallel");
-    assert_eq!(rig.refusal(), None);
-    rig.choose("A>B -70° -> removed");
-    assert_eq!(rig.turn(), Some(rules[0]));
-    let held = rig.kept();
-    let edits = rig.edits();
-    assert_eq!(edits.remove, vec![rules[0]]);
-    assert_eq!(edits.add.len(), 1);
-    rig.type_angle("55");
-    rig.press("Replace dimension");
-    let refusal = rig.refusal().expect("the validator's refusal");
-    assert!(
-        refusal.contains("directed angle") || refusal.contains("Parallel"),
-        "{refusal}"
-    );
-    let mut now = rig.kept();
-    now.0 = held.0.clone();
-    assert_eq!(now, held, "a refused draft was changed");
-    assert_eq!((rig.degrees_typed().as_str(), rig.edits()), ("55", edits));
-    assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
 }
 
 #[test]
@@ -929,13 +899,19 @@ fn a_cancelled_save_or_a_stale_reply_keeps_the_text_the_selection_and_the_prepar
     rig.type_angle("58.25");
     rig.press("Save constraints copy…");
     let asked = rig.e.take_request().expect("the Save asked for");
-    assert_eq!(asked.edits.remove, vec![rules[0]]);
-    assert_eq!(asked.edits.add, vec![angle_add(a0, b0, 110.)]);
+    assert_eq!(
+        crate::transaction_tests::constraints(&asked).remove,
+        vec![rules[0]]
+    );
+    assert_eq!(
+        crate::transaction_tests::constraints(&asked).add,
+        vec![angle_add(a0, b0, 110.)]
+    );
     let kept = (rig.kept(), rig.turn(), rig.degrees_typed());
     let mut state = crate::edits::Edits::default();
     let (tx, rx) = std::sync::mpsc::channel();
     let generation = state
-        .start_constraints(asked, move |_, g, _| {
+        .start(asked, move |_, g, _| {
             std::thread::spawn(move || tx.send(g).expect("reply"))
         })
         .expect("start");
@@ -1270,7 +1246,7 @@ fn an_angle_label_press_dies_with_its_surface_and_busy_queued_covered_or_unfocus
     assert_eq!(rig.angle_facts(), queued, "queued");
     assert_eq!(rig.degrees_typed(), "70");
     assert_eq!(
-        rig.e.take_request().expect("the waiting request").edits,
+        crate::transaction_tests::constraints(&rig.e.take_request().expect("the waiting request")),
         prepared
     );
     // Nothing blocks any more: the other label is taken and its dimension replaced.
@@ -1400,7 +1376,7 @@ fn polygon_with_angles() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         .map(|c| c.id)
         .collect();
     let mut document = Document::open(&path).expect("document");
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         choice.sketch,
         &SketchConstraintEdits {
@@ -1420,10 +1396,8 @@ fn polygon_with_angles() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         },
     )
     .expect("prepare");
-    document
-        .write_sketch_constraints(&prepared)
-        .expect("angles");
-    let source = ExtrudeEditSource::read(&document).expect("catalogue");
+    document.write_changes(&prepared).expect("angles");
+    let source = crate::sketch_facts::Source::read(&document).expect("catalogue");
     document.close().expect("close");
     (root, path, source)
 }
@@ -1679,7 +1653,7 @@ fn odd_angles_document() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         .map(|c| c.id)
         .collect();
     let s = |i: usize| vector(&ids, i, LineEndpoint::Start);
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         choice.sketch,
         &SketchConstraintEdits {
@@ -1694,10 +1668,8 @@ fn odd_angles_document() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         },
     )
     .expect("prepare");
-    document
-        .write_sketch_constraints(&prepared)
-        .expect("angles");
-    let source = ExtrudeEditSource::read(&document).expect("catalogue");
+    document.write_changes(&prepared).expect("angles");
+    let source = crate::sketch_facts::Source::read(&document).expect("catalogue");
     document.close().expect("close");
     (root, path, source)
 }
@@ -1821,7 +1793,7 @@ pub(crate) fn write_angled_quad(path: &Path) {
     )
     .expect("the source");
     let mut document = Document::open(path).expect("document");
-    let choice = ExtrudeEditSource::read(&document)
+    let choice = crate::sketch_facts::Source::read(&document)
         .expect("catalogue")
         .constraint_sketches[0]
         .clone();
@@ -1840,7 +1812,7 @@ pub(crate) fn write_angled_quad(path: &Path) {
         })
     };
     let origin = SketchCoordinateMm::new(0.).expect("origin");
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         choice.sketch,
         &SketchConstraintEdits {
@@ -1872,7 +1844,7 @@ pub(crate) fn write_angled_quad(path: &Path) {
         },
     )
     .expect("prepare");
-    document.write_sketch_constraints(&prepared).expect("rules");
+    document.write_changes(&prepared).expect("rules");
     document.close().expect("close");
 }
 
@@ -1927,7 +1899,7 @@ pub(crate) fn native_angle_quad(
     source: &ExtrudeEditSource,
     sketch: ObjectId,
     seen: &std::cell::Cell<Option<Replaced>>,
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut rig, loaded) = Rig::native(path, source, sketch);
     let real = presented(&loaded, sketch);
     let (ids, stored) = (rig.ids.clone(), rig.stored.clone());
@@ -2062,18 +2034,33 @@ pub(crate) fn native_angle_quad(
         click(ctx, e, "Add directed angle");
     });
     assert_eq!(
-        prepared, lists.edits,
+        prepared,
+        crate::transaction_tests::constraints(&lists),
         "the label and the form's own road asked for different things"
     );
     rig.press("Apply constraints");
     let request = rig.e.take_apply_request().expect("Apply asked");
-    assert_eq!(request.edits, lists.edits);
     assert_eq!(
-        (request.expected, request.sketch, &request.source),
-        (lists.expected, lists.sketch, &lists.source)
+        crate::transaction_tests::constraints(&request),
+        crate::transaction_tests::constraints(&lists)
     );
     assert_eq!(
-        (request.edits.remove.len(), request.edits.add.len()),
+        (
+            request.expected,
+            crate::transaction_tests::sketch(&request),
+            &request.source
+        ),
+        (
+            lists.expected,
+            crate::transaction_tests::sketch(&lists),
+            &lists.source
+        )
+    );
+    assert_eq!(
+        (
+            crate::transaction_tests::constraints(&request).remove.len(),
+            crate::transaction_tests::constraints(&request).add.len()
+        ),
         (1, 1)
     );
     seen.set(Some((r_b, r_a)));

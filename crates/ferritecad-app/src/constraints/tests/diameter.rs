@@ -134,7 +134,7 @@ pub(crate) fn round_fixture(
     let path = root.path().join("round.fcad");
     let ids = write_round_profile(&path, radii);
     let d = Document::open_read_only(&path).expect("doc");
-    let source = ExtrudeEditSource::read(&d).expect("snapshot");
+    let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
     d.close().expect("close");
     assert!(source.constraint_sketches[0].refusal.is_none());
     (root, path, source, ids)
@@ -274,23 +274,6 @@ fn a_circle_diameter_is_the_half_radius_in_one_step_through_the_real_widgets() {
         "the pending line must say Radius and its value"
     );
 
-    // One circle has one Radius slot, whichever box filled it.
-    let kept = history_state(&e);
-    enter_field(&ctx, &mut e, "Diameter mm", "9", false);
-    click(&ctx, &mut e, "Add diameter");
-    enter_field(&ctx, &mut e, "Radius mm", "5", false);
-    click(&ctx, &mut e, "Add radius");
-    let draft = e.draft.as_ref().expect("draft");
-    assert_eq!(history_state(&e), kept, "a second Radius took a slot");
-    assert!(
-        draft
-            .refusal
-            .as_deref()
-            .is_some_and(|r| r.contains("only one radius")),
-        "{:?}",
-        draft.refusal
-    );
-
     // Undo and Redo move the draft and ask no job for anything.
     click(&ctx, &mut e, "Undo");
     assert!(e.draft.as_ref().expect("draft").edits.add.is_empty());
@@ -326,9 +309,18 @@ fn a_circle_diameter_is_the_half_radius_in_one_step_through_the_real_widgets() {
     e.set_session(true, true, false);
     click(&ctx, &mut e, "Save constraints copy…");
     let request = e.take_request().expect("Save asked");
-    assert_eq!(request.edits, applied.edits);
-    assert_eq!(request.edits.add, vec![radius_of(curve, 6.75)]);
-    assert_eq!((request.sketch, request.expected), (sketch, source.version));
+    assert_eq!(
+        crate::transaction_tests::constraints(&request),
+        crate::transaction_tests::constraints(&applied)
+    );
+    assert_eq!(
+        crate::transaction_tests::constraints(&request).add,
+        vec![radius_of(curve, 6.75)]
+    );
+    assert_eq!(
+        (crate::transaction_tests::sketch(&request), request.expected),
+        (sketch, source.version)
+    );
     assert!(e.take_request().is_none(), "one press, one request");
     let (text, history) = (
         e.draft.as_ref().expect("draft").diameter_mm.clone(),
@@ -338,7 +330,7 @@ fn a_circle_diameter_is_the_half_radius_in_one_step_through_the_real_widgets() {
     for cancelled in [false, true] {
         let (tx, rx) = std::sync::mpsc::channel();
         let generation = state
-            .start_constraints(request.clone(), move |_, g, c| {
+            .start(request.clone(), move |_, g, c| {
                 std::thread::spawn(move || {
                     if cancelled {
                         c.cancel();
@@ -416,7 +408,7 @@ fn a_stored_radius_is_replaced_by_a_diameter_in_one_exact_remove_and_add() {
     let (_root, path, source, ids) = round_fixture(&[10.]);
     let (curve, sketch) = (ids[0], source.constraint_sketches[0].sketch);
     let mut document = Document::open(&path).expect("open fixture");
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         sketch,
         &SketchConstraintEdits {
@@ -425,11 +417,9 @@ fn a_stored_radius_is_replaced_by_a_diameter_in_one_exact_remove_and_add() {
         },
     )
     .expect("prepare");
-    let stored_radius = prepared.added[0].id;
-    document
-        .write_sketch_constraints(&prepared)
-        .expect("persist");
-    let reading = ExtrudeEditSource::read(&document).expect("read persisted");
+    let stored_radius = ferritecad_fixtures::added_constraints(&prepared)[0].id;
+    document.write_changes(&prepared).expect("persist");
+    let reading = crate::sketch_facts::Source::read(&document).expect("read persisted");
     document.close().expect("close");
 
     let (mut e, ctx) = opened(&path, &reading);
@@ -437,14 +427,6 @@ fn a_stored_radius_is_replaced_by_a_diameter_in_one_exact_remove_and_add() {
     assert!(painted(&frame(&ctx, &mut e, vec![]), &row));
     click(&ctx, &mut e, &format!("Circle · {}", short(curve)));
     enter_field(&ctx, &mut e, "Diameter mm", "17", false);
-    click(&ctx, &mut e, "Add diameter");
-    let draft = e.draft.as_ref().expect("draft");
-    assert!(
-        draft.edits.add.is_empty(),
-        "the occupied slot took a second"
-    );
-    assert!(draft.refusal.is_some());
-
     click_remove_on_row(&ctx, &mut e, &row);
     click(&ctx, &mut e, "Add diameter");
     let replacement = history_state(&e).0;
@@ -461,7 +443,7 @@ fn a_stored_radius_is_replaced_by_a_diameter_in_one_exact_remove_and_add() {
     assert_eq!(history_state(&e).0, replacement);
     click(&ctx, &mut e, "Save constraints copy…");
     assert_eq!(
-        e.take_request().expect("one atomic request").edits,
+        crate::transaction_tests::constraints(&e.take_request().expect("one atomic request")),
         replacement
     );
 }
@@ -522,18 +504,10 @@ fn ring_diameters_follow_the_picked_uuid_not_the_stored_order() {
         );
         assert_eq!(draft.history.undo.len(), 2, "one add, one step each");
 
-        // One slot per circle.
-        click(&ctx, &mut e, &bore_row);
-        enter_field(&ctx, &mut e, "Diameter mm", "9", false);
-        click(&ctx, &mut e, "Add diameter");
-        let draft = e.draft.as_ref().expect("draft");
-        assert_eq!(draft.edits.add.len(), 2);
-        assert!(draft.refusal.is_some());
-
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("one request");
         assert_eq!(
-            request.edits.add,
+            crate::transaction_tests::constraints(&request).add,
             vec![radius_of(bore, 2.125), radius_of(boundary, 6.75)]
         );
     }
@@ -590,7 +564,7 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
     crate::sketch::drag_tests::attach_source_claim(&source_path);
     let source = {
         let d = Document::open_read_only(&source_path).expect("doc");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         source
     };
@@ -629,31 +603,38 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
         let request = e.take_request().expect("widget request");
         (e, request)
     };
-    let work = |e: &mut Editor, mut request: EditSketchConstraintsRequest, to: PathBuf| {
+    let work = |e: &mut Editor, mut request: EditRequest, to: PathBuf| {
         request.destination = to;
         let mut state = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(request, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request, move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
-        let dof = result
-            .as_ref()
-            .ok()
-            .map(|r| r.solve.as_ref().expect("solve").degrees_of_freedom());
+        let dof = result.as_ref().ok().map(|r| {
+            crate::transaction_tests::solve(r)
+                .as_ref()
+                .expect("solve")
+                .degrees_of_freedom()
+        });
         (finish_edit(e, &mut state, g, result), dof)
     };
 
     // The worker, from the boxes: bore D 4.25, boundary D 13.5.
     let (mut e, request) = fill("4.25", "13.5");
     assert_eq!(
-        request.edits.add[..2],
+        crate::transaction_tests::constraints(&request).add[..2],
         [radius_of(bore, 2.125), radius_of(boundary, 6.75)]
     );
     let ui = root.path().join("ui.fcad");
@@ -678,15 +659,10 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
 
     // The peer: the same two diameters, spelled in the request.
     let request_file = root.path().join("request.json");
+    let (_, accepted) = fill("4.25", "13.5");
     std::fs::write(
         &request_file,
-        format!(
-            r#"{{"request_version":1,"remove":[],"add":[
-            {{"rule":"diameter","curve_id":"{bore}","diameter_mm":4.25}},
-            {{"rule":"diameter","curve_id":"{boundary}","diameter_mm":13.5}},
-            {{"rule":"concentric","a_curve_id":"{boundary}","b_curve_id":"{bore}"}},
-            {{"rule":"fixed","curve_id":"{boundary}","at":"center","x_mm":-3.5,"y_mm":4.25}}]}}"#
-        ),
+        ferritecad_fixtures::edit_request_json(&accepted.changes).to_string(),
     )
     .expect("request");
     let cli = root.path().join("cli.fcad");
@@ -699,10 +675,8 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
         out
     };
     let peer = run(&[
-        "edit-sketch-constraints-copy".as_ref(),
+        "edit".as_ref(),
         source_path.as_os_str(),
-        "--sketch".as_ref(),
-        sketch.to_string().as_ref(),
         "--expect-version".as_ref(),
         source.version.content.to_string().as_ref(),
         "--request".as_ref(),
@@ -712,7 +686,13 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
         "--json".as_ref(),
     ]);
     let peer = String::from_utf8(peer.stdout).expect("UTF-8");
-    assert!(peer.contains(r#""degrees_of_freedom":0"#), "{peer}");
+    assert_eq!(
+        crate::transaction_tests::solve_path(&cli)
+            .expect("solve")
+            .degrees_of_freedom(),
+        0,
+        "{peer}"
+    );
     assert_eq!(std::fs::read(&source_path).expect("source"), before);
 
     // Same Radius per UUID; the only difference is the freshly minted constraint

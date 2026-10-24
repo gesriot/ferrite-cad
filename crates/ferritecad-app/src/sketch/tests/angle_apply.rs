@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! §30E: actual angle widgets using the window's production availability predicate.
 use super::*;
+use crate::sketch_facts::Source as ExtrudeEditSource;
 use crate::{Loads, can_apply_angle, creates, edits, exports, sessions};
-use ferritecad_document::ExtrudeEditSource;
 
 pub(crate) const RADIAL: [[f64; 2]; 4] = [[2.75, -3.25], [7.5, -3.25], [7.5, 9.5], [2.75, 9.5]];
 
@@ -58,7 +58,7 @@ fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join("sector.fcad");
     crate::constraints::tests::revolve::write_sector(&path, &RADIAL, 137.5, None);
-    let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let reading = crate::sketch_facts::read(&path).expect("reading");
     (root, path, reading)
 }
 fn settle(ctx: &egui::Context, e: &mut Editor) {
@@ -146,10 +146,17 @@ fn angle_apply_uses_current_fields_and_confirmation_is_only_draft_history() {
     type_angle(&ctx, w.form(), "212.25");
     press(&ctx, w.form(), "Apply angle");
     let r = w.form().take_apply_angle_request().expect("Apply");
-    assert_eq!(r.changes[0].expression.value().to_degrees(), 212.25);
+    assert_eq!(
+        r.changes[0]
+            .expression()
+            .expect("numeric form contains an expression change")
+            .value()
+            .to_degrees(),
+        212.25
+    );
     assert_eq!(r.expected, reading.version);
     assert_eq!(
-        r.changes[0].object,
+        r.changes[0].object(),
         ferritecad_fixtures::expression_slot(
             &reading,
             ferritecad_document::ExpressionSlot::RevolveAngle
@@ -182,7 +189,8 @@ fn angle_apply_uses_current_fields_and_confirmation_is_only_draft_history() {
             .take_apply_angle_request()
             .expect("unconfirmed fields")
             .changes[0]
-            .expression
+            .expression()
+            .expect("expression")
             .value()
             .to_degrees(),
         198.125
@@ -289,7 +297,7 @@ fn angle_apply_busy_guards_first_prove_a_changed_request_is_available() {
         &ferritecad_kernel::OperationContext::default(),
     )
     .expect("plate");
-    let plate_reading = ferritecad_jobs::read_extrude_source(&plate).expect("plate");
+    let plate_reading = crate::sketch_facts::read(&plate).expect("plate");
     assert!(w.edits.begin(&plate, &plate_reading));
     assert!(!w.ready());
     w.edits = edits::Edits::default();
@@ -355,7 +363,7 @@ fn angle_apply_requires_its_own_form_and_session_and_supported_kind() {
     })
     .expect("full turn");
     d.close().expect("close");
-    let full = ferritecad_jobs::read_extrude_source(&path).expect("full");
+    let full = crate::sketch_facts::read(&path).expect("full");
     assert!(
         !w.form().begin_angle_edit(&path, &full, id),
         "full turn has no editable partial angle"
@@ -469,7 +477,7 @@ fn angle_form_opens_dirty_and_withholds_only_the_copy_workflow() {
     w.sessions.finish_scene(g, Ok(()));
     assert!(w.sessions.dirty());
     let current = w.sessions.export_path().expect("current");
-    let reading = ferritecad_jobs::read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     w.tell();
     let ctx = egui::Context::default();
     // The old copy-only entry gate is shut; the session entry must still open.
@@ -497,7 +505,7 @@ fn angle_form_opens_dirty_and_withholds_only_the_copy_workflow() {
     assert!(w.form().take_apply_angle_request().is_some());
     // A new clean session with the same form keeps the previous copy workflow.
     let mut clean = Window::open(&path);
-    let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let reading = crate::sketch_facts::read(&path).expect("reading");
     assert!(clean.form().begin_angle_edit(&path, &reading, id));
     clean.tell();
     let ctx = egui::Context::default();

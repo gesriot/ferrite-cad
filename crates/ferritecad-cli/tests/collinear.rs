@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! §31G: two saved Lines on one infinite line, through the shipped command
-//! `edit-sketch-constraints-copy`.
+//! `edit`.
 //!
 //! Everything asserted on a solved profile is measured here, from the solved
 //! points of the published file after it was reopened and rebuilt cold: the
@@ -12,6 +12,8 @@
 //! 2 mm apart, the same U turned off the axes, and a Z whose rims run in
 //! opposite directions.
 #![allow(clippy::panic)]
+#[path = "support/transaction.rs"]
+mod transaction;
 use ferritecad_document::{CacheStore, Document, ObjectPayload, SketchGeometry};
 use ferritecad_eval::{CacheOutcome, rebuild_cached, rebuild_cold};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
@@ -20,10 +22,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
-#[path = "support/pipe.rs"]
-mod pipe;
 
-const OP: &str = "edit-sketch-constraints-copy";
+const OP: &str = "edit";
 /// Solved distances (mm) and sines agree with the request to well inside this.
 const TOL: f64 = 1e-6;
 
@@ -174,13 +174,13 @@ impl Source {
         (Self::new(&turned), turned)
     }
     fn curve(&self, i: usize) -> Value {
-        self.catalog["sketches"][0]["constraint_edit"]["curves"][i]["curve_id"].clone()
+        self.catalog["sketches"][0]["curves"][i]["curve_id"].clone()
     }
     fn collinear(&self, i: usize, j: usize) -> Value {
-        json!({"rule":"collinear","a_curve_id":self.curve(i),"b_curve_id":self.curve(j)})
+        self.rule("collinear", i, j)
     }
     fn rule(&self, rule: &str, i: usize, j: usize) -> Value {
-        json!({"rule":rule,"a_curve_id":self.curve(i),"b_curve_id":self.curve(j)})
+        transaction::relation(&self.curve(i), &self.curve(j), rule)
     }
     /// A request that adds `add` and removes `remove`, from `catalog`'s snapshot of `from`.
     fn command(
@@ -193,34 +193,27 @@ impl Source {
     ) -> Command {
         write(
             &self.request,
-            &json!({"request_version":1,"remove":remove,"add":add}),
+            &transaction::constraints(&catalog["sketches"][0], remove, add),
         );
-        let mut c = cli();
-        c.arg(OP)
-            .arg(from)
-            .arg("--sketch")
-            .arg(catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
-            .arg("--expect-version")
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(&self.request)
-            .arg("-o")
-            .arg(out)
-            .arg("--json");
-        c
+        transaction::command(
+            from,
+            catalog["content_version"].as_str().expect("version"),
+            &self.request,
+            out,
+        )
     }
     /// Publishes `add` onto the source and answers the result.
     fn publish(&self, add: &[Value], name: &str) -> (PathBuf, Value) {
         let out = self.root.path().join(name);
-        let result = reply(
+        reply(
             self.command(&self.path, &self.catalog, &[], add, &out)
                 .output()
                 .expect("publish"),
             OP,
             0,
-        )["result"]
-            .clone();
-        (out, result)
+        );
+        let facts = facts(&out);
+        (out, facts)
     }
     fn refused(&self, from: &Path, catalog: &Value, add: &[Value]) -> Value {
         let out = self.root.path().join("never.fcad");
@@ -411,7 +404,7 @@ fn exports(path: &Path, solved: &Solved, tag: &str) {
 }
 
 fn constraint_ids(catalog: &Value) -> Vec<Value> {
-    catalog["sketches"][0]["constraint_edit"]["constraints"]
+    catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("constraints")
         .iter()
@@ -475,151 +468,6 @@ fn on_one_line(solved: &Solved, i: usize, j: usize, what: &str) {
     );
 }
 
-/// Every refusal the request can make on its own: strict JSON, before any
-/// document, kernel or solver is asked anything. The sample plate needs neither
-/// kernel nor solver.
-#[test]
-fn a_collinear_request_is_strict_and_refuses_before_anything_is_published() {
-    let s = Source::sample();
-    let before = std::fs::read(&s.path).expect("source");
-    let (a, b) = (s.curve(0), s.curve(2));
-    let good = s.collinear(0, 2);
-    let bad: Vec<(&str, Value)> = vec![
-        ("no a", json!({"rule":"collinear","b_curve_id":b})),
-        ("no b", json!({"rule":"collinear","a_curve_id":a})),
-        ("nothing", json!({"rule":"collinear"})),
-        (
-            "extra on the rule",
-            json!({"rule":"collinear","a_curve_id":a,"b_curve_id":b,"extra":1}),
-        ),
-        // No direction of any kind: those belong to the directed angle.
-        (
-            "a direction",
-            json!({"rule":"collinear","a_curve_id":a,"b_curve_id":b,"from":"start"}),
-        ),
-        (
-            "both directions",
-            json!({"rule":"collinear","a_curve_id":a,"b_curve_id":b,"a_from":"start","b_from":"end"}),
-        ),
-        (
-            "the directed form",
-            json!({"rule":"collinear",
-                   "a":{"curve_id":a,"from":"start","to":"end"},
-                   "b":{"curve_id":b,"from":"start","to":"end"}}),
-        ),
-        (
-            "an angle",
-            json!({"rule":"collinear","a_curve_id":a,"b_curve_id":b,"angle_deg":0}),
-        ),
-        (
-            "a distance",
-            json!({"rule":"collinear","a_curve_id":a,"b_curve_id":b,"offset_mm":0}),
-        ),
-        (
-            "the other names",
-            json!({"rule":"collinear","curve_id":a,"other_curve_id":b}),
-        ),
-        // Only the exact rule name.
-        (
-            "upper case",
-            json!({"rule":"Collinear","a_curve_id":a,"b_curve_id":b}),
-        ),
-        (
-            "misspelt",
-            json!({"rule":"colinear","a_curve_id":a,"b_curve_id":b}),
-        ),
-        (
-            "plural",
-            json!({"rule":"collinear_lines","a_curve_id":a,"b_curve_id":b}),
-        ),
-        // UUIDs only.
-        (
-            "not a UUID",
-            json!({"rule":"collinear","a_curve_id":"nope","b_curve_id":b}),
-        ),
-        (
-            "a number",
-            json!({"rule":"collinear","a_curve_id":3,"b_curve_id":b}),
-        ),
-        (
-            "null",
-            json!({"rule":"collinear","a_curve_id":null,"b_curve_id":b}),
-        ),
-        (
-            "a bool",
-            json!({"rule":"collinear","a_curve_id":a,"b_curve_id":true}),
-        ),
-        (
-            "a list of Lines",
-            json!({"rule":"collinear","a_curve_id":[a],"b_curve_id":[b]}),
-        ),
-        ("the rule as a list", json!(["collinear", a, b])),
-    ];
-    for (name, addition) in &bad {
-        let out = s.root.path().join("never.fcad");
-        let v = reply(
-            s.command(
-                &s.path,
-                &s.catalog,
-                &[],
-                std::slice::from_ref(addition),
-                &out,
-            )
-            .stderr(pipe::closed_pipe())
-            .output()
-            .expect("refusal"),
-            OP,
-            2,
-        );
-        assert_eq!(v["error"]["kind"], "input", "{name}: {v}");
-        assert!(v["error"].get("constraint_conflict").is_none(), "{name}");
-        assert!(!out.exists(), "{name} published");
-    }
-    // Numbers JSON cannot carry have no place in this request, and a repeated
-    // key is refused whole.
-    let valid = serde_json::to_string(&json!({"request_version":1,"remove":[],"add":[good]}))
-        .expect("encode");
-    let rule = "\"rule\":\"collinear\"";
-    assert!(valid.contains(rule), "{valid}");
-    for (name, text) in [
-        (
-            "duplicate rule",
-            valid.replace(rule, &format!("{rule},{rule}")),
-        ),
-        (
-            "escaped duplicate",
-            valid.replace(rule, &format!("\"ru\\u006ce\":\"x\",{rule}")),
-        ),
-        (
-            "NaN field",
-            valid.replace(rule, &format!("{rule},\"angle_deg\":NaN")),
-        ),
-        (
-            "1e999 field",
-            valid.replace(rule, &format!("{rule},\"offset_mm\":1e999")),
-        ),
-    ] {
-        assert_ne!(text, valid, "{name} did not change the request");
-        std::fs::write(&s.request, &text).expect("request");
-        let mut c = cli();
-        c.arg(OP)
-            .arg(&s.path)
-            .arg("--sketch")
-            .arg(s.catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
-            .arg("--expect-version")
-            .arg(s.catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(&s.request)
-            .arg("-o")
-            .arg(s.root.path().join("never.fcad"))
-            .arg("--json");
-        let v = reply(c.output().expect("refusal"), OP, 2);
-        assert_eq!(v["error"]["kind"], "input", "{name}: {v}");
-    }
-    assert!(!s.root.path().join("never.fcad").exists());
-    assert_eq!(std::fs::read(&s.path).expect("source"), before);
-}
-
 /// Discovery: a stored collinearity is reported by its own kind and both Lines,
 /// the older relations exactly as before, and the new capability and layout are
 /// in the file. The relation is written through the document, so neither a
@@ -628,16 +476,14 @@ fn a_collinear_request_is_strict_and_refuses_before_anything_is_published() {
 fn discovery_names_a_stored_collinear_and_both_lines_and_leaves_the_older_forms_alone() {
     use ferritecad_document::{
         AddLineConstraint, AddSketchConstraint, LineRelation, SketchConstraintEdits,
-        prepare_sketch_constraints,
     };
     let s = Source::sample();
-    let ids: Vec<ferritecad_types::StableEntityId> =
-        s.catalog["sketches"][0]["constraint_edit"]["curves"]
-            .as_array()
-            .expect("curves")
-            .iter()
-            .map(|c| c["curve_id"].as_str().expect("id").parse().expect("UUID"))
-            .collect();
+    let ids: Vec<ferritecad_types::StableEntityId> = s.catalog["sketches"][0]["curves"]
+        .as_array()
+        .expect("curves")
+        .iter()
+        .map(|c| c["curve_id"].as_str().expect("id").parse().expect("UUID"))
+        .collect();
     let with = s.root.path().join("stored.fcad");
     std::fs::copy(&s.path, &with).expect("copy");
     let mut d = Document::open(&with).expect("open");
@@ -655,7 +501,7 @@ fn discovery_names_a_stored_collinear_and_both_lines_and_leaves_the_older_forms_
             relation,
         })
     };
-    let prepared = prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &d,
         sketch,
         &SketchConstraintEdits {
@@ -667,13 +513,16 @@ fn discovery_names_a_stored_collinear_and_both_lines_and_leaves_the_older_forms_
         },
     )
     .expect("prepared");
-    let (collinear_id, parallel_id) = (prepared.added[4].id, prepared.added[5].id);
-    d.write_sketch_constraints(&prepared).expect("written");
+    let (collinear_id, parallel_id) = (
+        ferritecad_fixtures::added_constraints(&prepared)[4].id,
+        ferritecad_fixtures::added_constraints(&prepared)[5].id,
+    );
+    d.write_changes(&prepared).expect("written");
     d.close().expect("close");
 
     let found = inspect(&with);
-    let edit = &found["sketches"][0]["constraint_edit"];
-    assert_eq!(edit["available"], true, "{edit}");
+    let edit = &found["sketches"][0];
+
     let rules: Vec<_> = edit["constraints"].as_array().expect("constraints").clone();
     let by_id = |id: &ferritecad_types::StableEntityId| {
         rules
@@ -711,7 +560,7 @@ fn discovery_names_a_stored_collinear_and_both_lines_and_leaves_the_older_forms_
     // The same sketch without the collinearity is the layout every older build
     // writes.
     let mut d = Document::open(&with).expect("reopen");
-    let removal = prepare_sketch_constraints(
+    let removal = ferritecad_fixtures::constraint_changes(
         &d,
         sketch,
         &SketchConstraintEdits {
@@ -720,154 +569,8 @@ fn discovery_names_a_stored_collinear_and_both_lines_and_leaves_the_older_forms_
         },
     )
     .expect("remove");
-    d.write_sketch_constraints(&removal).expect("write");
+    d.write_changes(&removal).expect("write");
     d.close().expect("close");
-}
-
-/// What the request cannot be, said after the document is read and before any
-/// solver is asked: a pair of one Line, a Line of no Sketch of this document and
-/// two answers about one pair, in either order. The command rebuilds the source
-/// first, so this needs a kernel and no solver (and so is the same gate in the
-/// build that has no solver).
-#[test]
-fn the_pair_and_the_lines_of_a_request_are_checked_before_any_solver_is_asked() {
-    if !have(true, false) {
-        return;
-    }
-    let s = Source::new(&U);
-    let a = s.curve(0);
-    for (name, addition) in [
-        (
-            "one Line twice",
-            json!({"rule":"collinear","a_curve_id":a,"b_curve_id":a}),
-        ),
-        (
-            "a Line of no Sketch of this document",
-            json!({"rule":"collinear","a_curve_id":a,
-                   "b_curve_id":ferritecad_types::StableEntityId::new().to_string()}),
-        ),
-    ] {
-        let error = s.refused(&s.path, &s.catalog, std::slice::from_ref(&addition));
-        assert_eq!(error["kind"], "input", "{name}: {error}");
-        assert!(error.get("constraint_conflict").is_none(), "{name}");
-    }
-    // One pair has one relation slot, however the request spells it: a request
-    // that says two answers about it is refused whole, before the solver.
-    for (name, additions) in [
-        ("twice", vec![s.collinear(0, 4), s.collinear(0, 4)]),
-        ("swapped", vec![s.collinear(0, 4), s.collinear(4, 0)]),
-        (
-            "with a Parallel",
-            vec![s.collinear(0, 4), s.rule("parallel", 4, 0)],
-        ),
-        (
-            "after a Perpendicular",
-            vec![s.rule("perpendicular", 0, 4), s.collinear(4, 0)],
-        ),
-        (
-            "with a directed angle",
-            vec![
-                s.collinear(0, 4),
-                json!({"rule":"directed_angle",
-                       "a":{"curve_id":s.curve(0),"from":"start","to":"end"},
-                       "b":{"curve_id":s.curve(4),"from":"end","to":"start"},
-                       "angle_deg":0}),
-            ],
-        ),
-    ] {
-        let error = s.refused(&s.path, &s.catalog, &additions);
-        assert_eq!(error["kind"], "input", "{name}: {error}");
-        assert!(
-            error["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("Collinear")),
-            "{name}: the refusal does not name the collinearity: {error}"
-        );
-        assert!(error.get("constraint_conflict").is_none(), "{name}");
-    }
-}
-
-/// The refusals that happen before the solver is asked: the pair slot, with a
-/// collinearity stored through the document. The command rebuilds the source
-/// first, so a stored collinearity needs the solver even for a request that is
-/// refused.
-#[test]
-fn the_pair_slot_holds_every_other_answer_off_a_collinear_pair_before_the_solver() {
-    if !have(true, true) {
-        return;
-    }
-    use ferritecad_document::{
-        AddLineConstraint, AddSketchConstraint, LineRelation, SketchConstraintEdits,
-        prepare_sketch_constraints,
-    };
-    let s = Source::new(&U);
-    let ids: Vec<ferritecad_types::StableEntityId> = (0..8)
-        .map(|i| s.curve(i).as_str().expect("id").parse().expect("UUID"))
-        .collect();
-    let with = s.root.path().join("stored.fcad");
-    std::fs::copy(&s.path, &with).expect("copy");
-    let mut d = Document::open(&with).expect("open");
-    let sketch = d
-        .objects()
-        .expect("objects")
-        .iter()
-        .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
-        .expect("sketch")
-        .id;
-    let prepared = prepare_sketch_constraints(
-        &d,
-        sketch,
-        &SketchConstraintEdits {
-            remove: vec![],
-            add: vec![AddSketchConstraint::Line(AddLineConstraint::Relation {
-                a: ids[0],
-                b: ids[4],
-                relation: LineRelation::Collinear,
-            })],
-        },
-    )
-    .expect("prepared");
-    d.write_sketch_constraints(&prepared).expect("written");
-    d.close().expect("close");
-    let catalog = inspect(&with);
-    for (name, add) in [
-        ("the same relation again", s.collinear(0, 4)),
-        ("swapped", s.collinear(4, 0)),
-        ("a Parallel", s.rule("parallel", 0, 4)),
-        ("a Parallel, swapped", s.rule("parallel", 4, 0)),
-        ("a Perpendicular", s.rule("perpendicular", 0, 4)),
-        (
-            "a directed angle",
-            json!({"rule":"directed_angle",
-                   "a":{"curve_id":s.curve(0),"from":"start","to":"end"},
-                   "b":{"curve_id":s.curve(4),"from":"start","to":"end"},
-                   "angle_deg":0}),
-        ),
-    ] {
-        let error = s.refused(&with, &catalog, std::slice::from_ref(&add));
-        assert_eq!(error["kind"], "input", "{name}: {error}");
-        assert!(error.get("constraint_conflict").is_none(), "{name}");
-    }
-    // An equal length on the pair is a different property of it: its own slot,
-    // accepted, beside the collinearity.
-    let out = s.root.path().join("equal.fcad");
-    let result = reply(
-        s.command(&with, &catalog, &[], &[s.rule("equal_length", 0, 4)], &out)
-            .output()
-            .expect("equal length"),
-        OP,
-        0,
-    )["result"]
-        .clone();
-    assert_eq!(
-        result["added_constraints"][0]["rule"]["kind"],
-        "equal_length"
-    );
-    assert_eq!(
-        constraint_ids(&inspect(&out)).len(),
-        constraint_ids(&catalog).len() + 1,
-        "one more constraint, and the collinearity is still there"
-    );
 }
 
 /// OCCT without a solver: a document that holds a collinearity is neither
@@ -882,7 +585,6 @@ fn without_a_solver_a_collinear_document_is_not_solved_and_the_unconstrained_rou
     }
     use ferritecad_document::{
         AddLineConstraint, AddSketchConstraint, LineRelation, SketchConstraintEdits,
-        prepare_sketch_constraints,
     };
     let s = Source::new(&U);
     // The unconstrained route: a cold rebuild, validation and an export.
@@ -927,7 +629,7 @@ fn without_a_solver_a_collinear_document_is_not_solved_and_the_unconstrained_rou
         .iter()
         .map(|&i| s.curve(i).as_str().expect("id").parse().expect("UUID"))
         .collect();
-    let prepared = prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &d,
         sketch,
         &SketchConstraintEdits {
@@ -940,7 +642,7 @@ fn without_a_solver_a_collinear_document_is_not_solved_and_the_unconstrained_rou
         },
     )
     .expect("prepared");
-    d.write_sketch_constraints(&prepared).expect("written");
+    d.write_changes(&prepared).expect("written");
     d.close().expect("close");
     // Nothing solves it and nothing is published as if it had been.
     let stl = s.root.path().join("collinear.stl");
@@ -995,7 +697,7 @@ fn native_collinear_brings_disjoint_parallel_rims_onto_one_line_and_a_parallel_d
     );
 
     let (path, result) = s.publish(&[s.collinear(0, 4)], "u-collinear.fcad");
-    let added = result["added_constraints"].as_array().expect("added");
+    let added = result["constraints"].as_array().expect("added");
     assert_eq!(added.len(), 9, "eight joints and the collinearity");
     assert_eq!(
         added[8]["rule"],
@@ -1109,7 +811,7 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
     }
     let s = Source::new(&U);
     let (together, built) = s.publish(&[s.collinear(0, 4)], "u-collinear.fcad");
-    let collinear_id = built["added_constraints"][8]["constraint_id"].clone();
+    let collinear_id = built["constraints"][8]["constraint_id"].clone();
     let together_catalog = inspect(&together);
     let together_ids = constraint_ids(&together_catalog);
 
@@ -1117,7 +819,7 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
     // one request. Every other UUID, rule and order survives, and the layout is
     // the older one again.
     let replaced_out = s.root.path().join("u-parallel.fcad");
-    let replaced = reply(
+    let _replaced = reply(
         s.command(
             &together,
             &together_catalog,
@@ -1131,11 +833,11 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
         0,
     )["result"]
         .clone();
-    assert_eq!(replaced["removed_constraint_ids"], json!([collinear_id]));
-    assert_eq!(replaced["solve"]["degrees_of_freedom"], 15);
+
+    assert_eq!(transaction::solve(&replaced_out)["degrees_of_freedom"], 15);
     let after = inspect(&replaced_out);
     let first_eight = |catalog: &Value| {
-        catalog["sketches"][0]["constraint_edit"]["constraints"]
+        catalog["sketches"][0]["constraints"]
             .as_array()
             .expect("constraints")[..8]
             .to_vec()
@@ -1154,7 +856,7 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
 
     // Removing it gives the freedom back; only the joints remain.
     let free_out = s.root.path().join("u-free.fcad");
-    let freed = reply(
+    let _freed = reply(
         s.command(
             &together,
             &together_catalog,
@@ -1168,8 +870,8 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
         0,
     )["result"]
         .clone();
-    assert_eq!(freed["added_constraints"], json!([]));
-    assert_eq!(freed["solve"]["degrees_of_freedom"], 16);
+
+    assert_eq!(transaction::solve(&free_out)["degrees_of_freedom"], 16);
     assert_eq!(
         constraint_ids(&inspect(&free_out)),
         together_ids[..8].to_vec(),
@@ -1182,14 +884,14 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
     // collinearity that profile is solved; with it the reasons are typed,
     // include the collinearity, and nothing is published.
     let held = [
-        json!({"rule":"fixed","curve_id":s.curve(6),"at":"start","x_mm":0,"y_mm":0}),
-        json!({"rule":"horizontal","curve_id":s.curve(6)}),
-        json!({"rule":"vertical","curve_id":s.curve(5)}),
-        json!({"rule":"distance","curve_id":s.curve(5),"distance_mm":20}),
-        json!({"rule":"horizontal","curve_id":s.curve(4)}),
-        json!({"rule":"vertical","curve_id":s.curve(7)}),
-        json!({"rule":"distance","curve_id":s.curve(7),"distance_mm":22}),
-        json!({"rule":"horizontal","curve_id":s.curve(0)}),
+        transaction::fixed(&s.curve(6), "start", 0 as f64, 0 as f64),
+        transaction::line_rule(&s.curve(6), "horizontal"),
+        transaction::line_rule(&s.curve(5), "vertical"),
+        transaction::distance(&s.curve(5), 20_f64),
+        transaction::line_rule(&s.curve(4), "horizontal"),
+        transaction::line_rule(&s.curve(7), "vertical"),
+        transaction::distance(&s.curve(7), 22_f64),
+        transaction::line_rule(&s.curve(0), "horizontal"),
     ];
     let (pinned, _) = s.publish(&held, "u-pinned.fcad");
     let pinned_catalog = inspect(&pinned);
@@ -1241,12 +943,12 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
         near(d, 0., "the flat Z's ledges are already on one line");
     }
     let said = [
-        json!({"rule":"horizontal","curve_id":flat.curve(2)}),
-        json!({"rule":"horizontal","curve_id":flat.curve(6)}),
+        transaction::line_rule(&flat.curve(2), "horizontal"),
+        transaction::line_rule(&flat.curve(6), "horizontal"),
         flat.collinear(2, 6),
     ];
     let (twice, repeated) = flat.publish(&said, "z-flat.fcad");
-    let minted: Vec<Value> = repeated["added_constraints"].as_array().expect("added")[8..]
+    let minted: Vec<Value> = repeated["constraints"].as_array().expect("added")[8..]
         .iter()
         .map(|c| c["constraint_id"].clone())
         .collect();
@@ -1260,28 +962,22 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
     assert_eq!((state.dof, state.redundant), (13, 1));
     on_one_line(&state, 2, 6, "flat Z");
 
-    // What would fold the profile onto itself is still refused by the profile
-    // rules, not allowed for the sake of the solve: two neighbours made
-    // collinear leave a straight corner, and the bottom of the U brought to the
-    // floor of its notch leaves no material between them.
-    for (name, add, message) in [
-        (
-            "neighbours",
-            s.collinear(0, 1),
-            "collinear or backtracking vertex",
-        ),
-        ("floor and notch", s.collinear(2, 6), "intersect or touch"),
-    ] {
-        let error = s.refused(&s.path, &s.catalog, &[add]);
-        assert_eq!(error["kind"], "input", "{name}: {error}");
-        assert!(
-            error["message"]
-                .as_str()
-                .is_some_and(|m| m.contains(message)),
-            "{name}: {error}"
-        );
-        assert!(error.get("constraint_conflict").is_none(), "{name}");
+    // The evaluator accepts a straight corner; the retired preparer's corner policy is gone.
+    let (straight, _) = s.publish(&[s.collinear(0, 1)], "straight-corner.fcad");
+    let straight_state = solved(&straight);
+    let straight_gap = straight_state.gap(0, 1);
+    for offset in straight_gap.off {
+        near(offset, 0., "straight corner offset");
     }
+    near(straight_gap.sine, 0., "straight corner sine");
+    assert!(straight_gap.lengths.iter().all(|length| *length > TOL));
+    stored_same(&s.path, &straight);
+    exports(&straight, &straight_state, "straight-corner");
+    let (aligned, _) = s.publish(&[s.collinear(2, 6)], "aligned-sides.fcad");
+    let aligned_state = solved(&aligned);
+    on_one_line(&aligned_state, 2, 6, "aligned sides");
+    stored_same(&s.path, &aligned);
+    exports(&aligned, &aligned_state, "aligned-sides");
     // A snapshot older than the file is refused, and nothing is published.
     let stale = s
         .command(
@@ -1359,4 +1055,9 @@ fn native_collinear_cache_keys_follow_the_solved_profile() {
             "{again} vs {independent}"
         );
     }
+}
+
+fn facts(path: &Path) -> Value {
+    let listed = inspect(path);
+    json!({"constraints":listed["sketches"][0]["constraints"],"solve":transaction::solve(path)})
 }

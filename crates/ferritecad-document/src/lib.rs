@@ -32,34 +32,28 @@
 //! stored occurrence identities. Every object has one CBOR payload layout.
 //! Unknown types and corrupt payloads fail opening the document.
 
-mod annulus_edit;
 mod cache;
 mod chamfer;
-mod circle_edit;
 mod cut_boundary;
 mod cut_edit;
 mod document;
 mod edit;
 mod expression_edit;
-pub use expression_edit::{ExpressionChange, ExpressionSlot, ExpressionSlotValue};
+pub use expression_edit::{EditChange, ExpressionSlot, ExpressionSlotValue};
 mod fillet;
 mod fillet_radius;
 mod height_edit;
 mod polygon;
 mod revolve;
-mod sketch_edit;
-pub use annulus_edit::{
-    AnnulusChoice, AnnulusEdit, SavedAnnulus, annulus_choices, replace_annulus_geometry,
-};
+mod sketch_changes;
 pub use chamfer::{
     ChamferChoice, ChamferCorner, EdgeChamfer, MIN_DISTANCE_MM, MIN_FLAT_MM, PreparedEdgeChamfer,
     SavedChamfer, SavedChamferTarget, chamfer_choices, check_distance_value, evaluable_chamfer,
     max_distance_of, prepare_edge_chamfer, saved_chamfer,
 };
-pub use circle_edit::{
-    CircleChoice, CircleEdit, SavedCircle, circle_choices, replace_circle_geometry,
+pub use cut_boundary::{
+    BoundaryOrientation, BoundarySegment, CutBoundary, DiskClearance, circle_clearances,
 };
-pub use cut_boundary::{BoundaryOrientation, BoundarySegment, CutBoundary, DiskClearance};
 pub use cut_edit::{
     CircularCut, CircularCutEdit, CutChoice, CutExtent, CutParameterChoice, ExtentVocabulary,
     MAX_CIRCULAR_CUTS, NewObject, PreparedCircularCut, PreparedCutParameters, SavedCircularCut,
@@ -72,16 +66,13 @@ pub use fillet::{
     corner_for, evaluable_fillet, fillet_choices, pair_bound, prepare_edge_fillet,
     rectangle_corners, shared_side,
 };
-pub use fillet_radius::{NeighbourFillet, SavedFillet};
+pub use fillet_radius::{NeighbourFillet, SavedFillet, saved_fillets};
 pub use polygon::{
     AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion, RevolutionClosure,
 };
 pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices, stated_revolution};
+pub use sketch_changes::{SketchVertex, move_sketch_vertices, validate_sketch_changes};
 
-pub use sketch_edit::{
-    SketchChoice, SketchCutHistory, SketchProfileUse, SketchVertex, replace_sketch_coordinates,
-    sketch_choices,
-};
 mod envelope;
 mod graph;
 mod model;
@@ -111,13 +102,14 @@ pub use validate::{Diagnostic, Severity, ValidationReport};
 
 mod sketch_constraints;
 pub use sketch_constraints::{
-    AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
-    ConstraintSketchChoice, DirectedAngle, DirectedLine, LineConstraintKind, LineEndpoint,
-    LineLengthMm, LineRelation, PreparedSketchConstraints, SketchConstraintEdits,
-    SketchCoordinateMm, constraint_circle_roles, constraint_sketch_choices,
-    prepare_sketch_constraints,
+    AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm, DirectedAngle,
+    DirectedLine, LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation,
+    SketchConstraintEdits, SketchCoordinateMm, constraint_circle_roles, sketch_constraint_changes,
 };
 
 pub use height_edit::validate_extrude_distance;
 
 pub use model_tree::{ModelRowId, ModelTree, ModelTreeRow};
+
+#[cfg(test)]
+mod test_changes;

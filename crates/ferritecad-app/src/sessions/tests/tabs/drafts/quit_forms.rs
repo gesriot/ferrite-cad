@@ -620,7 +620,7 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
     w.stop_quit();
     w.creates = crate::creates::Creates::default();
     let source = w.sessions.export_path().expect("source");
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     w.edits.type_height(w.feature(), "20");
     let copy = w
         .edits
@@ -708,7 +708,7 @@ fn native_cancelled_quit_returns_form_for_apply_export_save_and_final_quit() {
     w.open(&root.path().join("b.fcad"));
     let b = w.sessions.tab();
     let source = w.sessions.export_path().expect("B");
-    let reading = read_extrude_source(&source).expect("B");
+    let reading = crate::sketch_facts::read(&source).expect("B");
     w.creates.sketch = crate::sketch::tests::analytic_apply::typed_circle(
         &source,
         &reading,

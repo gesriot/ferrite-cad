@@ -100,9 +100,13 @@ fn the_open_form_applies_through_the_windows_own_predicate_and_keeps_its_draft()
     click(&ctx, w.form(), "Apply constraints");
     let request = w.form().take_apply_request().expect("Apply asked");
     assert_eq!(request.expected, source.version);
-    assert_eq!(request.sketch, sketch);
-    assert_eq!(request.edits.remove.len(), 1, "the replaced length");
-    assert_eq!(request.edits.add.len(), 1);
+    assert_eq!(crate::transaction_tests::sketch(&request), sketch);
+    assert_eq!(
+        crate::transaction_tests::constraints(&request).remove.len(),
+        1,
+        "the replaced length"
+    );
+    assert_eq!(crate::transaction_tests::constraints(&request).add.len(), 1);
     assert!(
         w.form().take_apply_request().is_none(),
         "one press, one request"
@@ -113,7 +117,7 @@ fn the_open_form_applies_through_the_windows_own_predicate_and_keeps_its_draft()
     );
     assert_eq!(
         history_state(w.form()).0,
-        request.edits,
+        crate::transaction_tests::constraints(&request),
         "pressing Apply discarded the draft"
     );
 }
@@ -327,27 +331,12 @@ fn the_form_opens_on_a_document_with_unsaved_changes_only_when_the_window_says_s
 }
 
 /// The request the peer command line takes for the same edits, in its own words.
-pub(crate) fn peer_request(edits: &SketchConstraintEdits) -> String {
-    let removals = edits
-        .remove
-        .iter()
-        .map(|id| format!(r#""{id}""#))
-        .collect::<Vec<_>>()
-        .join(",");
-    let additions = edits
-        .add
-        .iter()
-        .map(peer_addition)
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(r#"{{"request_version":1,"remove":[{removals}],"add":[{additions}]}}"#)
+pub(crate) fn peer_request(path: &Path, sketch: ObjectId, edits: &SketchConstraintEdits) -> String {
+    let changes = crate::transaction_tests::constraint_changes(path, sketch, edits);
+    ferritecad_fixtures::edit_request_json(&changes).to_string()
 }
 
-fn pressed(
-    ctx: &egui::Context,
-    mut e: Editor,
-    unsaved: bool,
-) -> (Editor, EditSketchConstraintsRequest) {
+fn pressed(ctx: &egui::Context, mut e: Editor, unsaved: bool) -> (Editor, EditRequest) {
     e.set_session(true, true, unsaved);
     click(ctx, &mut e, "Apply constraints");
     let request = e.take_apply_request().expect("Apply constraints asked");
@@ -372,7 +361,7 @@ pub(crate) fn typed_replace_length(
     sketch: ObjectId,
     segment: usize,
     length: &str,
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut e, ctx) = opened(path, source, sketch);
     replace_segment_length(&ctx, &mut e, &format!("Segment {segment}"), length);
     pressed(&ctx, e, true)
@@ -385,7 +374,7 @@ pub(crate) fn typed_circle(
     sketch: ObjectId,
     radius: &str,
     centre: (&str, &str),
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut e, ctx) = opened(path, source, sketch);
     let curve = source.constraint_sketches[0]
         .stored
@@ -411,7 +400,7 @@ pub(crate) fn typed_parallel(
     sketch: ObjectId,
     a: usize,
     b: usize,
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut e, ctx) = opened(path, source, sketch);
     click(&ctx, &mut e, &format!("Segment {a}"));
     click(&ctx, &mut e, "Pair Line A");

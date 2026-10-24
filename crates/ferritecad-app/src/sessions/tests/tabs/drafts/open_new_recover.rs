@@ -246,7 +246,7 @@ pub(super) fn orphan(
     let mut session = crate::sessions::test_open::open_in(private, file, HistoryLimits::default())
         .expect("session");
     let feature = ferritecad_fixtures::expression_slot(
-        &read_extrude_source(session.current().path()).expect("reading"),
+        &crate::sketch_facts::read(session.current().path()).expect("reading"),
         ferritecad_document::ExpressionSlot::ExtrudeDistance,
     )
     .object;
@@ -255,7 +255,7 @@ pub(super) fn orphan(
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     millimetres,
@@ -397,7 +397,7 @@ fn open_over_unfinished_forms_keeps_them_with_their_tab_through_every_answer() {
     assert_eq!(height_in(w.hidden(a)), 14.0);
     // The copy's own vertex draft, with draft history both ways.
     let current = w.sessions.export_path().expect("C");
-    let reading = read_extrude_source(&current).expect("C");
+    let reading = crate::sketch_facts::read(&current).expect("C");
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
@@ -791,7 +791,7 @@ fn recover_over_an_unfinished_form_keeps_the_record_on_every_refusal() {
     }
     assert_eq!(recoverable(&store), [c]);
     let current = w.sessions.export_path().expect("A");
-    let reading = read_extrude_source(&current).expect("A");
+    let reading = crate::sketch_facts::read(&current).expect("A");
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
@@ -1134,7 +1134,7 @@ fn recipe_on_owners(root: &Path) {
     assert!(w.apply_height_form());
     // 5: A's vertices: both `80` made `90`, not applied.
     let current = w.sessions.export_path().expect("A");
-    let reading = read_extrude_source(&current).expect("A");
+    let reading = crate::sketch_facts::read(&current).expect("A");
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
@@ -1215,7 +1215,7 @@ fn recipe_on_owners(root: &Path) {
 /// 22 mm high.
 fn recovered_peer(inputs: &Path, work: &Path) -> PathBuf {
     let plate = inputs.join("plate.fcad");
-    let reading = read_extrude_source(&plate).expect("plate");
+    let reading = crate::sketch_facts::read(&plate).expect("plate");
     let peer = work.join("c-peer.fcad");
     {
         let request = crate::edits::tests::expression_request(

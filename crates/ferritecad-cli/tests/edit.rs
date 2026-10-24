@@ -4,6 +4,8 @@ use ferritecad_document::*;
 use ferritecad_types::{ObjectId, StableEntityId, Transform};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command};
+#[path = "support/sketch_transactions.rs"]
+mod sketch_transactions;
 #[path = "support/transaction.rs"]
 mod transaction;
 
@@ -37,7 +39,7 @@ fn apply(source: &Path, output: &Path, changes: Value, code: i32) -> Value {
     reply
 }
 fn change(slot: &ExpressionSlotValue, value: f64, unit: &str) -> Value {
-    json!({"object":slot.object,"slot":slot.slot,"value":value,"unit":unit})
+    json!({"kind":"set_expression","object":slot.object,"slot":slot.slot,"value":value,"unit":unit})
 }
 fn assert_saved(path: &Path, slot: &ExpressionSlotValue, internal: f64, display: f64) {
     let d = Document::open_read_only(path).expect("reopen");
@@ -71,10 +73,10 @@ fn edit_requires_units_version_and_known_slots_without_changing_files() {
     let slot = d.expression_slots().expect("slots").remove(0);
     let output = root.path().join("output.fcad");
     for request in [
-        json!([{"object":slot.object,"slot":slot.slot,"value":27}]),
+        json!([{"kind":"set_expression","object":slot.object,"slot":slot.slot,"value":27}]),
         json!([change(&slot, 27.0, "deg")]),
         json!([change(&slot, 27.0, "unknown")]),
-        json!([{"object":slot.object,"slot":{"kind":"not_a_slot"},"value":27,"unit":"mm"}]),
+        json!([{"kind":"set_expression","object":slot.object,"slot":{"kind":"not_a_slot"},"value":27,"unit":"mm"}]),
     ] {
         let reply = apply(&source, &output, request, 2);
         assert_eq!(reply["error"]["kind"], "input");

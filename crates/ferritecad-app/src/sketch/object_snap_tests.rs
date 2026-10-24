@@ -46,7 +46,7 @@ pub(super) fn open(points: &[[&str; 2]], closed: bool) -> (egui::Context, Editor
 
 /// The same drawing as a saved Sketch being edited: the form that has Apply and
 /// Save, with no document behind it.
-pub(super) fn saved(points: &[[&str; 2]]) -> (egui::Context, Editor, EditSketchRequest) {
+pub(super) fn saved(points: &[[&str; 2]]) -> (egui::Context, Editor, EditRequest) {
     let (ctx, mut e) = open(points, true);
     let vertices: Vec<_> = Canvas::points(e.draft.as_ref().expect("draft"))
         .expect("points")
@@ -57,24 +57,50 @@ pub(super) fn saved(points: &[[&str; 2]]) -> (egui::Context, Editor, EditSketchR
         })
         .collect();
     let id = ferritecad_types::ObjectId::new();
-    let request = EditSketchRequest {
+    let stored = ferritecad_document::Sketch {
+        plane: ferritecad_types::ObjectId::new(),
+        constraints: vec![],
+        curves: vertices
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let end = vertices[(i + 1) % vertices.len()].start_mm;
+                ferritecad_document::SketchCurve {
+                    id: v.curve_id,
+                    construction: false,
+                    geometry: ferritecad_document::SketchGeometry::Line {
+                        start: ferritecad_document::Point2::new(v.start_mm[0], v.start_mm[1])
+                            .expect("start"),
+                        end: ferritecad_document::Point2::new(end[0], end[1]).expect("end"),
+                    },
+                }
+            })
+            .collect(),
+    };
+    let request = EditRequest {
+        changes: stored
+            .curves
+            .iter()
+            .map(|c| ferritecad_document::EditChange::SetCurveGeometry {
+                sketch: id,
+                curve: c.id,
+                geometry: c.geometry.clone(),
+            })
+            .collect(),
         source: PathBuf::from("accepted.fcad"),
         destination: PathBuf::new(),
-        sketch: id,
-        vertices: vertices.clone(),
         expected: ferritecad_document::DocumentVersion {
             document_id: ferritecad_types::DocumentId::new(),
             content: ferritecad_types::ContentHash::of_bytes(b"accepted snapshot"),
         },
     };
     let choice = SketchChoice {
-        cut_history: None,
-        fillets: Vec::new(),
-        chamfer: None,
+        details: vec![],
+        stored: Some(stored),
         sketch: id,
         name: None,
         vertices: Some(vertices),
-        profile_use: Some(ferritecad_document::SketchProfileUse::BlindExtrude {
+        profile_use: Some(crate::sketch_facts::SketchProfileUse::BlindExtrude {
             feature: ferritecad_types::ObjectId::new(),
             height_mm: 10.,
         }),
@@ -721,14 +747,36 @@ fn saved_vertices_drag_to_a_midpoint_and_ask_for_the_request_typed_numbers_make(
     let snapped = e.edit_request().expect("a valid saved edit");
     // The very vertices the user would have typed: same IDs, same order, the
     // dragged one at exactly (40, 20).
-    let ids = |r: &EditSketchRequest| r.vertices.iter().map(|v| v.curve_id).collect::<Vec<_>>();
+    let ids = |r: &EditRequest| {
+        crate::transaction_tests::vertices_in(
+            r,
+            e.editing
+                .as_ref()
+                .expect("saved")
+                .1
+                .stored
+                .as_ref()
+                .expect("sketch"),
+        )
+        .iter()
+        .map(|v| v.curve_id)
+        .collect::<Vec<_>>()
+    };
     assert_eq!(ids(&snapped), ids(&original));
     assert_eq!(
-        snapped
-            .vertices
-            .iter()
-            .map(|v| v.start_mm)
-            .collect::<Vec<_>>(),
+        crate::transaction_tests::vertices_in(
+            &snapped,
+            e.editing
+                .as_ref()
+                .expect("saved")
+                .1
+                .stored
+                .as_ref()
+                .expect("sketch")
+        )
+        .iter()
+        .map(|v| v.start_mm)
+        .collect::<Vec<_>>(),
         [
             [0., 0.],
             [60., 0.],
@@ -743,15 +791,33 @@ fn saved_vertices_drag_to_a_midpoint_and_ask_for_the_request_typed_numbers_make(
         let (ctx, mut by_hand, _) = saved(&L);
         replace_field(&ctx, &mut by_hand, "60", "60"); // keeps 60 as typed
         by_hand.draft.as_mut().expect("draft").points[2] = pair("40", "20");
-        by_hand.edit_request().expect("typed").vertices
+        crate::transaction_tests::vertices_in(
+            &by_hand.edit_request().expect("typed"),
+            by_hand
+                .editing
+                .as_ref()
+                .expect("saved")
+                .1
+                .stored
+                .as_ref()
+                .expect("sketch"),
+        )
     };
     assert_eq!(
         typed.iter().map(|v| v.start_mm).collect::<Vec<_>>(),
-        snapped
-            .vertices
-            .iter()
-            .map(|v| v.start_mm)
-            .collect::<Vec<_>>()
+        crate::transaction_tests::vertices_in(
+            &snapped,
+            e.editing
+                .as_ref()
+                .expect("saved")
+                .1
+                .stored
+                .as_ref()
+                .expect("sketch")
+        )
+        .iter()
+        .map(|v| v.start_mm)
+        .collect::<Vec<_>>()
     );
     // The same Restore saved vertices as for any other edit.
     choose(&ctx, &mut e, "Restore saved vertices");
@@ -845,7 +911,8 @@ fn native_object_snap_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
         )
         .expect("accepted scene")
     };
-    let reading = loaded.edit_source.expect("accepted edit facts");
+    let reading =
+        crate::sketch_facts::Source::from(loaded.edit_source.expect("accepted edit facts"));
     let id = reading
         .sketches
         .iter()
@@ -882,10 +949,15 @@ fn native_object_snap_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
     request.destination = root.path().join("ui.fcad");
     let (tx, rx) = std::sync::mpsc::channel();
     edits
-        .start_sketch(request.clone(), move |r, g, c| {
-            crate::edits::spawn_sketch_edit(r, c, move |result| {
-                tx.send((g, result)).expect("reply")
-            })
+        .start(request.clone(), move |r, g, c| {
+            crate::edits::spawn_edit(
+                r.source,
+                r.expected,
+                r.changes,
+                r.destination,
+                c,
+                move |result| tx.send((g, result)).expect("reply"),
+            )
         })
         .expect("worker");
     let (g, result) = rx.recv().expect("completed");
@@ -894,24 +966,23 @@ fn native_object_snap_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
 
     // The numbers, typed: the same IDs in the same order, literal coordinates.
     let literal = [[0, 0], [60, 0], [40, 20], [20, 20], [20, 40], [0, 40]];
-    let vertices = request
-        .vertices
-        .iter()
-        .zip(literal)
-        .map(|(v, [x, y])| format!(r#"{{"curve_id":"{}","start_mm":[{x},{y}]}}"#, v.curve_id))
-        .collect::<Vec<_>>()
-        .join(",");
+    assert_eq!(
+        crate::transaction_tests::vertices(&request)
+            .iter()
+            .map(|v| v.start_mm)
+            .collect::<Vec<_>>(),
+        literal.map(|p| p.map(f64::from)).to_vec()
+    );
+
     std::fs::write(
         &input,
-        format!(r#"{{"request_version":1,"vertices":[{vertices}]}}"#),
+        ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
     )
     .expect("request");
     let cli = root.path().join("cli.fcad");
     let p = std::process::Command::new(ferritecad())
-        .arg("edit-sketch-copy")
+        .arg("edit")
         .arg(&source)
-        .arg("--sketch")
-        .arg(id.to_string())
         .arg("--expect-version")
         .arg(reading.version.content.to_string())
         .arg("--request")
@@ -931,7 +1002,7 @@ fn native_object_snap_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
         Document::open_read_only(&ui).expect("UI"),
         Document::open_read_only(&cli).expect("CLI"),
     );
-    assert_eq!(a.meta(), b.meta());
+    crate::transaction_tests::assert_meta(a.meta(), b.meta());
     assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
     assert_eq!(
         a.dependencies().expect("deps"),

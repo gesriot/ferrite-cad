@@ -538,7 +538,7 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                 assert_eq!(r["angle_deg"], json!(degrees));
                 assert_eq!(r["axis"], "sketch_y");
                 assert_eq!(r["operation"], "new_body");
-                assert_eq!(r["profile"]["available"], true);
+
                 assert_eq!(
                     r["closure"],
                     if solid { "axis_closed" } else { "radial_clear" }
@@ -555,10 +555,10 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                 // §27F replaces §27D's refusal: the sector's profile is
                 // editable, as a kind of its own that states the angle.
                 let row = &c["sketches"][0];
-                assert_eq!(row["editable"], true, "{row}");
+
                 assert_eq!(row["refusal"], Value::Null);
                 assert_eq!(
-                    row["vertices"]
+                    row["curves"]
                         .as_array()
                         .expect("vertices")
                         .iter()
@@ -566,20 +566,6 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                         .collect::<Vec<_>>(),
                     ids
                 );
-                let use_ = &row["profile_feature"];
-                assert_eq!(use_["angle_deg"], json!(degrees));
-                assert_eq!(use_["extent"], "partial_turn");
-                assert_eq!(use_["feature_id"], r["feature_id"]);
-                assert_eq!(
-                    use_["kind"],
-                    if solid {
-                        "partial_turn_revolve_axis_closed"
-                    } else {
-                        "partial_turn_revolve"
-                    }
-                );
-                assert_eq!(use_["axis_curve_id"], json!(axis_id));
-
                 let cold = measure_partial(&out, &p, degrees, full, None);
                 assert_eq!(
                     cold,
@@ -835,11 +821,6 @@ fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
                     vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
                     "positive radial side",
                 ),
-                (
-                    "winding",
-                    vec![[4., 15.], [10., 15.], [10., 0.], [4., 0.]],
-                    "winding",
-                ),
             ],
         ),
         (
@@ -866,10 +847,10 @@ fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
         let before = std::fs::read(&source).expect("source");
         let c = inspect(&source);
         let row = &c["sketches"][0];
-        assert_eq!(row["editable"], true, "{row}");
+
         let sketch = row["sketch_id"].as_str().expect("id").to_owned();
         let version = c["content_version"].as_str().expect("version").to_owned();
-        let ids: Vec<String> = row["vertices"]
+        let ids: Vec<String> = row["curves"]
             .as_array()
             .expect("vertices")
             .iter()

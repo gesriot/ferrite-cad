@@ -277,7 +277,7 @@ request = root / "radius.json"
 
 def edited(source, feature, r, name, previous, index):
     version = inspect(source)["content_version"]
-    request.write_text(json.dumps({"request_version": 1, "changes": [{"object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
+    request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
     out = root / name
     before = source.read_bytes()
     result = run(["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"])["result"]
@@ -288,7 +288,7 @@ def edited(source, feature, r, name, previous, index):
 
 def refused(source, feature, r, words, version=None):
     before = sorted(p.name for p in root.iterdir())
-    request.write_text(json.dumps({"request_version": 1, "changes": [{"object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
+    request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
     never = root / "never.fcad"
     error = run(["edit", source, "--expect-version", version or inspect(source)["content_version"], "--request", request, "-o", never, "--json"], 2)["error"]
     assert error["kind"] == "input" and words in error["message"], error

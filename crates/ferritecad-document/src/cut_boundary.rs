@@ -51,6 +51,41 @@ pub struct DiskClearance {
 }
 
 impl CutBoundary {
+    /// Read an already evaluated closed Line boundary without command policies.
+    pub fn from_profile(profile: &ferritecad_kernel::Profile) -> Option<Self> {
+        use ferritecad_kernel::SegmentGeometry;
+        if profile.segments().count() != profile.outer().segments().len() {
+            return None;
+        }
+        let segments: Vec<_> = profile
+            .outer()
+            .segments()
+            .iter()
+            .map(|segment| {
+                let SegmentGeometry::Line { start, end } = segment.geometry else {
+                    return None;
+                };
+                Some(BoundarySegment {
+                    curve_id: segment.label,
+                    start_mm: [start.x, start.y],
+                    end_mm: [end.x, end.y],
+                })
+            })
+            .collect::<Option<_>>()?;
+        if segments.len() < 3 {
+            return None;
+        }
+        let points: Vec<_> = segments.iter().map(|s| s.start_mm).collect();
+        Some(Self {
+            segments,
+            orientation: if signed_twice_area_xy(&points) > 0. {
+                BoundaryOrientation::CounterClockwise
+            } else {
+                BoundaryOrientation::Clockwise
+            },
+        })
+    }
+
     /// Reads the saved profile, or says why it is outside this class.
     ///
     /// Lines only, none construction, stored end to end and closing, and a
@@ -211,6 +246,29 @@ impl CutBoundary {
             nearest: nearest.1,
         }
     }
+
+    /// Detect ambiguous contact with any finite side or vertex, including outside the part.
+    pub fn disk_contact(&self, center: [f64; 2], radius: f64) -> Option<(StableEntityId, f64)> {
+        for side in &self.segments {
+            for (a, b) in [
+                (side.start_mm, side.end_mm),
+                (side.start_mm, side.start_mm),
+                (side.end_mm, side.end_mm),
+            ] {
+                let gap = segment_distance(center, a, b) - radius;
+                if gap.abs() <= crate::WALL_CLEARANCE_MM {
+                    return Some((side.curve_id, gap));
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Signed gaps to external and internal tangency of two circular rims.
+pub fn circle_clearances(a: [f64; 2], ar: f64, b: [f64; 2], br: f64) -> [f64; 2] {
+    let distance = (a[0] - b[0]).hypot(a[1] - b[1]);
+    [distance - ar - br, distance - (ar - br).abs()]
 }
 
 /// Distance from `p` to the closed segment `a`–`b`.
@@ -282,6 +340,36 @@ mod tests {
     fn inside(b: &CutBoundary, c: [f64; 2], r: f64) -> bool {
         let d = b.disk_clearance(c, r);
         d.center_inside && d.clearance_mm > crate::WALL_CLEARANCE_MM
+    }
+
+    #[test]
+    fn contact_checks_finite_sides_and_vertices_from_either_side() {
+        for points in [L.to_vec(), reversed(&L)] {
+            let b = boundary(&points);
+            for (center, radius) in [
+                ([40., 10.], 10.),
+                ([17., 17.], 18_f64.sqrt()),
+                ([-3., -4.], 5.),
+            ] {
+                let (side, gap) = b.disk_contact(center, radius).expect("contact");
+                assert!(b.segments.iter().any(|s| s.curve_id == side));
+                assert!(gap.abs() < 1e-12);
+                for delta in [-0.25, 0.25] {
+                    assert!(b.disk_contact(center, radius + delta).is_none());
+                }
+            }
+            // The bottom supporting line is tangent, but its finite side ends before the circle.
+            assert!(b.disk_contact([65., 10.], 10.).is_none());
+        }
+        assert_eq!(circle_clearances([0., 0.], 3., [5., 0.], 2.), [0., 4.]);
+        assert_eq!(circle_clearances([0., 0.], 3., [1., 0.], 2.), [-4., 0.]);
+        for separation in [0.75, 1.25, 4.75, 5.25] {
+            assert!(
+                circle_clearances([0., 0.], 3., [separation, 0.], 2.)
+                    .iter()
+                    .all(|gap| gap.abs() > crate::WALL_CLEARANCE_MM)
+            );
+        }
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub struct Case {
     pub extrude: Option<ObjectId>,
     pub fillet: Option<ObjectId>,
     pub revolve: Option<ObjectId>,
+    pub vertex: Option<(ObjectId, Sketch, Vec<SketchVertex>)>,
 }
 
 /// Every run writes fresh documents, with independent identities for each body.
@@ -208,6 +209,28 @@ fn describe(name: &str, path: PathBuf, bodies: usize) -> Result<Case> {
         })
         .map(|slot| slot.object);
     Ok(Case {
+        vertex: if name == "plate" {
+            objects.iter().find_map(|o| {
+                let ObjectPayload::Sketch(sketch) = &o.payload else {
+                    return None;
+                };
+                let mut vertices: Vec<_> = sketch
+                    .curves
+                    .iter()
+                    .filter_map(|c| match c.geometry {
+                        SketchGeometry::Line { start, .. } => Some(SketchVertex {
+                            curve_id: c.id,
+                            start_mm: [start.x, start.y],
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                vertices[0].start_mm[0] += 1.0;
+                Some((o.id, sketch.clone(), vertices))
+            })
+        } else {
+            None
+        },
         name: name.to_owned(),
         path,
         bodies,

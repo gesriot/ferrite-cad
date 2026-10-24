@@ -5,7 +5,7 @@ use crate::model_tree::{actions, availability, open};
 use ferritecad_document::{Dependency, DependencyRole, ObjectPayload};
 use ferritecad_ui::{ModelAction, ModelEdit, ModelKey};
 
-fn source(w: &Window) -> &ferritecad_document::ExtrudeEditSource {
+fn source(w: &Window) -> &crate::sketch_facts::Source {
     w.scene.edit_source.as_ref().expect("accepted catalogue")
 }
 fn key(w: &Window, object: ObjectId) -> ModelKey {
@@ -51,7 +51,7 @@ pub(in crate::sessions::tests::tabs) fn facts_scene(path: &Path) -> Result<Loade
     Ok(LoadedScene {
         rebuild_facts: None,
         rebuild: Default::default(),
-        edit_source: Some(read_extrude_source(path)?),
+        edit_source: Some(ferritecad_jobs::read_extrude_source(path)?),
         snapshot: ferritecad_viewport::SnapshotBuilder::new().build(),
         catalogue: vec![],
         faces: Default::default(),
@@ -592,7 +592,7 @@ fn native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes(
         210.,
         None,
     );
-    let rs = read_extrude_source(&rp).expect("reading");
+    let rs = crate::sketch_facts::read(&rp).expect("reading");
     for (path, id, edit) in [
         (
             &fp,
@@ -649,7 +649,7 @@ fn compare_cut_files(before: &Path, saved: &Path, stl: &Path, fbx: &Path, undo: 
         assert!(path.is_file(), "missing actual output: {}", path.display());
     }
     let peer_root = tempfile::tempdir().expect("peer");
-    let reading = read_extrude_source(before).expect("source reading");
+    let reading = crate::sketch_facts::read(before).expect("source reading");
     let early = crate::cuts::tests::session_apply::selected(&reading, 0);
     let request = ferritecad_jobs::EditCircularCutRequest {
         source: before.to_path_buf(),

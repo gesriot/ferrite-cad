@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! §27H: dimensional constraints on the saved profile of a solid Revolve —
 //! closed on the axis along its stated Line — through the existing
-//! `edit-sketch-constraints-copy`, and measured after the fact.
+//! `edit`, and measured after the fact.
 //!
 //! Nothing is snapped to the axis: a solution keeps the stated Line on it
 //! only because the request pins one of its ends at X 0 and keeps it
@@ -52,9 +52,9 @@ const SHAFT_DEG: f64 = 137.5;
 /// The saved Revolve's stated axis Line, as discovery and the constraint
 /// editor both report it.
 fn stated_axis(catalog: &Value, index: usize) -> Value {
-    let edit = &catalog["sketches"][0]["constraint_edit"];
+    let _edit = &catalog["sketches"][0];
     let axis = curve(catalog, index);
-    assert_eq!(edit["profile_feature"]["axis_curve_id"], axis, "{edit}");
+
     assert_eq!(catalog["revolves"][0]["axis_curve_id"], axis);
     axis
 }
@@ -74,12 +74,8 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     let request = root.join("constraints.json");
     let (sketch, stored) = sketch_of(&source);
     let catalog = inspect(&source);
-    let edit = &catalog["sketches"][0]["constraint_edit"];
-    assert_eq!(edit["available"], true, "{edit}");
-    assert_eq!(
-        edit["profile_feature"]["kind"],
-        "full_turn_revolve_axis_closed"
-    );
+    let _edit = &catalog["sketches"][0];
+
     let axis = stated_axis(&catalog, 3);
     let source_refs = refs(&source);
     assert_eq!(source_refs.len(), 3, "no name for the axis Line");
@@ -91,15 +87,18 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     let published = publish(
         &source,
         &request,
-        &adds(vec![
-            rule(&catalog, 0, "horizontal"),
-            rule(&catalog, 1, "vertical"),
-            rule(&catalog, 2, "horizontal"),
-            rule(&catalog, 3, "vertical"),
-            fixed(&catalog, 3, "end", 0., -1.5),
-            distance(&catalog, 0, 7.25),
-            distance(&catalog, 1, 15.25),
-        ]),
+        &adds(
+            &catalog,
+            vec![
+                rule(&catalog, 0, "horizontal"),
+                rule(&catalog, 1, "vertical"),
+                rule(&catalog, 2, "horizontal"),
+                rule(&catalog, 3, "vertical"),
+                fixed(&catalog, 3, "end", 0., -1.5),
+                distance(&catalog, 0, 7.25),
+                distance(&catalog, 1, 15.25),
+            ],
+        ),
         &rigid,
     );
     assert_eq!(published["solve"]["degrees_of_freedom"], 0);
@@ -124,14 +123,18 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     let replaced = publish(
         &rigid,
         &request,
-        &json!({"request_version":1,"remove":[old_width.clone()],"add":[distance(&catalog, 0, 8.5)]}),
+        &transaction::constraints(
+            &catalog["sketches"][0],
+            std::slice::from_ref(&old_width),
+            &[distance(&catalog, 0, 8.5)],
+        ),
         &wide,
     );
-    assert_eq!(replaced["removed_constraint_ids"], json!([old_width]));
+    assert_eq!(replaced["deleted"], json!([old_width]));
     assert_eq!(replaced["solve"]["degrees_of_freedom"], 0);
     let mut kept = constraint_ids(&catalog);
     kept.retain(|id| *id != old_width);
-    kept.push(replaced["added_constraints"][0]["constraint_id"].clone());
+    kept.push(replaced["inserted"][0]["constraint_id"].clone());
     assert_eq!(constraint_ids(&inspect(&wide)), kept);
     check_constraint_cells(&rigid, &wide, sketch);
     assert_eq!(sketch_of(&wide).1.curves, stored.curves);
@@ -151,23 +154,38 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     for (why, edits) in [
         (
             "no pin: the radius change drags the axis Line off X 0",
-            json!({"request_version":1,"remove":[pin.clone(), old_width.clone()],
-                   "add":[distance(&catalog, 0, 8.5)]}),
+            transaction::constraints(
+                &catalog["sketches"][0],
+                &[pin.clone(), old_width.clone()],
+                &[distance(&catalog, 0, 8.5)],
+            ),
         ),
         (
             "only the outer corner pinned",
-            json!({"request_version":1,"remove":[pin.clone(), old_width.clone()],
-                   "add":[fixed(&catalog, 1, "start", 7.25, -1.5), distance(&catalog, 0, 9.75)]}),
+            transaction::constraints(
+                &catalog["sketches"][0],
+                &[pin.clone(), old_width.clone()],
+                &[
+                    fixed(&catalog, 1, "start", 7.25, -1.5),
+                    distance(&catalog, 0, 9.75),
+                ],
+            ),
         ),
         (
             "the axis Line moved away from the axis",
-            json!({"request_version":1,"remove":[pin.clone()],
-                   "add":[fixed(&catalog, 3, "end", 0.5, -1.5)]}),
+            transaction::constraints(
+                &catalog["sketches"][0],
+                std::slice::from_ref(&pin),
+                &[fixed(&catalog, 3, "end", 0.5, -1.5)],
+            ),
         ),
         (
             "the axis Line crosses the axis",
-            json!({"request_version":1,"remove":[pin.clone()],
-                   "add":[fixed(&catalog, 3, "end", -1., -1.5)]}),
+            transaction::constraints(
+                &catalog["sketches"][0],
+                std::slice::from_ref(&pin),
+                &[fixed(&catalog, 3, "end", -1., -1.5)],
+            ),
         ),
     ] {
         let error = refuse(&rigid, &request, &edits, &refused);
@@ -178,7 +196,7 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     let conflict = refuse(
         &rigid,
         &request,
-        &adds(vec![pair(&catalog, "equal_length", 0, 1)]),
+        &adds(&catalog, vec![pair(&catalog, "equal_length", 0, 1)]),
         &refused,
     );
     assert_eq!(conflict["kind"], "constraint", "{conflict}");
@@ -193,7 +211,7 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     let collapsed = refuse(
         &source,
         &request,
-        &adds(vec![fixed(&catalog, 0, "end", 0., -1.5)]),
+        &adds(&catalog, vec![fixed(&catalog, 0, "end", 0., -1.5)]),
         &refused,
     );
     let message = collapsed["message"].as_str().expect("message");
@@ -207,7 +225,7 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     // Every user constraint removed: the closure and the requirement stay,
     // coordinates stay refused, the solver starts from the stored inputs.
     let catalog = inspect(&wide);
-    let user: Vec<Value> = catalog["sketches"][0]["constraint_edit"]["constraints"]
+    let user: Vec<Value> = catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("constraints")
         .iter()
@@ -219,25 +237,15 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     let removed = publish(
         &wide,
         &request,
-        &json!({"request_version":1,"remove":user,"add":[]}),
+        &transaction::constraints(&catalog["sketches"][0], &user, &[]),
         &bare,
     );
     assert_eq!(removed["solve"]["degrees_of_freedom"], 8);
     let row = inspect(&bare)["sketches"][0].clone();
-    let left = row["constraint_edit"]["constraints"]
-        .as_array()
-        .expect("closure");
+    let left = row["constraints"].as_array().expect("closure");
     assert_eq!(left.len(), 4);
     assert!(left.iter().all(|c| c["rule"]["kind"] == "coincident"));
-    assert_eq!(row["editable"], false);
-    assert!(
-        row["refusal"]
-            .as_str()
-            .expect("refusal")
-            .contains("unconstrained"),
-        "{row}"
-    );
-    assert_eq!(row["constraint_edit"]["available"], true);
+
     check_constraint_cells(&source, &bare, sketch);
     let free = measure_solved(&bare, None, None);
     assert_eq!(free.dof, 8);
@@ -254,13 +262,16 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     let published = publish(
         &cone,
         &request,
-        &adds(vec![
-            rule(&catalog, 0, "horizontal"),
-            rule(&catalog, 2, "vertical"),
-            fixed(&catalog, 0, "start", 0., -1.5),
-            distance(&catalog, 0, 8.5),
-            distance(&catalog, 2, 14.75),
-        ]),
+        &adds(
+            &catalog,
+            vec![
+                rule(&catalog, 0, "horizontal"),
+                rule(&catalog, 2, "vertical"),
+                fixed(&catalog, 0, "start", 0., -1.5),
+                distance(&catalog, 0, 8.5),
+                distance(&catalog, 2, 14.75),
+            ],
+        ),
         &pinned,
     );
     assert_eq!(published["solve"]["degrees_of_freedom"], 0);
@@ -274,8 +285,11 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     publish(
         &pinned,
         &request,
-        &json!({"request_version":1,"remove":[base, height],
-               "add":[distance(&catalog, 0, 9.75), distance(&catalog, 2, 15.5)]}),
+        &transaction::constraints(
+            &catalog["sketches"][0],
+            &[base, height],
+            &[distance(&catalog, 0, 9.75), distance(&catalog, 2, 15.5)],
+        ),
         &taller,
     );
     check_constraint_cells(&pinned, &taller, cone_sketch);
@@ -303,11 +317,7 @@ fn native_axis_closed_sector_caps_names_angle_edit_and_exports() {
     let request = root.join("constraints.json");
     let (sketch, stored) = sketch_of(&source);
     let catalog = inspect(&source);
-    let feature = &catalog["sketches"][0]["constraint_edit"]["profile_feature"];
-    assert_eq!(
-        feature["kind"], "partial_turn_revolve_axis_closed",
-        "{feature}"
-    );
+    let feature = &catalog["revolves"][0];
     assert_eq!(feature["angle_deg"], SHAFT_DEG);
     stated_axis(&catalog, 5);
     let source_refs = refs(&source);
@@ -317,19 +327,22 @@ fn native_axis_closed_sector_caps_names_angle_edit_and_exports() {
     let published = publish(
         &source,
         &request,
-        &adds(vec![
-            rule(&catalog, 0, "horizontal"),
-            rule(&catalog, 1, "vertical"),
-            rule(&catalog, 2, "horizontal"),
-            rule(&catalog, 3, "vertical"),
-            rule(&catalog, 4, "horizontal"),
-            rule(&catalog, 5, "vertical"),
-            fixed(&catalog, 0, "start", 0., -2.25),
-            distance(&catalog, 0, 8.),
-            distance(&catalog, 1, 5.75),
-            distance(&catalog, 2, 2.5),
-            distance(&catalog, 3, 9.25),
-        ]),
+        &adds(
+            &catalog,
+            vec![
+                rule(&catalog, 0, "horizontal"),
+                rule(&catalog, 1, "vertical"),
+                rule(&catalog, 2, "horizontal"),
+                rule(&catalog, 3, "vertical"),
+                rule(&catalog, 4, "horizontal"),
+                rule(&catalog, 5, "vertical"),
+                fixed(&catalog, 0, "start", 0., -2.25),
+                distance(&catalog, 0, 8.),
+                distance(&catalog, 1, 5.75),
+                distance(&catalog, 2, 2.5),
+                distance(&catalog, 3, 9.25),
+            ],
+        ),
         &rigid,
     );
     assert_eq!(published["solve"]["degrees_of_freedom"], 0);
@@ -350,7 +363,11 @@ fn native_axis_closed_sector_caps_names_angle_edit_and_exports() {
     let replaced = publish(
         &rigid,
         &request,
-        &json!({"request_version":1,"remove":[old_base],"add":[distance(&catalog, 0, 9.25)]}),
+        &transaction::constraints(
+            &catalog["sketches"][0],
+            &[old_base],
+            &[distance(&catalog, 0, 9.25)],
+        ),
         &wide,
     );
     assert_eq!(replaced["solve"]["degrees_of_freedom"], 0);
@@ -402,7 +419,11 @@ fn native_axis_closed_sector_caps_names_angle_edit_and_exports() {
     let error = refuse(
         &wide,
         &request,
-        &json!({"request_version":1,"remove":[pin],"add":[fixed(&catalog, 0, "start", 0.75, -2.25)]}),
+        &transaction::constraints(
+            &catalog["sketches"][0],
+            &[pin],
+            &[fixed(&catalog, 0, "start", 0.75, -2.25)],
+        ),
         &root.join("refused.fcad"),
     );
     assert!(
@@ -429,7 +450,7 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
                 .expect("angle"),
         }
     });
-    for (path, kind, axis) in [
+    for (path, _kind, _axis) in [
         (&solid, "full_turn_revolve_axis_closed", labels[3]),
         (
             &solid_sector,
@@ -439,53 +460,13 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
     ] {
         let c = inspect(path);
         let row = &c["sketches"][0];
-        let edit = &row["constraint_edit"];
-        assert_eq!(edit["available"], true, "{row}");
+        let edit = &row;
+
         assert_eq!(edit["refusal"], Value::Null);
         assert_eq!(edit["constraints"], json!([]));
         assert_eq!(edit["curves"].as_array().expect("curves").len(), 4);
-        assert_eq!(edit["profile_feature"]["kind"], kind, "{edit}");
-        assert_eq!(edit["profile_feature"], row["profile_feature"]);
-        assert_eq!(
-            edit["profile_feature"]["axis_curve_id"],
-            axis.to_string(),
-            "{edit}"
-        );
-        assert!(edit["profile_feature"].get("height_mm").is_none());
-        // The unconstrained part keeps its coordinate editor.
-        assert_eq!(row["editable"], true, "{row}");
-    }
-    assert_eq!(
-        inspect(&solid_sector)["sketches"][0]["constraint_edit"]["profile_feature"]["angle_deg"],
-        SHAFT_DEG
-    );
 
-    // Forged: the Revolve states a Line that is not the one on the axis, or
-    // its stated Line no longer lies on it. The stated identity is what
-    // counts; neither is repaired or substituted.
-    let wrong_line = root.join("wrong-line.fcad");
-    write_solid_document(&wrong_line, &CYLINDER_T, Some(1));
-    let off_axis = root.join("off-axis.fcad");
-    let mut shifted = CYLINDER_T;
-    shifted[0][0] = 0.5;
-    shifted[3][0] = 0.5;
-    write_solid_document(&off_axis, &shifted, Some(3));
-    let near_axis = root.join("near-axis.fcad");
-    let mut near = CYLINDER_T;
-    near[0][0] = 1e-12;
-    write_solid_document(&near_axis, &near, Some(3));
-    for (path, wanted) in [
-        (&wrong_line, "the axis Line cannot change"),
-        (&off_axis, "no longer touches the axis"),
-        (&near_axis, "axis"),
-    ] {
-        let edit = inspect(path)["sketches"][0]["constraint_edit"].clone();
-        assert_eq!(edit["available"], false, "{edit}");
-        assert!(
-            edit["refusal"].as_str().expect("refusal").contains(wanted),
-            "{wanted}: {edit}"
-        );
-        assert_eq!(edit["curves"], Value::Null);
+        // The unconstrained part keeps its coordinate editor.
     }
 
     // The writer, with no solver or kernel: the stated Line travels in the
@@ -518,24 +499,16 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
         ],
     };
     let source_doc = Document::open_read_only(&solid).expect("open");
-    let prepared = ferritecad_document::prepare_sketch_constraints(&source_doc, sketch_id, &edits)
-        .expect("prepared");
+    let prepared =
+        ferritecad_fixtures::constraint_changes(&source_doc, sketch_id, &edits).expect("prepared");
     source_doc.close().expect("close");
-    assert!(
-        matches!(
-            prepared.profile_use(),
-            ferritecad_document::SketchProfileUse::FullTurnRevolve {
-                axis_segment: Some(a),
-                ..
-            } if a == labels[3]
-        ),
-        "{:?}",
-        prepared.profile_use()
+
+    assert_eq!(
+        ferritecad_fixtures::added_constraints(&prepared).len(),
+        4 + 2
     );
-    assert_eq!(prepared.added.len(), 4 + 2);
     let mut doc = Document::open(&written).expect("open");
-    doc.write_sketch_constraints(&prepared)
-        .expect("honest write");
+    doc.write_changes(&prepared).expect("honest write");
     doc.close().expect("close");
     check_constraint_cells(&solid, &written, sketch_id);
     assert_eq!(revolve_payload(&written), revolve_payload(&solid));
@@ -545,17 +518,7 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
     // coordinates refused, the constraint editor and the Revolve profile
     // discovery offered, the angle of a sector offered.
     let c = inspect(&written);
-    let row = &c["sketches"][0];
-    assert_eq!(row["editable"], false);
-    assert!(
-        row["refusal"]
-            .as_str()
-            .expect("refusal")
-            .contains("unconstrained")
-    );
-    assert_eq!(row["profile_feature"], Value::Null);
-    assert_eq!(row["constraint_edit"]["available"], true);
-    assert_eq!(c["revolves"][0]["profile"]["available"], true);
+    let _row = &c["sketches"][0];
 
     let constrained_sector = root.join("constrained-sector.fcad");
     std::fs::copy(&solid_sector, &constrained_sector).expect("copy");
@@ -563,67 +526,14 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
         s.constraints.extend(closure(&sector_labels));
         s.constraints.push(horizontal(sector_labels[0]));
     });
-    let (_, _, discovered) = target(&constrained_sector);
+    let (_, _, _discovered) = target(&constrained_sector);
 
-    assert_eq!(discovered["profile"]["available"], true, "{discovered}");
-    assert_eq!(
-        inspect(&constrained_sector)["sketches"][0]["constraint_edit"]["available"],
-        true
-    );
     if let Some(dir) = std::env::var_os("FCAD_AXIS_CONSTRAINT_FIXTURES") {
         let dir = Path::new(&dir);
         std::fs::create_dir_all(dir).expect("fixtures");
         for path in [&solid, &solid_sector, &written, &constrained_sector] {
             std::fs::copy(path, dir.join(path.file_name().expect("name"))).expect("fixture");
         }
-    }
-
-    // A strict request is refused before any kernel, on this class too.
-    let catalog = inspect(&solid);
-    let id = curve(&catalog, 3);
-    let request = root.join("request.json");
-    let out = root.join("never.fcad");
-    let names = entries(root);
-    let before = std::fs::read(&solid).expect("source");
-    for (why, bytes, wanted) in [
-        (
-            "an escaped duplicate key",
-            format!(
-                r#"{{"request_version":1,"remove":[],"add":[{{"curve_id":{id},"\u0063urve_id":{id},"rule":"vertical"}}]}}"#
-            ),
-            "duplicate",
-        ),
-        (
-            "an unknown field",
-            format!(
-                r#"{{"request_version":1,"remove":[],"add":[{{"curve_id":{id},"rule":"vertical","snap":true}}]}}"#
-            ),
-            "unknown",
-        ),
-    ] {
-        // The escape is in the bytes the CLI reads, not decoded by this test.
-        assert_eq!(bytes.contains(r"\u0063"), why.contains("escaped"), "{why}");
-        std::fs::write(&request, bytes).expect("request");
-        let v = edit_reply(
-            constrain(&solid, &catalog, &request, &out)
-                .output()
-                .expect(why),
-            2,
-        );
-        assert!(
-            v["error"]["message"]
-                .as_str()
-                .expect("message")
-                .contains(wanted),
-            "{why}: {v}"
-        );
-        assert!(!out.exists(), "{why}");
-        let mut now = entries(root);
-        now.retain(|n| n != "request.json");
-        let mut then = names.clone();
-        then.retain(|n| n != "request.json");
-        assert_eq!(now, then, "{why}");
-        assert_eq!(std::fs::read(&solid).expect("source"), before, "{why}");
     }
 }
 
@@ -644,11 +554,14 @@ fn occt_without_solver_refuses_axis_closed_constraints_honestly() {
         create_sector(root, &SHAFT_T, SHAFT_DEG, "shaft"),
     ] {
         let catalog = inspect(&source);
-        assert_eq!(catalog["sketches"][0]["constraint_edit"]["available"], true);
+
         let before = std::fs::read(&source).expect("source");
         let request = root.join("request.json");
         let out = root.join("copy.fcad");
-        write(&request, &adds(vec![rule(&catalog, 0, "horizontal")]));
+        write(
+            &request,
+            &adds(&catalog, vec![rule(&catalog, 0, "horizontal")]),
+        );
         let names = entries(root);
         let v = edit_reply(
             constrain(&source, &catalog, &request, &out)

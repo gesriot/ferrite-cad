@@ -305,7 +305,7 @@ impl Tabs {
     pub(crate) fn model_arrived(
         &mut self,
         active: &Sessions,
-        source: Option<&ferritecad_document::ExtrudeEditSource>,
+        source: Option<&crate::sketch_facts::Source>,
     ) {
         if !active.has_session() {
             return;

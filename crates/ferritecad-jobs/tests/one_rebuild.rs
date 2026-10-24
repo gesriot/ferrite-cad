@@ -161,7 +161,7 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
                 let expected = ticket.source().version();
                 ticket.edit(
                     vec![
-                        ferritecad_document::ExpressionChange::constant(
+                        ferritecad_document::EditChange::constant(
                             feature,
                             ferritecad_document::ExpressionSlot::ExtrudeDistance,
                             12.0,
@@ -187,51 +187,42 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
                             start_mm: [start.x * 0.9, start.y],
                         }
                     })
-                    .collect();
-                ticket.edit_sketch_vertices(
-                    sketch_id,
-                    vertices,
+                    .collect::<Vec<_>>();
+                ticket.edit(
+                    move_sketch_vertices(sketch_id, &sketch, &vertices).expect("vertex changes"),
                     expected,
                     &mut kernel,
                     no_imports,
                     &context,
                 )
             }
-            "constraints" => ticket.edit_sketch_constraints(
-                sketch_id,
-                SketchConstraintEdits {
-                    remove: vec![],
-                    add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
-                        curve: sketch.curves[0].id,
-                        kind: LineConstraintKind::Horizontal,
-                    })],
-                },
+            "constraints" => ticket.edit(
+                sketch_constraint_changes(
+                    sketch_id,
+                    &sketch,
+                    &SketchConstraintEdits {
+                        remove: vec![],
+                        add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
+                            curve: sketch.curves[0].id,
+                            kind: LineConstraintKind::Horizontal,
+                        })],
+                    },
+                )
+                .expect("constraint changes"),
                 expected,
                 &mut kernel,
                 no_imports,
                 &context,
             ),
-            "circle" => ticket.edit_circle(
-                sketch_id,
-                CircleEdit {
-                    curve_id: sketch.curves[0].id,
-                    center_mm: [10.0, 10.0],
-                    radius_mm: 6.0,
-                },
-                expected,
-                &mut kernel,
-                no_imports,
-                &context,
-            ),
-            "annulus" => ticket.edit_annulus(
-                sketch_id,
-                AnnulusEdit {
-                    outer_curve_id: sketch.curves[0].id,
-                    inner_curve_id: sketch.curves[1].id,
-                    center_mm: [10.0, 10.0],
-                    outer_radius_mm: 6.0,
-                    inner_radius_mm: 2.0,
-                },
+            "circle" | "annulus" => ticket.edit(
+                vec![EditChange::SetCurveGeometry {
+                    sketch: sketch_id,
+                    curve: sketch.curves[0].id,
+                    geometry: SketchGeometry::Circle {
+                        center: Point2::new(10., 10.).expect("center"),
+                        radius: 6.,
+                    },
+                }],
                 expected,
                 &mut kernel,
                 no_imports,
@@ -284,7 +275,7 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
             ),
             "fillet_radius" => ticket.edit(
                 vec![
-                    ferritecad_document::ExpressionChange::constant(
+                    ferritecad_document::EditChange::constant(
                         selected,
                         ferritecad_document::ExpressionSlot::FilletRadius,
                         2.5,
@@ -309,7 +300,7 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
             ),
             "chamfer_distance" => ticket.edit(
                 vec![
-                    ferritecad_document::ExpressionChange::constant(
+                    ferritecad_document::EditChange::constant(
                         selected,
                         ferritecad_document::ExpressionSlot::ChamferDistance,
                         2.5,
@@ -323,7 +314,7 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
             ),
             "revolve_angle" => ticket.edit(
                 vec![
-                    ferritecad_document::ExpressionChange::constant(
+                    ferritecad_document::EditChange::constant(
                         feature,
                         ferritecad_document::ExpressionSlot::RevolveAngle,
                         200.0_f64.to_radians(),
@@ -397,7 +388,7 @@ fn a_picture_failure_releases_the_rebuild_and_keeps_the_accepted_version() {
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     12.0,

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-use ferritecad_document::{Document, ExpressionChange, ExpressionSlot};
+#![allow(clippy::panic)]
+use ferritecad_document::{Document, EditChange, ExpressionSlot};
 use ferritecad_jobs::{EditRequest, edit_copy};
 use ferritecad_kernel::OperationContext;
 
@@ -26,7 +27,7 @@ fn a_dimension_and_its_fillet_can_be_repaired_together() {
         source: source.clone(),
         expected: reading.version,
         changes: vec![
-            ExpressionChange::constant(dimension.object, dimension.slot, 10.0).expect("dimension"),
+            EditChange::constant(dimension.object, dimension.slot, 10.0).expect("dimension"),
         ],
         destination: root.path().join("edited.fcad"),
     };
@@ -43,7 +44,7 @@ fn a_dimension_and_its_fillet_can_be_repaired_together() {
     assert!(!request.destination.exists());
     assert_eq!(std::fs::read(&source).expect("unchanged"), before);
     request.changes.push(
-        ExpressionChange::constant(chain.first, ExpressionSlot::FilletRadius, 2.0).expect("radius"),
+        EditChange::constant(chain.first, ExpressionSlot::FilletRadius, 2.0).expect("radius"),
     );
     let result = edit_copy(&request, &mut kernel, &context).expect("one transaction repairs both");
     assert!(result.rebuild.all_built());
@@ -53,12 +54,20 @@ fn a_dimension_and_its_fillet_can_be_repaired_together() {
         result.version.content
     );
     for change in &request.changes {
+        let EditChange::SetExpression {
+            object,
+            slot,
+            expression,
+        } = change
+        else {
+            panic!("numeric transaction")
+        };
         let slots = reopened.expression_slots().expect("slots");
         let saved = slots
             .iter()
-            .find(|s| s.object == change.object && s.slot == change.slot)
+            .find(|s| s.object == *object && s.slot == *slot)
             .expect("saved slot");
-        assert_eq!(saved.expression, change.expression);
+        assert_eq!(&saved.expression, expression);
     }
     let built =
         ferritecad_eval::rebuild_cold(&reopened, &mut kernel, &context).expect("cold rebuild");

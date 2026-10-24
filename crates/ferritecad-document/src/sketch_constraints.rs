@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Bounded persisted Line orientation/length/pin/equality/relation editing. No solver or wire format.
 use crate::{
-    CircleExtrusion, Document, ObjectPayload, ObjectRecord, Sketch, SketchConstraint,
-    SketchConstraintRule, SketchGeometry, SketchPointRef, SketchPointSelector, SketchProfileUse,
-    SketchSegmentRef,
+    Sketch, SketchConstraint, SketchConstraintRule, SketchGeometry, SketchPointRef,
+    SketchPointSelector, SketchSegmentRef,
 };
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 use std::collections::BTreeSet;
@@ -298,143 +297,6 @@ pub struct SketchConstraintEdits {
     pub add: Vec<AddSketchConstraint>,
 }
 
-/// Same objects()/content-version snapshot as coordinate discovery; independent eligibility.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConstraintSketchChoice {
-    pub sketch: ObjectId,
-    pub name: Option<String>,
-    pub stored: Option<Sketch>,
-    /// The extrusion height, for a profile an Extrude uses; `None` for a
-    /// Revolve profile, which has no height, and for an unsupported Sketch.
-    pub height_mm: Option<f64>,
-    /// §27G: the feature that turns this profile into a solid, and so the
-    /// policy its solved drawing must satisfy. Present exactly when `stored`
-    /// is.
-    pub profile_use: Option<SketchProfileUse>,
-    /// §28E/§28K/§28L: the saved Fillets over this plate in history order,
-    /// when this is its base Sketch; empty otherwise. Each `corner` is read
-    /// from the stored Lines; the part's corners, every radius and every
-    /// shared flat are the solved plate's to satisfy at every rebuild. Each
-    /// later Fillet rounds the result of the one before it.
-    pub fillets: Vec<crate::SavedFillet>,
-    /// §29D: the one saved Chamfer over this plate, when this is its base
-    /// Sketch; `None` otherwise. Its `corner` is read from the stored Lines and
-    /// its distance's bound is the solved plate's to satisfy at every rebuild.
-    pub chamfer: Option<crate::SavedChamfer>,
-    pub refusal: Option<String>,
-}
-
-impl ConstraintSketchChoice {
-    /// The first Fillet, the one that rounds the plate (§28E).
-    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
-        self.fillets.first()
-    }
-}
-
-pub fn constraint_sketch_choices(
-    document: &Document,
-    objects: &[ObjectRecord],
-) -> Vec<ConstraintSketchChoice> {
-    objects
-        .iter()
-        .filter(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
-        .map(|o| match supported_family(document, objects, o) {
-            Ok((_, profile_use, over, chamfer)) => {
-                let ObjectPayload::Sketch(sketch) = &o.payload else {
-                    unreachable!("checked")
-                };
-                let fillets = over.map(|o| o.fillets).unwrap_or_default();
-                ConstraintSketchChoice {
-                    sketch: o.id,
-                    name: o.name.clone(),
-                    stored: Some(sketch.clone()),
-                    height_mm: extrusion_height(&profile_use),
-                    profile_use: Some(profile_use),
-                    fillets,
-                    chamfer,
-                    refusal: None,
-                }
-            }
-            Err(e) => ConstraintSketchChoice {
-                sketch: o.id,
-                name: o.name.clone(),
-                stored: None,
-                height_mm: None,
-                profile_use: None,
-                fillets: Vec::new(),
-                chamfer: None,
-                refusal: Some(e.to_string()),
-            },
-        })
-        .collect()
-}
-
-fn extrusion_height(profile_use: &SketchProfileUse) -> Option<f64> {
-    match *profile_use {
-        SketchProfileUse::BlindExtrude { height_mm, .. } => Some(height_mm),
-        _ => None,
-    }
-}
-
-/// The frame, the geometry family and the owning feature, all from one reading.
-fn supported_family(
-    document: &Document,
-    objects: &[ObjectRecord],
-    object: &ObjectRecord,
-) -> Result<(
-    Family,
-    SketchProfileUse,
-    Option<crate::fillet_radius::FilletsOverPlate>,
-    Option<crate::SavedChamfer>,
-)> {
-    // The frame every copy edit of a saved profile requires is checked once,
-    // in the one place that owns it, before either family is considered. It
-    // also says which feature uses the profile (§27G): an Extrude and its
-    // height, or a Revolve with a bore and its stated turn.
-    let (sketch, profile_use, over, chamfer) =
-        crate::sketch_edit::constraint_frame(document, objects, object)?;
-    let family = classify(sketch)?;
-    if (over.is_some() || chamfer.is_some()) && family != Family::Lines {
-        return Err(CadError::unsupported(
-            "the plate under a Fillet or a Chamfer is four Lines, and this Sketch holds \
-             something else",
-        ));
-    }
-    let height = extrusion_height(&profile_use);
-    match (family, height) {
-        // The Line editor's own class, checked by its own code against the
-        // policy of the feature that uses it — the same check an Extrude
-        // profile always had, and the Revolve policy for a turned one.
-        (Family::Lines, _) => {
-            crate::sketch_edit::constrained_lines(sketch, &profile_use)?;
-        }
-        (Family::Circle | Family::Annulus, None) => {
-            return Err(CadError::unsupported(
-                "a Revolve profile is Lines; constraint editing of Circles is supported only on \
-                 an extruded profile",
-            ));
-        }
-        (Family::Circle, Some(height)) => {
-            let (_, center, radius) = crate::circle_edit::analytic_circle(&sketch.curves[0])?;
-            // The stored geometry has to be inside the policy new numbers are
-            // judged by, and it is the *same* policy: one numeric rule, asked
-            // here, in the request check and at creation alike.
-            CircleExtrusion::new([center.x, center.y], radius, height).map_err(|e| {
-                CadError::unsupported(format!("saved circle is outside edit policy: {e}"))
-            })?;
-        }
-        (Family::Annulus, Some(height)) => {
-            // The same reading, the same roles and the same numeric policy the
-            // annulus editor applies to a saved pair — asked here through the
-            // one function that owns them, so a document the two editors both
-            // see cannot be two different drawings.
-            crate::annulus_edit::saved_pair(sketch, height)?;
-        }
-    }
-    managed(sketch, family)?;
-    Ok((family, profile_use, over, chamfer))
-}
-
 /// §28E: the managed Line family, asked of a Sketch whose other readers — the
 /// Fillet frame and the evaluator — accept only it.
 pub(crate) fn managed_lines(sketch: &Sketch) -> Result<()> {
@@ -699,76 +561,6 @@ pub(crate) fn first_outside_managed_lines(sketch: &Sketch) -> Option<&SketchCons
                 if expected.contains(&unordered(a, b)))
     })
 }
-/// The slot a requested addition occupies, refusing a pair that is not one.
-fn requested(add: &AddSketchConstraint) -> Result<(Slot, [StableEntityId; 2])> {
-    let add = match *add {
-        AddSketchConstraint::Circle { curve, kind } => {
-            return Ok((
-                match kind {
-                    CircleConstraintKind::Radius(_) => Slot::Radius(curve),
-                    CircleConstraintKind::FixedCenter { .. } => Slot::Pin,
-                },
-                [curve, curve],
-            ));
-        }
-        AddSketchConstraint::Concentric { a, b } => {
-            if a == b {
-                return Err(CadError::input(
-                    "concentricity relates two different Circles; this addition names one twice",
-                ));
-            }
-            return Ok((concentric_slot(a, b), [a, b]));
-        }
-        AddSketchConstraint::Line(line) => line,
-    };
-    Ok(match add {
-        AddLineConstraint::Line { curve, kind } => (line_slot(curve, kind), [curve, curve]),
-        AddLineConstraint::EqualLength { a, b } => {
-            if a == b {
-                return Err(CadError::input(
-                    "equal length relates two different Lines; this addition names one twice",
-                ));
-            }
-            (equal_slot(a, b), [a, b])
-        }
-        AddLineConstraint::Relation { a, b, .. } => {
-            if a == b {
-                return Err(CadError::input(
-                    "a relative orientation relates two different Lines; this addition names one twice",
-                ));
-            }
-            (relation_slot(a, b), [a, b])
-        }
-        AddLineConstraint::DirectedAngle { a, b, .. } => {
-            if a.curve() == b.curve() {
-                return Err(CadError::input(
-                    "a directed angle relates two different Lines; this addition names one twice",
-                ));
-            }
-            (relation_slot(a.curve(), b.curve()), [a.curve(), b.curve()])
-        }
-    })
-}
-fn occupied(slot: Slot) -> &'static str {
-    match slot {
-        Slot::Length(_) => "a Line may hold only one length; remove its current constraint first",
-        Slot::Pin => {
-            "a profile may hold only one fixed endpoint; remove the stored one in the same request"
-        }
-        Slot::Equal(..) => {
-            "these two Lines already hold an equal length; remove it in the same request"
-        }
-        Slot::Relation(..) => {
-            "these two Lines already hold a Parallel, Perpendicular, directed angle or Collinear; remove it in the same request"
-        }
-        Slot::Orientation(_) => "a Line may hold only one H/V; remove its current constraint first",
-        Slot::Radius(_) => "a circle may hold only one radius; remove its current constraint first",
-        Slot::Concentric(..) => {
-            "these two circles already share a centre; remove that constraint in the same request"
-        }
-    }
-}
-
 /// Preserve only this declared family of stored relationships; never simplify others.
 fn managed(sketch: &Sketch, family: Family) -> Result<()> {
     match family {
@@ -859,170 +651,6 @@ fn managed_circles(sketch: &Sketch, family: Family) -> Result<()> {
     Ok(())
 }
 
-/// Which stored rules a family manages, decided once for every caller.
-fn family_slot_of(
-    family: Family,
-    rule: &SketchConstraintRule,
-) -> Option<(Slot, [StableEntityId; 2])> {
-    match family {
-        Family::Lines => slot_of(rule),
-        Family::Circle => circle_slot_of(rule).map(|(slot, curve)| (slot, [curve, curve])),
-        Family::Annulus => annulus_slot_of(rule),
-    }
-}
-
-/// Validate the atomic remove-then-add request without minting IDs or solving.
-fn retained(
-    sketch: &Sketch,
-    family: Family,
-    edits: &SketchConstraintEdits,
-) -> Result<Vec<SketchConstraint>> {
-    managed(sketch, family)?;
-    let count = edits.remove.len().saturating_add(edits.add.len());
-    if count == 0 || count > 512 {
-        return Err(CadError::input(
-            "constraint request requires 1..512 changes",
-        ));
-    }
-    let mut removals = BTreeSet::new();
-    for id in &edits.remove {
-        if !removals.insert(*id) {
-            return Err(CadError::input("duplicate constraint removal UUID"));
-        }
-        let c = sketch
-            .constraints
-            .iter()
-            .find(|c| c.id == *id)
-            .ok_or_else(|| {
-                CadError::input(format!(
-                    "constraint {id} does not belong to the selected Sketch"
-                ))
-            })?;
-        if family_slot_of(family, &c.rule).is_none() {
-            return Err(CadError::input(
-                "only H/V, Line length, equal length, Parallel/Perpendicular/directed angle/Collinear, the Fixed endpoint, a circle radius, a fixed centre or a concentricity may be removed; Line closure links are retained",
-            ));
-        }
-    }
-    let kept: Vec<_> = sketch
-        .constraints
-        .iter()
-        .filter(|c| !removals.contains(&c.id))
-        .cloned()
-        .collect();
-    let mut lines: BTreeSet<_> = kept
-        .iter()
-        .filter_map(|c| family_slot_of(family, &c.rule).map(|(slot, _)| slot))
-        .collect();
-    for add in &edits.add {
-        let (slot, curves) = requested(add)?;
-        // An addition has to speak the family's own vocabulary. A radius asked
-        // of a Line profile and an H/V asked of a circle are both requests for
-        // geometry that is not there, and saying so beats storing a constraint
-        // the solver would then be asked to make sense of.
-        let fits = matches!(
-            (family, add),
-            (Family::Lines, AddSketchConstraint::Line(_))
-                | (
-                    Family::Circle | Family::Annulus,
-                    AddSketchConstraint::Circle { .. }
-                )
-                | (Family::Annulus, AddSketchConstraint::Concentric { .. })
-        );
-        if !fits {
-            return Err(CadError::input(match family {
-                Family::Lines => "this Sketch is a Line profile and takes no circle constraint",
-                Family::Circle => {
-                    "this Sketch is one analytic Circle: it takes no Line constraint, and one \
-                     circle has nothing to be concentric with"
-                }
-                Family::Annulus => {
-                    "this Sketch is two analytic Circles and takes no Line constraint"
-                }
-            }));
-        }
-        for curve in curves {
-            if !sketch.curves.iter().any(|c| c.id == curve) {
-                return Err(CadError::input(format!(
-                    "curve {curve} does not belong to the selected Sketch"
-                )));
-            }
-        }
-        if !lines.insert(slot) {
-            return Err(CadError::input(occupied(slot)));
-        }
-    }
-    Ok(kept)
-}
-impl ConstraintSketchChoice {
-    pub fn validate_edits(&self, edits: &SketchConstraintEdits) -> Result<()> {
-        let sketch = self
-            .stored
-            .as_ref()
-            .ok_or_else(|| CadError::unsupported("unsupported constraint Sketch choice"))?;
-        let family = classify(sketch)?;
-        retained(sketch, family, edits).map(|_| ())
-    }
-}
-
-/// Owned preparation: IDs are allocated once, only after all request checks pass.
-#[derive(Debug, Clone)]
-pub struct PreparedSketchConstraints {
-    pub(crate) object: ObjectRecord,
-    pub added: Vec<SketchConstraint>,
-    pub removed: Vec<StableEntityId>,
-    /// The feature that uses the profile, read with the frame: what the
-    /// solved drawing must satisfy before publication. Private, like the
-    /// payload, so no caller can swap the policy a copy is judged by.
-    profile_use: SketchProfileUse,
-    roles: Option<(StableEntityId, StableEntityId)>,
-    /// §28E/§28L: the Fillets the frame read with this Sketch, in history
-    /// order; empty for a Sketch no Fillet rounds.
-    fillets: Vec<crate::SavedFillet>,
-    /// §29D: the Chamfer the frame read with this Sketch, if any.
-    pub(crate) chamfer: Option<crate::SavedChamfer>,
-}
-impl PreparedSketchConstraints {
-    pub fn object(&self) -> &ObjectRecord {
-        &self.object
-    }
-
-    /// The feature that turns the profile into a solid (§27G).
-    pub fn profile_use(&self) -> SketchProfileUse {
-        self.profile_use
-    }
-
-    /// The boundary and the bore of the **saved** profile, in that order, or
-    /// `None` for a profile that is not an annulus.
-    ///
-    /// Read from the saved radii before anything is solved, and carried here so
-    /// the rebuild can check the solved drawing still holds the same two roles
-    /// under the same two UUIDs. Re-reading it from the solved answer instead
-    /// would legalise a swap: two circles that exchanged sizes would look like
-    /// a perfectly good annulus whose roles had simply always been the other
-    /// way round.
-    pub fn circle_roles(&self) -> Option<(StableEntityId, StableEntityId)> {
-        self.roles
-    }
-
-    /// §28E/§28L: the saved Fillets over the plate this Sketch bounds, in
-    /// history order, as read with the frame.
-    pub fn fillets(&self) -> &[crate::SavedFillet] {
-        &self.fillets
-    }
-
-    /// The first Fillet, which rounds the plate (§28E).
-    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
-        self.fillets.first()
-    }
-
-    /// §29D: the saved Chamfer over the plate this Sketch bounds, as read with
-    /// the frame; its corner is stored, its bound the rebuild's.
-    pub fn chamfer(&self) -> Option<&crate::SavedChamfer> {
-        self.chamfer.as_ref()
-    }
-}
-
 /// Which of a managed profile's circles bounds the part and which is the bore,
 /// or `None` when the profile is not two circles.
 ///
@@ -1030,32 +658,37 @@ impl PreparedSketchConstraints {
 /// so neither has to decide roles for itself. It is the same reading the editor
 /// uses, asked of the same stored sketch.
 pub fn constraint_circle_roles(sketch: &Sketch) -> Option<(StableEntityId, StableEntityId)> {
-    (classify(sketch).ok()? == Family::Annulus)
-        .then(|| crate::annulus_edit::pair_in_roles(sketch).ok())
-        .flatten()
-        .map(|(outer, inner)| (outer.0, inner.0))
+    let [a, b] = sketch.curves.as_slice() else {
+        return None;
+    };
+    let (SketchGeometry::Circle { radius: ar, .. }, SketchGeometry::Circle { radius: br, .. }) =
+        (&a.geometry, &b.geometry)
+    else {
+        return None;
+    };
+    Some(if ar >= br { (a.id, b.id) } else { (b.id, a.id) })
 }
 
-pub fn prepare_sketch_constraints(
-    document: &Document,
+/// Translate form gestures to explicit changes; rebuild decides whether they fit.
+pub fn sketch_constraint_changes(
     id: ObjectId,
+    sketch: &Sketch,
     edits: &SketchConstraintEdits,
-) -> Result<PreparedSketchConstraints> {
-    let objects = document.objects()?;
-    let mut object = objects
+) -> Result<Vec<crate::EditChange>> {
+    let mut kept = sketch
+        .constraints
         .iter()
-        .find(|o| o.id == id)
+        .filter(|c| !edits.remove.contains(&c.id))
         .cloned()
-        .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
-    let (family, profile_use, over, chamfer) = supported_family(document, &objects, &object)?;
-    let fillets = over.map(|o| o.fillets).unwrap_or_default();
-    let ObjectPayload::Sketch(sketch) = &mut object.payload else {
-        unreachable!("checked")
-    };
-    let mut kept = retained(sketch, family, edits)?;
+        .collect::<Vec<_>>();
     let mut added = Vec::new();
     // A circle has no joints to close, so nothing is appended on its behalf.
-    if family == Family::Lines && !edits.add.is_empty() {
+    if sketch
+        .curves
+        .iter()
+        .all(|c| matches!(c.geometry, SketchGeometry::Line { .. }))
+        && !edits.add.is_empty()
+    {
         for (i, pair) in closures(sketch).into_iter().enumerate() {
             if kept.iter().any(
                 |c| matches!(c.rule,SketchConstraintRule::Coincident{a,b} if unordered(a,b)==pair),
@@ -1159,105 +792,35 @@ pub fn prepare_sketch_constraints(
         kept.push(c.clone());
         added.push(c);
     }
-    sketch.constraints = kept;
-    // The saved roles, read before this edit is written and from the saved
-    // radii alone.
-    let roles = (family == Family::Annulus)
-        .then(|| crate::annulus_edit::pair_in_roles(sketch))
-        .transpose()?
-        .map(|(outer, inner)| (outer.0, inner.0));
-    Ok(PreparedSketchConstraints {
-        object,
-        added,
-        removed: edits.remove.clone(),
-        profile_use,
-        roles,
-        fillets,
-        chamfer,
-    })
+    let changes: Vec<_> = edits
+        .remove
+        .iter()
+        .map(|constraint| crate::EditChange::RemoveConstraint {
+            sketch: id,
+            constraint: *constraint,
+        })
+        .chain(
+            added
+                .into_iter()
+                .map(|constraint| crate::EditChange::AddConstraint {
+                    sketch: id,
+                    constraint,
+                }),
+        )
+        .collect();
+    crate::validate_sketch_changes(id, sketch, &changes)?;
+    Ok(changes)
 }
 
-/// The writer's re-derivation (§28E): the prepared edit is derived again from
-/// the document the write consumes, and nothing in it is taken on trust.
-///
-/// The frame and the family are read again, so a Fillet or a feature that
-/// changed since preparation refuses. The written constraint list must be
-/// exactly the stored one without the removed UUIDs, followed by the added
-/// constraints; each removal named a removable stored constraint and each
-/// addition is new; the curves and the plane are the stored ones; and the
-/// result is inside the managed family.
-pub(crate) fn rederive(document: &Document, prepared: &PreparedSketchConstraints) -> Result<()> {
-    let objects = document.objects()?;
-    let current = objects
-        .iter()
-        .find(|o| o.id == prepared.object.id)
-        .ok_or_else(|| CadError::input("selected Sketch disappeared before constraint write"))?;
-    let (family, profile_use, over, chamfer) = supported_family(document, &objects, current)?;
-    let fillets = over.map(|o| o.fillets).unwrap_or_default();
-    if profile_use != prepared.profile_use
-        || fillets != prepared.fillets
-        || chamfer != prepared.chamfer
-    {
-        return Err(CadError::input(
-            "the feature, Fillet or Chamfer around this Sketch changed after constraint \
-             preparation",
-        ));
+fn family_slot_of(
+    family: Family,
+    rule: &SketchConstraintRule,
+) -> Option<(Slot, [StableEntityId; 2])> {
+    match family {
+        Family::Lines => slot_of(rule),
+        Family::Circle => circle_slot_of(rule).map(|(slot, curve)| (slot, [curve, curve])),
+        Family::Annulus => annulus_slot_of(rule),
     }
-    let (ObjectPayload::Sketch(stored), ObjectPayload::Sketch(written)) =
-        (&current.payload, &prepared.object.payload)
-    else {
-        return Err(CadError::input(
-            "constraint preparation must contain a Sketch",
-        ));
-    };
-    if written.plane != stored.plane || written.curves != stored.curves {
-        return Err(CadError::input(
-            "a constraint edit may not change the Sketch's plane or curves",
-        ));
-    }
-    let removed: BTreeSet<_> = prepared.removed.iter().copied().collect();
-    if removed.len() != prepared.removed.len() {
-        return Err(CadError::input("duplicate constraint removal UUID"));
-    }
-    for id in &removed {
-        let c = stored
-            .constraints
-            .iter()
-            .find(|c| c.id == *id)
-            .ok_or_else(|| {
-                CadError::input(format!(
-                    "removed constraint {id} is not in the stored Sketch"
-                ))
-            })?;
-        if family_slot_of(family, &c.rule).is_none() {
-            return Err(CadError::input(format!(
-                "removed constraint {id} is a closure link, which constraint editing retains"
-            )));
-        }
-    }
-    if prepared
-        .added
-        .iter()
-        .any(|a| stored.constraints.iter().any(|c| c.id == a.id))
-    {
-        return Err(CadError::input(
-            "an added constraint reuses a stored constraint UUID",
-        ));
-    }
-    let expected: Vec<_> = stored
-        .constraints
-        .iter()
-        .filter(|c| !removed.contains(&c.id))
-        .chain(prepared.added.iter())
-        .cloned()
-        .collect();
-    if written.constraints != expected {
-        return Err(CadError::input(
-            "the prepared constraint list is not the stored list with these removals and \
-             additions",
-        ));
-    }
-    managed(written, family)
 }
 
 #[cfg(test)]

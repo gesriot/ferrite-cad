@@ -226,34 +226,6 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
         "the pending line must say the angle and both directions"
     );
 
-    // One pair has one relative-orientation slot, whichever way it is said.
-    let kept = history_state(&e);
-    enter_field(&ctx, &mut e, ANGLE_BOX, "-150", false);
-    click(&ctx, &mut e, "A: start>end");
-    click(&ctx, &mut e, "Add directed angle");
-    assert!(
-        e.draft
-            .as_ref()
-            .expect("d")
-            .refusal
-            .as_deref()
-            .is_some_and(|r| r.contains("directed angle")),
-        "the same relation with A turned is a second answer to one question"
-    );
-    assert_eq!(history_state(&e), kept);
-    click(&ctx, &mut e, "A: end>start");
-    click(&ctx, &mut e, "Add Parallel");
-    assert!(
-        e.draft
-            .as_ref()
-            .expect("d")
-            .refusal
-            .as_deref()
-            .is_some_and(|r| r.contains("directed angle")),
-        "a Parallel on an angled pair is refused for the slot"
-    );
-    assert_eq!(history_state(&e), kept);
-
     // Another pair, the second vector turned, and the opposite spelt -180: the
     // stored value is +180, the direction is as said.
     pair(&ctx, &mut e, 3, 4);
@@ -311,9 +283,18 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     e.set_session(true, true, false);
     click(&ctx, &mut e, "Save constraints copy…");
     let request = e.take_request().expect("Save asked");
-    assert_eq!(request.edits, applied.edits);
-    assert_eq!(request.edits.add, vec![first, second]);
-    assert_eq!((request.sketch, request.expected), (sketch, source.version));
+    assert_eq!(
+        crate::transaction_tests::constraints(&request),
+        crate::transaction_tests::constraints(&applied)
+    );
+    assert_eq!(
+        crate::transaction_tests::constraints(&request).add,
+        vec![first, second]
+    );
+    assert_eq!(
+        (crate::transaction_tests::sketch(&request), request.expected),
+        (sketch, source.version)
+    );
     assert!(e.take_request().is_none(), "one press, one request");
     let (text, history) = (
         e.draft.as_ref().expect("draft").angle_deg.clone(),
@@ -323,7 +304,7 @@ fn a_directed_angle_is_two_explicit_vectors_and_a_signed_angle_in_one_step_throu
     for cancelled in [false, true] {
         let (tx, rx) = std::sync::mpsc::channel();
         let generation = state
-            .start_constraints(request.clone(), move |_, g, c| {
+            .start(request.clone(), move |_, g, c| {
                 std::thread::spawn(move || {
                     if cancelled {
                         c.cancel();
@@ -369,7 +350,7 @@ fn a_stored_angle_is_replaced_by_another_in_one_exact_remove_and_add() {
     // The stored angle is written through the document, turned against the
     // stored order, as an earlier editor session would have left it.
     let mut document = Document::open(&path).expect("doc");
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         plain.constraint_sketches[0].sketch,
         &SketchConstraintEdits {
@@ -382,9 +363,12 @@ fn a_stored_angle_is_replaced_by_another_in_one_exact_remove_and_add() {
         },
     )
     .expect("prepare");
-    let stored_id = prepared.added.last().expect("the angle").id;
-    document.write_sketch_constraints(&prepared).expect("write");
-    let source = ExtrudeEditSource::read(&document).expect("catalog");
+    let stored_id = ferritecad_fixtures::added_constraints(&prepared)
+        .last()
+        .expect("the angle")
+        .id;
+    document.write_changes(&prepared).expect("write");
+    let source = crate::sketch_facts::Source::read(&document).expect("catalog");
     document.close().expect("close");
     let (mut e, ctx) = opened_form(&path, &source);
 
@@ -428,21 +412,16 @@ fn a_stored_angle_is_replaced_by_another_in_one_exact_remove_and_add() {
     e.set_session(true, true, false);
     click(&ctx, &mut e, "Save constraints copy…");
     let request = e.take_request().expect("Save asked");
-    assert_eq!(request.edits.remove, vec![stored_id]);
-    assert_eq!(request.edits.add.len(), 1);
-    // And without the removal the same add is refused for the slot.
-    click(&ctx, &mut e, "Undo");
-    click(&ctx, &mut e, "Undo");
-    enter_field(&ctx, &mut e, ANGLE_BOX, "150", false);
-    click(&ctx, &mut e, "Add directed angle");
-    assert!(
-        e.draft
-            .as_ref()
-            .expect("d")
-            .refusal
-            .as_deref()
-            .is_some_and(|r| r.contains("directed angle"))
+    assert_eq!(
+        crate::transaction_tests::constraints(&request).remove,
+        vec![stored_id]
     );
+    assert_eq!(crate::transaction_tests::constraints(&request).add.len(), 1);
+    // The form also permits an additional rule; the solver decides its effect.
+    click(&ctx, &mut e, "Undo");
+    click(&ctx, &mut e, "Undo");
+    click(&ctx, &mut e, "Add directed angle");
+    assert!(e.draft.as_ref().expect("draft").refusal.is_none());
 }
 
 /// A directed angle between Lines `a` and `b` (1-based, as the list numbers
@@ -454,7 +433,7 @@ pub(crate) fn typed_angle_apply(
     (a, b): (usize, usize),
     turn_b: bool,
     text: &str,
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut e, ctx) = opened_form(path, source);
     e.set_session(true, true, true);
     pair(&ctx, &mut e, a, b);
@@ -507,7 +486,7 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     crate::sketch::drag_tests::attach_source_claim(&source_path);
     let source = {
         let d = Document::open_read_only(&source_path).expect("doc");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         source
     };
@@ -530,16 +509,24 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
         vector(saved.curves[2].id, LineEndpoint::End),
         110.,
     );
-    assert_eq!(request.edits.add, vec![expected]);
+    assert_eq!(
+        crate::transaction_tests::constraints(&request).add,
+        vec![expected]
+    );
     let ui = root.path().join("ui.fcad");
     request.destination = ui.clone();
     let mut state = crate::edits::Edits::default();
     let (tx, rx) = std::sync::mpsc::channel();
     state
-        .start_constraints(request.clone(), move |r, g, c| {
-            crate::edits::spawn_constraint_edit(r, c, move |result| {
-                tx.send((g, result)).expect("reply")
-            })
+        .start(request.clone(), move |r, g, c| {
+            crate::edits::spawn_edit(
+                r.source,
+                r.expected,
+                r.changes,
+                r.destination,
+                c,
+                move |result| tx.send((g, result)).expect("reply"),
+            )
         })
         .expect("worker");
     let (g, result) = rx
@@ -549,7 +536,10 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
         result
             .as_ref()
             .ok()
-            .map(|r| r.solve.as_ref().expect("solve").degrees_of_freedom()),
+            .map(|r| crate::transaction_tests::solve(r)
+                .as_ref()
+                .expect("solve")
+                .degrees_of_freedom()),
         Some(7)
     );
     assert_eq!(finish_edit(&mut e, &mut state, g, result), Some(ui.clone()));
@@ -560,10 +550,14 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     let request_file = root.path().join("request.json");
     std::fs::write(
         &request_file,
-        super::session_apply::peer_request(&SketchConstraintEdits {
-            remove: vec![],
-            add: vec![expected],
-        }),
+        super::session_apply::peer_request(
+            &source_path,
+            sketch,
+            &SketchConstraintEdits {
+                remove: vec![],
+                add: vec![expected],
+            },
+        ),
     )
     .expect("request");
     let run = |args: &[&std::ffi::OsStr]| {
@@ -575,10 +569,8 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
         out
     };
     run(&[
-        "edit-sketch-constraints-copy".as_ref(),
+        "edit".as_ref(),
         source_path.as_os_str(),
-        "--sketch".as_ref(),
-        sketch.to_string().as_ref(),
         "--expect-version".as_ref(),
         source.version.content.to_string().as_ref(),
         "--request".as_ref(),
@@ -785,25 +777,31 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     // Replace, then remove, from the window's own copy: the form's Remove row and
     // a new Add (one request, one worker), then the Remove alone. Each answer is
     // set against the peer CLI given the same request on the same file.
-    let work = |request: EditSketchConstraintsRequest, to: &Path| {
+    let work = |request: EditRequest, to: &Path| {
         let mut request = request;
         request.destination = to.to_path_buf();
         let mut state = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(request, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request, move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
-        let dof = result
-            .as_ref()
-            .ok()
-            .map(|r| r.solve.as_ref().map(|s| s.degrees_of_freedom()));
+        let dof = result.as_ref().ok().map(|r| {
+            crate::transaction_tests::solve(r)
+                .as_ref()
+                .map(|s| s.degrees_of_freedom())
+        });
         let mut idle = Editor::default();
         (finish_edit(&mut idle, &mut state, g, result), dof)
     };
@@ -811,12 +809,14 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
                 version: &ferritecad_document::DocumentVersion,
                 edits: &SketchConstraintEdits,
                 to: &Path| {
-        std::fs::write(&request_file, super::session_apply::peer_request(edits)).expect("request");
+        std::fs::write(
+            &request_file,
+            super::session_apply::peer_request(from, sketch, edits),
+        )
+        .expect("request");
         run(&[
-            "edit-sketch-constraints-copy".as_ref(),
+            "edit".as_ref(),
             from.as_os_str(),
-            "--sketch".as_ref(),
-            sketch.to_string().as_ref(),
             "--expect-version".as_ref(),
             version.content.to_string().as_ref(),
             "--request".as_ref(),
@@ -835,7 +835,7 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     };
     let reading = |path: &Path| {
         let d = Document::open_read_only(path).expect("doc");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         source
     };
@@ -855,11 +855,19 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
     click(&ctx, &mut e, "Save constraints copy…");
     let replace = e.take_request().expect("widget request");
-    assert_eq!(replace.edits.remove, vec![stored_angle]);
+    assert_eq!(
+        crate::transaction_tests::constraints(&replace).remove,
+        vec![stored_angle]
+    );
     let (ui2, cli2) = (root.path().join("ui2.fcad"), root.path().join("cli2.fcad"));
     let (made, dof) = work(replace.clone(), &ui2);
     assert_eq!((made, dof), (Some(ui2.clone()), Some(Some(7))));
-    peer(&ui, &from_ui.version, &replace.edits, &cli2);
+    peer(
+        &ui,
+        &from_ui.version,
+        &crate::transaction_tests::constraints(&replace),
+        &cli2,
+    );
     let (new_ui, new_cli) = (ids_of(&ui2), ids_of(&cli2));
     assert_eq!(new_ui[..4], old_ids[..4], "the joints keep their UUIDs");
     assert_eq!(new_ui[..4], new_cli[..4]);
@@ -910,13 +918,23 @@ fn native_directed_angle_form_worker_and_cli_publish_the_same_geometry() {
     click(&ctx, &mut e, "Save constraints copy…");
     let remove = e.take_request().expect("widget request");
     assert_eq!(
-        (remove.edits.remove.clone(), remove.edits.add.len()),
+        (
+            crate::transaction_tests::constraints(&remove)
+                .remove
+                .clone(),
+            crate::transaction_tests::constraints(&remove).add.len()
+        ),
         (vec![new_ui[4]], 0)
     );
     let (ui3, cli3) = (root.path().join("ui3.fcad"), root.path().join("cli3.fcad"));
     let (made, dof) = work(remove.clone(), &ui3);
     assert_eq!((made, dof), (Some(ui3.clone()), Some(Some(8))));
-    peer(&ui2, &from_ui2.version, &remove.edits, &cli3);
+    peer(
+        &ui2,
+        &from_ui2.version,
+        &crate::transaction_tests::constraints(&remove),
+        &cli3,
+    );
     for path in [&ui3, &cli3] {
         assert_eq!(ids_of(path), new_ui[..4].to_vec(), "only the joints remain");
 

@@ -3,7 +3,7 @@
 use super::*;
 use crate::cuts::tests::session_apply::{draft_state, fixture, selected, typed_cut};
 use ferritecad_document::{
-    CircularCutEdit, CutExtent, ExtentVocabulary, ExtrudeEditSource, ObjectPayload, TopologyRef,
+    CircularCutEdit, CutExtent, ExtentVocabulary, ObjectPayload, TopologyRef,
 };
 use ferritecad_jobs::EditCircularCutRequest;
 
@@ -43,7 +43,7 @@ pub(super) fn apply(s: &mut Sessions, r: &EditCircularCutRequest) -> Edited {
 }
 fn request(s: &Sessions, index: usize) -> EditCircularCutRequest {
     let source = s.export_path().expect("current");
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     let saved = selected(&reading, index);
     EditCircularCutRequest {
         source,
@@ -73,7 +73,7 @@ pub(super) fn peer(source: &Path, r: &EditCircularCutRequest, root: &Path, out: 
         "--feature".as_ref(),
         r.cut.to_string().as_ref(),
         "--expect-version".as_ref(),
-        read_extrude_source(source)
+        crate::sketch_facts::read(source)
             .expect("reading")
             .version
             .content
@@ -257,7 +257,7 @@ pub(super) fn cold(path: &Path) -> f64 {
             r.id
         );
     }
-    let reading = ExtrudeEditSource::read(&d).expect("reading");
+    let reading = crate::sketch_facts::Source::read(&d).expect("reading");
     let selected = selected(&reading, 0);
     let exact = selected.boundary.area_mm2() * selected.height_mm
         - selected
@@ -313,7 +313,7 @@ pub(super) fn mesh(stl: &[u8], path: &Path) -> f64 {
         "closed oriented mesh"
     );
     volume /= 6.;
-    let reading = read_extrude_source(path).expect("reading");
+    let reading = crate::sketch_facts::read(path).expect("reading");
     let s = selected(&reading, 0);
     let exact = s.boundary.area_mm2() * s.height_mm
         - s.tools
@@ -424,7 +424,7 @@ fn gate(count: usize, height: bool, name: &str) {
             ])
         };
         assert_eq!(sql(&s.export_path().expect("height"), &[]), sql(&out, &[]));
-        let now = read_extrude_source(&s.export_path().expect("height")).expect("reading");
+        let now = crate::sketch_facts::read(&s.export_path().expect("height")).expect("reading");
         for (a, b) in selected(&opened, 0)
             .tools
             .iter()
@@ -439,24 +439,33 @@ fn gate(count: usize, height: bool, name: &str) {
         base_steps += 1;
     }
     let current = s.export_path().expect("current");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let base = reading
         .sketches
         .iter()
         .find(|c| c.vertices.is_some())
         .expect("base");
-    let mut v = ferritecad_jobs::EditSketchRequest {
+    let mut v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(current),
+            base.sketch,
+            &(base.vertices.clone().expect("vertices")),
+        ),
         source: current,
         expected: reading.version,
-        sketch: base.sketch,
-        vertices: base.vertices.clone().expect("vertices"),
         destination: PathBuf::new(),
     };
-    for p in &mut v.vertices {
+    let mut vertices = crate::transaction_tests::vertices(&v);
+    for p in &mut vertices {
         if p.start_mm[0] == -2.5 {
             p.start_mm[0] = -3.75;
         }
     }
+    v.changes = crate::transaction_tests::vertex_changes(
+        &v.source,
+        crate::transaction_tests::sketch(&v),
+        &vertices,
+    );
     apply_sketch_native(&mut s, v.clone());
     base_steps += 1;
     let out = root.path().join("peer-vertices.fcad");
@@ -470,7 +479,7 @@ fn gate(count: usize, height: bool, name: &str) {
     let mut accepted = vec![before_cut.clone()];
     for (step, index) in [0, count / 2, count - 1].into_iter().enumerate() {
         let current = s.export_path().expect("current");
-        let reading = read_extrude_source(&current).expect("reading");
+        let reading = crate::sketch_facts::read(&current).expect("reading");
         let chosen = selected(&reading, index);
         let (mut form, r) = typed_cut(
             &current,
@@ -492,7 +501,7 @@ fn gate(count: usize, height: bool, name: &str) {
         assert!(!form.active());
         let applied = s.export_path().expect("applied");
         // UUID selection is proved against every other Cut, not just count/volume.
-        let changed = read_extrude_source(&applied).expect("reading");
+        let changed = crate::sketch_facts::read(&applied).expect("reading");
         for old in selected(&reading, 0).tools {
             let new = selected(&changed, 0)
                 .tools
@@ -596,7 +605,7 @@ fn gate(count: usize, height: bool, name: &str) {
     );
     assert!(noop.exists());
     let current = s.export_path().expect("current");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let chosen = selected(&reading, 0);
     let (form, r) = typed_cut(
         &current,
@@ -686,7 +695,7 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     r.edit.extent = CutExtent::ThroughAll;
     assert!(matches!(apply(&mut s, &r), Edited::Show(_)));
     let before = s.export_path().expect("before floor");
-    let reading = read_extrude_source(&before).expect("reading");
+    let reading = crate::sketch_facts::read(&before).expect("reading");
     let (mut form, r) = typed_cut(&before, &reading, &s, 0, "7.5", "1.625", Some("6.125"));
     let peer_out = root.path().join("peer-floor.fcad");
     peer(&before, &r, root.path(), &peer_out);
@@ -824,7 +833,7 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
         original
     );
     let tmp = tempfile::tempdir().expect("peer root");
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     let height = tmp.path().join("height.fcad");
     {
         let request = crate::edits::tests::expression_request(
@@ -844,7 +853,7 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
             height.as_os_str(),
         ])
     };
-    let reading = read_extrude_source(&height).expect("height reading");
+    let reading = crate::sketch_facts::read(&height).expect("height reading");
     let base = reading
         .sketches
         .iter()
@@ -856,17 +865,20 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
             p.start_mm[0] = -3.75;
         }
     }
-    let v = ferritecad_jobs::EditSketchRequest {
+    let v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(height.clone()),
+            base.sketch,
+            &(vertices),
+        ),
         source: height.clone(),
         expected: reading.version,
-        sketch: base.sketch,
-        vertices,
         destination: PathBuf::new(),
     };
     let base = tmp.path().join("base.fcad");
     sketch_peer(&height, &v, tmp.path(), &base);
     let make = |src: &Path, index: usize, x: f64, radius: f64, depth: Option<f64>, out: &Path| {
-        let reading = read_extrude_source(src).expect("reading");
+        let reading = crate::sketch_facts::read(src).expect("reading");
         let s = selected(&reading, index);
         let r = EditCircularCutRequest {
             source: src.into(),

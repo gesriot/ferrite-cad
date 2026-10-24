@@ -4,8 +4,8 @@
 //! Kernel-free: the documents are written and read without Open CASCADE.
 
 use super::*;
+use crate::sketch_facts::Source as ExtrudeEditSource;
 use crate::{Loads, can_apply_analytic, creates, edits, exports, sessions};
-use ferritecad_document::ExtrudeEditSource;
 use ferritecad_types::ObjectId;
 
 struct Window {
@@ -180,14 +180,14 @@ pub(crate) fn write_round(
 fn circle_document(root: &Path) -> (PathBuf, ExtrudeEditSource) {
     let path = root.join("circle.fcad");
     write_round(&path, [12.5, -7.25], &[10.5], 15.25, false);
-    let source = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let source = crate::sketch_facts::read(&path).expect("reading");
     (path, source)
 }
 
 fn annulus_document(root: &Path) -> (PathBuf, ExtrudeEditSource) {
     let path = root.join("annulus.fcad");
     write_round(&path, [12.5, -7.25], &[10.5, 4.75], 15.25, false);
-    let source = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let source = crate::sketch_facts::read(&path).expect("reading");
     (path, source)
 }
 
@@ -202,7 +202,7 @@ fn plate_document(root: &Path) -> (PathBuf, ExtrudeEditSource) {
         &ferritecad_kernel::OperationContext::default(),
     )
     .expect("plate");
-    let source = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let source = crate::sketch_facts::read(&path).expect("reading");
     (path, source)
 }
 
@@ -272,11 +272,14 @@ fn the_open_forms_apply_through_the_windows_own_predicate_and_keep_their_drafts(
     press(&ctx, w.form(), "Apply circle");
     let request = w.form().take_apply_circle_request().expect("Apply asked");
     assert_eq!(request.expected, source.version);
-    assert_eq!(request.sketch, sketch);
-    assert_eq!(request.edit.center_mm, [-3.5, 4.25]);
-    assert_eq!(request.edit.radius_mm, 6.75);
+    assert_eq!(crate::transaction_tests::sketch(&request), sketch);
     assert_eq!(
-        request.edit.curve_id,
+        crate::transaction_tests::circle(&request).center_mm,
+        [-3.5, 4.25]
+    );
+    assert_eq!(crate::transaction_tests::circle(&request).radius_mm, 6.75);
+    assert_eq!(
+        crate::transaction_tests::circle(&request).curve_id,
         source.circle_sketches[0]
             .circle
             .as_ref()
@@ -310,11 +313,26 @@ fn the_open_forms_apply_through_the_windows_own_predicate_and_keep_their_drafts(
     let request = w.form().take_apply_annulus_request().expect("Apply asked");
     let saved = source.annulus_sketches[0].annulus.as_ref().expect("saved");
     assert_eq!(request.expected, source.version);
-    assert_eq!(request.edit.center_mm, [-3.5, 4.25]);
-    assert_eq!(request.edit.outer_radius_mm, 9.25);
-    assert_eq!(request.edit.inner_radius_mm, 3.125);
-    assert_eq!(request.edit.outer_curve_id, saved.outer_curve_id);
-    assert_eq!(request.edit.inner_curve_id, saved.inner_curve_id);
+    assert_eq!(
+        crate::transaction_tests::circle(&request).center_mm,
+        [-3.5, 4.25]
+    );
+    assert_eq!(
+        crate::transaction_tests::annulus(&request).outer_radius_mm,
+        9.25
+    );
+    assert_eq!(
+        crate::transaction_tests::annulus(&request).inner_radius_mm,
+        3.125
+    );
+    assert_eq!(
+        crate::transaction_tests::annulus(&request).outer_curve_id,
+        saved.outer_curve_id
+    );
+    assert_eq!(
+        crate::transaction_tests::annulus(&request).inner_curve_id,
+        saved.inner_curve_id
+    );
     assert!(w.form().take_apply_annulus_request().is_none());
     assert!(w.form().editing_analytic());
 }
@@ -771,7 +789,7 @@ pub(crate) fn typed_circle(
     sketch: ObjectId,
     center: [&str; 2],
     radius: &str,
-) -> (Editor, EditCircleRequest) {
+) -> (Editor, EditRequest) {
     let mut e = Editor::default();
     e.set_session(true, false, true);
     e.set_analytic_apply(true);
@@ -792,7 +810,7 @@ pub(crate) fn typed_annulus(
     center: [&str; 2],
     outer: &str,
     inner: &str,
-) -> (Editor, EditAnnulusRequest) {
+) -> (Editor, EditRequest) {
     let mut e = Editor::default();
     e.set_session(true, false, true);
     e.set_analytic_apply(true);

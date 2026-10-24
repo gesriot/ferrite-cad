@@ -79,7 +79,7 @@ fn new_opened_over_a_floating_form_shares_no_focus_or_text_with_it() {
     );
     let key = sessions.tab().key();
     let current = sessions.export_path().expect("shown");
-    let reading = ferritecad_jobs::read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let (mut tabs, mut edits, mut creates) =
         (Tabs::new(None), Edits::default(), Creates::default());
     let mut input = ViewportInput::new();

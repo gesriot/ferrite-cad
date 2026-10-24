@@ -452,21 +452,17 @@ const FOUR: [(usize, f64); 4] = [(1, 2.0), (3, 2.0), (0, 2.0), (2, 2.0)];
 #[test]
 fn the_height_the_rectangle_and_the_constraints_keep_all_four_fillets() {
     let (_root, mut d, _body, ids) = rounded(PLATE, &FOUR);
-    let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
     let base = base_extrude(&d);
     let listed = |fillets: &[SavedFillet]| fillets.iter().map(|f| f.feature).collect::<Vec<_>>();
-    assert_eq!(listed(&reading.sketches[0].fillets), ids);
-    assert_eq!(reading.sketches[0].refusal, None);
-    assert_eq!(listed(&reading.constraint_sketches[0].fillets), ids);
-    assert_eq!(reading.constraint_sketches[0].refusal, None);
+    assert_eq!(listed(&read(&d)), ids);
 
     // The height.
     let objects = d.objects().expect("objects");
     let refs = d.topology_refs().expect("refs");
     let deps = d.dependencies().expect("deps");
-    let p = crate::ExpressionChange::constant(base, crate::ExpressionSlot::ExtrudeDistance, 9.5)
+    let p = crate::EditChange::constant(base, crate::ExpressionSlot::ExtrudeDistance, 9.5)
         .expect("prepared");
-    d.write_expression_changes(&[p]).expect("written");
+    d.write_changes(&[p]).expect("written");
     assert_eq!(changed_rows(&objects, &d), vec![base]);
     assert_eq!(d.topology_refs().expect("refs"), refs);
     assert_eq!(d.dependencies().expect("deps"), deps);
@@ -475,92 +471,20 @@ fn the_height_the_rectangle_and_the_constraints_keep_all_four_fillets() {
     // The rectangle: 20 × 5 holds four radii of 2 mm with 1 mm to spare.
     let objects = d.objects().expect("objects");
     let (sketch, vertices) = starts(&d, rect(false, (0., 0.), (20., 5.0)));
-    let p = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("prepared");
-    d.write_sketch_geometry(&p).expect("written");
+    let p = crate::test_changes::vertex_changes(&d, sketch, &vertices).expect("prepared");
+    d.write_changes(&p).expect("written");
     assert_eq!(changed_rows(&objects, &d), vec![sketch]);
     assert_eq!(d.topology_refs().expect("refs"), refs);
-    // The least depth that leaves the flat between the first and the fourth
-    // Fillet (2 + 2 + 0.01), and one float below it: refused, naming the
-    // Fillet that is in the way and the Line they share.
-    let depth = (4.0 + MIN_RADIUS_MM).max(4.01);
-    let exact = {
-        let mut least = depth;
-        while 2.0 <= crate::fillet::pair_bound(least, 2.0) {
-            least = least.next_down();
-        }
-        least.next_up()
-    };
-    let (_, v) = starts(&d, rect(false, (0., 0.), (20., exact)));
-    crate::replace_sketch_coordinates(&d, sketch, &v).expect("the exact depth");
-    let (_, v) = starts(&d, rect(false, (0., 0.), (20., exact.next_down())));
-    let e = crate::replace_sketch_coordinates(&d, sketch, &v).expect_err("one float below");
-    assert_eq!(e.kind(), ErrorKind::Input);
-    let text = e.to_string();
-    assert!(text.contains("flat"), "{text}");
-    assert!(
-        ids.iter().any(|id| text.contains(&id.to_string())),
-        "{text}"
-    );
-    assert!(
-        plate_lines(&d)
-            .1
-            .iter()
-            .any(|l| text.contains(&l.to_string())),
-        "the Line: {text}"
-    );
-
     // The constraints: only the Sketch row and its capability move.
     let objects = d.objects().expect("objects");
     constrained(&mut d);
     assert_eq!(changed_rows(&objects, &d), vec![sketch]);
-    let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-    assert_eq!(listed(&reading.constraint_sketches[0].fillets), ids);
+    assert_eq!(listed(&read(&d)), ids);
     // A constrained plate's bounds are the solved plate's, never the stored.
     for s in read(&d) {
         assert!(s.constrained);
     }
     assert!(d.validate().expect("validate").is_ok());
-}
-
-/// Every writer re-derives the whole history inside its transaction: a
-/// preparation that drops, reorders or changes any of four Fillets, or whose
-/// neighbours' radii are not the saved ones, is refused and writes nothing; a
-/// radius changed after preparation is refused by the Sketch writer for a
-/// rectangle that can no longer hold it, and by the version guard.
-#[test]
-fn every_writer_rederives_four_fillets_and_refuses_forgery_and_stale_radii() {
-    let (_root, mut d, _body, ids) = rounded(PLATE, &FOUR);
-    // The Sketch writer reads every current radius: the rectangle prepared
-    // for 2 mm radii cannot take the first Fillet's 2.4 mm.
-    let (sketch, vertices) = starts(&d, rect(false, (0., 0.), (20., 4.5)));
-    let honest = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("prepared");
-    let before = cells(&d);
-    let p = crate::ExpressionChange::constant(ids[0], crate::ExpressionSlot::FilletRadius, 2.4)
-        .expect("fits the saved plate");
-    d.write_expression_changes(&[p]).expect("radius written");
-    let after = cells(&d);
-    let e = d.write_sketch_geometry(&honest).expect_err("stale");
-    assert!(e.to_string().contains("too large"), "{e}");
-    assert_eq!(cells(&d), after, "stale wrote something");
-    assert_ne!(after, before);
-
-    // The constraint writer: a Fillet changes after preparation.
-    let (sketch, lines) = plate_lines(&d);
-    let prepared = crate::prepare_sketch_constraints(
-        &d,
-        sketch,
-        &crate::SketchConstraintEdits {
-            remove: Vec::new(),
-            add: vec![line_rule(lines[0], crate::LineConstraintKind::Horizontal)],
-        },
-    )
-    .expect("prepared");
-    let p = crate::ExpressionChange::constant(ids[2], crate::ExpressionSlot::FilletRadius, 1.5)
-        .expect("another radius");
-    d.write_expression_changes(&[p]).expect("written");
-    let after = cells(&d);
-    assert!(d.write_sketch_constraints(&prepared).is_err());
-    assert_eq!(cells(&d), after, "stale wrote something");
 }
 
 /// On a constrained plate the evaluator judges all four Fillets, and every

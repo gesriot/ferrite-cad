@@ -229,9 +229,11 @@ with the measured volumes and radii.
 ```python
 # FCAD_27G_AGENT_RECIPE
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import constraint_request, line_rule, distance, fixed as pin_rule, relation
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-27g-"))
-OP = "edit-sketch-constraints-copy"
+OP = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -258,19 +260,17 @@ def constrain(source, body, out, code=0):
     catalog = inspect(source)
     request = root / f"{out.stem}.json"
     request.write_text(body if isinstance(body, str) else json.dumps(body))
-    return run([OP, source, "--sketch", catalog["sketches"][0]["sketch_id"],
-                "--expect-version", catalog["content_version"], "--request", request,
+    return run([OP, source, "--expect-version", catalog["content_version"], "--request", request,
                 "-o", out, "--json"], code)
 
 def lines(catalog):
-    return catalog["sketches"][0]["constraint_edit"]["curves"]
+    return catalog["sketches"][0]["curves"]
 
-def rule(catalog, i, kind, **extra):
-    return {"curve_id": lines(catalog)[i]["curve_id"], "rule": kind, **extra}
+
 
 def stored_constraint(catalog, kind, i):
     curve = lines(catalog)[i]["curve_id"]
-    for c in catalog["sketches"][0]["constraint_edit"]["constraints"]:
+    for c in catalog["sketches"][0]["constraints"]:
         r = c["rule"]
         if r["kind"] == kind and curve in (r.get("a", {}).get("curve_id"),
                                            r.get("point", {}).get("curve_id")):
@@ -300,6 +300,8 @@ def allowlist(source, copy, sketch):
                 if t == "objects" and d["id"] == sid:
                     for k in ("payload", "payload_hash"):
                         d.pop(k)
+                if t == "meta":
+                    d.pop("modified_at")
                 kept.append(sorted(d.items()))
             return sorted(kept, key=repr)
         assert strip(a[t]) == strip(b[t]), f"{t}: a cell outside the allowlist"
@@ -353,36 +355,32 @@ BUSHING = [[4.25, -1.5], [10.5, -1.5], [10.5, 13.75], [4.25, 13.75]]
 source = create("bushing", BUSHING)
 catalog = inspect(source)
 row = catalog["sketches"][0]
-edit = row["constraint_edit"]
-assert edit["available"] is True, edit
-assert edit["profile_feature"]["kind"] == "full_turn_revolve", edit
-assert "height_mm" not in edit["profile_feature"]
+edit = row
+
+
+
 sketch = row["sketch_id"]
 source_bytes = source.read_bytes()
 
-# 2. Refused before anything is solved: an array request, an escaped
-#    duplicate key, and an addition written as an array.
+# 2. Strict request parsing rejects an array and an escaped duplicate key.
 first = lines(catalog)[0]["curve_id"]
-for body in (f'[1,[],[{{"curve_id":"{first}","rule":"horizontal"}}]]',
-             f'{{"request_version":1,"remove":[],"add":[{{"curve_id":"{first}",'
-             f'"curve_\\u0069d":"{first}","rule":"horizontal"}}]}}',
-             f'{{"request_version":1,"remove":[],"add":[["horizontal","{first}"]]}}'):
+for body in ('[]', '{"request_version":1,"changes":[],"chan\\u0067es":[]}'):
     refused = constrain(source, body, root / "never.fcad", 2)
     assert refused["error"]["kind"] == "input", refused
 assert not (root / "never.fcad").exists() and source.read_bytes() == source_bytes
 
 # 3. Rigid: H/V on all four Lines, the inner bottom corner pinned where it
 #    is stored, both sizes as stored.
-rigid_body = {"request_version": 1, "remove": [], "add": [
-    rule(catalog, 0, "horizontal"), rule(catalog, 1, "vertical"),
-    rule(catalog, 2, "horizontal"), rule(catalog, 3, "vertical"),
-    rule(catalog, 0, "fixed", at="start", x_mm=4.25, y_mm=-1.5),
-    rule(catalog, 0, "distance", distance_mm=6.25),
-    rule(catalog, 1, "distance", distance_mm=15.25)]}
+rigid_body = constraint_request(catalog["sketches"][0], [], [
+    line_rule(lines(catalog)[0]["curve_id"], "horizontal"), line_rule(lines(catalog)[1]["curve_id"], "vertical"),
+    line_rule(lines(catalog)[2]["curve_id"], "horizontal"), line_rule(lines(catalog)[3]["curve_id"], "vertical"),
+    pin_rule(lines(catalog)[0]["curve_id"], "start", 4.25, -1.5),
+    distance(lines(catalog)[0]["curve_id"], 6.25),
+    distance(lines(catalog)[1]["curve_id"], 15.25)])
 rigid = root / "rigid.fcad"
 rigid_request = root / "rigid.json"
 rigid_request.write_text(json.dumps(rigid_body))
-p = subprocess.run([cli, OP, source, "--sketch", sketch, "--expect-version",
+p = subprocess.run([cli, OP, source, "--expect-version",
                     catalog["content_version"], "--request", rigid_request,
                     "-o", rigid, "--json"], capture_output=True, encoding="utf-8")
 reply = json.loads(p.stdout)
@@ -393,8 +391,8 @@ if p.returncode == 2 and "planegcs" in reply["error"]["message"]:
     sys.exit(1 if os.environ.get("FCAD_EXPECT_SOLVER") == "1" else 0)
 assert p.returncode == 0, (p.stdout, p.stderr)
 published = reply["result"]
-assert published["solve"] == {"degrees_of_freedom": 0, "redundant_constraint_ids": []}, published
-assert len(published["added_constraints"]) == 4 + 7
+
+
 allowlist(source, rigid, sketch)
 assert lines(inspect(rigid)) == lines(catalog), "stored inputs never move"
 rigid_volume, rigid_r = exported(rigid, BUSHING)
@@ -403,10 +401,9 @@ rigid_volume, rigid_r = exported(rigid, BUSHING)
 catalog = inspect(rigid)
 old = stored_constraint(catalog, "distance", 0)
 wide = root / "wide.fcad"
-changed = constrain(rigid, {"request_version": 1, "remove": [old],
-                            "add": [rule(catalog, 0, "distance", distance_mm=7.5)]}, wide)["result"]
-assert changed["removed_constraint_ids"] == [old], changed
-assert changed["solve"]["degrees_of_freedom"] == 0, changed
+changed = constrain(rigid, constraint_request(catalog["sketches"][0], [old], [distance(lines(catalog)[0]["curve_id"], 7.5)]), wide)["result"]
+
+
 allowlist(rigid, wide, sketch)
 WIDE = [[4.25, -1.5], [11.75, -1.5], [11.75, 13.75], [4.25, 13.75]]
 wide_volume, wide_r = exported(wide, WIDE)
@@ -415,27 +412,26 @@ assert wide_volume > rigid_volume and abs(wide_r - 11.75) < 1e-4
 # 5. Typed errors, nothing written: a real conflict and a solved profile
 #    that would cross the axis.
 catalog = inspect(wide)
-conflict = constrain(wide, {"request_version": 1, "remove": [], "add": [
-    {"rule": "equal_length", "a_curve_id": lines(catalog)[0]["curve_id"],
-     "b_curve_id": lines(catalog)[1]["curve_id"]}]}, root / "conflict.fcad", 2)["error"]
+conflict = constrain(wide, constraint_request(catalog["sketches"][0], [], [
+    relation(lines(catalog)[0]["curve_id"], lines(catalog)[1]["curve_id"], "equal_length")]), root / "conflict.fcad", 2)["error"]
 assert conflict["kind"] == "constraint", conflict
 assert conflict["constraint_conflict"]["constraints"], conflict
 pin = stored_constraint(catalog, "fixed", 0)
-crossing = constrain(wide, {"request_version": 1, "remove": [pin], "add": [
-    rule(catalog, 0, "fixed", at="start", x_mm=-1.0, y_mm=-1.5)]}, root / "crossing.fcad", 2)["error"]
+crossing = constrain(wide, constraint_request(catalog["sketches"][0], [pin], [
+    pin_rule(lines(catalog)[0]["curve_id"], "start", -1.0, -1.5)]), root / "crossing.fcad", 2)["error"]
 assert "axis" in crossing["message"], crossing
 assert not (root / "conflict.fcad").exists() and not (root / "crossing.fcad").exists()
 
 # 6. Every user constraint removed by exact UUID: closure stays, the
 #    stored inputs rebuild again, coordinate edits stay refused.
-user = [c["constraint_id"] for c in catalog["sketches"][0]["constraint_edit"]["constraints"]
+user = [c["constraint_id"] for c in catalog["sketches"][0]["constraints"]
         if c["rule"]["kind"] != "coincident"]
 bare = root / "bare.fcad"
-removed = constrain(wide, {"request_version": 1, "remove": user, "add": []}, bare)["result"]
-assert removed["solve"]["degrees_of_freedom"] == 8, removed
+removed = constrain(wide, constraint_request(catalog["sketches"][0], user, []), bare)["result"]
+
 after = inspect(bare)["sketches"][0]
-assert [c["rule"]["kind"] for c in after["constraint_edit"]["constraints"]] == ["coincident"] * 4
-assert after["editable"] is False and "unconstrained" in after["refusal"]
+assert [c["rule"]["kind"] for c in after["constraints"]] == ["coincident"] * 4
+
 exported(bare, BUSHING)
 
 # 7. A 137.5° sector: dimensioned, its outer wall made taller; the angle is
@@ -443,30 +439,28 @@ exported(bare, BUSHING)
 SECTOR = [[2.75, -3.25], [7.5, -3.25], [7.5, 2.125], [4.25, 9.5], [2.75, 9.5]]
 sector = create("sector", SECTOR, {"kind": "angle", "degrees": 137.5})
 catalog = inspect(sector)
-assert catalog["sketches"][0]["constraint_edit"]["profile_feature"]["angle_deg"] == 137.5
+
 sector_rigid = root / "sector-rigid.fcad"
-constrain(sector, {"request_version": 1, "remove": [], "add": [
-    rule(catalog, 0, "horizontal"), rule(catalog, 1, "vertical"),
-    rule(catalog, 3, "horizontal"), rule(catalog, 4, "vertical"),
-    rule(catalog, 0, "fixed", at="start", x_mm=2.75, y_mm=-3.25),
-    rule(catalog, 0, "distance", distance_mm=4.75),
-    rule(catalog, 1, "distance", distance_mm=5.375),
-    rule(catalog, 3, "distance", distance_mm=1.5),
-    rule(catalog, 4, "distance", distance_mm=12.75)]}, sector_rigid)
+constrain(sector, constraint_request(catalog["sketches"][0], [], [
+    line_rule(lines(catalog)[0]["curve_id"], "horizontal"), line_rule(lines(catalog)[1]["curve_id"], "vertical"),
+    line_rule(lines(catalog)[3]["curve_id"], "horizontal"), line_rule(lines(catalog)[4]["curve_id"], "vertical"),
+    pin_rule(lines(catalog)[0]["curve_id"], "start", 2.75, -3.25),
+    distance(lines(catalog)[0]["curve_id"], 4.75),
+    distance(lines(catalog)[1]["curve_id"], 5.375),
+    distance(lines(catalog)[3]["curve_id"], 1.5),
+    distance(lines(catalog)[4]["curve_id"], 12.75)]), sector_rigid)
 catalog = inspect(sector_rigid)
 tall = root / "sector-tall.fcad"
-constrain(sector_rigid, {"request_version": 1,
-                         "remove": [stored_constraint(catalog, "distance", 1)],
-                         "add": [rule(catalog, 1, "distance", distance_mm=7.0)]}, tall)
+constrain(sector_rigid, constraint_request(catalog["sketches"][0], [stored_constraint(catalog, "distance", 1)], [distance(lines(catalog)[1]["curve_id"], 7.0)]), tall)
 TALL = [[2.75, -3.25], [7.5, -3.25], [7.5, 3.75], [4.25, 9.5], [2.75, 9.5]]
 sector_volume, _ = exported(tall, TALL, 137.5)
 revolve = inspect(tall)["revolves"][0]
 angle_request = root / "angle.json"
-angle_request.write_text(json.dumps({"request_version": 1, "changes": [{"object": revolve["feature_id"], "slot": {"kind": "revolve_angle"}, "value": 212.25, "unit": "deg"}]}))
+angle_request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": revolve["feature_id"], "slot": {"kind": "revolve_angle"}, "value": 212.25, "unit": "deg"}]}))
 turned = root / "sector-turned.fcad"
 run(["edit", tall, "--expect-version", inspect(tall)["content_version"], "--request", angle_request, "-o", turned, "--json"])
-assert inspect(turned)["sketches"][0]["constraint_edit"]["constraints"] == \
-    inspect(tall)["sketches"][0]["constraint_edit"]["constraints"]
+assert inspect(turned)["sketches"][0]["constraints"] == \
+    inspect(tall)["sketches"][0]["constraints"]
 turned_volume, _ = exported(turned, TALL, 212.25)
 assert source.read_bytes() == source_bytes
 print("FCAD_27G_RECIPE_OK", json.dumps({

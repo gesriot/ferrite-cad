@@ -55,19 +55,104 @@ impl std::fmt::Display for ExpressionSlot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ExpressionChange {
-    pub object: ObjectId,
-    pub slot: ExpressionSlot,
-    pub expression: Expression,
+pub enum EditChange {
+    SetExpression {
+        object: ObjectId,
+        slot: ExpressionSlot,
+        expression: Expression,
+    },
+    SetCurveGeometry {
+        sketch: ObjectId,
+        curve: StableEntityId,
+        geometry: crate::SketchGeometry,
+    },
+    AddConstraint {
+        sketch: ObjectId,
+        constraint: crate::SketchConstraint,
+    },
+    RemoveConstraint {
+        sketch: ObjectId,
+        constraint: StableEntityId,
+    },
 }
 
-impl ExpressionChange {
+impl EditChange {
+    pub fn expression(&self) -> Option<&Expression> {
+        match self {
+            Self::SetExpression { expression, .. } => Some(expression),
+            _ => None,
+        }
+    }
     pub fn constant(object: ObjectId, slot: ExpressionSlot, value: f64) -> Result<Self> {
-        Ok(Self {
+        Ok(Self::SetExpression {
             object,
             slot,
             expression: Expression::constant(value)?,
         })
+    }
+
+    pub fn object(&self) -> ObjectId {
+        match self {
+            Self::SetExpression { object, .. } => *object,
+            Self::SetCurveGeometry { sketch, .. }
+            | Self::AddConstraint { sketch, .. }
+            | Self::RemoveConstraint { sketch, .. } => *sketch,
+        }
+    }
+
+    pub(crate) fn apply(&self, payload: &mut ObjectPayload) -> Result<()> {
+        if let Self::SetExpression {
+            slot, expression, ..
+        } = self
+        {
+            return set_expression(payload, *slot, expression.clone());
+        }
+        let ObjectPayload::Sketch(sketch) = payload else {
+            return Err(CadError::input(format!(
+                "object {} is not a Sketch",
+                self.object()
+            )));
+        };
+        match self {
+            Self::SetCurveGeometry {
+                curve, geometry, ..
+            } => {
+                let saved = sketch
+                    .curves
+                    .iter_mut()
+                    .find(|c| c.id == *curve)
+                    .ok_or_else(|| CadError::input(format!("sketch has no curve {curve}")))?;
+                if std::mem::discriminant(&saved.geometry) != std::mem::discriminant(geometry) {
+                    return Err(CadError::input(format!(
+                        "curve {curve} must keep its geometry kind"
+                    )));
+                }
+                saved.geometry = geometry.clone();
+            }
+            Self::AddConstraint { constraint, .. } => {
+                if sketch.constraints.iter().any(|c| c.id == constraint.id) {
+                    return Err(CadError::input(format!(
+                        "constraint {} already exists",
+                        constraint.id
+                    )));
+                }
+                sketch.constraints.push(constraint.clone());
+            }
+            Self::RemoveConstraint { constraint, .. } => {
+                let index = sketch
+                    .constraints
+                    .iter()
+                    .position(|c| c.id == *constraint)
+                    .ok_or_else(|| {
+                        CadError::input(format!("sketch has no constraint {constraint}"))
+                    })?;
+                sketch.constraints.remove(index);
+            }
+            Self::SetExpression { .. } => {
+                unreachable!("expressions were handled before reading the sketch")
+            }
+        }
+        Ok(())
     }
 }
 
@@ -194,32 +279,33 @@ impl Document {
     }
 
     /// Apply in request order and write each changed object once in one SQLite transaction.
-    pub fn write_expression_changes(
-        &mut self,
-        changes: &[ExpressionChange],
-    ) -> Result<Vec<StableEntityId>> {
+    pub fn write_changes(&mut self, changes: &[EditChange]) -> Result<Vec<StableEntityId>> {
         self.write_reading(|document, writer| {
-            let history = crate::cut_edit::saved_history(document, &document.objects()?).ok();
             let parameters = parameter_dependents(document)?;
             let mut changed = BTreeMap::<ObjectId, ObjectRecord>::new();
             for change in changes {
-                if parameters.contains(&change.object) {
-                    return Err(CadError::unsupported(parameter_reason(change.object)));
+                let id = change.object();
+                if parameters.contains(&id) {
+                    return Err(CadError::unsupported(parameter_reason(id)));
                 }
-                if let std::collections::btree_map::Entry::Vacant(entry) =
-                    changed.entry(change.object)
-                {
-                    entry.insert(document.object(change.object)?.ok_or_else(|| {
-                        CadError::input(format!("unknown object {}", change.object))
-                    })?);
+                if let std::collections::btree_map::Entry::Vacant(entry) = changed.entry(id) {
+                    let object = document
+                        .object(id)?
+                        .ok_or_else(|| CadError::input(format!("unknown object {id}")))?;
+                    // Rewriting a payload this build reads only in part would drop the rest.
+                    if object.payload.to_storage_bytes()?.as_slice() != object.storage_bytes() {
+                        return Err(CadError::unsupported(format!(
+                            "object {id}'s saved payload cannot be rewritten losslessly by this build"
+                        )));
+                    }
+                    entry.insert(object);
                 }
-                let object = changed
-                    .get_mut(&change.object)
-                    .expect("changed object was inserted");
-                set_expression(&mut object.payload, change.slot, change.expression.clone())
+                let object = changed.get_mut(&id).expect("changed object was inserted");
+                change
+                    .apply(&mut object.payload)
                     .map_err(|source| CadError::Context {
                         kind: source.kind(),
-                        message: format!("cannot edit object {} ({})", change.object, change.slot),
+                        message: format!("cannot edit object {id}"),
                         source: Box::new(source),
                     })?;
             }
@@ -227,20 +313,12 @@ impl Document {
                 object.payload.validate()?;
             }
             for object in changed.values() {
-                writer.put_object(
-                    object.id,
-                    object.parent,
-                    object.ordinal,
-                    object.name.as_deref(),
-                    &object.payload,
-                )?;
+                writer.update_payload(object.id, &object.payload)?;
             }
             let mut minted = Vec::new();
-            if let Some(history) = history {
-                for reference in history.missing_output_references(document)? {
-                    writer.put_topology_ref(&reference)?;
-                    minted.push(reference.id);
-                }
+            for reference in crate::cut_edit::candidate_output_references(document)? {
+                writer.put_topology_ref(&reference)?;
+                minted.push(reference.id);
             }
             Ok(minted)
         })

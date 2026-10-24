@@ -84,22 +84,14 @@ fn heightened(
         crate::transaction::first_slot(&after, "extrude_distance")["expression"]["value"],
         h
     );
-    assert_eq!(
-        after["sketches"][0]["chamfer_base"], before_catalog["sketches"][0]["chamfer_base"],
-        "the Chamfer is the same one at the same edge and distance"
-    );
-    assert_eq!(after["sketches"][0]["chamfer_base"]["distance_mm"], DIST);
-    assert_eq!(
-        after["sketches"][0]["chamfer_base"]["corner_mm"],
-        json!(corner)
-    );
+
     assert_eq!(after["chamfers"][0]["feature_id"], json!(id.to_string()));
     assert_eq!(
         after["chamfers"][0]["edge"],
         before_catalog["chamfers"][0]["edge"]
     );
     assert_eq!(after["chamfers"][0]["expression"]["value"], DIST);
-    assert_eq!(after["bodies"][0]["chamfer_edge"]["available"], false);
+
     assert_eq!(
         after["bodies"][0]["body_id"],
         before_catalog["bodies"][0]["body_id"]
@@ -198,7 +190,7 @@ fn native_the_height_of_a_chamfered_plate_changes_at_every_corner_in_three_order
             let request = f.root.path().join(format!("{tag}-d.json"));
             write(
                 &request,
-                &json!({"request_version":1,"changes":[{"object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":max,"unit":"mm"}]}),
+                &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":max,"unit":"mm"}]}),
             );
             let out = f.root.path().join(format!("{tag}-d.fcad"));
             reply(
@@ -433,7 +425,7 @@ fn native_chamfer_height_preserves_preexisting_unresolved_references() {
         assert!(document.validate().expect("validate").is_ok());
         // This is a supported Chamfer history; only resolving the reference
         // against a real rebuild distinguishes it from the positive control.
-        ferritecad_document::ExpressionChange::constant(
+        ferritecad_document::EditChange::constant(
             base,
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
             9.5,
@@ -492,15 +484,10 @@ fn native_after_a_height_edit_every_other_editor_still_names_the_chamfer() {
     let f = Fixture::drawn(Plate::new(CCW));
     let (copy, id, _) = chamfer_at(&f, &f.source, [X0, Y0 + D], 2.0, "src");
     let (edited, _) = heightened_plain(&f, &copy, 7.25, "edited");
-    let (base, version, catalog) = base_and_version(&edited);
+    let (base, version, _catalog) = base_and_version(&edited);
     // §29C/§29D: the Sketch's coordinates and its Line constraints are both
     // editable under the Chamfer.
-    assert_eq!(catalog["sketches"][0]["editable"], true);
-    assert_eq!(catalog["sketches"][0]["constraint_edit"]["available"], true);
-    assert_eq!(
-        catalog["sketches"][0]["constraint_edit"]["chamfer_base"],
-        catalog["sketches"][0]["chamfer_base"]
-    );
+
     let _ = &id;
     // A second height edit of the edited plate is the same operation again.
     let again = f.root.path().join("again.fcad");

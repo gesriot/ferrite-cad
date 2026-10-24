@@ -311,7 +311,7 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
         .base_feature;
     dirty(&mut s, base);
     let current = s.export_path().expect("current");
-    let reading = ferritecad_jobs::read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let choice = &reading.chamfer_bodies[0];
     let label = format!(
         "Chamfer edge of {} — {}…",
@@ -461,7 +461,7 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
     else {
         panic!("Sketch");
     };
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &d,
         profile,
         &ferritecad_document::SketchConstraintEdits {
@@ -475,9 +475,9 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
         },
     )
     .expect("constraint");
-    d.write_sketch_constraints(&prepared).expect("write");
+    d.write_changes(&prepared).expect("write");
     d.close().expect("close");
-    let constrained = ferritecad_jobs::read_extrude_source(&pathk).expect("reading");
+    let constrained = crate::sketch_facts::read(&pathk).expect("reading");
     let refusal = constrained.chamfer_bodies[0]
         .refusal
         .as_deref()

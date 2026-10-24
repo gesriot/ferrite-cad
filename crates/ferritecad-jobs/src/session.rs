@@ -58,10 +58,8 @@ use crate::checkpoint::{
 };
 use crate::create::{CreateDocumentRequest, NewDocument, create_document_with_kernel};
 use crate::edit::{
-    CircularCutRequest, EdgeChamferRequest, EdgeFilletRequest, EditAnnulusRequest,
-    EditCircleRequest, EditCircularCutRequest, EditSketchConstraintsRequest, EditSketchRequest,
-    chamfer_edge_copy_with, circular_cut_copy_with, edit_annulus_copy_with, edit_circle_copy_with,
-    edit_circular_cut_copy_with, edit_sketch_constraints_copy_with, edit_sketch_copy_with,
+    CircularCutRequest, EdgeChamferRequest, EdgeFilletRequest, EditCircularCutRequest,
+    chamfer_edge_copy_with, circular_cut_copy_with, edit_circular_cut_copy_with,
     fillet_edge_copy_with,
 };
 use crate::save::{SavePlan, SaveTarget, Saved};
@@ -696,7 +694,7 @@ impl StepTicket {
 
     pub fn edit<K: GeometryKernel + ?Sized>(
         self,
-        changes: Vec<ferritecad_document::ExpressionChange>,
+        changes: Vec<ferritecad_document::EditChange>,
         expected: DocumentVersion,
         kernel: &mut K,
         read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
@@ -713,176 +711,6 @@ impl StepTicket {
                         source: source.to_path_buf(),
                         expected,
                         changes,
-                        destination: destination.to_path_buf(),
-                    },
-                    kernel,
-                    context,
-                    run,
-                )
-                .map(|_| ())
-            },
-        )
-    }
-
-    /// Moves the vertices of one saved Line Sketch: the reused `edit-sketch-copy`
-    /// operation, reading the current version and writing the next, so the result
-    /// is what the command line makes from the same document.
-    ///
-    /// `expected` is the version the form that asked for this was opened from. If
-    /// the session has moved on since (an Apply, an Undo, a Redo), the request is
-    /// about a picture that is no longer the document and is refused, so an old
-    /// form can never be applied to a newer version.
-    #[allow(clippy::too_many_arguments)]
-    pub fn edit_sketch_vertices<K: GeometryKernel + ?Sized>(
-        self,
-        sketch: ObjectId,
-        vertices: Vec<ferritecad_document::SketchVertex>,
-        expected: DocumentVersion,
-        kernel: &mut K,
-        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
-        context: &OperationContext,
-    ) -> Result<ProducedStep> {
-        if expected != self.source.version() {
-            return Err(CadError::input(
-                "the document changed after this form was opened; open it again to edit the current version",
-            ));
-        }
-        self.run_edit(
-            kernel,
-            read_step,
-            context,
-            |source, expected, destination, kernel, run| {
-                edit_sketch_copy_with(
-                    &EditSketchRequest {
-                        source: source.to_path_buf(),
-                        expected,
-                        sketch,
-                        vertices,
-                        destination: destination.to_path_buf(),
-                    },
-                    kernel,
-                    context,
-                    run,
-                )
-                .map(|_| ())
-            },
-        )
-    }
-
-    /// Adds and removes constraints of one saved Sketch: the reused
-    /// `edit-sketch-constraints-copy` operation, reading the current version and
-    /// writing the next, so the result is what the command line makes from the same
-    /// document (the solver decides the shape; stored coordinates stay the
-    /// solver's starting approximation).
-    ///
-    /// `expected` is the version the form that asked for this was opened on; a
-    /// request about any other version is refused, as for the vertex edit. An
-    /// edit that leaves the model as it was is not a step (`changes_model`); a
-    /// replaced constraint is a different UUID and so is a step even when the
-    /// solved drawing is the same.
-    #[allow(clippy::too_many_arguments)]
-    pub fn edit_sketch_constraints<K: GeometryKernel + ?Sized>(
-        self,
-        sketch: ObjectId,
-        edits: ferritecad_document::SketchConstraintEdits,
-        expected: DocumentVersion,
-        kernel: &mut K,
-        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
-        context: &OperationContext,
-    ) -> Result<ProducedStep> {
-        if expected != self.source.version() {
-            return Err(CadError::input(
-                "the document changed after this form was opened; open it again to edit the current version",
-            ));
-        }
-        self.run_edit(
-            kernel,
-            read_step,
-            context,
-            |source, expected, destination, kernel, run| {
-                edit_sketch_constraints_copy_with(
-                    &EditSketchConstraintsRequest {
-                        source: source.to_path_buf(),
-                        expected,
-                        sketch,
-                        edits,
-                        destination: destination.to_path_buf(),
-                    },
-                    kernel,
-                    context,
-                    run,
-                )
-                .map(|_| ())
-            },
-        )
-    }
-
-    /// Moves and resizes one saved analytic circle: the reused `edit-circle`
-    /// copy operation, reading the current version and writing the next, so the
-    /// result is what the command line's `edit-circle` makes from the same
-    /// document. The height is not part of the request.
-    ///
-    /// `expected` is the version the form that asked for this was opened on; a
-    /// request about any other version is refused, as for the other forms. A
-    /// request that leaves the model as it was is not a step (`changes_model`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn edit_circle<K: GeometryKernel + ?Sized>(
-        self,
-        sketch: ObjectId,
-        edit: ferritecad_document::CircleEdit,
-        expected: DocumentVersion,
-        kernel: &mut K,
-        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
-        context: &OperationContext,
-    ) -> Result<ProducedStep> {
-        self.check_form_version(expected)?;
-        self.run_edit(
-            kernel,
-            read_step,
-            context,
-            |source, expected, destination, kernel, run| {
-                edit_circle_copy_with(
-                    &EditCircleRequest {
-                        source: source.to_path_buf(),
-                        expected,
-                        sketch,
-                        edit,
-                        destination: destination.to_path_buf(),
-                    },
-                    kernel,
-                    context,
-                    run,
-                )
-                .map(|_| ())
-            },
-        )
-    }
-
-    /// Moves and resizes the two circles of one saved annular profile: the reused
-    /// `edit-annular` copy operation, each circle named by its own UUID in the
-    /// role it already holds. Version rule and no-op rule as for the circle.
-    #[allow(clippy::too_many_arguments)]
-    pub fn edit_annulus<K: GeometryKernel + ?Sized>(
-        self,
-        sketch: ObjectId,
-        edit: ferritecad_document::AnnulusEdit,
-        expected: DocumentVersion,
-        kernel: &mut K,
-        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
-        context: &OperationContext,
-    ) -> Result<ProducedStep> {
-        self.check_form_version(expected)?;
-        self.run_edit(
-            kernel,
-            read_step,
-            context,
-            |source, expected, destination, kernel, run| {
-                edit_annulus_copy_with(
-                    &EditAnnulusRequest {
-                        source: source.to_path_buf(),
-                        expected,
-                        sketch,
-                        edit,
                         destination: destination.to_path_buf(),
                     },
                     kernel,

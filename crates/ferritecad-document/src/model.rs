@@ -205,7 +205,7 @@ impl SketchGeometry {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         match self {
             Self::Point { at } => at.validate(),
             Self::Line { start, end } => {

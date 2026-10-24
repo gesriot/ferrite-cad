@@ -339,7 +339,7 @@ fn dirty_copy_of_a_source(root: &Path, user: &Path, sessions: &Path) -> Dirty {
         let expected = ticket.source().version();
         ticket.edit(
             vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     feature,
                     ferritecad_document::ExpressionSlot::ExtrudeDistance,
                     22.0,

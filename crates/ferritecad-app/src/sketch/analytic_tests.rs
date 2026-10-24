@@ -185,7 +185,7 @@ pub(crate) fn saved(radii: &[f64]) -> (tempfile::TempDir, egui::Context, Editor)
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join("round.fcad");
     crate::sketch::tests::analytic_apply::write_round(&path, [12.5, -7.25], radii, 15.25, false);
-    let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let reading = crate::sketch_facts::read(&path).expect("reading");
     let mut e = Editor::default();
     e.set_session(true, false, false);
     e.set_analytic_apply(true);
@@ -440,7 +440,10 @@ fn saved_forms_take_a_gesture_as_one_confirmed_step_and_apply_exactly_its_number
     assert_eq!(stored, strings(["12.5", "-7.25"], "10.5", None));
     let (curve, sketch) = {
         let (request, _) = e.editing_circle.as_ref().expect("form");
-        (request.edit.curve_id, request.sketch)
+        (
+            crate::transaction_tests::circle(request).curve_id,
+            e.editing_circle.as_ref().expect("circle choice").1.sketch,
+        )
     };
     let at = handle(&ctx, &mut e, Handle::Centre);
     let to = at + egui::vec2(-31.25, 18.75);
@@ -460,20 +463,20 @@ fn saved_forms_take_a_gesture_as_one_confirmed_step_and_apply_exactly_its_number
     let request = e.take_apply_circle_request().expect("Apply asked");
     assert_eq!(
         (
-            request.sketch,
-            request.edit.curve_id,
-            request.edit.radius_mm
+            crate::transaction_tests::sketch(&request),
+            crate::transaction_tests::circle(&request).curve_id,
+            crate::transaction_tests::circle(&request).radius_mm
         ),
         (sketch, curve, 10.5)
     );
     assert_eq!(
-        request.edit.center_mm,
+        crate::transaction_tests::circle(&request).center_mm,
         [12.5 + d[0], -7.25 + d[1]],
         "the request is the canvas's numbers"
     );
     press_button(&ctx, &mut e, "Save edited circle copy…");
     let copy = e.take_circle_edit_request().expect("copy asked");
-    assert_eq!(copy.edit, request.edit);
+    assert_eq!(copy.changes, request.changes);
     press_button(&ctx, &mut e, "Undo draft");
     assert_eq!((shown(&e), depth(&e)), (stored, (0, 1)));
     press_button(&ctx, &mut e, "Redo draft");
@@ -484,7 +487,10 @@ fn saved_forms_take_a_gesture_as_one_confirmed_step_and_apply_exactly_its_number
     let (_root, ctx, mut e) = saved(&[10.5, 4.75]);
     let (outer_id, inner_id) = {
         let (request, _) = e.editing_annulus.as_ref().expect("form");
-        (request.edit.outer_curve_id, request.edit.inner_curve_id)
+        (
+            crate::transaction_tests::annulus(request).outer_curve_id,
+            crate::transaction_tests::annulus(request).inner_curve_id,
+        )
     };
     let at = handle(&ctx, &mut e, Handle::Bore);
     let to = at + egui::vec2(9.5, -12.25);
@@ -499,11 +505,11 @@ fn saved_forms_take_a_gesture_as_one_confirmed_step_and_apply_exactly_its_number
     let request = e.take_apply_annulus_request().expect("Apply asked");
     assert_eq!(
         (
-            request.edit.outer_curve_id,
-            request.edit.inner_curve_id,
-            request.edit.outer_radius_mm,
-            request.edit.inner_radius_mm,
-            request.edit.center_mm,
+            crate::transaction_tests::annulus(&request).outer_curve_id,
+            crate::transaction_tests::annulus(&request).inner_curve_id,
+            crate::transaction_tests::annulus(&request).outer_radius_mm,
+            crate::transaction_tests::annulus(&request).inner_radius_mm,
+            crate::transaction_tests::circle(&request).center_mm,
         ),
         (outer_id, inner_id, 10.5, bore, [12.5, -7.25])
     );
@@ -776,7 +782,7 @@ fn busy_queued_covered_and_outside_presses_start_nothing_and_held_fields_take_no
         "a queued Apply was changed"
     );
     let asked = e.take_apply_circle_request().expect("asked");
-    assert_eq!(asked.edit.radius_mm, 11.);
+    assert_eq!(crate::transaction_tests::circle(&asked).radius_mm, 11.);
     drag(&ctx, &mut e, c, c + egui::vec2(20., 0.));
     assert_ne!(
         shown(&e).centre,
@@ -1069,12 +1075,11 @@ fn a_refused_profile_stays_a_visible_draft_and_text_that_cannot_be_drawn_draws_n
         bore_ring.2, outer_ring.2,
         "the roles were swapped or merged"
     );
-    assert!(painted(
-        &out,
-        "invalid input: inner radius must be smaller than the outer radius; a hole is inside \
-         its boundary"
-    ));
-    assert!(!painted(&out, "Apply annulus") && !painted(&out, "Confirm draft numbers"));
+    assert!(painted(&out, "Apply annulus"));
+    assert!(
+        e.annulus_edit_request().is_ok(),
+        "the payload is drawable; Apply decides geometry"
+    );
     assert!(e.editing_analytic() && depth(&e) == (1, 0));
     assert_eq!(s.outer, "10.5", "nothing was clamped or exchanged");
 
@@ -1085,7 +1090,7 @@ fn a_refused_profile_stays_a_visible_draft_and_text_that_cannot_be_drawn_draws_n
     assert!(profile(&e).expect("drawable").handles().len() == 2);
     assert!(painted(
         &out,
-        "invalid input: circle radius must be finite and positive in mm"
+        "invalid input: circle radius must be positive, found -2"
     ));
 
     // Text that cannot be drawn: no profile at all, the field and the reason named, the
@@ -1210,7 +1215,7 @@ pub(crate) fn choose_profile(e: &mut Editor, profile: &str) {
 pub(crate) fn begin_saved_circle(e: &mut Editor, root: &std::path::Path) -> bool {
     let path = root.join("round.fcad");
     crate::sketch::tests::analytic_apply::write_round(&path, [12.5, -7.25], &[10.5], 15.25, false);
-    let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let reading = crate::sketch_facts::read(&path).expect("reading");
     e.begin_circle_edit(&path, &reading, reading.circle_sketches[0].sketch)
 }
 
@@ -1259,7 +1264,7 @@ pub(crate) fn dragged_circle_apply(
     path: &std::path::Path,
     reading: &ExtrudeEditSource,
     sketch: ferritecad_types::ObjectId,
-) -> (Editor, EditCircleRequest) {
+) -> (Editor, EditRequest) {
     let mut e = Editor::default();
     e.set_session(true, false, true);
     e.set_analytic_apply(true);
@@ -1271,7 +1276,10 @@ pub(crate) fn dragged_circle_apply(
     let request = e.take_apply_circle_request().expect("Apply circle asked");
     let n = |s: &str| s.parse::<f64>().expect("a number");
     assert_eq!(
-        (request.edit.center_mm, request.edit.radius_mm),
+        (
+            crate::transaction_tests::circle(&request).center_mm,
+            crate::transaction_tests::circle(&request).radius_mm
+        ),
         ([n(&typed.centre[0]), n(&typed.centre[1])], n(&typed.outer)),
         "the request is not what the canvas wrote"
     );
@@ -1283,7 +1291,7 @@ pub(crate) fn dragged_annulus_apply(
     path: &std::path::Path,
     reading: &ExtrudeEditSource,
     sketch: ferritecad_types::ObjectId,
-) -> (Editor, EditAnnulusRequest) {
+) -> (Editor, EditRequest) {
     let mut e = Editor::default();
     e.set_session(true, false, true);
     e.set_analytic_apply(true);
@@ -1297,9 +1305,9 @@ pub(crate) fn dragged_annulus_apply(
     let n = |s: &str| s.parse::<f64>().expect("a number");
     assert_eq!(
         (
-            request.edit.center_mm,
-            request.edit.outer_radius_mm,
-            request.edit.inner_radius_mm
+            crate::transaction_tests::annulus(&request).center_mm,
+            crate::transaction_tests::annulus(&request).outer_radius_mm,
+            crate::transaction_tests::annulus(&request).inner_radius_mm
         ),
         (
             [n(&typed.centre[0]), n(&typed.centre[1])],

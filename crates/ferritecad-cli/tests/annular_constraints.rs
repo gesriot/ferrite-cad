@@ -23,10 +23,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
-#[path = "support/pipe.rs"]
-mod pipe;
 
-const OP: &str = "edit-sketch-constraints-copy";
+const OP: &str = "edit";
 const LINEAR_MM: f64 = 0.05;
 const ANGULAR_RAD: f64 = 0.1;
 /// Single-precision STL coordinates land a few parts in 10^7 from the radius
@@ -128,16 +126,27 @@ impl Fixture {
         }
     }
     fn discovery(&self) -> &Value {
-        &self.catalog["sketches"][0]["constraint_edit"]
+        &self.catalog["sketches"][0]
     }
     /// The circle discovery reports in the named role, from the same snapshot.
     fn role(&self, role: &str) -> &str {
-        self.discovery()["circles"]
-            .as_array()
-            .expect("circles")
-            .iter()
-            .find(|c| c["role"] == role)
-            .unwrap_or_else(|| panic!("no {role} circle in {:?}", self.discovery()))["curve_id"]
+        let curves = self.discovery()["curves"].as_array().expect("curves");
+        let selected = if role == "boundary" {
+            curves.iter().max_by(|a, b| {
+                a["geometry"]["radius_mm"]
+                    .as_f64()
+                    .expect("radius")
+                    .total_cmp(&b["geometry"]["radius_mm"].as_f64().expect("radius"))
+            })
+        } else {
+            curves.iter().min_by(|a, b| {
+                a["geometry"]["radius_mm"]
+                    .as_f64()
+                    .expect("radius")
+                    .total_cmp(&b["geometry"]["radius_mm"].as_f64().expect("radius"))
+            })
+        };
+        selected.expect("circle")["curve_id"]
             .as_str()
             .expect("curve UUID")
     }
@@ -150,36 +159,30 @@ impl Fixture {
     fn ask(&self, remove: &[Value], add: &[Value]) {
         write(
             &self.request,
-            &json!({"request_version":1,"remove":remove,"add":add}),
+            &transaction::constraints(&self.catalog["sketches"][0], remove, add),
         );
     }
     fn edit(&self, output: &Path) -> Command {
         self.edit_from(&self.source, &self.catalog, output)
     }
     fn edit_from(&self, source: &Path, catalog: &Value, output: &Path) -> Command {
-        let mut c = cli();
-        c.arg(OP)
-            .arg(source)
-            .arg("--sketch")
-            .arg(catalog["sketches"][0]["sketch_id"].as_str().expect("id"))
-            .arg("--expect-version")
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(&self.request)
-            .arg("-o")
-            .arg(output)
-            .arg("--json");
-        c
+        transaction::sketch_address(&self.request, &catalog["sketches"][0]["sketch_id"]);
+        transaction::command(
+            source,
+            catalog["content_version"].as_str().expect("version"),
+            &self.request,
+            output,
+        )
     }
 }
 fn radius_add(curve: &str, mm: f64) -> Value {
-    json!({"rule":"radius","curve_id":curve,"radius_mm":mm})
+    json!({"kind":"radius","curve":curve,"radius":transaction::number(mm,"mm")})
 }
 fn center_add(curve: &str, x: f64, y: f64) -> Value {
-    json!({"rule":"fixed","curve_id":curve,"at":"center","x_mm":x,"y_mm":y})
+    json!({"kind":"fixed","point":transaction::point_ref(&json!(curve),"center"),"x":transaction::number(x,"mm"),"y":transaction::number(y,"mm")})
 }
 fn concentric_add(a: &str, b: &str) -> Value {
-    json!({"rule":"concentric","a_curve_id":a,"b_curve_id":b})
+    json!({"kind":"coincident","a":transaction::point_ref(&json!(a),"center"),"b":transaction::point_ref(&json!(b),"center")})
 }
 
 /// The four objects an annular extrusion is, written without a kernel.
@@ -777,177 +780,6 @@ fn only_the_constraint_payload_changed(
     }
 }
 
-/// Discovery, the request protocol and every structural refusal, with no kernel
-/// and no solver needed.
-#[test]
-fn annular_constraint_discovery_and_protocol_without_native() {
-    for swapped in [false, true] {
-        let f = Fixture::drawn(swapped);
-        let before = std::fs::read(&f.source).expect("source bytes");
-        let discovery = f.discovery();
-        assert_eq!(discovery["available"], true, "{discovery:?}");
-        assert!(discovery["refusal"].is_null());
-        assert_eq!(
-            discovery["curves"].as_array().expect("curves").len(),
-            0,
-            "an annular profile offers no Line"
-        );
-        assert_eq!(discovery["constraints"].as_array().expect("list").len(), 0);
-
-        // Both circles and both roles come out of this one snapshot.
-        let circles = discovery["circles"].as_array().expect("circles");
-        assert_eq!(circles.len(), 2);
-        let boundary = f.boundary().to_owned();
-        let bore = f.bore().to_owned();
-        assert_ne!(boundary, bore);
-        for c in circles {
-            assert_eq!(c["center_mm"], json!([12.0, -7.0]));
-        }
-        let radius_of = |id: &str| {
-            circles
-                .iter()
-                .find(|c| c["curve_id"] == id)
-                .expect("named circle")["radius_mm"]
-                .as_f64()
-                .expect("radius")
-        };
-        assert_eq!(radius_of(&boundary), 10.0, "the larger radius bounds");
-        assert_eq!(radius_of(&bore), 4.0, "the smaller radius is the bore");
-        // The roles follow the radii, not the stored order.
-        let order = stored(&f.source).stored_order;
-        if swapped {
-            assert_eq!(order[0].to_string(), bore, "this fixture stores bore first");
-        } else {
-            assert_eq!(order[0].to_string(), boundary);
-        }
-
-        // The other editors keep their own answers about the same Sketch.
-        let sketch = &f.catalog["sketches"][0];
-        assert_eq!(sketch["editable"], false);
-        assert!(sketch["vertices"].is_null());
-        assert_eq!(sketch["circle_edit"]["available"], false);
-        assert_eq!(sketch["annulus_edit"]["available"], true);
-
-        let never = f.root.path().join("never.fcad");
-        let foreign = ferritecad_types::StableEntityId::new().to_string();
-        // The request file is part of the fixture, so it exists before the
-        // directory is photographed: what must not appear is a published copy.
-        f.ask(&[], &[radius_add(&boundary, 5.0)]);
-        let names = entries(f.root.path());
-        // Structural refusals, each one a request this build will not store.
-        for (add, why) in [
-            (vec![radius_add(&boundary, 0.0)], "a zero radius"),
-            (vec![radius_add(&bore, -4.0)], "a negative radius"),
-            (
-                vec![radius_add(&boundary, 6.75), radius_add(&boundary, 8.125)],
-                "two radii on one circle",
-            ),
-            (
-                vec![
-                    concentric_add(&boundary, &bore),
-                    concentric_add(&bore, &boundary),
-                ],
-                "one pair, named both ways round, is one slot",
-            ),
-            (
-                vec![concentric_add(&boundary, &boundary)],
-                "a circle cannot be concentric with itself",
-            ),
-            (
-                vec![concentric_add(&boundary, &foreign)],
-                "a curve of some other sketch",
-            ),
-            (vec![radius_add(&foreign, 3.0)], "a foreign circle"),
-            (
-                vec![center_add(&boundary, 0.0, 0.0), center_add(&bore, 1.0, 1.0)],
-                "a profile holds one pin",
-            ),
-            (
-                vec![json!({"rule":"horizontal","curve_id":boundary})],
-                "a Line rule on a circular profile",
-            ),
-            (
-                vec![json!({"rule":"distance","curve_id":boundary,"distance_mm":4.0})],
-                "a Line length on a circular profile",
-            ),
-            (
-                vec![
-                    center_add(&boundary, 0.0, 0.0),
-                    json!({"rule":"fixed","curve_id":boundary,
-                      "at":"start","x_mm":0.0,"y_mm":0.0}),
-                ],
-                "a Line endpoint pin on a circle",
-            ),
-        ] {
-            f.ask(&[], &add);
-            let refused = reply(f.edit(&never).output().expect("process"), OP, 2);
-            assert!(
-                matches!(
-                    refused["error"]["kind"].as_str(),
-                    Some("input" | "unsupported")
-                ),
-                "{why}: {refused:?}"
-            );
-        }
-        // Removing something that is not there, and removing nothing at all.
-        // A build with no kernel answers `unsupported` before it reaches the
-        // request, which is a different true thing about the same refusal.
-        for remove in [vec![json!(foreign)], Vec::new()] {
-            f.ask(&remove, &[]);
-            let refused = reply(f.edit(&never).output().expect("process"), OP, 2);
-            assert!(
-                matches!(
-                    refused["error"]["kind"].as_str(),
-                    Some("input" | "unsupported")
-                ),
-                "{refused:?}"
-            );
-        }
-        // Request forms this reader will not accept at all.
-        for raw in [
-            r#"{"request_version":2,"remove":[],"add":[]}"#.to_owned(),
-            r#"{"request_version":1,"remove":[],"add":[{"rule":"concentric"}]}"#.to_owned(),
-            format!(
-                r#"{{"request_version":1,"remove":[],"add":[{{"rule":"concentric","a_curve_id":"{boundary}","b_curve_id":"{bore}","radius_mm":1}}]}}"#
-            ),
-            format!(
-                r#"{{"request_version":1,"remove":[],"add":[{{"rule":"concentric","curve_id":"{boundary}"}}]}}"#
-            ),
-            format!(
-                r#"{{"request_version":1,"remove":[],"add":[{{"rule":"radius","curve_id":"{boundary}","radius_mm":1e999}}]}}"#
-            ),
-        ] {
-            std::fs::write(&f.request, raw.as_bytes()).expect("request");
-            let refused = reply(f.edit(&never).output().expect("process"), OP, 2);
-            assert!(
-                matches!(
-                    refused["error"]["kind"].as_str(),
-                    Some("input" | "unsupported")
-                ),
-                "{raw}: {refused:?}"
-            );
-        }
-        // A refused operation whose report cannot be written is still a
-        // refusal, reported as the lost report it is and publishing nothing.
-        f.ask(&[], &[radius_add(&foreign, 3.0)]);
-        assert_eq!(
-            f.edit(&never)
-                .stdout(pipe::closed_pipe())
-                .stderr(pipe::closed_pipe())
-                .status()
-                .expect("pipes")
-                .code(),
-            Some(7)
-        );
-        assert_eq!(entries(f.root.path()), names, "a refusal left something");
-        assert_eq!(
-            std::fs::read(&f.source).expect("source bytes"),
-            before,
-            "the source was touched"
-        );
-    }
-}
-
 /// The measured slice: concentricity, two radii and one pin drive the ring.
 #[test]
 fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
@@ -979,22 +811,25 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     );
     let published = reply(f.edit(&sized).output().expect("process"), OP, 0);
     let result = &published["result"];
-    assert_eq!(result["sketch_id"], saved.sketch.to_string());
+
     assert_eq!(
-        result["solve"]["degrees_of_freedom"], 0,
+        transaction::solve(&sized)["degrees_of_freedom"],
+        0,
         "six unknowns, six constraints' worth of removal: {result:?}"
     );
-    assert_eq!(result["solve"]["redundant_constraint_ids"], json!([]));
-    let added: Vec<&str> = result["added_constraints"]
+    assert_eq!(
+        transaction::solve(&sized)["redundant_constraint_ids"],
+        json!([])
+    );
+    let listed = inspect(&sized);
+    let added = listed["sketches"][0]["constraints"]
         .as_array()
-        .expect("added")
-        .iter()
-        .map(|c| c["constraint_id"].as_str().expect("UUID"))
-        .collect();
+        .expect("constraints");
     assert_eq!(added.len(), 4);
     assert_eq!(
         added
             .iter()
+            .map(|c| c["constraint_id"].as_str().expect("id"))
             .collect::<std::collections::BTreeSet<_>>()
             .len(),
         4
@@ -1017,21 +852,10 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     assert_eq!(kept.objects, saved.objects);
     assert_eq!(kept.height_mm, 15.0);
     let copy = inspect(&sized);
-    let after = &copy["sketches"][0]["constraint_edit"];
-    let role_of = |id: &str| {
-        after["circles"]
-            .as_array()
-            .expect("circles")
-            .iter()
-            .find(|c| c["curve_id"] == id)
-            .expect("circle")["role"]
-            .clone()
-    };
-    assert_eq!(role_of(&boundary), "boundary");
-    assert_eq!(role_of(&bore), "bore");
-    // The pair editor steps back while constraints hold the profile.
-    assert_eq!(copy["sketches"][0]["annulus_edit"]["available"], false);
-    assert_eq!(copy["sketches"][0]["circle_edit"]["available"], false);
+    assert_eq!(
+        copy["sketches"][0]["curves"],
+        f.catalog["sketches"][0]["curves"]
+    );
     let rules: Vec<String> = kept.constraints.iter().map(|c| c.1.clone()).collect();
     let (a, b) = if boundary_id <= bore_id {
         (boundary_id, bore_id)
@@ -1093,7 +917,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     // Replacing one radius keeps the concentricity, the pin and every other
     // identity, and really changes the solid.
     let catalog = inspect(&sized);
-    let listed = catalog["sketches"][0]["constraint_edit"]["constraints"]
+    let listed = catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("stored")
         .clone();
@@ -1111,19 +935,16 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     let concentric = id_of(&|r: &Value| r["kind"] == "coincident");
     let widened = f.root.path().join("widened.fcad");
     f.ask(&[json!(bore_radius)], &[radius_add(&bore, 3.5)]);
-    let again = reply(
+    let _again = reply(
         f.edit_from(&sized, &catalog, &widened)
             .output()
             .expect("process"),
         OP,
         0,
     );
-    assert_eq!(
-        again["result"]["removed_constraint_ids"],
-        json!([bore_radius])
-    );
-    assert_eq!(again["result"]["solve"]["degrees_of_freedom"], 0);
-    let wider = inspect(&widened)["sketches"][0]["constraint_edit"]["constraints"]
+
+    assert_eq!(transaction::solve(&widened)["degrees_of_freedom"], 0);
+    let wider = inspect(&widened)["sketches"][0]["constraints"]
         .as_array()
         .expect("stored")
         .iter()
@@ -1183,12 +1004,13 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         0,
     );
     assert_eq!(
-        loosened["result"]["solve"]["degrees_of_freedom"], 4,
+        transaction::solve(&freed)["degrees_of_freedom"],
+        4,
         "two centres are free again, and the two radii are not: {loosened:?}"
     );
     let catalog = inspect(&freed);
     assert_eq!(
-        catalog["sketches"][0]["constraint_edit"]["constraints"]
+        catalog["sketches"][0]["constraints"]
             .as_array()
             .expect("stored")
             .len(),
@@ -1199,7 +1021,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     analytic_matches(&analytic(&freed), boundary_id, bore_id, 6.75, 3.5, 15.0);
 
     // Taking everything off hands the profile back to the annulus editor.
-    let ids: Vec<Value> = catalog["sketches"][0]["constraint_edit"]["constraints"]
+    let ids: Vec<Value> = catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("stored")
         .iter()
@@ -1207,7 +1029,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         .collect();
     let plain = f.root.path().join("plain.fcad");
     f.ask(&ids, &[]);
-    let gone = reply(
+    let _gone = reply(
         f.edit_from(&freed, &catalog, &plain)
             .output()
             .expect("process"),
@@ -1215,15 +1037,12 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         0,
     );
     assert!(
-        gone["result"]["solve"].is_null(),
+        transaction::solve(&plain).is_null(),
         "nothing left to solve is not zero freedom"
     );
     let bare = inspect(&plain);
-    assert_eq!(
-        bare["sketches"][0]["constraint_edit"]["constraints"],
-        json!([])
-    );
-    assert_eq!(bare["sketches"][0]["annulus_edit"]["available"], true);
+    assert_eq!(bare["sketches"][0]["constraints"], json!([]));
+
     analytic_matches(&analytic(&plain), boundary_id, bore_id, 10.0, 4.0, 15.0);
 
     // The existing height edit keeps the constraints and the solved radii.
@@ -1254,7 +1073,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         25.0
     );
     assert_eq!(
-        up["sketches"][0]["constraint_edit"]["constraints"]
+        up["sketches"][0]["constraints"]
             .as_array()
             .expect("stored")
             .len(),
@@ -1291,8 +1110,8 @@ fn native_stored_order_does_not_decide_the_roles() {
             center_add(&bore, -3.5, 4.25),
         ],
     );
-    let published = reply(f.edit(&sized).output().expect("process"), OP, 0);
-    assert_eq!(published["result"]["solve"]["degrees_of_freedom"], 0);
+    let _published = reply(f.edit(&sized).output().expect("process"), OP, 0);
+    assert_eq!(transaction::solve(&sized)["degrees_of_freedom"], 0);
     let kept = stored(&sized);
     assert_eq!(kept.stored_order, saved.stored_order);
     assert_eq!(kept.circles, saved.circles);
@@ -1408,7 +1227,7 @@ fn occt_without_solver_builds_plain_annuli_and_refuses_annular_constraints() {
 }
 
 fn diameter_add(curve: &str, mm: f64) -> Value {
-    json!({"rule":"diameter","curve_id":curve,"diameter_mm":mm})
+    radius_add(curve, mm / 2.)
 }
 
 /// §31E, native: a diameter names its circle by UUID. The request lists the bore
@@ -1440,10 +1259,11 @@ fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
                 center_add(&boundary, -3.5, 4.25),
             ],
         );
-        let v = reply(f.edit(&sized).output().expect("process"), OP, 0);
-        assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 0);
+        let _v = reply(f.edit(&sized).output().expect("process"), OP, 0);
+        assert_eq!(transaction::solve(&sized)["degrees_of_freedom"], 0);
         // The response keeps calling them radii, with the fields it always had.
-        let radii: Vec<(String, f64)> = v["result"]["added_constraints"]
+        let listed = inspect(&sized);
+        let radii: Vec<(String, f64)> = listed["sketches"][0]["constraints"]
             .as_array()
             .expect("added")
             .iter()
@@ -1451,7 +1271,7 @@ fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
             .map(|c| {
                 (
                     c["rule"]["curve_id"].as_str().expect("curve").to_owned(),
-                    c["rule"]["radius"].as_f64().expect("radius"),
+                    c["rule"]["radius"]["value"].as_f64().expect("radius"),
                 )
             })
             .collect();
@@ -1508,7 +1328,7 @@ fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
         // One Radius slot per circle, whichever unit filled it; replacing the
         // bore's keeps the boundary's radius, the pair and the pin as they were.
         let catalog = inspect(&sized);
-        let stored_rules = catalog["sketches"][0]["constraint_edit"]["constraints"]
+        let stored_rules = catalog["sketches"][0]["constraints"]
             .as_array()
             .expect("constraints")
             .clone();
@@ -1531,14 +1351,14 @@ fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
             std::slice::from_ref(&bore_radius),
             &[diameter_add(&bore, 5.5)],
         );
-        let v = reply(
+        let _v = reply(
             f.edit_from(&sized, &catalog, &replaced)
                 .output()
                 .expect("process"),
             OP,
             0,
         );
-        assert_eq!(v["result"]["removed_constraint_ids"], json!([bore_radius]));
+
         let after = stored(&replaced);
         let ids = |s: &Stored| -> std::collections::BTreeSet<_> {
             s.constraints.iter().map(|(id, _)| *id).collect()

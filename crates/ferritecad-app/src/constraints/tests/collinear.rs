@@ -26,7 +26,7 @@ pub(crate) fn collinear_apply(
     path: &Path,
     source: &ExtrudeEditSource,
     (a, b): (usize, usize),
-) -> (Editor, EditSketchConstraintsRequest) {
+) -> (Editor, EditRequest) {
     let (mut e, ctx) = opened_form(path, source);
     e.set_session(true, true, true);
     pair(&ctx, &mut e, a, b);
@@ -72,13 +72,6 @@ fn a_collinear_is_one_step_on_a_picked_pair_and_reads_neither_vector_direction()
     // Nothing is picked: nothing is added.
     click(&ctx, &mut e, "Add Collinear");
     assert!(e.draft.as_ref().expect("draft").edits.add.is_empty());
-    // One Line picked as both sides is no pair.
-    pair(&ctx, &mut e, 1, 1);
-    click(&ctx, &mut e, "Add Collinear");
-    let draft = e.draft.as_ref().expect("draft");
-    assert!(draft.edits.add.is_empty() && draft.refusal.is_some());
-    assert!(draft.history.undo.is_empty());
-
     // Two opposite sides, each vector turned the way it is not stored: the
     // request carries the two Lines and no direction at all.
     pair(&ctx, &mut e, 1, 3);
@@ -107,47 +100,7 @@ fn a_collinear_is_one_step_on_a_picked_pair_and_reads_neither_vector_direction()
     click(&ctx, &mut e, "A: end>start");
     click(&ctx, &mut e, "B: end>start");
 
-    // One pair has one relative-orientation slot, whichever way it is said, and
-    // the refusal names the collinearity that holds it.
-    let kept = history_state(&e);
-    for (a, b, button) in [
-        (1, 3, "Add Collinear"),
-        (3, 1, "Add Collinear"),
-        (1, 3, "Add Parallel"),
-        (3, 1, "Add Perpendicular"),
-    ] {
-        pair(&ctx, &mut e, a, b);
-        click(&ctx, &mut e, button);
-        assert!(
-            e.draft
-                .as_ref()
-                .expect("d")
-                .refusal
-                .as_deref()
-                .is_some_and(|r| r.contains("Collinear")),
-            "{button} on ({a}, {b}) is a second answer to one question: {:?}",
-            e.draft.as_ref().map(|d| &d.refusal)
-        );
-        assert_eq!(
-            history_state(&e),
-            kept,
-            "{button} on ({a}, {b}) changed the draft"
-        );
-    }
     pair(&ctx, &mut e, 1, 3);
-    enter_field(&ctx, &mut e, "A>B (°):", "0", false);
-    click(&ctx, &mut e, "Add directed angle");
-    assert!(
-        e.draft
-            .as_ref()
-            .expect("d")
-            .refusal
-            .as_deref()
-            .is_some_and(|r| r.contains("Collinear")),
-        "a directed angle on a collinear pair is refused for the slot"
-    );
-    assert_eq!(history_state(&e), kept);
-
     // An equal length on the same pair is another property: its own slot.
     click(&ctx, &mut e, "Add Equal length");
     assert_eq!(e.draft.as_ref().expect("d").refusal, None);
@@ -186,9 +139,15 @@ fn a_collinear_is_one_step_on_a_picked_pair_and_reads_neither_vector_direction()
     e.set_session(true, true, false);
     click(&ctx, &mut e, "Save constraints copy…");
     let request = e.take_request().expect("Save asked");
-    assert_eq!(request.edits, applied.edits);
-    assert_eq!(request.edits.add.len(), 3);
-    assert_eq!((request.sketch, request.expected), (sketch, source.version));
+    assert_eq!(
+        crate::transaction_tests::constraints(&request),
+        crate::transaction_tests::constraints(&applied)
+    );
+    assert_eq!(crate::transaction_tests::constraints(&request).add.len(), 3);
+    assert_eq!(
+        (crate::transaction_tests::sketch(&request), request.expected),
+        (sketch, source.version)
+    );
     assert!(e.take_request().is_none(), "one press, one request");
     let (pair_now, history) = (
         e.draft.as_ref().map(|d| (d.pair_a, d.pair_b)),
@@ -200,7 +159,7 @@ fn a_collinear_is_one_step_on_a_picked_pair_and_reads_neither_vector_direction()
     for cancelled in [false, true] {
         let (tx, rx) = std::sync::mpsc::channel();
         let generation = state
-            .start_constraints(request.clone(), move |_, g, c| {
+            .start(request.clone(), move |_, g, c| {
                 std::thread::spawn(move || {
                     if cancelled {
                         c.cancel();
@@ -242,7 +201,7 @@ fn a_stored_collinear_is_replaced_by_a_parallel_in_one_exact_remove_and_add() {
     // Written through the document, as an earlier editor session would have
     // left it.
     let mut document = Document::open(&path).expect("doc");
-    let prepared = ferritecad_document::prepare_sketch_constraints(
+    let prepared = ferritecad_fixtures::constraint_changes(
         &document,
         plain.constraint_sketches[0].sketch,
         &SketchConstraintEdits {
@@ -251,9 +210,12 @@ fn a_stored_collinear_is_replaced_by_a_parallel_in_one_exact_remove_and_add() {
         },
     )
     .expect("prepare");
-    let stored_id = prepared.added.last().expect("the collinear").id;
-    document.write_sketch_constraints(&prepared).expect("write");
-    let source = ExtrudeEditSource::read(&document).expect("catalog");
+    let stored_id = ferritecad_fixtures::added_constraints(&prepared)
+        .last()
+        .expect("the collinear")
+        .id;
+    document.write_changes(&prepared).expect("write");
+    let source = crate::sketch_facts::Source::read(&document).expect("catalog");
     document.close().expect("close");
     let (mut e, ctx) = opened_form(&path, &source);
 
@@ -290,20 +252,11 @@ fn a_stored_collinear_is_replaced_by_a_parallel_in_one_exact_remove_and_add() {
     e.set_session(true, true, false);
     click(&ctx, &mut e, "Save constraints copy…");
     let request = e.take_request().expect("Save asked");
-    assert_eq!(request.edits.remove, vec![stored_id]);
-    assert_eq!(request.edits.add.len(), 1);
-    // Without the removal the same add is refused for the slot.
-    click(&ctx, &mut e, "Undo");
-    click(&ctx, &mut e, "Undo");
-    click(&ctx, &mut e, "Add Parallel");
-    assert!(
-        e.draft
-            .as_ref()
-            .expect("d")
-            .refusal
-            .as_deref()
-            .is_some_and(|r| r.contains("Collinear"))
+    assert_eq!(
+        crate::transaction_tests::constraints(&request).remove,
+        vec![stored_id]
     );
+    assert_eq!(crate::transaction_tests::constraints(&request).add.len(), 1);
 }
 
 /// A U with two disjoint, parallel rims at different heights: the right one
@@ -380,7 +333,7 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
     crate::sketch::drag_tests::attach_source_claim(&source_path);
     let source = {
         let d = Document::open_read_only(&source_path).expect("doc");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         source
     };
@@ -397,27 +350,36 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
     click(&ctx, &mut e, "Save constraints copy…");
     let request = e.take_request().expect("widget request");
     let expected = collinear_of(saved.curves[0].id, saved.curves[4].id);
-    assert_eq!(request.edits.add, vec![expected]);
+    assert_eq!(
+        crate::transaction_tests::constraints(&request).add,
+        vec![expected]
+    );
     let ui = root.path().join("ui.fcad");
-    let work = |request: EditSketchConstraintsRequest, to: &Path| {
+    let work = |request: EditRequest, to: &Path| {
         let mut request = request;
         request.destination = to.to_path_buf();
         let mut state = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(request, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request, move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
-        let dof = result
-            .as_ref()
-            .ok()
-            .map(|r| r.solve.as_ref().map(|s| s.degrees_of_freedom()));
+        let dof = result.as_ref().ok().map(|r| {
+            crate::transaction_tests::solve(r)
+                .as_ref()
+                .map(|s| s.degrees_of_freedom())
+        });
         let mut idle = Editor::default();
         (finish_edit(&mut idle, &mut state, g, result), dof)
     };
@@ -440,12 +402,14 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
                 version: &ferritecad_document::DocumentVersion,
                 edits: &SketchConstraintEdits,
                 to: &Path| {
-        std::fs::write(&request_file, super::session_apply::peer_request(edits)).expect("request");
+        std::fs::write(
+            &request_file,
+            super::session_apply::peer_request(from, sketch, edits),
+        )
+        .expect("request");
         run(&[
-            "edit-sketch-constraints-copy".as_ref(),
+            "edit".as_ref(),
             from.as_os_str(),
-            "--sketch".as_ref(),
-            sketch.to_string().as_ref(),
             "--expect-version".as_ref(),
             version.content.to_string().as_ref(),
             "--request".as_ref(),
@@ -455,7 +419,12 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
         ]);
     };
     let cli = root.path().join("cli.fcad");
-    peer(&source_path, &source.version, &request.edits, &cli);
+    peer(
+        &source_path,
+        &source.version,
+        &crate::transaction_tests::constraints(&request),
+        &cli,
+    );
     let control = root.path().join("parallel.fcad");
     peer(
         &source_path,
@@ -689,7 +658,7 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
     };
     let reading = |path: &Path| {
         let d = Document::open_read_only(path).expect("doc");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         source
     };
@@ -703,11 +672,19 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
     assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
     click(&ctx, &mut e, "Save constraints copy…");
     let replace = e.take_request().expect("widget request");
-    assert_eq!(replace.edits.remove, vec![stored_collinear]);
+    assert_eq!(
+        crate::transaction_tests::constraints(&replace).remove,
+        vec![stored_collinear]
+    );
     let (ui2, cli2) = (root.path().join("ui2.fcad"), root.path().join("cli2.fcad"));
     let (made, dof) = work(replace.clone(), &ui2);
     assert_eq!((made, dof), (Some(ui2.clone()), Some(Some(15))));
-    peer(&ui, &from_ui.version, &replace.edits, &cli2);
+    peer(
+        &ui,
+        &from_ui.version,
+        &crate::transaction_tests::constraints(&replace),
+        &cli2,
+    );
     let (new_ui, new_cli) = (ids_of(&ui2), ids_of(&cli2));
     assert_eq!(new_ui[..8], old_ids[..8], "the joints keep their UUIDs");
     assert_eq!(new_ui[..8], new_cli[..8]);
@@ -732,13 +709,23 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
     click(&ctx, &mut e, "Save constraints copy…");
     let remove = e.take_request().expect("widget request");
     assert_eq!(
-        (remove.edits.remove.clone(), remove.edits.add.len()),
+        (
+            crate::transaction_tests::constraints(&remove)
+                .remove
+                .clone(),
+            crate::transaction_tests::constraints(&remove).add.len()
+        ),
         (vec![new_ui[8]], 0)
     );
     let (ui3, cli3) = (root.path().join("ui3.fcad"), root.path().join("cli3.fcad"));
     let (made, dof) = work(remove.clone(), &ui3);
     assert_eq!((made, dof), (Some(ui3.clone()), Some(Some(16))));
-    peer(&ui2, &from_ui2.version, &remove.edits, &cli3);
+    peer(
+        &ui2,
+        &from_ui2.version,
+        &crate::transaction_tests::constraints(&remove),
+        &cli3,
+    );
     for path in [&ui3, &cli3] {
         assert_eq!(ids_of(path), new_ui[..8].to_vec(), "only the joints remain");
         assert_eq!(solved(path).1.0, 16);

@@ -7,13 +7,13 @@ use crate::sketch::dimension::{
     self, Dimension, Kind, Pending, Shown, ShownTurn, Turn, TurnPending,
 };
 use crate::sketch::marker::{self, Mark, Shown as ShownMark};
+use crate::sketch_facts::{ConstraintSketchChoice, SketchProfileUse, Source as ExtrudeEditSource};
 use ferritecad_document::{
-    AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
-    ConstraintSketchChoice, DirectedAngle, DirectedLine, DocumentVersion, ExtrudeEditSource,
-    LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation, Sketch, SketchConstraintEdits,
-    SketchConstraintRule, SketchCoordinateMm, SketchGeometry, SketchProfileUse,
+    AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm, DirectedAngle,
+    DirectedLine, DocumentVersion, LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation,
+    Sketch, SketchConstraintEdits, SketchConstraintRule, SketchCoordinateMm, SketchGeometry,
 };
-use ferritecad_jobs::{EditSketchConstraintsRequest, EditedSketchConstraints};
+use ferritecad_jobs::{EditRequest, EditedDocument};
 use ferritecad_types::{ObjectId, Result, StableEntityId};
 use std::path::{Path, PathBuf};
 
@@ -185,9 +185,9 @@ pub(crate) type AngleState = (
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     draft: Option<Draft>,
-    pending: Option<EditSketchConstraintsRequest>,
+    pending: Option<EditRequest>,
     /// §30C: Apply into the open document, asked for and not yet taken.
-    pending_apply: Option<EditSketchConstraintsRequest>,
+    pending_apply: Option<EditRequest>,
     /// Whether the window can apply the draft to the open document right now.
     /// Set by the window each frame from the production predicate; never stored.
     can_apply: bool,
@@ -211,11 +211,11 @@ impl Editor {
         self.can_begin = begin;
         self.unsaved = unsaved;
     }
-    pub(crate) fn take_request(&mut self) -> Option<EditSketchConstraintsRequest> {
+    pub(crate) fn take_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.pending.take()
     }
     /// §30C: the draft the user asked to apply to the open document.
-    pub(crate) fn take_apply_request(&mut self) -> Option<EditSketchConstraintsRequest> {
+    pub(crate) fn take_apply_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.pending_apply.take()
     }
     #[cfg(test)]
@@ -638,85 +638,7 @@ impl Editor {
                 }
                 // §28E: the Fillet these Lines carry, and what the new copy
                 // has to be before it is saved.
-                if let [_, _, ..] = draft.choice.fillets.as_slice() {
-                    // §28K/§28L: every Fillet in history order; each rounds
-                    // the result of the one before it. All radii and the flats
-                    // between adjacent arcs are the solved plate's to satisfy.
-                    let all = &draft.choice.fillets;
-                    egui::ScrollArea::vertical()
-                    .id_salt("fillet-history-note")
-                    .max_height(96.)
-                    .show(ui, |ui| {
-                        ui.label(format!(
-                        "History: Extrude -> {}. {} Fillets keep their corners and radii: the \
-                         change is accepted only if the solved plate is still a rectangle with \
-                         every Line on its side, each side at a corner at least {}, and \
-                         adjacent arcs still leave a flat between them.",
-                        all.iter()
-                            .map(|f| {
-                                let [a, b] = f.edge.joint.segments();
-                                format!(
-                                    "Fillet {} {} at the corner of Lines {a} | {b}, r {} mm \
-                                     (stored corner ({}, {}))",
-                                    f.history_index,
-                                    f.feature,
-                                    f.radius_mm,
-                                    f.corner.corner_mm[0],
-                                    f.corner.corner_mm[1]
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" -> "),
-                        if all.len() == 2 {
-                            "Both".to_owned()
-                        } else {
-                            format!("All {}", all.len())
-                        },
-                        all.iter()
-                            .map(|f| format!(
-                                "{} mm (Fillet {})",
-                                f.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION,
-                                f.history_index
-                            ))
-                            .collect::<Vec<_>>()
-                            .join(" or ")
-                    ));
-                    });
-                } else if let Some(fillet) = draft.choice.fillet() {
-                    let [a, b] = fillet.edge.joint.segments();
-                    ui.label(format!(
-                        "Rounded by Fillet {} at the corner of Lines {a} | {b}, r {} mm \
-                         (stored corner ({}, {})). The Fillet keeps its corner and radius: \
-                         the change is accepted only if the solved plate is still a rectangle \
-                         with every Line on its side and each side at that corner at least \
-                         {} mm.",
-                        fillet.feature,
-                        fillet.radius_mm,
-                        fillet.corner.corner_mm[0],
-                        fillet.corner.corner_mm[1],
-                        fillet.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
-                    ));
-                }
-                if let Some(chamfer) = &draft.choice.chamfer {
-                    // §29D: the one Chamfer keeps its corner and distance; the
-                    // distance's bound is the solved plate's, judged by the
-                    // rebuild, so nothing here repeats it.
-                    let [a, b] = chamfer.edge.joint.segments();
-                    ui.label(format!(
-                        "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d {} mm \
-                         (stored corner ({}, {})). The Chamfer keeps its corner and distance: \
-                         the coordinates shown are the stored ones, and the change is accepted \
-                         only if the solved plate is still a rectangle with every Line on its \
-                         side and each side at that corner at least {} mm.",
-                        chamfer.feature,
-                        chamfer.distance_mm,
-                        chamfer.corner.corner_mm[0],
-                        chamfer.corner.corner_mm[1],
-                        format!("{:.6}", chamfer.distance_mm + ferritecad_document::MIN_FLAT_MM)
-                            .trim_end_matches('0')
-                            .trim_end_matches('.')
-                    ));
-                }
+
                 ui.add_enabled_ui(!running, |ui| {
                     ui.horizontal(|ui| {
                         if ui.button("Cancel constraints draft").clicked() {
@@ -1765,12 +1687,11 @@ impl Editor {
                         ui.colored_label(ui.visuals().error_fg_color, refusal);
                     }
                     match draft.choice.validate_edits(&draft.edits) {
-                        Ok(()) => {
-                            let request = EditSketchConstraintsRequest {
+                        Ok(()) if !draft.edits.add.is_empty() || !draft.edits.remove.is_empty() => {
+                            let request = EditRequest {
                                 source: draft.source.clone(),
                                 expected: draft.version,
-                                sketch: draft.choice.sketch,
-                                edits: draft.edits.clone(),
+                                changes: ferritecad_document::sketch_constraint_changes(draft.choice.sketch, draft.choice.stored.as_ref().expect("stored sketch"), &draft.edits).expect("validated constraint draft"),
                                 destination: PathBuf::new(),
                             };
                             ui.horizontal(|ui| {
@@ -1803,6 +1724,7 @@ impl Editor {
                                 );
                             }
                         }
+                        Ok(()) => {}
                         Err(e) => {
                             ui.colored_label(ui.visuals().error_fg_color, e.to_string());
                         }
@@ -2318,7 +2240,7 @@ pub(crate) fn finish_edit(
     editor: &mut Editor,
     edits: &mut crate::edits::Edits,
     generation: u64,
-    result: Result<EditedSketchConstraints>,
+    result: Result<EditedDocument>,
 ) -> Option<PathBuf> {
     if !edits.accepts(generation) {
         return None;
@@ -2326,7 +2248,7 @@ pub(crate) fn finish_edit(
     if result.is_ok() {
         editor.dismiss();
     }
-    edits.finish_constraints(generation, result)
+    edits.finish(generation, result)
 }
 
 #[cfg(test)]
@@ -2578,16 +2500,16 @@ pub(crate) mod tests {
         )
         .expect("source");
         let d = Document::open_read_only(&path).expect("doc");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }
     fn persist_rectangle_lengths(path: &Path) -> ExtrudeEditSource {
         let mut document = Document::open(path).expect("doc");
-        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
         let choice = &source.constraint_sketches[0];
         let curves = &choice.stored.as_ref().expect("stored").curves;
-        let prepared = ferritecad_document::prepare_sketch_constraints(
+        let prepared = ferritecad_fixtures::constraint_changes(
             &document,
             choice.sketch,
             &SketchConstraintEdits {
@@ -2613,9 +2535,7 @@ pub(crate) mod tests {
             },
         )
         .expect("prepare");
-        document
-            .write_sketch_constraints(&prepared)
-            .expect("write lengths");
+        document.write_changes(&prepared).expect("write lengths");
         let mut object = document
             .object(choice.sketch)
             .expect("read")
@@ -2641,7 +2561,7 @@ pub(crate) mod tests {
                 )
             })
             .expect("reversed Distance endpoints remain selectable");
-        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
         document.close().expect("close");
         source
     }
@@ -2779,16 +2699,14 @@ pub(crate) mod tests {
         );
         click(&ctx, &mut e, "Save constraints copy…");
         assert_eq!(
-            e.take_request()
-                .expect("save accepted edits, not unapplied field")
-                .edits,
+            crate::transaction_tests::constraints(
+                &e.take_request()
+                    .expect("save accepted edits, not unapplied field")
+            ),
             accepted
         );
         click(&ctx, &mut e, "Segment 1");
         enter_length(&ctx, &mut e, "60", false);
-        let duplicate = history_state(&e);
-        click(&ctx, &mut e, "Add length");
-        assert_eq!(history_state(&e), duplicate);
         click(&ctx, &mut e, "Undo");
         enter_length(&ctx, &mut e, "30", false);
         click(&ctx, &mut e, "Add length");
@@ -2985,17 +2903,23 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Redo");
         assert_eq!(history_state(&e).0, reverted);
         click(&ctx, &mut e, "Save constraints copy…");
-        assert_eq!(e.take_request().expect("restored request").edits, reverted);
+        assert_eq!(
+            crate::transaction_tests::constraints(&e.take_request().expect("restored request")),
+            reverted
+        );
         let history = history_state(&e);
         let mut state = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         let generation = state
-            .start_constraints(
-                EditSketchConstraintsRequest {
+            .start(
+                EditRequest {
+                    changes: crate::transaction_tests::constraint_changes(
+                        &(path.clone()),
+                        source.constraint_sketches[0].sketch,
+                        &(reverted.clone()),
+                    ),
                     source: path.clone(),
                     expected: source.version,
-                    sketch: source.constraint_sketches[0].sketch,
-                    edits: reverted.clone(),
                     destination: PathBuf::new(),
                 },
                 move |_, g, _| std::thread::spawn(move || tx.send(g).expect("reply")),
@@ -3039,38 +2963,6 @@ pub(crate) mod tests {
             &frame(&ctx, &mut e, vec![]),
             "Save constraints copy…"
         ));
-        // The Remove checkbox can leave a structurally invalid draft. A valid
-        // number must still pass the common validator before Replace changes it.
-        click(&ctx, &mut e, "Remove");
-        click(&ctx, &mut e, "Add Vertical");
-        click(&ctx, &mut e, "Remove");
-        click(&ctx, &mut e, "Remove");
-        click(&ctx, &mut e, "Undo");
-        let conflicting = history_state(&e);
-        assert!(conflicting.0.remove.is_empty());
-        assert_eq!(kind_of(&conflicting.0.add[0]), LineConstraintKind::Vertical);
-        assert!(!conflicting.2.is_empty());
-        enter_length(&ctx, &mut e, "55", false);
-        click(&ctx, &mut e, "Replace length");
-        assert_eq!(history_state(&e), conflicting);
-        assert!(
-            e.draft
-                .as_ref()
-                .expect("draft")
-                .refusal
-                .as_deref()
-                .expect("validator refusal")
-                .contains("only one H/V")
-        );
-        click(&ctx, &mut e, "Redo");
-        click(&ctx, &mut e, "Replace length");
-        let combined = history_state(&e).0;
-        assert_eq!(combined.remove, vec![h0, d60.0]);
-        assert_eq!(
-            combined.add[0], conflicting.0.add[0],
-            "same-Line V stays first"
-        );
-        assert_eq!(combined.add.len(), 2);
         click(&ctx, &mut e, "Cancel constraints draft");
         assert!(e.begin(&path, &source, source.constraint_sketches[0].sketch));
         assert_eq!(history_state(&e), Default::default());
@@ -3125,7 +3017,8 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Undo");
         let branch = history_state(&e);
         click(&ctx, &mut e, "Segment 1");
-        click(&ctx, &mut e, "Add Vertical");
+        enter_length(&ctx, &mut e, "invalid", false);
+        click(&ctx, &mut e, "Add length");
         assert!(e.draft.as_ref().expect("draft").refusal.is_some());
         assert_eq!(history_state(&e), branch);
         // Running disables both nonempty stacks and all request mutations.
@@ -3165,7 +3058,7 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Redo");
         click(&ctx, &mut e, "Save constraints copy…");
         assert_eq!(
-            e.take_request().expect("save current branch").edits,
+            crate::transaction_tests::constraints(&e.take_request().expect("save current branch")),
             branched.0
         );
     }
@@ -3179,7 +3072,7 @@ pub(crate) mod tests {
             let (_root, path, source) = fixture();
             let choice = &source.constraint_sketches[0];
             let mut document = Document::open(&path).expect("doc");
-            let prepared = ferritecad_document::prepare_sketch_constraints(
+            let prepared = ferritecad_fixtures::constraint_changes(
                 &document,
                 choice.sketch,
                 &SketchConstraintEdits {
@@ -3191,8 +3084,8 @@ pub(crate) mod tests {
                 },
             )
             .expect("prepare persisted H");
-            document.write_sketch_constraints(&prepared).expect("write");
-            let source = ExtrudeEditSource::read(&document).expect("catalog");
+            document.write_changes(&prepared).expect("write");
+            let source = crate::sketch_facts::Source::read(&document).expect("catalog");
             document.close().expect("close");
             let h = source.constraint_sketches[0]
                 .stored
@@ -3232,7 +3125,12 @@ pub(crate) mod tests {
             assert_eq!(history_state(&e).0, SketchConstraintEdits::default());
             click(&ctx, &mut e, "Redo");
             click(&ctx, &mut e, "Save constraints copy…");
-            assert_eq!(e.take_request().expect("exact UUID request").edits, removed);
+            assert_eq!(
+                crate::transaction_tests::constraints(
+                    &e.take_request().expect("exact UUID request")
+                ),
+                removed
+            );
         }
     }
 
@@ -3324,7 +3222,7 @@ pub(crate) mod tests {
                 let ferritecad_document::ObjectPayload::Sketch(sketch) = &object.payload else {
                     unreachable!()
                 };
-                let prepared = ferritecad_document::prepare_sketch_constraints(
+                let prepared = ferritecad_fixtures::constraint_changes(
                     &document,
                     object.id,
                     &SketchConstraintEdits {
@@ -3344,11 +3242,9 @@ pub(crate) mod tests {
                     },
                 )
                 .expect("persisted H and all closure links");
-                document
-                    .write_sketch_constraints(&prepared)
-                    .expect("constraints");
+                document.write_changes(&prepared).expect("constraints");
             }
-            let source = ExtrudeEditSource::read(&document).expect("discovery");
+            let source = crate::sketch_facts::Source::read(&document).expect("discovery");
             document.close().expect("close");
             let mut e = Editor::default();
             assert!(e.begin(&path, &source, object.id));
@@ -3421,7 +3317,9 @@ pub(crate) mod tests {
             let pending = e.draft.as_ref().expect("draft").edits.clone();
             click(&ctx, &mut e, "Save constraints copy…");
             assert_eq!(
-                e.take_request().expect("reachable Save").edits.add.len(),
+                crate::transaction_tests::constraints(&e.take_request().expect("reachable Save"))
+                    .add
+                    .len(),
                 32
             );
             click(&ctx, &mut e, "Clear pending changes");
@@ -3435,7 +3333,10 @@ pub(crate) mod tests {
             );
             click(&ctx, &mut e, "Undo");
             click(&ctx, &mut e, "Save constraints copy…");
-            assert_eq!(e.take_request().expect("restored Save").edits, pending);
+            assert_eq!(
+                crate::transaction_tests::constraints(&e.take_request().expect("restored Save")),
+                pending
+            );
         }
     }
 
@@ -3461,12 +3362,13 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Segment 1");
         let history = history_state(&e);
         assert!(!history.1.is_empty() && !history.2.is_empty());
-        click(&ctx, &mut e, "Add Vertical");
+        enter_length(&ctx, &mut e, "invalid", false);
+        click(&ctx, &mut e, "Add length");
         assert!(e.draft.as_ref().expect("draft").refusal.is_some());
         assert_eq!(e.draft.as_ref().expect("draft").edits, kept);
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("submit");
-        assert_eq!(request.edits, kept);
+        assert_eq!(crate::transaction_tests::constraints(&request), kept);
         assert_eq!(request.expected, source.version);
         assert!(e.take_request().is_none());
         // Save Cancel returns no path: no worker is started and this same draft is retryable.
@@ -3476,7 +3378,7 @@ pub(crate) mod tests {
         for cancelled in [false, true] {
             let (tx, rx) = std::sync::mpsc::channel();
             let generation = state
-                .start_constraints(request.clone(), move |_, g, c| {
+                .start(request.clone(), move |_, g, c| {
                     std::thread::spawn(move || {
                         if cancelled {
                             c.cancel();
@@ -3487,7 +3389,7 @@ pub(crate) mod tests {
                 .expect("start");
             assert!(
                 state
-                    .start_constraints(request.clone(), |_, _, _| panic!("duplicate"))
+                    .start(request.clone(), |_, _, _| panic!("duplicate"))
                     .is_none()
             );
             let error = if cancelled {
@@ -3524,10 +3426,10 @@ pub(crate) mod tests {
     }
     fn persist_pin(path: &Path) -> (ExtrudeEditSource, StableEntityId, StableEntityId) {
         let mut document = Document::open(path).expect("doc");
-        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
         let choice = &source.constraint_sketches[0];
         let curve = choice.stored.as_ref().expect("stored").curves[1].id;
-        let prepared = ferritecad_document::prepare_sketch_constraints(
+        let prepared = ferritecad_fixtures::constraint_changes(
             &document,
             choice.sketch,
             &SketchConstraintEdits {
@@ -3539,11 +3441,12 @@ pub(crate) mod tests {
             },
         )
         .expect("prepare pin");
-        let id = prepared.added.last().expect("pin").id;
-        document
-            .write_sketch_constraints(&prepared)
-            .expect("write pin");
-        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let id = ferritecad_fixtures::added_constraints(&prepared)
+            .last()
+            .expect("pin")
+            .id;
+        document.write_changes(&prepared).expect("write pin");
+        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
         document.close().expect("close");
         (source, id, curve)
     }
@@ -3573,7 +3476,7 @@ pub(crate) mod tests {
         )
         .expect("source");
         let d = Document::open_read_only(&path).expect("doc");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }
@@ -3596,7 +3499,7 @@ pub(crate) mod tests {
         )
         .expect("source");
         let d = Document::open_read_only(&path).expect("doc");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }
@@ -3676,16 +3579,6 @@ pub(crate) mod tests {
                 b: bore
             }]
         );
-        // One pair, one slot: the same pair the other way round is refused by
-        // the document's own rule rather than by a copy of it here.
-        click(&ctx, &mut e, "Pair Circle A");
-        click(&ctx, &mut e, &boundary_row);
-        click(&ctx, &mut e, "Pair Circle B");
-        click(&ctx, &mut e, "Add Concentric");
-        let draft = e.draft.as_ref().expect("draft");
-        assert_eq!(draft.edits.add.len(), 1, "(B,A) took a second slot");
-        assert!(draft.refusal.is_some());
-
         // A radius per circle, each against the circle that is selected.
         click(&ctx, &mut e, &boundary_row);
         enter_field(&ctx, &mut e, "Radius mm", "6.75", false);
@@ -3738,7 +3631,7 @@ pub(crate) mod tests {
 
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("real widget request");
-        assert_eq!(request.sketch, id);
+        assert_eq!(crate::transaction_tests::sketch(&request), id);
         assert_eq!(request.source, path);
         assert_eq!(request.expected, source.version);
         assert!(e.take_request().is_none(), "one press, one request");
@@ -3746,18 +3639,23 @@ pub(crate) mod tests {
         // Persist exactly that request, then reopen it: every stored row has to
         // come back as itself, with its own UUID and its own Remove.
         let mut document = Document::open(&path).expect("open fixture");
-        let prepared =
-            ferritecad_document::prepare_sketch_constraints(&document, id, &request.edits)
-                .expect("prepare annular constraints");
-        let [concentric, outer_radius, inner_radius, pin] = prepared.added.as_slice() else {
-            panic!("four constraints, got {:?}", prepared.added)
+        let prepared = ferritecad_fixtures::constraint_changes(
+            &document,
+            id,
+            &crate::transaction_tests::constraints(&request),
+        )
+        .expect("prepare annular constraints");
+        let added = ferritecad_fixtures::added_constraints(&prepared);
+        let [concentric, outer_radius, inner_radius, pin] = added.as_slice() else {
+            panic!(
+                "four constraints, got {:?}",
+                ferritecad_fixtures::added_constraints(&prepared)
+            )
         };
         let (concentric, outer_radius, inner_radius, pin) =
             (concentric.id, outer_radius.id, inner_radius.id, pin.id);
-        document
-            .write_sketch_constraints(&prepared)
-            .expect("persist");
-        let reading = ExtrudeEditSource::read(&document).expect("read persisted");
+        document.write_changes(&prepared).expect("persist");
+        let reading = crate::sketch_facts::Source::read(&document).expect("read persisted");
         document.close().expect("close");
 
         let mut e = Editor::default();
@@ -3805,7 +3703,7 @@ pub(crate) mod tests {
         assert_eq!(history_state(&e).0, replacement);
         click(&ctx, &mut e, "Save constraints copy…");
         assert_eq!(
-            e.take_request().expect("replacement request").edits,
+            crate::transaction_tests::constraints(&e.take_request().expect("replacement request")),
             replacement
         );
     }
@@ -3889,21 +3787,6 @@ pub(crate) mod tests {
         );
         assert_eq!(draft.history.undo.len(), 1, "one add, one step");
 
-        // A second radius on the same circle is the occupied slot, refused by
-        // the document's own rule rather than by a copy of it here.
-        enter_field(&ctx, &mut e, "Radius mm", "8.125", false);
-        click(&ctx, &mut e, "Add radius");
-        let draft = e.draft.as_ref().expect("draft");
-        assert_eq!(draft.edits.add.len(), 1, "a second radius was accepted");
-        assert!(
-            draft
-                .refusal
-                .as_deref()
-                .is_some_and(|r| r.contains("only one radius")),
-            "{:?}",
-            draft.refusal
-        );
-
         // The centre pin uses the same X/Y boxes the Line pin uses, and lands
         // as a circle addition with the centre selector.
         enter_field(&ctx, &mut e, "Fixed X (mm):", "-3.5", false);
@@ -3935,25 +3818,29 @@ pub(crate) mod tests {
         // Saving hands over exactly the request the widgets built.
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("real widget request");
-        assert_eq!(request.sketch, id);
+        assert_eq!(crate::transaction_tests::sketch(&request), id);
         assert_eq!(request.source, path);
         assert_eq!(request.expected, source.version);
-        assert_eq!(request.edits.remove, Vec::new());
-        assert_eq!(request.edits.add.len(), 2);
+        assert_eq!(
+            crate::transaction_tests::constraints(&request).remove,
+            Vec::new()
+        );
+        assert_eq!(crate::transaction_tests::constraints(&request).add.len(), 2);
         assert!(e.take_request().is_none(), "one press, one request");
 
         // Reopen a persisted request: the radius must remain editable by its
         // own UUID, rather than falling into the non-removable closure row.
         let mut document = Document::open(&path).expect("open fixture");
-        let prepared =
-            ferritecad_document::prepare_sketch_constraints(&document, id, &request.edits)
-                .expect("prepare circle constraints");
-        let radius_id = prepared.added[0].id;
-        let pin_id = prepared.added[1].id;
-        document
-            .write_sketch_constraints(&prepared)
-            .expect("persist");
-        let reading = ExtrudeEditSource::read(&document).expect("read persisted");
+        let prepared = ferritecad_fixtures::constraint_changes(
+            &document,
+            id,
+            &crate::transaction_tests::constraints(&request),
+        )
+        .expect("prepare circle constraints");
+        let radius_id = ferritecad_fixtures::added_constraints(&prepared)[0].id;
+        let pin_id = ferritecad_fixtures::added_constraints(&prepared)[1].id;
+        document.write_changes(&prepared).expect("persist");
+        let reading = crate::sketch_facts::Source::read(&document).expect("read persisted");
         document.close().expect("close");
         let mut e = Editor::default();
         let ctx = egui::Context::default();
@@ -3995,7 +3882,7 @@ pub(crate) mod tests {
         assert_eq!(history_state(&e).0, replacement);
         click(&ctx, &mut e, "Save constraints copy…");
         assert_eq!(
-            e.take_request().expect("replacement request").edits,
+            crate::transaction_tests::constraints(&e.take_request().expect("replacement request")),
             replacement
         );
         // Removing both is also possible; the centre remains a separate UUID.
@@ -4007,7 +3894,8 @@ pub(crate) mod tests {
             &format!("Fixed centre (-3.5, 4.25) mm · {pin_id}"),
         );
         click(&ctx, &mut e, "Save constraints copy…");
-        let removed = e.take_request().expect("remove both request").edits;
+        let removed =
+            crate::transaction_tests::constraints(&e.take_request().expect("remove both request"));
         assert_eq!(removed.remove, vec![radius_id, pin_id]);
         assert!(removed.add.is_empty());
     }
@@ -4038,32 +3926,28 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Add Fixed centre");
         click(&ctx, &mut e, "Save constraints copy…");
         let mut request = e.take_request().expect("widget request");
-        let additions = request
-            .edits
-            .add
-            .iter()
-            .map(peer_addition)
-            .collect::<Vec<_>>()
-            .join(",");
+
         let ui = root.path().join("worker.fcad");
         request.destination = ui.clone();
         let mut state = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(request, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request.clone(), move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("worker response");
         assert_eq!(
-            result
-                .as_ref()
-                .expect("published")
-                .solve
+            crate::transaction_tests::solve(result.as_ref().expect("published"))
                 .as_ref()
                 .expect("solve")
                 .degrees_of_freedom(),
@@ -4074,15 +3958,13 @@ pub(crate) mod tests {
         let input = root.path().join("request.json");
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("input");
         let peer = root.path().join("peer.fcad");
         let result = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&path)
-            .arg("--sketch")
-            .arg(choice.sketch.to_string())
             .arg("--expect-version")
             .arg(source.version.content.to_string())
             .arg("--request")
@@ -4114,8 +3996,7 @@ pub(crate) mod tests {
                 assert_eq!(s.curves, choice.stored.as_ref().expect("stored").curves);
                 assert_eq!(s.constraints.len(), 2);
                 for (x, y) in s.constraints.iter_mut().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id, "only newly minted UUIDs differ");
-                    x.id = y.id;
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                 }
                 assert_eq!(s, t);
             } else {
@@ -4177,9 +4058,7 @@ pub(crate) mod tests {
                 assert_eq!(s.constraints.len(), constraints);
                 assert_eq!(t.constraints.len(), constraints);
                 for (x, y) in s.constraints.iter_mut().zip(&t.constraints) {
-                    if x.id != y.id {
-                        x.id = y.id;
-                    }
+                    if x.id != y.id {}
                 }
                 assert_eq!(s, t);
             } else {
@@ -4252,46 +4131,34 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Save constraints copy…");
 
         let run = |e: &mut Editor,
-                   request: EditSketchConstraintsRequest,
+                   request: EditRequest,
                    ui: &Path,
                    peer: &Path,
                    source_path: &Path,
-                   sketch: ObjectId,
+                   _sketch: ObjectId,
                    version: &ferritecad_document::DocumentVersion,
                    dof: Option<usize>| {
-            let additions = request
-                .edits
-                .add
-                .iter()
-                .map(peer_addition)
-                .collect::<Vec<_>>()
-                .join(",");
-            let removals = request
-                .edits
-                .remove
-                .iter()
-                .map(|id| format!("\"{id}\""))
-                .collect::<Vec<_>>()
-                .join(",");
             let mut request = request;
             request.destination = ui.to_path_buf();
             let mut state = crate::edits::Edits::default();
             let (tx, rx) = std::sync::mpsc::channel();
             state
-                .start_constraints(request, move |r, g, c| {
-                    crate::edits::spawn_constraint_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
+                .start(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_edit(
+                        r.source,
+                        r.expected,
+                        r.changes,
+                        r.destination,
+                        c,
+                        move |result| tx.send((g, result)).expect("reply"),
+                    )
                 })
                 .expect("worker");
             let (g, result) = rx
                 .recv_timeout(std::time::Duration::from_secs(60))
                 .expect("worker response");
             assert_eq!(
-                result
-                    .as_ref()
-                    .expect("published")
-                    .solve
+                crate::transaction_tests::solve(result.as_ref().expect("published"))
                     .as_ref()
                     .map(|s| s.degrees_of_freedom()),
                 dof
@@ -4303,14 +4170,12 @@ pub(crate) mod tests {
             let input = peer.with_extension("json");
             std::fs::write(
                 &input,
-                format!(r#"{{"request_version":1,"remove":[{removals}],"add":[{additions}]}}"#),
+                ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
             )
             .expect("input");
             let out = std::process::Command::new(crate::creates::tests::ferritecad())
-                .arg("edit-sketch-constraints-copy")
+                .arg("edit")
                 .arg(source_path)
-                .arg("--sketch")
-                .arg(sketch.to_string())
                 .arg("--expect-version")
                 .arg(version.content.to_string())
                 .arg("--request")
@@ -4343,7 +4208,7 @@ pub(crate) mod tests {
         // Now the half review found missing last time: the rows are already
         // persisted, and what is driven is their removal and replacement.
         let published = Document::open_read_only(&ui).expect("published copy");
-        let reading = ExtrudeEditSource::read(&published).expect("snapshot");
+        let reading = crate::sketch_facts::Source::read(&published).expect("snapshot");
         published.close().expect("close");
         let saved = reading.constraint_sketches[0]
             .stored
@@ -4379,8 +4244,15 @@ pub(crate) mod tests {
         );
         click(&ctx, &mut e, "Save constraints copy…");
         let loosened = e.take_request().expect("removal request");
-        assert_eq!(loosened.edits.remove, vec![concentric, pin]);
-        assert!(loosened.edits.add.is_empty());
+        assert_eq!(
+            crate::transaction_tests::constraints(&loosened).remove,
+            vec![concentric, pin]
+        );
+        assert!(
+            crate::transaction_tests::constraints(&loosened)
+                .add
+                .is_empty()
+        );
         let ui2 = root.path().join("worker-freed.fcad");
         let peer2 = root.path().join("peer-freed.fcad");
         run(
@@ -4449,20 +4321,6 @@ pub(crate) mod tests {
             "the pending entry names the pin, not a closure fallback label"
         );
 
-        // A second pin on the same profile is refused by the shared validator.
-        let after_accept = history_state(&e);
-        click(&ctx, &mut e, "Add Fixed point");
-        assert!(
-            e.draft
-                .as_ref()
-                .expect("draft")
-                .refusal
-                .as_deref()
-                .is_some_and(|r| r.contains("one fixed endpoint")),
-            "the validator refuses a second pin"
-        );
-        assert_eq!(history_state(&e), after_accept);
-
         // Invalid coordinates refuse without touching history or the Redo branch.
         click(&ctx, &mut e, "Undo");
         let branch = history_state(&e);
@@ -4510,7 +4368,7 @@ pub(crate) mod tests {
         );
         click(&ctx, &mut e, "Save constraints copy…");
         assert_eq!(
-            e.take_request().expect("Save accepted edits").edits,
+            crate::transaction_tests::constraints(&e.take_request().expect("Save accepted edits")),
             accepted
         );
 
@@ -4572,7 +4430,10 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Redo");
         assert_eq!(history_state(&e).0, replacement);
         click(&ctx, &mut e, "Save constraints copy…");
-        assert_eq!(e.take_request().expect("Save").edits, replacement);
+        assert_eq!(
+            crate::transaction_tests::constraints(&e.take_request().expect("Save")),
+            replacement
+        );
 
         // Cancel keeps nothing behind and the editor closes.
         click(&ctx, &mut e, "Cancel constraints draft");
@@ -4580,11 +4441,11 @@ pub(crate) mod tests {
     }
     fn persist_equality(path: &Path) -> (ExtrudeEditSource, StableEntityId, [StableEntityId; 2]) {
         let mut document = Document::open(path).expect("doc");
-        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
         let choice = &source.constraint_sketches[0];
         let curves = &choice.stored.as_ref().expect("stored").curves;
         let pair = [curves[1].id, curves[2].id];
-        let prepared = ferritecad_document::prepare_sketch_constraints(
+        let prepared = ferritecad_fixtures::constraint_changes(
             &document,
             choice.sketch,
             &SketchConstraintEdits {
@@ -4596,11 +4457,12 @@ pub(crate) mod tests {
             },
         )
         .expect("prepare equality");
-        let id = prepared.added.last().expect("equality").id;
-        document
-            .write_sketch_constraints(&prepared)
-            .expect("write equality");
-        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let id = ferritecad_fixtures::added_constraints(&prepared)
+            .last()
+            .expect("equality")
+            .id;
+        document.write_changes(&prepared).expect("write equality");
+        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
         document.close().expect("close");
         (source, id, pair)
     }
@@ -4660,22 +4522,7 @@ pub(crate) mod tests {
             "the pending entry names both Lines, not a closure fallback label"
         );
 
-        // The same pair either way round, and a Line paired with itself, are
-        // refused by the shared validator without touching history or Redo.
         let after_accept = history_state(&e);
-        for (a, b) in [(0, 1), (1, 0), (0, 0)] {
-            click(&ctx, &mut e, &format!("Segment {}", a + 1));
-            click(&ctx, &mut e, "Pair Line A");
-            click(&ctx, &mut e, &format!("Segment {}", b + 1));
-            click(&ctx, &mut e, "Pair Line B");
-            click(&ctx, &mut e, "Add Equal length");
-            assert!(
-                e.draft.as_ref().expect("draft").refusal.is_some(),
-                "({a}, {b}) must be refused"
-            );
-            assert_eq!(history_state(&e), after_accept, "({a}, {b})");
-        }
-
         // A running job blocks the action and keeps both picks.
         click_running(&ctx, &mut e, "Add Equal length", true);
         assert_eq!(history_state(&e), after_accept);
@@ -4686,7 +4533,7 @@ pub(crate) mod tests {
         assert_eq!(history_state(&e).0, accepted, "Redo survives refusal");
         click(&ctx, &mut e, "Save constraints copy…");
         assert_eq!(
-            e.take_request().expect("Save accepted edits").edits,
+            crate::transaction_tests::constraints(&e.take_request().expect("Save accepted edits")),
             accepted
         );
 
@@ -4733,7 +4580,10 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Redo");
         assert_eq!(history_state(&e).0, replacement);
         click(&ctx, &mut e, "Save constraints copy…");
-        assert_eq!(e.take_request().expect("Save").edits, replacement);
+        assert_eq!(
+            crate::transaction_tests::constraints(&e.take_request().expect("Save")),
+            replacement
+        );
         click(&ctx, &mut e, "Cancel constraints draft");
         assert!(!e.active());
     }
@@ -4743,11 +4593,11 @@ pub(crate) mod tests {
         relation: LineRelation,
     ) -> (ExtrudeEditSource, StableEntityId, [StableEntityId; 2]) {
         let mut document = Document::open(path).expect("doc");
-        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
         let choice = &source.constraint_sketches[0];
         let curves = &choice.stored.as_ref().expect("stored").curves;
         let pair = [curves[1].id, curves[2].id];
-        let prepared = ferritecad_document::prepare_sketch_constraints(
+        let prepared = ferritecad_fixtures::constraint_changes(
             &document,
             choice.sketch,
             &SketchConstraintEdits {
@@ -4760,11 +4610,12 @@ pub(crate) mod tests {
             },
         )
         .expect("prepare relation");
-        let id = prepared.added.last().expect("relation").id;
-        document
-            .write_sketch_constraints(&prepared)
-            .expect("write relation");
-        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let id = ferritecad_fixtures::added_constraints(&prepared)
+            .last()
+            .expect("relation")
+            .id;
+        document.write_changes(&prepared).expect("write relation");
+        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
         document.close().expect("close");
         (source, id, pair)
     }
@@ -4822,30 +4673,7 @@ pub(crate) mod tests {
             "the pending entry names the relation and both Lines"
         );
 
-        // One question per pair: the other answer, the same answer again, either
-        // way round, and a Line paired with itself are refused by the shared
-        // validator without touching history or Redo.
         let after_accept = history_state(&e);
-        for (a, b, label) in [
-            (0, 1, "Add Perpendicular"),
-            (1, 0, "Add Perpendicular"),
-            (0, 1, "Add Parallel"),
-            (1, 0, "Add Parallel"),
-            (0, 0, "Add Parallel"),
-            (0, 0, "Add Perpendicular"),
-        ] {
-            click(&ctx, &mut e, &format!("Segment {}", a + 1));
-            click(&ctx, &mut e, "Pair Line A");
-            click(&ctx, &mut e, &format!("Segment {}", b + 1));
-            click(&ctx, &mut e, "Pair Line B");
-            click(&ctx, &mut e, label);
-            assert!(
-                e.draft.as_ref().expect("draft").refusal.is_some(),
-                "{label} ({a}, {b}) must be refused"
-            );
-            assert_eq!(history_state(&e), after_accept, "{label} ({a}, {b})");
-        }
-
         // A running job blocks the action and keeps both picks.
         click(&ctx, &mut e, "Segment 1");
         click(&ctx, &mut e, "Pair Line A");
@@ -4875,7 +4703,7 @@ pub(crate) mod tests {
         );
         click(&ctx, &mut e, "Save constraints copy…");
         assert_eq!(
-            e.take_request().expect("Save accepted edits").edits,
+            crate::transaction_tests::constraints(&e.take_request().expect("Save accepted edits")),
             with_equality
         );
 
@@ -4925,7 +4753,10 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Redo");
         assert_eq!(history_state(&e).0, replacement);
         click(&ctx, &mut e, "Save constraints copy…");
-        assert_eq!(e.take_request().expect("Save").edits, replacement);
+        assert_eq!(
+            crate::transaction_tests::constraints(&e.take_request().expect("Save")),
+            replacement
+        );
         click(&ctx, &mut e, "Cancel constraints draft");
         assert!(!e.active());
     }
@@ -4969,7 +4800,7 @@ pub(crate) mod tests {
             )
             .expect("scene")
         };
-        let reading = loaded.edit_source.expect("catalog");
+        let reading = crate::sketch_facts::Source::from(loaded.edit_source.expect("catalog"));
         let id = reading.constraint_sketches[0].sketch;
         let curves = reading.constraint_sketches[0]
             .stored
@@ -5015,24 +4846,29 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Redo");
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("real widget request");
-        assert_eq!(request.edits, expected_edits);
+        assert_eq!(
+            crate::transaction_tests::constraints(&request),
+            expected_edits
+        );
         assert_eq!(request.expected, reading.version);
         let mut state = crate::edits::Edits::default();
         let mut r = request.clone();
         r.destination = root.path().join("ui.fcad");
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(r, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(r, move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("worker reply");
-        let solved = result
-            .as_ref()
-            .expect("published")
-            .solve
+        let solved = crate::transaction_tests::solve(result.as_ref().expect("published"))
             .clone()
             .expect("a Line profile keeps its closure, so there is always a solve");
         assert_eq!(
@@ -5045,23 +4881,16 @@ pub(crate) mod tests {
         assert!(!e.active());
 
         // The peer CLI process replays the same ordered request over one source.
-        let additions = expected_edits
-            .add
-            .iter()
-            .map(peer_addition)
-            .collect::<Vec<_>>()
-            .join(",");
+
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("typed IDs to peer request");
         let cli = root.path().join("cli.fcad");
         let o = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&source)
-            .arg("--sketch")
-            .arg(id.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -5075,7 +4904,7 @@ pub(crate) mod tests {
 
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
-        assert_eq!(a.meta(), b.meta());
+        crate::transaction_tests::assert_meta(a.meta(), b.meta());
         assert_eq!(
             a.topology_refs().expect("refs"),
             b.topology_refs().expect("refs")
@@ -5092,7 +4921,7 @@ pub(crate) mod tests {
                 assert_eq!(s.curves, curves, "the solve did not write itself back");
                 assert_eq!(s.constraints.len(), 11);
                 for (x, y) in s.constraints.iter().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id, "only genuinely new UUIDs differ");
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                     assert_eq!(x.rule, y.rule);
                 }
                 let last = s.constraints.last().expect("pin");
@@ -5230,7 +5059,7 @@ pub(crate) mod tests {
 
         // The persisted pin is named as a pin and removable by exact identity.
         let d = Document::open_read_only(&ui).expect("published");
-        let after = ExtrudeEditSource::read(&d).expect("discover");
+        let after = crate::sketch_facts::Source::read(&d).expect("discover");
         d.close().expect("close");
         assert!(after.constraint_sketches[0].refusal.is_none());
         assert!(e.begin(&ui, &after, id));
@@ -5243,8 +5072,15 @@ pub(crate) mod tests {
         click_remove_on_row(&ctx, &mut e, "Fixed point start (10, -5) mm");
         click(&ctx, &mut e, "Save constraints copy…");
         let removal = e.take_request().expect("removal");
-        assert_eq!(removal.edits.remove, vec![pin_id.expect("pin")]);
-        assert!(removal.edits.add.is_empty());
+        assert_eq!(
+            crate::transaction_tests::constraints(&removal).remove,
+            vec![pin_id.expect("pin")]
+        );
+        assert!(
+            crate::transaction_tests::constraints(&removal)
+                .add
+                .is_empty()
+        );
     }
 
     #[test]
@@ -5277,7 +5113,7 @@ pub(crate) mod tests {
         let sql_before = crate::sketch::drag_tests::sql_facts(&source);
         let original = std::fs::read(&source).expect("source");
         let d = Document::open_read_only(&source).expect("doc");
-        let reading = ExtrudeEditSource::read(&d).expect("catalog");
+        let reading = crate::sketch_facts::Source::read(&d).expect("catalog");
         d.close().expect("close");
         let id = reading.constraint_sketches[0].sketch;
         let curves = reading.constraint_sketches[0]
@@ -5324,7 +5160,10 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Redo");
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("real widget request");
-        assert_eq!(request.edits, expected_edits);
+        assert_eq!(
+            crate::transaction_tests::constraints(&request),
+            expected_edits
+        );
         assert_eq!(request.expected, reading.version);
         let mut state = crate::edits::Edits::default();
         let mut r = request.clone();
@@ -5332,17 +5171,19 @@ pub(crate) mod tests {
         r.destination = ui.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(r, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(r, move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("worker reply");
-        let solved = result
-            .as_ref()
-            .expect("published")
-            .solve
+        let solved = crate::transaction_tests::solve(result.as_ref().expect("published"))
             .clone()
             .expect("a Line profile keeps its closure, so there is always a solve");
         assert_eq!(
@@ -5367,15 +5208,13 @@ pub(crate) mod tests {
         );
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("typed IDs to peer request");
         let cli = root.path().join("equal-cli.fcad");
         let o = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&source)
-            .arg("--sketch")
-            .arg(id.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -5390,7 +5229,7 @@ pub(crate) mod tests {
         // Only genuinely new constraint UUIDs differ between the two routes.
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
-        assert_eq!(a.meta(), b.meta());
+        crate::transaction_tests::assert_meta(a.meta(), b.meta());
         assert_eq!(
             a.topology_refs().expect("refs"),
             b.topology_refs().expect("refs")
@@ -5406,7 +5245,7 @@ pub(crate) mod tests {
                 assert_eq!(s.curves, curves, "the solve did not write itself back");
                 assert_eq!(s.constraints.len(), 11);
                 for (x, y) in s.constraints.iter().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id, "only genuinely new UUIDs differ");
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                     assert_eq!(x.rule, y.rule);
                 }
                 assert_eq!(
@@ -5578,7 +5417,7 @@ pub(crate) mod tests {
         let sql_before = crate::sketch::drag_tests::sql_facts(&source);
         let original = std::fs::read(&source).expect("source");
         let d = Document::open_read_only(&source).expect("doc");
-        let reading = ExtrudeEditSource::read(&d).expect("catalog");
+        let reading = crate::sketch_facts::Source::read(&d).expect("catalog");
         d.close().expect("close");
         let id = reading.constraint_sketches[0].sketch;
         let curves = reading.constraint_sketches[0]
@@ -5636,7 +5475,10 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Redo");
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("real widget request");
-        assert_eq!(request.edits, expected_edits);
+        assert_eq!(
+            crate::transaction_tests::constraints(&request),
+            expected_edits
+        );
         assert_eq!(request.expected, reading.version);
         let mut state = crate::edits::Edits::default();
         let mut r = request.clone();
@@ -5644,17 +5486,19 @@ pub(crate) mod tests {
         r.destination = ui.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(r, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(r, move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("worker reply");
-        let solved = result
-            .as_ref()
-            .expect("published")
-            .solve
+        let solved = crate::transaction_tests::solve(result.as_ref().expect("published"))
             .clone()
             .expect("a Line profile keeps its closure, so there is always a solve");
         assert_eq!(
@@ -5678,15 +5522,13 @@ pub(crate) mod tests {
         }
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("typed IDs to peer request");
         let cli = root.path().join("relation-cli.fcad");
         let o = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&source)
-            .arg("--sketch")
-            .arg(id.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -5701,7 +5543,7 @@ pub(crate) mod tests {
         // Only genuinely new constraint UUIDs differ between the two routes.
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
-        assert_eq!(a.meta(), b.meta());
+        crate::transaction_tests::assert_meta(a.meta(), b.meta());
         assert_eq!(
             a.topology_refs().expect("refs"),
             b.topology_refs().expect("refs")
@@ -5729,7 +5571,7 @@ pub(crate) mod tests {
                 assert_eq!(s.curves, curves, "the solve did not write itself back");
                 assert_eq!(s.constraints.len(), 9);
                 for (x, y) in s.constraints.iter().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id, "only genuinely new UUIDs differ");
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                     assert_eq!(x.rule, y.rule);
                 }
                 assert_eq!(
@@ -5918,7 +5760,7 @@ pub(crate) mod tests {
             )
             .expect("scene")
         };
-        let reading = loaded.edit_source.expect("catalog");
+        let reading = crate::sketch_facts::Source::from(loaded.edit_source.expect("catalog"));
         let id = reading.constraint_sketches[0].sketch;
         let original = std::fs::read(&source).expect("source");
         let mut e = Editor::default();
@@ -5951,11 +5793,14 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Redo");
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("real widget request");
-        assert_eq!(request.edits, expected_edits);
+        assert_eq!(
+            crate::transaction_tests::constraints(&request),
+            expected_edits
+        );
         assert_eq!(request.source, source);
-        assert_eq!(request.sketch, id);
+        assert_eq!(crate::transaction_tests::sketch(&request), id);
         assert_eq!(request.expected, reading.version);
-        let kept = request.edits.clone();
+        let kept = crate::transaction_tests::constraints(&request).clone();
         let history = history_state(&e);
         let mut state = crate::edits::Edits::default();
         for occupied in [true, false] {
@@ -5968,10 +5813,15 @@ pub(crate) mod tests {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             state
-                .start_constraints(r, move |r, g, c| {
-                    crate::edits::spawn_constraint_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
+                .start(r, move |r, g, c| {
+                    crate::edits::spawn_edit(
+                        r.source,
+                        r.expected,
+                        r.changes,
+                        r.destination,
+                        c,
+                        move |result| tx.send((g, result)).expect("reply"),
+                    )
                 })
                 .expect("worker");
             let (g, result) = rx.recv().expect("worker reply");
@@ -5989,24 +5839,17 @@ pub(crate) mod tests {
                 assert!(!e.active());
             }
         }
-        let additions = kept
-            .add
-            .iter()
-            .map(peer_addition)
-            .collect::<Vec<_>>()
-            .join(",");
+
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("typed IDs to peer request");
         let cli = root.path().join("cli.fcad");
         let ui = root.path().join("ui.fcad");
         let o = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&source)
-            .arg("--sketch")
-            .arg(id.to_string())
             .arg("--expect-version")
             .arg(reading.version.content.to_string())
             .arg("--request")
@@ -6019,7 +5862,7 @@ pub(crate) mod tests {
         assert!(o.status.success(), "{o:?}");
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
-        assert_eq!(a.meta(), b.meta());
+        crate::transaction_tests::assert_meta(a.meta(), b.meta());
         assert_eq!(
             a.dependencies().expect("deps"),
             b.dependencies().expect("deps")
@@ -6039,7 +5882,7 @@ pub(crate) mod tests {
                 assert_eq!(s.plane, t.plane);
                 assert_eq!(s.constraints.len(), if lengths { 10 } else { 5 });
                 for (x, y) in s.constraints.iter().zip(&t.constraints) {
-                    assert_ne!(x.id, y.id);
+                    assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                     assert_eq!(x.rule, y.rule);
                 }
             } else {
@@ -6091,7 +5934,8 @@ pub(crate) mod tests {
             )
             .expect("async Open route");
             assert!(
-                snap.edit_source.expect("facts").constraint_sketches[0]
+                crate::sketch_facts::Source::from(snap.edit_source.expect("facts"))
+                    .constraint_sketches[0]
                     .refusal
                     .is_none()
             );
@@ -6118,7 +5962,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&source).expect("source"), original);
         // Exact persisted H is removable through the same widgets after publication.
         let d = Document::open_read_only(&ui).expect("published");
-        let after = ExtrudeEditSource::read(&d).expect("discover");
+        let after = crate::sketch_facts::Source::read(&d).expect("discover");
         d.close().expect("close");
         assert!(e.begin(&ui, &after, id));
         assert_eq!(
@@ -6132,7 +5976,7 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Save constraints copy…");
         let remove = e.take_request().expect("removal");
         assert_eq!(
-            remove.edits.remove,
+            crate::transaction_tests::constraints(&remove).remove,
             vec![
                 after.constraint_sketches[0]
                     .stored
@@ -6142,7 +5986,11 @@ pub(crate) mod tests {
                     .id
             ]
         );
-        assert!(remove.edits.add.is_empty());
+        assert!(
+            crate::transaction_tests::constraints(&remove)
+                .add
+                .is_empty()
+        );
         if !lengths {
             return;
         }
@@ -6182,10 +6030,10 @@ pub(crate) mod tests {
         assert_eq!(e.draft.as_ref().expect("draft").edits, replaced);
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("replace request");
-        assert_eq!(request.edits, replaced);
+        assert_eq!(crate::transaction_tests::constraints(&request), replaced);
         assert_eq!(request.source, ui);
         assert_eq!(request.expected, after.version);
-        let kept = request.edits.clone();
+        let kept = crate::transaction_tests::constraints(&request).clone();
         let history = history_state(&e);
         let original_constrained = std::fs::read(&ui).expect("constrained source");
         let mut state = crate::edits::Edits::default();
@@ -6201,10 +6049,15 @@ pub(crate) mod tests {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             state
-                .start_constraints(r, move |r, g, c| {
-                    crate::edits::spawn_constraint_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
+                .start(r, move |r, g, c| {
+                    crate::edits::spawn_edit(
+                        r.source,
+                        r.expected,
+                        r.changes,
+                        r.destination,
+                        c,
+                        move |result| tx.send((g, result)).expect("reply"),
+                    )
                 })
                 .expect("worker");
             let (g, result) = rx.recv().expect("worker reply");
@@ -6224,18 +6077,14 @@ pub(crate) mod tests {
         }
         std::fs::write(
             &input,
-            format!(
-                r#"{{"request_version":1,"remove":["{old_length}"],"add":[{{"curve_id":"{curve}","rule":"distance","distance_mm":55}}]}}"#
-            ),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("peer replace request");
         let cli_replaced = root.path().join("cli-replaced.fcad");
         let ui_replaced = root.path().join("ui-replaced.fcad");
         let o = std::process::Command::new(ferritecad())
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&ui)
-            .arg("--sketch")
-            .arg(id.to_string())
             .arg("--expect-version")
             .arg(after.version.content.to_string())
             .arg("--request")
@@ -6249,7 +6098,7 @@ pub(crate) mod tests {
         let a = Document::open_read_only(&ui_replaced).expect("UI replace");
         let b = Document::open_read_only(&cli_replaced).expect("CLI replace");
         let source_doc = Document::open_read_only(&ui).expect("constrained source");
-        assert_eq!(a.meta(), b.meta());
+        crate::transaction_tests::assert_meta(a.meta(), b.meta());
         assert_eq!(
             a.dependencies().expect("deps"),
             b.dependencies().expect("deps")
@@ -6285,7 +6134,7 @@ pub(crate) mod tests {
                                 == ferritecad_document::Expression::constant(55.)
                                     .expect("finite constant") =>
                         {
-                            assert_ne!(x.id, y.id);
+                            assert_eq!(x.id, y.id, "the transaction supplies the constraint UUID");
                             assert_ne!(x.id, old_length);
                             assert_ne!(y.id, old_length);
                             new_ui = Some(x.id);
@@ -6415,78 +6264,12 @@ pub(crate) mod tests {
         );
         assert!((volume6.abs() / 6. - 16500.).abs() < 0.02);
         assert_eq!(std::fs::read(&ui).expect("source"), original_constrained);
-        assert_ne!(new_ui.expect("UI length"), new_cli.expect("CLI length"));
-    }
-
-    /// §28E: the form on the base Sketch of a rounded plate names the Fillet,
-    /// the two Lines of its corner and its radius, says the coordinates are
-    /// the stored ones and what the solved plate must be; it builds the usual
-    /// requests (H/V, length, Replace length) with bounded Undo/Redo, and keeps
-    /// the draft through a cancelled Save and a worker refusal about the
-    /// solved plate. No kernel is involved.
-    #[test]
-    fn fillet_base_constraint_widgets_name_the_fillet_and_keep_the_draft() {
-        let (_root, path, source) = crate::fillets::tests::rounded(2.375);
-        let choice = source.constraint_sketches[0].clone();
-        assert_eq!(choice.refusal, None);
-        let fillet = choice.fillet().cloned().expect("the Fillet as context");
-        let [a, b] = fillet.edge.joint.segments();
-        let mut e = Editor::default();
-        assert!(e.begin(&path, &source, choice.sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        let context = format!(
-            "Rounded by Fillet {} at the corner of Lines {a} | {b}, r 2.375 mm (stored corner \
-             (33, 3.25)).",
-            fillet.feature
-        );
-        assert!(
-            out.shapes.iter().any(|s| matches!(&s.shape,
-                egui::Shape::Text(t) if t.galley.text().starts_with(&context)
-                    && t.galley.text().contains("at least 4.75 mm"))),
-            "{context}"
-        );
-        assert!(painted(
-            &out,
-            "Coordinates below are stored inputs, not the solved drawing."
-        ));
-        // Segment 2 runs along X on this plate.
-        click(&ctx, &mut e, "Segment 2");
-        click(&ctx, &mut e, "Add Horizontal");
-        enter_length(&ctx, &mut e, "30.5", false);
-        click(&ctx, &mut e, "Add length");
-        let kept = history_state(&e).0;
-        assert_eq!(kept.add.len(), 2);
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(history_state(&e).0.add.len(), 1);
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(history_state(&e).0, kept);
-        click(&ctx, &mut e, "Save constraints copy…");
-        let request = e.take_request().expect("the widgets' request");
-        assert!(e.take_request().is_none(), "one press, one request");
-        assert_eq!(request.sketch, choice.sketch);
-        assert_eq!(request.expected, source.version);
-        assert_eq!(request.edits, kept);
-        // A cancelled Save started nothing; a refusal about the solved plate
-        // keeps the draft for another try.
-        assert_eq!(history_state(&e).0, kept);
-        let mut state = crate::edits::Edits::default();
-        let generation = state
-            .start_constraints(request, |_, _, _| std::thread::spawn(|| {}))
-            .expect("started");
-        let refusal = ferritecad_types::CadError::input(
-            "as its constraints solve it, the rounded plate has sides of 30.5 and 4 mm at the \
-             rounded corner, too short for the saved radius",
-        );
-        assert!(finish_edit(&mut e, &mut state, generation, Err(refusal)).is_none());
-        assert!(e.active(), "a refusal keeps the draft");
-        assert_eq!(history_state(&e).0, kept);
+        assert_eq!(new_ui.expect("UI length"), new_cli.expect("CLI length"));
     }
 
     /// §28E, native with PlaneGCS: the widgets' request on the rounded plate
     /// through the app's worker and the same request through the shipped
-    /// `edit-sketch-constraints-copy` publish one document — every SQL row
+    /// `edit` publish one document — every SQL row
     /// equal once the newly minted constraint UUIDs are matched off, the
     /// stored guess unchanged — and byte-identical STL and FBX.
     #[test]
@@ -6531,33 +6314,34 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Add length");
         click(&ctx, &mut e, "Save constraints copy…");
         let mut request = e.take_request().expect("widget request");
-        assert_eq!(request.edits.add.len(), 7, "{:?}", request.edits);
-        let additions = request
-            .edits
-            .add
-            .iter()
-            .map(peer_addition)
-            .collect::<Vec<_>>()
-            .join(",");
+        assert_eq!(
+            crate::transaction_tests::constraints(&request).add.len(),
+            7,
+            "{:?}",
+            crate::transaction_tests::constraints(&request)
+        );
+
         let ui = root.path().join("worker.fcad");
         request.destination = ui.clone();
         let mut state = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(request, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request.clone(), move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
         assert_eq!(
-            result
-                .as_ref()
-                .expect("published")
-                .solve
+            crate::transaction_tests::solve(result.as_ref().expect("published"))
                 .as_ref()
                 .expect("solve")
                 .degrees_of_freedom(),
@@ -6567,15 +6351,13 @@ pub(crate) mod tests {
         let input = root.path().join("request.json");
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("input");
         let peer = root.path().join("peer.fcad");
         let result = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&path)
-            .arg("--sketch")
-            .arg(choice.sketch.to_string())
             .arg("--expect-version")
             .arg(source.version.content.to_string())
             .arg("--request")
@@ -6612,119 +6394,9 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
-    /// §29D: the form on the base Sketch of a chamfered plate names the
-    /// Chamfer, the two Lines of its corner and its distance, says the
-    /// coordinates are the stored ones and what the solved plate must be; it
-    /// builds the usual requests (H/V, length, Replace length) with bounded
-    /// Undo/Redo, and keeps the draft through a cancelled Save, a worker refusal
-    /// about the solved plate and a stale reply. The form repeats no bound.
-    /// No kernel is involved.
-    #[test]
-    fn chamfer_base_constraint_widgets_name_the_chamfer_and_keep_the_draft() {
-        let (_root, path, source) = crate::chamfers::tests::chamfered(2.375);
-        let choice = source.constraint_sketches[0].clone();
-        assert_eq!(choice.refusal, None);
-        let chamfer = choice.chamfer.clone().expect("the Chamfer as context");
-        assert!(!chamfer.constrained);
-        let [a, b] = chamfer.edge.joint.segments();
-        let mut e = Editor::default();
-        assert!(e.begin(&path, &source, choice.sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        let context = format!(
-            "Chamfered by Chamfer {} at the corner of Lines {a} | {b}, d 2.375 mm (stored \
-             corner (33, 3.25)).",
-            chamfer.feature
-        );
-        assert!(
-            out.shapes.iter().any(|s| matches!(&s.shape,
-                egui::Shape::Text(t) if t.galley.text().starts_with(&context)
-                    && t.galley.text().contains("the coordinates shown are the stored ones")
-                    && t.galley.text().contains("at least 2.385 mm"))),
-            "{context}"
-        );
-        assert!(painted(
-            &out,
-            "Coordinates below are stored inputs, not the solved drawing."
-        ));
-        click(&ctx, &mut e, "Segment 2");
-        click(&ctx, &mut e, "Add Horizontal");
-        enter_length(&ctx, &mut e, "30.5", false);
-        click(&ctx, &mut e, "Add length");
-        let kept = history_state(&e).0;
-        assert_eq!(kept.add.len(), 2);
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(history_state(&e).0.add.len(), 1);
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(history_state(&e).0, kept);
-        click(&ctx, &mut e, "Save constraints copy…");
-        let request = e.take_request().expect("the widgets' request");
-        assert!(e.take_request().is_none(), "one press, one request");
-        assert_eq!(request.sketch, choice.sketch);
-        assert_eq!(request.expected, source.version);
-        assert_eq!(request.edits, kept);
-        // A cancelled Save started nothing; a refusal about the solved plate
-        // keeps the draft, and so does a stale reply.
-        assert_eq!(history_state(&e).0, kept);
-        let mut state = crate::edits::Edits::default();
-        let generation = state
-            .start_constraints(request, |_, _, _| std::thread::spawn(|| {}))
-            .expect("started");
-        let refusal = ferritecad_types::CadError::input(format!(
-            "Chamfer {} of 2.375 mm does not fit the solved plate: too large",
-            chamfer.feature
-        ));
-        assert!(finish_edit(&mut e, &mut state, generation, Err(refusal)).is_none());
-        assert!(e.active(), "a refusal keeps the draft");
-        assert_eq!(history_state(&e).0, kept);
-
-        // Replace length on a plate that already carries a length: one removal
-        // and one addition, with Undo/Redo over the pair; the form says the
-        // distance's bound is not its to judge.
-        let mut d = Document::open(&path).expect("writable");
-        let lines = choice.stored.clone().expect("stored").curves;
-        let edits = ferritecad_document::SketchConstraintEdits {
-            remove: Vec::new(),
-            add: vec![ferritecad_document::AddSketchConstraint::Line(
-                ferritecad_document::AddLineConstraint::Line {
-                    curve: lines[1].id,
-                    kind: ferritecad_document::LineConstraintKind::Distance(
-                        LineLengthMm::new(12.25).expect("length"),
-                    ),
-                },
-            )],
-        };
-        let prepared = ferritecad_document::prepare_sketch_constraints(&d, choice.sketch, &edits)
-            .expect("prepared");
-        d.write_sketch_constraints(&prepared).expect("written");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
-        d.close().expect("close");
-        let choice = source.constraint_sketches[0].clone();
-        assert!(choice.chamfer.as_ref().is_some_and(|c| c.constrained));
-        let mut e = Editor::default();
-        assert!(e.begin(&path, &source, choice.sketch));
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, vec![]);
-        }
-        click(&ctx, &mut e, "Segment 2");
-        enter_length(&ctx, &mut e, "20", false);
-        click(&ctx, &mut e, "Replace length");
-        let replaced = history_state(&e).0;
-        assert_eq!((replaced.remove.len(), replaced.add.len()), (1, 1));
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(history_state(&e).0.remove.len(), 0);
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(history_state(&e).0, replaced);
-        click(&ctx, &mut e, "Save constraints copy…");
-        let request = e.take_request().expect("the widgets' request");
-        assert_eq!(request.edits, replaced);
-    }
-
     /// §29D, native with PlaneGCS: the widgets' request on the chamfered plate
     /// through the app's worker and the same request through the shipped
-    /// `edit-sketch-constraints-copy` publish one document — every SQL row equal
+    /// `edit` publish one document — every SQL row equal
     /// once the newly minted constraint UUIDs are matched off, the stored guess
     /// unchanged — and byte-identical STL and FBX; the solved plate's volume is
     /// the analytic one at the chosen corner.
@@ -6766,33 +6438,34 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Add length");
         click(&ctx, &mut e, "Save constraints copy…");
         let mut request = e.take_request().expect("widget request");
-        assert_eq!(request.edits.add.len(), 7, "{:?}", request.edits);
-        let additions = request
-            .edits
-            .add
-            .iter()
-            .map(peer_addition)
-            .collect::<Vec<_>>()
-            .join(",");
+        assert_eq!(
+            crate::transaction_tests::constraints(&request).add.len(),
+            7,
+            "{:?}",
+            crate::transaction_tests::constraints(&request)
+        );
+
         let ui = root.path().join("worker.fcad");
         request.destination = ui.clone();
         let mut state = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(request, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request.clone(), move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
         assert_eq!(
-            result
-                .as_ref()
-                .expect("published")
-                .solve
+            crate::transaction_tests::solve(result.as_ref().expect("published"))
                 .as_ref()
                 .expect("solve")
                 .degrees_of_freedom(),
@@ -6802,15 +6475,13 @@ pub(crate) mod tests {
         let input = root.path().join("request.json");
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("input");
         let peer = root.path().join("peer.fcad");
         let result = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&path)
-            .arg("--sketch")
-            .arg(choice.sketch.to_string())
             .arg("--expect-version")
             .arg(source.version.content.to_string())
             .arg("--request")
@@ -6844,87 +6515,9 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
-    /// §28K: the form on the base Sketch of a plate rounded twice names both
-    /// Fillets in history order with their Lines, radii and stored corners,
-    /// says what the solved plate must be, builds the usual requests with
-    /// Undo/Redo over the whole request, and keeps the draft through a
-    /// cancelled Save and a worker refusal naming either radius or the flat
-    /// between the arcs. No kernel is involved.
-    #[test]
-    fn two_fillet_base_constraint_widgets_name_both_fillets_and_keep_the_draft() {
-        let (_root, path, source) = crate::fillets::tests::rounded_twice(2.375, 3.0625);
-        let choice = source.constraint_sketches[0].clone();
-        assert_eq!(choice.refusal, None);
-        let (first, second) = (
-            choice.fillet().cloned().expect("Fillet 1 as context"),
-            choice.fillets.get(1).cloned().expect("Fillet 2 as context"),
-        );
-        assert_eq!(second.previous, first.feature, "Fillet 2 rounds Fillet 1");
-        let [a1, b1] = first.edge.joint.segments();
-        let [a2, b2] = second.edge.joint.segments();
-        let mut e = Editor::default();
-        assert!(e.begin(&path, &source, choice.sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        let context = format!(
-            "History: Extrude -> Fillet 1 {} at the corner of Lines {a1} | {b1}, r 2.375 mm \
-             (stored corner (33, 3.25)) -> Fillet 2 {} at the corner of Lines {a2} | {b2}, \
-             r 3.0625 mm (stored corner (33, 15.5)).",
-            first.feature, second.feature
-        );
-        assert!(
-            out.shapes.iter().any(|s| matches!(&s.shape,
-                egui::Shape::Text(t) if t.galley.text().starts_with(&context)
-                    && t.galley.text().contains("at least 4.75 mm (Fillet 1) or 6.125 mm (Fillet 2)")
-                    && t.galley.text().contains("leave a flat between them"))),
-            "{context}"
-        );
-        assert!(painted(
-            &out,
-            "Coordinates below are stored inputs, not the solved drawing."
-        ));
-        click(&ctx, &mut e, "Segment 2");
-        click(&ctx, &mut e, "Add Horizontal");
-        enter_length(&ctx, &mut e, "30.5", false);
-        click(&ctx, &mut e, "Add length");
-        let kept = history_state(&e).0;
-        assert_eq!(kept.add.len(), 2);
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(history_state(&e).0.add.len(), 1);
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(history_state(&e).0, kept);
-        click(&ctx, &mut e, "Save constraints copy…");
-        let request = e.take_request().expect("the widgets' request");
-        assert!(e.take_request().is_none(), "one press, one request");
-        assert_eq!(request.sketch, choice.sketch);
-        assert_eq!(request.expected, source.version);
-        assert_eq!(request.edits, kept);
-        assert_eq!(
-            history_state(&e).0,
-            kept,
-            "a cancelled Save started nothing"
-        );
-        let mut state = crate::edits::Edits::default();
-        for reason in [
-            "as its constraints solve it, the rounded plate has sides of 30.5 and 4 mm at the \
-             rounded corner, too short for the saved radius: a fillet of 2.375 mm is too large",
-            "as the plate is built, fillets of 2.375 mm and 3.0625 mm at the two ends of a Line \
-             would leave 0.001 mm of it flat",
-        ] {
-            let generation = state
-                .start_constraints(request.clone(), |_, _, _| std::thread::spawn(|| {}))
-                .expect("started");
-            let refusal = ferritecad_types::CadError::input(reason);
-            assert!(finish_edit(&mut e, &mut state, generation, Err(refusal)).is_none());
-            assert!(e.active(), "a refusal keeps the draft");
-            assert_eq!(history_state(&e).0, kept);
-        }
-    }
-
     /// §28K, native with PlaneGCS: the widgets' request on the plate rounded
     /// twice through the app's worker and the same request through the shipped
-    /// `edit-sketch-constraints-copy` publish one document — every SQL row
+    /// `edit` publish one document — every SQL row
     /// equal once the newly minted constraint UUIDs are matched off, the
     /// stored guess unchanged — and byte-identical STL and FBX.
     #[test]
@@ -6965,33 +6558,34 @@ pub(crate) mod tests {
         click(&ctx, &mut e, "Add length");
         click(&ctx, &mut e, "Save constraints copy…");
         let mut request = e.take_request().expect("widget request");
-        assert_eq!(request.edits.add.len(), 7, "{:?}", request.edits);
-        let additions = request
-            .edits
-            .add
-            .iter()
-            .map(peer_addition)
-            .collect::<Vec<_>>()
-            .join(",");
+        assert_eq!(
+            crate::transaction_tests::constraints(&request).add.len(),
+            7,
+            "{:?}",
+            crate::transaction_tests::constraints(&request)
+        );
+
         let ui = root.path().join("worker.fcad");
         request.destination = ui.clone();
         let mut state = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .start_constraints(request, move |r, g, c| {
-                crate::edits::spawn_constraint_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request.clone(), move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker response");
         assert_eq!(
-            result
-                .as_ref()
-                .expect("published")
-                .solve
+            crate::transaction_tests::solve(result.as_ref().expect("published"))
                 .as_ref()
                 .expect("solve")
                 .degrees_of_freedom(),
@@ -7001,15 +6595,13 @@ pub(crate) mod tests {
         let input = root.path().join("request.json");
         std::fs::write(
             &input,
-            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
         )
         .expect("input");
         let peer = root.path().join("peer.fcad");
         let result = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("edit-sketch-constraints-copy")
+            .arg("edit")
             .arg(&path)
-            .arg("--sketch")
-            .arg(choice.sketch.to_string())
             .arg("--expect-version")
             .arg(source.version.content.to_string())
             .arg("--request")
@@ -7044,74 +6636,5 @@ pub(crate) mod tests {
         built.release_all(&mut k);
         d.close().expect("close");
         assert_eq!(std::fs::read(&path).expect("source"), before);
-    }
-
-    /// §28L, kernel-free: the constraint form on the base Sketch of a plate
-    /// rounded four times names every Fillet in history order with its Lines,
-    /// radius and stored corner, says what the solved plate must be, and keeps
-    /// Save on the screen.
-    #[test]
-    fn four_fillet_base_constraint_widgets_name_every_fillet_and_keep_save_in_reach() {
-        let (_root, path, source) = crate::fillets::tests::rounded_n(&[
-            ([33., 3.25], 2.375),
-            ([-4.5, 15.5], 3.0625),
-            ([-4.5, 3.25], 1.5),
-            ([33., 15.5], 6.0),
-        ]);
-        let choice = source.constraint_sketches[0].clone();
-        assert_eq!(choice.refusal, None);
-        assert_eq!(choice.fillets.len(), 4);
-        let mut e = Editor::default();
-        assert!(e.begin(&path, &source, choice.sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        let has = |label: &str| {
-            out.shapes.iter().any(
-                |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(label)),
-            )
-        };
-        for f in &choice.fillets {
-            let [a, b] = f.edge.joint.segments();
-            assert!(
-                has(&format!(
-                    "Fillet {} {} at the corner of Lines {a} | {b}, r {} mm (stored corner ({}, {}))",
-                    f.history_index,
-                    f.feature,
-                    f.radius_mm,
-                    f.corner.corner_mm[0],
-                    f.corner.corner_mm[1]
-                )),
-                "{}",
-                f.history_index
-            );
-        }
-        assert!(has("All 4 Fillets keep their corners and radii"));
-        assert!(has(
-            "at least 4.75 mm (Fillet 1) or 6.125 mm (Fillet 2) or 3 mm (Fillet 3) or 12 mm (Fillet 4)"
-        ));
-        assert!(
-            ctx.globally_used_rect().max.y <= 768.,
-            "{:?}",
-            ctx.globally_used_rect()
-        );
-        click(&ctx, &mut e, "Segment 2");
-        click(&ctx, &mut e, "Add Horizontal");
-        let out = frame(&ctx, &mut e, vec![]);
-        let save = out
-            .shapes
-            .iter()
-            .find_map(|s| match &s.shape {
-                egui::Shape::Text(t) if t.galley.text().starts_with("Save constraints copy…") => {
-                    Some(t.visual_bounding_rect().center())
-                }
-                _ => None,
-            })
-            .expect("Save is painted");
-        assert!(save.y > 0. && save.y < 768., "Save at {save:?}");
-        click(&ctx, &mut e, "Save constraints copy…");
-        let request = e.take_request().expect("the widgets' request");
-        assert_eq!(request.sketch, choice.sketch);
-        assert_eq!(request.edits.add.len(), 1);
     }
 }

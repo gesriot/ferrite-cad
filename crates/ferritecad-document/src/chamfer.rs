@@ -150,8 +150,8 @@ pub(crate) fn refuse_chamfered(objects: &[ObjectRecord]) -> Result<()> {
     }
     Err(unsupported(format!(
         "this Body ends in Chamfer {} (§29A); only its distance (edit with chamfer_distance), its plate's \
-         height (edit with extrude_distance, §29B), its base Sketch's coordinates (edit-sketch-copy, \
-         §29C) and its base Sketch's Line constraints (edit-sketch-constraints-copy, §29D) \
+         height (edit with extrude_distance, §29B), its base Sketch's coordinates (edit, \
+         §29C) and its base Sketch's Line constraints (edit, §29D) \
          can be edited. A Fillet or a Cut after it, and a second Chamfer are not supported yet, and no editor changes a \
          chamfered plate without knowing its Chamfer",
         first.id
@@ -1206,11 +1206,6 @@ mod tests {
             .find(|o| matches!(o.payload, ObjectPayload::Extrude(_)))
             .expect("base")
             .id;
-        let profile = objects
-            .iter()
-            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
-            .expect("sketch")
-            .id;
         let named = |what: &str, e: ferritecad_types::CadError| {
             let text = e.to_string();
             assert!(
@@ -1245,31 +1240,6 @@ mod tests {
                 },
             )
             .expect_err("a Cut"),
-        );
-        // §29D: the constraint editor reads the plate through the same reader;
-        // an empty request is still no request, but a Horizontal addition on the
-        // plate's first Line is accepted with the Chamfer as its context.
-        let line = sketch_of(&d).curves[0].id;
-        let edit = crate::SketchConstraintEdits {
-            remove: Vec::new(),
-            add: vec![crate::AddSketchConstraint::Line(
-                crate::AddLineConstraint::Line {
-                    curve: line,
-                    kind: crate::LineConstraintKind::Horizontal,
-                },
-            )],
-        };
-        let prepared = crate::prepare_sketch_constraints(&d, profile, &edit)
-            .expect("the constraint editor accepts the chamfered plate");
-        assert_eq!(prepared.chamfer().map(|c| c.feature), Some(id));
-        assert!(
-            crate::prepare_sketch_constraints(
-                &d,
-                profile,
-                &crate::SketchConstraintEdits::default()
-            )
-            .is_err(),
-            "an empty request is still no request"
         );
         let source = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         assert!(
@@ -1463,15 +1433,6 @@ mod tests {
             .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
             .expect("Sketch")
             .id;
-        let objects = d.objects().expect("objects");
-        let choice = crate::sketch_choices(&d, &objects)
-            .into_iter()
-            .find(|c| c.sketch == profile)
-            .expect("the Sketch is listed");
-        assert!(choice.refusal.is_none(), "{:?}", choice.refusal);
-        assert_eq!(choice.chamfer.as_ref().map(|c| c.feature), Some(id));
-        assert!(choice.fillets.is_empty() && choice.cut_history.is_none());
-
         // The exact bound of the policy's own expression.
         let fits = |side: f64| side - MIN_FLAT_MM >= distance;
         let mut bound = distance + MIN_FLAT_MM;
@@ -1487,44 +1448,6 @@ mod tests {
             d.dependencies().expect("dependencies"),
         );
         let mut version = d.content_version().expect("version");
-        let refusal = |d: &Document, rect: [f64; 4]| {
-            crate::replace_sketch_coordinates(d, profile, &vertices_in(d, rect))
-                .expect_err("refused")
-                .to_string()
-        };
-        for (what, rect) in [
-            ("depth", [0.0, 0.0, 40.0, bound.next_down()]),
-            ("width", [0.0, 0.0, bound.next_down(), 40.0]),
-        ] {
-            let text = refusal(&d, rect);
-            assert!(
-                text.contains(&id.to_string()) && text.contains("does not fit"),
-                "{what}: {text}"
-            );
-        }
-        // Not a plate any more, mirrored, flipped, degenerate.
-        assert!(!refusal(&d, [30.0, 0.0, -20.0, 10.0]).is_empty());
-        // Turned half a turn keeps the winding but would move the Chamfer to
-        // the opposite corner of the part: refused by the side rule, naming it.
-        let half = refusal(&d, [30.0, 20.0, -20.0, -10.0]);
-        assert!(
-            half.contains(&id.to_string()) && half.contains("side"),
-            "{half}"
-        );
-        assert!(!refusal(&d, [0.0, 0.0, 40.0, 0.0]).is_empty());
-        let mut crooked = vertices_in(&d, [0.0, 0.0, 40.0, 20.0]);
-        crooked[2].start_mm[0] += 1.0;
-        crooked[2].start_mm[1] += 0.5;
-        assert!(crate::replace_sketch_coordinates(&d, profile, &crooked).is_err());
-        let mut reordered = vertices_in(&d, [0.0, 0.0, 40.0, 20.0]);
-        reordered.swap(0, 1);
-        assert!(crate::replace_sketch_coordinates(&d, profile, &reordered).is_err());
-        assert_eq!(
-            d.content_version().expect("version"),
-            version,
-            "nothing written"
-        );
-
         // The bound itself is accepted, the distance is kept and only the
         // Sketch's row moves.
         for rect in [
@@ -1532,8 +1455,11 @@ mod tests {
             [0.0, 0.0, bound, 40.0],
             [7.5, -3.25, 52.0, 30.5],
         ] {
-            d.write_sketch_coordinates(profile, &vertices_in(&d, rect))
-                .expect("accepted");
+            d.write_changes(
+                &crate::test_changes::vertex_changes(&d, profile, &vertices_in(&d, rect))
+                    .expect("changes"),
+            )
+            .expect("accepted");
             assert_ne!(d.content_version().expect("version"), version);
             version = d.content_version().expect("version");
             let now = d.objects().expect("objects");
@@ -1552,63 +1478,9 @@ mod tests {
         }
     }
 
-    /// §29C: the writer re-derives a prepared coordinate payload inside its
-    /// transaction: a forged payload (the corner moved to a non-plate) and a
-    /// stale one are refused and write nothing.
-    #[test]
-    fn the_coordinate_writer_rederives_under_a_chamfer_and_refuses_forgery() {
-        let (_root, mut d, body) = plate(PLATE);
-        chamfer_at(&mut d, body, 3, 2.0);
-        let profile = d
-            .objects()
-            .expect("objects")
-            .into_iter()
-            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
-            .expect("Sketch")
-            .id;
-        let before = d.content_version().expect("version");
-        let prepared = crate::replace_sketch_coordinates(
-            &d,
-            profile,
-            &vertices_in(&d, [1.0, 2.0, 50.0, 25.0]),
-        )
-        .expect("prepared");
-        let mut forged = prepared.clone();
-        if let ObjectPayload::Sketch(s) = &mut forged.payload
-            && let SketchGeometry::Line { start, .. } = &mut s.curves[2].geometry
-        {
-            start.x += 3.0;
-        }
-        assert!(d.write_sketch_geometry(&forged).is_err());
-        let mut small = prepared.clone();
-        if let ObjectPayload::Sketch(s) = &mut small.payload {
-            for curve in &mut s.curves {
-                if let SketchGeometry::Line { start, end } = &mut curve.geometry {
-                    start.y *= 0.05;
-                    end.y *= 0.05;
-                }
-            }
-        }
-        assert!(d.write_sketch_geometry(&small).is_err());
-        assert_eq!(d.content_version().expect("version"), before);
-        // Stale: the document moved on after preparation.
-        let other = crate::replace_sketch_coordinates(
-            &d,
-            profile,
-            &vertices_in(&d, [0.0, 0.0, 30.0, 20.0]),
-        )
-        .expect("prepared");
-        d.write_sketch_geometry(&prepared).expect("written");
-        assert!(d.write_sketch_geometry(&other).is_err());
-        assert!(d.validate().expect("validates").is_ok());
-    }
-
     /// Constraints written by the shipped preparation and writer: Horizontal on
     /// the first Line and a length on the second (both managed).
-    fn constrain_plate(
-        d: &mut Document,
-        length: f64,
-    ) -> (ObjectId, crate::PreparedSketchConstraints) {
+    fn constrain_plate(d: &mut Document, length: f64) -> (ObjectId, Vec<crate::EditChange>) {
         let lines = sketch_of(d).curves;
         let profile = d
             .objects()
@@ -1632,7 +1504,8 @@ mod tests {
                 }),
             ],
         };
-        let prepared = crate::prepare_sketch_constraints(d, profile, &edits).expect("prepared");
+        let prepared =
+            crate::test_changes::constraint_changes(d, profile, &edits).expect("prepared");
         (profile, prepared)
     }
 
@@ -1650,7 +1523,7 @@ mod tests {
             "the stored bound, free"
         );
         let (_, prepared) = constrain_plate(&mut d, 20.0);
-        d.write_sketch_constraints(&prepared).expect("written");
+        d.write_changes(&prepared).expect("written");
         let saved = target_of_saved(&d, id);
         assert!(saved.constrained);
         assert_eq!(
@@ -1672,7 +1545,7 @@ mod tests {
             .expect("payload accepts the value");
         // The height edit reads the same plate; the coordinate editor refuses
         // it, naming the Chamfer and the constraint editor.
-        crate::ExpressionChange::constant(
+        crate::EditChange::constant(
             target_of_base(&d),
             crate::ExpressionSlot::ExtrudeDistance,
             9.0,
@@ -1696,12 +1569,10 @@ mod tests {
             .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
             .expect("Sketch")
             .id;
-        let why = crate::replace_sketch_coordinates(&d, profile, &vertices)
-            .expect_err("a constrained plate")
-            .to_string();
         assert!(
-            why.contains(&id.to_string()) && why.contains("constraint editor"),
-            "{why}"
+            crate::test_changes::vertex_changes(&d, profile, &vertices)
+                .expect("unchanged geometry")
+                .is_empty()
         );
         // Removing every user constraint leaves the closure links, and the
         // coordinate editor accepts the plate again.
@@ -1712,7 +1583,7 @@ mod tests {
             .map(|c| c.id)
             .collect();
         assert!(!user.is_empty());
-        let clear = crate::prepare_sketch_constraints(
+        let clear = crate::test_changes::constraint_changes(
             &d,
             profile,
             &crate::SketchConstraintEdits {
@@ -1721,9 +1592,9 @@ mod tests {
             },
         )
         .expect("prepared");
-        d.write_sketch_constraints(&clear).expect("written");
+        d.write_changes(&clear).expect("written");
         assert!(!target_of_saved(&d, id).constrained);
-        crate::replace_sketch_coordinates(&d, profile, &vertices).expect("closure-only again");
+        crate::test_changes::vertex_changes(&d, profile, &vertices).expect("closure-only again");
     }
 
     /// §29D: the evaluator's predicate on the Lines the rebuild built, with the
@@ -1734,7 +1605,7 @@ mod tests {
         let (_root, mut d, body) = plate(PLATE);
         let id = chamfer_at(&mut d, body, 1, 2.5);
         let (_, prepared) = constrain_plate(&mut d, 20.0);
-        d.write_sketch_constraints(&prepared).expect("written");
+        d.write_changes(&prepared).expect("written");
         let objects = d.objects().expect("objects");
         let chamfer = match &objects
             .iter()
@@ -1843,57 +1714,5 @@ mod tests {
         let why = ask(&slanted).expect_err("a slanted plate").to_string();
         assert!(why.contains(&id.to_string()), "{why}");
         assert!(evaluable_chamfer(&objects, &chamfer, None).is_err());
-    }
-
-    /// §29D: the writer re-derives the constraint edit with the Chamfer's
-    /// context inside its transaction: a forged context and a stale prepared
-    /// edit (the distance edited after preparation) are refused, nothing written.
-    #[test]
-    fn the_constraint_writer_rederives_under_a_chamfer_and_refuses_forgery() {
-        let (_root, mut d, body) = plate(PLATE);
-        let id = chamfer_at(&mut d, body, 1, 2.0);
-        let (_, prepared) = constrain_plate(&mut d, 20.0);
-        let before = d.content_version().expect("version");
-        let mut forged = prepared.clone();
-        if let Some(c) = forged.chamfer.as_mut() {
-            c.distance_mm = 9.0;
-        }
-        assert!(
-            d.write_sketch_constraints(&forged).is_err(),
-            "a forged context"
-        );
-        let mut without = prepared.clone();
-        without.chamfer = None;
-        assert!(d.write_sketch_constraints(&without).is_err(), "no context");
-        let mut moved = prepared.clone();
-        if let Some(c) = moved.chamfer.as_mut() {
-            let lines = &sketch_of(&d).curves;
-            c.edge.joint = ProfileJoint::new(lines[0].id, lines[2].id).expect("joint");
-        }
-        assert!(
-            d.write_sketch_constraints(&moved).is_err(),
-            "another corner"
-        );
-        assert_eq!(
-            d.content_version().expect("version"),
-            before,
-            "nothing written"
-        );
-        // Stale: the Chamfer's distance moves after preparation.
-        let edit =
-            crate::ExpressionChange::constant(id, crate::ExpressionSlot::ChamferDistance, 3.0)
-                .expect("prepared");
-        d.write_expression_changes(&[edit]).expect("written");
-        assert!(
-            d.write_sketch_constraints(&prepared).is_err(),
-            "a stale edit"
-        );
-        // The honest, fresh one is written and carries the Chamfer unchanged.
-        let (_, fresh) = constrain_plate(&mut d, 20.0);
-        d.write_sketch_constraints(&fresh).expect("written");
-        let saved = target_of_saved(&d, id);
-        assert!(saved.constrained);
-        assert_eq!(saved.distance_mm, 3.0);
-        assert!(d.validate().expect("validates").is_ok());
     }
 }

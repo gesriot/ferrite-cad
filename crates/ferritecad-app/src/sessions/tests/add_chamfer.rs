@@ -77,7 +77,7 @@ fn peer_add(source: &Path, body: ObjectId, chamfer: &EdgeChamfer, out: &Path) {
         "--body".as_ref(),
         body.to_string().as_ref(),
         "--expect-version".as_ref(),
-        read_extrude_source(source)
+        crate::sketch_facts::read(source)
             .expect("reading")
             .version
             .content
@@ -185,7 +185,7 @@ fn dirty_base(
     root: &Path,
     accepted: &mut Vec<PathBuf>,
 ) -> PathBuf {
-    let opened = read_extrude_source(source).expect("reading");
+    let opened = crate::sketch_facts::read(source).expect("reading");
     let target = opened.chamfer_bodies[0].target.clone().expect("target");
     let ph = root.join("peer-height.fcad");
     {
@@ -215,26 +215,35 @@ fn dirty_base(
     );
     let current = s.export_path().expect("current");
     accepted.push(current.clone());
-    let reading = read_extrude_source(&current).expect("reading");
-    let mut v = ferritecad_jobs::EditSketchRequest {
+    let reading = crate::sketch_facts::read(&current).expect("reading");
+    let mut v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(current),
+            target.profile,
+            &(reading
+                .sketches
+                .iter()
+                .find(|c| c.sketch == target.profile)
+                .expect("base")
+                .vertices
+                .clone()
+                .expect("vertices")),
+        ),
         source: current,
         expected: reading.version,
-        sketch: target.profile,
-        vertices: reading
-            .sketches
-            .iter()
-            .find(|c| c.sketch == target.profile)
-            .expect("base")
-            .vertices
-            .clone()
-            .expect("vertices"),
         destination: PathBuf::new(),
     };
-    for p in &mut v.vertices {
+    let mut vertices = crate::transaction_tests::vertices(&v);
+    for p in &mut vertices {
         if p.start_mm[0] == -4.5 {
             p.start_mm[0] = -5.75;
         }
     }
+    v.changes = crate::transaction_tests::vertex_changes(
+        &v.source,
+        crate::transaction_tests::sketch(&v),
+        &vertices,
+    );
     let pv = root.join("peer-vertices.fcad");
     sketch_peer(&ph, &v, root, &pv);
     apply_sketch_native(s, v);
@@ -268,7 +277,7 @@ fn gate(name: &str) {
     accepted.push(before_add.clone());
 
     // One Add through the form's own widgets, without confirming the draft.
-    let reading = read_extrude_source(&before_add).expect("reading");
+    let reading = crate::sketch_facts::read(&before_add).expect("reading");
     let (mut form, r) = typed_add(&before_add, &reading, &s, A.0, A.1);
     assert_eq!(r.body, body, "the Body is its saved UUID");
     assert_eq!(r.expected, reading.version, "the accepted version");
@@ -291,13 +300,13 @@ fn gate(name: &str) {
         "Add wrote the file"
     );
     let feature = assert_allowlist(&before_add, &added, body, &r.chamfer);
-    let after = read_extrude_source(&added).expect("reading");
+    let after = crate::sketch_facts::read(&added).expect("reading");
     assert_eq!(
-        saved_of(&after).feature,
+        saved_of(&added).feature,
         feature,
         "Edit Chamfer distance offers it"
     );
-    assert_eq!(saved_of(&after).corner.corner_mm, A.0);
+    assert_eq!(saved_of(&added).corner.corner_mm, A.0);
     let mut exact_map = BTreeMap::new();
     pair_chamfer(&mut exact_map, &before_add, &added, &before_add, &exact);
     same_model(
@@ -353,7 +362,9 @@ fn gate(name: &str) {
     // The new Chamfer's distance is changed at once through §30H's own form.
     let (mut form, d) = typed_distance(&added, &after, &s, feature, A_DISTANCE);
     let mut theirs = d.clone();
-    theirs.changes[0].object = ObjectId::from_bytes(map[&feature.to_bytes()]).expect("id");
+    if let ferritecad_document::EditChange::SetExpression { object, .. } = &mut theirs.changes[0] {
+        *object = ObjectId::from_bytes(map[&feature.to_bytes()]).expect("id");
+    }
     let edited_peer = root.path().join("peer-distance.fcad");
     distance_peer(&independent, &theirs, &edited_peer);
     assert!(
@@ -383,7 +394,7 @@ fn gate(name: &str) {
     }
     assert!(!s.dirty());
     assert!(
-        read_extrude_source(&s.export_path().expect("opened"))
+        crate::sketch_facts::read(&s.export_path().expect("opened"))
             .expect("reading")
             .expression_slots
             .iter()
@@ -425,7 +436,7 @@ fn gate(name: &str) {
     assert!(s.can_redo());
     let current = s.export_path().expect("pre-Add");
     assert_eq!(sql(&current), sql(&before_add));
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let (form, fresh) = typed_add(&current, &reading, &s, B.0, B.1);
     let draft = add_draft_state(&form);
     let mut r = fresh.clone();
@@ -603,23 +614,20 @@ fn native_every_corner_adds_its_own_plane_like_the_cli() {
 
 /// Vertical/Horizontal on all four Lines, the first Line's start fixed at
 /// (33, 15.5), its length 14.25 mm and the second's 41 mm: §30H's set.
-fn solved_rectangle(path: &Path) -> ferritecad_jobs::EditSketchConstraintsRequest {
+fn solved_rectangle(path: &Path) -> ferritecad_jobs::EditRequest {
     use ferritecad_document::{
         AddLineConstraint, AddSketchConstraint, LineConstraintKind, LineEndpoint, LineLengthMm,
         SketchConstraintEdits, SketchCoordinateMm,
     };
-    let reading = read_extrude_source(path).expect("reading");
+    let reading = crate::sketch_facts::read(path).expect("reading");
     let profile = reading
-        .chamfer_bodies
+        .objects
         .iter()
-        .find_map(|c| c.target.as_ref().map(|t| t.profile))
-        .or_else(|| {
-            reading
-                .sketches
-                .iter()
-                .find_map(|s| s.chamfer.as_ref().map(|s| s.profile))
+        .find_map(|o| match &o.payload {
+            ObjectPayload::Extrude(e) => Some(e.profile),
+            _ => None,
         })
-        .expect("plate profile");
+        .expect("base profile");
     let d = Document::open_read_only(path).expect("document");
     let ObjectPayload::Sketch(sketch) = d.object(profile).expect("object").expect("sketch").payload
     else {
@@ -655,14 +663,17 @@ fn solved_rectangle(path: &Path) -> ferritecad_jobs::EditSketchConstraintsReques
         lines[1],
         LineConstraintKind::Distance(LineLengthMm::new(41.).expect("width")),
     ));
-    ferritecad_jobs::EditSketchConstraintsRequest {
+    ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::constraint_changes(
+            path,
+            profile,
+            &(SketchConstraintEdits {
+                remove: Vec::new(),
+                add,
+            }),
+        ),
         source: path.to_path_buf(),
         expected: reading.version,
-        sketch: profile,
-        edits: SketchConstraintEdits {
-            remove: Vec::new(),
-            add,
-        },
         destination: PathBuf::new(),
     }
 }
@@ -690,7 +701,7 @@ fn native_constraints_close_add_but_constraints_and_distance_after_add_still_app
     let draft = add_draft_state(&form);
     apply_constraints_native(&mut s, &solved_rectangle(&source));
     let current = s.export_path().expect("constraints");
-    let constrained = read_extrude_source(&current).expect("reading");
+    let constrained = crate::sketch_facts::read(&current).expect("reading");
     let reason = constrained.chamfer_bodies[0]
         .refusal
         .clone()
@@ -718,8 +729,8 @@ fn native_constraints_close_add_but_constraints_and_distance_after_add_still_app
     let added = s.export_path().expect("added");
     apply_constraints_native(&mut s, &solved_rectangle(&added));
     let current = s.export_path().expect("constraints");
-    let reading = read_extrude_source(&current).expect("reading");
-    let stored = saved_of(&reading);
+    let reading = crate::sketch_facts::read(&current).expect("reading");
+    let stored = saved_of(&current);
     assert!(
         stored.constrained,
         "the managed family under the saved Chamfer"
@@ -790,7 +801,7 @@ const WINDOW_OUTPUTS: [&str; 9] = [
 ];
 
 fn chamfer_of(at: [f64; 2], distance: &str, path: &Path) -> EdgeChamfer {
-    let reading = read_extrude_source(path).expect("reading");
+    let reading = crate::sketch_facts::read(path).expect("reading");
     let target = reading.chamfer_bodies[0].target.clone().expect("target");
     let corner = target
         .corners
@@ -838,7 +849,7 @@ fn compare_gui(root: &Path) {
         "Save As wrote the previous file"
     );
     let tmp = tempfile::tempdir().expect("peer root");
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     let target = reading.chamfer_bodies[0].target.clone().expect("target");
     let body = target.body;
     let height = tmp.path().join("height.fcad");
@@ -860,7 +871,7 @@ fn compare_gui(root: &Path) {
             height.as_os_str(),
         ])
     };
-    let reading = read_extrude_source(&height).expect("height reading");
+    let reading = crate::sketch_facts::read(&height).expect("height reading");
     let mut vertices = reading
         .sketches
         .iter()
@@ -874,11 +885,14 @@ fn compare_gui(root: &Path) {
             p.start_mm[0] = -5.75;
         }
     }
-    let v = ferritecad_jobs::EditSketchRequest {
+    let v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(height.clone()),
+            target.profile,
+            &(vertices),
+        ),
         source: height.clone(),
         expected: reading.version,
-        sketch: target.profile,
-        vertices,
         destination: PathBuf::new(),
     };
     let base = tmp.path().join("base.fcad");
@@ -890,10 +904,10 @@ fn compare_gui(root: &Path) {
         &a,
         &ferritecad_jobs::EditRequest {
             source: a.clone(),
-            expected: read_extrude_source(&a).expect("a").version,
+            expected: crate::sketch_facts::read(&a).expect("a").version,
 
             changes: vec![
-                ferritecad_document::ExpressionChange::constant(
+                ferritecad_document::EditChange::constant(
                     new_chamfer(&base, &a).expect("their Chamfer"),
                     ferritecad_document::ExpressionSlot::ChamferDistance,
                     WINDOW_A_DISTANCE.parse().expect("distance"),
@@ -1011,7 +1025,7 @@ fn compare_with_controls(root: &Path) {
     control(root, "new ref owner", "a new ref pairs", &|r| {
         let saved = r.join("saved.fcad");
         let source = r.join("source/plate.fcad");
-        let base = read_extrude_source(&source)
+        let base = crate::sketch_facts::read(&source)
             .expect("reading")
             .chamfer_bodies[0]
             .target
@@ -1062,12 +1076,12 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
     let mut accepted = vec![s.export_path().expect("opened")];
     dirty_base(&mut s, &source, root.path(), &mut accepted);
     let current = s.export_path().expect("base");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let (mut form, r) = typed_add(&current, &reading, &s, WINDOW_A.0, WINDOW_A.1);
     assert!(matches!(add(&mut s, &r), Edited::Show(_)), "{}", s.status);
     form.finish_session_change();
     let added = s.export_path().expect("A");
-    let reading = read_extrude_source(&added).expect("reading");
+    let reading = crate::sketch_facts::read(&added).expect("reading");
     let feature = new_chamfer(&current, &added).expect("ours");
     let (mut form, d) = typed_distance(&added, &reading, &s, feature, WINDOW_A_DISTANCE);
     assert!(matches!(apply_distance(&mut s, &d), Edited::Show(_)));
@@ -1098,7 +1112,7 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
     move_native(&mut s, true);
     move_native(&mut s, true);
     let current = s.export_path().expect("pre-Add");
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let (_, mut bound) = typed_add(&current, &reading, &s, WINDOW_A.0, WINDOW_A.1);
     bound.chamfer.distance_mm = WINDOW_BOUND.parse().expect("bound");
     assert!(refuse(&mut s, &bound).contains("too large"));

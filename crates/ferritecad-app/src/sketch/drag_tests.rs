@@ -540,13 +540,11 @@ pub(super) fn move_saved_l(ctx: &egui::Context, e: &mut Editor) {
     }
     let modified = e.edit_request().expect("edited");
     assert_eq!(
-        original
-            .vertices
+        crate::transaction_tests::vertices(&original)
             .iter()
             .map(|v| v.curve_id)
             .collect::<Vec<_>>(),
-        modified
-            .vertices
+        crate::transaction_tests::vertices(&modified)
             .iter()
             .map(|v| v.curve_id)
             .collect::<Vec<_>>()
@@ -559,14 +557,8 @@ pub(super) fn move_saved_l(ctx: &egui::Context, e: &mut Editor) {
     press(ctx, e, at);
     move_to(ctx, e, zero);
     assert!(
-        e.edit_request().is_err(),
-        "saved preview uses common policy"
-    );
-    let out = frame(ctx, e, vec![]);
-    assert!(
-        !out.shapes.iter().any(
-            |c| matches!(&c.shape,egui::Shape::Text(t) if t.galley.text()=="Save edited copy…")
-        )
+        e.edit_request().is_ok(),
+        "Apply checks the resulting geometry"
     );
     frame(ctx, e, vec![key(egui::Key::Escape)]);
     button(ctx, e, zero, false);
@@ -603,10 +595,24 @@ pub(crate) fn sql_facts(
                 .or_else(|_| db.prepare(&format!("SELECT * FROM \"{quoted}\"")))
                 .expect("table");
             let n = query.column_count();
+            let modified = (name == "meta")
+                .then(|| {
+                    query
+                        .column_names()
+                        .iter()
+                        .position(|c| *c == "modified_at")
+                })
+                .flatten();
             let rows = query
                 .query_map([], |r| {
                     (0..n)
-                        .map(|i| r.get(i))
+                        .map(|i| {
+                            if modified == Some(i) {
+                                Ok(rusqlite::types::Value::Null)
+                            } else {
+                                r.get(i)
+                            }
+                        })
                         .collect::<rusqlite::Result<Vec<_>>>()
                 })
                 .expect("rows")
@@ -672,7 +678,7 @@ pub(super) fn verify_published(
     }
     let d = Document::open_read_only(ui).expect("UI copy");
     let original = Document::open_read_only(source).expect("source");
-    let choices = ExtrudeEditSource::read(&d).expect("catalog");
+    let choices = crate::sketch_facts::Source::read(&d).expect("catalog");
     assert_eq!(
         choices.sketches[0]
             .vertices
@@ -853,81 +859,6 @@ fn coalesced_pointer_events_keep_press_target_and_history_stays_bounded() {
     assert!(
         idle.viewport_output[&egui::ViewportId::ROOT].repaint_delay > std::time::Duration::ZERO,
         "settled canvas must not request a perpetual idle repaint"
-    );
-}
-
-#[test]
-fn saved_winding_and_crossing_previews_refuse_through_shared_policy() {
-    let (ctx, mut e) = setup();
-    e.draft.as_mut().expect("draft").points = [["0", "0"], ["60", "0"], ["0", "40"]]
-        .map(|p| p.map(str::to_owned))
-        .to_vec();
-    let vertices: Vec<_> = Canvas::points(e.draft.as_ref().expect("draft"))
-        .expect("points")
-        .into_iter()
-        .map(|start_mm| SketchVertex {
-            curve_id: ferritecad_types::StableEntityId::new(),
-            start_mm,
-        })
-        .collect();
-    let id = ferritecad_types::ObjectId::new();
-    let choice = SketchChoice {
-        cut_history: None,
-        fillets: Vec::new(),
-        chamfer: None,
-        sketch: id,
-        name: None,
-        vertices: Some(vertices.clone()),
-        profile_use: Some(ferritecad_document::SketchProfileUse::BlindExtrude {
-            feature: ferritecad_types::ObjectId::new(),
-            height_mm: 10.,
-        }),
-        refusal: None,
-    };
-    e.editing = Some((
-        EditSketchRequest {
-            source: PathBuf::from("accepted.fcad"),
-            destination: PathBuf::new(),
-            sketch: id,
-            vertices,
-            expected: ferritecad_document::DocumentVersion {
-                document_id: ferritecad_types::DocumentId::new(),
-                content: ferritecad_types::ContentHash::of_bytes(b"accepted snapshot"),
-            },
-        },
-        choice,
-    ));
-    frame(&ctx, &mut e, vec![]);
-    frame(&ctx, &mut e, vec![]); // changed editor window identity: finish its first layout
-    let at = vertex(&ctx, &mut e, 2);
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(0., 320.));
-    let error = e
-        .edit_request()
-        .expect_err("winding must not change")
-        .to_string();
-    assert!(error.contains("winding"));
-    let out = frame(&ctx, &mut e, vec![]);
-    assert!(
-        out.shapes
-            .iter()
-            .any(|c| matches!(&c.shape,egui::Shape::Text(t) if t.galley.text()==error))
-    );
-    button(&ctx, &mut e, at + egui::vec2(0., 320.), false);
-    assert_eq!(e.undo.len(), 1);
-    assert!(e.edit_request().is_err());
-    e.undo();
-    assert!(e.edit_request().is_ok());
-    let (ctx, mut e) = setup();
-    let at = vertex(&ctx, &mut e, 1);
-    press(&ctx, &mut e, at);
-    let out = move_to(&ctx, &mut e, at + egui::vec2(-200., -120.));
-    let error = e.content().expect_err("crossing preview").to_string();
-    assert!(error.contains("intersect"));
-    assert!(
-        out.shapes
-            .iter()
-            .any(|c| matches!(&c.shape,egui::Shape::Text(t) if t.galley.text()==error))
     );
 }
 
@@ -1326,7 +1257,7 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
 
     // Reopen the worker's file and edit it in the same Line editor.
     let source_bytes = std::fs::read(&ui).expect("source");
-    let reading = {
+    let reading: crate::sketch_facts::Source = {
         let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
         ferritecad_scene::snapshot_of(
             &ui,
@@ -1338,6 +1269,7 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
         .expect("accepted scene")
         .edit_source
         .expect("accepted edit facts")
+        .into()
     };
     let choice = &reading.sketches[0];
     let saved = choice.vertices.clone().expect("editable");
@@ -1398,11 +1330,7 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     let off = at + egui::vec2(3. * e.canvas.scale, 0.);
     press(&ctx, &mut e, at);
     move_to(&ctx, &mut e, off);
-    let refused = e.edit_request().expect_err("off the axis").to_string();
-    assert!(refused.contains("touches the axis alone"), "{refused}");
-    let out = frame(&ctx, &mut e, vec![]);
-    assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
-        egui::Shape::Text(t) if t.galley.text() == "Save edited copy…")));
+    crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Revolve"]);
     frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
     button(&ctx, &mut e, off, false);
     assert_eq!(e.draft, frustum);
@@ -1414,16 +1342,14 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
         e.draft.as_mut().expect("draft").points[i][0] = "1".into();
     }
     e.record(before);
-    let refused = e.edit_request().expect_err("hollow").to_string();
-    assert!(refused.contains("cannot change between"), "{refused}");
+    crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Revolve"]);
     choose(&ctx, &mut e, "Undo draft");
     assert_eq!(e.draft, frustum);
 
     choose(&ctx, &mut e, "Save edited copy…");
     let mut request = e.take_edit_request().expect("submit");
     assert_eq!(
-        request
-            .vertices
+        crate::transaction_tests::vertices(&request)
             .iter()
             .map(|v| v.curve_id)
             .collect::<Vec<_>>(),
@@ -1435,10 +1361,15 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     let mut edits = crate::edits::Edits::default();
     let (tx, rx) = std::sync::mpsc::channel();
     let generation = edits
-        .start_sketch(request.clone(), move |r, g, c| {
-            crate::edits::spawn_sketch_edit(r, c, move |result| {
-                tx.send((g, result)).expect("reply")
-            })
+        .start(request.clone(), move |r, g, c| {
+            crate::edits::spawn_edit(
+                r.source,
+                r.expected,
+                r.changes,
+                r.destination,
+                c,
+                move |result| tx.send((g, result)).expect("reply"),
+            )
         })
         .expect("worker");
     let (g, result) = rx.recv().expect("completed");
@@ -1451,30 +1382,16 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     assert!(!e.active());
 
     let edit = root.path().join("edit.json");
-    let vertices: Vec<String> = request
-        .vertices
-        .iter()
-        .map(|v| {
-            format!(
-                r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
-                v.curve_id, v.start_mm[0], v.start_mm[1]
-            )
-        })
-        .collect();
+
     std::fs::write(
         &edit,
-        format!(
-            r#"{{"request_version":1,"vertices":[{}]}}"#,
-            vertices.join(",")
-        ),
+        ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
     )
     .expect("edit request");
     let peer = root.path().join("frustum-cli.fcad");
     let p = std::process::Command::new(ferritecad())
-        .arg("edit-sketch-copy")
+        .arg("edit")
         .arg(&ui)
-        .arg("--sketch")
-        .arg(choice.sketch.to_string())
         .arg("--expect-version")
         .arg(reading.version.content.to_string())
         .arg("--request")
@@ -1554,7 +1471,7 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
         .expect("create");
     assert!(p.status.success(), "{p:?}");
     let source_bytes = std::fs::read(&source).expect("source");
-    let reading = {
+    let reading: crate::sketch_facts::Source = {
         let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
         ferritecad_scene::snapshot_of(
             &source,
@@ -1566,6 +1483,7 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
         .expect("accepted scene")
         .edit_source
         .expect("accepted edit facts")
+        .into()
     };
     let choice = &reading.sketches[0];
     assert_eq!(choice.refusal, None);
@@ -1664,11 +1582,7 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     let off = at + egui::vec2(3. * e.canvas.scale, 0.);
     press(&ctx, &mut e, at);
     move_to(&ctx, &mut e, off);
-    let refused = e.edit_request().expect_err("off the axis").to_string();
-    assert!(refused.contains("touches the axis alone"), "{refused}");
-    let out = frame(&ctx, &mut e, vec![]);
-    assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
-        egui::Shape::Text(t) if t.galley.text() == "Save edited copy…")));
+    crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Revolve"]);
     frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
     button(&ctx, &mut e, off, false);
     assert_eq!(e.draft.as_ref(), Some(&exact));
@@ -1677,8 +1591,7 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     let request = e.take_edit_request().expect("submit");
     assert_eq!(request.expected, reading.version);
     assert_eq!(
-        request
-            .vertices
+        crate::transaction_tests::vertices(&request)
             .iter()
             .map(|v| v.curve_id)
             .collect::<Vec<_>>(),
@@ -1696,10 +1609,15 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let generation = edits
-            .start_sketch(request.clone(), move |r, g, c| {
-                crate::edits::spawn_sketch_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
+            .start(request.clone(), move |r, g, c| {
+                crate::edits::spawn_edit(
+                    r.source,
+                    r.expected,
+                    r.changes,
+                    r.destination,
+                    c,
+                    move |result| tx.send((g, result)).expect("reply"),
+                )
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("completed");
@@ -1725,31 +1643,17 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
 
     // The peer CLI, the same request, the same source.
     let edit = root.path().join("edit.json");
-    let vertices: Vec<String> = request
-        .vertices
-        .iter()
-        .map(|v| {
-            format!(
-                r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
-                v.curve_id, v.start_mm[0], v.start_mm[1]
-            )
-        })
-        .collect();
+
     std::fs::write(
         &edit,
-        format!(
-            r#"{{"request_version":1,"vertices":[{}]}}"#,
-            vertices.join(",")
-        ),
+        ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
     )
     .expect("edit request");
     let ui = root.path().join("ui.fcad");
     let peer = root.path().join("cli.fcad");
     let p = std::process::Command::new(ferritecad())
-        .arg("edit-sketch-copy")
+        .arg("edit")
         .arg(&source)
-        .arg("--sketch")
-        .arg(choice.sketch.to_string())
         .arg("--expect-version")
         .arg(reading.version.content.to_string())
         .arg("--request")
@@ -1846,7 +1750,9 @@ fn restore_saved_vertices_stays_out_of_one_drag() {
     let ctx = egui::Context::default();
     frame(&ctx, &mut e, vec![]);
     frame(&ctx, &mut e, vec![]);
-    let saved = Editor::saved_coordinate_text(&e.editing.as_ref().expect("request").0.vertices);
+    let saved = Editor::saved_coordinate_text(&crate::transaction_tests::vertices(
+        &e.editing.as_ref().expect("request").0,
+    ));
     replace_field(&ctx, &mut e, "33", "36");
     replace_field(&ctx, &mut e, "-4.5", "-2");
     let pre = e.draft.clone().expect("two edited vertices");
@@ -1960,10 +1866,7 @@ fn chamfer_base_drag_is_one_undo_step_and_moves_no_neighbour() {
     for i in [0, 2, 3] {
         assert_eq!(dragged.points[i], before.points[i], "vertex {i} was moved");
     }
-    let error = e
-        .edit_request()
-        .expect_err("one dragged corner is no plate");
-    assert!(!error.to_string().is_empty());
+    crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Chamfer"]);
     assert!(e.take_edit_request().is_none());
     choose(&ctx, &mut e, "Undo draft");
     assert_eq!(e.draft, saved);

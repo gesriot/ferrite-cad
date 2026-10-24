@@ -8,17 +8,11 @@ use super::*;
 use crate::sketch::tests::analytic_apply::{typed_annulus, typed_circle, write_round};
 
 enum Request {
-    Circle(ferritecad_jobs::EditCircleRequest),
-    Annulus(ferritecad_jobs::EditAnnulusRequest),
+    Circle(ferritecad_jobs::EditRequest),
+    Annulus(ferritecad_jobs::EditRequest),
 }
 
 impl Request {
-    fn sketch(&self) -> ObjectId {
-        match self {
-            Self::Circle(r) => r.sketch,
-            Self::Annulus(r) => r.sketch,
-        }
-    }
     fn expected(&self) -> ferritecad_document::DocumentVersion {
         match self {
             Self::Circle(r) => r.expected,
@@ -27,11 +21,11 @@ impl Request {
     }
     fn at(&self, expected: ferritecad_document::DocumentVersion) -> Self {
         match self {
-            Self::Circle(r) => Self::Circle(ferritecad_jobs::EditCircleRequest {
+            Self::Circle(r) => Self::Circle(ferritecad_jobs::EditRequest {
                 expected,
                 ..r.clone()
             }),
-            Self::Annulus(r) => Self::Annulus(ferritecad_jobs::EditAnnulusRequest {
+            Self::Annulus(r) => Self::Annulus(ferritecad_jobs::EditRequest {
                 expected,
                 ..r.clone()
             }),
@@ -39,37 +33,16 @@ impl Request {
     }
     /// The request the peer command line takes for the same numbers.
     fn peer(&self, source: &Path, root: &Path, out: &Path) {
-        let (operation, json) = match self {
-            Self::Circle(r) => (
-                "edit-circle",
-                format!(
-                    r#"{{"request_version":1,"curve_id":"{}","center_mm":[{},{}],"radius_mm":{}}}"#,
-                    r.edit.curve_id, r.edit.center_mm[0], r.edit.center_mm[1], r.edit.radius_mm
-                ),
-            ),
-            Self::Annulus(r) => (
-                "edit-annular",
-                format!(
-                    r#"{{"request_version":1,"outer_curve_id":"{}","inner_curve_id":"{}","center_mm":[{},{}],"outer_radius_mm":{},"inner_radius_mm":{}}}"#,
-                    r.edit.outer_curve_id,
-                    r.edit.inner_curve_id,
-                    r.edit.center_mm[0],
-                    r.edit.center_mm[1],
-                    r.edit.outer_radius_mm,
-                    r.edit.inner_radius_mm
-                ),
-            ),
+        let changes = match self {
+            Self::Circle(r) | Self::Annulus(r) => &r.changes,
         };
+        let json = ferritecad_fixtures::edit_request_json(changes).to_string();
         let file = root.join("analytic-request.json");
         std::fs::write(&file, json).expect("request");
-        let version = ferritecad_jobs::read_extrude_source(source)
-            .expect("reading")
-            .version;
+        let version = crate::sketch_facts::read(source).expect("reading").version;
         cli(&[
-            operation.as_ref(),
+            "edit".as_ref(),
             source.as_os_str(),
-            "--sketch".as_ref(),
-            self.sketch().to_string().as_ref(),
             "--expect-version".as_ref(),
             version.content.to_string().as_ref(),
             "--request".as_ref(),
@@ -91,19 +64,17 @@ fn start(
     let (tx, rx) = mpsc::channel();
     let generation = sessions
         .begin_apply(|ticket, _, cancel| match request {
-            Request::Circle(r) => spawn_apply_circle(
-                ticket,
-                r.sketch,
-                r.edit,
+            Request::Circle(r) => spawn_apply(
                 r.expected,
+                ticket,
+                r.changes.clone(),
                 cancel.clone(),
                 move |result| tx.send(result).expect("deliver"),
             ),
-            Request::Annulus(r) => spawn_apply_annulus(
-                ticket,
-                r.sketch,
-                r.edit,
+            Request::Annulus(r) => spawn_apply(
                 r.expected,
+                ticket,
+                r.changes.clone(),
                 cancel.clone(),
                 move |result| tx.send(result).expect("deliver"),
             ),
@@ -340,14 +311,11 @@ fn analytic_gate(
     root: &Path,
     source: &Path,
     numbers: &Numbers,
-    draft: impl FnOnce(
-        &Path,
-        &ferritecad_document::ExtrudeEditSource,
-    ) -> (crate::sketch::Editor, Request),
+    draft: impl FnOnce(&Path, &crate::sketch_facts::Source) -> (crate::sketch::Editor, Request),
     check_mesh: impl Fn(&[u8], bool),
 ) {
     let original = std::fs::read(source).expect("source");
-    let opened = ferritecad_jobs::read_extrude_source(source).expect("reading");
+    let opened = crate::sketch_facts::read(source).expect("reading");
     let feature = ferritecad_fixtures::expression_slot(
         &opened,
         ferritecad_document::ExpressionSlot::ExtrudeDistance,
@@ -363,7 +331,7 @@ fn analytic_gate(
 
     apply_native(&mut sessions, feature, numbers.height);
     let after_height = sessions.export_path().expect("accepted");
-    let reading = ferritecad_jobs::read_extrude_source(&after_height).expect("reading");
+    let reading = crate::sketch_facts::read(&after_height).expect("reading");
     let (form, request) = draft(&after_height, &reading);
     assert_eq!(request.expected(), reading.version, "the form's version");
 
@@ -511,7 +479,7 @@ fn analytic_gate(
     // From the saved model: Undo, then everything that must change nothing.
     move_native(&mut sessions, true);
     assert!(sessions.can_redo());
-    let current = ferritecad_jobs::read_extrude_source(&sessions.export_path().expect("accepted"))
+    let current = crate::sketch_facts::read(&sessions.export_path().expect("accepted"))
         .expect("reading")
         .version;
 
@@ -525,11 +493,13 @@ fn analytic_gate(
     assert!(sessions.can_redo(), "a refusal cut off the Redo");
     let forged = match request.at(current) {
         Request::Circle(mut r) => {
-            r.edit.radius_mm = 0.0;
+            let v = crate::transaction_tests::circle(&r);
+            crate::transaction_tests::set_circle(&mut r, 0, v.center_mm, 0.);
             Request::Circle(r)
         }
         Request::Annulus(mut r) => {
-            r.edit.inner_radius_mm = r.edit.outer_radius_mm;
+            let v = crate::transaction_tests::annulus(&r);
+            crate::transaction_tests::set_circle(&mut r, 1, v.center_mm, v.outer_radius_mm);
             Request::Annulus(r)
         }
     };
@@ -542,8 +512,7 @@ fn analytic_gate(
         let curves = stored_curves(&sessions.export_path().expect("accepted"));
         match request.at(current) {
             Request::Circle(mut r) => {
-                r.edit.center_mm = curves[0].1;
-                r.edit.radius_mm = curves[0].2;
+                crate::transaction_tests::set_circle(&mut r, 0, curves[0].1, curves[0].2);
                 Request::Circle(r)
             }
             Request::Annulus(mut r) => {
@@ -552,9 +521,8 @@ fn analytic_gate(
                 } else {
                     (curves[1], curves[0])
                 };
-                r.edit.center_mm = outer.1;
-                r.edit.outer_radius_mm = outer.2;
-                r.edit.inner_radius_mm = inner.2;
+                crate::transaction_tests::set_circle(&mut r, 0, outer.1, outer.2);
+                crate::transaction_tests::set_circle(&mut r, 1, inner.1, inner.2);
                 Request::Annulus(r)
             }
         }
@@ -603,7 +571,7 @@ fn native_a_circle_with_a_fractional_offset_is_applied_like_the_command_line() {
         "create-circle-extrude",
         r#"{"schema_version":1,"center_mm":[12.5,-7.25],"radius_mm":10.5,"height_mm":15.25}"#,
     );
-    let sketch = ferritecad_jobs::read_extrude_source(&source)
+    let sketch = crate::sketch_facts::read(&source)
         .expect("reading")
         .circle_sketches[0]
         .sketch;
@@ -671,7 +639,7 @@ fn native_an_annulus_stored_bore_first_keeps_its_roles_by_curve_uuid() {
 }
 
 fn annulus_gate(name: &str, root: &Path, source: &Path) {
-    let sketch = ferritecad_jobs::read_extrude_source(source)
+    let sketch = crate::sketch_facts::read(source)
         .expect("reading")
         .annulus_sketches[0]
         .sketch;
@@ -735,10 +703,7 @@ fn canvas_gate(
     name: &str,
     root: &Path,
     source: &Path,
-    draft: impl FnOnce(
-        &Path,
-        &ferritecad_document::ExtrudeEditSource,
-    ) -> (crate::sketch::Editor, Request),
+    draft: impl FnOnce(&Path, &crate::sketch_facts::Source) -> (crate::sketch::Editor, Request),
 ) -> (Request, Vec<u8>) {
     let original = std::fs::read(source).expect("source");
     let private = tempfile::tempdir().expect("private root");
@@ -749,7 +714,7 @@ fn canvas_gate(
     );
     let alias = sessions.logical_path().expect("logical").to_path_buf();
     let opened = sessions.export_path().expect("accepted");
-    let reading = ferritecad_jobs::read_extrude_source(&opened).expect("reading");
+    let reading = crate::sketch_facts::read(&opened).expect("reading");
     let (mut form, request) = draft(&opened, &reading);
     assert_eq!(request.expected(), reading.version, "the form's version");
 
@@ -831,16 +796,16 @@ fn canvas_gate(
 
 /// A height of the saved Extrude, read back.
 fn saved_height(path: &Path) -> f64 {
-    let reading = ferritecad_jobs::read_extrude_source(path).expect("reading");
+    let reading = crate::sketch_facts::read(path).expect("reading");
     reading
         .circle_sketches
         .iter()
-        .filter_map(|c| c.circle.as_ref().map(|c| c.height_mm))
+        .filter_map(|c| c.circle.as_ref().and_then(|c| c.height_mm))
         .chain(
             reading
                 .annulus_sketches
                 .iter()
-                .filter_map(|a| a.annulus.as_ref().map(|a| a.height_mm)),
+                .filter_map(|a| a.annulus.as_ref().and_then(|a| a.height_mm)),
         )
         .next()
         .expect("one round profile")
@@ -859,7 +824,8 @@ fn assert_circle_canvas_result(
     let Request::Circle(request) = request else {
         panic!("a circle request");
     };
-    let (centre, radius) = (request.edit.center_mm, request.edit.radius_mm);
+    let curves = requested_circles(&request, before);
+    let (centre, radius) = (curves[0].1, curves[0].2);
     eprintln!("{name} centre={centre:?} radius={radius} height=15.25");
     // An offset, fractional centre and radius, as the pointer made them.
     assert!(centre[0] != 12.5 && centre[1] != -7.25 && centre.iter().all(|c| c.fract() != 0.));
@@ -892,7 +858,15 @@ fn assert_annulus_canvas_result(
     let Request::Annulus(request) = request else {
         panic!("an annulus request");
     };
-    let edit = request.edit;
+    let mut curves = requested_circles(&request, before);
+    curves.sort_by(|a, b| b.2.total_cmp(&a.2));
+    let edit = crate::transaction_tests::AnnulusValues {
+        outer_curve_id: curves[0].0,
+        inner_curve_id: curves[1].0,
+        center_mm: curves[0].1,
+        outer_radius_mm: curves[0].2,
+        inner_radius_mm: curves[1].2,
+    };
     eprintln!(
         "{name} centre={:?} outer={} bore={} height=15.25",
         edit.center_mm, edit.outer_radius_mm, edit.inner_radius_mm
@@ -1028,7 +1002,7 @@ impl Untouched {
             "the source's STL or FBX moved"
         );
         assert_eq!(
-            ferritecad_jobs::read_extrude_source(session_copy)
+            crate::sketch_facts::read(session_copy)
                 .expect("reading")
                 .version,
             self.version,
@@ -1108,7 +1082,7 @@ fn without_a_kernel_a_circle_apply_is_refused_and_the_document_stays_clean() {
     let root = tempfile::tempdir().expect("root");
     let source = root.path().join("circle.fcad");
     write_round(&source, [12.5, -7.25], &[10.5], 15.25, false);
-    let reading = ferritecad_jobs::read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     let sketch = reading.circle_sketches[0].sketch;
     let (_form, request) = typed_circle(&source, &reading, sketch, ["1", "2"], "3");
     let original = std::fs::read(&source).expect("bytes");
@@ -1137,7 +1111,7 @@ fn without_a_kernel_a_circle_apply_is_refused_and_the_document_stays_clean() {
 /// removing it through the session offers the editor again: availability follows
 /// the accepted version, not the form that was open.
 #[test]
-fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circle_editor() {
+fn native_constraints_applied_and_removed_through_the_session_keep_the_circle_editor_available() {
     if !native() {
         return;
     }
@@ -1151,7 +1125,7 @@ fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circl
         "create-circle-extrude",
         r#"{"schema_version":1,"center_mm":[12.5,-7.25],"radius_mm":10.5,"height_mm":15.25}"#,
     );
-    let opened = ferritecad_jobs::read_extrude_source(&source).expect("reading");
+    let opened = crate::sketch_facts::read(&source).expect("reading");
     let sketch = opened.constraint_sketches[0].sketch;
     assert!(opened.circle_sketches[0].refusal.is_none());
     let private = tempfile::tempdir().expect("private root");
@@ -1169,20 +1143,17 @@ fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circl
     );
     apply_constraints_native(&mut sessions, &constraints);
     let constrained =
-        ferritecad_jobs::read_extrude_source(&sessions.export_path().expect("accepted"))
-            .expect("reading");
-    let refusal = constrained.circle_sketches[0]
-        .refusal
-        .as_deref()
-        .expect("the Circle editor is withdrawn once the profile is constrained");
-    assert!(refusal.contains("constrain"), "{refusal}");
+        crate::sketch_facts::read(&sessions.export_path().expect("accepted")).expect("reading");
+    assert!(constrained.circle_sketches[0].refusal.is_none());
+    let accepted = sessions.export_path().expect("accepted");
     let mut form = crate::sketch::Editor::default();
-    assert!(
-        !form.begin_circle_edit(&source, &constrained, constrained.circle_sketches[0].sketch),
-        "the withdrawn editor opened"
-    );
+    assert!(form.begin_circle_edit(
+        &accepted,
+        &constrained,
+        constrained.circle_sketches[0].sketch
+    ));
 
-    // Removing both constraints through the session offers it again.
+    // The same transaction path removes the constraints while keeping the editor available.
     let ids: Vec<_> = stored_constraints(&sessions.export_path().expect("accepted"))
         .iter()
         .map(|c| c.id)
@@ -1190,19 +1161,52 @@ fn native_constraints_applied_through_the_session_withdraw_and_restore_the_circl
     assert_eq!(ids.len(), 2);
     apply_constraints_native(
         &mut sessions,
-        &ferritecad_jobs::EditSketchConstraintsRequest {
-            source: source.clone(),
+        &ferritecad_jobs::EditRequest {
+            changes: crate::transaction_tests::constraint_changes(
+                &accepted,
+                sketch,
+                &(ferritecad_document::SketchConstraintEdits {
+                    remove: ids,
+                    add: Vec::new(),
+                }),
+            ),
+            source: accepted.clone(),
             expected: constrained.version,
-            sketch,
-            edits: ferritecad_document::SketchConstraintEdits {
-                remove: ids,
-                add: Vec::new(),
-            },
             destination: PathBuf::new(),
         },
     );
-    let restored = ferritecad_jobs::read_extrude_source(&sessions.export_path().expect("accepted"))
-        .expect("reading");
+    let restored =
+        crate::sketch_facts::read(&sessions.export_path().expect("accepted")).expect("reading");
     assert!(restored.circle_sketches[0].refusal.is_none());
-    assert!(form.begin_circle_edit(&source, &restored, restored.circle_sketches[0].sketch));
+    form.dismiss();
+    assert!(form.begin_circle_edit(
+        &sessions.export_path().expect("accepted"),
+        &restored,
+        restored.circle_sketches[0].sketch
+    ));
+}
+
+fn requested_circles(
+    request: &ferritecad_jobs::EditRequest,
+    before: &[(ferritecad_types::StableEntityId, [f64; 2], f64)],
+) -> Vec<(ferritecad_types::StableEntityId, [f64; 2], f64)> {
+    before
+        .iter()
+        .map(|&(id, center, radius)| {
+            let value = request
+                .changes
+                .iter()
+                .rev()
+                .find_map(|change| match change {
+                    ferritecad_document::EditChange::SetCurveGeometry {
+                        curve,
+                        geometry: ferritecad_document::SketchGeometry::Circle { center, radius },
+                        ..
+                    } if *curve == id => Some(([center.x, center.y], *radius)),
+                    _ => None,
+                })
+                .unwrap_or((center, radius));
+            (id, value.0, value.1)
+        })
+        .collect()
 }

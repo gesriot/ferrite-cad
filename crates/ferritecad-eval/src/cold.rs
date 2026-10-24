@@ -374,6 +374,7 @@ fn run<K: GeometryKernel + ?Sized>(
     // Recorded before any cache lookup, from the stored inputs alone, so a
     // restored feature says exactly what a rebuilt one would.
     let mut reaches: BTreeMap<ObjectId, Reach> = BTreeMap::new();
+    let mut cut_contacts = BTreeMap::<ObjectId, crate::cut_contact::CutContacts>::new();
     let datum_of = |sketch: ObjectId| match objects.get(&sketch).map(|o| &o.payload) {
         Some(ObjectPayload::Sketch(s)) => Ok(s.plane),
         _ => Err(CadError::input(format!("{sketch} is not a sketch"))),
@@ -493,6 +494,12 @@ fn run<K: GeometryKernel + ?Sized>(
                                 Reach::of_new_body(feature, datum_of(feature.profile)?)
                             {
                                 reaches.insert(*id, reach);
+                                if let Some(contacts) = crate::cut_contact::CutContacts::new(
+                                    request.profile(),
+                                    reach.datum,
+                                ) {
+                                    cut_contacts.insert(*id, contacts);
+                                }
                             }
                             let key = extrude_archive_key(kernel.identity(), &request, &scoped);
 
@@ -544,6 +551,15 @@ fn run<K: GeometryKernel + ?Sized>(
                                 datum_of(feature.profile)?,
                                 reach,
                             )?;
+                            // Apply the same contact guard before both cache restore and kernel work.
+                            if let Some(mut contacts) = cut_contacts.get(&previous).cloned() {
+                                contacts.add(
+                                    *id,
+                                    tool_request.profile(),
+                                    datum_of(feature.profile)?,
+                                )?;
+                                cut_contacts.insert(*id, contacts);
+                            }
                             if let Some(reach) = reach {
                                 reaches.insert(*id, reach);
                             }

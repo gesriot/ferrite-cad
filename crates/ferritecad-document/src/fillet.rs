@@ -489,8 +489,8 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
         return Err(unsupported(format!(
             "this Body ends in Fillet {} after {} Fillets in all (§28G, §28L); only the radius \
              of any Fillet (edit with fillet_radius, §28H), the plate's height (edit with extrude_distance, \
-             §28I), the base Sketch's Line coordinates (edit-sketch-copy, §28J) and its Line \
-             constraints (edit-sketch-constraints-copy, §28K) can be edited, and a Fillet added \
+             §28I), the base Sketch's Line coordinates (edit, §28J) and its Line \
+             constraints (edit, §28K) can be edited, and a Fillet added \
              on another corner (fillet-edge-copy) while fewer than {MAX_PLATE_FILLETS} are \
              rounded. Adding a Cut or a Chamfer is not supported yet",
             tip.id,
@@ -500,24 +500,12 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
     Err(unsupported(format!(
         "this Body ends in Fillet {} (§28A); only its radius (edit with fillet_radius, §28B), the \
          rounded plate's height (edit with extrude_distance, §28C), its base Sketch's coordinates \
-         (edit-sketch-copy, §28D) and that Sketch's Line constraints \
-         (edit-sketch-constraints-copy, §28E) can be edited, and another Fillet added on \
+         (edit, §28D) and that Sketch's Line constraints \
+         (edit, §28E) can be edited, and another Fillet added on \
          another corner (fillet-edge-copy, §28G, up to four, §28L). Editing the rest of a \
          filleted part, and adding a Cut after a Fillet, are not supported yet",
         tip.id
     )))
-}
-
-/// Why an editor refuses a filleted part whose Fillet is outside the frame
-/// the radius, height and Sketch edits read: [`refuse_filleted`]'s sentence
-/// naming the Fillet, and the frame's own reason.
-pub(crate) fn filleted_outside_frame(objects: &[ObjectRecord], reason: &CadError) -> CadError {
-    match refuse_filleted(objects) {
-        Err(e) => unsupported(format!(
-            "{e}. This Fillet is outside the frame those edits read: {reason}"
-        )),
-        Ok(()) => unsupported(reason.to_string()),
-    }
 }
 
 fn saved_target(
@@ -1584,18 +1572,6 @@ mod tests {
                 .is_some()
         );
         assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
-        // Its base Sketch is editable (§28D), with the Fillet as context, and
-        // so are its Line constraints (§28E).
-        assert!(
-            reading.sketches.iter().all(|s| {
-                s.refusal.is_none() && s.fillet().is_some_and(|r| r.feature == saved.id)
-            })
-        );
-        assert!(
-            reading.constraint_sketches.iter().all(|s| {
-                s.refusal.is_none() && s.fillet().is_some_and(|r| r.feature == saved.id)
-            })
-        );
     }
 
     /// A first Fillet written through the shipped preparation and writer.
@@ -1803,16 +1779,6 @@ mod tests {
                 .count(),
             2
         );
-        let one = &reading.sketches[0].fillets[0];
-        let two = &reading.sketches[0].fillets[1];
-        // §28J: the base Sketch's coordinates read both Fillets.
-        assert!(reading.sketches.iter().all(|s| s.refusal.is_none()));
-        // §28K: so do its Line constraints, with both Fillets in order.
-        for s in &reading.constraint_sketches {
-            assert_eq!(s.refusal, None);
-            assert_eq!(s.fillet().map(|f| f.feature), Some(one.feature));
-            assert_eq!(s.fillets.get(1).map(|f| f.feature), Some(two.feature));
-        }
         assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
     }
 
@@ -1951,8 +1917,9 @@ mod tests {
                 },
             )],
         };
-        let prepared = crate::prepare_sketch_constraints(&d, sketch_id, &edits).expect("prepared");
-        d.write_sketch_constraints(&prepared).expect("written");
+        let prepared =
+            crate::test_changes::constraint_changes(&d, sketch_id, &edits).expect("prepared");
+        d.write_changes(&prepared).expect("written");
 
         let choice = fillet_choices(&d, &d.objects().expect("objects"))[0].clone();
         assert_eq!(choice.refusal, None);

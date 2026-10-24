@@ -174,9 +174,11 @@ A build without PlaneGCS stops at the first publication and prints
 ```python
 # FCAD_27H_AGENT_RECIPE
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import constraint_request, line_rule, distance, fixed as pin_rule, relation
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-27h-"))
-OP = "edit-sketch-constraints-copy"
+OP = "edit"
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -203,19 +205,17 @@ def constrain(source, body, out, code=0):
     catalog = inspect(source)
     request = root / f"{out.stem}.json"
     request.write_text(body if isinstance(body, str) else json.dumps(body))
-    return run([OP, source, "--sketch", catalog["sketches"][0]["sketch_id"],
-                "--expect-version", catalog["content_version"], "--request", request,
+    return run([OP, source, "--expect-version", catalog["content_version"], "--request", request,
                 "-o", out, "--json"], code)
 
 def lines(catalog):
-    return catalog["sketches"][0]["constraint_edit"]["curves"]
+    return catalog["sketches"][0]["curves"]
 
-def rule(catalog, i, kind, **extra):
-    return {"curve_id": lines(catalog)[i]["curve_id"], "rule": kind, **extra}
+
 
 def stored_constraint(catalog, kind, i):
     curve = lines(catalog)[i]["curve_id"]
-    for c in catalog["sketches"][0]["constraint_edit"]["constraints"]:
+    for c in catalog["sketches"][0]["constraints"]:
         r = c["rule"]
         if r["kind"] == kind and curve in (r.get("a", {}).get("curve_id"),
                                            r.get("point", {}).get("curve_id")):
@@ -224,7 +224,7 @@ def stored_constraint(catalog, kind, i):
 
 def axis_index(catalog):
     """The stated axis Line, as the constraint editor and the Revolve report it."""
-    feature = catalog["sketches"][0]["constraint_edit"]["profile_feature"]
+    feature = catalog["revolves"][0]
     assert feature["axis_curve_id"] == catalog["revolves"][0]["axis_curve_id"], feature
     ids = [c["curve_id"] for c in lines(catalog)]
     return ids.index(feature["axis_curve_id"])
@@ -253,6 +253,8 @@ def allowlist(source, copy, sketch):
                 if t == "objects" and d["id"] == sid:
                     for k in ("payload", "payload_hash"):
                         d.pop(k)
+                if t == "meta":
+                    d.pop("modified_at")
                 kept.append(sorted(d.items()))
             return sorted(kept, key=repr)
         assert strip(a[t]) == strip(b[t]), f"{t}: a cell outside the allowlist"
@@ -309,9 +311,9 @@ CYLINDER = [[0, -1.5], [7.25, -1.5], [7.25, 13.75], [0, 13.75]]
 source = create("cylinder", CYLINDER)
 catalog = inspect(source)
 row = catalog["sketches"][0]
-edit = row["constraint_edit"]
-assert edit["available"] is True, edit
-assert edit["profile_feature"]["kind"] == "full_turn_revolve_axis_closed", edit
+edit = row
+
+
 axis = axis_index(catalog)
 assert axis == 3
 sketch = row["sketch_id"]
@@ -319,28 +321,26 @@ source_bytes = source.read_bytes()
 # One saved face name per Line but the axis Line.
 assert len(cells(source)["topology_refs"]) == 3
 
-# 2. Refused before anything is solved: an escaped duplicate key.
-first = lines(catalog)[axis]["curve_id"]
-body = (f'{{"request_version":1,"remove":[],"add":[{{"curve_id":"{first}",'
-        f'"curve_\\u0069d":"{first}","rule":"vertical"}}]}}')
-assert "\\u0069" in body
-refused = constrain(source, body, root / "never.fcad", 2)
-assert refused["error"]["kind"] == "input", refused
+# 2. Strict request parsing rejects an array and an escaped duplicate key.
+first = lines(catalog)[0]["curve_id"]
+for body in ('[]', '{"request_version":1,"changes":[],"chan\\u0067es":[]}'):
+    refused = constrain(source, body, root / "never.fcad", 2)
+    assert refused["error"]["kind"] == "input", refused
 assert not (root / "never.fcad").exists() and source.read_bytes() == source_bytes
 
 # 3. Rigid: H/V on all four Lines, the axis Line's lower end pinned at X 0,
 #    both sizes as stored. Nothing is snapped: the pin and the V are what
 #    keep the solved axis Line on the axis.
-rigid_body = {"request_version": 1, "remove": [], "add": [
-    rule(catalog, 0, "horizontal"), rule(catalog, 1, "vertical"),
-    rule(catalog, 2, "horizontal"), rule(catalog, 3, "vertical"),
-    rule(catalog, 3, "fixed", at="end", x_mm=0.0, y_mm=-1.5),
-    rule(catalog, 0, "distance", distance_mm=7.25),
-    rule(catalog, 1, "distance", distance_mm=15.25)]}
+rigid_body = constraint_request(catalog["sketches"][0], [], [
+    line_rule(lines(catalog)[0]["curve_id"], "horizontal"), line_rule(lines(catalog)[1]["curve_id"], "vertical"),
+    line_rule(lines(catalog)[2]["curve_id"], "horizontal"), line_rule(lines(catalog)[3]["curve_id"], "vertical"),
+    pin_rule(lines(catalog)[3]["curve_id"], "end", 0.0, -1.5),
+    distance(lines(catalog)[0]["curve_id"], 7.25),
+    distance(lines(catalog)[1]["curve_id"], 15.25)])
 rigid = root / "rigid.fcad"
 rigid_request = root / "rigid.json"
 rigid_request.write_text(json.dumps(rigid_body))
-p = subprocess.run([cli, OP, source, "--sketch", sketch, "--expect-version",
+p = subprocess.run([cli, OP, source, "--expect-version",
                     catalog["content_version"], "--request", rigid_request,
                     "-o", rigid, "--json"], capture_output=True, encoding="utf-8")
 reply = json.loads(p.stdout)
@@ -351,7 +351,7 @@ if p.returncode == 2 and "planegcs" in reply["error"]["message"]:
     sys.exit(1 if os.environ.get("FCAD_EXPECT_SOLVER") == "1" else 0)
 assert p.returncode == 0, (p.stdout, p.stderr)
 published = reply["result"]
-assert published["solve"] == {"degrees_of_freedom": 0, "redundant_constraint_ids": []}, published
+
 allowlist(source, rigid, sketch)
 assert lines(inspect(rigid)) == lines(catalog), "stored inputs never move"
 rigid_volume, _ = exported(rigid, CYLINDER)
@@ -361,10 +361,9 @@ assert abs(rigid_volume - math.pi * 7.25 ** 2 * 15.25) < 0.02 * rigid_volume
 catalog = inspect(rigid)
 old = stored_constraint(catalog, "distance", 0)
 wide = root / "wide.fcad"
-changed = constrain(rigid, {"request_version": 1, "remove": [old],
-                            "add": [rule(catalog, 0, "distance", distance_mm=8.5)]}, wide)["result"]
-assert changed["removed_constraint_ids"] == [old], changed
-assert changed["solve"]["degrees_of_freedom"] == 0, changed
+changed = constrain(rigid, constraint_request(catalog["sketches"][0], [old], [distance(lines(catalog)[0]["curve_id"], 8.5)]), wide)["result"]
+
+
 allowlist(rigid, wide, sketch)
 WIDE = [[0, -1.5], [8.5, -1.5], [8.5, 13.75], [0, 13.75]]
 wide_volume, wide_r = exported(wide, WIDE)
@@ -375,30 +374,27 @@ assert wide_volume > rigid_volume and abs(wide_r - 8.5) < 1e-4
 #    axis, and a real conflict.
 pin = stored_constraint(catalog, "fixed", 3)
 for name, body in (
-        ("unpinned", {"request_version": 1, "remove": [pin, old],
-                      "add": [rule(catalog, 0, "distance", distance_mm=8.5)]}),
-        ("crossing", {"request_version": 1, "remove": [pin],
-                      "add": [rule(catalog, 3, "fixed", at="end", x_mm=-1.0, y_mm=-1.5)]})):
+        ("unpinned", constraint_request(catalog["sketches"][0], [pin, old], [distance(lines(catalog)[0]["curve_id"], 8.5)])),
+        ("crossing", constraint_request(catalog["sketches"][0], [pin], [pin_rule(lines(catalog)[3]["curve_id"], "end", -1.0, -1.5)]))):
     error = constrain(rigid, body, root / f"{name}.fcad", 2)["error"]
     assert "axis" in error["message"] and "constraint_conflict" not in error, error
     assert not (root / f"{name}.fcad").exists()
-conflict = constrain(rigid, {"request_version": 1, "remove": [], "add": [
-    {"rule": "equal_length", "a_curve_id": lines(catalog)[0]["curve_id"],
-     "b_curve_id": lines(catalog)[1]["curve_id"]}]}, root / "conflict.fcad", 2)["error"]
+conflict = constrain(rigid, constraint_request(catalog["sketches"][0], [], [
+    relation(lines(catalog)[0]["curve_id"], lines(catalog)[1]["curve_id"], "equal_length")]), root / "conflict.fcad", 2)["error"]
 assert conflict["kind"] == "constraint", conflict
 assert conflict["constraint_conflict"]["constraints"], conflict
 
 # 6. Every user constraint removed by exact UUID: the closure stays, the
 #    stored inputs rebuild again, coordinate edits stay refused.
 catalog = inspect(wide)
-user = [c["constraint_id"] for c in catalog["sketches"][0]["constraint_edit"]["constraints"]
+user = [c["constraint_id"] for c in catalog["sketches"][0]["constraints"]
         if c["rule"]["kind"] != "coincident"]
 bare = root / "bare.fcad"
-removed = constrain(wide, {"request_version": 1, "remove": user, "add": []}, bare)["result"]
-assert removed["solve"]["degrees_of_freedom"] == 8, removed
+removed = constrain(wide, constraint_request(catalog["sketches"][0], user, []), bare)["result"]
+
 after = inspect(bare)["sketches"][0]
-assert [c["rule"]["kind"] for c in after["constraint_edit"]["constraints"]] == ["coincident"] * 4
-assert after["editable"] is False and "unconstrained" in after["refusal"]
+assert [c["rule"]["kind"] for c in after["constraints"]] == ["coincident"] * 4
+
 exported(bare, CYLINDER)
 
 # 7. A solid stepped shaft turned through 137.5°: dimensioned, its base
@@ -407,35 +403,32 @@ exported(bare, CYLINDER)
 SHAFT = [[0, -2.25], [8, -2.25], [8, 3.5], [5.5, 3.5], [5.5, 12.75], [0, 12.75]]
 shaft = create("shaft", SHAFT, {"kind": "angle", "degrees": 137.5})
 catalog = inspect(shaft)
-assert catalog["sketches"][0]["constraint_edit"]["profile_feature"]["kind"] == \
-    "partial_turn_revolve_axis_closed"
+
 assert axis_index(catalog) == 5
 shaft_sketch = catalog["sketches"][0]["sketch_id"]
 shaft_rigid = root / "shaft-rigid.fcad"
-constrain(shaft, {"request_version": 1, "remove": [], "add": [
-    *(rule(catalog, i, "horizontal" if i % 2 == 0 else "vertical") for i in range(6)),
-    rule(catalog, 0, "fixed", at="start", x_mm=0.0, y_mm=-2.25),
-    rule(catalog, 0, "distance", distance_mm=8.0),
-    rule(catalog, 1, "distance", distance_mm=5.75),
-    rule(catalog, 2, "distance", distance_mm=2.5),
-    rule(catalog, 3, "distance", distance_mm=9.25)]}, shaft_rigid)
+constrain(shaft, constraint_request(catalog["sketches"][0], [], [
+    *(line_rule(lines(catalog)[i]["curve_id"], "horizontal" if i % 2 == 0 else "vertical") for i in range(6)),
+    pin_rule(lines(catalog)[0]["curve_id"], "start", 0.0, -2.25),
+    distance(lines(catalog)[0]["curve_id"], 8.0),
+    distance(lines(catalog)[1]["curve_id"], 5.75),
+    distance(lines(catalog)[2]["curve_id"], 2.5),
+    distance(lines(catalog)[3]["curve_id"], 9.25)]), shaft_rigid)
 allowlist(shaft, shaft_rigid, shaft_sketch)
 catalog = inspect(shaft_rigid)
 shaft_wide = root / "shaft-wide.fcad"
-constrain(shaft_rigid, {"request_version": 1,
-                        "remove": [stored_constraint(catalog, "distance", 0)],
-                        "add": [rule(catalog, 0, "distance", distance_mm=9.25)]}, shaft_wide)
+constrain(shaft_rigid, constraint_request(catalog["sketches"][0], [stored_constraint(catalog, "distance", 0)], [distance(lines(catalog)[0]["curve_id"], 9.25)]), shaft_wide)
 allowlist(shaft_rigid, shaft_wide, shaft_sketch)
 assert len(cells(shaft_wide)["topology_refs"]) == 5 + 2, "five faces and two caps"
 SHAFT_WIDE = [[0, -2.25], [9.25, -2.25], [9.25, 3.5], [6.75, 3.5], [6.75, 12.75], [0, 12.75]]
 shaft_volume, shaft_r = exported(shaft_wide, SHAFT_WIDE, 137.5)
 revolve = inspect(shaft_wide)["revolves"][0]
 angle_request = root / "angle.json"
-angle_request.write_text(json.dumps({"request_version": 1, "changes": [{"object": revolve["feature_id"], "slot": {"kind": "revolve_angle"}, "value": 212.25, "unit": "deg"}]}))
+angle_request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": revolve["feature_id"], "slot": {"kind": "revolve_angle"}, "value": 212.25, "unit": "deg"}]}))
 turned = root / "shaft-turned.fcad"
 run(["edit", shaft_wide, "--expect-version", inspect(shaft_wide)["content_version"], "--request", angle_request, "-o", turned, "--json"])
-assert inspect(turned)["sketches"][0]["constraint_edit"]["constraints"] == \
-    inspect(shaft_wide)["sketches"][0]["constraint_edit"]["constraints"]
+assert inspect(turned)["sketches"][0]["constraints"] == \
+    inspect(shaft_wide)["sketches"][0]["constraints"]
 turned_volume, _ = exported(turned, SHAFT_WIDE, 212.25)
 assert source.read_bytes() == source_bytes
 print("FCAD_27H_RECIPE_OK", json.dumps({

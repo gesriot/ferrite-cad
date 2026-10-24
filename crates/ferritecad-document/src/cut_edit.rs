@@ -171,42 +171,116 @@ pub(crate) struct CutHistory {
     pub(crate) cuts: Vec<SavedCircularCut>,
 }
 
-impl CutHistory {
-    /// Keep the saved output catalogue consistent until D3 derives names during rebuild.
-    pub(crate) fn missing_output_references(
-        &self,
-        document: &Document,
-    ) -> Result<Vec<TopologyRef>> {
-        let objects = document.objects()?;
-        let extrude = |id| match objects.iter().find(|o| o.id == id).map(|o| &o.payload) {
-            Some(ObjectPayload::Extrude(e)) => Ok(e),
-            _ => Err(CadError::input(format!("missing history extrusion {id}"))),
+/// The output names the written candidate's Cut histories give and the saved
+/// catalogue lacks, so the catalogue stays consistent with the numbers until
+/// generative naming (ADR 0006 D3) derives names during rebuild and removes
+/// this step. Bodies outside the circular Cut history structure need none here.
+pub(crate) fn candidate_output_references(document: &Document) -> Result<Vec<TopologyRef>> {
+    let objects = document.objects()?;
+    let stored = document.topology_refs()?;
+    let mut missing = Vec::new();
+    for object in &objects {
+        let ObjectPayload::Body(Body {
+            tip_feature: Some(tip),
+        }) = &object.payload
+        else {
+            continue;
         };
-        let height = blind_literal(extrude(self.target.base_feature)?, "base extrusion")?;
-        let stored = document.topology_refs()?;
-        let mut ancestors = Vec::new();
-        let mut missing = Vec::new();
-        for cut in &self.cuts {
-            let mut tool = cut.tool();
-            tool.extent = saved_extent(extrude(cut.feature)?, "cut")?;
-            tool.leaves_a_floor = tool.extent.leaves_a_floor(height);
+        if let Some(wanted) = candidate_history_references(&objects, *tip) {
             missing.extend(
-                history_references(
-                    tool.feature,
-                    tool.tool_curve,
-                    &self.target.profile_segments,
-                    tool.leaves_a_floor,
-                    self.target.base_feature,
-                    &ancestors,
-                )
-                .into_iter()
-                .filter(|want| !stored.iter().any(|r| same_meaning(r, want))),
+                wanted
+                    .into_iter()
+                    .filter(|want| !stored.iter().chain(&missing).any(|r| same_meaning(r, want)))
+                    .collect::<Vec<_>>(),
             );
-            ancestors.push(tool);
         }
-        Ok(missing)
     }
+    Ok(missing)
+}
 
+fn candidate_history_references(
+    objects: &[ObjectRecord],
+    tip: ObjectId,
+) -> Option<Vec<TopologyRef>> {
+    let get = |id| objects.iter().find(|o| o.id == id).map(|o| &o.payload);
+    let mut cursor = tip;
+    let mut seen = BTreeSet::new();
+    let mut chain = Vec::new();
+    let (base_id, base) = loop {
+        if !seen.insert(cursor) {
+            return None;
+        }
+        let ObjectPayload::Extrude(extrude) = get(cursor)? else {
+            return None;
+        };
+        if extrude.reversed {
+            return None;
+        }
+        match (extrude.operation, extrude.previous) {
+            (SolidOperation::NewBody, None) => break (cursor, extrude),
+            (SolidOperation::Cut, Some(previous)) => {
+                chain.push((cursor, extrude));
+                cursor = previous;
+            }
+            _ => return None,
+        }
+    };
+    let EndCondition::Blind { distance } = &base.end_condition else {
+        return None;
+    };
+    let ObjectPayload::Sketch(part) = get(base.profile)? else {
+        return None;
+    };
+    let segments: Vec<_> = part
+        .curves
+        .iter()
+        .filter(|c| !c.construction)
+        .map(|c| matches!(c.geometry, SketchGeometry::Line { .. }).then_some(c.id))
+        .collect::<Option<_>>()?;
+    if segments.len() < 3 {
+        return None;
+    }
+    let mut ancestors = Vec::new();
+    let mut wanted = Vec::new();
+    for (feature, cut) in chain.into_iter().rev() {
+        let ObjectPayload::Sketch(sketch) = get(cut.profile)? else {
+            return None;
+        };
+        if sketch.plane != part.plane {
+            return None;
+        }
+        let curves: Vec<_> = sketch.curves.iter().filter(|c| !c.construction).collect();
+        let [curve] = curves.as_slice() else {
+            return None;
+        };
+        let SketchGeometry::Circle { center, radius } = curve.geometry else {
+            return None;
+        };
+        let extent = match &cut.end_condition {
+            EndCondition::Blind { distance } => CutExtent::Blind {
+                depth_mm: distance.value(),
+            },
+            EndCondition::ThroughAll => CutExtent::ThroughAll,
+            _ => return None,
+        };
+        let floor = extent.leaves_a_floor(distance.value());
+        wanted.extend(history_references(
+            feature, curve.id, &segments, floor, base_id, &ancestors,
+        ));
+        ancestors.push(SavedCutTool {
+            feature,
+            tool_sketch: cut.profile,
+            tool_curve: curve.id,
+            center_mm: [center.x, center.y],
+            radius_mm: radius,
+            extent,
+            leaves_a_floor: floor,
+        });
+    }
+    Some(wanted)
+}
+
+impl CutHistory {
     /// §28A: the plate a Fillet may round, which is this history with no Cut.
     pub(crate) fn target_for_fillet(&self, body: ObjectId) -> Result<SavedCutTarget> {
         if self.target.body != body {
@@ -237,7 +311,6 @@ impl CutHistory {
 pub(crate) struct CutCatalog {
     pub bodies: Vec<CutChoice>,
     pub features: Vec<CutParameterChoice>,
-    pub sketches: Vec<crate::SketchChoice>,
 }
 
 pub(crate) fn cut_catalog(document: &Document, objects: &[ObjectRecord]) -> CutCatalog {
@@ -283,12 +356,7 @@ pub(crate) fn cut_catalog(document: &Document, objects: &[ObjectRecord]) -> CutC
             }
         })
         .collect();
-    let sketches = crate::sketch_edit::choices_with_history(document, objects, history.as_ref());
-    CutCatalog {
-        bodies,
-        features,
-        sketches,
-    }
+    CutCatalog { bodies, features }
 }
 
 pub fn cut_choices(document: &Document, objects: &[ObjectRecord]) -> Vec<CutChoice> {
@@ -301,30 +369,6 @@ pub(crate) fn supported(
     object: &ObjectRecord,
 ) -> Result<SavedCutTarget> {
     saved_history(document, objects)?.add_target(object.id)
-}
-
-/// Validate a changed base against every unchanged, absolute tool — near the
-/// change or not. Called by the coordinate editor's shared
-/// draft/prepare/writer check.
-pub(crate) fn validate_base(
-    curves: &[SketchCurve],
-    height_mm: f64,
-    tools: &[SavedCutTool],
-) -> Result<()> {
-    let boundary = CutBoundary::read(curves, height_mm)?;
-    for tool in tools {
-        validate(
-            height_mm,
-            &boundary,
-            &CircularCut {
-                center_mm: tool.center_mm,
-                radius_mm: tool.radius_mm,
-                extent: tool.extent,
-            },
-        )
-        .map_err(|e| CadError::input(format!("Cut {}: {e}", tool.feature)))?;
-    }
-    Ok(())
 }
 
 impl CutChoice {
@@ -350,8 +394,7 @@ fn validate_target(target: &SavedCutTarget, cut: &CircularCut) -> Result<CircleE
 fn validate_disks(cut: &CircularCut, other: &SavedCutTool) -> Result<()> {
     let center = other.center_mm;
     let radius = other.radius_mm;
-    let gap =
-        (cut.center_mm[0] - center[0]).hypot(cut.center_mm[1] - center[1]) - cut.radius_mm - radius;
+    let [gap, _] = crate::circle_clearances(cut.center_mm, cut.radius_mm, center, radius);
     if !gap.is_finite() || gap <= WALL_CLEARANCE_MM {
         return Err(CadError::input(format!(
             "the circular disk conflicts with Cut {}: disks must be separate by more than {WALL_CLEARANCE_MM} mm; gap is {gap} mm",
@@ -1044,7 +1087,32 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
     // Named first, so every editor built on this reader says why a filleted
     // part is not its target rather than reporting a shape mismatch.
     crate::fillet::refuse_filleted(objects)?;
-    read_history(document, objects, &[], false)
+    read_history(document, objects, &[], false).map_err(|source| {
+        let has_cut = objects.iter().any(|o| {
+            matches!(&o.payload, ObjectPayload::Extrude(e) if e.operation == SolidOperation::Cut)
+        });
+        if !has_cut {
+            return source;
+        }
+        CadError::Context {
+            kind: source.kind(),
+            message: format!(
+                "{source}; this command edits only the saved Cut histories it can read; use edit \
+                 to change the part or tool"
+            ),
+            source: Box::new(source),
+        }
+    })
+}
+
+/// A reader refusal about one saved Cut, naming it: the document, not the
+/// request, is what this command cannot read.
+fn saved_cut_refusal(cut: ObjectId, source: CadError) -> CadError {
+    CadError::Context {
+        kind: source.kind(),
+        message: format!("saved Cut {cut}: {source}"),
+        source: Box::new(source),
+    }
 }
 
 /// §28F: the same reader, asked about the plate a new Fillet would round.
@@ -1276,19 +1344,22 @@ fn read_history(
         let ObjectPayload::Sketch(sketch) = &tool.payload else {
             return Err(unsupported("the Cut's profile is not a Sketch"));
         };
+        let refusal = |source| saved_cut_refusal(record.id, source);
         if sketch.plane != plane.id || !sketch.constraints.is_empty() {
-            return Err(unsupported(
+            return Err(refusal(unsupported(
                 "this slice edits an unconstrained tool on the part's base datum",
-            ));
+            )));
         }
         let [curve] = sketch.curves.as_slice() else {
-            return Err(unsupported("the Cut's tool Sketch draws one circle"));
+            return Err(refusal(unsupported(
+                "the Cut's tool Sketch draws one circle",
+            )));
         };
         if curve.construction {
-            return Err(unsupported("construction geometry cuts nothing"));
+            return Err(refusal(unsupported("construction geometry cuts nothing")));
         }
         let SketchGeometry::Circle { center, radius } = curve.geometry else {
-            return Err(unsupported("this slice edits a circular tool"));
+            return Err(refusal(unsupported("this slice edits a circular tool")));
         };
         let extent = saved_extent(cut, "cut")?;
         let numbers = CircularCut {
@@ -1296,9 +1367,9 @@ fn read_history(
             radius_mm: radius,
             extent,
         };
-        validate(height_mm, &boundary, &numbers)?;
+        validate(height_mm, &boundary, &numbers).map_err(refusal)?;
         for previous in &saved {
-            validate_disks(&numbers, &previous.tool())?;
+            validate_disks(&numbers, &previous.tool()).map_err(refusal)?;
         }
         let previous = cut.previous.expect("checked history link");
         expected.extend([
@@ -1330,14 +1401,21 @@ fn read_history(
         );
         let mut remaining = stored.clone();
         for want in wanted {
-            let position = remaining.iter().position(|r| same_meaning(r, &want)).ok_or_else(||
-                unsupported("the saved Cut does not name the faces this build gives a cut of its numbers"))?;
+            let position = remaining
+                .iter()
+                .position(|r| same_meaning(r, &want))
+                .ok_or_else(|| {
+                    refusal(unsupported(
+                        "the saved Cut does not name the faces this build gives a cut of its \
+                         numbers",
+                    ))
+                })?;
             remaining.remove(position);
         }
         if !remaining.is_empty() {
-            return Err(unsupported(
+            return Err(refusal(unsupported(
                 "the saved Cut names more faces than a cut of its numbers gives",
-            ));
+            )));
         }
         let floor_reference = stored
             .iter()

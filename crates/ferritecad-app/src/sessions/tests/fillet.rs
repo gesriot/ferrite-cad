@@ -36,13 +36,13 @@ pub(super) fn apply(s: &mut Sessions, r: &EditRequest) -> Edited {
 }
 fn request(s: &Sessions, index: usize, radius_mm: f64) -> EditRequest {
     let source = s.export_path().expect("current");
-    let reading = read_extrude_source(&source).expect("reading");
+    let reading = crate::sketch_facts::read(&source).expect("reading");
     EditRequest {
         source,
         expected: reading.version,
 
         changes: vec![
-            ferritecad_document::ExpressionChange::constant(
+            ferritecad_document::EditChange::constant(
                 selected(&reading, index).feature,
                 ferritecad_document::ExpressionSlot::FilletRadius,
                 radius_mm,
@@ -58,22 +58,29 @@ pub(super) fn peer(source: &Path, r: &EditRequest, out: &Path) {
         &file,
         format!(
             r#"{{"request_version":1,"radius_mm":{}}}"#,
-            r.changes[0].expression.value()
+            r.changes[0]
+                .expression()
+                .expect("numeric form contains an expression change")
+                .value()
         ),
     )
     .expect("request");
     {
         let request = crate::edits::tests::expression_request(
-            &r.changes[0].object.to_string(),
+            &r.changes[0].object().to_string(),
             "fillet_radius",
-            &r.changes[0].expression.value().to_string(),
+            &r.changes[0]
+                .expression()
+                .expect("numeric form contains an expression change")
+                .value()
+                .to_string(),
             "mm",
         );
         cli(&[
             "edit".as_ref(),
             source.as_os_str(),
             "--expect-version".as_ref(),
-            read_extrude_source(source)
+            crate::sketch_facts::read(source)
                 .expect("reading")
                 .version
                 .content
@@ -159,16 +166,9 @@ fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     s.status.clone()
 }
 pub(super) fn history(path: &Path) -> Vec<SavedFillet> {
-    let reading = read_extrude_source(path).expect("reading");
-    (0..reading
-        .expression_slots
-        .iter()
-        .filter(|s| s.slot == ferritecad_document::ExpressionSlot::FilletRadius)
-        .cloned()
-        .collect::<Vec<_>>()
-        .len())
-        .map(|i| selected(&reading, i))
-        .collect()
+    let d = Document::open_read_only(path).expect("document");
+    ferritecad_document::saved_fillets(&d, &d.objects().expect("objects"))
+        .expect("structural history")
 }
 pub(super) fn cold(path: &Path, width: f64, depth: f64, height: f64) -> f64 {
     let d = Document::open_read_only(path).expect("document");
@@ -340,26 +340,35 @@ fn gate(count: usize, name: &str) {
     peers = ph;
     accepted.push(s.export_path().expect("height"));
     let current = s.export_path().expect("current");
-    let reading = read_extrude_source(&current).expect("reading");
-    let mut v = ferritecad_jobs::EditSketchRequest {
+    let reading = crate::sketch_facts::read(&current).expect("reading");
+    let mut v = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::vertex_changes(
+            &(current),
+            initial[0].profile,
+            &(reading
+                .sketches
+                .iter()
+                .find(|c| c.sketch == initial[0].profile)
+                .expect("base")
+                .vertices
+                .clone()
+                .expect("vertices")),
+        ),
         source: current,
         expected: reading.version,
-        sketch: initial[0].profile,
-        vertices: reading
-            .sketches
-            .iter()
-            .find(|c| c.sketch == initial[0].profile)
-            .expect("base")
-            .vertices
-            .clone()
-            .expect("vertices"),
         destination: PathBuf::new(),
     };
-    for p in &mut v.vertices {
+    let mut vertices = crate::transaction_tests::vertices(&v);
+    for p in &mut vertices {
         if p.start_mm[0] == -4.5 {
             p.start_mm[0] = -5.75;
         }
     }
+    v.changes = crate::transaction_tests::vertex_changes(
+        &v.source,
+        crate::transaction_tests::sketch(&v),
+        &vertices,
+    );
     let pv = root.path().join("vertices.fcad");
     sketch_peer(&peers, &v, root.path(), &pv);
     apply_sketch_native(&mut s, v);
@@ -369,8 +378,8 @@ fn gate(count: usize, name: &str) {
     let indices = if count == 1 { vec![0] } else { vec![0, 1, 3] };
     for (step, index) in indices.into_iter().enumerate() {
         let current = s.export_path().expect("current");
-        let reading = read_extrude_source(&current).expect("reading");
-        let chosen = selected(&reading, index);
+        let reading = crate::sketch_facts::read(&current).expect("reading");
+        let chosen = history(&current)[index].clone();
         let radius = chosen.radius_mm + 0.375;
         let (mut form, r) =
             typed_radius(&current, &reading, &s, chosen.feature, &radius.to_string());
@@ -385,10 +394,13 @@ fn gate(count: usize, name: &str) {
                 .into_iter()
                 .find(|f| f.feature == old.feature)
                 .expect("UUID");
-            if old.feature == r.changes[0].object {
+            if old.feature == r.changes[0].object() {
                 assert_eq!(
                     new.radius_mm,
-                    r.changes[0].expression.value(),
+                    r.changes[0]
+                        .expression()
+                        .expect("numeric form contains an expression change")
+                        .value(),
                     "selected Fillet"
                 );
             } else {
@@ -456,13 +468,17 @@ fn gate(count: usize, name: &str) {
     let bad = request(&s, 0, 6.25);
     assert!(refuse(&mut s, &bad).contains("too large"));
     let r = request(&s, 0, chosen.radius_mm + 0.125);
-    let reading = read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let (form, _) = typed_radius(
         &current,
         &reading,
         &s,
-        r.changes[0].object,
-        &r.changes[0].expression.value().to_string(),
+        r.changes[0].object(),
+        &r.changes[0]
+            .expression()
+            .expect("numeric form contains an expression change")
+            .value()
+            .to_string(),
     );
     let draft = draft_state(&form);
     let disk = std::fs::read(&source).expect("disk");
@@ -614,14 +630,17 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
     ));
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
-    let cr = ferritecad_jobs::EditSketchConstraintsRequest {
+    let cr = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::constraint_changes(
+            &(source.clone()),
+            chosen.profile,
+            &(SketchConstraintEdits {
+                remove: Vec::new(),
+                add,
+            }),
+        ),
         source: source.clone(),
         expected: reading.version,
-        sketch: chosen.profile,
-        edits: SketchConstraintEdits {
-            remove: Vec::new(),
-            add,
-        },
         destination: PathBuf::new(),
     };
     apply_constraints_native(&mut s, &cr);
@@ -639,7 +658,7 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
     drop(dd);
     let (mut form, r) = typed_radius(
         &current,
-        &read_extrude_source(&current).expect("reading"),
+        &crate::sketch_facts::read(&current).expect("reading"),
         &s,
         chosen.feature,
         "7.125",
@@ -681,8 +700,8 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
     assert!(s.can_redo());
     for (index, value, need) in [(0, "7.25", "too large"), (2, "7.125", "Line")] {
         let current = s.export_path().expect("current");
-        let reading = read_extrude_source(&current).expect("reading");
-        let saved = selected(&reading, index);
+        let reading = crate::sketch_facts::read(&current).expect("reading");
+        let saved = history(&current)[index].clone();
         let (mut form, r) = typed_radius(&current, &reading, &s, saved.feature, value);
         let draft = draft_state(&form);
         let before = (
@@ -743,17 +762,22 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
         .expect("horizontal length")
         .id;
     drop(d);
-    let square = ferritecad_jobs::EditSketchConstraintsRequest {
+    let square = ferritecad_jobs::EditRequest {
+        changes: crate::transaction_tests::constraint_changes(
+            &(current.clone()),
+            chosen.profile,
+            &(SketchConstraintEdits {
+                remove: vec![width],
+                add: vec![line(
+                    lines[1],
+                    LineConstraintKind::Distance(LineLengthMm::new(14.25).expect("width")),
+                )],
+            }),
+        ),
         source: current.clone(),
-        expected: read_extrude_source(&current).expect("reading").version,
-        sketch: chosen.profile,
-        edits: SketchConstraintEdits {
-            remove: vec![width],
-            add: vec![line(
-                lines[1],
-                LineConstraintKind::Distance(LineLengthMm::new(14.25).expect("width")),
-            )],
-        },
+        expected: crate::sketch_facts::read(&current)
+            .expect("reading")
+            .version,
         destination: PathBuf::new(),
     };
     apply_constraints_native(&mut s, &square);
@@ -768,9 +792,9 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
         assert!(matches!(apply(&mut s, &r), Edited::Show(_)));
         move_native(&mut s, true);
         let current = s.export_path().expect("square");
-        let reading = read_extrude_source(&current).expect("reading");
-        let fourth = selected(&reading, 3);
-        let beside = selected(&reading, neighbour);
+        let reading = crate::sketch_facts::read(&current).expect("reading");
+        let fourth = history(&current)[3].clone();
+        let beside = history(&current)[neighbour].clone();
         let shared = fourth
             .neighbours
             .iter()
@@ -824,4 +848,93 @@ fn mixed_radius_apply_uses_occt_without_solver() {
         return;
     }
     gate(4, "fillet-mixed");
+}
+
+#[test]
+fn native_vertex_form_moves_a_filleted_side_and_keeps_refusals_atomic() {
+    if !native() {
+        return;
+    }
+    let (_root, source, reading) = fixture(1);
+    let fillet = selected(&reading, 0);
+    let original = std::fs::read(&source).expect("source");
+    let mut session = Sessions::default();
+    session.adopt(crate::sessions::test_open::open(&source).expect("open"));
+    let (mut form, edit) =
+        crate::sketch::tests::typed_apply(&source, &reading, fillet.profile, "33", "31");
+    assert!(
+        matches!(apply(&mut session, &edit), Edited::Show(_)),
+        "{}",
+        session.status
+    );
+    form.finish_session_change();
+    let accepted = session.export_path().expect("accepted");
+    let accepted_cells = sql(&accepted);
+    cold(&accepted, 35.5, 12.25, 6.75);
+    move_native(&mut session, true);
+    assert!(!session.dirty());
+    assert_eq!(sql(&session.export_path().expect("undo")), sql(&source));
+    move_native(&mut session, false);
+    assert_eq!(sql(&session.export_path().expect("redo")), accepted_cells);
+    assert_eq!(std::fs::read(&source).expect("source"), original);
+    saved(&mut session, SaveTarget::InPlace);
+    let reopened = crate::sessions::test_open::open(&source).expect("reopen");
+    assert_eq!(sql(reopened.current().path()), accepted_cells);
+    cold(reopened.current().path(), 35.5, 12.25, 6.75);
+    drop(reopened);
+
+    for whole_side in [false, true] {
+        let path = session.export_path().expect("accepted");
+        let reading = crate::sketch_facts::read(&path).expect("reading");
+        let mut form = crate::sketch::Editor::default();
+        form.set_session(true, true, false);
+        assert!(form.begin_edit(&path, &reading, fillet.profile));
+        let ctx = egui::Context::default();
+        let to = if whole_side { "-4" } else { "30" };
+        if whole_side {
+            crate::sketch::tests::replace_in_form(&ctx, &mut form, "31", to);
+        } else {
+            crate::sketch::tests::replace_one_in_form(&ctx, &mut form, "31", to);
+        }
+        assert!(crate::sketch::tests::offers_apply(&ctx, &mut form));
+        crate::sketch::tests::click_label(&ctx, &mut form, "Apply vertices");
+        let request = form.take_apply_request().expect("Apply");
+        let before = state(&session);
+        assert_eq!(apply(&mut session, &request), Edited::Failed);
+        assert!(
+            session.status.contains(&fillet.feature.to_string()),
+            "{}",
+            session.status
+        );
+        assert_eq!(state(&session), before);
+        assert_eq!(
+            sql(&session.export_path().expect("accepted")),
+            accepted_cells
+        );
+        assert_eq!(sql(&source), accepted_cells);
+        assert!(form.active());
+    }
+
+    // A single vertex of an ordinary plate is accepted by the same form and worker.
+    let (_root, plain, reading) = crate::fillets::tests::plate();
+    let sketch = reading.sketches[0].sketch;
+    let mut session = Sessions::default();
+    session.adopt(crate::sessions::test_open::open(&plain).expect("plain"));
+    let mut form = crate::sketch::Editor::default();
+    form.set_session(true, true, false);
+    assert!(form.begin_edit(&plain, &reading, sketch));
+    let ctx = egui::Context::default();
+    crate::sketch::tests::replace_one_in_form(&ctx, &mut form, "33", "31");
+    crate::sketch::tests::click_label(&ctx, &mut form, "Apply vertices");
+    let request = form.take_apply_request().expect("Apply");
+    assert!(
+        matches!(apply(&mut session, &request), Edited::Show(_)),
+        "{}",
+        session.status
+    );
+    let changed = session.export_path().expect("changed");
+    let geometry = crate::sketch_facts::read(&changed).expect("new geometry");
+    let vertices = geometry.sketches[0].vertices.as_ref().expect("vertices");
+    assert_eq!(vertices.iter().filter(|v| v.start_mm[0] == 31.).count(), 1);
+    assert_eq!(vertices.iter().filter(|v| v.start_mm[0] == 33.).count(), 1);
 }

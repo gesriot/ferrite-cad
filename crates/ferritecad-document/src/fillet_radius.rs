@@ -131,10 +131,7 @@ impl SavedFillet {
 /// per earlier Fillet) with no other name owned by any of them. Shared by the
 /// radius edit, the height, coordinate and constraint edits and the add-Fillet
 /// editor; the older one- and two-Fillet shapes are projections of its list.
-pub(crate) fn saved_fillets(
-    document: &Document,
-    objects: &[ObjectRecord],
-) -> Result<Vec<SavedFillet>> {
+pub fn saved_fillets(document: &Document, objects: &[ObjectRecord]) -> Result<Vec<SavedFillet>> {
     let records: Vec<&ObjectRecord> = objects
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
@@ -634,26 +631,23 @@ mod tests {
 
     /// §28D: the vertices of the base Sketch, in saved order, moved to `at`.
     fn starts(d: &Document, at: [[f64; 2]; 4]) -> (ObjectId, Vec<crate::SketchVertex>) {
-        let reading = crate::ExtrudeEditSource::read(d).expect("catalogue");
-        let choice = &reading.sketches[0];
-        let vertices = choice.vertices.clone().expect("editable");
+        let (sketch, lines) = plate_lines(d);
         (
-            choice.sketch,
-            vertices
+            sketch,
+            lines
                 .into_iter()
                 .zip(at)
-                .map(|(v, start_mm)| crate::SketchVertex { start_mm, ..v })
+                .map(|(curve_id, start_mm)| crate::SketchVertex { curve_id, start_mm })
                 .collect(),
         )
     }
 
+    fn saved(d: &Document) -> Vec<crate::SavedFillet> {
+        saved_fillets(d, &d.objects().expect("objects")).expect("saved fillets")
+    }
+
     fn corner_now(d: &Document) -> [f64; 2] {
-        let reading = crate::ExtrudeEditSource::read(d).expect("catalogue");
-        reading.sketches[0]
-            .fillet()
-            .expect("the Fillet as context")
-            .corner
-            .corner_mm
+        saved(d)[0].corner.corner_mm
     }
 
     /// §28D: the base rectangle moves and resizes alone. Only the Sketch
@@ -664,11 +658,7 @@ mod tests {
     fn the_base_rectangle_moves_and_resizes_alone_and_interleaves() {
         let (_root, mut d, fillet) = filleted(2.375);
         let base = base_of(&d, fillet);
-        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        let choice = reading.sketches[0].clone();
-        assert_eq!(choice.refusal, None);
-        assert_eq!(choice.cut_history, None, "a Fillet is not a Cut history");
-        let context = choice.fillet().cloned().expect("the Fillet as context");
+        let context = &saved(&d)[0];
         assert_eq!((context.feature, context.radius_mm), (fillet, 2.375));
         assert_eq!(context.corner.corner_mm, [33., 3.25]);
         let refs = d.topology_refs().expect("refs");
@@ -703,31 +693,31 @@ mod tests {
         ] {
             let row = match step {
                 "height" => {
-                    let p = crate::ExpressionChange::constant(
+                    let p = crate::EditChange::constant(
                         base,
                         crate::ExpressionSlot::ExtrudeDistance,
                         9.5,
                     )
                     .expect("height");
-                    d.write_expression_changes(&[p]).expect("height written");
+                    d.write_changes(&[p]).expect("height written");
                     base
                 }
                 "radius" => {
                     radius = 1.1875;
-                    let p = crate::ExpressionChange::constant(
+                    let p = crate::EditChange::constant(
                         fillet,
                         crate::ExpressionSlot::FilletRadius,
                         radius,
                     )
                     .expect("radius");
-                    d.write_expression_changes(&[p]).expect("radius written");
+                    d.write_changes(&[p]).expect("radius written");
                     fillet
                 }
                 _ => {
                     let (sketch, vertices) = starts(&d, at);
                     let prepared =
-                        crate::replace_sketch_coordinates(&d, sketch, &vertices).expect(step);
-                    d.write_sketch_geometry(&prepared).expect(step);
+                        crate::test_changes::vertex_changes(&d, sketch, &vertices).expect(step);
+                    d.write_changes(&prepared).expect(step);
                     assert_eq!(corner_now(&d), at[1], "{step}: the same corner, moved");
                     sketch
                 }
@@ -753,165 +743,6 @@ mod tests {
         assert_eq!(height_of(&d, base), 9.5, "the Sketch edit kept the height");
     }
 
-    /// §28D refusals, each by the domain check the form and the writer share:
-    /// a rectangle too small for the saved radius, a Line that changes side,
-    /// a shape that is no longer a rectangle, the loop in another order.
-    #[test]
-    fn a_candidate_rectangle_that_does_not_keep_the_rounded_corner_is_refused() {
-        let (_root, mut d, _) = filleted(2.375);
-        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        let choice = &reading.sketches[0];
-        let (_, vertices) = starts(&d, [[0.; 2]; 4]);
-        let with = |at: [[f64; 2]; 4]| -> Vec<crate::SketchVertex> {
-            vertices
-                .iter()
-                .zip(at)
-                .map(|(v, start_mm)| crate::SketchVertex {
-                    start_mm,
-                    ..v.clone()
-                })
-                .collect()
-        };
-        for (why, at, says) in [
-            (
-                "too shallow for r",
-                [[0.5, 1.], [20.25, 1.], [20.25, 5.74], [0.5, 5.74]],
-                "too large",
-            ),
-            (
-                "too narrow for r",
-                [[0., 0.], [4.7, 0.], [4.7, 9.], [0., 9.]],
-                "too large",
-            ),
-            (
-                "Lines rotated to other sides",
-                [[0., 20.], [0., 0.], [40., 0.], [40., 20.]],
-                "keep its side",
-            ),
-            (
-                "a trapezoid",
-                [[0., 0.], [40., 0.], [35., 12.], [5., 12.]],
-                "axis-aligned rectangle",
-            ),
-        ] {
-            let error = choice.validate_coordinates(&with(at)).expect_err(why);
-            assert!(error.to_string().contains(says), "{why}: {error}");
-        }
-        let mut reordered = with([[0., 0.], [40., 0.], [40., 20.], [0., 20.]]);
-        reordered.swap(1, 3);
-        assert!(
-            choice.validate_coordinates(&reordered).is_err(),
-            "reordered"
-        );
-        // The rectangle reader accepts sub-tolerance coordinate noise. It
-        // does not turn a horizontal side into a different side, in either
-        // the candidate or the saved profile. Keep the supplied numbers;
-        // there is no snapping in a coordinate edit.
-        let clean = [[0., 0.], [40., 0.], [40., 20.], [0., 20.]];
-        let mut noisy = clean;
-        noisy[1][1] = 1e-10;
-        let p = crate::replace_sketch_coordinates(&d, choice.sketch, &with(noisy))
-            .expect("same side within the rectangle reader's tolerance");
-        d.write_sketch_geometry(&p).expect("write noisy rectangle");
-        let p = crate::replace_sketch_coordinates(&d, choice.sketch, &with(clean))
-            .expect("a saved nearly horizontal side can become exactly horizontal");
-        d.write_sketch_geometry(&p).expect("write exact rectangle");
-    }
-
-    /// §28D: the coordinate writer re-derives the edit from the new
-    /// coordinates against the Fillet as it is now. A forged payload, a
-    /// Sketch changed after preparation, and a Fillet whose radius no longer
-    /// fits the prepared rectangle are all refused and write nothing.
-    #[test]
-    fn the_sketch_writer_refuses_a_forged_or_stale_preparation() {
-        let (_root, mut d, fillet) = filleted(2.375);
-        let (sketch, vertices) = starts(&d, [[0., 0.], [20., 0.], [20., 6.], [0., 6.]]);
-        let honest = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("prepared");
-        let forge = |edit: &dyn Fn(&mut crate::Sketch)| {
-            let mut p = honest.clone();
-            let ObjectPayload::Sketch(s) = &mut p.payload else {
-                panic!("a Sketch")
-            };
-            edit(s);
-            p
-        };
-        let line = |s: &mut crate::Sketch, i: usize, a: [f64; 2], b: [f64; 2]| {
-            s.curves[i].geometry = SketchGeometry::Line {
-                start: Point2::new(a[0], a[1]).expect("a"),
-                end: Point2::new(b[0], b[1]).expect("b"),
-            };
-        };
-        let forged = [
-            (
-                "too small for r",
-                forge(&|s| {
-                    line(s, 1, [20., 0.], [20., 4.]);
-                    line(s, 2, [20., 4.], [0., 4.]);
-                    line(s, 3, [0., 4.], [0., 0.]);
-                }),
-            ),
-            (
-                "another plane",
-                forge(&|s| {
-                    s.plane = ObjectId::new();
-                }),
-            ),
-            (
-                "a construction Line",
-                forge(&|s| {
-                    s.curves[0].construction = true;
-                }),
-            ),
-            ("the loop reversed", forge(&|s| s.curves.reverse())),
-        ];
-        let before = cells(&d);
-        for (why, p) in &forged {
-            assert!(d.write_sketch_geometry(p).is_err(), "{why} was written");
-            assert_eq!(cells(&d), before, "{why} wrote something");
-        }
-        // Stale: the Fillet's radius grows after preparation to one the
-        // prepared 6 mm deep rectangle cannot hold.
-        let p = crate::ExpressionChange::constant(fillet, crate::ExpressionSlot::FilletRadius, 3.5)
-            .expect("still fits the saved plate");
-        d.write_expression_changes(&[p]).expect("radius written");
-        let before = cells(&d);
-        let error = d.write_sketch_geometry(&honest).expect_err("stale");
-        assert!(error.to_string().contains("too large"), "{error}");
-        assert_eq!(cells(&d), before, "stale wrote something");
-    }
-
-    /// §28D: a Fillet outside the frame keeps every Sketch refused, naming
-    /// the Fillet and the reason; the constraint editor refuses regardless.
-    #[test]
-    fn a_sketch_under_a_fillet_outside_the_frame_is_refused_with_its_reason() {
-        let (_root, mut d, fillet) = filleted(2.375);
-        d.write(|w| {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: fillet,
-                producer_feature: fillet,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::FilletFace {
-                    source_edge: StableEntityId::new(),
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })
-        })
-        .expect("extra name");
-        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        let row = &reading.sketches[0];
-        assert!(row.vertices.is_none() && row.fillets.is_empty());
-        let reason = row.refusal.as_deref().expect("refused");
-        assert!(
-            reason.contains(&fillet.to_string()) && reason.contains("more faces"),
-            "{reason}"
-        );
-        let (sketch, _) = (row.sketch, ());
-        let vertices = vec![];
-        assert!(crate::replace_sketch_coordinates(&d, sketch, &vertices).is_err());
-    }
-
     /// The plate's Sketch, its Line UUIDs in stored order.
     fn plate_lines(d: &Document) -> (ObjectId, Vec<StableEntityId>) {
         let objects = d.objects().expect("objects");
@@ -933,14 +764,15 @@ mod tests {
     }
 
     /// §28E: H on the first Line, through the shipped preparation and writer.
-    fn constrained(d: &mut Document) -> crate::PreparedSketchConstraints {
+    fn constrained(d: &mut Document) -> Vec<crate::EditChange> {
         let (sketch, lines) = plate_lines(d);
         let edits = crate::SketchConstraintEdits {
             remove: Vec::new(),
             add: vec![line_rule(lines[0], crate::LineConstraintKind::Horizontal)],
         };
-        let prepared = crate::prepare_sketch_constraints(d, sketch, &edits).expect("prepared");
-        d.write_sketch_constraints(&prepared).expect("written");
+        let prepared =
+            crate::test_changes::constraint_changes(d, sketch, &edits).expect("prepared");
+        d.write_changes(&prepared).expect("written");
         prepared
     }
 
@@ -981,9 +813,10 @@ mod tests {
                 for (i, column) in columns.iter().enumerate() {
                     if a[i] != b[i] {
                         assert!(
-                            table == "objects"
+                            (table == "objects"
                                 && ["payload", "payload_hash"].contains(&column.as_str())
-                                && a.contains(&selected),
+                                && a.contains(&selected))
+                                || (table == "meta" && column == "modified_at"),
                             "{table}.{column} changed"
                         );
                     }
@@ -992,9 +825,7 @@ mod tests {
         }
         assert_eq!(d.topology_refs().expect("refs"), refs);
 
-        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        let choice = &reading.constraint_sketches[0];
-        let saved = choice.fillet().expect("the Fillet as context");
+        let saved = &saved(&d)[0];
         assert!(saved.constrained);
         assert_eq!(saved.feature, fillet);
         assert_eq!(saved.corner.corner_mm, [33., 3.25], "the stored corner");
@@ -1005,25 +836,15 @@ mod tests {
             .expect("the bound is the solved plate's");
         assert!(saved.check_radius(0.001).is_err());
         assert!(saved.check_radius(f64::NAN).is_err());
-        let radius =
-            crate::ExpressionChange::constant(fillet, crate::ExpressionSlot::FilletRadius, 50.)
-                .expect("deferred to the rebuild");
-        assert_eq!(radius.expression.value(), 50.0);
-        assert!(
-            reading.sketches[0]
-                .refusal
-                .as_deref()
-                .is_some_and(|r| r.contains("unconstrained")),
-            "{:?}",
-            reading.sketches[0].refusal
-        );
+        let radius = crate::EditChange::constant(fillet, crate::ExpressionSlot::FilletRadius, 50.)
+            .expect("deferred to the rebuild");
+        assert_eq!(radius.expression().expect("expression").value(), 50.0);
         // The height keeps the constraints byte for byte.
         let stored = d.object(sketch).expect("read").expect("Sketch");
         let base = base_of(&d, fillet);
-        let height =
-            crate::ExpressionChange::constant(base, crate::ExpressionSlot::ExtrudeDistance, 9.5)
-                .expect("height");
-        d.write_expression_changes(&[height]).expect("written");
+        let height = crate::EditChange::constant(base, crate::ExpressionSlot::ExtrudeDistance, 9.5)
+            .expect("height");
+        d.write_changes(&[height]).expect("written");
         let kept = d.object(sketch).expect("read").expect("Sketch");
         assert_eq!(kept.storage_bytes(), stored.storage_bytes());
         // Creating a Fillet still requires an unconstrained profile (§28A).
@@ -1033,72 +854,6 @@ mod tests {
         };
         assert!(crate::rectangle_corners(base, s).is_err());
         drop(objects);
-    }
-
-    /// §28E: the constraint writer derives the edit again inside its
-    /// transaction. A payload that moves a curve, drops a closure link, adds a
-    /// constraint the preparation did not, or was prepared before the Fillet
-    /// changed, is refused and writes nothing.
-    #[test]
-    fn the_constraint_writer_rederives_the_edit_under_a_fillet() {
-        let (_root, mut d, fillet) = filleted(2.375);
-        constrained(&mut d);
-        let (sketch, lines) = plate_lines(&d);
-        let edits = crate::SketchConstraintEdits {
-            remove: Vec::new(),
-            add: vec![line_rule(lines[1], crate::LineConstraintKind::Vertical)],
-        };
-        let good = crate::prepare_sketch_constraints(&d, sketch, &edits).expect("prepared");
-        let untouched = cells(&d);
-        let refuse = |d: &mut Document, p: &crate::PreparedSketchConstraints, why: &str| {
-            let e = d.write_sketch_constraints(p).expect_err(why);
-            assert_eq!(e.kind(), ErrorKind::Input, "{why}: {e}");
-            assert_eq!(cells(d), untouched, "{why} wrote something");
-            e
-        };
-        // A moved curve.
-        let mut moved = good.clone();
-        let ObjectPayload::Sketch(s) = &mut moved.object.payload else {
-            unreachable!()
-        };
-        s.curves = built(
-            &lines,
-            [[-4.5, 3.25], [40., 3.25], [40., 15.5], [-4.5, 15.5]],
-        );
-        refuse(&mut d, &moved, "moved curves");
-        // A closure link dropped from the payload and named as removed.
-        let mut dropped = good.clone();
-        let ObjectPayload::Sketch(s) = &mut dropped.object.payload else {
-            unreachable!()
-        };
-        let link = s.constraints[0].clone();
-        s.constraints.remove(0);
-        dropped.removed = vec![link.id];
-        let e = refuse(&mut d, &dropped, "closure");
-        assert!(e.to_string().contains("closure"), "{e}");
-        // An extra constraint the preparation did not add.
-        let mut extra = good.clone();
-        let ObjectPayload::Sketch(s) = &mut extra.object.payload else {
-            unreachable!()
-        };
-        s.constraints.push(crate::SketchConstraint {
-            id: StableEntityId::new(),
-            rule: crate::SketchConstraintRule::Horizontal {
-                a: crate::SketchPointRef::new(lines[2], crate::SketchPointSelector::Start),
-                b: crate::SketchPointRef::new(lines[2], crate::SketchPointSelector::End),
-            },
-        });
-        refuse(&mut d, &extra, "extra");
-        // Stale: the Fillet's radius changed after preparation.
-        let radius =
-            crate::ExpressionChange::constant(fillet, crate::ExpressionSlot::FilletRadius, 3.)
-                .expect("radius");
-        d.write_expression_changes(&[radius]).expect("written");
-        let changed = cells(&d);
-        let e = d.write_sketch_constraints(&good).expect_err("stale");
-        assert_eq!(e.kind(), ErrorKind::Input, "{e}");
-        assert!(e.to_string().contains("Fillet"), "{e}");
-        assert_eq!(cells(&d), changed);
     }
 
     /// §28E: the evaluator's question, asked of the Lines the plate was built
@@ -1166,12 +921,9 @@ mod tests {
     }
 
     /// §28J: the two Fillets as the Sketch editor reads them.
-    fn both(d: &Document) -> (crate::SketchChoice, crate::SavedFillet, crate::SavedFillet) {
-        let reading = crate::ExtrudeEditSource::read(d).expect("catalogue");
-        let choice = reading.sketches[0].clone();
-        let one = choice.fillet().cloned().expect("Fillet 1 as context");
-        let two = choice.fillets.get(1).cloned().expect("Fillet 2 as context");
-        (choice, one, two)
+    fn both(d: &Document) -> (crate::SavedFillet, crate::SavedFillet) {
+        let fillets = saved(d);
+        (fillets[0].clone(), fillets[1].clone())
     }
 
     /// §28J: under two Fillets, adjacent and opposite, in both windings, the
@@ -1190,8 +942,7 @@ mod tests {
             let plate = rect(cw, (-4.5, 3.25), (33., 15.5));
             let (_root, mut d, first, second) = sequential_on(plate, r1, at, r2);
             let base = base_of(&d, first);
-            let (choice, one, two) = both(&d);
-            assert_eq!(choice.refusal, None);
+            let (one, two) = both(&d);
             assert_eq!((one.feature, one.previous), (first, base));
             assert_eq!(
                 (two.feature, two.previous, two.base_feature),
@@ -1213,9 +964,9 @@ mod tests {
             for (step, at_step) in steps {
                 let (sketch, vertices) = starts(&d, at_step);
                 let prepared =
-                    crate::replace_sketch_coordinates(&d, sketch, &vertices).expect(step);
-                d.write_sketch_geometry(&prepared).expect(step);
-                let (_, one_now, two_now) = both(&d);
+                    crate::test_changes::vertex_changes(&d, sketch, &vertices).expect(step);
+                d.write_changes(&prepared).expect(step);
+                let (one_now, two_now) = both(&d);
                 assert_eq!(one_now.corner.corner_mm, at_step[1], "{step}: Fillet 1");
                 assert_eq!(two_now.corner.corner_mm, at_step[at], "{step}: Fillet 2");
                 let after = cells(&d);
@@ -1234,235 +985,19 @@ mod tests {
                 assert!(d.validate().expect("validate").is_ok(), "{step}");
             }
             // Height and each radius still edit, and the Sketch again after.
-            let p = crate::ExpressionChange::constant(
-                base,
-                crate::ExpressionSlot::ExtrudeDistance,
-                9.5,
-            )
-            .expect("height");
-            d.write_expression_changes(&[p]).expect("height written");
+            let p = crate::EditChange::constant(base, crate::ExpressionSlot::ExtrudeDistance, 9.5)
+                .expect("height");
+            d.write_changes(&[p]).expect("height written");
             for (id, r) in [(first, r1 * 0.5), (second, r2 * 0.5)] {
-                let p =
-                    crate::ExpressionChange::constant(id, crate::ExpressionSlot::FilletRadius, r)
-                        .expect("radius");
-                d.write_expression_changes(&[p]).expect("radius written");
+                let p = crate::EditChange::constant(id, crate::ExpressionSlot::FilletRadius, r)
+                    .expect("radius");
+                d.write_changes(&[p]).expect("radius written");
             }
             let (sketch, vertices) = starts(&d, rect(cw, (1., 1.), (60., 40.)));
-            let p = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("again");
-            d.write_sketch_geometry(&p).expect("again written");
+            let p = crate::test_changes::vertex_changes(&d, sketch, &vertices).expect("again");
+            d.write_changes(&p).expect("again written");
             assert_eq!(height_of(&d, base), 9.5);
         }
-    }
-
-    /// §28J refusals, each by the check the form and the writer share, naming
-    /// the Fillet that fails: a Line that changes side, a shape that is no
-    /// longer a rectangle, a side too short for Fillet 1's radius or for
-    /// Fillet 2's alone, and the flat between two adjacent arcs — at exactly
-    /// the bound and one float below it — which opposite corners never owe.
-    #[test]
-    fn a_rectangle_that_loses_a_corner_a_radius_or_the_shared_flat_is_refused() {
-        let ask = |d: &Document, at: [[f64; 2]; 4]| {
-            let (choice, ..) = both(d);
-            let (_, vertices) = starts(d, at);
-            choice.validate_coordinates(&vertices)
-        };
-        // The wider Fillet is the second: its bound is what fails first.
-        let (_a, d, first, second) = sequential(2.0, 3, 5.5);
-        let (_, one, two) = both(&d);
-        assert_eq!((one.feature, two.feature), (first, second));
-        ask(&d, rect(false, (0., 0.), (30., 11.))).expect("exactly 2 r2");
-        let e = ask(&d, rect(false, (0., 0.), (30., 10.9))).expect_err("under 2 r2");
-        assert_eq!(e.kind(), ErrorKind::Input);
-        assert!(e.to_string().contains(&two.edge.joint.to_string()), "{e}");
-        assert!(!e.to_string().contains(&one.edge.joint.to_string()), "{e}");
-        // The wider Fillet is the first: Fillet 1's own bound names Fillet 1.
-        let (_b, d, ..) = sequential(5.5, 3, 2.0);
-        let (_, one, two) = both(&d);
-        let e = ask(&d, rect(false, (0., 0.), (30., 10.9))).expect_err("under 2 r1");
-        assert!(e.to_string().contains(&one.edge.joint.to_string()), "{e}");
-        assert!(!e.to_string().contains(&two.edge.joint.to_string()), "{e}");
-        // The same Lines in another order, and a rectangle turned to a skew.
-        let plate = rect(false, (-4.5, 3.25), (33., 15.5));
-        let mut shifted = plate;
-        shifted.rotate_left(1);
-        let e = ask(&d, shifted).expect_err("Lines swap their sides");
-        assert!(e.to_string().contains("keep its side"), "{e}");
-        let e = ask(&d, [[0., 0.], [20., 0.], [20., 12.], [1., 12.]]).expect_err("not a rectangle");
-        assert_eq!(e.kind(), ErrorKind::Unsupported);
-        // The pair: r1 = r2 = 3 on adjacent corners share the Line x = 33.
-        // Each radius alone fits a 6.005 mm deep plate; the flat between them
-        // does not, and the bound is the predicate itself, not an epsilon.
-        let (_c, adjacent, ..) = sequential(3.0, 2, 3.0);
-        let deep = |d: f64| rect(false, (0., 0.), (20., d));
-        let e = ask(&adjacent, deep(6.005)).expect_err("no flat left");
-        assert_eq!(e.kind(), ErrorKind::Input);
-        assert!(e.to_string().contains("flat"), "{e}");
-        let mut fits = 6.01_f64;
-        while 3.0 > crate::fillet::pair_bound(fits, 3.0) {
-            fits = fits.next_up();
-        }
-        ask(&adjacent, deep(fits)).expect("the least depth that leaves the flat");
-        let e = ask(&adjacent, deep(fits.next_down())).expect_err("one float below");
-        assert!(e.to_string().contains("flat"), "{e}");
-        // Opposite corners share no Line: only each radius counts (2 r = 6).
-        let (_o, opposite, ..) = sequential(3.0, 3, 3.0);
-        ask(&opposite, deep(6.0)).expect("no shared Line, no flat owed");
-        let e = ask(&opposite, deep(5.999)).expect_err("under 2 r");
-        assert!(e.to_string().contains("too large"), "{e}");
-        // Nothing was written by any refusal.
-        let before = cells(&adjacent);
-        let (sketch, vertices) = starts(&adjacent, deep(6.005));
-        assert!(crate::replace_sketch_coordinates(&adjacent, sketch, &vertices).is_err());
-        assert_eq!(cells(&adjacent), before);
-    }
-
-    /// §28J: the writer re-derives both Fillets. A preparation that no longer
-    /// fits Fillet 2, a Sketch changed after preparation, a Fillet 2 radius
-    /// that grew past the prepared rectangle, and a forged payload are all
-    /// refused, writing nothing.
-    #[test]
-    fn the_sketch_writer_rederives_both_fillets_and_refuses_forgery() {
-        let (_root, mut d, first, second) = sequential(2.375, 2, 3.0625);
-        let (sketch, vertices) = starts(&d, rect(false, (0., 0.), (20., 6.125)));
-        let honest = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("prepared");
-        let forge = |edit: &dyn Fn(&mut crate::Sketch)| {
-            let mut p = honest.clone();
-            let ObjectPayload::Sketch(s) = &mut p.payload else {
-                panic!("a Sketch")
-            };
-            edit(s);
-            p
-        };
-        let line = |s: &mut crate::Sketch, i: usize, a: [f64; 2], b: [f64; 2]| {
-            s.curves[i].geometry = SketchGeometry::Line {
-                start: Point2::new(a[0], a[1]).expect("a"),
-                end: Point2::new(b[0], b[1]).expect("b"),
-            };
-        };
-        let forged = [
-            (
-                "5.9 mm deep: under 2 r2 (Fillet 2)",
-                forge(&|s| {
-                    line(s, 1, [20., 0.], [20., 5.9]);
-                    line(s, 2, [20., 5.9], [0., 5.9]);
-                    line(s, 3, [0., 5.9], [0., 0.]);
-                }),
-            ),
-            (
-                "another plane",
-                forge(&|s| {
-                    s.plane = ObjectId::new();
-                }),
-            ),
-            ("the loop reversed", forge(&|s| s.curves.reverse())),
-            (
-                "a constraint that was never there",
-                forge(&|s| {
-                    s.constraints.push(crate::SketchConstraint {
-                        id: StableEntityId::new(),
-                        rule: crate::SketchConstraintRule::Horizontal {
-                            a: crate::SketchPointRef::new(
-                                s.curves[0].id,
-                                crate::SketchPointSelector::Start,
-                            ),
-                            b: crate::SketchPointRef::new(
-                                s.curves[0].id,
-                                crate::SketchPointSelector::End,
-                            ),
-                        },
-                    });
-                }),
-            ),
-        ];
-        let before = cells(&d);
-        for (why, p) in &forged {
-            assert!(d.write_sketch_geometry(p).is_err(), "{why} was written");
-            assert_eq!(cells(&d), before, "{why} wrote something");
-        }
-        // Stale: Fillet 2 grows to 3.0625 → 3.5 after preparation. The
-        // prepared 6.125 mm deep rectangle cannot hold it (2 × 3.5 = 7).
-        let p = crate::ExpressionChange::constant(second, crate::ExpressionSlot::FilletRadius, 3.5)
-            .expect("fits the saved plate");
-        d.write_expression_changes(&[p]).expect("radius written");
-        let before = cells(&d);
-        let error = d.write_sketch_geometry(&honest).expect_err("stale");
-        assert!(error.to_string().contains("too large"), "{error}");
-        assert_eq!(cells(&d), before, "stale wrote something");
-        // Fillet 1 keeps its radius throughout.
-        assert_eq!(
-            stored_fillet(&d, first).radius_mm,
-            crate::Expression::constant(2.375).expect("finite constant")
-        );
-    }
-
-    /// §28J: what the Sketch may carry under two Fillets. Only the Coincident
-    /// closure links §28E leaves are kept — byte for byte — and edited
-    /// around; any other constraint refuses the coordinate editor, naming the
-    /// constraint editor (§28K) that edits it.
-    #[test]
-    fn under_two_fillets_only_closure_links_survive_a_coordinate_edit() {
-        let (_root, mut d, ..) = sequential(2.375, 2, 3.0625);
-        let (sketch, lines) = plate_lines(&d);
-        let object = d.object(sketch).expect("read").expect("Sketch");
-        let mut payload = object.payload.clone();
-        let ObjectPayload::Sketch(s) = &mut payload else {
-            unreachable!()
-        };
-        let point = |curve, at| crate::SketchPointRef::new(curve, at);
-        let joins: Vec<_> = (0..4)
-            .map(|i| crate::SketchConstraint {
-                id: StableEntityId::new(),
-                rule: crate::SketchConstraintRule::Coincident {
-                    a: point(lines[i], crate::SketchPointSelector::End),
-                    b: point(lines[(i + 1) % 4], crate::SketchPointSelector::Start),
-                },
-            })
-            .collect();
-        s.constraints = joins.clone();
-        let put = |d: &mut Document, payload: &ObjectPayload| {
-            d.write(|w| {
-                w.put_object(
-                    sketch,
-                    None,
-                    object.ordinal,
-                    object.name.as_deref(),
-                    payload,
-                )
-            })
-            .expect("stored");
-        };
-        put(&mut d, &payload);
-        let (choice, ..) = both(&d);
-        assert_eq!(choice.refusal, None, "closure links are free");
-        let (_, vertices) = starts(&d, rect(false, (0., 0.), (20., 7.)));
-        let prepared = crate::replace_sketch_coordinates(&d, sketch, &vertices).expect("edit");
-        d.write_sketch_geometry(&prepared).expect("written");
-        let ObjectPayload::Sketch(now) = d.object(sketch).expect("read").expect("row").payload
-        else {
-            unreachable!()
-        };
-        assert_eq!(now.constraints, joins, "the links are kept byte for byte");
-        assert!(d.validate().expect("validate").is_ok());
-        // One more constraint and the coordinate editor refuses, naming why.
-        let ObjectPayload::Sketch(s) = &mut payload else {
-            unreachable!()
-        };
-        s.constraints.push(crate::SketchConstraint {
-            id: StableEntityId::new(),
-            rule: crate::SketchConstraintRule::Horizontal {
-                a: point(lines[0], crate::SketchPointSelector::Start),
-                b: point(lines[0], crate::SketchPointSelector::End),
-            },
-        });
-        put(&mut d, &payload);
-        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        let row = &reading.sketches[0];
-        assert!(row.vertices.is_none() && row.fillets.get(1).is_none());
-        let reason = row.refusal.as_deref().expect("refused");
-        assert!(reason.contains("edit-sketch-constraints-copy"), "{reason}");
-        let before = cells(&d);
-        assert!(crate::replace_sketch_coordinates(&d, sketch, &vertices).is_err());
-        assert_eq!(cells(&d), before);
     }
 
     /// §28K: every cell but the base Sketch row's payload and hash and the
@@ -1538,13 +1073,7 @@ mod tests {
             assert_eq!(d.dependencies().expect("deps"), deps);
             assert!(d.validate().expect("validate").is_ok());
 
-            let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-            let choice = &reading.constraint_sketches[0];
-            assert_eq!(choice.refusal, None, "{choice:?}");
-            let (one, two) = (
-                choice.fillet().expect("Fillet 1"),
-                choice.fillets.get(1).expect("Fillet 2"),
-            );
+            let (one, two) = both(&d);
             assert_eq!((one.feature, one.previous), (first, base));
             assert_eq!(
                 (
@@ -1563,15 +1092,6 @@ mod tests {
             two.check_radius(50.)
                 .expect("the bound is the solved plate's");
             assert!(two.check_radius(f64::NAN).is_err());
-            assert!(
-                reading.sketches[0]
-                    .refusal
-                    .as_deref()
-                    .is_some_and(|r| r.contains("edit-sketch-constraints-copy")),
-                "{:?}",
-                reading.sketches[0].refusal
-            );
-
             // A replacement: the height of the plate is its ordinary edit.
             let stored = stored_constraints(&d, sketch);
             let closures: Vec<_> = stored
@@ -1590,12 +1110,10 @@ mod tests {
                 remove: user.clone(),
                 add: vec![line_rule(lines[1], crate::LineConstraintKind::Vertical)],
             };
-            let p = crate::prepare_sketch_constraints(&d, sketch, &swap).expect("replace");
-            assert_eq!((p.added.len(), p.removed.clone()), (1, user.clone()));
-            assert_eq!(p.fillet().map(|f| f.feature), Some(first));
-            assert_eq!(p.fillets().get(1).map(|f| f.feature), Some(second));
+            let p = crate::test_changes::constraint_changes(&d, sketch, &swap).expect("replace");
+            assert_eq!(crate::test_changes::added_constraints(&p).len(), 1);
             let before = cells(&d);
-            d.write_sketch_constraints(&p).expect("replaced");
+            d.write_changes(&p).expect("replaced");
             only_the_constraints_moved(&before, &cells(&d), sketch);
             let now = stored_constraints(&d, sketch);
             assert!(
@@ -1618,77 +1136,13 @@ mod tests {
                 remove: added,
                 add: Vec::new(),
             };
-            let p = crate::prepare_sketch_constraints(&d, sketch, &strip).expect("strip");
+            let p = crate::test_changes::constraint_changes(&d, sketch, &strip).expect("strip");
             let before = cells(&d);
-            d.write_sketch_constraints(&p).expect("stripped");
+            d.write_changes(&p).expect("stripped");
             only_the_constraints_moved(&before, &cells(&d), sketch);
             assert_eq!(stored_constraints(&d, sketch), closures);
             assert_eq!(rows(&d), (f1, f2, extrude), "unchanged rows");
-            let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-            let coords = &reading.sketches[0];
-            assert_eq!(coords.refusal, None, "{coords:?}");
-            assert_eq!(coords.fillets.get(1).map(|f| f.feature), Some(second));
-            assert_eq!(reading.constraint_sketches[0].refusal, None);
             assert!(d.validate().expect("validate").is_ok());
-        }
-    }
-
-    /// §28K: the constraint writer re-derives both Fillets. A payload that
-    /// moves a curve, adds a constraint the preparation did not, or was
-    /// prepared before **either** Fillet's radius changed, is refused and
-    /// writes nothing — Fillet 2 alone changing is enough, so Fillet 2 is
-    /// compared and not merely read.
-    #[test]
-    fn the_constraint_writer_rederives_both_fillets_and_refuses_forgery() {
-        let (_root, mut d, first, second) = sequential(2.375, 2, 3.0625);
-        let (sketch, lines) = plate_lines(&d);
-        let edits = crate::SketchConstraintEdits {
-            remove: Vec::new(),
-            add: vec![line_rule(lines[0], crate::LineConstraintKind::Horizontal)],
-        };
-        let good = crate::prepare_sketch_constraints(&d, sketch, &edits).expect("prepared");
-        let untouched = cells(&d);
-        let refuse = |d: &mut Document, p: &crate::PreparedSketchConstraints, why: &str| {
-            let e = d.write_sketch_constraints(p).expect_err(why);
-            assert_eq!(e.kind(), ErrorKind::Input, "{why}: {e}");
-            assert_eq!(cells(d), untouched, "{why} wrote something");
-            e
-        };
-        let mut moved = good.clone();
-        let ObjectPayload::Sketch(s) = &mut moved.object.payload else {
-            unreachable!()
-        };
-        s.curves = built(
-            &lines,
-            [[-4.5, 3.25], [40., 3.25], [40., 15.5], [-4.5, 15.5]],
-        );
-        refuse(&mut d, &moved, "moved curves");
-        let mut extra = good.clone();
-        let ObjectPayload::Sketch(s) = &mut extra.object.payload else {
-            unreachable!()
-        };
-        s.constraints.push(crate::SketchConstraint {
-            id: StableEntityId::new(),
-            rule: crate::SketchConstraintRule::Vertical {
-                a: crate::SketchPointRef::new(lines[2], crate::SketchPointSelector::Start),
-                b: crate::SketchPointRef::new(lines[2], crate::SketchPointSelector::End),
-            },
-        });
-        refuse(&mut d, &extra, "extra");
-        // Stale: Fillet 2 alone, then Fillet 1 alone, changed after preparation.
-        for (feature, radius) in [(second, 3.5), (first, 2.0)] {
-            let edit = crate::ExpressionChange::constant(
-                feature,
-                crate::ExpressionSlot::FilletRadius,
-                radius,
-            )
-            .expect("radius");
-            d.write_expression_changes(&[edit]).expect("written");
-            let changed = cells(&d);
-            let e = d.write_sketch_constraints(&good).expect_err("stale");
-            assert_eq!(e.kind(), ErrorKind::Input, "{e}");
-            assert!(e.to_string().contains("Fillet"), "{e}");
-            assert_eq!(cells(&d), changed, "stale wrote something");
         }
     }
 

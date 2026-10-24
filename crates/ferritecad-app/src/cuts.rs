@@ -6,9 +6,10 @@
 //! part's own base XY datum and runs along that datum's normal. There is no
 //! face to pick here and no attachment to choose, because this slice implements
 //! neither, and a control that suggested otherwise would be promising it.
+use crate::sketch_facts::Source as ExtrudeEditSource;
 use ferritecad_document::{
     CircularCut, CircularCutEdit, CutChoice, CutExtent, CutParameterChoice, DocumentVersion,
-    ExtentVocabulary, ExtrudeEditSource,
+    ExtentVocabulary,
 };
 use ferritecad_jobs::{CircularCutRequest, EditCircularCutRequest};
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
@@ -904,7 +905,7 @@ pub(crate) mod tests {
         )
         .expect("source");
         let d = Document::open_read_only(&path).expect("doc");
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }
@@ -1230,7 +1231,7 @@ pub(crate) mod tests {
         )
         .expect("a part with a cut in it");
         let d = Document::open_read_only(&cut).expect("doc");
-        let reading = ExtrudeEditSource::read(&d).expect("snapshot");
+        let reading = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, cut, reading)
     }
@@ -1437,7 +1438,7 @@ pub(crate) mod tests {
             .expect("tool");
             d.write_circular_cut(&p).expect("link");
         }
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         let saved = source
             .cut_features
             .iter()
@@ -1513,7 +1514,7 @@ pub(crate) mod tests {
             }
             d.close().expect("close");
             let d = Document::open_read_only(&path).expect("read");
-            source = ExtrudeEditSource::read(&d).expect("snapshot");
+            source = crate::sketch_facts::Source::read(&d).expect("snapshot");
             d.close().expect("close");
             // A separate source name makes it clear this is the saved two-cut file.
             let two = root.path().join("two.fcad");
@@ -1813,7 +1814,7 @@ pub(crate) mod tests {
             .expect("cut");
             d.write_circular_cut(&p).expect("write");
         }
-        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
     }

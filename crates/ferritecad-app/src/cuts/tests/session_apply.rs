@@ -30,7 +30,10 @@ pub(crate) fn fixture(count: usize) -> (tempfile::TempDir, PathBuf, ExtrudeEditS
     )
     .expect("structural base");
     let mut d = Document::open(&path).expect("document");
-    let body = ExtrudeEditSource::read(&d).expect("reading").cut_bodies[0].body;
+    let body = crate::sketch_facts::Source::read(&d)
+        .expect("reading")
+        .cut_bodies[0]
+        .body;
     for i in 0..count {
         let slot = i * 7 % 16;
         let cut = CircularCut {
@@ -61,7 +64,7 @@ pub(crate) fn fixture(count: usize) -> (tempfile::TempDir, PathBuf, ExtrudeEditS
     )
     .expect("unordered extended fixture");
     drop(db);
-    let reading = ferritecad_jobs::read_extrude_source(&path).expect("reading");
+    let reading = crate::sketch_facts::read(&path).expect("reading");
     (root, path, reading)
 }
 pub(crate) fn selected(
@@ -317,7 +320,7 @@ fn cut_apply_dirty_discovery_copy_refusals_status_and_scene_dismissal() {
     s.finish_scene(g, Ok(()));
     assert!(s.dirty());
     let current = s.export_path().expect("current");
-    let reading = ferritecad_jobs::read_extrude_source(&current).expect("reading");
+    let reading = crate::sketch_facts::read(&current).expect("reading");
     let saved = selected(&reading, 0);
     let mut c = creates::Creates::default();
     tell(&mut c, &s);

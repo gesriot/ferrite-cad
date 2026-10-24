@@ -56,16 +56,14 @@ def main():
     before = create("constrained-before", 2.75)
     catalog = run("inspect", before, "--json")
     row = catalog["sketches"][0]
-    lines = row["constraint_edit"]["curves"]
-    ids = [c["curve_id"] for c in lines]
-    add = [{"curve_id": ids[i], "rule": "horizontal" if i % 2 == 0 else "vertical"} for i in range(4)]
-    add += [{"curve_id": ids[0], "rule": "fixed", "at": "start", "x_mm": 2.75, "y_mm": -3.25},
-            {"curve_id": ids[0], "rule": "distance", "distance_mm": 4.75},
-            {"curve_id": ids[1], "rule": "distance", "distance_mm": 12.75}]
+    from edit_requests import constraint_request, line_rule, fixed, distance
+    ids = [c["curve_id"] for c in row["curves"]]
+    add = [line_rule(ids[i], "horizontal" if i % 2 == 0 else "vertical") for i in range(4)]
+    add += [fixed(ids[0], "start", 2.75, -3.25), distance(ids[0], 4.75), distance(ids[1], 12.75)]
     req = root / "constraints.json"
-    req.write_text(json.dumps({"request_version": 1, "remove": [], "add": add}))
-    run("edit-sketch-constraints-copy", before, "--sketch", row["sketch_id"], "--expect-version",
-        catalog["content_version"], "--request", req, "-o", root / "source/constrained.fcad", "--json")
+    req.write_text(json.dumps(constraint_request(row, [], add)))
+    run("edit", before, "--expect-version", catalog["content_version"], "--request", req,
+        "-o", root / "source/constrained.fcad", "--json")
     facts = {}
     for name in ("radial", "axis", "constrained"):
         src = root / "source" / f"{name}.fcad"

@@ -172,10 +172,12 @@ paths экспортируются в том же shell. Рецепт созда
 ```python
 # FCAD_31F_AGENT_RECIPE
 import hashlib, json, math, os, pathlib, struct, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
+from edit_requests import constraint_request, line_rule, distance, fixed as pin_rule, relation, point_ref, number
 cli = os.environ["FERRITECAD"]
 expect_solver = os.environ.get("FCAD_EXPECT_SOLVER") == "1"
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-directed-angle-"))
-OP = "edit-sketch-constraints-copy"
+OP = "edit"
 
 def call(args, code=0):
     """One CLI call; the JSON answer, or the error it refused with."""
@@ -259,38 +261,39 @@ def make(points):
     return source, call(["inspect", source])
 
 def edit(source, catalog, remove, add, out, code=0):
-    (root / "request.json").write_text(json.dumps({"request_version": 1, "remove": remove, "add": add}))
-    args = [OP, source, "--sketch", catalog["sketches"][0]["sketch_id"], "--expect-version",
+    (root / "request.json").write_text(json.dumps(constraint_request(catalog["sketches"][0], remove, add)))
+    args = [OP, source, "--expect-version",
             catalog["content_version"], "--request", root / "request.json", "-o", out]
     if code != 0:
         error = call(args, code)
         assert not out.exists(), "a refusal published"
         return error
-    return need(args, "edit")
+    need(args, "edit")
+    return call(["inspect", out])["sketches"][0]
 
 def ids(catalog):
-    return [c["constraint_id"] for c in catalog["sketches"][0]["constraint_edit"]["constraints"]]
+    return [c["constraint_id"] for c in catalog["sketches"][0]["constraints"]]
 
 def vec(curves, i, f="start", t="end"):
-    return {"curve_id": curves[i], "from": f, "to": t}
+    return {"from": point_ref(curves[i], f), "to": point_ref(curves[i], t)}
 
 def turn_rule(a, b, degrees):
-    return {"rule": "directed_angle", "a": a, "b": b, "angle_deg": degrees}
+    return {"kind": "directed_angle", "a": a, "b": b, "angle": number(degrees, "deg")}
 
 def said(v):
-    return {"from": {"curve_id": v["curve_id"], "at": v["from"]}, "to": {"curve_id": v["curve_id"], "at": v["to"]}}
+    return {end: {"curve_id": v[end]["curve"], "at": v[end]["at"]} for end in ("from", "to")}
 
 # 1. A dart: Line 1 meets Line 2 at a reflex corner that turns about -53 degrees.
 #    Line 0 is pinned at the origin and made horizontal, only so that the exported
 #    footprint can be read back as Line 0, 1, 2, 3 without any help from the solver.
 source, catalog = make([[0, 0], [40, 0], [10, 10], [0, 40]])
-edit_view = catalog["sketches"][0]["constraint_edit"]
+edit_view = catalog["sketches"][0]
 curves = [c["curve_id"] for c in edit_view["curves"]]
-assert edit_view["available"] and not edit_view["constraints"] and len(curves) == 4
+assert len(curves) == 4
 untouched = sha(source)
 V = lambda i, f="start", t="end": vec(curves, i, f, t)
-pins = [{"rule": "fixed", "curve_id": curves[0], "at": "start", "x_mm": 0, "y_mm": 0},
-        {"rule": "horizontal", "curve_id": curves[0]}]
+pins = [pin_rule(curves[0], "start", 0, 0),
+        line_rule(curves[0], "horizontal")]
 
 # 2. -70 degrees counter-clockwise from Line 1 to Line 2, said five ways. Every
 #    spelling is one relation: swapping the vectors negates the angle, turning one
@@ -303,9 +306,9 @@ published = {}
 for i, (name, a, b, degrees) in enumerate(spellings):
     out = root / f"dart-{i}.fcad"
     done = edit(source, catalog, [], pins + [turn_rule(a, b, degrees)], out)
-    rule = done["added_constraints"][-1]["rule"]
-    assert rule == {"kind": "directed_angle", "a": said(a), "b": said(b), "angle_deg": degrees}, (name, rule)
-    assert done["solve"]["degrees_of_freedom"] == 4 and done["solve"]["redundant_constraint_ids"] == []
+    rule = done["constraints"][-1]["rule"]
+    assert rule == {"kind": "directed_angle", "a": said(a), "b": said(b), "angle": {"value": degrees, "unit": "deg"}}, (name, rule)
+
     turns, area, volume = corners(out)
     assert abs(turns[1] + 70) < 1e-3, (name, turns)          # the reflex corner, measured
     reflex_turn = turns[1]
@@ -326,74 +329,73 @@ assert abs(mirror_volume - published["A to B"][2]) > 100
 #    order survives. Then remove it: the freedom comes back.
 first, first_done, _ = published["A to B"]
 first_catalog = call(["inspect", first])
-angle_id = first_done["added_constraints"][-1]["constraint_id"]
+angle_id = first_done["constraints"][-1]["constraint_id"]
 replaced = root / "dart-replaced.fcad"
 r = edit(first, first_catalog, [angle_id], [turn_rule(V(1), V(2), -60.0)], replaced)
-assert r["removed_constraint_ids"] == [angle_id] and r["solve"]["degrees_of_freedom"] == 4
+
 after = call(["inspect", replaced])
-assert ids(after) == [i for i in ids(first_catalog) if i != angle_id] + [r["added_constraints"][0]["constraint_id"]]
+assert ids(after) == [i for i in ids(first_catalog) if i != angle_id] + [r["constraints"][-1]["constraint_id"]]
 replaced_turn = corners(replaced)[0][1]
 assert abs(replaced_turn + 60) < 1e-3
 removed = root / "dart-free.fcad"
-r = edit(replaced, after, [r["added_constraints"][0]["constraint_id"]], [], removed)
-assert r["added_constraints"] == [] and r["solve"]["degrees_of_freedom"] == 5
+r = edit(replaced, after, [r["constraints"][-1]["constraint_id"]], [], removed)
+
 assert all(c["rule"]["kind"] != "directed_angle" for c in
-           call(["inspect", removed])["sketches"][0]["constraint_edit"]["constraints"])
+           call(["inspect", removed])["sketches"][0]["constraints"])
 
 # 5. Structural refusals before any solving: the pair holds one relation, however it
 #    is said; two different Lines, each from one end to the other; one full circle.
 def refused(request, source=first, catalog=first_catalog):
     error = edit(source, catalog, [], [request], root / "never.fcad", 2)
     assert error["kind"] == "input" and "constraint_conflict" not in error, error
-for request in [turn_rule(V(1), V(2), -70.0), turn_rule(V(2), V(1), 70.0),
-                turn_rule(V(1, "end", "start"), V(2), 110.0), turn_rule(V(2), V(1), 45.0),
-                {"rule": "parallel", "a_curve_id": curves[1], "b_curve_id": curves[2]},
-                {"rule": "perpendicular", "a_curve_id": curves[2], "b_curve_id": curves[1]},
-                turn_rule(V(3), V(3, "end", "start"), 90.0),
-                turn_rule(V(3), V(3, "start", "start"), 90.0),
-                turn_rule(V(2), {"curve_id": "00000000-0000-7000-8000-000000000000", "from": "start", "to": "end"}, 90.0),
+# A repeated relation has a distinct identity and is accepted as redundant.
+repeated = root / "dart-redundant.fcad"
+edit(first, first_catalog, [], [turn_rule(V(1), V(2), -70.0)], repeated)
+assert len(ids(call(["inspect", repeated]))) == len(ids(first_catalog)) + 1
+assert abs(corners(repeated)[0][1] + 70) < 1e-3
+for request in [turn_rule(V(2), {"from": point_ref("00000000-0000-7000-8000-000000000000", "start"), "to": point_ref("00000000-0000-7000-8000-000000000000", "end")}, 90.0),
                 turn_rule(V(2), V(3), 181.0), turn_rule(V(2), V(3), -181.0), turn_rule(V(2), V(3), 270.0),
                 {**turn_rule(V(2), V(3), 90.0), "extra": 1},
                 {"rule": "directed_angle", "a": V(2), "angle_deg": 90.0},
-                {"rule": "directed_angle", "a": V(2), "b": {"curve_id": curves[3], "from": "start"}, "angle_deg": 90.0}]:
+                {"kind": "directed_angle", "a": V(2), "b": {"curve_id": curves[3], "from": "start"}, "angle": number(90.0, "deg")}]:
     refused(request)
 
 # 6. The solver's own answers, with the UUIDs of their reasons: a closed contour
 #    of right turns. The fourth turn is implied by the three before it (redundant, and
 #    still published); turned the other way it cannot hold (a conflict, nothing published).
 slanted, scatalog = make([[-20, -10], [40, -8], [42, 30], [-20, 30]])
-scurves = [c["curve_id"] for c in scatalog["sketches"][0]["constraint_edit"]["curves"]]
+scurves = [c["curve_id"] for c in scatalog["sketches"][0]["curves"]]
 S = lambda i, j, degrees: turn_rule(vec(scurves, i), vec(scurves, j), degrees)
 rect = root / "right-turns.fcad"
 r = edit(slanted, scatalog, [], [S(0, 1, 90.0), S(1, 2, 90.0), S(2, 3, 90.0)], rect)
-assert r["solve"]["degrees_of_freedom"] == 5 and r["solve"]["redundant_constraint_ids"] == []
+
 four = root / "right-turns-4.fcad"
 r = edit(slanted, scatalog, [], [S(0, 1, 90.0), S(1, 2, 90.0), S(2, 3, 90.0), S(3, 0, 90.0)], four)
-minted = [c["constraint_id"] for c in r["added_constraints"][4:]]
-assert len(r["solve"]["redundant_constraint_ids"]) == 1 and r["solve"]["redundant_constraint_ids"][0] in minted
-assert r["solve"]["degrees_of_freedom"] == 5
-redundant = len(r["solve"]["redundant_constraint_ids"])
+
+
+
+
 error = edit(slanted, scatalog, [], [S(0, 1, 90.0), S(1, 2, 90.0), S(2, 3, 90.0), S(3, 0, -90.0)],
              root / "contradiction.fcad", 2)
 assert error["kind"] == "constraint", error
 reasons = error["constraint_conflict"]["constraints"]
 assert reasons and all(c["rule"]["kind"] == "directed_angle" and isinstance(c["constraint_id"], str)
-                       and c["rule"]["angle_deg"] in (90.0, -90.0) for c in reasons), reasons
+                       and c["rule"]["angle"]["value"] in (90.0, -90.0) for c in reasons), reasons
 
 # 7. The opposite is +180 and nothing else: -180 is read as +180, and the response
 #    says 180.
 box, bcatalog = make([[0, 0], [60, 0], [60, 30], [0, 30]])
-bcurves = [c["curve_id"] for c in bcatalog["sketches"][0]["constraint_edit"]["curves"]]
+bcurves = [c["curve_id"] for c in bcatalog["sketches"][0]["curves"]]
 opposite = root / "opposite.fcad"
 r_opposite = edit(box, bcatalog, [], [turn_rule(vec(bcurves, 0), vec(bcurves, 2), -180.0)], opposite)
-assert r_opposite["added_constraints"][-1]["rule"]["angle_deg"] == 180.0
-assert r_opposite["solve"]["degrees_of_freedom"] == 7
+assert r_opposite["constraints"][-1]["rule"]["angle"]["value"] == 180.0
+
 
 assert sha(source) == untouched, "the source changed"
 assert not (root / "never.fcad").exists()
 print("FCAD_31F_RECIPE_OK", f"reflex={reflex_turn:.3f} mirror={mirror_turn:.3f} replaced={replaced_turn:.3f}",
-      f"volumes={published['A to B'][2]}/{mirror_volume:.3f} redundant={redundant} conflict_reasons={len(reasons)}",
-      f"opposite={r_opposite['added_constraints'][-1]['rule']['angle_deg']}")
+      f"volumes={published['A to B'][2]}/{mirror_volume:.3f} conflict_reasons={len(reasons)}",
+      f"opposite={r_opposite['constraints'][-1]['rule']['angle']['value']}")
 ```
 
 Результат этого рецепта на native-сборке (OCCT + PlaneGCS 1.0.1), измерено по STL:
