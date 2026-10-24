@@ -719,6 +719,7 @@ dependencies = [
 name = "ferritecad-bench"
 version = "0.0.1"
 dependencies = [
+ "ciborium",
  "ferritecad-document",
  "ferritecad-eval",
  "ferritecad-fixtures",
@@ -727,6 +728,7 @@ dependencies = [
  "ferritecad-occt",
  "ferritecad-scene",
  "ferritecad-sketch-solver",
+ "ferritecad-topology",
  "ferritecad-types",
  "serde",
  "serde_json",

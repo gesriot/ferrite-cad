@@ -13,6 +13,8 @@
 
 #include <XSControl_WorkSession.hxx>
 
+#include <algorithm>
+#include <stdexcept>
 #include <cmath>
 #include <cstddef>
 #include <map>
@@ -131,6 +133,7 @@ namespace {
 
 /// A shape the session owns, with the sub-shapes the caller may name.
 struct ShapeRecord {
+  std::vector<uint64_t> naming_history;
   TopoDS_Shape shape;
   /// True when the shape came back from a cache blob rather than an operation.
   ///
@@ -211,6 +214,91 @@ struct ShapeRecord {
     return static_cast<uint64_t>(sub_shapes.size() - 1);
   }
 };
+
+// Six words per relation: source shape, source id, source kind, relation,
+// output id, output kind. Positions are transient transport, never names.
+uint64_t naming_kind(const TopoDS_Shape &sub) {
+  switch (sub.ShapeType()) {
+  case TopAbs_FACE: return 0;
+  case TopAbs_EDGE: return 1;
+  case TopAbs_VERTEX: return 2;
+  default: throw std::runtime_error("naming history contains a non-elementary shape");
+  }
+}
+
+void naming_inventory(ShapeRecord &record) {
+  for (TopAbs_ShapeEnum kind : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
+    TopTools_IndexedMapOfShape found;
+    TopExp::MapShapes(record.shape, kind, found);
+    for (int i = 1; i <= found.Extent(); ++i) record.remember(found(i));
+  }
+}
+
+bool naming_contains(const ShapeRecord &record, const TopoDS_Shape &sub) {
+  if (sub.IsNull()) return false;
+  for (const auto &candidate : record.sub_shapes)
+    if (candidate.IsSame(sub)) return true;
+  return false;
+}
+
+void naming_link(ShapeRecord &record, uint64_t shape, uint64_t input,
+                 uint64_t kind, uint64_t relation, const TopoDS_Shape &output) {
+  if (!naming_contains(record, output)) return;
+  const uint64_t words[] = {shape, input, kind, relation,
+                            record.remember(output), naming_kind(output)};
+  record.naming_history.insert(record.naming_history.end(), words, words + 6);
+}
+
+void naming_deleted(ShapeRecord &record, uint64_t shape, uint64_t input,
+                    uint64_t kind) {
+  const uint64_t words[] = {shape, input, kind, 3, 0, 0};
+  record.naming_history.insert(record.naming_history.end(), words, words + 6);
+}
+
+template <typename Builder>
+void naming_operation(ShapeRecord &record, Builder &builder, uint64_t input,
+                       const ShapeRecord &source) {
+  for (size_t i = 0; i < source.sub_shapes.size(); ++i) {
+    const auto &sub = source.sub_shapes[i];
+    const uint64_t kind = naming_kind(sub);
+    const auto before = record.naming_history.size();
+    for (TopTools_ListOfShape::Iterator it(builder.Modified(sub)); it.More(); it.Next())
+      naming_link(record, input, i, kind, 1, it.Value());
+    if (record.naming_history.size() == before && naming_contains(record, sub))
+      naming_link(record, input, i, kind, 0, sub);
+    // Generated descendants do not imply that the input itself survived.
+    if (record.naming_history.size() == before) naming_deleted(record, input, i, kind);
+    for (TopTools_ListOfShape::Iterator it(builder.Generated(sub)); it.More(); it.Next())
+      naming_link(record, input, i, kind, 2, it.Value());
+  }
+}
+
+template <typename Sweep>
+void naming_sweep(ShapeRecord &record, Sweep &sweep,
+                  const std::vector<TopoDS_Edge> &edges, const FcOcctSegment *segments) {
+  naming_inventory(record);
+  for (size_t i = 0; i < edges.size(); ++i) {
+    const auto produced = sweep.Shape(edges[i]);
+    if (naming_contains(record, produced)) naming_link(record, 0, i, 3, 2, produced);
+    else naming_deleted(record, 0, i, 3);
+    naming_link(record, 0, i, 3, 2, sweep.FirstShape(edges[i]));
+    naming_link(record, 0, i, 3, 2, sweep.LastShape(edges[i]));
+    if (segments[i].kind == FC_OCCT_SEGMENT_CIRCLE) continue;
+    for (int end = 0; end < 2; ++end) {
+      const auto vertex = end ? TopExp::LastVertex(edges[i], true)
+                              : TopExp::FirstVertex(edges[i], true);
+      const auto output = sweep.Shape(vertex);
+      if (naming_contains(record, output)) naming_link(record, 0, i, 4 + end, 2, output);
+      else naming_deleted(record, 0, i, 4 + end);
+      naming_link(record, 0, i, 4 + end, 2, sweep.FirstShape(vertex));
+      naming_link(record, 0, i, 4 + end, 2, sweep.LastShape(vertex));
+    }
+  }
+  const auto &starts = record.revolved ? record.revolve_start_cap : record.start_cap;
+  const auto &ends = record.revolved ? record.revolve_end_cap : record.end_cap;
+  for (auto id : starts) naming_link(record, 0, 0, 6, 2, record.sub_shapes[id]);
+  for (auto id : ends) naming_link(record, 0, 1, 6, 2, record.sub_shapes[id]);
+}
 
 /// Consults the caller's cancellation callback.
 ///
@@ -974,6 +1062,9 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
       record.end_cap.push_back(record.remember(prism.LastShape()));
     }
 
+    auto naming_prism = prism.Prism();
+    naming_sweep(record, naming_prism, edges, segments);
+
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
     *out_shape = id;
@@ -1254,6 +1345,8 @@ FcOcctStatus revolve_profile(FcOcctSession *session, const FcOcctPlane *plane,
       return FC_OCCT_KERNEL;
     }
 
+    naming_sweep(record, sweep, edges, segments);
+
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
     *out_shape = id;
@@ -1414,6 +1507,9 @@ FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
     ShapeRecord record;
     record.shape = result_shape;
 
+    naming_inventory(target_found->second);
+    naming_inventory(tool_found->second);
+
     // What became of every name either input already had. Asked now, while the
     // algorithm is alive, and for every registered sub-shape rather than a
     // chosen few: which of them the caller cares about is the caller's
@@ -1473,10 +1569,55 @@ FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
       }
     }
 
+    naming_inventory(record);
+    naming_operation(record, algorithm, target, target_found->second);
+    naming_operation(record, algorithm, tool, tool_found->second);
+
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
     *out_shape = id;
     *out_removed_volume = removed;
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_naming_data(FcOcctSession *session, uint64_t shape,
+                                  int32_t history, uint64_t *out, size_t capacity,
+                                  size_t *count, FcOcctError *error) noexcept {
+  return guarded(error, [&]() -> FcOcctStatus {
+    if (!session || !count) {
+      write_error(error, "complete naming data requires a session and count");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
+    auto &record = found->second;
+    if (history && record.decoded && record.naming_history.empty()) {
+      write_error(error, "the restored B-Rep has no operation provenance");
+      return FC_OCCT_UNSUPPORTED;
+    }
+    naming_inventory(record);
+    std::vector<uint64_t> words;
+    if (history) words = record.naming_history;
+    else {
+      for (size_t i = 0; i < record.sub_shapes.size(); ++i) {
+        const auto &sub = record.sub_shapes[i];
+        const auto kind = naming_kind(sub);
+        words.insert(words.end(), {i, kind, UINT64_MAX});
+        if (kind == 0) continue;
+        for (size_t f = 0; f < record.sub_shapes.size(); ++f) {
+          const auto &face = record.sub_shapes[f];
+          if (face.ShapeType() != TopAbs_FACE) continue;
+          TopTools_IndexedMapOfShape members;
+          TopExp::MapShapes(face, sub.ShapeType(), members);
+          if (members.Contains(sub)) words.insert(words.end(), {i, kind, f});
+        }
+      }
+    }
+    *count = words.size();
+    if (!capacity) return FC_OCCT_OK;
+    if (!out || capacity < words.size()) return FC_OCCT_INVALID_INPUT;
+    std::copy(words.begin(), words.end(), out);
     return FC_OCCT_OK;
   });
 }
@@ -2539,6 +2680,7 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
                                  " was released or never existed");
       return FC_OCCT_UNKNOWN_HANDLE;
     }
+    naming_inventory(found->second);
     const ShapeRecord &source = found->second;
     if (edge >= source.sub_shapes.size()) {
       write_error(out_error, "sub-shape " + std::to_string(edge) +
@@ -2704,6 +2846,9 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
       record.carried.emplace(std::make_pair(target, static_cast<uint64_t>(i)),
                              std::make_pair(kind, std::move(outputs)));
     }
+
+    naming_inventory(record);
+    naming_operation(record, fillet, target, source);
 
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));

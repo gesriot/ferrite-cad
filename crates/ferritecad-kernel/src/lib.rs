@@ -36,6 +36,7 @@ mod context;
 mod handle;
 mod identity;
 mod kernel;
+mod naming;
 mod profile;
 mod refusal;
 mod request;
@@ -63,3 +64,5 @@ pub use result::{
     History, HistoryInput, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange,
     MeshVertices, OperationResult, RevolveResult,
 };
+
+pub use naming::{NamingHistory, NamingInput, NamingOperation, NamingRelation, ShapeTopology};

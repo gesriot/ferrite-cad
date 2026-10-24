@@ -534,6 +534,24 @@ FcOcctStatus fc_occt_cut_carried(FcOcctSession *session, uint64_t result,
                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
+ * Complete naming data; capacity/count are uint64_t words, not row counts.
+ *
+ * history=0: triples (entity, kind, incident_face). UINT64_MAX marks the entity
+ * itself; following triples list each incident face once. Kinds: face=0,
+ * edge=1, vertex=2. Faces have only the entity marker.
+ * history=1: six words (input_shape, input, input_kind, relation, output, kind).
+ * Input kinds 0..2 are sub-shapes; 3 is a profile curve, 4/5 its start/end, 6
+ * an operation cap (input 0=start, 1=end). Profile inputs use shape=0 and the
+ * request's flattened curve position, translated to UUIDs by the adapter.
+ * Relations: kept=0, modified=1, generated=2, deleted=3 (output words unused).
+ * All positions are session-local transport, never durable names.
+ * Capacity zero measures the buffer; decoded B-Reps have no operation history.
+ */
+FcOcctStatus fc_occt_naming_data(FcOcctSession *session, uint64_t shape,
+                                 int32_t history, uint64_t *out, size_t capacity,
+                                 size_t *count, FcOcctError *error) FC_OCCT_NOEXCEPT;
+
+/*
  * How many sub-shapes of `shape` this session has registered.
  *
  * The bound for the `input_sub` argument of fc_occt_cut_carried, so a caller
