@@ -40,6 +40,23 @@ pub trait GeometryKernel {
     /// Which kernel this is, for cache keys and error messages.
     fn identity(&self) -> &KernelIdentity;
 
+    /// Enumerates every elementary result entity and its incident faces.
+    fn shape_topology(&mut self, shape: ShapeHandle) -> Result<crate::ShapeTopology> {
+        let _ = shape;
+        Err(ferritecad_types::CadError::unsupported(
+            "this kernel does not report full topology",
+        ))
+    }
+
+    /// Reads complete operation provenance, independent of caller tracking.
+    /// An archive without provenance must refuse rather than report no history.
+    fn naming_history(&mut self, shape: ShapeHandle) -> Result<crate::NamingHistory> {
+        let _ = shape;
+        Err(ferritecad_types::CadError::unsupported(
+            "this kernel does not report full history",
+        ))
+    }
+
     /// Sweeps a planar profile into a solid.
     fn extrude(
         &mut self,

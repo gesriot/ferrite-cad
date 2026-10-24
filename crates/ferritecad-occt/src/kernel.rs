@@ -58,6 +58,8 @@ pub struct OcctKernel {
     identity: KernelIdentity,
     session: ffi::Session,
     session_id: SessionId,
+    naming_curves: BTreeMap<ShapeHandle, Vec<ferritecad_types::StableEntityId>>,
+    naming_operations: BTreeMap<ShapeHandle, ferritecad_kernel::NamingOperation>,
 }
 
 impl OcctKernel {
@@ -75,6 +77,8 @@ impl OcctKernel {
             identity: KernelIdentity::new("occt", version, env!("FERRITECAD_BRIDGE_BUILD"))?,
             session: ffi::Session::new()?,
             session_id: SessionId::new(),
+            naming_curves: BTreeMap::new(),
+            naming_operations: BTreeMap::new(),
         })
     }
 
@@ -387,6 +391,89 @@ impl GeometryKernel for OcctKernel {
         &self.identity
     }
 
+    fn shape_topology(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::ShapeTopology> {
+        let raw = self.raw(shape)?;
+        let words = self.session.naming_data(raw, false)?;
+        if !words.len().is_multiple_of(3) {
+            return Err(CadError::kernel("invalid topology record length"));
+        }
+        let mut topology = ferritecad_kernel::ShapeTopology::default();
+        for row in words.chunks_exact(3) {
+            let entity = SubShapeHandle::new(shape, naming_kind(row[1])?, row[0]);
+            let faces = topology.adjacent_faces.entry(entity).or_default();
+            if row[2] != u64::MAX {
+                faces.insert(self.face(shape, row[2]));
+            }
+        }
+        Ok(topology)
+    }
+
+    fn naming_history(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::NamingHistory> {
+        use ferritecad_kernel::{NamingHistory, NamingInput, NamingRelation};
+        let raw = self.raw(shape)?;
+        let words = self.session.naming_data(raw, true)?;
+        if !words.len().is_multiple_of(6) {
+            return Err(CadError::kernel("invalid history record length"));
+        }
+        let operation =
+            self.naming_operations.get(&shape).copied().ok_or_else(|| {
+                CadError::unsupported("the shape has no live operation provenance")
+            })?;
+        let mut history = NamingHistory {
+            operation: Some(operation),
+            ..NamingHistory::default()
+        };
+        for row in words.chunks_exact(6) {
+            let input = match row[2] {
+                0..=2 => NamingInput::SubShape(SubShapeHandle::new(
+                    ShapeHandle::new(self.session_id, row[0]),
+                    naming_kind(row[2])?,
+                    row[1],
+                )),
+                3..=5 => {
+                    let curve = self
+                        .naming_curves
+                        .get(&shape)
+                        .and_then(|curves| usize::try_from(row[1]).ok().and_then(|i| curves.get(i)))
+                        .copied()
+                        .ok_or_else(|| {
+                            CadError::kernel("history names an unknown profile curve")
+                        })?;
+                    if row[2] == 3 {
+                        NamingInput::Curve(curve)
+                    } else {
+                        NamingInput::CurveEnd {
+                            curve,
+                            end: row[2] == 5,
+                        }
+                    }
+                }
+                6 => NamingInput::Cap {
+                    end: match row[1] {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(CadError::kernel("unknown operation cap")),
+                    },
+                },
+                _ => return Err(CadError::kernel("unknown naming input kind")),
+            };
+            let relation = match row[3] {
+                0 => NamingRelation::Kept,
+                1 => NamingRelation::Modified,
+                2 => NamingRelation::Generated,
+                3 => NamingRelation::Deleted,
+                _ => return Err(CadError::kernel("unknown naming relation")),
+            };
+            let output = if relation == NamingRelation::Deleted {
+                None
+            } else {
+                Some(SubShapeHandle::new(shape, naming_kind(row[5])?, row[4]))
+            };
+            history.relations.insert((input, relation, output));
+        }
+        Ok(history)
+    }
+
     fn revolve(
         &mut self,
         request: &RevolveRequest,
@@ -471,6 +558,10 @@ impl GeometryKernel for OcctKernel {
         };
         context.progress().report(1.0);
         let shape = ShapeHandle::new(self.session_id, raw);
+        self.naming_operations
+            .insert(shape, ferritecad_kernel::NamingOperation::Revolve);
+        self.naming_curves
+            .insert(shape, drawn.iter().map(|s| s.label).collect());
         let assembled = (|| -> Result<RevolveResult> {
             // The completion report may cancel; the shape is ours to release.
             context.check_cancelled()?;
@@ -568,6 +659,10 @@ impl GeometryKernel for OcctKernel {
         context.progress().report(1.0);
 
         let shape = ShapeHandle::new(self.session_id, raw);
+        self.naming_operations
+            .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
+        self.naming_curves
+            .insert(shape, drawn.iter().map(|s| s.label).collect());
         let assembled = (|| -> Result<ExtrudeResult> {
             // A progress callback may cancel at the completion report. The
             // bridge has already handed us a shape at that point, so the error
@@ -731,7 +826,7 @@ impl GeometryKernel for OcctKernel {
         })();
 
         if assembled.is_err() {
-            self.session.release(raw);
+            self.release(shape);
         }
         assembled
     }
@@ -769,6 +864,8 @@ impl GeometryKernel for OcctKernel {
         context.progress().report(1.0);
 
         let shape = ShapeHandle::new(self.session_id, raw);
+        self.naming_operations
+            .insert(shape, ferritecad_kernel::NamingOperation::Cut);
         let assembled = (|| -> Result<CutResult> {
             // A progress callback may cancel at the completion report, by which
             // point the bridge has already handed over a shape.
@@ -816,7 +913,7 @@ impl GeometryKernel for OcctKernel {
         match assembled {
             Ok(result) => Ok(result),
             Err(error) => {
-                self.session.release(raw);
+                self.release(shape);
                 Err(error)
             }
         }
@@ -843,6 +940,8 @@ impl GeometryKernel for OcctKernel {
         context.progress().report(1.0);
 
         let shape = ShapeHandle::new(self.session_id, raw);
+        self.naming_operations
+            .insert(shape, ferritecad_kernel::NamingOperation::Fillet);
         let assembled = (|| -> Result<FilletResult> {
             let (history, carried) = self
                 .account_for_edge_operation(raw, target, shape, edge, track, "fillet", context)?;
@@ -869,7 +968,7 @@ impl GeometryKernel for OcctKernel {
         match assembled {
             Ok(result) => Ok(result),
             Err(error) => {
-                self.session.release(raw);
+                self.release(shape);
                 Err(error)
             }
         }
@@ -896,6 +995,8 @@ impl GeometryKernel for OcctKernel {
         context.progress().report(1.0);
 
         let shape = ShapeHandle::new(self.session_id, raw);
+        self.naming_operations
+            .insert(shape, ferritecad_kernel::NamingOperation::Chamfer);
         let assembled = (|| -> Result<ChamferResult> {
             let (history, carried) = self
                 .account_for_edge_operation(raw, target, shape, edge, track, "chamfer", context)?;
@@ -919,7 +1020,7 @@ impl GeometryKernel for OcctKernel {
         match assembled {
             Ok(result) => Ok(result),
             Err(error) => {
-                self.session.release(raw);
+                self.release(shape);
                 Err(error)
             }
         }
@@ -1108,6 +1209,8 @@ impl GeometryKernel for OcctKernel {
     }
 
     fn release(&mut self, shape: ShapeHandle) {
+        self.naming_curves.remove(&shape);
+        self.naming_operations.remove(&shape);
         // A handle from another session names nothing here, and releasing what
         // one does not hold is defined to be harmless.
         if shape.session() == self.session_id {
@@ -1162,4 +1265,13 @@ fn segment_of(geometry: &SegmentGeometry) -> ffi::Segment {
         _ => segment.kind = -1,
     }
     segment
+}
+
+fn naming_kind(raw: u64) -> Result<SubShapeKind> {
+    match raw {
+        0 => Ok(SubShapeKind::Face),
+        1 => Ok(SubShapeKind::Edge),
+        2 => Ok(SubShapeKind::Vertex),
+        _ => Err(CadError::kernel("unknown elementary shape kind")),
+    }
 }

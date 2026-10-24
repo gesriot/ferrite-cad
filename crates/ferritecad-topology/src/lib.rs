@@ -40,3 +40,6 @@ pub use archive::{ArchivedFeature, BoundName, archive_feature, restore_feature};
 pub use codec::ARCHIVE_CACHE_KIND;
 pub use map::{CarriedName, FeatureNames, RestoredNames, TopologyMap};
 pub use resolve::resolve;
+
+pub mod generative;
+mod generative_legacy;

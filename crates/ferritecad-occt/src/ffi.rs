@@ -154,6 +154,16 @@ impl Segment {
 type CancelFn = extern "C" fn(*mut c_void) -> i32;
 
 unsafe extern "C" {
+    fn fc_occt_naming_data(
+        session: *mut RawSession,
+        shape: u64,
+        history: i32,
+        out: *mut u64,
+        capacity: usize,
+        count: *mut usize,
+        error: *mut RawError,
+    ) -> i32;
+
     fn fc_occt_version() -> *const c_char;
     fn fc_occt_session_create(out_session: *mut *mut RawSession, out_error: *mut RawError) -> i32;
     fn fc_occt_session_destroy(session: *mut RawSession);
@@ -917,6 +927,43 @@ impl Session {
         };
         interpret(status, &error, "cutting one shape out of another")?;
         Ok((shape, removed))
+    }
+
+    pub(crate) fn naming_data(&mut self, shape: u64, history: bool) -> Result<Vec<u64>> {
+        let mut count = 0;
+        let mut error = RawError::empty();
+        // SAFETY: zero capacity measures the required length; out-parameters are live.
+        let status = unsafe {
+            fc_occt_naming_data(
+                self.raw,
+                shape,
+                i32::from(history),
+                std::ptr::null_mut(),
+                0,
+                &mut count,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "measuring complete naming data")?;
+        let mut words = vec![0; count];
+        let mut written = 0;
+        // SAFETY: the vector holds the measured number of words.
+        let status = unsafe {
+            fc_occt_naming_data(
+                self.raw,
+                shape,
+                i32::from(history),
+                words.as_mut_ptr(),
+                words.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "reading complete naming data")?;
+        if written != count {
+            return Err(CadError::kernel("naming data changed between reads"));
+        }
+        Ok(words)
     }
 
     /// How many sub-shapes of a shape this session has handed out.

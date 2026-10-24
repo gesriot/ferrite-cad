@@ -47,3 +47,17 @@ failures, and tessellates that same result before publishing. CLI copy jobs have
 no session facts and still rebuild twice. Open, tab switching, model Undo/Redo
 and export each rebuild once. Checkpoint changes that keep the picture retain
 the existing path. Neither the history nor these benchmarks cache scenes.
+
+The isolated naming experiment measures a cold rebuild and then generative
+naming separately, including every intermediate feature result:
+
+```sh
+cargo run -p ferritecad-bench --features planegcs --release --example naming -- \
+  /tmp/ferritecad-naming-corpus /tmp/ferritecad-naming.json 5
+```
+
+Use the native OCCT/PlaneGCS environment described above. The first run writes
+the corpus, including Chamfer; subsequent runs reuse the same document bytes.
+The JSON contains raw rebuild/naming/total samples, counts for every feature,
+all ambiguous primary names and comparisons with stored references and consumed
+swept edges. Run timing samples sequentially without other builds or tests.
