@@ -96,6 +96,13 @@ set, never an arbitrarily selected subset. Validate kind and selection when
 reading the reference. Missing, deleted and ambiguous references identify the
 reference and fail its consuming feature under D2/D3.
 
+The producer is the feature that minted the name. The consumer resolves the
+digest in the result it consumes, through ancestry: the entities of that result
+that descend from the name by kept or modified history. A feature inserted
+between them leaves the reference valid while the entity survives; a split
+makes **one** refuse, and a deletion or a consuming operation such as a Fillet
+of that edge leaves nothing to resolve.
+
 Delete `fallback_signature` in 08. Reject preserving it as a nearest-neighbour
 or best-score escape hatch. The prototype refuses the open slot's ambiguous
 bindings even though their positions could distinguish them.
