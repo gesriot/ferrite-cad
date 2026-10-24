@@ -5,6 +5,10 @@ use ferritecad_types::{ObjectId, Result, StableEntityId};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Source {
     facts: ferritecad_document::ExtrudeEditSource,
+    pub cut_bodies: Vec<crate::feature_facts::CutChoice>,
+    pub cut_features: Vec<crate::feature_facts::CutParameterChoice>,
+    pub fillet_bodies: Vec<crate::feature_facts::EdgeChoice>,
+    pub chamfer_bodies: Vec<crate::feature_facts::EdgeChoice>,
     pub sketches: Vec<SketchChoice>,
     pub constraint_sketches: Vec<ConstraintSketchChoice>,
     pub circle_sketches: Vec<CircleChoice>,
@@ -116,7 +120,12 @@ pub(crate) struct SavedAnnulus {
 }
 impl From<ferritecad_document::ExtrudeEditSource> for Source {
     fn from(facts: ferritecad_document::ExtrudeEditSource) -> Self {
+        let (cut_bodies, cut_features, fillet_bodies) = crate::feature_facts::read(&facts.objects);
         let mut result = Self {
+            chamfer_bodies: fillet_bodies.clone(),
+            cut_bodies,
+            cut_features,
+            fillet_bodies,
             facts,
             sketches: vec![],
             constraint_sketches: vec![],
@@ -224,16 +233,6 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                     }
                     _ => {}
                 }
-            }
-            let cuts = result
-                .facts
-                .cut_features
-                .iter()
-                .filter_map(|c| c.saved.as_ref())
-                .filter(|c| c.profile_sketch == object.id)
-                .count();
-            if cuts != 0 {
-                details.push(format!("Base of {cuts} circular Cuts"));
             }
             result.sketches.push(SketchChoice {
                 details,

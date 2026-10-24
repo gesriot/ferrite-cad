@@ -18,7 +18,7 @@ fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
         let mut tools = history::tools(n);
         if pockets {
             for (i, tool) in tools.iter_mut().enumerate() {
-                tool.extent = CutExtent::Blind {
+                tool.extent = CutDepth::Blind {
                     depth_mm: 3.0 + (i % 7) as f64,
                 };
             }
@@ -67,17 +67,7 @@ fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
                 assert_eq!(old, now);
             }
         }
-        // New pocket floors must remain named so structural edits can follow.
-        let catalog = ferritecad_document::ExtrudeEditSource::read(&edited).expect("reading");
-        for choice in &catalog.cut_features {
-            if choice.feature != base {
-                assert!(
-                    choice.saved.is_some(),
-                    "Cut history must remain editable: {:?}",
-                    choice.refusal
-                );
-            }
-        }
+        assert_eq!(crate::cut_facts::observed(&output).len(), n);
         let bounds = [[0., 0.], [SIZE[0], SIZE[1]]];
         let cold = super::measure_history_at(&output, &tools, bounds, height, None);
         for outcome in [CacheOutcome::Miss, CacheOutcome::Hit] {
@@ -186,7 +176,7 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
             saved.len(),
             "own floor and every later origin"
         );
-        tools[0].extent = CutExtent::Blind { depth_mm: depth };
+        tools[0].extent = CutDepth::Blind { depth_mm: depth };
         let cold_volume = super::measure_history_at(
             &output,
             &tools,

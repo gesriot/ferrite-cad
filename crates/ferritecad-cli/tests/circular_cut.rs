@@ -8,11 +8,14 @@
 //! exists to keep: the body is the one it always was, and the cut is a feature
 //! in its history rather than a replacement for what was there.
 #![allow(clippy::panic)]
+#[path = "support/cut_facts.rs"]
+mod cut_facts;
 #[path = "support/transaction.rs"]
 mod transaction;
 
-use ferritecad_document::{CutExtent, ExtentVocabulary};
+use crate::cut_facts::CutDepth;
 use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
+
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
 use std::{
@@ -24,7 +27,7 @@ use std::{
 #[path = "support/pipe.rs"]
 mod pipe;
 
-const OP: &str = "cut-circular-copy";
+const OP: &str = "edit";
 const LINEAR_MM: f64 = 0.05;
 const ANGULAR_RAD: f64 = 0.1;
 /// Single-precision STL coordinates land a few parts in 10^7 from the number
@@ -118,11 +121,6 @@ impl Fixture {
             std::fs::remove_file(&create).expect("the request is not part of the fixture");
         })
     }
-    /// The same drawing written without a kernel, so discovery and the request
-    /// protocol are testable in a build that has none.
-    fn drawn() -> Self {
-        Self::built(|path| write_plate_document(path, WIDTH, DEPTH, HEIGHT))
-    }
     fn built(build: impl FnOnce(&Path)) -> Self {
         let root = tempfile::tempdir().expect("directory");
         let source = root.path().join("плита space.fcad");
@@ -145,21 +143,23 @@ impl Fixture {
         self.catalog["content_version"].as_str().expect("version")
     }
     fn ask(&self, center: [f64; 2], radius: f64, depth: f64) {
-        write(
+        crate::cut_facts::write_add(
+            &self.source,
             &self.request,
-            &json!({"request_version":1,"center_mm":center,"radius_mm":radius,
-                    "depth_mm":depth}),
+            cut_facts::CutSpec {
+                center_mm: center,
+                radius_mm: radius,
+                extent: CutDepth::Blind { depth_mm: depth },
+            },
         );
     }
     fn cut(&self, output: &Path) -> Command {
         self.cut_from(&self.source, self.body_id(), self.version(), output)
     }
-    fn cut_from(&self, source: &Path, body: &str, version: &str, output: &Path) -> Command {
+    fn cut_from(&self, source: &Path, _body: &str, version: &str, output: &Path) -> Command {
         let mut c = cli();
         c.arg(OP)
             .arg(source)
-            .arg("--body")
-            .arg(body)
             .arg("--expect-version")
             .arg(version)
             .arg("--request")
@@ -187,6 +187,7 @@ fn write_polygon_document(path: &Path, corners: &[[f64; 2]], height: f64) {
         Expression, Extrude, Point2, SelectionRule, Sketch, SketchCurve, SolidOperation,
         TopologyRef,
     };
+
     use ferritecad_types::{ObjectId, StableEntityId, Transform};
     let mut d = Document::create(path).expect("document");
     let [plane, sketch, extrude, body] = std::array::from_fn(|_| ObjectId::new());
@@ -738,131 +739,6 @@ fn only_the_cut_was_added(source: &Path, copy: &Path, body: ferritecad_types::Ob
     }
 }
 
-/// Discovery, the request protocol and every structural refusal, with no kernel
-/// needed.
-#[test]
-fn cut_discovery_and_protocol_without_native() {
-    let f = Fixture::drawn();
-    let before = std::fs::read(&f.source).expect("source bytes");
-
-    let discovery = &f.body()["cut_edit"];
-    assert_eq!(discovery["available"], true, "{discovery:?}");
-    assert!(discovery["refusal"].is_null());
-    let target = &discovery["target"];
-    assert_eq!(target["body_id"], f.body_id());
-    assert_eq!(target["height_mm"], HEIGHT);
-    assert_eq!(target["extents_mm"], json!([[0.0, 0.0], [WIDTH, DEPTH]]));
-    assert_eq!(target["direction"], "+z along the plane normal");
-    assert!(target["wall_clearance_mm"].as_f64().expect("clearance") > 0.0);
-    // The plane and the feature it would modify are named, not implied.
-    let saved = stored(&f.source);
-    assert_eq!(
-        target["tip_feature_id"],
-        saved.tip.expect("a tip").to_string()
-    );
-    assert_eq!(
-        target["profile_sketch_id"],
-        saved
-            .sketches
-            .keys()
-            .next()
-            .expect("one sketch")
-            .to_string()
-    );
-
-    let never = f.root.path().join("never.fcad");
-    f.ask(CENTER, RADIUS, 4.0);
-    let names = entries(f.root.path());
-    let foreign = ferritecad_types::ObjectId::new().to_string();
-
-    // Structural and numeric refusals, each with every other argument correct.
-    for (center, radius, depth, why) in [
-        (CENTER, 0.0, 4.0, "a tool of no radius"),
-        (CENTER, -5.0, 4.0, "a negative radius"),
-        (CENTER, RADIUS, 0.0, "a cut of no depth"),
-        (CENTER, RADIUS, -4.0, "a negative depth"),
-        (CENTER, RADIUS, HEIGHT + 1.0, "deeper than the part"),
-        ([0.0, 15.0], RADIUS, 4.0, "a tool hanging off the edge"),
-        (
-            [RADIUS, 15.0],
-            RADIUS,
-            4.0,
-            "a tool exactly touching the wall",
-        ),
-        ([200.0, 200.0], RADIUS, 4.0, "a tool nowhere near the part"),
-        (CENTER, 1.0e7, 4.0, "a radius past the published bound"),
-    ] {
-        f.ask(center, radius, depth);
-        let refused = reply(f.cut(&never).output().expect("process"), OP, 2);
-        assert!(
-            matches!(
-                refused["error"]["kind"].as_str(),
-                Some("input" | "unsupported")
-            ),
-            "{why}: {refused:?}"
-        );
-    }
-    // A body that is not there, and a version that is not this one.
-    f.ask(CENTER, RADIUS, 4.0);
-    for (body, version) in [
-        (foreign.as_str(), f.version()),
-        (f.body_id(), &"0".repeat(64)),
-    ] {
-        let refused = reply(
-            f.cut_from(&f.source, body, version, &never)
-                .output()
-                .expect("process"),
-            OP,
-            2,
-        );
-        // A build with no kernel answers `unsupported` before it reaches the
-        // request, which is a different true thing about the same refusal.
-        assert!(
-            matches!(
-                refused["error"]["kind"].as_str(),
-                Some("input" | "unsupported")
-            ),
-            "{refused:?}"
-        );
-    }
-    // Request forms this reader will not accept at all.
-    for raw in [
-        r#"{"request_version":2,"center_mm":[20,15],"radius_mm":5,"depth_mm":4}"#,
-        r#"{"request_version":1,"center_mm":[20,15],"radius_mm":5}"#,
-        r#"{"request_version":1,"center_mm":[20,15],"radius_mm":5,"depth_mm":4,"plane":"xy"}"#,
-        r#"{"request_version":1,"center_mm":[20,15,0],"radius_mm":5,"depth_mm":4}"#,
-        r#"{"request_version":1,"center_mm":[20,15],"radius_mm":5,"depth_mm":1e999}"#,
-    ] {
-        std::fs::write(&f.request, raw).expect("request");
-        let refused = reply(f.cut(&never).output().expect("process"), OP, 2);
-        assert!(
-            matches!(
-                refused["error"]["kind"].as_str(),
-                Some("input" | "unsupported")
-            ),
-            "{raw}: {refused:?}"
-        );
-    }
-    // A refused operation whose report cannot be written is still a refusal.
-    f.ask(CENTER, 0.0, 4.0);
-    assert_eq!(
-        f.cut(&never)
-            .stdout(pipe::closed_pipe())
-            .stderr(pipe::closed_pipe())
-            .status()
-            .expect("pipes")
-            .code(),
-        Some(7)
-    );
-    assert_eq!(entries(f.root.path()), names, "a refusal left something");
-    assert_eq!(
-        std::fs::read(&f.source).expect("source bytes"),
-        before,
-        "the source was touched"
-    );
-    assert_eq!(saved.objects, 4);
-}
-
 /// The measured slice: a through hole and a pocket, both from the same part.
 #[test]
 fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
@@ -885,16 +761,9 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
         let copy = f.root.path().join(format!("{name}.fcad"));
         f.ask(CENTER, RADIUS, depth);
         let published = reply(f.cut(&copy).output().expect("process"), OP, 0);
-        let result = &published["result"];
         assert_eq!(
-            result["body_id"],
-            saved.body.to_string(),
-            "the body is the same body"
-        );
-        assert_eq!(
-            result["previous_feature_id"],
-            plate_feature.to_string(),
-            "the cut modifies the feature that was the tip"
+            published["result"]["content_version"],
+            inspect(&copy)["content_version"]
         );
         assert_eq!(
             std::fs::read(&f.source).expect("source bytes"),
@@ -910,11 +779,7 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
             "a plane, two sketches, two features, one body"
         );
         assert_eq!(now.body, saved.body);
-        let cut = result["feature_id"]
-            .as_str()
-            .expect("feature")
-            .parse::<ferritecad_types::ObjectId>()
-            .expect("UUID");
+        let cut = now.tip.expect("Cut tip");
         assert_eq!(now.tip, Some(cut), "the body's tip is the cut");
         let history: BTreeMap<_, _> = now
             .features
@@ -1062,7 +927,7 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
                 .sum::<usize>(),
             5
         );
-        assert_eq!(after["bodies"][0]["cut_edit"]["available"], true);
+        assert_eq!(after["bodies"][0]["history"], json!([plate_feature, cut]));
     }
 }
 

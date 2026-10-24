@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: MIT
-//! A disposable circular-cut request over stored facts; no kernel, no file reads.
-//!
-//! The form offers a cut only where the document says one can be made, and it
-//! says what it is doing rather than implying it: the tool is drawn on the
-//! part's own base XY datum and runs along that datum's normal. There is no
-//! face to pick here and no attachment to choose, because this slice implements
-//! neither, and a control that suggested otherwise would be promising it.
+//! Draft fields over stored geometry; the shared transaction judges Apply.
+use crate::feature_facts::{CircularCut, CutChoice, CutExtent, CutParameterChoice};
 use crate::sketch_facts::Source as ExtrudeEditSource;
-use ferritecad_document::{
-    CircularCut, CircularCutEdit, CutChoice, CutExtent, CutParameterChoice, DocumentVersion,
-    ExtentVocabulary,
-};
-use ferritecad_jobs::{CircularCutRequest, EditCircularCutRequest};
+use ferritecad_document::DocumentVersion;
+use ferritecad_jobs::EditRequest;
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 use std::path::{Path, PathBuf};
 
@@ -79,19 +71,14 @@ enum Subject {
 }
 
 impl Subject {
-    /// The same numeric rule as the job, with no SQLite and no kernel work.
-    fn validate(&self, typed: &Numbers) -> Result<()> {
+    fn changes(&self, cut: CircularCut) -> Result<Vec<ferritecad_document::EditChange>> {
         match self {
-            Self::Add(choice) => choice.validate_cut(&numbers(typed)?),
-            Self::Edit(choice) => {
-                let saved = choice
-                    .saved
-                    .as_ref()
-                    .ok_or_else(|| CadError::input("unsupported cut to edit"))?;
-                let cut = numbers(typed)?;
-                choice.validate_edit(&edit_of(saved.tool_curve, &cut))
-            }
+            Self::Add(c) => cut.additions(c.target.as_ref().expect("form has target")),
+            Self::Edit(c) => cut.changes(c.saved.as_ref().expect("form has saved cut")),
         }
+    }
+    fn validate(&self, typed: &Numbers) -> Result<()> {
+        self.changes(numbers(typed)?).map(|_| ())
     }
 }
 
@@ -115,14 +102,14 @@ struct Draft {
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     draft: Option<Draft>,
-    pending: Option<CircularCutRequest>,
+    pending: Option<EditRequest>,
     /// The edit's own pending request beside the addition's. Two fields rather
     /// than one enum, so the window keeps handing each operation to the worker
     /// that already knows what to do with it.
-    pending_edit: Option<EditCircularCutRequest>,
-    pending_apply: Option<EditCircularCutRequest>,
+    pending_edit: Option<EditRequest>,
+    pending_apply: Option<EditRequest>,
     /// §30I: the new Cut the Add form asked to add to the open document.
-    pending_add: Option<CircularCutRequest>,
+    pending_add: Option<EditRequest>,
     can_begin_edit: bool,
     can_apply: bool,
     /// Whether the window's `can_add_cut` allows the Add form's own Add now.
@@ -142,10 +129,10 @@ impl Editor {
         self.set_session(availability.0, availability.1, availability.2);
         self.can_add = add;
     }
-    pub(crate) fn take_request(&mut self) -> Option<CircularCutRequest> {
+    pub(crate) fn take_request(&mut self) -> Option<EditRequest> {
         self.pending.take()
     }
-    pub(crate) fn take_edit_request(&mut self) -> Option<EditCircularCutRequest> {
+    pub(crate) fn take_edit_request(&mut self) -> Option<EditRequest> {
         self.pending_edit.take()
     }
 
@@ -165,7 +152,7 @@ impl Editor {
     pub(crate) fn set_outcome(&mut self, outcome: &str) {
         self.outcome = outcome.to_owned();
     }
-    pub(crate) fn take_apply_request(&mut self) -> Option<EditCircularCutRequest> {
+    pub(crate) fn take_apply_request(&mut self) -> Option<EditRequest> {
         self.pending_apply.take()
     }
     /// §30I: the Add form is open (not the edit of a saved Cut).
@@ -182,7 +169,7 @@ impl Editor {
         self.can_add
     }
     /// §30I: the new Cut the user asked to add to the open document.
-    pub(crate) fn take_add_request(&mut self) -> Option<CircularCutRequest> {
+    pub(crate) fn take_add_request(&mut self) -> Option<EditRequest> {
         self.pending_add.take()
     }
 
@@ -361,37 +348,7 @@ impl Editor {
                     shown.height_mm,
                     shown.modifies,
                 ));
-                ui.small(
-                    "The tool must stay inside the part's real outline — the Lines themselves, \
-                     not the box around them.",
-                );
-                let tools = match &draft.subject {
-                    Subject::Add(c) => c.target.as_ref().map(|t| t.tools.as_slice()),
-                    Subject::Edit(c) => c.saved.as_ref().map(|s| s.tools.as_slice()),
-                }
-                .unwrap_or_default();
-                if !tools.is_empty() {
-                    ui.small(format!(
-                        "{} saved tools; disk clearance > {} mm",
-                        tools.len(),
-                        ferritecad_document::WALL_CLEARANCE_MM
-                    ));
-                    egui::ScrollArea::vertical()
-                        .id_salt("cut-tools")
-                        .max_height(90.)
-                        .show(ui, |ui| {
-                            for tool in tools {
-                                ui.small(format!(
-                                    "Cut {}: ({}, {}) r{}, {}",
-                                    tool.feature,
-                                    tool.center_mm[0],
-                                    tool.center_mm[1],
-                                    tool.radius_mm,
-                                    describe(tool.extent)
-                                ));
-                            }
-                        });
-                }
+                ui.small("Apply rebuilds the Cut and reports any failed features or lost names.");
                 match &shown.editing {
                     None => {
                         ui.label(
@@ -417,14 +374,7 @@ impl Editor {
                                 "a hole through the part"
                             },
                         ));
-                        ui.label(if editing.through_allowed {
-                            "The depth may run to the part's height, or the cut may run \
-                             through all of it."
-                        } else {
-                            "This pocket's saved floor face is named by the document, so the \
-                             depth must stay below the part's height; cutting through, by depth \
-                             or with Through all, would destroy that name and is refused."
-                        });
+
                     }
                 }
 
@@ -500,11 +450,10 @@ impl Editor {
                         if ui.add_enabled(self.can_apply && differs && valid.is_ok(),
                             egui::Button::new("Apply cut")).clicked() {
                             let cut = parsed.expect("validated fields");
-                            self.pending_apply = Some(EditCircularCutRequest {
-                                source: draft.source.clone(), expected: draft.version,
-                                cut: editing.feature, edit: edit_of(editing.tool_curve, &cut),
-                                destination: PathBuf::new(),
-                            });
+                            self.pending_apply = Some(EditRequest {
+                source:draft.source.clone(), expected:draft.version,
+                changes:draft.subject.changes(cut).expect("validated draft"), destination:PathBuf::new(),
+            });
                         }
                         if let Err(error) = valid {
                             ui.colored_label(ui.visuals().error_fg_color, error.to_string());
@@ -521,13 +470,10 @@ impl Editor {
                             .clicked()
                         {
                             let cut = numbers(&draft.typed).expect("validated fields");
-                            self.pending_add = Some(CircularCutRequest {
-                                source: draft.source.clone(),
-                                expected: draft.version,
-                                body: shown.body,
-                                cut,
-                                destination: PathBuf::new(),
-                            });
+                            self.pending_add = Some(EditRequest {
+                source:draft.source.clone(), expected:draft.version,
+                changes:draft.subject.changes(cut).expect("validated draft"), destination:PathBuf::new(),
+            });
                         }
                         if let Err(error) = valid {
                             ui.colored_label(ui.visuals().error_fg_color, error.to_string());
@@ -572,25 +518,19 @@ impl Editor {
                             if ui.add_enabled(!self.unsaved, egui::Button::new("Save cut copy…")).clicked() {
                                 match &shown.editing {
                                     None => {
-                                        self.pending = Some(CircularCutRequest {
-                                            source: draft.source.clone(),
-                                            expected: draft.version,
-                                            body: shown.body,
-                                            cut,
-                                            destination: PathBuf::new(),
-                                        })
+                                        self.pending = Some(EditRequest {
+                source:draft.source.clone(), expected:draft.version,
+                changes:draft.subject.changes(cut).expect("validated draft"), destination:PathBuf::new(),
+            })
                                     }
                                     // The saved identity, never the text of a
                                     // field: the form sends back the curve the
                                     // document told it about.
-                                    Some(editing) => {
-                                        self.pending_edit = Some(EditCircularCutRequest {
-                                            source: draft.source.clone(),
-                                            expected: draft.version,
-                                            cut: editing.feature,
-                                            edit: edit_of(editing.tool_curve, &cut),
-                                            destination: PathBuf::new(),
-                                        })
+                                    Some(_) => {
+                                        self.pending_edit = Some(EditRequest {
+                source:draft.source.clone(), expected:draft.version,
+                changes:draft.subject.changes(cut).expect("validated draft"), destination:PathBuf::new(),
+            })
                                     }
                                 }
                             }
@@ -616,16 +556,8 @@ impl Editor {
 /// The part as the catalogue read it. A rectangle is named by its size; any
 /// other outline by its Lines and area, with the box around it named as
 /// bounds and never as the part.
-pub(crate) fn part_outline(boundary: &ferritecad_document::CutBoundary) -> String {
-    if let Some([[x0, y0], [x1, y1]]) = boundary.rectangle_mm() {
-        return format!("{} × {} mm from ({x0}, {y0})", x1 - x0, y1 - y0);
-    }
-    let [[x0, y0], [x1, y1]] = boundary.bounds_mm();
-    format!(
-        "outline of {} Lines, {} mm², within bounds ({x0}, {y0})–({x1}, {y1})",
-        boundary.segments().len(),
-        boundary.area_mm2()
-    )
+pub(crate) fn part_outline(boundary: &[[f64; 2]]) -> String {
+    format!("stored outline of {} Lines", boundary.len())
 }
 
 /// What the open form says about the part, whichever operation it is for.
@@ -636,7 +568,7 @@ pub(crate) fn part_outline(boundary: &ferritecad_document::CutBoundary) -> Strin
 struct Shown {
     body: ObjectId,
     plane: ObjectId,
-    boundary: ferritecad_document::CutBoundary,
+    boundary: Vec<[f64; 2]>,
     height_mm: f64,
     /// The feature whose result the operation changes.
     modifies: ObjectId,
@@ -653,7 +585,6 @@ struct Editing {
     radius_mm: f64,
     extent: CutExtent,
     leaves_a_floor: bool,
-    through_allowed: bool,
 }
 
 impl Subject {
@@ -685,8 +616,10 @@ impl Subject {
                         center_mm: saved.center_mm,
                         radius_mm: saved.radius_mm,
                         extent: saved.extent,
-                        leaves_a_floor: saved.leaves_a_floor(),
-                        through_allowed: saved.through_allowed(),
+                        leaves_a_floor: saved
+                            .extent
+                            .blind_depth_mm()
+                            .is_some_and(|d| d < saved.height_mm),
                     }),
                 })
             }
@@ -699,17 +632,6 @@ fn describe(extent: CutExtent) -> String {
     match extent {
         CutExtent::Blind { depth_mm } => format!("cut {depth_mm} mm deep"),
         CutExtent::ThroughAll => "cut through all".to_owned(),
-    }
-}
-
-/// The form can say either end, so its edits never refuse a saved ThroughAll.
-fn edit_of(tool_curve: StableEntityId, cut: &CircularCut) -> CircularCutEdit {
-    CircularCutEdit {
-        tool_curve,
-        center_mm: cut.center_mm,
-        radius_mm: cut.radius_mm,
-        extent: cut.extent,
-        vocabulary: ExtentVocabulary::BlindOrThroughAll,
     }
 }
 
@@ -738,39 +660,6 @@ fn numbers(typed: &Numbers) -> Result<CircularCut> {
             }
         },
     })
-}
-
-/// The same two steps every published copy takes: the draft is handed to the
-/// shared retention so an Open that is later refused can give it back.
-pub(crate) fn finish_cut(
-    editor: &mut crate::sketch::Editor,
-    edits: &mut crate::edits::Edits,
-    generation: u64,
-    result: Result<ferritecad_jobs::AddedCircularCut>,
-) -> Option<PathBuf> {
-    if edits.accepts(generation)
-        && let Ok(saved) = &result
-    {
-        editor.draft_published(&saved.destination);
-    }
-    edits.finish_cut(generation, result)
-}
-
-/// The edit's completion, through exactly the same two steps and the same
-/// retention. Its own function only because the two jobs answer with different
-/// facts; nothing about what happens to the draft differs.
-pub(crate) fn finish_cut_edit(
-    editor: &mut crate::sketch::Editor,
-    edits: &mut crate::edits::Edits,
-    generation: u64,
-    result: Result<ferritecad_jobs::EditedCircularCut>,
-) -> Option<PathBuf> {
-    if edits.accepts(generation)
-        && let Ok(saved) = &result
-    {
-        editor.draft_published(&saved.destination);
-    }
-    edits.finish_cut_edit(generation, result)
 }
 
 #[cfg(test)]
@@ -883,1448 +772,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// A real plate, made by the shipped creation route.
-    fn plate() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
-        part(vec![[0., 0.], [60., 0.], [60., 40.], [0., 40.]])
-    }
-
-    /// A real straight Line-polygon part, made by the shipped creation route.
-    fn part(points: Vec<[f64; 2]>) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
-        let root = tempfile::tempdir().expect("dir");
-        let path = root.path().join("plate.fcad");
-        ferritecad_jobs::create_document_with_kernel(
-            ferritecad_jobs::CreateDocumentRequest::new(
-                &path,
-                ferritecad_jobs::NewDocument::SketchExtrude(
-                    ferritecad_document::PolygonExtrusion::new(points, 10.).expect("a part"),
-                ),
-                "test",
-            ),
-            ferritecad_occt::OcctKernel::new,
-            &OperationContext::default(),
-        )
-        .expect("source");
-        let d = Document::open_read_only(&path).expect("doc");
-        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
-        d.close().expect("close");
-        (root, path, source)
-    }
-
     fn fill(ctx: &egui::Context, e: &mut Editor, x: &str, y: &str, r: &str, depth: &str) {
         enter_field(ctx, e, "Centre X (mm):", x);
         enter_field(ctx, e, "Centre Y (mm):", y);
         enter_field(ctx, e, "Radius (mm):", r);
         enter_field(ctx, e, "Depth (mm):", depth);
-    }
-
-    #[test]
-    fn the_form_names_the_plane_and_refuses_a_tool_the_document_would() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (_root, path, source) = plate();
-        let body = source.cut_bodies[0].body;
-        let mut e = Editor::default();
-        assert!(e.begin(&path, &source, body), "the plate can be cut");
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-
-        // The plane and the direction are named rather than implied, and the
-        // part's own extents are offered so a centre need not be guessed.
-        let out = frame(&ctx, &mut e, false);
-        assert!(
-            painted(&out, "base XY plane"),
-            "the form must name the plane"
-        );
-        assert!(painted(&out, "+Z"), "and the direction it cuts");
-        assert!(painted(&out, "60 × 40 mm"), "and the part it is cutting");
-        assert!(
-            painted(&out, "cuts through it"),
-            "and what a full depth does"
-        );
-
-        // Nothing is ready before Apply, however complete the boxes look.
-        fill(&ctx, &mut e, "20", "15", "5", "4");
-        assert!(
-            !painted(&frame(&ctx, &mut e, false), "Save cut copy…"),
-            "typing is not applying"
-        );
-        assert!(e.take_request().is_none());
-
-        // A tool the document refuses is refused in the form, by the document's
-        // own rule rather than a copy of it here, and changes no history.
-        for (x, y, r, depth, why) in [
-            ("20", "15", "0", "4", "no radius"),
-            ("20", "15", "5", "0", "no depth"),
-            ("20", "15", "5", "11", "deeper than the part"),
-            ("2", "15", "5", "4", "hanging off the edge"),
-            ("banana", "15", "5", "4", "not a number"),
-        ] {
-            fill(&ctx, &mut e, x, y, r, depth);
-            click(&ctx, &mut e, "Confirm draft numbers");
-            let draft = e.draft.as_ref().expect("draft");
-            assert!(draft.applied.is_none(), "{why} was accepted");
-            assert!(draft.refusal.is_some(), "{why} said nothing");
-            assert!(draft.history.undo.is_empty());
-        }
-
-        // One Apply is one history step over all four numbers.
-        fill(&ctx, &mut e, "20", "15", "5", "4");
-        click(&ctx, &mut e, "Confirm draft numbers");
-        let draft = e.draft.as_ref().expect("draft");
-        assert_eq!(draft.refusal, None);
-        assert_eq!(draft.history.undo.len(), 1, "one Apply, one step");
-        assert!(painted(&frame(&ctx, &mut e, false), "Save cut copy…"));
-
-        // Changing a number un-readies the request until it is applied again.
-        enter_field(&ctx, &mut e, "Depth (mm):", "6");
-        assert!(
-            !painted(&frame(&ctx, &mut e, false), "Save cut copy…"),
-            "an unapplied change must not be saveable"
-        );
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 2);
-
-        // Undo and Redo move the request and ask no job for anything.
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(e.draft.as_ref().expect("draft").typed.depth, "4");
-        assert!(e.take_request().is_none(), "Undo submitted a job");
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(e.draft.as_ref().expect("draft").typed.depth, "6");
-        assert!(e.take_request().is_none(), "Redo submitted a job");
-
-        // Saving hands over exactly the request the widgets built.
-        click(&ctx, &mut e, "Save cut copy…");
-        let request = e.take_request().expect("real widget request");
-        assert_eq!(request.body, body);
-        assert_eq!(request.source, path);
-        assert_eq!(request.expected, source.version);
-        assert_eq!(request.cut.center_mm, [20., 15.]);
-        assert_eq!(request.cut.radius_mm, 5.);
-        assert_eq!(request.cut.extent.blind_depth_mm().expect("blind"), 6.);
-        assert!(e.take_request().is_none(), "one press, one request");
-
-        // Cancelling leaves nothing behind and starts nothing.
-        click(&ctx, &mut e, "Cancel cut draft");
-        assert!(!e.active());
-        assert!(e.take_request().is_none());
-    }
-
-    /// The same request, run once through the app's own worker and once through
-    /// the shipped CLI, publishes the same part.
-    #[test]
-    fn native_cut_worker_and_cli_publish_the_same_part() {
-        worker_and_cli(false);
-    }
-
-    #[test]
-    fn native_second_cut_widgets_worker_and_cli_preserve_history() {
-        worker_and_cli(true);
-    }
-
-    fn worker_and_cli(second: bool) {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (root, path, source) = if second { pocket(4.) } else { plate() };
-        let original = Document::open_read_only(&path).expect("source");
-        let original_ids: Vec<_> = original
-            .objects()
-            .expect("objects")
-            .iter()
-            .map(|o| o.id)
-            .collect();
-        original.close().expect("close");
-        let before = std::fs::read(&path).expect("source");
-        let body = source.cut_bodies[0].body;
-
-        let mut e = Editor::default();
-        let ctx = egui::Context::default();
-        assert!(e.begin(&path, &source, body));
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        fill(&ctx, &mut e, "20", "15", "5", "4");
-        if second {
-            click(&ctx, &mut e, "Confirm draft numbers");
-            assert!(
-                e.draft
-                    .as_ref()
-                    .expect("draft")
-                    .refusal
-                    .as_ref()
-                    .expect("overlap refused")
-                    .contains("separate")
-            );
-            assert!(e.draft.as_ref().expect("draft").history.undo.is_empty());
-            fill(&ctx, &mut e, "45", "25", "6", "7");
-        }
-        click(&ctx, &mut e, "Confirm draft numbers");
-        if second {
-            click(&ctx, &mut e, "Undo");
-            assert_eq!(e.draft.as_ref().expect("draft").typed, Numbers::default());
-            click(&ctx, &mut e, "Redo");
-            assert_eq!(e.draft.as_ref().expect("draft").typed.center_x, "45");
-        }
-        click(&ctx, &mut e, "Save cut copy…");
-        let mut request = e.take_request().expect("widget request");
-
-        let ui = root.path().join("worker.fcad");
-        request.destination = ui.clone();
-        let cut = request.cut;
-        let mut state = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        state
-            .start_cut(request, move |r, g, c| {
-                crate::edits::spawn_cut(r, c, move |result| tx.send((g, result)).expect("reply"))
-            })
-            .expect("worker");
-        let (generation, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        let published = result.as_ref().expect("published").clone();
-        assert_eq!(published.body, body, "the body kept its identity");
-        let typed = e.draft.as_ref().expect("draft").typed.clone();
-        let applied = e.draft.as_ref().expect("draft").applied.clone();
-        let undo = e.draft.as_ref().expect("draft").history.undo.clone();
-        let mut editor = crate::sketch::Editor::default();
-        editor.cuts = e;
-        assert_eq!(
-            finish_cut(&mut editor, &mut state, generation, result),
-            Some(ui.clone())
-        );
-        assert!(!editor.active());
-        editor.draft_load_finished(&root.path().join("unrelated.fcad"), false);
-        assert!(!editor.active());
-        editor.draft_load_finished(&ui, false);
-        assert!(
-            editor.cuts.active(),
-            "a refused Open must restore the Cut draft"
-        );
-        let restored = editor.cuts.draft.as_ref().expect("restored draft");
-        assert_eq!(restored.typed, typed);
-        assert_eq!(restored.applied, applied);
-        assert_eq!(restored.history.undo, undo);
-        editor.draft_published(&ui);
-        editor.draft_load_finished(&ui, true);
-        assert!(!editor.active());
-        editor.draft_load_finished(&ui, false);
-        assert!(!editor.active(), "accepted drafts cannot be resurrected");
-
-        // The same numbers, through the shipped command line.
-        let input = root.path().join("request.json");
-        std::fs::write(
-            &input,
-            format!(
-                r#"{{"request_version":1,"center_mm":[{},{}],"radius_mm":{},"depth_mm":{}}}"#,
-                cut.center_mm[0],
-                cut.center_mm[1],
-                cut.radius_mm,
-                cut.extent.blind_depth_mm().expect("blind")
-            ),
-        )
-        .expect("input");
-        let peer = root.path().join("peer.fcad");
-        let out = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("cut-circular-copy")
-            .arg(&path)
-            .arg("--body")
-            .arg(body.to_string())
-            .arg("--expect-version")
-            .arg(source.version.content.to_string())
-            .arg("--request")
-            .arg(input)
-            .arg("-o")
-            .arg(&peer)
-            .arg("--json")
-            .output()
-            .expect("peer");
-        assert!(out.status.success(), "{out:?}");
-
-        // One document, two ways. Only the identifiers this operation minted
-        // may differ, and they are matched off one by one rather than ignored.
-        let a = Document::open_read_only(&ui).expect("worker copy");
-        let b = Document::open_read_only(&peer).expect("CLI copy");
-        assert_eq!(a.meta().document_id, b.meta().document_id);
-        let (mine, theirs) = (a.objects().expect("objects"), b.objects().expect("objects"));
-        assert_eq!(mine.len(), theirs.len());
-        assert_eq!(mine.len(), original_ids.len() + 2);
-        let minted = |objects: &[ferritecad_document::ObjectRecord]| {
-            objects
-                .iter()
-                .filter(|o| !original_ids.contains(&o.id))
-                .map(|o| o.id)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(minted(&mine).len(), 2, "a cut mints two objects");
-        assert_eq!(minted(&theirs).len(), 2);
-        for left in &mine {
-            if minted(&mine).contains(&left.id) {
-                continue;
-            }
-            let right = b.object(left.id).expect("read").expect("same object");
-            match (&left.payload, &right.payload) {
-                // The body's tip is the feature each run minted, so the payload
-                // differs by exactly that one identifier and nothing else.
-                (
-                    ferritecad_document::ObjectPayload::Body(one),
-                    ferritecad_document::ObjectPayload::Body(other),
-                ) => {
-                    assert!(minted(&mine).contains(&one.tip_feature.expect("a tip")));
-                    assert!(minted(&theirs).contains(&other.tip_feature.expect("a tip")));
-                    assert_eq!(left.name, right.name);
-                    assert_eq!(left.ordinal, right.ordinal);
-                }
-                _ => assert_eq!(
-                    left, &right,
-                    "an object this operation does not touch moved"
-                ),
-            }
-        }
-        a.close().expect("close");
-        b.close().expect("close");
-
-        // And the geometry both published is the same geometry, byte for byte.
-        for format in ["stl", "fbx"] {
-            let mut exports = Vec::new();
-            for model in [&ui, &peer] {
-                let output = model.with_extension(format);
-                let result = std::process::Command::new(crate::creates::tests::ferritecad())
-                    .arg(format!("export-{format}"))
-                    .arg(model)
-                    .arg("-o")
-                    .arg(&output)
-                    .arg("--json")
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                exports.push(std::fs::read(output).expect("export bytes"));
-            }
-            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
-        }
-        assert_eq!(std::fs::read(&path).expect("source"), before);
-    }
-
-    /// A real plate with one real pocket cut into it, made by the shipped
-    /// routes, and the catalogue a form would read from it.
-    fn pocket(depth: f64) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
-        let (root, plate, source) = plate();
-        let cut = root.path().join("cut.fcad");
-        ferritecad_jobs::circular_cut_copy(
-            &CircularCutRequest {
-                source: plate,
-                expected: source.version,
-                body: source.cut_bodies[0].body,
-                cut: CircularCut {
-                    center_mm: [20., 15.],
-                    radius_mm: 5.,
-                    extent: CutExtent::Blind { depth_mm: depth },
-                },
-                destination: cut.clone(),
-            },
-            &mut ferritecad_occt::OcctKernel::new().expect("kernel"),
-            &OperationContext::default(),
-        )
-        .expect("a part with a cut in it");
-        let d = Document::open_read_only(&cut).expect("doc");
-        let reading = crate::sketch_facts::Source::read(&d).expect("snapshot");
-        d.close().expect("close");
-        (root, cut, reading)
-    }
-
-    #[test]
-    fn the_edit_form_shows_the_saved_cut_and_refuses_what_the_document_would() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (_root, path, source) = pocket(4.);
-        let saved = source
-            .cut_features
-            .iter()
-            .find(|c| c.refusal.is_none())
-            .expect("one editable cut")
-            .saved
-            .clone()
-            .expect("the saved cut");
-        // The extrusion that started the body is not offered here; its own
-        // distance edit still owns it.
-        assert_eq!(
-            source
-                .cut_features
-                .iter()
-                .filter(|c| c.refusal.is_none())
-                .count(),
-            1,
-            "only the Cut is offered"
-        );
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &source, saved.feature));
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-
-        // It opens on what the document stores, not on an empty box.
-        let draft = e.draft.as_ref().expect("draft");
-        assert_eq!(draft.typed.center_x, "20");
-        assert_eq!(draft.typed.center_y, "15");
-        assert_eq!(draft.typed.radius, "5");
-        assert_eq!(draft.typed.depth, "4");
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(&out, "base XY plane"), "the plane is named");
-        assert!(painted(&out, "+Z"), "and the direction");
-        assert!(painted(&out, "60 × 40 mm"), "and the part");
-        assert!(
-            painted(&out, &saved.feature.to_string()),
-            "and the cut being edited"
-        );
-        assert!(
-            painted(&out, &saved.tool_curve.to_string()),
-            "and the circle whose numbers these are"
-        );
-        assert!(
-            painted(&out, "a pocket with a floor"),
-            "and what the cut is today"
-        );
-        assert!(
-            painted(&out, "must stay below the part's height"),
-            "and that this pocket may not be cut through"
-        );
-        assert!(e.take_edit_request().is_none());
-
-        // What the document refuses, the form refuses, by the document's own
-        // rule and without touching the history.
-        for (x, y, r, depth, why) in [
-            ("20", "15", "5", "10", "cutting the saved floor away"),
-            ("20", "15", "0", "4", "no radius"),
-            ("20", "15", "5", "0", "no depth"),
-            ("2", "15", "5", "4", "hanging off the edge"),
-            ("banana", "15", "5", "4", "not a number"),
-        ] {
-            fill(&ctx, &mut e, x, y, r, depth);
-            click(&ctx, &mut e, "Confirm draft numbers");
-            let draft = e.draft.as_ref().expect("draft");
-            assert!(draft.applied.is_none(), "{why} was accepted");
-            assert!(draft.refusal.is_some(), "{why} said nothing");
-            assert!(draft.history.undo.is_empty());
-        }
-
-        // One Apply is one step over all four, and a later change closes Save.
-        fill(&ctx, &mut e, "30", "20", "7.5", "6");
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 1);
-        let confirmed = e.draft.as_ref().expect("draft").typed.clone();
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(
-            e.draft.as_ref().expect("draft").typed,
-            Numbers {
-                center_x: "20".into(),
-                center_y: "15".into(),
-                radius: "5".into(),
-                depth: "4".into(),
-                through_all: false,
-            },
-            "the first Undo restores the saved cut, not an empty creation form"
-        );
-        assert!(e.take_edit_request().is_none());
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(e.draft.as_ref().expect("draft").typed, confirmed);
-        assert!(painted(&frame(&ctx, &mut e, false), "Save cut copy…"));
-        enter_field(&ctx, &mut e, "Radius (mm):", "8");
-        assert!(
-            !painted(&frame(&ctx, &mut e, false), "Save cut copy…"),
-            "an unapplied change must not be saveable"
-        );
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 2);
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(e.draft.as_ref().expect("draft").typed.radius, "7.5");
-        assert!(e.take_edit_request().is_none(), "Undo submitted a job");
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(e.draft.as_ref().expect("draft").typed.radius, "8");
-        assert!(e.take_edit_request().is_none(), "Redo submitted a job");
-
-        // Saving hands over the identities the document gave, never text.
-        click(&ctx, &mut e, "Save cut copy…");
-        let request = e.take_edit_request().expect("real widget request");
-        assert_eq!(request.source, path);
-        assert_eq!(request.expected, source.version);
-        assert_eq!(request.cut, saved.feature);
-        assert_eq!(request.edit.tool_curve, saved.tool_curve);
-        assert_eq!(request.edit.center_mm, [30., 20.]);
-        assert_eq!(request.edit.radius_mm, 8.);
-        assert_eq!(request.edit.extent.blind_depth_mm().expect("blind"), 6.);
-        assert!(e.take_edit_request().is_none(), "one press, one request");
-        click(&ctx, &mut e, "Cancel cut draft");
-        assert!(!e.active());
-    }
-
-    /// A cut that already runs through the part may be shortened: that adds a
-    /// name and loses none, which is the whole of the policy in one direction.
-    #[test]
-    fn a_hole_may_be_shortened_into_a_pocket_and_the_form_says_so() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (_root, path, source) = pocket(10.);
-        let saved = source
-            .cut_features
-            .iter()
-            .find(|c| c.refusal.is_none())
-            .expect("one editable cut")
-            .saved
-            .clone()
-            .expect("the saved cut");
-        assert!(saved.through_allowed(), "a hole has no floor to lose");
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &source, saved.feature));
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(&out, "a hole through the part"));
-        assert!(painted(&out, "may run to the part's height"));
-        fill(&ctx, &mut e, "20", "15", "5", "3");
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
-        // And the depth it already has is still accepted.
-        fill(&ctx, &mut e, "20", "15", "5", "10");
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
-    }
-
-    /// The same request, run once through the app's own worker and once through
-    /// the shipped CLI, publishes the same edited part.
-    #[test]
-    fn native_cut_edit_worker_and_cli_publish_the_same_part() {
-        edit_worker_and_cli(None, 1);
-    }
-
-    #[test]
-    fn native_either_sequential_cut_widgets_worker_and_cli_keep_draft_and_identity() {
-        for index in 0..2 {
-            edit_worker_and_cli(Some(index), 2);
-        }
-    }
-
-    #[test]
-    fn native_history_widgets_worker_cli_preserve_draft() {
-        for index in 0..3 {
-            edit_worker_and_cli(Some(index), 3);
-        }
-        if !ferritecad_occt::is_available() {
-            return;
-        }
-        let (_root, path, source) = plate();
-        let body = source.cut_bodies[0].body;
-        let mut d = Document::open(&path).expect("doc");
-        for i in 0..16 {
-            let p = ferritecad_document::prepare_circular_cut(
-                &d,
-                body,
-                &CircularCut {
-                    center_mm: [6. + (i % 4) as f64 * 14., 5. + (i / 4) as f64 * 9.],
-                    radius_mm: 1.,
-                    extent: CutExtent::Blind { depth_mm: 10. },
-                },
-            )
-            .expect("tool");
-            d.write_circular_cut(&p).expect("link");
-        }
-        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
-        let saved = source
-            .cut_features
-            .iter()
-            .filter_map(|c| c.saved.as_ref())
-            .find(|s| s.feature == s.tip_feature)
-            .expect("tip");
-        let mut e = Editor::default();
-        let ctx = egui::Context::default();
-        assert!(e.begin_edit(&path, &source, saved.feature));
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        fill(&ctx, &mut e, "48", "32", "1.25", "8");
-        click(&ctx, &mut e, "Confirm draft numbers");
-        let out = frame(&ctx, &mut e, false);
-        for label in ["Confirm draft numbers", "Undo", "Redo", "Save cut copy"] {
-            let shape=out.shapes.iter().find(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().starts_with(label))).expect("control");
-            let egui::Shape::Text(text) = &shape.shape else {
-                unreachable!()
-            };
-            let rect = text.visual_bounding_rect();
-            assert!(
-                shape.clip_rect.contains_rect(rect) && rect.bottom() < 768.,
-                "control clipped: {label}"
-            );
-        }
-        click(&ctx, &mut e, "Save cut copy…");
-        e.take_edit_request().expect("visible save");
-        assert!(e.active());
-    }
-
-    fn edit_worker_and_cli(index: Option<usize>, count: usize) {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (root, mut path, mut source) = pocket(4.1234567890123);
-        if index.is_some() {
-            let mut d = Document::open(&path).expect("fixture");
-            let body = source
-                .cut_features
-                .iter()
-                .find_map(|c| c.saved.as_ref())
-                .expect("first")
-                .body;
-            let cut = ferritecad_document::prepare_circular_cut(
-                &d,
-                body,
-                &CircularCut {
-                    center_mm: [45.1234567890123, 25.2345678901234],
-                    radius_mm: 6.1234567890123,
-                    extent: CutExtent::Blind {
-                        depth_mm: 7.1234567890123,
-                    },
-                },
-            )
-            .expect("second");
-            d.write_circular_cut(&cut).expect("write");
-            if count == 3 {
-                let cut = ferritecad_document::prepare_circular_cut(
-                    &d,
-                    body,
-                    &CircularCut {
-                        center_mm: [8.1234567890123, 31.2345678901234],
-                        radius_mm: 2.1234567890123,
-                        extent: CutExtent::Blind {
-                            depth_mm: 5.1234567890123,
-                        },
-                    },
-                )
-                .expect("third");
-                d.write_circular_cut(&cut).expect("third write");
-            }
-            d.close().expect("close");
-            let d = Document::open_read_only(&path).expect("read");
-            source = crate::sketch_facts::Source::read(&d).expect("snapshot");
-            d.close().expect("close");
-            // A separate source name makes it clear this is the saved two-cut file.
-            let two = root.path().join("two.fcad");
-            std::fs::rename(&path, &two).expect("fixture rename");
-            path = two;
-        }
-        let before = std::fs::read(&path).expect("source");
-        let last = source
-            .cut_features
-            .iter()
-            .filter_map(|c| c.saved.as_ref())
-            .find(|s| s.feature == s.tip_feature)
-            .expect("tip");
-        let selected = last.tools[index.unwrap_or(0)].feature;
-        let saved = source
-            .cut_features
-            .iter()
-            .find(|c| c.feature == selected)
-            .expect("selected")
-            .saved
-            .clone()
-            .expect("saved");
-
-        let mut e = Editor::default();
-        let ctx = egui::Context::default();
-        assert!(e.begin_edit(&path, &source, saved.feature));
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        let initial = e.draft.as_ref().expect("draft").typed.clone();
-        if index.is_some() {
-            assert_eq!(
-                source
-                    .cut_features
-                    .iter()
-                    .filter(|c| c.saved.is_some())
-                    .count(),
-                count
-            );
-            let other = saved
-                .tools
-                .iter()
-                .rev()
-                .find(|t| t.feature != saved.feature)
-                .expect("other");
-            fill(
-                &ctx,
-                &mut e,
-                &other.center_mm[0].to_string(),
-                &other.center_mm[1].to_string(),
-                "5",
-                "3",
-            );
-            click(&ctx, &mut e, "Confirm draft numbers");
-            assert!(
-                e.draft
-                    .as_ref()
-                    .expect("draft")
-                    .refusal
-                    .as_ref()
-                    .expect("visible refusal")
-                    .contains("separate")
-            );
-            assert!(e.draft.as_ref().expect("draft").history.undo.is_empty());
-        }
-        let (x, y, r, d) = if index == Some(2) {
-            ("9", "32", "2.25", "3.5")
-        } else if index == Some(1) {
-            ("44", "27", "5.5", "5.25")
-        } else {
-            ("22", "17", "4.5", "3.25")
-        };
-        fill(&ctx, &mut e, x, y, r, d);
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 1);
-        let confirmed = e.draft.as_ref().expect("draft").typed.clone();
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(
-            e.draft.as_ref().expect("draft").typed,
-            initial,
-            "exact first Undo"
-        );
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(e.draft.as_ref().expect("draft").typed, confirmed);
-        // The native Save dialog consumes this request, then Cancel returns
-        // without starting a worker. Discard exactly that request here.
-        click(&ctx, &mut e, "Save cut copy…");
-        e.take_edit_request().expect("cancelled Save request");
-        assert_eq!(e.draft.as_ref().expect("draft").typed, confirmed);
-        assert!(e.draft.as_ref().expect("draft").applied.is_some());
-        click(&ctx, &mut e, "Save cut copy…");
-        let mut request = e.take_edit_request().expect("widget request");
-
-        let ui = root.path().join("worker.fcad");
-        request.destination = ui.clone();
-        let edit = request.edit;
-        if index.is_some() {
-            let mut stale = request.clone();
-            stale.expected.content = ferritecad_types::ContentHash::of_bytes(b"stale version");
-            let mut failed = crate::edits::Edits::default();
-            let (tx, rx) = std::sync::mpsc::channel();
-            failed
-                .start_cut_edit(stale, move |r, g, c| {
-                    crate::edits::spawn_cut_edit(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
-                })
-                .expect("failed worker");
-            let (g, result) = rx
-                .recv_timeout(std::time::Duration::from_secs(120))
-                .expect("reply");
-            assert!(
-                result
-                    .as_ref()
-                    .expect_err("stale refusal")
-                    .to_string()
-                    .contains("source has changed")
-            );
-            let mut holder = crate::sketch::Editor::default();
-            holder.cuts = e;
-            assert!(
-                finish_cut_edit(
-                    &mut holder,
-                    &mut failed,
-                    g + 1,
-                    Err(CadError::input("stale reply"))
-                )
-                .is_none()
-            );
-            assert!(holder.cuts.active());
-            assert!(finish_cut_edit(&mut holder, &mut failed, g, result).is_none());
-            assert_eq!(holder.cuts.draft.as_ref().expect("draft").typed, confirmed);
-            assert_eq!(
-                holder
-                    .cuts
-                    .draft
-                    .as_ref()
-                    .expect("draft")
-                    .history
-                    .undo
-                    .len(),
-                1
-            );
-            e = std::mem::take(&mut holder.cuts);
-            assert!(!ui.exists());
-        }
-        let mut state = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        state
-            .start_cut_edit(request, move |r, g, c| {
-                crate::edits::spawn_cut_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
-            })
-            .expect("worker");
-        let (generation, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        let published = result.as_ref().expect("published").clone();
-        assert_eq!(
-            published.feature, saved.feature,
-            "the cut kept its identity"
-        );
-        assert_eq!(published.tool_curve, saved.tool_curve);
-        assert_eq!(published.body, saved.body);
-        assert_eq!(published.previous, saved.previous_feature);
-        assert!(published.leaves_a_floor);
-
-        // The draft survives a publication whose Open is then refused, through
-        // exactly the retention every other copy edit uses.
-        let typed = e.draft.as_ref().expect("draft").typed.clone();
-        let applied = e.draft.as_ref().expect("draft").applied.clone();
-        let undo = e.draft.as_ref().expect("draft").history.undo.clone();
-        let mut editor = crate::sketch::Editor::default();
-        editor.cuts = e;
-        assert_eq!(
-            finish_cut_edit(&mut editor, &mut state, generation, result),
-            Some(ui.clone())
-        );
-        assert!(!editor.active());
-        editor.draft_load_finished(&root.path().join("unrelated.fcad"), false);
-        assert!(!editor.active());
-        editor.draft_load_finished(&ui, false);
-        assert!(
-            editor.cuts.active(),
-            "a refused Open must restore the cut edit draft"
-        );
-        let restored = editor.cuts.draft.as_ref().expect("restored draft");
-        assert_eq!(restored.typed, typed);
-        assert_eq!(restored.applied, applied);
-        assert_eq!(restored.history.undo, undo);
-        editor.draft_published(&ui);
-        editor.draft_load_finished(&ui, true);
-        assert!(!editor.active(), "an accepted draft is finished");
-
-        // The same numbers, through the shipped command line.
-        let input = root.path().join("request.json");
-        std::fs::write(
-            &input,
-            format!(
-                r#"{{"request_version":1,"tool_curve_id":"{}","center_mm":[{},{}],"radius_mm":{},"depth_mm":{}}}"#,
-                edit.tool_curve,
-                edit.center_mm[0],
-                edit.center_mm[1],
-                edit.radius_mm,
-                edit.extent.blind_depth_mm().expect("blind")
-            ),
-        )
-        .expect("input");
-        let peer = root.path().join("peer.fcad");
-        let out = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("edit-circular-cut")
-            .arg(&path)
-            .arg("--feature")
-            .arg(saved.feature.to_string())
-            .arg("--expect-version")
-            .arg(source.version.content.to_string())
-            .arg("--request")
-            .arg(input)
-            .arg("-o")
-            .arg(&peer)
-            .arg("--json")
-            .output()
-            .expect("peer");
-        assert!(out.status.success(), "{out:?}");
-
-        // One document, two ways. This operation mints no object at all, so
-        // every object must match whole — not "all but the new ones".
-        let a = Document::open_read_only(&ui).expect("worker copy");
-        let b = Document::open_read_only(&peer).expect("CLI copy");
-        assert_eq!(a.meta().document_id, b.meta().document_id);
-        let (mine, theirs) = (a.objects().expect("objects"), b.objects().expect("objects"));
-        assert_eq!(mine.len(), 4 + count * 2);
-        assert_eq!(mine, theirs, "an edited object differs between the two");
-        // And the names: an edit that kept a floor adds none, so both copies
-        // hold exactly the same references under exactly the same identities.
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
-        a.close().expect("close");
-        b.close().expect("close");
-
-        for format in ["stl", "fbx"] {
-            let mut exports = Vec::new();
-            for model in [&ui, &peer] {
-                let output = model.with_extension(format);
-                let result = std::process::Command::new(crate::creates::tests::ferritecad())
-                    .arg(format!("export-{format}"))
-                    .arg(model)
-                    .arg("-o")
-                    .arg(&output)
-                    .arg("--json")
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                exports.push(std::fs::read(output).expect("export bytes"));
-            }
-            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
-        }
-        assert_eq!(std::fs::read(&path).expect("source"), before);
-    }
-
-    /// Two references naming the same thing, identity aside.
-    fn same_meaning(
-        a: &ferritecad_document::TopologyRef,
-        b: &ferritecad_document::TopologyRef,
-    ) -> bool {
-        a.owner == b.owner
-            && a.producer_feature == b.producer_feature
-            && a.expected_kind == b.expected_kind
-            && a.output_role == b.output_role
-            && a.selection == b.selection
-            && a.fallback_signature == b.fallback_signature
-    }
-
-    /// A plate 60 × 40 × 10 with a Blind through hole, a pocket and a
-    /// ThroughAll Cut at the tip, at fractional numbers and off-axis order.
-    fn mixed() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
-        let (root, path, source) = plate();
-        let body = source.cut_bodies[0].body;
-        let mut d = Document::open(&path).expect("doc");
-        for (center, radius, extent) in [
-            ([15.25, 12.5], 3.125, CutExtent::Blind { depth_mm: 10. }),
-            ([40.125, 12.375], 4.25, CutExtent::Blind { depth_mm: 4.5 }),
-            ([30.5, 30.25], 2.625, CutExtent::ThroughAll),
-        ] {
-            let p = ferritecad_document::prepare_circular_cut(
-                &d,
-                body,
-                &CircularCut {
-                    center_mm: center,
-                    radius_mm: radius,
-                    extent,
-                },
-            )
-            .expect("cut");
-            d.write_circular_cut(&p).expect("write");
-        }
-        let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
-        d.close().expect("close");
-        (root, path, source)
-    }
-
-    #[test]
-    fn native_through_all_widgets_worker_and_cli_keep_intent_draft_and_names() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (root, path, source) = mixed();
-        let before = std::fs::read(&path).expect("source");
-        let tip = source
-            .cut_features
-            .iter()
-            .filter_map(|c| c.saved.as_ref())
-            .find(|s| s.feature == s.tip_feature)
-            .expect("tip")
-            .clone();
-        let [first, _, last] = [0, 1, 2].map(|i| tip.tools[i].feature);
-        let ctx = egui::Context::default();
-
-        // A saved ThroughAll Cut opens as Through all, with no invented depth,
-        // and the disabled depth box cannot be typed into.
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &source, last));
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        let draft = e.draft.as_ref().expect("draft");
-        assert!(draft.typed.through_all);
-        assert_eq!(draft.typed.depth, "");
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(&out, "cut through all — a hole through the part"));
-        assert!(painted(&out, "Through all has no depth"));
-        enter_field(&ctx, &mut e, "Depth (mm):", "7");
-        assert_eq!(e.draft.as_ref().expect("draft").typed.depth, "", "disabled");
-        e.dismiss();
-
-        // Blind through (first link) -> Through all: one Apply over centre,
-        // radius and end; the exact first Undo; Redo; Save Cancel keeps it.
-        assert!(e.begin_edit(&path, &source, first));
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        let initial = e.draft.as_ref().expect("draft").typed.clone();
-        assert!(!initial.through_all);
-        enter_field(&ctx, &mut e, "Centre X (mm):", "14.75");
-        enter_field(&ctx, &mut e, "Radius (mm):", "3.375");
-        click(&ctx, &mut e, "Through all");
-        assert!(
-            !painted(&frame(&ctx, &mut e, false), "Save cut copy…"),
-            "choosing an end is not applying it"
-        );
-        click(&ctx, &mut e, "Confirm draft numbers");
-        let draft = e.draft.as_ref().expect("draft");
-        assert_eq!(draft.refusal, None);
-        assert_eq!(draft.history.undo.len(), 1, "one Apply, one step");
-        let confirmed = draft.typed.clone();
-        assert!(confirmed.through_all);
-        assert_eq!(confirmed.depth, "10", "the unused depth text is kept");
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(
-            e.draft.as_ref().expect("draft").typed,
-            initial,
-            "exact first Undo"
-        );
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(e.draft.as_ref().expect("draft").typed, confirmed);
-        click(&ctx, &mut e, "Save cut copy…");
-        e.take_edit_request().expect("cancelled Save request");
-        assert_eq!(e.draft.as_ref().expect("draft").typed, confirmed);
-        click(&ctx, &mut e, "Save cut copy…");
-        let request = e.take_edit_request().expect("widget request");
-        assert_eq!(request.edit.extent, CutExtent::ThroughAll);
-        assert_eq!(request.edit.vocabulary, ExtentVocabulary::BlindOrThroughAll);
-        let (ui, peer) = worker_and_peer(
-            &root,
-            &path,
-            &source,
-            request,
-            e,
-            format!(
-                r#"{{"request_version":2,"tool_curve_id":"{}","center_mm":[14.75,12.5],"radius_mm":3.375,"extent":{{"kind":"through_all"}}}}"#,
-                tip.tools[0].tool_curve
-            ),
-            "intent",
-        );
-        // Same tool, same names: nothing added, nothing moved.
-        let source_doc = Document::open_read_only(&path).expect("source");
-        let a = Document::open_read_only(&ui).expect("worker copy");
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            source_doc.topology_refs().expect("refs")
-        );
-        a.close().expect("close");
-        source_doc.close().expect("close");
-        let _ = peer;
-
-        // ThroughAll (tip) -> Blind pocket: one own floor, through the same
-        // worker and the same request v2 on the CLI.
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &source, last));
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        click(&ctx, &mut e, "Blind depth");
-        enter_field(&ctx, &mut e, "Depth (mm):", "3.25");
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
-        click(&ctx, &mut e, "Save cut copy…");
-        let request = e.take_edit_request().expect("widget request");
-        assert_eq!(request.edit.extent, CutExtent::Blind { depth_mm: 3.25 });
-        let (ui, peer) = worker_and_peer(
-            &root,
-            &path,
-            &source,
-            request,
-            e,
-            format!(
-                r#"{{"request_version":2,"tool_curve_id":"{}","center_mm":[30.5,30.25],"radius_mm":2.625,"extent":{{"kind":"blind","depth_mm":3.25}}}}"#,
-                tip.tools[2].tool_curve
-            ),
-            "pocket",
-        );
-        let source_doc = Document::open_read_only(&path).expect("source");
-        let old = source_doc.topology_refs().expect("refs");
-        for copy in [&ui, &peer] {
-            let d = Document::open_read_only(copy).expect("copy");
-            let refs = d.topology_refs().expect("refs");
-            assert!(old.iter().all(|r| refs.contains(r)), "no saved name moved");
-            let added: Vec<_> = refs.iter().filter(|r| !old.contains(r)).collect();
-            assert_eq!(added.len(), 1, "one own floor for the tip");
-            assert_eq!(added[0].owner, last);
-            assert_eq!(
-                added[0].output_role,
-                ferritecad_document::SemanticRole::ExtrudeCap {
-                    side: ferritecad_document::CapSide::End
-                }
-            );
-            d.close().expect("close");
-        }
-        source_doc.close().expect("close");
-        assert_eq!(std::fs::read(&path).expect("source"), before);
-    }
-
-    /// Publishes one edit through the app's worker (with the failed-Open
-    /// retention) and through the shipped CLI, and proves the two copies are
-    /// one document: every object equal, refs equal by full semantics, and
-    /// STL/FBX byte-identical.
-    fn worker_and_peer(
-        root: &tempfile::TempDir,
-        path: &Path,
-        source: &ExtrudeEditSource,
-        mut request: EditCircularCutRequest,
-        e: Editor,
-        cli_request: String,
-        label: &str,
-    ) -> (PathBuf, PathBuf) {
-        let ui = root.path().join(format!("{label}-worker.fcad"));
-        request.destination = ui.clone();
-        let feature = request.cut;
-        let extent = request.edit.extent;
-        let mut state = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        state
-            .start_cut_edit(request, move |r, g, c| {
-                crate::edits::spawn_cut_edit(r, c, move |result| {
-                    tx.send((g, result)).expect("reply")
-                })
-            })
-            .expect("worker");
-        let (generation, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        let published = result.as_ref().expect("published").clone();
-        assert_eq!(published.feature, feature);
-        assert_eq!(published.extent, extent);
-        assert_eq!(
-            published.leaves_a_floor,
-            matches!(extent, CutExtent::Blind { depth_mm } if depth_mm < 10.)
-        );
-        let typed = e.draft.as_ref().expect("draft").typed.clone();
-        let mut editor = crate::sketch::Editor::default();
-        editor.cuts = e;
-        assert_eq!(
-            finish_cut_edit(&mut editor, &mut state, generation, result),
-            Some(ui.clone())
-        );
-        editor.draft_load_finished(&ui, false);
-        assert_eq!(
-            editor.cuts.draft.as_ref().expect("restored").typed,
-            typed,
-            "a refused Open restores the exact intent"
-        );
-
-        let input = root.path().join(format!("{label}-request.json"));
-        std::fs::write(&input, cli_request).expect("input");
-        let peer = root.path().join(format!("{label}-peer.fcad"));
-        let out = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("edit-circular-cut")
-            .arg(path)
-            .arg("--feature")
-            .arg(feature.to_string())
-            .arg("--expect-version")
-            .arg(source.version.content.to_string())
-            .arg("--request")
-            .arg(input)
-            .arg("-o")
-            .arg(&peer)
-            .arg("--json")
-            .output()
-            .expect("peer");
-        assert!(out.status.success(), "{out:?}");
-
-        let a = Document::open_read_only(&ui).expect("worker copy");
-        let b = Document::open_read_only(&peer).expect("CLI copy");
-        assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
-        let (mine, theirs) = (
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs"),
-        );
-        assert_eq!(mine.len(), theirs.len());
-        for r in &mine {
-            assert!(
-                theirs.iter().any(|t| t.id == r.id && t == r)
-                    || theirs.iter().any(|t| same_meaning(t, r)),
-                "{r:?}"
-            );
-        }
-        a.close().expect("close");
-        b.close().expect("close");
-        for format in ["stl", "fbx"] {
-            let mut exports = Vec::new();
-            for model in [&ui, &peer] {
-                let output = model.with_extension(format);
-                let result = std::process::Command::new(crate::creates::tests::ferritecad())
-                    .arg(format!("export-{format}"))
-                    .arg(model)
-                    .arg("-o")
-                    .arg(&output)
-                    .arg("--json")
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                exports.push(std::fs::read(output).expect("export bytes"));
-            }
-            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
-        }
-        (ui, peer)
-    }
-
-    #[test]
-    fn native_through_all_add_widgets_worker_and_cli_publish_one_part() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (root, path, source) = plate();
-        let body = source.cut_bodies[0].body;
-        let ctx = egui::Context::default();
-        let mut e = Editor::default();
-        assert!(e.begin(&path, &source, body));
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        fill(&ctx, &mut e, "20.375", "15.125", "5.25", "");
-        click(&ctx, &mut e, "Through all");
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
-        click(&ctx, &mut e, "Save cut copy…");
-        let mut request = e.take_request().expect("widget request");
-        assert_eq!(request.cut.extent, CutExtent::ThroughAll);
-        let ui = root.path().join("add-worker.fcad");
-        request.destination = ui.clone();
-        let mut state = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        state
-            .start_cut(request, move |r, g, c| {
-                crate::edits::spawn_cut(r, c, move |result| tx.send((g, result)).expect("reply"))
-            })
-            .expect("worker");
-        let (_, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        assert_eq!(result.expect("published").extent, CutExtent::ThroughAll);
-        let input = root.path().join("add.json");
-        std::fs::write(
-            &input,
-            r#"{"request_version":2,"center_mm":[20.375,15.125],"radius_mm":5.25,"extent":{"kind":"through_all"}}"#,
-        )
-        .expect("input");
-        let peer = root.path().join("add-peer.fcad");
-        let out = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("cut-circular-copy")
-            .arg(&path)
-            .arg("--body")
-            .arg(body.to_string())
-            .arg("--expect-version")
-            .arg(source.version.content.to_string())
-            .arg("--request")
-            .arg(input)
-            .arg("-o")
-            .arg(&peer)
-            .arg("--json")
-            .output()
-            .expect("peer");
-        assert!(out.status.success(), "{out:?}");
-        for format in ["stl", "fbx"] {
-            let mut exports = Vec::new();
-            for model in [&ui, &peer] {
-                let output = model.with_extension(format);
-                let result = std::process::Command::new(crate::creates::tests::ferritecad())
-                    .arg(format!("export-{format}"))
-                    .arg(model)
-                    .arg("-o")
-                    .arg(&output)
-                    .arg("--json")
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                exports.push(std::fs::read(output).expect("export bytes"));
-            }
-            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
-        }
-        // Both copies store the intent, and no floor.
-        for copy in [&ui, &peer] {
-            let d = Document::open_read_only(copy).expect("copy");
-            let cut = d
-                .objects()
-                .expect("objects")
-                .into_iter()
-                .find(|o| matches!(&o.payload, ferritecad_document::ObjectPayload::Extrude(x) if x.previous.is_some()))
-                .expect("the cut");
-
-            assert!(
-                !d.topology_refs()
-                    .expect("refs")
-                    .iter()
-                    .any(|r| r.owner == cut.id
-                        && r.output_role
-                            == ferritecad_document::SemanticRole::ExtrudeCap {
-                                side: ferritecad_document::CapSide::End
-                            })
-            );
-            d.close().expect("close");
-        }
-    }
-
-    /// §26I: the L profile through the form, the app's worker and the CLI.
-    /// The form reads the same boundary as the document and refuses the notch
-    /// and the reflex vertex by the document's rule; worker and CLI publish
-    /// the same part, byte for byte, with the same stored history.
-    #[test]
-    fn native_polygon_widgets_worker_and_cli_publish_one_part() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (root, path, source) = part(vec![
-            [0., 0.],
-            [60., 0.],
-            [60., 20.],
-            [20., 20.],
-            [20., 40.],
-            [0., 40.],
-        ]);
-        let body = source.cut_bodies[0].body;
-        let target = source.cut_bodies[0].target.as_ref().expect("an L");
-        assert_eq!(target.boundary.rectangle_mm(), None);
-        let ctx = egui::Context::default();
-        let mut e = Editor::default();
-        assert!(e.begin(&path, &source, body));
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        let out = frame(&ctx, &mut e, false);
-        assert!(
-            painted(&out, "outline of 6 Lines, 1600 mm²"),
-            "the real part"
-        );
-        assert!(
-            !painted(&out, "60 × 40 mm"),
-            "never the bounding box as the part"
-        );
-        for (x, y, r, why) in [
-            ("40", "30", "3", "the notch"),
-            ("17", "17", "4.3", "the reflex vertex"),
-            ("40", "17", "4", "the concave edge"),
-        ] {
-            fill(&ctx, &mut e, x, y, r, "4");
-            click(&ctx, &mut e, "Confirm draft numbers");
-            let draft = e.draft.as_ref().expect("draft");
-            assert!(draft.applied.is_none(), "{why} was accepted");
-            assert!(
-                draft
-                    .refusal
-                    .as_deref()
-                    .is_some_and(|r| r.contains("stay inside the part")),
-                "{why}: {:?}",
-                draft.refusal
-            );
-            assert!(draft.history.undo.is_empty());
-        }
-        fill(&ctx, &mut e, "10.125", "18.625", "2.25", "");
-        click(&ctx, &mut e, "Through all");
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
-        fill(&ctx, &mut e, "45", "10", "5", "");
-        click(&ctx, &mut e, "Confirm draft numbers");
-        assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 2);
-        click(&ctx, &mut e, "Undo");
-        assert_eq!(e.draft.as_ref().expect("draft").typed.center_x, "10.125");
-        assert!(e.take_request().is_none(), "Undo submitted a job");
-        click(&ctx, &mut e, "Redo");
-        assert_eq!(e.draft.as_ref().expect("draft").typed.center_x, "45");
-        click(&ctx, &mut e, "Undo");
-        click(&ctx, &mut e, "Save cut copy…");
-        let mut request = e.take_request().expect("widget request");
-        assert_eq!(request.cut.center_mm, [10.125, 18.625]);
-        assert_eq!(request.cut.extent, CutExtent::ThroughAll);
-        let ui = root.path().join("polygon-worker.fcad");
-        request.destination = ui.clone();
-        let mut state = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        state
-            .start_cut(request, move |r, g, c| {
-                crate::edits::spawn_cut(r, c, move |result| tx.send((g, result)).expect("reply"))
-            })
-            .expect("worker");
-        let (_, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        assert_eq!(result.expect("published").extent, CutExtent::ThroughAll);
-        let input = root.path().join("polygon.json");
-        std::fs::write(
-            &input,
-            r#"{"request_version":2,"center_mm":[10.125,18.625],"radius_mm":2.25,"extent":{"kind":"through_all"}}"#,
-        )
-        .expect("input");
-        let peer = root.path().join("polygon-peer.fcad");
-        let out = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("cut-circular-copy")
-            .arg(&path)
-            .arg("--body")
-            .arg(body.to_string())
-            .arg("--expect-version")
-            .arg(source.version.content.to_string())
-            .arg("--request")
-            .arg(input)
-            .arg("-o")
-            .arg(&peer)
-            .arg("--json")
-            .output()
-            .expect("peer");
-        assert!(out.status.success(), "{out:?}");
-        for format in ["stl", "fbx"] {
-            let mut exports = Vec::new();
-            for model in [&ui, &peer] {
-                let output = model.with_extension(format);
-                let result = std::process::Command::new(crate::creates::tests::ferritecad())
-                    .arg(format!("export-{format}"))
-                    .arg(model)
-                    .arg("-o")
-                    .arg(&output)
-                    .arg("--json")
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                exports.push(std::fs::read(output).expect("export bytes"));
-            }
-            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
-        }
-        // The same stored history, once the identities minted by each copy
-        // are set aside: every table's shape, every kept row, and the new
-        // objects' and names' meaning.
-        let stored = |p: &PathBuf| {
-            let d = Document::open_read_only(p).expect("copy");
-            let objects: Vec<_> = d
-                .objects()
-                .expect("objects")
-                .into_iter()
-                .map(|o| {
-                    let meaning = match &o.payload {
-                        ferritecad_document::ObjectPayload::Sketch(s) => format!(
-                            "{:?}",
-                            s.curves
-                                .iter()
-                                .map(|c| c.geometry.clone())
-                                .collect::<Vec<_>>()
-                        ),
-                        ferritecad_document::ObjectPayload::Extrude(x) => {
-                            format!("{:?} {:?} {}", x.end_condition, x.operation, x.reversed)
-                        }
-                        other => format!("{:?}", other.kind()),
-                    };
-                    (o.name.clone(), o.ordinal, meaning)
-                })
-                .collect();
-            let mut roles: Vec<_> = d
-                .topology_refs()
-                .expect("refs")
-                .into_iter()
-                .map(|r| format!("{:?}", std::mem::discriminant(&r.output_role)))
-                .collect();
-            roles.sort();
-            let deps = d.dependencies().expect("deps").len();
-            d.close().expect("close");
-            (objects, roles, deps)
-        };
-        assert_eq!(stored(&ui), stored(&peer));
     }
 }

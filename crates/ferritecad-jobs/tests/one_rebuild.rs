@@ -5,7 +5,7 @@ use counting::CountingMock;
 use ferritecad_document::*;
 use ferritecad_jobs::*;
 use ferritecad_kernel::{OperationContext, TessellationParams};
-use ferritecad_types::{ObjectId, ProfileJoint};
+use ferritecad_types::ObjectId;
 
 fn no_imports(
     _: &mut CountingMock,
@@ -94,51 +94,55 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
             })
             .expect("feature")
             .id;
-        let edge = || SweptEdge {
-            feature,
-            joint: ProfileJoint::new(sketch.curves[3].id, sketch.curves[0].id).expect("joint"),
-        };
         let mut selected = ObjectId::new();
-        if operation == "fillet_radius" {
-            let prepared = prepare_edge_fillet(
+        let mut cut_tool = None;
+        if matches!(operation, "fillet_radius" | "chamfer_distance") {
+            let change = ferritecad_fixtures::feature_changes::edge_addition(
                 &document,
                 body,
-                &EdgeFillet {
-                    edge: edge(),
-                    radius_mm: 2.0,
-                },
+                0,
+                2.,
+                operation == "chamfer_distance",
             )
-            .expect("fillet");
-            selected = prepared.feature().id;
-            document.write_edge_fillet(&prepared).expect("write fillet");
-        } else if operation == "chamfer_distance" {
-            let prepared = prepare_edge_chamfer(
-                &document,
-                body,
-                &EdgeChamfer {
-                    edge: edge(),
-                    distance_mm: 2.0,
-                },
-            )
-            .expect("chamfer");
-            selected = prepared.feature().id;
-            document
-                .write_edge_chamfer(&prepared)
-                .expect("write chamfer");
+            .expect("addition");
+            selected = change.object();
+            document.write_changes(&[change]).expect("edge feature");
         } else if operation == "cut_parameters" {
-            let prepared = prepare_circular_cut(
+            let tool = ferritecad_fixtures::feature_changes::circular_tool(
                 &document,
                 body,
-                &CircularCut {
-                    center_mm: [20.0, 20.0],
-                    radius_mm: 2.0,
-                    extent: CutExtent::ThroughAll,
-                },
+                [20., 20.],
+                2.,
+                EndCondition::ThroughAll,
             )
-            .expect("cut");
-            selected = prepared.feature().id;
-            document.write_circular_cut(&prepared).expect("write cut");
+            .expect("tool");
+            document.write_changes(&tool.changes).expect("cut");
+            cut_tool = Some(tool);
         }
+        let additions = match operation {
+            "add_cut" => {
+                ferritecad_fixtures::feature_changes::circular_tool(
+                    &document,
+                    body,
+                    [20., 20.],
+                    2.,
+                    EndCondition::ThroughAll,
+                )
+                .expect("tool")
+                .changes
+            }
+            "add_fillet" | "add_chamfer" => vec![
+                ferritecad_fixtures::feature_changes::edge_addition(
+                    &document,
+                    body,
+                    0,
+                    2.,
+                    operation == "add_chamfer",
+                )
+                .expect("addition"),
+            ],
+            _ => vec![],
+        };
         document.close().expect("close");
         let mut session = DocumentSession::open(&path).expect("session");
         let mut kernel = CountingMock::new();
@@ -228,51 +232,26 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
                 no_imports,
                 &context,
             ),
-            "add_cut" => ticket.add_circular_cut(
-                body,
-                CircularCut {
-                    center_mm: [20.0, 20.0],
-                    radius_mm: 2.0,
-                    extent: CutExtent::ThroughAll,
-                },
-                expected,
-                &mut kernel,
-                no_imports,
-                &context,
-            ),
+            "add_cut" | "add_fillet" | "add_chamfer" => {
+                ticket.edit(additions, expected, &mut kernel, no_imports, &context)
+            }
             "cut_parameters" => {
-                let d = Document::open_read_only(session.current().path()).expect("doc");
-                let choice = cut_parameter_choices(&d, &d.objects().expect("objects"))
-                    .into_iter()
-                    .find(|c| c.feature == selected)
-                    .expect("cut choice");
-                let saved = choice.saved.expect("editable cut");
-                ticket.edit_circular_cut(
-                    selected,
-                    CircularCutEdit {
-                        tool_curve: saved.tool_curve,
-                        center_mm: [20.0, 20.0],
-                        radius_mm: 2.5,
-                        extent: CutExtent::ThroughAll,
-                        vocabulary: ExtentVocabulary::BlindOrThroughAll,
-                    },
+                let cut = cut_tool.expect("saved tool");
+                ticket.edit(
+                    vec![EditChange::SetCurveGeometry {
+                        sketch: cut.sketch,
+                        curve: cut.curve,
+                        geometry: SketchGeometry::Circle {
+                            center: Point2::new(20., 20.).expect("center"),
+                            radius: 2.5,
+                        },
+                    }],
                     expected,
                     &mut kernel,
                     no_imports,
                     &context,
                 )
             }
-            "add_fillet" => ticket.add_edge_fillet(
-                body,
-                EdgeFillet {
-                    edge: edge(),
-                    radius_mm: 2.0,
-                },
-                expected,
-                &mut kernel,
-                no_imports,
-                &context,
-            ),
             "fillet_radius" => ticket.edit(
                 vec![
                     ferritecad_document::EditChange::constant(
@@ -282,17 +261,6 @@ fn every_session_edit_builds_once_and_returns_its_picture() {
                     )
                     .expect("test value"),
                 ],
-                expected,
-                &mut kernel,
-                no_imports,
-                &context,
-            ),
-            "add_chamfer" => ticket.add_edge_chamfer(
-                body,
-                EdgeChamfer {
-                    edge: edge(),
-                    distance_mm: 2.0,
-                },
                 expected,
                 &mut kernel,
                 no_imports,

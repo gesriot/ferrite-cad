@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 //! §30G: real workers, UUID selection, exact SQL and independent geometry peers.
 use super::*;
+use crate::feature_tests::EdgeObservation;
 use crate::fillets::tests::session_apply::{
     draft_state, fixture, selected, typed_radius, visible_outcome,
 };
-use ferritecad_document::{ObjectPayload, SavedFillet};
+use ferritecad_document::ObjectPayload;
 use ferritecad_jobs::EditRequest;
 use ferritecad_kernel::GeometryKernel;
 
@@ -165,10 +166,8 @@ fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     assert_eq!(state(s), before);
     s.status.clone()
 }
-pub(super) fn history(path: &Path) -> Vec<SavedFillet> {
-    let d = Document::open_read_only(path).expect("document");
-    ferritecad_document::saved_fillets(&d, &d.objects().expect("objects"))
-        .expect("structural history")
+pub(super) fn history(path: &Path) -> Vec<EdgeObservation> {
+    crate::feature_tests::edge_history(path, false)
 }
 pub(super) fn cold(path: &Path, width: f64, depth: f64, height: f64) -> f64 {
     let d = Document::open_read_only(path).expect("document");
@@ -223,7 +222,7 @@ pub(super) fn cold(path: &Path, width: f64, depth: f64, height: f64) -> f64 {
     }
     exact
 }
-pub(super) fn mesh(stl: &[u8], fillets: &[SavedFillet], bounds: [f64; 4], height: f64) -> f64 {
+pub(super) fn mesh(stl: &[u8], fillets: &[EdgeObservation], bounds: [f64; 4], height: f64) -> f64 {
     let [x0, y0, x1, y1] = bounds;
     let n = u32::from_le_bytes(stl[80..84].try_into().expect("count")) as usize;
     assert_eq!(stl.len(), 84 + 50 * n);
@@ -795,14 +794,13 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
         let reading = crate::sketch_facts::read(&current).expect("reading");
         let fourth = history(&current)[3].clone();
         let beside = history(&current)[neighbour].clone();
-        let shared = fourth
-            .neighbours
+        let shared = *fourth
+            .edge
+            .joint
+            .segments()
             .iter()
-            .find(|n| n.feature == beside.feature)
-            .expect("neighbour")
-            .shared
-            .expect("shared Line")
-            .0;
+            .find(|id| beside.edge.joint.segments().contains(id))
+            .expect("shared Line");
         let (mut form, r) = typed_radius(&current, &reading, &s, fourth.feature, "7.125");
         let draft = draft_state(&form);
         let reason = refuse(&mut s, &r);

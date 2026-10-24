@@ -41,7 +41,7 @@ use ferritecad_jobs::{
 };
 use ferritecad_kernel::{CancelToken, OperationContext, TessellationParams};
 use ferritecad_scene::LoadedScene;
-use ferritecad_types::{CadError, ErrorKind, ObjectId, Result};
+use ferritecad_types::{CadError, ErrorKind, Result};
 
 use crate::PRODUCT_NAME;
 use crate::tabs::TabId;
@@ -1139,118 +1139,6 @@ pub(crate) fn spawn_apply(
     )
 }
 
-/// The existing circular Cut edit on the kernel-owning worker. Add has its own
-/// worker (`spawn_add_cut`).
-pub(crate) fn spawn_apply_cut(
-    ticket: StepTicket,
-    cut: ObjectId,
-    edit: ferritecad_document::CircularCutEdit,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.edit_circular_cut(
-                cut,
-                edit,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
-/// §30I: a new circular Cut on the kernel-owning worker. `expected` is the version
-/// the Add form was opened on; the Body is its saved UUID.
-pub(crate) fn spawn_add_cut(
-    ticket: StepTicket,
-    body: ObjectId,
-    cut: ferritecad_document::CircularCut,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.add_circular_cut(
-                body,
-                cut,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
-/// §30J: a new Fillet on the kernel-owning worker. `expected` is the version the
-/// Add form was opened on; the Body is its saved UUID.
-pub(crate) fn spawn_add_fillet(
-    ticket: StepTicket,
-    body: ObjectId,
-    fillet: ferritecad_document::EdgeFillet,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.add_edge_fillet(
-                body,
-                fillet,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
-/// §30K: a new Chamfer on the kernel-owning worker. `expected` is the version the
-/// Add form was opened on; the Body is its saved UUID.
-pub(crate) fn spawn_add_chamfer(
-    ticket: StepTicket,
-    body: ObjectId,
-    chamfer: ferritecad_document::EdgeChamfer,
-    expected: ferritecad_document::DocumentVersion,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.add_edge_chamfer(
-                body,
-                chamfer,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
 /// §30N: a checkpoint change on a worker of its own. No kernel: the library
 /// copies and checks files; a restored model is drawn afterwards by
 /// [`spawn_scene`] like any Apply's.
@@ -1433,6 +1321,7 @@ pub(crate) fn open_for_view(
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use ferritecad_types::ObjectId;
     mod add_chamfer;
     mod add_cut;
     mod add_fillet;

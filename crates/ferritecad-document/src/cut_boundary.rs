@@ -12,7 +12,7 @@ use crate::{PolygonExtrusion, SketchCurve, SketchGeometry};
 /// How far one stored Line end may be from the next Line's start and still
 /// close the profile. The kernel's linear tolerance, as the rectangle reader
 /// that preceded this one used.
-const CLOSURE_MM: f64 = crate::cut_edit::WALL_CLEARANCE_MM;
+const CLOSURE_MM: f64 = crate::WALL_CLEARANCE_MM;
 
 /// One saved side of the part, exactly as stored.
 #[derive(Debug, Clone, Copy, PartialEq)]

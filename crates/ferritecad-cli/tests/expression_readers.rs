@@ -1,28 +1,14 @@
 // SPDX-License-Identifier: MIT
-use ferritecad_document::{Document, EditChange, ExpressionSlot, ExtrudeEditSource, ObjectPayload};
+use ferritecad_document::{
+    Document, EditChange, EndCondition, Expression, ExpressionSlot, ExtrudeEditSource,
+    ObjectPayload,
+};
 use ferritecad_kernel::OperationContext;
-use std::{collections::BTreeMap, path::Path};
 #[path = "support/transaction.rs"]
 mod transaction;
 
-fn readers(path: &Path) -> BTreeMap<String, bool> {
-    let document = Document::open_read_only(path).expect("document");
-    let source = ExtrudeEditSource::read(&document).expect("reading");
-    let mut result = BTreeMap::new();
-    for row in source.cut_features {
-        result.insert(format!("Cut {}", row.feature), row.saved.is_some());
-    }
-    for row in source.fillet_bodies {
-        result.insert(format!("Fillet {}", row.body), row.target.is_some());
-    }
-    for row in source.chamfer_bodies {
-        result.insert(format!("Chamfer {}", row.body), row.target.is_some());
-    }
-    result
-}
-
 #[test]
-fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
+fn native_every_numeric_slot_preserves_history_and_edge_names() {
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
     }
@@ -57,62 +43,32 @@ fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
                 .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
                 .expect("body")
                 .id;
-            let reading = ExtrudeEditSource::read(&document).expect("reading");
             match kind {
-                "fillet" => {
-                    let corner = &reading.fillet_bodies[0]
-                        .target
-                        .as_ref()
-                        .expect("fillet target")
-                        .corners[0];
-                    let edge = ferritecad_document::SweptEdge {
-                        feature: corner.feature,
-                        joint: corner.joint,
-                    };
-                    let prepared = ferritecad_document::prepare_edge_fillet(
+                "fillet" | "chamfer" | "constrained-chamfer" => {
+                    let change = ferritecad_fixtures::feature_changes::edge_addition(
                         &document,
                         body,
-                        &ferritecad_document::EdgeFillet {
-                            edge,
-                            radius_mm: 2.,
-                        },
+                        0,
+                        2.,
+                        kind != "fillet",
                     )
-                    .expect("prepare");
-                    document.write_edge_fillet(&prepared).expect("fillet");
-                }
-                "chamfer" | "constrained-chamfer" => {
-                    let corner = &reading.chamfer_bodies[0]
-                        .target
-                        .as_ref()
-                        .expect("chamfer target")
-                        .corners[0];
-                    let edge = ferritecad_document::SweptEdge {
-                        feature: corner.feature,
-                        joint: corner.joint,
-                    };
-                    let prepared = ferritecad_document::prepare_edge_chamfer(
-                        &document,
-                        body,
-                        &ferritecad_document::EdgeChamfer {
-                            edge,
-                            distance_mm: 2.,
-                        },
-                    )
-                    .expect("prepare");
-                    document.write_edge_chamfer(&prepared).expect("chamfer");
+                    .expect("addition");
+                    document
+                        .write_changes(&[change])
+                        .expect("write edge feature");
                 }
                 "cut" => {
-                    let prepared = ferritecad_document::prepare_circular_cut(
+                    let tool = ferritecad_fixtures::feature_changes::circular_tool(
                         &document,
                         body,
-                        &ferritecad_document::CircularCut {
-                            center_mm: [15., 15.],
-                            radius_mm: 2.,
-                            extent: ferritecad_document::CutExtent::Blind { depth_mm: 2. },
+                        [15., 15.],
+                        2.,
+                        EndCondition::Blind {
+                            distance: Expression::constant(2.).expect("depth"),
                         },
                     )
-                    .expect("prepare");
-                    document.write_circular_cut(&prepared).expect("Cut");
+                    .expect("tool");
+                    document.write_changes(&tool.changes).expect("Cut");
                 }
                 _ => {}
             }
@@ -162,12 +118,6 @@ fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
         }
         let document = Document::open_read_only(&source).expect("saved");
         let reading = ExtrudeEditSource::read(&document).expect("reading");
-        let expected_readers = readers(&source);
-        assert_eq!(
-            expected_readers.values().any(|v| *v),
-            !kind.ends_with("chamfer"),
-            "{kind}: {expected_readers:?}"
-        );
         let references = document.topology_refs().expect("names");
         let bytes = std::fs::read(&source).expect("source");
         for (index, slot) in reading.expression_slots.iter().enumerate() {
@@ -190,12 +140,7 @@ fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
             .output()
             .expect("CLI");
             assert!(output.status.success(), "{kind} {}: {output:?}", slot.slot);
-            assert_eq!(
-                readers(&destination),
-                expected_readers,
-                "{kind} {}",
-                slot.slot
-            );
+
             let edited = Document::open_read_only(&destination).expect("reopen");
             assert_eq!(
                 edited.topology_refs().expect("names"),
@@ -225,7 +170,7 @@ fn native_every_numeric_slot_preserves_structural_readers_and_edge_names() {
                 )
                 .expect("session transaction");
             session.commit_step(step).expect("commit");
-            assert_eq!(readers(session.current().path()), expected_readers);
+
             let accepted = Document::open_read_only(session.current().path()).expect("accepted");
             assert_eq!(accepted.topology_refs().expect("names"), references);
         }

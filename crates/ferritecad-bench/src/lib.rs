@@ -51,6 +51,8 @@ pub fn run(root: &Path, runs: usize, smoke: bool) -> Result<Vec<Measurement>> {
             "cold_rebuild",
             "warm_rebuild_cached",
             "open",
+            "apply_add_cut",
+            "apply_add_fillet",
             "apply_height",
             "apply_vertex",
             "apply_fillet",
@@ -58,7 +60,8 @@ pub fn run(root: &Path, runs: usize, smoke: bool) -> Result<Vec<Measurement>> {
             "undo",
             "export_stl",
         ] {
-            if (operation == "apply_vertex" && case.vertex.is_none())
+            if (operation.starts_with("apply_add_") && case.additions.is_empty())
+                || (operation == "apply_vertex" && case.vertex.is_none())
                 || (operation == "apply_height" && case.extrude.is_none())
                 || (operation == "apply_fillet" && case.fillet.is_none())
                 || (operation == "apply_angle" && case.revolve.is_none())
@@ -199,6 +202,15 @@ fn apply(
 ) -> Result<ferritecad_jobs::ProducedStep> {
     let expected = session.current().version();
     let ticket = session.begin_step();
+    if let Some((_, changes)) = case.additions.iter().find(|(name, _)| *name == operation) {
+        return ticket.edit(
+            changes.clone(),
+            expected,
+            kernel,
+            |k, bytes| k.import_step(bytes),
+            context,
+        );
+    }
     if operation == "apply_vertex" {
         let (id, sketch, vertices) = case.vertex.as_ref().expect("vertex fixture");
         return ticket.edit(

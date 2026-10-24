@@ -148,6 +148,7 @@ fn inspect_reports_every_sketch_and_preserves_geometry_and_constraint_identities
         .find(|s| s["sketch_id"] == id.to_string())
         .expect("second sketch");
     assert_eq!(row["name"], "Additional sketch");
+    assert_eq!(row["plane_id"], sketch.plane.to_string());
     assert_eq!(row["curves"][0]["curve_id"], point.to_string());
     assert_eq!(
         row["curves"][0]["geometry"],
@@ -164,7 +165,7 @@ fn inspect_reports_every_sketch_and_preserves_geometry_and_constraint_identities
         json!({"value":12.5,"unit":"mm"})
     );
     for row in sketches {
-        assert_eq!(row.as_object().expect("sketch").len(), 4);
+        assert_eq!(row.as_object().expect("sketch").len(), 5);
     }
     assert_eq!(std::fs::read(&source).expect("bytes"), before);
     assert!(!root.path().join("source.fcad-wal").exists());

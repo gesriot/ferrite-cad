@@ -13,7 +13,7 @@ mod base_height;
 mod base_sketch;
 use ferritecad_types::ObjectId;
 
-const OPC: &str = "chamfer-edge-copy";
+const OPC: &str = "edit";
 const OPE: &str = "edit";
 const RECT: [f64; 4] = [X0, Y0, W, D];
 
@@ -21,38 +21,29 @@ fn uuid(v: &Value) -> ObjectId {
     v.as_str().expect("UUID").parse().expect("UUID")
 }
 
-fn discovery(f: &Fixture) -> &Value {
-    &f.catalog["bodies"][0]["chamfer_edge"]
+fn at(f: &Fixture, corner: [f64; 2]) -> Value {
+    f.at(corner)
 }
-fn candidates(f: &Fixture) -> &Vec<Value> {
-    discovery(f)["target"]["candidates"]
-        .as_array()
-        .expect("candidates")
-}
-fn at(f: &Fixture, corner: [f64; 2]) -> &Value {
-    candidates(f)
-        .iter()
-        .find(|c| c["corner_mm"] == json!(corner))
-        .unwrap_or_else(|| panic!("no candidate at {corner:?}"))
-}
+
 /// The request, with the candidate's own edge and its pair in the other order:
 /// the same edge.
 fn ask(f: &Fixture, corner: [f64; 2], distance: f64) {
     let edge = &at(f, corner)["edge"];
-    write(
+    write_addition(
         &f.request,
-        &json!({"request_version":1,
-                "edge":{"feature_id":edge["feature_id"],
-                        "joint":[edge["joint"][1], edge["joint"][0]]},
-                "distance_mm":distance}),
+        f.body_id(),
+        "chamfer",
+        &json!({"feature_id":edge["feature_id"],"joint":[edge["joint"][1],edge["joint"][0]]}),
+        "distance",
+        distance,
     );
 }
+
 fn chamfer_from(f: &Fixture, source: &Path, body: &str, version: &str, output: &Path) -> Command {
+    address_body(&f.request, body);
     let mut c = cli();
     c.arg(OPC)
         .arg(source)
-        .arg("--body")
-        .arg(body)
         .arg("--expect-version")
         .arg(version)
         .arg("--request")
@@ -93,7 +84,7 @@ fn chamfered_without_kernel(plate: Plate, corner: [f64; 2], distance: f64) -> Fi
     let mut d = Document::open(&f.source).expect("writable");
     let body = uuid(&json!(f.body_id()));
     let edge = &at(&f, corner)["edge"];
-    let chamfer = ferritecad_document::EdgeChamfer {
+    let chamfer = ferritecad_document::FeatureAddition::Chamfer {
         edge: ferritecad_document::SweptEdge {
             feature: uuid(&edge["feature_id"]),
             joint: ferritecad_types::ProfileJoint::new(
@@ -102,10 +93,10 @@ fn chamfered_without_kernel(plate: Plate, corner: [f64; 2], distance: f64) -> Fi
             )
             .expect("joint"),
         },
-        distance_mm: distance,
+        distance_mm: ferritecad_document::Expression::constant(distance).expect("number"),
     };
-    let prepared = ferritecad_document::prepare_edge_chamfer(&d, body, &chamfer).expect("prepared");
-    d.write_edge_chamfer(&prepared).expect("written");
+    d.write_changes(&[addition(body, chamfer)])
+        .expect("written");
     d.close().expect("close");
     Fixture {
         catalog: inspect(&f.source),
@@ -500,43 +491,17 @@ fn chamfer_at(
         OPC,
         0,
     );
-    let result = &published["result"];
     assert_eq!(
-        result["body_id"],
-        row.body_id(),
-        "the Body keeps its identity"
+        published["result"]["content_version"],
+        inspect(&copy)["content_version"]
     );
-    let base = discovery(&row)["target"]["base_feature_id"].clone();
-    assert_eq!(result["previous_feature_id"], base, "the tip was the plate");
-    assert_eq!(result["edge"], candidate["edge"], "the canonical meaning");
-    assert_eq!(result["corner_mm"], json!(corner));
-    assert_eq!(result["distance_mm"], d);
-    assert_eq!(result["distance_unit"], "mm");
-    let mut roles: Vec<&str> = result["references"]
-        .as_array()
-        .expect("references")
-        .iter()
-        .map(|r| r["role"].as_str().expect("role"))
-        .collect();
-    roles.sort_unstable();
-    assert_eq!(
-        roles,
-        [
-            "edge_chamfer_face",
-            "origin_cap",
-            "origin_cap",
-            "origin_side",
-            "origin_side",
-            "origin_side",
-            "origin_side"
-        ]
-    );
+    let base = candidate["edge"]["feature_id"].clone();
     assert_eq!(
         std::fs::read(source).expect("source bytes"),
         before,
         "the source was touched"
     );
-    let id = uuid(&result["feature_id"]);
+    let id = stored_tip(&copy);
     only_a_chamfer_was_added(source, &copy, uuid(&json!(row.body_id())));
 
     // What the copy holds.
@@ -590,327 +555,6 @@ fn stored_count(path: &Path) -> usize {
     let n = d.topology_refs().expect("refs").len();
     d.close().expect("close");
     n
-}
-
-/// Discovery, the strict request protocol, every structural refusal, a saved
-/// Chamfer's discovery and every other editor's refusal of it — with no kernel
-/// needed.
-#[test]
-fn chamfer_discovery_and_protocol_without_native() {
-    let f = Fixture::drawn(Plate::new(CCW));
-    let before = std::fs::read(&f.source).expect("source bytes");
-    let d = discovery(&f);
-
-    assert!(d["refusal"].is_null() && d["document_refusal"].is_null());
-    let target = &d["target"];
-    assert_eq!(target["body_id"], f.body_id());
-    assert_eq!(target["height_mm"], H);
-    assert_eq!(target["request_versions"], json!([1]));
-    assert_eq!(target["distance_unit"], "mm");
-    assert_eq!(target["min_distance_mm"], 0.001);
-    assert_eq!(target["min_flat_mm"], 0.01);
-    assert_eq!(candidates(&f).len(), 4, "four vertical edges");
-    for c in candidates(&f) {
-        assert_eq!(c["edge"]["feature_id"], target["base_feature_id"]);
-        let [a, b] = [0, 1].map(|i| uuid_stable(&c["edge"]["joint"][i]));
-        assert!(a < b, "the pair is listed in canonical order");
-        let mut lengths: Vec<f64> = c["adjacent_lengths_mm"]
-            .as_array()
-            .expect("lengths")
-            .iter()
-            .map(|l| l.as_f64().expect("length"))
-            .collect();
-        lengths.sort_by(f64::total_cmp);
-        assert_eq!(lengths, [D, W]);
-        assert_eq!(c["max_distance_mm"], D - 0.01);
-        assert_eq!(c["offerable"], true);
-        assert!(
-            c["label"]
-                .as_str()
-                .expect("label")
-                .contains("vertical edge")
-        );
-    }
-    assert_eq!(f.catalog["chamfers"], json!([]));
-    // The Fillet's own discovery says what it always said.
-
-    assert_eq!(f.discovery()["target"]["min_radius_mm"], 0.01);
-
-    // The strict request: nothing outside it is a request.
-    let never = f.root.path().join("never.fcad");
-    let edge = at(&f, [X0, Y0])["edge"].clone();
-    write(&f.request, &json!({}));
-    let names = entries(f.root.path());
-    let good = json!({"request_version":1,"edge":edge,"distance_mm":2.0});
-    let mut extra = good.clone();
-    extra["angle_deg"] = json!(45);
-    let mut second = good.clone();
-    second["second_distance_mm"] = json!(1.0);
-    let mut wrong_edge = good.clone();
-    wrong_edge["edge"]["extra"] = json!(1);
-    let mut as_array = json!([1, edge, 2.0]);
-    let _ = &mut as_array;
-    for (why, request, code) in [
-        ("an unknown field", extra, "input"),
-        ("a second distance", second, "input"),
-        ("an unknown edge field", wrong_edge, "input"),
-        ("an array", as_array, "input"),
-        (
-            "request_version 2",
-            json!({"request_version":2,"edge":edge,"distance_mm":2.0}),
-            "unsupported",
-        ),
-        (
-            "a string distance",
-            json!({"request_version":1,"edge":edge,"distance_mm":"2"}),
-            "input",
-        ),
-        (
-            "no distance",
-            json!({"request_version":1,"edge":edge}),
-            "input",
-        ),
-        (
-            "a malformed UUID",
-            json!({"request_version":1,"edge":{"feature_id":"not-a-uuid","joint":edge["joint"]},"distance_mm":2.0}),
-            "input",
-        ),
-        (
-            "a joint of three",
-            json!({"request_version":1,"edge":{"feature_id":edge["feature_id"],"joint":[edge["joint"][0],edge["joint"][1],edge["joint"][1]]},"distance_mm":2.0}),
-            "input",
-        ),
-    ] {
-        write(&f.request, &request);
-        let v = reply(chamfer(&f, &never).output().expect("process"), OPC, 2);
-        assert_eq!(refused(&v), code, "{why}: {v}");
-        assert!(!never.exists(), "{why}");
-    }
-    // Numbers JSON can say that no distance is, and the policy's own bounds.
-    for (why, text) in [
-        ("zero", "0"),
-        ("negative", "-1"),
-        ("NaN", "NaN"),
-        ("too small", "0.0009"),
-        ("past the side", "12.25"),
-        ("past the bound", "12.241"),
-    ] {
-        let id = edge.to_string();
-        std::fs::write(
-            &f.request,
-            format!("{{\"request_version\":1,\"edge\":{id},\"distance_mm\":{text}}}"),
-        )
-        .expect("request");
-        let v = reply(chamfer(&f, &never).output().expect("process"), OPC, 2);
-        // A build with no kernel answers `unsupported` before it reaches the
-        // geometry; the decoder alone refuses what is not a number.
-        let want = if ferritecad_occt::is_available() || text == "NaN" {
-            "input"
-        } else {
-            "unsupported"
-        };
-        assert_eq!(refused(&v), want, "{why}: {v}");
-        assert!(!never.exists());
-    }
-    // A bound-exact request is accepted or refused only for the kernel.
-    ask(&f, [X0, Y0], D - 0.01);
-    let v = chamfer(&f, &never).output().expect("process");
-    if ferritecad_occt::is_available() {
-        let v = reply(v, OPC, 0);
-        assert_eq!(v["result"]["distance_mm"], D - 0.01);
-        std::fs::remove_file(&never).expect("cleanup");
-    } else {
-        let v = reply(v, OPC, 2);
-        assert_eq!(refused(&v), "unsupported", "no kernel: {v}");
-        assert!(!never.exists(), "an unsupported kernel creates no file");
-    }
-    assert_eq!(entries(f.root.path()), names, "a refusal left something");
-    assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
-
-    // Every composition outside the class is refused by name, and nothing is
-    // published.
-    let trapezoid = [[X0, Y0], [X0 + W, Y0], [X0 + W - 3., Y0 + D], [X0, Y0 + D]];
-    for (why, plate, expect) in [
-        (
-            "reversed",
-            Plate {
-                reversed: true,
-                ..Plate::new(CCW)
-            },
-            "forward",
-        ),
-        (
-            "symmetric",
-            Plate {
-                symmetric: true,
-                ..Plate::new(CCW)
-            },
-            "",
-        ),
-        (
-            "dimensioned",
-            Plate {
-                constrained: true,
-                ..Plate::new(CCW)
-            },
-            "horizontal",
-        ),
-        (
-            "placed",
-            Plate {
-                placement: true,
-                ..Plate::new(CCW)
-            },
-            "",
-        ),
-        (
-            "two bodies",
-            Plate {
-                second_body: true,
-                ..Plate::new(CCW)
-            },
-            "",
-        ),
-        ("a trapezoid", Plate::new(trapezoid), "rectangle"),
-    ] {
-        let g = Fixture::drawn(plate);
-        let before = std::fs::read(&g.source).expect("source bytes");
-        for body in g.catalog["bodies"].as_array().expect("bodies") {
-            let d = &body["chamfer_edge"];
-
-            assert!(d["target"].is_null(), "{why}");
-            let reason = d["refusal"].as_str().expect("a reason");
-            assert!(reason.to_lowercase().contains(expect), "{why}: {reason}");
-        }
-        assert_eq!(std::fs::read(&g.source).expect("bytes"), before, "{why}");
-    }
-
-    // A saved Chamfer, discovered without a kernel.
-    let c = chamfered_without_kernel(Plate::new(CW_FROM_UPPER_RIGHT), [X0 + W, Y0], 2.375);
-    let saved = c.catalog["chamfers"].as_array().expect("chamfers");
-    assert_eq!(saved.len(), 1);
-    let row = &saved[0];
-    assert_eq!(row["name"], "Chamfer");
-    assert_eq!(row["expression"]["value"], 2.375);
-    let slot = crate::transaction::slot(&c.catalog, &row["feature_id"], "chamfer_distance");
-    assert!(slot["refusal"].is_null());
-    assert_eq!(slot["display_unit"], "mm");
-    assert_eq!(slot["expression"], row["expression"]);
-    let feature = row["feature_id"].as_str().expect("feature").to_owned();
-
-    assert!(
-        c.catalog["bodies"][0]["chamfer_edge"]["refusal"]
-            .as_str()
-            .expect("reason")
-            .contains("Chamfer")
-    );
-    // §29B: the plate's height is the one thing besides the distance that the
-    // extrusion editor changes under a Chamfer, and it names the Chamfer as
-    // context on the base Extrude.
-
-    let base = &c.catalog["features"][0];
-    assert!(
-        crate::transaction::slot(&c.catalog, &base["feature_id"], "extrude_distance")["refusal"]
-            .is_null()
-    );
-
-    // The other editors keep saying so by name: none offers an edit.
-
-    assert!(
-        c.catalog["fillets"].as_array().expect("fillets").is_empty(),
-        "a Chamfer is not a Fillet"
-    );
-    for _sketch in c.catalog["sketches"].as_array().expect("sketches") {}
-
-    // The distance request protocol.
-    let version = c.version().to_owned();
-    let request = c.root.path().join("distance.json");
-    let out = c.root.path().join("edited.fcad");
-    let kept = std::fs::read(&c.source).expect("bytes");
-    for (why, body, code) in [
-        (
-            "an unknown field",
-            json!({"request_version":1,"distance_mm":3.0,"edge":{}}),
-            "input",
-        ),
-        (
-            "request_version 2",
-            json!({"request_version":2,"changes":[]}),
-            "input",
-        ),
-        ("no distance", json!({"request_version":1}), "input"),
-        ("an array", json!([1, 3.0]), "input"),
-        (
-            "zero",
-            json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":0.0,"unit":"mm"}]}),
-            "input",
-        ),
-        (
-            "below the minimum",
-            json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":0.0009,"unit":"mm"}]}),
-            "input",
-        ),
-        (
-            "past the bound",
-            json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":12.241,"unit":"mm"}]}),
-            "input",
-        ),
-    ] {
-        write(&request, &body);
-        let v = reply(
-            edit_from(&c.source, &feature, &version, &request, &out)
-                .output()
-                .expect("process"),
-            OPE,
-            2,
-        );
-        // A build with no kernel answers `unsupported` before the geometry.
-        let want = if code == "input"
-            && !ferritecad_occt::is_available()
-            && v["error"]["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("no Open CASCADE"))
-        {
-            "unsupported"
-        } else {
-            code
-        };
-        assert_eq!(refused(&v), want, "{why}: {v}");
-        assert!(!out.exists(), "{why}");
-    }
-    // An edit of a feature that is not a Chamfer.
-    write(
-        &request,
-        &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":3.0,"unit":"mm"}]}),
-    );
-    let base = c.catalog["bodies"][0]["chamfer_edge"]["target"].is_null();
-    assert!(base);
-    let body_id = c.body_id().to_owned();
-    let v = reply(
-        edit_from(&c.source, &body_id, &version, &request, &out)
-            .output()
-            .expect("process"),
-        OPE,
-        2,
-    );
-    assert!(matches!(refused(&v), "input" | "unsupported"), "{v}");
-    // Without a kernel the bound-exact edit is refused as unsupported and
-    // writes nothing; with one it publishes.
-    write(
-        &request,
-        &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"chamfer_distance"},"value":D - 0.01,"unit":"mm"}]}),
-    );
-    let v = edit_from(&c.source, &feature, &version, &request, &out)
-        .output()
-        .expect("process");
-    if ferritecad_occt::is_available() {
-        reply(v, OPE, 0);
-    } else {
-        let v = reply(v, OPE, 2);
-        assert_eq!(refused(&v), "unsupported", "{v}");
-        assert!(!out.exists());
-    }
-    assert_eq!(std::fs::read(&c.source).expect("bytes"), kept);
 }
 
 /// A chamfer at each of the four corners of the translated, fractional plate,
@@ -1008,7 +652,7 @@ fn native_the_distance_bounds_are_exact_and_the_cache_follows_the_distance() {
     }
     let f = Fixture::drawn(Plate::new(CCW));
     let corner = [X0 + W, Y0];
-    let max = at(&f, corner)["max_distance_mm"].as_f64().expect("max");
+    let max = D - 0.01;
     assert_eq!(max, D - 0.01);
     let never = f.root.path().join("never.fcad");
     ask(&f, corner, max);
@@ -1280,25 +924,27 @@ fn native_chamfer_refusals_races_cancellation_and_report_loss_are_atomic() {
             content: doc.content_version().expect("version"),
         };
         doc.close().expect("close");
-        let request = ferritecad_jobs::EdgeChamferRequest {
+        let request = ferritecad_jobs::EditRequest {
             source: f.source.clone(),
             expected,
-            body: uuid(&json!(f.body_id())),
-            chamfer: ferritecad_document::EdgeChamfer {
-                edge: ferritecad_document::SweptEdge {
-                    feature: uuid(&edge["feature_id"]),
-                    joint: ferritecad_types::ProfileJoint::new(
-                        uuid_stable(&edge["joint"][0]),
-                        uuid_stable(&edge["joint"][1]),
-                    )
-                    .expect("joint"),
-                },
-                distance_mm: 2.0,
-            },
             destination: destination.clone(),
+            changes: vec![addition(
+                uuid(&json!(f.body_id())),
+                ferritecad_document::FeatureAddition::Chamfer {
+                    edge: ferritecad_document::SweptEdge {
+                        feature: uuid(&edge["feature_id"]),
+                        joint: ferritecad_types::ProfileJoint::new(
+                            uuid_stable(&edge["joint"][0]),
+                            uuid_stable(&edge["joint"][1]),
+                        )
+                        .expect("joint"),
+                    },
+                    distance_mm: ferritecad_document::Expression::constant(2.0).expect("number"),
+                },
+            )],
         };
         let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-        let result = ferritecad_jobs::chamfer_edge_copy(&request, &mut kernel, &context);
+        let result = ferritecad_jobs::edit_copy(&request, &mut kernel, &context);
         assert!(result.is_err(), "cancelled at {at_fraction}: {result:?}");
         assert!(!destination.exists());
         assert_eq!(kernel.live_shape_count(), 0);
@@ -1434,7 +1080,6 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
         .as_str()
         .expect("version")
         .to_owned();
-    let _base = catalog["bodies"][0]["chamfer_edge"].clone();
 
     let before = std::fs::read(&copy).expect("bytes");
     let out = f.root.path().join("never.fcad");
@@ -1442,7 +1087,10 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
     write(&request, &json!({}));
     let names = entries(f.root.path());
     let named = |why: &str, v: &Value| {
-        assert!(matches!(refused(v), "unsupported" | "input"), "{why}: {v}");
+        assert!(
+            matches!(refused(v), "unsupported" | "input" | "topology"),
+            "{why}: {v}"
+        );
         let message = v["error"]["message"].as_str().expect("message");
         assert!(
             message.contains("Chamfer") || message.contains(&id.to_string()),
@@ -1478,22 +1126,16 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
     };
     let body = g.body_id().to_owned();
     let any = f.at([X0, Y0])["edge"].clone();
-    write(
-        &request,
-        &json!({"request_version":1,"edge":any,"radius_mm":1.0}),
-    );
+    g.ask_edge(&any, 1.);
     let v = reply(
         g.fillet_from(&copy, &body, &version, &out)
             .output()
             .expect("process"),
-        "fillet-edge-copy",
+        "edit",
         2,
     );
-    named("fillet-edge-copy", &v);
-    write(
-        &request,
-        &json!({"request_version":1,"edge":any,"distance_mm":1.0}),
-    );
+    named("edit", &v);
+    write_addition(&request, &body, "chamfer", &any, "distance", 1.);
     let v = reply(
         chamfer_from(&g, &copy, &body, &version, &out)
             .output()
@@ -1513,7 +1155,7 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
         "edit",
         2,
     );
-    named("cut-circular-copy", &v);
+    named("edit", &v);
     assert_eq!(
         entries(f.root.path()).len(),
         names.len(),
@@ -1695,8 +1337,8 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         .expect("branched");
     });
     refused_everywhere("two Chamfers over one plate", &branch, 2);
-    // Repairable geometry clears its failures; an unchanged missing joint
-    // can remain failed, while a forked history fails document validation.
+    // Repairable geometry clears its failures; a missing joint cannot resolve
+    // its newly reconciled name, and a forked history fails validation.
     for (path, repairable) in [
         (&wide, true),
         (&thin, true),
@@ -1723,6 +1365,19 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
             let result = reply(v, "edit", 2);
             assert_eq!(refused(&result), "input");
             assert!(result.to_string().contains("forked-history"));
+            assert!(!out.exists());
+            assert_eq!(std::fs::read(path).expect("source bytes"), before);
+            continue;
+        }
+        if !repairable {
+            let result = reply(v, "edit", 2);
+            assert_eq!(refused(&result), "topology");
+            assert!(
+                !result["error"]["lost_references"]
+                    .as_array()
+                    .expect("lost names")
+                    .is_empty()
+            );
             assert!(!out.exists());
             assert_eq!(std::fs::read(path).expect("source bytes"), before);
             continue;

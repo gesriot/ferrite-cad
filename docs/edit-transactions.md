@@ -9,7 +9,7 @@ source and destination unchanged.
 
 Use `inspect source.fcad --json` to obtain `content_version`, object UUIDs and
 `expression_slots`. Each `sketches` row contains the saved curve UUIDs,
-construction flags and geometry in millimetres, plus the exact constraint UUIDs
+plane UUID, construction flags and geometry in millimetres, plus the exact constraint UUIDs
 and rules. Constraint values carry display units; angles use display degrees.
 Stored coordinates remain the starting guess when constraints are present.
 
@@ -41,10 +41,50 @@ side and reduce its Fillet radius together. The evaluator still requires the
 Fillet's rectangular profile. Moving only one corner therefore refuses that Fillet;
 a plain extrusion can accept the same nonrectangular profile.
 
-A generic edit may make a circular Cut an open slot, overlap earlier tools, or
-constrain its tool sketch. The structural Cut commands and forms currently accept
-a narrower domain. Their refusal identifies the saved Cut and directs the user to
-`edit`; returning the wall or tool inside, or Undo, restores availability. Tangent
-circle rims within `WALL_CLEARANCE_MM` of a Line boundary or an earlier circular Cut
-are refused by the evaluator. Missing Cut output names are reconciled from the
-written candidate after all changes; existing names are retained.
+Cut additions and edits use this same path on open slots, overlapping tools and
+constrained tool sketches. Tangent circle rims within `WALL_CLEARANCE_MM` of a Line
+boundary or an earlier circular Cut are refused by the evaluator. Missing output
+names for Cut histories, Fillet chains and Chamfer are reconciled from the written
+candidate. Existing names are retained. Other structures build without newly
+catalogued names until generative naming is implemented.
+
+`inspect --json` includes each Body's `history` from its first feature to its tip.
+Extrude/Cut rows include `profile_sketch_id`, `previous_feature_id`, `operation`,
+`reversed` and a unitful `end_condition`. Fillet/Chamfer rows include their edge's
+feature and pair of segment UUIDs, previous feature, expression, `display_value`
+and `display_unit`. These are saved facts; they do not declare eligibility.
+
+New objects and curves have caller-supplied UUIDv7 identities. Changes apply in
+order: a feature can use a sketch added earlier in the request. `add_feature`
+sets its predecessor to the Body's current candidate tip and moves that tip;
+dependencies are derived from each final payload. Occupied identities, missing
+objects and wrong object kinds refuse the whole transaction. Rewriting any saved
+object, including a Body tip, refuses if its payload cannot round-trip losslessly.
+
+For example, add a circular tool and a Cut (replace every UUID placeholder):
+
+```json
+{"request_version":1,"changes":[
+  {"kind":"add_sketch","object":"<new Sketch UUID>","name":"Tool","plane":"<plane UUID>",
+   "curves":[{"id":"<new Circle UUID>","construction":false,"geometry":{"kind":"circle",
+    "center":{"x":{"value":20,"unit":"mm"},"y":{"value":20,"unit":"mm"}},
+    "radius":{"value":2,"unit":"mm"}}}],"constraints":[]},
+  {"kind":"add_feature","object":"<new Cut UUID>","body":"<Body UUID>","name":"Cut",
+   "feature":{"kind":"cut","profile":"<new Sketch UUID>","reversed":false,
+    "end_condition":{"kind":"blind","distance":{"value":3,"unit":"mm"}}}}
+]}
+```
+
+A Fillet feature payload is `{"kind":"fillet","edge":{"feature":"<base UUID>",
+"joint":["<Line UUID>","<Line UUID>"]},"radius":{"value":2,"unit":"mm"}}`.
+A Chamfer uses `"kind":"chamfer"` and `"distance"` instead of `"radius"`.
+Both use `add_feature` with an explicit new object and Body. The edge pair may be
+supplied in either order. The evaluator's existing rectangle, radius, distance
+and adjacent-Fillet policies still decide the result.
+
+`{"kind":"set_end_condition","object":"<Extrude or Cut UUID>",
+"end_condition":{"kind":"through_all"}}` changes the end condition; Blind uses
+the same unitful `distance` shown above. A Blind Cut becoming ThroughAll is refused
+when that would lose a previously resolved floor name. Circle and depth edits use
+`set_curve_geometry` and `set_expression` as before. All additions and edits return
+the same four result fields; there are no per-feature eligibility catalogues.

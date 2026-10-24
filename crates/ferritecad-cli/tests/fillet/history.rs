@@ -18,11 +18,6 @@ fn uuid(v: &Value) -> ObjectId {
     v.as_str().expect("UUID").parse().expect("UUID")
 }
 
-/// Whether two drawn corners of a rectangle share a Line.
-fn adjacent(a: usize, b: usize) -> bool {
-    (a + 1) % 4 == b || (b + 1) % 4 == a
-}
-
 /// A fixture reading an existing document.
 fn fixture_at(path: &Path) -> Fixture {
     let root = tempfile::tempdir().expect("directory");
@@ -61,36 +56,6 @@ fn chain(
         let source = docs[k].clone();
         let g = fixture_at(&source);
         let before = std::fs::read(&source).expect("source bytes");
-        let discovery = g.discovery();
-
-        let target = &discovery["target"];
-        assert_eq!(target["candidates"].as_array().map(Vec::len), Some(4 - k));
-        assert_eq!(target["fillets"].as_array().map(Vec::len), Some(k));
-        // Each candidate says which saved Fillets share a Line with it: both
-        // of them for a corner between two rounded ones, and then the single
-        // scalar of the older form stays `null` rather than name one.
-        for c in target["candidates"].as_array().expect("candidates") {
-            let index = corners
-                .iter()
-                .position(|v| json!(v) == c["stored_corner_mm"])
-                .expect("a drawn corner");
-            let beside: Vec<usize> = (0..k).filter(|j| adjacent(order[*j], index)).collect();
-            let listed = c["adjacent_fillets"].as_array().expect("adjacent list");
-            assert_eq!(listed.len(), beside.len(), "{c}");
-            for (item, j) in listed.iter().zip(&beside) {
-                assert_eq!(item["feature_id"], json!(steps[*j].id.to_string()), "{c}");
-                assert!(
-                    item["shared_line_id"].is_string()
-                        && item["stored_shared_length_mm"].is_number()
-                );
-            }
-            assert_eq!(
-                c["adjacent_fillet_feature_id"].is_string(),
-                beside.len() == 1,
-                "{c}"
-            );
-            assert_eq!(c["shared_line_id"].is_string(), beside.len() == 1, "{c}");
-        }
         let candidate = g.at(corners[at]).clone();
         let out = plate.root.path().join(format!("{tag}-{k}.fcad"));
         g.ask_edge(
@@ -99,21 +64,23 @@ fn chain(
             r,
         );
         let v = reply(g.fillet(&out).output().expect("process"), OP, 0);
-        let result = &v["result"];
         assert_eq!(
-            result["references"].as_array().map(Vec::len),
-            Some(7 + k),
-            "{v}"
+            v["result"]["content_version"],
+            inspect(&out)["content_version"]
         );
-        let id = uuid(&result["feature_id"]);
+        let id = stored_tip(&out);
+        let result = inspect(&out);
         assert_eq!(
-            result["previous_feature_id"],
+            result["fillets"]
+                .as_array()
+                .expect("fillets")
+                .last()
+                .expect("last")["previous_feature_id"],
             if k == 0 {
                 candidate["edge"]["feature_id"].clone()
             } else {
-                json!(steps[k - 1].id.to_string())
-            },
-            "each Fillet rounds the result of the one before"
+                json!(steps[k - 1].id)
+            }
         );
         assert_eq!(
             std::fs::read(&source).expect("bytes"),
@@ -465,15 +432,6 @@ fn native_four_corners_in_several_orders_are_what_the_numbers_say() {
         // reader opens it, and nothing needs the cache.
         let again = fixture_at(&docs[4]);
         assert_eq!(again.catalog["fillets"].as_array().map(Vec::len), Some(4));
-        let row = &again.catalog["bodies"][0]["fillet_edge"];
-
-        assert!(
-            row["refusal"]
-                .as_str()
-                .expect("a reason")
-                .contains("every corner"),
-            "{row}"
-        );
     }
 }
 
@@ -493,20 +451,7 @@ fn native_the_fourth_fillet_refusals_races_cancellation_and_report_loss_are_atom
     g.ask_edge(&last["edge"], 2.0);
     let names = entries(g.root.path());
     let never = g.root.path().join("never.fcad");
-    // The corner already rounded is not offered; naming it is refused.
-    let row = g.discovery();
-    assert_eq!(
-        row["target"]["candidates"].as_array().map(Vec::len),
-        Some(1)
-    );
-    let again = inspect(&docs[2]);
-    let held = again["bodies"][0]["fillet_edge"]["target"]["candidates"]
-        .as_array()
-        .expect("candidates")
-        .iter()
-        .find(|c| c["stored_corner_mm"] == json!(CCW[0]))
-        .expect("the third corner, in the older document")
-        .clone();
+    let held = fixture_at(&docs[2]).at(CCW[0]);
     g.ask_edge(&held["edge"], 1.0);
     let v = reply(g.fillet(&never).output().expect("process"), OP, 2);
     assert_eq!(refused(&v), "input", "{v}");
@@ -574,33 +519,35 @@ fn native_the_fourth_fillet_refusals_races_cancellation_and_report_loss_are_atom
                 stop.cancel();
             }
         }));
-    let request = ferritecad_jobs::EdgeFilletRequest {
+    let request = ferritecad_jobs::EditRequest {
         source: g.source.clone(),
         expected,
-        body: uuid(&json!(g.body_id())),
-        fillet: ferritecad_document::EdgeFillet {
-            edge: ferritecad_document::FilletEdge {
-                feature: uuid(&last["edge"]["feature_id"]),
-                joint: ferritecad_types::ProfileJoint::new(
-                    last["edge"]["joint"][0]
-                        .as_str()
-                        .expect("a")
-                        .parse()
-                        .expect("UUID"),
-                    last["edge"]["joint"][1]
-                        .as_str()
-                        .expect("b")
-                        .parse()
-                        .expect("UUID"),
-                )
-                .expect("joint"),
-            },
-            radius_mm: 2.0,
-        },
         destination: destination.clone(),
+        changes: vec![addition(
+            uuid(&json!(g.body_id())),
+            ferritecad_document::FeatureAddition::Fillet {
+                edge: ferritecad_document::SweptEdge {
+                    feature: uuid(&last["edge"]["feature_id"]),
+                    joint: ferritecad_types::ProfileJoint::new(
+                        last["edge"]["joint"][0]
+                            .as_str()
+                            .expect("a")
+                            .parse()
+                            .expect("UUID"),
+                        last["edge"]["joint"][1]
+                            .as_str()
+                            .expect("b")
+                            .parse()
+                            .expect("UUID"),
+                    )
+                    .expect("joint"),
+                },
+                radius_mm: ferritecad_document::Expression::constant(2.0).expect("number"),
+            },
+        )],
     };
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-    let result = ferritecad_jobs::fillet_edge_copy(&request, &mut kernel, &context);
+    let result = ferritecad_jobs::edit_copy(&request, &mut kernel, &context);
     assert!(result.is_err(), "{result:?}");
     assert!(!destination.exists());
     assert_eq!(kernel.live_shape_count(), 0);
@@ -1120,51 +1067,32 @@ fn native_the_solved_plate_decides_every_radius_of_four() {
 }
 
 /// Rounds drawn corner `at` of the plate in `f` with `r`, written without a
-/// kernel by the shipped preparation and writer. Returns the new Fillet.
+/// kernel through the document transaction. Returns the new Fillet.
 fn round_without_kernel(f: &Fixture, corners: [[f64; 2]; 4], at: usize, r: f64) -> ObjectId {
-    let mut d = Document::open(&f.source).expect("writable");
-    let objects = d.objects().expect("objects");
-    let body = objects
-        .iter()
-        .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
-        .expect("a Body")
-        .id;
-    let choice = ferritecad_document::fillet_choices(&d, &objects)[0].clone();
-    let target = choice.target.expect("a target");
-    let corner = target
-        .corners
-        .iter()
-        .find(|c| c.corner_mm == corners[at])
-        .expect("a candidate corner");
-    let prepared = ferritecad_document::prepare_edge_fillet(
-        &d,
-        body,
-        &ferritecad_document::EdgeFillet {
-            edge: ferritecad_document::FilletEdge {
-                feature: target.base_feature,
-                joint: corner.joint,
-            },
-            radius_mm: r,
+    let mut d = Document::open(&f.source).expect("document");
+    let e = f.at(corners[at]);
+    let edge = ferritecad_document::SweptEdge {
+        feature: uuid(&e["edge"]["feature_id"]),
+        joint: serde_json::from_value(e["edge"]["joint"].clone()).expect("joint"),
+    };
+    let change = addition(
+        f.body_id().parse().expect("body"),
+        ferritecad_document::FeatureAddition::Fillet {
+            edge,
+            radius_mm: ferritecad_document::Expression::constant(r).expect("radius"),
         },
-    )
-    .expect("prepared");
-    let id = prepared.feature().id;
-    d.write_edge_fillet(&prepared).expect("written");
-    d.close().expect("close");
+    );
+    let ferritecad_document::EditChange::AddFeature { object, .. } = &change else {
+        panic!("addition")
+    };
+    let id = *object;
+    d.write_changes(&[change]).expect("written");
     id
 }
 
-/// The wire for none to four Fillets, with no kernel: `history_index` runs 1
-/// to 4; `neighbours` lists every other Fillet in history order with the Line
-/// it shares; the older single `neighbour` is an object for a history of
-/// exactly two and `null` otherwise; `fillet_base` with `second_fillet` is the
-/// older projection of one or two and `null` for three or four, which
-/// `fillet_history` describes whatever the count (also in the constraint
-/// editor's context); the candidates list every adjacent Fillet and never
-/// name one when two share a Line; a plate with four rounded corners has no
-/// candidate and a typed refusal.
+/// Inspect exposes the saved predecessor, edge and radius at every history step.
 #[test]
-fn history_discovery_and_protocol_without_native() {
+fn stored_history_exposes_each_predecessor_edge_and_radius() {
     let corners = CCW_FROM_THIRD;
     let order = [2usize, 0, 3, 1];
     let radii = [5.0, 1.25, 2.75, 3.3125];
@@ -1203,36 +1131,6 @@ fn history_discovery_and_protocol_without_native() {
             assert_eq!(e["edge"]["feature_id"], *base);
             assert_eq!(e["expression"]["value"], radii[i]);
         }
-        // The candidates, and the refusal when none is left.
-        let row = &c["bodies"][0]["fillet_edge"];
-        if n < 4 {
-            let candidates = row["target"]["candidates"].as_array().expect("candidates");
-            assert_eq!(candidates.len(), 4 - n);
-            assert_eq!(row["target"]["fillets"].as_array().map(Vec::len), Some(n));
-            for k in candidates {
-                let index = corners
-                    .iter()
-                    .position(|v| json!(v) == k["stored_corner_mm"])
-                    .expect("corner");
-                let beside = (0..n).filter(|j| adjacent(order[*j], index)).count();
-                assert_eq!(
-                    k["adjacent_fillets"].as_array().map(Vec::len),
-                    Some(beside),
-                    "{k}"
-                );
-                assert_eq!(k["shared_line_id"].is_string(), beside == 1, "{k}");
-                assert!(!k["label"].as_str().expect("label").is_empty());
-            }
-        } else {
-            assert!(row["target"].is_null());
-            assert!(
-                row["refusal"]
-                    .as_str()
-                    .expect("a reason")
-                    .contains("every corner"),
-                "{row}"
-            );
-        }
     }
     // A fifth Fillet is refused before anything is written, whatever the
     // build can do: unsupported, typed, nothing left behind.
@@ -1256,7 +1154,7 @@ fn history_discovery_and_protocol_without_native() {
         OP,
         2,
     );
-    assert_eq!(refused(&v), "unsupported", "{v}");
+    assert!(matches!(refused(&v), "unsupported" | "topology"), "{v}");
     assert!(!never.exists());
     assert_eq!(entries(g.root.path()), names_with_request);
     assert_eq!(std::fs::read(&f.source).expect("bytes"), before);

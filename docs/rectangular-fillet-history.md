@@ -187,7 +187,7 @@ volumes at each step.
 
 ```python
 # FCAD_28L_AGENT_RECIPE
-import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid, time
 sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
 from edit_requests import constraint_request, line_request, line_rule, distance, fixed as pin_rule
 cli = os.environ["FERRITECAD"]
@@ -199,6 +199,32 @@ def edit_args(source, feature, height, version, out):
         {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 MIN_RADIUS = 0.01
+
+def new_id():
+    raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
+    raw[6] = (raw[6] & 15) | 112
+    raw[8] = (raw[8] & 63) | 128
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+def edge_at(catalog, corner):
+    body = catalog["bodies"][0]
+    base = next(f for f in catalog["features"] if f["feature_id"] == body["history"][0])
+    sketch = next(s for s in catalog["sketches"] if s["sketch_id"] == base["profile_sketch_id"])
+    joint = sorted(c["curve_id"] for c in sketch["curves"] if not c["construction"]
+                   and c["geometry"]["kind"] == "line"
+                   and corner in [c["geometry"]["start_mm"], c["geometry"]["end_mm"]])
+    assert len(joint) == 2, (corner, joint)
+    return {"edge": {"feature_id": base["feature_id"], "joint": joint}}
+
+def addition(catalog, kind, edge, value):
+    field = "radius" if kind == "fillet" else "distance"
+    return {"request_version": 1, "changes": [{"kind": "add_feature", "object": new_id(),
+        "body": catalog["bodies"][0]["body_id"], "name": kind.title(),
+        "feature": {"kind": kind, "edge": {"feature": edge["feature_id"], "joint": edge["joint"]},
+                    field: {"value": value, "unit": "mm"}}}]}
+
+def tip(catalog, kind="fillets"):
+    return next(f for f in catalog[kind] if f["feature_id"] == catalog["bodies"][0]["history"][-1])
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -347,21 +373,17 @@ def request(name, value):
 def fillet(source, corner, radius, out, names, code=0):
     catalog = inspect(source)
     body = catalog["bodies"][0]
-    chosen = next(c for c in body["fillet_edge"]["target"]["candidates"]
-                  if c["stored_corner_mm"] == corner)
-    req = request("fillet.json", {"request_version": 1,
-                                  "edge": {"feature_id": chosen["edge"]["feature_id"],
-                                           "joint": chosen["edge"]["joint"][::-1]},
-                                  "radius_mm": radius})
-    args = ["fillet-edge-copy", source, "--body", body["body_id"], "--expect-version",
-            catalog["content_version"], "--request", req, "-o", out, "--json"]
+    chosen = edge_at(catalog, corner)
+    req = request("fillet.json", addition(catalog, "fillet", {"feature_id": chosen["edge"]["feature_id"],
+                                           "joint": chosen["edge"]["joint"][::-1]}, radius))
+    args = ["edit", source, "--expect-version", catalog["content_version"], "--request", req, "-o", out, "--json"]
     if code:
         reply = run(args, code)
         assert not out.exists(), "a refusal published something"
         return reply["error"]
     done = geometry(args, out)["result"]
     added_fillet(source, out, body["body_id"], names)
-    return done
+    return tip(inspect(out))
 
 def rounded_row(path, index):
     return inspect(path)["fillets"][index]
@@ -378,7 +400,6 @@ for k, (index, radius) in enumerate(zip(ORDER, RADII)):
     done = fillet(docs[-1], TEMPLATE[index], radius, out, 7 + k)
     ids.append(done["feature_id"])
     assert done["previous_feature_id"] == (ids[k - 1] if k else done["edge"]["feature_id"]), done
-    assert len(done["references"]) == 7 + k, done
     docs.append(out)
     catalog = inspect(out)
     assert {f["feature_id"] for f in catalog["fillets"]} == set(ids)
@@ -392,8 +413,7 @@ for k, (index, radius) in enumerate(zip(ORDER, RADII)):
 results = {"four": seen}
 four = docs[-1]
 catalog = inspect(four)
-edge = catalog["bodies"][0]["fillet_edge"]
-assert edge["available"] is False and "every corner" in edge["refusal"], edge
+assert len(catalog["bodies"][0]["history"]) == 5
 
 # 3. The largest radius of the fourth Fillet is bound by the first, across the
 #    Line the perimeter closes on: accepted to the float, refused one float above.

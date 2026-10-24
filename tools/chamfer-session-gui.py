@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """§30H real-window inputs and comparison. Generator never creates outputs."""
+from feature_requests import edge_addition, edge_at
 import hashlib
 import json
 import math
@@ -65,13 +66,12 @@ def main():
         run("create-sketch-extrude", request, "-o", plate, "--json")
         catalog = inspect(plate)
         body = catalog["bodies"][0]
-        chosen = next(c for c in body["chamfer_edge"]["target"]["candidates"] if c["corner_mm"] == CORNER)
         request = root / "chamfer.json"
-        request.write_text(json.dumps({"request_version": 1, "edge": chosen["edge"], "distance_mm": 2.375}))
+        request.write_text(json.dumps(edge_addition(catalog, "chamfer", CORNER, 2.375)))
         current = root / "source/chamfer.fcad"
-        run("chamfer-edge-copy", plate, "--body", body["body_id"], "--expect-version",
+        run("edit", plate, "--expect-version",
             catalog["content_version"], "--request", request, "-o", current, "--json")
-        base = bytes.fromhex(chosen["edge"]["feature_id"].replace("-", ""))
+        base = bytes.fromhex(edge_at(catalog, CORNER)["feature"].replace("-", ""))
         with sqlite3.connect(current) as db:
             # One more name owned by the base Extrude that resolves, then names,
             # rowids and ordinals that disagree with the feature history.
@@ -83,7 +83,7 @@ def main():
                              "INSERT INTO extra_data VALUES(91,x'010203');")
         resolved(current)
         saved = inspect(current)["chamfers"][0]
-        assert inspect(current)["sketches"][0]["chamfer_base"]["corner_mm"] == CORNER and saved["expression"]["value"] == 2.375
+        assert saved["edge"]["joint"] == edge_at(catalog, CORNER)["joint"] and saved["expression"]["value"] == 2.375
         shutil.copyfile(current, root / "work/chamfer.fcad")
         (root / "facts.json").write_text(json.dumps({"sha256": hashlib.sha256(current.read_bytes()).hexdigest(),
                                                     "chamfer_uuid": saved["feature_id"],

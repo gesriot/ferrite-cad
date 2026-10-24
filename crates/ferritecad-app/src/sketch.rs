@@ -637,21 +637,19 @@ impl Editor {
         }
         Ok(())
     }
-    pub(crate) fn take_cut_request(&mut self) -> Option<ferritecad_jobs::CircularCutRequest> {
+    pub(crate) fn take_cut_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.cuts.take_request()
     }
-    pub(crate) fn take_cut_edit_request(
-        &mut self,
-    ) -> Option<ferritecad_jobs::EditCircularCutRequest> {
+    pub(crate) fn take_cut_edit_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.cuts.take_edit_request()
     }
-    pub(crate) fn take_fillet_request(&mut self) -> Option<ferritecad_jobs::EdgeFilletRequest> {
+    pub(crate) fn take_fillet_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.fillets.take_request()
     }
     pub(crate) fn take_fillet_radius_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.fillets.take_radius_request()
     }
-    pub(crate) fn take_chamfer_request(&mut self) -> Option<ferritecad_jobs::EdgeChamferRequest> {
+    pub(crate) fn take_chamfer_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.chamfers.take_request()
     }
     pub(crate) fn take_chamfer_distance_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
@@ -6914,26 +6912,30 @@ pub(crate) mod tests {
                 .body;
             for i in 0..cuts {
                 let slot = (i * 7) % 16;
-                let p = ferritecad_document::prepare_circular_cut(
+                let tool = crate::feature_facts::CircularCut {
+                    center_mm: [
+                        if i + 1 == cuts {
+                            55.
+                        } else {
+                            6. + (slot % 4) as f64 * 14.
+                        },
+                        5. + (slot / 4) as f64 * 9.,
+                    ],
+                    radius_mm: 1. + (i % 3) as f64 * 0.1,
+                    extent: crate::feature_facts::CutExtent::Blind {
+                        depth_mm: if i % 2 == 0 { 10. } else { 3. + (i % 4) as f64 },
+                    },
+                };
+                let p = ferritecad_fixtures::feature_changes::circular_tool(
                     &d,
                     body,
-                    &ferritecad_document::CircularCut {
-                        center_mm: [
-                            if i + 1 == cuts {
-                                55.
-                            } else {
-                                6. + (slot % 4) as f64 * 14.
-                            },
-                            5. + (slot / 4) as f64 * 9.,
-                        ],
-                        radius_mm: 1. + (i % 3) as f64 * 0.1,
-                        extent: ferritecad_document::CutExtent::Blind {
-                            depth_mm: if i % 2 == 0 { 10. } else { 3. + (i % 4) as f64 },
-                        },
-                    },
+                    tool.center_mm,
+                    tool.radius_mm,
+                    tool.extent.end().expect("end"),
                 )
-                .expect("prepare");
-                d.write_circular_cut(&p).expect("cut");
+                .expect("tool")
+                .changes;
+                d.write_changes(&p).expect("cut");
             }
             d.close().expect("close");
         }
@@ -7799,17 +7801,21 @@ pub(crate) mod tests {
             })
             .body;
         let mut document = ferritecad_document::Document::open(&path).expect("plate");
-        let prepared = ferritecad_document::prepare_circular_cut(
+        let tool = crate::feature_facts::CircularCut {
+            center_mm: [14., 9.],
+            radius_mm: 1.,
+            extent: crate::feature_facts::CutExtent::Blind { depth_mm: 2. },
+        };
+        let prepared = ferritecad_fixtures::feature_changes::circular_tool(
             &document,
             body,
-            &ferritecad_document::CircularCut {
-                center_mm: [14., 9.],
-                radius_mm: 1.,
-                extent: ferritecad_document::CutExtent::Blind { depth_mm: 2. },
-            },
+            tool.center_mm,
+            tool.radius_mm,
+            tool.extent.end().expect("end"),
         )
-        .expect("one cut");
-        document.write_circular_cut(&prepared).expect("write");
+        .expect("tool")
+        .changes;
+        document.write_changes(&prepared).expect("write");
         let reading = crate::sketch_facts::Source::read(&document).expect("catalogue");
         document.close().expect("close");
         (root, path, reading)
@@ -7892,8 +7898,8 @@ pub(crate) mod tests {
             .clone();
         let (ctx, mut e) = open_saved(&path, &reading, choice.sketch);
         let opened = e.draft.clone().expect("draft");
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, "Base of 1 circular Cuts"));
+        frame(&ctx, &mut e, vec![]);
+        assert_eq!(e.draft.as_ref().expect("cut base").points.len(), 4);
         set_coordinate(&ctx, &mut e, "33", "36");
         set_coordinate(&ctx, &mut e, "-4.5", "-");
         let dirty = e.draft.clone().expect("two vertices");
@@ -7928,8 +7934,8 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(e.take_edit_request().is_none());
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, "Base of 1 circular Cuts"));
+        frame(&ctx, &mut e, vec![]);
+        assert_eq!(e.draft.as_ref().expect("cut base").points.len(), 4);
         click_label(&ctx, &mut e, "Undo draft");
         assert_eq!(e.draft.as_ref(), Some(&dirty));
     }

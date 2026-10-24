@@ -12,7 +12,6 @@ use ferritecad_document::{Document, ExtrudeEditSource};
 use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result, StableEntityId};
 use serde::{Deserialize, Serialize};
 
-mod chamfer;
 mod checkpoint;
 pub(crate) mod constraints;
 mod fbx;
@@ -34,10 +33,6 @@ const EXIT_REPORT_DELIVERY: u8 = 7;
 pub enum Operation {
     Inspect,
     Edit,
-    CutCircularCopy,
-    EditCircularCut,
-    FilletEdgeCopy,
-    ChamferEdgeCopy,
     Create,
     CreateSketchExtrude,
     CreateSketchRevolve,
@@ -245,6 +240,7 @@ impl RevolveDiscovery {
 #[derive(Serialize)]
 struct Sketch {
     sketch_id: ObjectId,
+    plane_id: ObjectId,
     name: Option<String>,
     curves: Vec<constraints::Curve>,
     constraints: Vec<constraints::Constraint>,
@@ -254,452 +250,9 @@ struct Sketch {
 struct Body {
     body_id: ObjectId,
     name: Option<String>,
-    /// Whether a circular cut can be added to this body, and what the operation
-    /// would be cutting into. Its own answer beside the sketch editors, which
-    /// keep saying exactly what they always said about their own classes.
-    cut_edit: CutDiscovery<BlindDepth>,
-    /// The same answer in the form that can describe ThroughAll (§26H).
-    cut_edit_v2: CutDiscovery<ExplicitEnd>,
-    /// The same answer for any supported polygon, with its real boundary (§26I).
-    cut_edit_v3: CutDiscovery<ExplicitEnd, PolygonBoundary>,
-    /// §28A, additive: whether `fillet-edge-copy` can round one vertical edge
-    /// of this Body, and which edges. Structural only: it promises neither an
-    /// installed kernel nor that the geometry will build.
-    fillet_edge: FilletDiscovery,
-    /// §29A, additive: whether `chamfer-edge-copy` can cut one vertical edge of
-    /// this Body away, and which edges. Structural only, like `fillet_edge`.
-    chamfer_edge: chamfer::ChamferDiscovery,
+    history: Vec<ObjectId>,
 }
 
-/// What `fillet-edge-copy` would accept about one Body, from the same reading.
-#[derive(Serialize)]
-struct FilletDiscovery {
-    available: bool,
-    refusal: Option<String>,
-    document_refusal: Option<String>,
-    target: Option<FilletTarget>,
-}
-
-#[derive(Serialize)]
-struct FilletTarget {
-    body_id: ObjectId,
-    /// The feature both consumed and rounded: the plate's base Extrude.
-    base_feature_id: ObjectId,
-    profile_sketch_id: ObjectId,
-    height_mm: f64,
-    request_versions: &'static [u32],
-    min_radius_mm: f64,
-    max_radius_fraction: f64,
-    /// §28F, additive: whether the profile carries the constraint editor's
-    /// managed Line family. Then every candidate is a structurally admissible
-    /// joint of the stored Lines, and the part's corner, sides and radius
-    /// bound are the solved plate's, judged when the copy is rebuilt;
-    /// discovery does no solve.
-    profile_constrained: bool,
-    /// §28G, additive: the feature whose result the new Fillet rounds — the
-    /// base Extrude of a plain plate, or the plate's one Fillet.
-    previous_feature_id: ObjectId,
-    /// §28G, additive: the Fillets the plate already has, in history order
-    /// (none to three; §28L).
-    fillets: Vec<ExistingFilletDto>,
-    /// The vertical edges still sharp, in stored segment order: four on a
-    /// plain plate, three beside one Fillet, and so on down to none.
-    candidates: Vec<FilletCandidate>,
-}
-
-/// §28G: a Fillet the plate already carries.
-#[derive(Serialize)]
-struct ExistingFilletDto {
-    feature_id: ObjectId,
-    edge: FilletEdgeDto,
-    radius_mm: f64,
-    /// Its corner on the stored Lines.
-    stored_corner_mm: [f64; 2],
-    /// The part's corner: the stored one of an unconstrained plate, `null`
-    /// for a constrained one.
-    corner_mm: Option<[f64; 2]>,
-}
-
-/// One edge, by its meaning. `edge` is the identity a request repeats; the
-/// rest are labels recomputed from the saved profile.
-#[derive(Serialize)]
-struct FilletCandidate {
-    edge: FilletEdgeDto,
-    label: String,
-    /// The part's corner, sides and bound: the stored ones of an
-    /// unconstrained plate; `null` for a constrained one (§28F), whose part
-    /// only a solve knows.
-    corner_mm: Option<[f64; 2]>,
-    adjacent_lengths_mm: Option<[f64; 2]>,
-    max_radius_mm: Option<f64>,
-    /// §28F, additive: the same corner and sides in the stored Lines.
-    stored_corner_mm: [f64; 2],
-    stored_adjacent_lengths_mm: [f64; 2],
-    /// §28G, additive: the saved Fillet at a corner sharing a Line with this
-    /// one, and that Line. Both `null` for the opposite corner or a plain
-    /// plate — and, §28L, when **two** saved Fillets are adjacent, which
-    /// `adjacent_fillets` lists: a scalar never stands for several. For an
-    /// unconstrained plate `max_radius_mm` also keeps every shared Line's flat
-    /// of at least `min_radius_mm`.
-    adjacent_fillet_feature_id: Option<ObjectId>,
-    shared_line_id: Option<StableEntityId>,
-    /// §28L, additive: every saved Fillet at a corner sharing a Line with this
-    /// one (none to two), each with that Line and its stored length.
-    adjacent_fillets: Vec<AdjacentFilletDto>,
-}
-
-/// §28L: a saved Fillet beside a candidate corner.
-#[derive(Serialize)]
-struct AdjacentFilletDto {
-    feature_id: ObjectId,
-    shared_line_id: StableEntityId,
-    stored_shared_length_mm: f64,
-}
-
-/// An edge as a request states it: the feature that swept it and the two
-/// Line UUIDs meeting at its corner, in canonical order (either order is
-/// accepted in a request and means the same edge).
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct FilletEdgeDto {
-    pub(crate) feature_id: ObjectId,
-    pub(crate) joint: [StableEntityId; 2],
-}
-
-impl FilletDiscovery {
-    fn new(choice: &ferritecad_document::FilletChoice, document_refusal: Option<String>) -> Self {
-        let target = choice.target.as_ref().map(|t| FilletTarget {
-            body_id: t.body,
-            base_feature_id: t.base_feature,
-            profile_sketch_id: t.profile,
-            height_mm: t.height_mm,
-            request_versions: &[1],
-            min_radius_mm: ferritecad_document::MIN_RADIUS_MM,
-            max_radius_fraction: ferritecad_document::MAX_RADIUS_FRACTION,
-            profile_constrained: t.constrained,
-            previous_feature_id: t.previous_feature,
-            fillets: t
-                .fillets
-                .iter()
-                .map(|f| ExistingFilletDto {
-                    feature_id: f.feature,
-                    edge: FilletEdgeDto {
-                        feature_id: f.edge.feature,
-                        joint: f.edge.joint.segments(),
-                    },
-                    radius_mm: f.radius_mm,
-                    stored_corner_mm: f.corner.corner_mm,
-                    corner_mm: (!t.constrained).then_some(f.corner.corner_mm),
-                })
-                .collect(),
-            candidates: t
-                .corners
-                .iter()
-                .map(|c| {
-                    let [a, b] = c.joint.segments();
-                    let part = (!t.constrained).then_some(c);
-                    let adjacent = t.adjacent_fillets(c);
-                    let beside: String = adjacent
-                        .iter()
-                        .map(|(f, line, _)| {
-                            format!(
-                                "; shares Line {line} with Fillet {} (r {} mm), whose flat must \
-                                 stay at least {} mm",
-                                f.feature,
-                                f.radius_mm,
-                                ferritecad_document::MIN_RADIUS_MM
-                            )
-                        })
-                        .collect();
-                    FilletCandidate {
-                        edge: FilletEdgeDto {
-                            feature_id: c.feature,
-                            joint: c.joint.segments(),
-                        },
-                        label: if t.constrained {
-                            format!(
-                                "vertical edge between Lines {a} and {b}, stored at ({}, {}) mm; \
-                                 the solved plate decides where it is and how large a radius \
-                                 fits{beside}",
-                                c.corner_mm[0], c.corner_mm[1]
-                            )
-                        } else {
-                            format!(
-                                "vertical edge at ({}, {}) mm between Lines {a} and {b}{beside}",
-                                c.corner_mm[0], c.corner_mm[1]
-                            )
-                        },
-                        corner_mm: part.map(|c| c.corner_mm),
-                        adjacent_lengths_mm: part.map(|c| c.adjacent_lengths_mm),
-                        max_radius_mm: t.max_radius_mm(c),
-                        stored_corner_mm: c.corner_mm,
-                        stored_adjacent_lengths_mm: c.adjacent_lengths_mm,
-                        adjacent_fillet_feature_id: match adjacent.as_slice() {
-                            [(f, _, _)] => Some(f.feature),
-                            _ => None,
-                        },
-                        shared_line_id: match adjacent.as_slice() {
-                            [(_, line, _)] => Some(*line),
-                            _ => None,
-                        },
-                        adjacent_fillets: adjacent
-                            .iter()
-                            .map(|(f, line, length)| AdjacentFilletDto {
-                                feature_id: f.feature,
-                                shared_line_id: *line,
-                                stored_shared_length_mm: *length,
-                            })
-                            .collect(),
-                    }
-                })
-                .collect(),
-        });
-        Self {
-            available: choice.refusal.is_none() && document_refusal.is_none(),
-            refusal: choice.refusal.clone(),
-            document_refusal,
-            target,
-        }
-    }
-}
-
-/// What `cut-circular-copy` would accept about one Body, from the same reading.
-#[derive(Serialize)]
-struct CutDiscovery<E, P = RectangleExtents> {
-    available: bool,
-    refusal: Option<String>,
-    document_refusal: Option<String>,
-    target: Option<SavedCutTarget<E, P>>,
-}
-
-/// The part a cut would go into, as stored.
-///
-/// The plane and the direction are reported rather than left to be assumed: a
-/// caller that said "on the base plane, along +Z" without asking would be
-/// promising the only thing this slice does as if it were a choice.
-#[derive(Serialize)]
-struct SavedCutTarget<E, P> {
-    body_id: ObjectId,
-    plane_id: ObjectId,
-    /// The feature the cut would modify, which is the body's tip today.
-    tip_feature_id: ObjectId,
-    base_feature_id: ObjectId,
-    existing_cut: Option<ExistingCut<E>>,
-    tools: Vec<ExistingCut<E>>,
-    disk_clearance_mm: f64,
-    profile_sketch_id: ObjectId,
-    height_mm: f64,
-    /// v1/`_v2`: `extents_mm`, `[[min_x, min_y], [max_x, max_y]]` of the
-    /// rectangular part. `_v3`: `bounds_mm` and the real `boundary`.
-    #[serde(flatten)]
-    profile: P,
-    /// The one direction a cut runs here, said out loud.
-    direction: &'static str,
-    /// How far the tool must stay from the part's outer wall.
-    wall_clearance_mm: f64,
-    /// `_v2`/`_v3` only: request versions `cut-circular-copy` accepts.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    request_versions: Option<&'static [u32]>,
-}
-
-/// How one discovery form spells the end of a saved tool.
-///
-/// JSON v1 discovery has always spelt it as a required `depth_mm` number, and
-/// that type is part of its contract. A ThroughAll Cut has no such number, so
-/// the v1 form cannot describe a history that holds one: rather than change
-/// the field's type or report the computed height as a Blind depth, every v1
-/// block that would need it reports itself unavailable in the way it was
-/// already allowed to (a `null` object, and a reason where the block has a
-/// `refusal`). The additive `_v2` blocks carry the explicit end.
-trait EndForm: Serialize + Sized {
-    fn of(extent: ferritecad_document::CutExtent) -> Option<Self>;
-    /// Request versions a `_v2` block advertises; v1 blocks advertise none.
-    fn request_versions(versions: &'static [u32]) -> Option<&'static [u32]>;
-}
-
-/// The v1 spelling: a Blind depth, exactly as before §26H.
-#[derive(Serialize)]
-struct BlindDepth {
-    depth_mm: f64,
-}
-
-impl EndForm for BlindDepth {
-    fn of(extent: ferritecad_document::CutExtent) -> Option<Self> {
-        extent.blind_depth_mm().map(|depth_mm| Self { depth_mm })
-    }
-    fn request_versions(_: &'static [u32]) -> Option<&'static [u32]> {
-        None
-    }
-}
-
-/// The `_v2` spelling: the explicit end, Blind with its depth or ThroughAll.
-#[derive(Serialize)]
-struct ExplicitEnd {
-    extent: Extent,
-}
-
-impl EndForm for ExplicitEnd {
-    fn of(extent: ferritecad_document::CutExtent) -> Option<Self> {
-        Some(Self {
-            extent: extent.into(),
-        })
-    }
-    fn request_versions(versions: &'static [u32]) -> Option<&'static [u32]> {
-        Some(versions)
-    }
-}
-
-/// Why a v1 discovery block is unavailable although the operation exists.
-fn v1_cannot_describe(block: &str) -> String {
-    format!(
-        "this Cut history holds a ThroughAll Cut, which the v1 form of this discovery cannot \
-         describe; read {block}_v2"
-    )
-}
-
-/// How one discovery form states the part's outer wall.
-///
-/// v1 and `_v2` have always stated it as `extents_mm`, the corners of an
-/// axis-aligned rectangle, and a consumer of those blocks may take that as the
-/// part. The bounding box of any other polygon would be a rectangle the part
-/// is not, so those blocks report themselves unavailable for it in the ways
-/// they already could, and the additive `_v3` blocks carry the real boundary.
-trait ProfileForm: Serialize + Sized {
-    fn of(boundary: &ferritecad_document::CutBoundary) -> Option<Self>;
-}
-
-/// v1/`_v2`: the extents of a part that is an axis-aligned rectangle.
-#[derive(Serialize)]
-struct RectangleExtents {
-    extents_mm: [[f64; 2]; 2],
-}
-
-impl ProfileForm for RectangleExtents {
-    fn of(boundary: &ferritecad_document::CutBoundary) -> Option<Self> {
-        boundary
-            .rectangle_mm()
-            .map(|extents_mm| Self { extents_mm })
-    }
-}
-
-/// v1/`_v2` blocks that never stated the part: present only for a rectangle.
-#[derive(Serialize)]
-struct PolygonBoundary {
-    /// `[[min_x, min_y], [max_x, max_y]]`. A range, never proof of containment.
-    bounds_mm: [[f64; 2]; 2],
-    boundary: Boundary,
-}
-
-#[derive(Serialize)]
-struct Boundary {
-    kind: &'static str,
-    orientation: &'static str,
-    area_mm2: f64,
-    /// Every saved Line in stored order; the part is inside them.
-    segments: Vec<BoundarySegment>,
-}
-
-#[derive(Serialize)]
-struct BoundarySegment {
-    curve_id: StableEntityId,
-    start_mm: [f64; 2],
-    end_mm: [f64; 2],
-}
-
-impl ProfileForm for PolygonBoundary {
-    fn of(boundary: &ferritecad_document::CutBoundary) -> Option<Self> {
-        Some(Self {
-            bounds_mm: boundary.bounds_mm(),
-            boundary: Boundary {
-                kind: "line_polygon",
-                orientation: match boundary.orientation() {
-                    ferritecad_document::BoundaryOrientation::CounterClockwise => {
-                        "counter_clockwise"
-                    }
-                    ferritecad_document::BoundaryOrientation::Clockwise => "clockwise",
-                },
-                area_mm2: boundary.area_mm2(),
-                segments: boundary
-                    .segments()
-                    .iter()
-                    .map(|s| BoundarySegment {
-                        curve_id: s.curve_id,
-                        start_mm: s.start_mm,
-                        end_mm: s.end_mm,
-                    })
-                    .collect(),
-            },
-        })
-    }
-}
-
-/// Why a v1/`_v2` discovery block is unavailable for a non-rectangular part.
-fn cannot_describe_polygon(block: &str) -> String {
-    format!(
-        "this Cut history's part is not an axis-aligned rectangle, and this form of the \
-         discovery can state only a rectangle; read {block}_v3"
-    )
-}
-
-/// One saved tool.
-#[derive(Serialize)]
-struct ExistingCut<E> {
-    feature_id: ObjectId,
-    tool_sketch_id: ObjectId,
-    tool_curve_id: StableEntityId,
-    center_mm: [f64; 2],
-    radius_mm: f64,
-    #[serde(flatten)]
-    end: E,
-}
-
-impl<E: EndForm> ExistingCut<E> {
-    fn of(t: &ferritecad_document::SavedCutTool) -> Option<Self> {
-        Some(Self {
-            feature_id: t.feature,
-            tool_sketch_id: t.tool_sketch,
-            tool_curve_id: t.tool_curve,
-            center_mm: t.center_mm,
-            radius_mm: t.radius_mm,
-            end: E::of(t.extent)?,
-        })
-    }
-    fn all(tools: &[ferritecad_document::SavedCutTool]) -> Option<Vec<Self>> {
-        tools.iter().map(Self::of).collect()
-    }
-}
-
-/// The end of a circular Cut on the wire: request v2, `_v2` discovery and results.
-///
-/// `ThroughAll {}` rather than a unit variant: serde lets a unit variant of an
-/// internally tagged enum ignore extra fields, so `{"kind":"through_all",
-/// "depth_mm":4}` would be accepted with its depth silently dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Extent {
-    Blind { depth_mm: f64 },
-    ThroughAll {},
-}
-
-impl From<Extent> for ferritecad_document::CutExtent {
-    fn from(e: Extent) -> Self {
-        match e {
-            Extent::Blind { depth_mm } => Self::Blind { depth_mm },
-            Extent::ThroughAll {} => Self::ThroughAll,
-        }
-    }
-}
-
-impl From<ferritecad_document::CutExtent> for Extent {
-    fn from(e: ferritecad_document::CutExtent) -> Self {
-        match e {
-            ferritecad_document::CutExtent::Blind { depth_mm } => Self::Blind { depth_mm },
-            ferritecad_document::CutExtent::ThroughAll => Self::ThroughAll {},
-        }
-    }
-}
-
-/// The version a Cut request declares, read before its shape is.
 pub(crate) fn request_version(bytes: &[u8], what: &str) -> Result<u32> {
     #[derive(Deserialize)]
     struct Declared {
@@ -708,48 +261,6 @@ pub(crate) fn request_version(bytes: &[u8], what: &str) -> Result<u32> {
     serde_json::from_slice::<Declared>(bytes)
         .map(|d| d.request_version)
         .map_err(|e| CadError::input(format!("invalid {what} JSON: {e}")))
-}
-
-impl<E: EndForm, P: ProfileForm> CutDiscovery<E, P> {
-    fn new(
-        choice: &ferritecad_document::CutChoice,
-        document_refusal: Option<String>,
-        block: &str,
-    ) -> Self {
-        let described = choice.target.as_ref().map(|t| {
-            let profile = P::of(&t.boundary).ok_or_else(|| cannot_describe_polygon(block))?;
-            let tools = || v1_cannot_describe(block);
-            Ok(SavedCutTarget {
-                body_id: t.body,
-                plane_id: t.plane,
-                tip_feature_id: t.tip_feature,
-                base_feature_id: t.base_feature,
-                tools: ExistingCut::all(&t.tools).ok_or_else(tools)?,
-                existing_cut: match &t.existing_cut {
-                    Some(c) => Some(ExistingCut::of(&c.tool()).ok_or_else(tools)?),
-                    None => None,
-                },
-                request_versions: E::request_versions(&[1, 2]),
-                disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
-                profile_sketch_id: t.profile,
-                height_mm: t.height_mm,
-                profile,
-                direction: "+z along the plane normal",
-                wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
-            })
-        });
-        let (target, refusal) = match described {
-            Some(Err(reason)) => (None, Some(reason)),
-            Some(Ok(t)) => (Some(t), choice.refusal.clone()),
-            None => (None, choice.refusal.clone()),
-        };
-        Self {
-            available: refusal.is_none() && document_refusal.is_none(),
-            refusal,
-            document_refusal,
-            target,
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -804,126 +315,11 @@ struct DisplayUnits {
 struct Feature {
     feature_id: ObjectId,
     name: Option<String>,
-    circular_cut_edit: CutParameterDiscovery<BlindDepth>,
-    circular_cut_edit_v2: CutParameterDiscovery<ExplicitEnd>,
-    circular_cut_edit_v3: CutParameterDiscovery<ExplicitEnd, PolygonBoundary>,
-}
-
-/// What `edit-circular-cut` would accept about one feature, from the same
-/// reading.
-#[derive(Serialize)]
-struct CutParameterDiscovery<E, P = RectangleExtents> {
-    available: bool,
-    refusal: Option<String>,
-    document_refusal: Option<String>,
-    saved: Option<SavedCircularCut<E, P>>,
-}
-
-/// The cut as stored, and what an edit of it is measured against.
-///
-/// Every identity it names is one the copy keeps. The plane and the direction
-/// are repeated here rather than assumed for the reason the Cut catalogue
-/// beside it repeats them.
-#[derive(Serialize)]
-struct SavedCircularCut<E, P> {
-    feature_id: ObjectId,
-    body_id: ObjectId,
-    plane_id: ObjectId,
-    /// The feature this cut modifies; unchanged by an edit of its numbers.
-    previous_feature_id: ObjectId,
-    base_feature_id: ObjectId,
-    tip_feature_id: ObjectId,
-    protected_floor_reference_ids: Vec<StableEntityId>,
-    neighboring_tool: Option<ExistingCut<E>>,
-    tools: Vec<ExistingCut<E>>,
-    disk_clearance_mm: f64,
-    /// The part's own profile; unchanged by an edit of its numbers.
+    operation: ferritecad_document::SolidOperation,
     profile_sketch_id: ObjectId,
-    /// The sketch holding the tool circle, whose numbers an edit rewrites.
-    tool_sketch_id: ObjectId,
-    /// The circle inside it. A request must name exactly this identity.
-    tool_curve_id: StableEntityId,
-    center_mm: [f64; 2],
-    radius_mm: f64,
-    /// v1: `depth_mm`; `_v2`: `extent`.
-    #[serde(flatten)]
-    end: E,
-    /// `_v2` only: request versions that express this Cut without loss.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    request_versions: Option<&'static [u32]>,
-    height_mm: f64,
-    /// v1/`_v2`: `extents_mm`, `[[min_x, min_y], [max_x, max_y]]` of the
-    /// rectangular part. `_v3`: `bounds_mm` and the real `boundary`.
-    #[serde(flatten)]
-    profile: P,
-    /// The one direction a cut runs here, said out loud.
-    direction: &'static str,
-    /// How far the tool must stay from the part's outer wall.
-    wall_clearance_mm: f64,
-    /// Whether the saved cut stops inside the part.
-    leaves_a_floor: bool,
-    /// The saved name of that floor, when there is one.
-    floor_reference_id: Option<StableEntityId>,
-    /// Whether the depth may be raised to the part's height.
-    ///
-    /// False for a cut that has a floor: the face its saved reference names
-    /// would stop existing, and this slice refuses rather than dropping a saved
-    /// name or resolving it to the part's far side. A cut that already runs
-    /// through the part may be shortened, because that only adds a name.
-    through_allowed: bool,
-}
-
-impl<E: EndForm, P: ProfileForm> CutParameterDiscovery<E, P> {
-    fn new(
-        choice: &ferritecad_document::CutParameterChoice,
-        document_refusal: Option<String>,
-        block: &str,
-    ) -> Self {
-        let described = choice.saved.as_ref().map(|c| {
-            let profile = P::of(&c.boundary).ok_or_else(|| cannot_describe_polygon(block))?;
-            let tools = || v1_cannot_describe(block);
-            Ok(SavedCircularCut {
-                feature_id: c.feature,
-                body_id: c.body,
-                plane_id: c.plane,
-                previous_feature_id: c.previous_feature,
-                base_feature_id: c.base_feature,
-                tools: ExistingCut::all(&c.tools).ok_or_else(tools)?,
-                tip_feature_id: c.tip_feature,
-                protected_floor_reference_ids: c.protected_floor_references.clone(),
-                neighboring_tool: match &c.neighboring_tool {
-                    Some(t) => Some(ExistingCut::of(t).ok_or_else(tools)?),
-                    None => None,
-                },
-                disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
-                profile_sketch_id: c.profile_sketch,
-                tool_sketch_id: c.tool_sketch,
-                tool_curve_id: c.tool_curve,
-                center_mm: c.center_mm,
-                radius_mm: c.radius_mm,
-                end: E::of(c.extent).ok_or_else(tools)?,
-                request_versions: E::request_versions(c.request_versions()),
-                height_mm: c.height_mm,
-                profile,
-                direction: "+z along the plane normal",
-                wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
-                leaves_a_floor: c.leaves_a_floor(),
-                floor_reference_id: c.floor_reference,
-                through_allowed: c.through_allowed(),
-            })
-        });
-        let (saved, refusal) = match described {
-            Some(Err(reason)) => (None, Some(reason)),
-            Some(Ok(s)) => (Some(s), choice.refusal.clone()),
-            None => (None, choice.refusal.clone()),
-        };
-        Self {
-            available: refusal.is_none() && document_refusal.is_none(),
-            refusal,
-            document_refusal,
-            saved,
-        }
-    }
+    previous_feature_id: Option<ObjectId>,
+    end_condition: serde_json::Value,
+    reversed: bool,
 }
 
 #[derive(Serialize)]
@@ -1038,19 +434,6 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     } else {
         (None, None)
     };
-    let mut cut_choices: std::collections::BTreeMap<_, _> =
-        source.cut_bodies.into_iter().map(|c| (c.body, c)).collect();
-    let mut fillet_choices: std::collections::BTreeMap<_, _> = source
-        .fillet_bodies
-        .into_iter()
-        .map(|c| (c.body, c))
-        .collect();
-    let mut chamfer_choices: std::collections::BTreeMap<_, _> = source
-        .chamfer_bodies
-        .into_iter()
-        .map(|c| (c.body, c))
-        .collect();
-    let cut_parameter_choices = source.cut_features;
     let revolves = source
         .revolves
         .into_iter()
@@ -1063,7 +446,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 ferritecad_document::ObjectPayload::Chamfer(c) if !fillet => (c.previous, c.edge, c.distance_mm),
                 _ => return None,
             };
-            Some(serde_json::json!({"feature_id":o.id,"name":o.name,"previous_feature_id":previous,"edge":{"feature_id":edge.feature,"joint":edge.joint.segments()},"expression":value}))
+            Some(serde_json::json!({"feature_id":o.id,"name":o.name,"previous_feature_id":previous,"edge":{"feature_id":edge.feature,"joint":edge.joint.segments()},"display_value":value.value() * document.meta().display_length_unit.per_base_unit(),"display_unit":document.meta().display_length_unit.symbol(),"expression":value}))
         }).collect())
     };
     let fillets = edge_features(true)?;
@@ -1108,6 +491,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 };
                 Some(Sketch {
                     sketch_id: object.id,
+                    plane_id: sketch.plane,
                     name: object.name,
                     curves: sketch.curves.iter().map(constraints::Curve::from).collect(),
                     constraints: sketch
@@ -1124,59 +508,58 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 })
             })
             .collect(),
-        features: cut_parameter_choices
+        features: source
+            .objects
             .iter()
-            .map(|choice| Feature {
-                feature_id: choice.feature,
-                name: choice.name.clone(),
-                circular_cut_edit: CutParameterDiscovery::new(
-                    choice,
-                    source.refusal.clone(),
-                    "circular_cut_edit",
-                ),
-                circular_cut_edit_v2: CutParameterDiscovery::new(
-                    choice,
-                    source.refusal.clone(),
-                    "circular_cut_edit",
-                ),
-                circular_cut_edit_v3: CutParameterDiscovery::new(
-                    choice,
-                    source.refusal.clone(),
-                    "circular_cut_edit",
-                ),
+            .filter_map(|o| {
+                let ferritecad_document::ObjectPayload::Extrude(e) = &o.payload else {
+                    return None;
+                };
+                let distance = |value: f64| {
+                    serde_json::json!({
+                        "value": value * document.meta().display_length_unit.per_base_unit(),
+                        "unit": document.meta().display_length_unit.symbol(),
+                    })
+                };
+                let end_condition = match &e.end_condition {
+                    ferritecad_document::EndCondition::Blind { distance: d } => {
+                        serde_json::json!({"kind":"blind", "distance":distance(d.value())})
+                    }
+                    ferritecad_document::EndCondition::Symmetric { distance: d } => {
+                        serde_json::json!({"kind":"symmetric", "distance":distance(d.value())})
+                    }
+                    ferritecad_document::EndCondition::ThroughAll => {
+                        serde_json::json!({"kind":"through_all"})
+                    }
+                    _ => return None,
+                };
+                Some(Feature {
+                    feature_id: o.id,
+                    name: o.name.clone(),
+                    operation: e.operation,
+                    profile_sketch_id: e.profile,
+                    previous_feature_id: e.previous,
+                    end_condition,
+                    reversed: e.reversed,
+                })
             })
             .collect(),
-        bodies: {
-            // Project the same Cut catalogue the UI receives; do not read and
-            // classify the objects again for this JSON view.
-            ferritecad_jobs::stl_bodies(&document)?
-                .into_iter()
-                .map(|body| {
-                    let choice = cut_choices
-                        .remove(&body.id)
-                        .expect("same snapshot Body catalogue");
-                    Body {
-                        body_id: body.id,
-                        name: body.name,
-                        cut_edit: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
-                        cut_edit_v2: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
-                        cut_edit_v3: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
-                        fillet_edge: FilletDiscovery::new(
-                            &fillet_choices
-                                .remove(&body.id)
-                                .expect("same snapshot Body catalogue"),
-                            source.refusal.clone(),
-                        ),
-                        chamfer_edge: chamfer::ChamferDiscovery::new(
-                            &chamfer_choices
-                                .remove(&body.id)
-                                .expect("same snapshot Body catalogue"),
-                            source.refusal.clone(),
-                        ),
-                    }
-                })
-                .collect()
-        },
+        bodies: source
+            .objects
+            .iter()
+            .filter(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+            .map(|o| Body {
+                body_id: o.id,
+                name: o.name.clone(),
+                history: source
+                    .model_tree
+                    .rows
+                    .iter()
+                    .filter(|r| r.id.1 == Some(o.id) && r.id.2.is_none())
+                    .map(|r| r.id.0)
+                    .collect(),
+            })
+            .collect(),
         revolves,
         fillets,
         chamfers,
@@ -1248,34 +631,4 @@ fn emit_outcome<T: Serialize>(
         return ExitCode::from(EXIT_REPORT_DELIVERY);
     }
     exit
-}
-
-#[cfg(test)]
-mod extent_tests {
-    use super::Extent;
-
-    #[test]
-    fn a_cut_extent_is_strict_in_both_kinds() {
-        for (text, expected) in [
-            (r#"{"kind":"through_all"}"#, Some(Extent::ThroughAll {})),
-            (
-                r#"{"kind":"blind","depth_mm":4.5}"#,
-                Some(Extent::Blind { depth_mm: 4.5 }),
-            ),
-            (r#"{"kind":"through_all","depth_mm":4}"#, None),
-            (r#"{"kind":"blind","depth_mm":4,"x":1}"#, None),
-            (r#"{"kind":"blind"}"#, None),
-            (r#"{"kind":"through"}"#, None),
-        ] {
-            assert_eq!(
-                serde_json::from_str::<Extent>(text).ok(),
-                expected,
-                "{text}"
-            );
-        }
-        assert_eq!(
-            serde_json::to_string(&Extent::ThroughAll {}).expect("json"),
-            r#"{"kind":"through_all"}"#
-        );
-    }
 }

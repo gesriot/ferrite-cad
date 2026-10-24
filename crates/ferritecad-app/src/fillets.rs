@@ -1,18 +1,11 @@
 // SPDX-License-Identifier: MIT
-//! A disposable single-edge fillet request over stored facts; no kernel, no
-//! file reads (§28A).
-//!
-//! The form offers only what the document says can be rounded: the four
-//! vertical edges of one saved rectangular plate, each named by the base
-//! Extrude and the two Lines that meet there. It lists them rather than
-//! letting a pointer pick geometry, because this slice has no picking, and a
-//! control that suggested otherwise would be promising it.
-use crate::sketch_facts::Source as ExtrudeEditSource;
-use ferritecad_document::{
-    DocumentVersion, EdgeFillet, ExpressionSlotValue, FilletChoice, FilletCorner, FilletEdge,
-    SavedFilletTarget,
+//! Draft fields over stored geometry; the shared transaction judges Apply.
+use crate::feature_facts::{
+    Corner as FilletCorner, EdgeChoice as FilletChoice, EdgeFillet, EdgeTarget as SavedFilletTarget,
 };
-use ferritecad_jobs::{EdgeFilletRequest, EditRequest};
+use crate::sketch_facts::Source as ExtrudeEditSource;
+use ferritecad_document::{DocumentVersion, ExpressionSlotValue, SweptEdge};
+use ferritecad_jobs::EditRequest;
 use ferritecad_types::{CadError, ObjectId, Result};
 use std::path::{Path, PathBuf};
 
@@ -59,14 +52,15 @@ impl Draft {
             .parse::<f64>()
             .map_err(|_| CadError::input("enter a finite fillet radius in mm"))?;
         let fillet = EdgeFillet {
-            edge: FilletEdge {
+            edge: SweptEdge {
                 feature: corner.feature,
                 joint: corner.joint,
             },
             radius_mm,
         };
-        let corner = self.choice.validate(&fillet)?;
-        Ok((corner, fillet))
+        let target = self.choice.target.as_ref().expect("form has target");
+        target.addition(fillet.feature()?, "Fillet")?;
+        Ok((*corner, fillet))
     }
 }
 
@@ -98,12 +92,12 @@ impl RadiusDraft {
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     draft: Option<Draft>,
-    pending: Option<EdgeFilletRequest>,
+    pending: Option<EditRequest>,
     radius: Option<RadiusDraft>,
     pending_radius: Option<EditRequest>,
     pending_apply: Option<EditRequest>,
     /// §30J: the new Fillet the Add form asked to add to the open document.
-    pending_add: Option<EdgeFilletRequest>,
+    pending_add: Option<EditRequest>,
     /// Whether the window's `can_add_fillet` allows the Add form's own Add now.
     can_add: bool,
     can_begin_radius: bool,
@@ -123,7 +117,7 @@ impl Editor {
         self.set_session(availability.0, availability.1, availability.2);
         self.can_add = add;
     }
-    pub(crate) fn take_request(&mut self) -> Option<EdgeFilletRequest> {
+    pub(crate) fn take_request(&mut self) -> Option<EditRequest> {
         self.pending.take()
     }
     pub(crate) fn take_radius_request(&mut self) -> Option<EditRequest> {
@@ -145,7 +139,7 @@ impl Editor {
         self.can_add
     }
     /// §30J: the new Fillet the user asked to add to the open document.
-    pub(crate) fn take_add_request(&mut self) -> Option<EdgeFilletRequest> {
+    pub(crate) fn take_add_request(&mut self) -> Option<EditRequest> {
         self.pending_add.take()
     }
     pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
@@ -416,37 +410,6 @@ impl Editor {
                     ferritecad_document::MIN_RADIUS_MM,
                     ferritecad_document::MAX_RADIUS_FRACTION
                 ));
-                // §28G/§28L: the history the new Fillet goes on the end of,
-                // in a bounded area so Save and Cancel stay in reach.
-                if !target.fillets.is_empty() {
-                    let steps: Vec<String> = target
-                        .fillets
-                        .iter()
-                        .map(|f| {
-                            let [a, b] = f.edge.joint.segments();
-                            format!(
-                                "Fillet {} (Lines {a} | {b}, r{} mm)",
-                                f.feature, f.radius_mm
-                            )
-                        })
-                        .collect();
-                    egui::ScrollArea::vertical()
-                        .id_salt("fillet-history")
-                        .max_height(96.)
-                        .show(ui, |ui| {
-                            ui.label(format!(
-                                "History: Extrude {} -> {} -> new Fillet. It rounds one of the \
-                                 other corners of the same plate; a corner sharing a Line with a \
-                                 saved Fillet must leave at least {} mm of that Line flat \
-                                 between the two arcs. With several Fillets their radii, the \
-                                 plate's height, its base Sketch's coordinates and its \
-                                 constraints can be edited.",
-                                target.base_feature,
-                                steps.join(" -> "),
-                                ferritecad_document::MIN_RADIUS_MM
-                            ));
-                        });
-                }
                 if target.constrained {
                     ui.label(format!(
                         "This plate's Sketch carries constraints. The corners and sides below \
@@ -489,11 +452,12 @@ impl Editor {
                         .clicked()
                     {
                         let (_, fillet) = valid.as_ref().copied().expect("validated draft");
-                        self.pending_add = Some(EdgeFilletRequest {
+                        self.pending_add = Some(EditRequest {
                             source: draft.source.clone(),
                             expected: draft.version,
-                            body: target.body,
-                            fillet,
+                            changes: target
+                                .addition(fillet.feature().expect("validated number"), "Fillet")
+                                .expect("validated draft"),
                             destination: PathBuf::new(),
                         });
                     }
@@ -541,11 +505,15 @@ impl Editor {
                                 .add_enabled(!self.unsaved, egui::Button::new("Save fillet copy…"))
                                 .clicked()
                             {
-                                self.pending = Some(EdgeFilletRequest {
+                                self.pending = Some(EditRequest {
                                     source: draft.source.clone(),
                                     expected: draft.version,
-                                    body: target.body,
-                                    fillet,
+                                    changes: target
+                                        .addition(
+                                            fillet.feature().expect("validated number"),
+                                            "Fillet",
+                                        )
+                                        .expect("validated draft"),
                                     destination: PathBuf::new(),
                                 });
                             }
@@ -580,75 +548,18 @@ impl Editor {
 /// One candidate as the form lists it: where, which Lines, and the limit.
 /// For a constrained plate (§28F) the numbers are the stored drawing's and are
 /// labelled so; the limit is the solved plate's and is not shown as a number.
-fn describe(corner: &FilletCorner, constrained: bool) -> String {
+fn describe(corner: &FilletCorner, _constrained: bool) -> String {
     let [a, b] = corner.joint.segments();
-    if constrained {
-        return format!(
-            "Lines {a} | {b} — stored corner ({}, {}), stored sides {} × {} mm; r limit from the \
-             solved plate",
-            corner.corner_mm[0],
-            corner.corner_mm[1],
-            corner.adjacent_lengths_mm[0],
-            corner.adjacent_lengths_mm[1]
-        );
-    }
     format!(
-        "Corner ({}, {}) — Lines {a} | {b}; sides {} × {} mm; r ≤ {} mm",
+        "Corner ({}, {}) — Lines {a} | {b}; stored sides {} × {} mm",
         corner.corner_mm[0],
         corner.corner_mm[1],
         corner.adjacent_lengths_mm[0],
-        corner.adjacent_lengths_mm[1],
-        corner.max_radius_mm
+        corner.adjacent_lengths_mm[1]
     )
 }
-
-/// One candidate of a target: [`describe`], and (§28G/§28L) every saved Fillet
-/// it shares a Line with, with the bound those pairs leave.
 fn describe_candidate(corner: &FilletCorner, target: &SavedFilletTarget) -> String {
-    let adjacent = target.adjacent_fillets(corner);
-    if adjacent.is_empty() {
-        return describe(corner, target.constrained);
-    }
-    let [a, b] = corner.joint.segments();
-    let beside = adjacent
-        .iter()
-        .map(|(existing, line, _)| {
-            format!(
-                "shares Line {line} with Fillet {} (r{} mm)",
-                existing.feature, existing.radius_mm
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    match target.max_radius_mm(corner) {
-        Some(max) => format!(
-            "Corner ({}, {}) — Lines {a} | {b}; sides {} × {} mm; {beside}; r ≤ {max} mm",
-            corner.corner_mm[0],
-            corner.corner_mm[1],
-            corner.adjacent_lengths_mm[0],
-            corner.adjacent_lengths_mm[1],
-        ),
-        None => format!(
-            "{}; {beside}, and the solved plate decides the room left",
-            describe(corner, true)
-        ),
-    }
-}
-
-/// The same two steps every published copy takes: the draft is handed to the
-/// shared retention so an Open that is later refused can give it back.
-pub(crate) fn finish_fillet(
-    editor: &mut crate::sketch::Editor,
-    edits: &mut crate::edits::Edits,
-    generation: u64,
-    result: Result<ferritecad_jobs::AddedEdgeFillet>,
-) -> Option<PathBuf> {
-    if edits.accepts(generation)
-        && let Ok(saved) = &result
-    {
-        editor.draft_published(&saved.destination);
-    }
-    edits.finish_fillet(generation, result)
+    describe(corner, target.constrained)
 }
 
 /// §28B's completion, through exactly the same two steps and retention as
@@ -877,10 +788,6 @@ pub(crate) mod tests {
         (root, path, source)
     }
 
-    /// Opens the form through its own button, as a person would.
-    fn begin_by_button(e: &mut Editor, path: &Path, source: &ExtrudeEditSource) {
-        begin_by(e, path, source, "Fillet edge of Plate");
-    }
     fn begin_by(e: &mut Editor, path: &Path, source: &ExtrudeEditSource, button: &str) {
         let ctx = egui::Context::default();
         let layout = |e: &mut Editor, events| {
@@ -915,178 +822,6 @@ pub(crate) mod tests {
         assert!(e.active(), "the button opened the form");
     }
 
-    /// The form lists the four corners the document names, refuses what the
-    /// document would, and keeps its draft through a cancelled Save, a worker
-    /// refusal and a stale reply. No kernel is involved.
-    #[test]
-    fn fillet_widgets_list_corners_refuse_like_the_document_and_keep_the_draft() {
-        let (_root, path, source) = plate();
-        let choice = source.fillet_bodies[0].clone();
-        let target = choice.target.clone().expect("a target");
-        let mut e = Editor::default();
-        begin_by_button(&mut e, &path, &source);
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        let out = frame(&ctx, &mut e, false);
-        for corner in &target.corners {
-            let [a, b] = corner.joint.segments();
-            assert!(painted(
-                &out,
-                &format!(
-                    "Corner ({}, {}) — Lines {a} | {b}",
-                    corner.corner_mm[0], corner.corner_mm[1]
-                )
-            ));
-        }
-        assert!(painted(&out, &target.base_feature.to_string()));
-        assert!(painted(
-            &out,
-            "Radius from 0.01 mm to 0.5 × the shorter adjacent side"
-        ));
-        assert!(!painted(&out, "Save fillet copy…"), "nothing applied yet");
-
-        // Nothing chosen, then text that is no radius, then radii the
-        // document refuses: each refused, none applied.
-        click(&ctx, &mut e, "Confirm draft edge and radius");
-        assert!(
-            e.draft
-                .as_ref()
-                .expect("draft")
-                .refusal
-                .as_deref()
-                .expect("refused")
-                .contains("choose one vertical edge")
-        );
-        click(&ctx, &mut e, "Corner (33, 3.25)");
-        let chosen = target
-            .corners
-            .iter()
-            .position(|c| c.corner_mm == [33., 3.25])
-            .expect("that corner");
-        assert_eq!(e.draft.as_ref().expect("draft").typed.corner, Some(chosen));
-        for (text, why) in [
-            ("banana", "finite"),
-            ("0", "at least"),
-            ("0.005", "at least"),
-            ("6.2", "too large"),
-            ("inf", "finite"),
-        ] {
-            radius(&ctx, &mut e, text);
-            click(&ctx, &mut e, "Confirm draft edge and radius");
-            let draft = e.draft.as_ref().expect("draft");
-            assert!(draft.applied.is_none(), "{text} was applied");
-            assert!(
-                draft.refusal.as_deref().expect("a refusal").contains(why),
-                "{text}: {:?}",
-                draft.refusal
-            );
-        }
-        radius(&ctx, &mut e, "2.375");
-        click(&ctx, &mut e, "Confirm draft edge and radius");
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(
-            &out,
-            "Ready: round the edge at (33, 3.25) with r2.375 mm"
-        ));
-        assert!(painted(&out, "Save fillet copy…"));
-        // An unapplied change un-readies the request.
-        radius(&ctx, &mut e, "3");
-        assert!(!painted(&frame(&ctx, &mut e, false), "Save fillet copy…"));
-        radius(&ctx, &mut e, "2.375");
-        assert!(painted(&frame(&ctx, &mut e, false), "Save fillet copy…"));
-
-        click(&ctx, &mut e, "Save fillet copy…");
-        let request = e.take_request().expect("the widgets' request");
-        assert!(e.take_request().is_none(), "one press, one request");
-        assert_eq!(request.source, path);
-        assert_eq!(request.expected, source.version);
-        assert_eq!(request.body, choice.body);
-        assert_eq!(request.fillet.edge.feature, target.base_feature);
-        assert_eq!(request.fillet.edge.joint, target.corners[chosen].joint);
-        assert_eq!(request.fillet.radius_mm, 2.375);
-        let typed = e.draft.as_ref().expect("draft").typed.clone();
-
-        // The Save dialog was cancelled: nothing ran, and the draft is as it was.
-        assert!(e.active());
-        assert_eq!(e.draft.as_ref().expect("draft").typed, typed);
-
-        // While a job runs the form is inert, and says the draft is kept.
-        let out = frame(&ctx, &mut e, true);
-        assert!(painted(
-            &out,
-            "Draft retained until publication or acceptance"
-        ));
-        click_while(&ctx, &mut e, "Cancel fillet draft", true);
-        assert!(e.active(), "Cancel is disabled while saving");
-
-        // A worker refusal and a stale reply both leave the draft in place.
-        let mut editor = crate::sketch::Editor::default();
-        editor.fillets = e;
-        let mut edits = crate::edits::Edits::default();
-        let mut refused = request.clone();
-        refused.destination = PathBuf::from("refused.fcad");
-        let generation = edits
-            .start_fillet(refused, |_, _, _| std::thread::spawn(|| {}))
-            .expect("started");
-        assert_eq!(
-            finish_fillet(
-                &mut editor,
-                &mut edits,
-                generation + 1,
-                Ok(published_stub())
-            ),
-            None,
-            "a stale reply is ignored"
-        );
-        assert!(editor.fillets.active());
-        assert_eq!(
-            finish_fillet(
-                &mut editor,
-                &mut edits,
-                generation,
-                Err(ferritecad_types::CadError::kernel("refused by the worker"))
-            ),
-            None
-        );
-        assert!(editor.fillets.active(), "a refusal keeps the draft");
-        assert_eq!(editor.fillets.draft.as_ref().expect("draft").typed, typed);
-
-        // Cancel, when nothing runs, leaves nothing and starts nothing.
-        let mut e = std::mem::take(&mut editor.fillets);
-        click(&ctx, &mut e, "Cancel fillet draft");
-        assert!(!e.active());
-        assert!(e.take_request().is_none());
-    }
-
-    fn published_stub() -> ferritecad_jobs::AddedEdgeFillet {
-        let corner = ferritecad_document::FilletCorner {
-            feature: ObjectId::new(),
-            joint: ferritecad_types::ProfileJoint::new(
-                StableEntityId::new(),
-                StableEntityId::new(),
-            )
-            .expect("joint"),
-            corner_mm: [0., 0.],
-            adjacent_lengths_mm: [1., 1.],
-            max_radius_mm: 0.5,
-        };
-        ferritecad_jobs::AddedEdgeFillet {
-            rebuild: Default::default(),
-            destination: PathBuf::from("stale.fcad"),
-            document_id: ferritecad_types::DocumentId::new(),
-            body: ObjectId::new(),
-            feature: ObjectId::new(),
-            previous: ObjectId::new(),
-            corner,
-            built_corner: corner,
-            profile_constrained: false,
-            radius_mm: 0.25,
-            references: Vec::new(),
-        }
-    }
-
     type Rows = Vec<Vec<rusqlite::types::Value>>;
     pub(crate) fn tables(path: &Path) -> std::collections::BTreeMap<String, (Vec<String>, Rows)> {
         let c =
@@ -1119,225 +854,6 @@ pub(crate) mod tests {
                 (name, (columns, rows))
             })
             .collect()
-    }
-
-    /// The same widget request, run once through the app's worker and once
-    /// through the shipped CLI, publishes one document: every SQL cell is the
-    /// same once the identifiers this operation minted are matched, and the
-    /// exports are the same bytes.
-    #[test]
-    fn native_fillet_widgets_worker_and_cli_publish_the_same_part() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (root, path, source) = plate();
-        let before = std::fs::read(&path).expect("source");
-        let mut e = Editor::default();
-        begin_by_button(&mut e, &path, &source);
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        click(&ctx, &mut e, "Corner (-4.5, 15.5)");
-        radius(&ctx, &mut e, "3.0625");
-        click(&ctx, &mut e, "Confirm draft edge and radius");
-        click(&ctx, &mut e, "Save fillet copy…");
-        let mut request = e.take_request().expect("widget request");
-        let fillet = request.fillet;
-
-        let ui = root.path().join("worker.fcad");
-        request.destination = ui.clone();
-        let mut edits = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        edits
-            .start_fillet(request, move |r, g, c| {
-                crate::edits::spawn_fillet(r, c, move |result| tx.send((g, result)).expect("reply"))
-            })
-            .expect("worker");
-        let (generation, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        let published = result.as_ref().expect("published").clone();
-        assert_eq!(published.corner.corner_mm, [-4.5, 15.5]);
-        let typed = e.draft.as_ref().expect("draft").typed.clone();
-        let mut editor = crate::sketch::Editor::default();
-        editor.fillets = e;
-        assert_eq!(
-            finish_fillet(&mut editor, &mut edits, generation, result),
-            Some(ui.clone()),
-            "publication goes to the ordinary async Open"
-        );
-        assert!(!editor.active());
-        editor.draft_load_finished(&ui, false);
-        assert!(editor.fillets.active(), "a refused Open restores the draft");
-        assert_eq!(editor.fillets.draft.as_ref().expect("draft").typed, typed);
-        editor.draft_published(&ui);
-        editor.draft_load_finished(&ui, true);
-        assert!(!editor.active());
-
-        // The same request through the shipped command line.
-        let input = root.path().join("request.json");
-        let [a, b] = fillet.edge.joint.segments();
-        std::fs::write(
-            &input,
-            format!(
-                r#"{{"request_version":1,"edge":{{"feature_id":"{}","joint":["{b}","{a}"]}},"radius_mm":{}}}"#,
-                fillet.edge.feature, fillet.radius_mm
-            ),
-        )
-        .expect("input");
-        let peer = root.path().join("peer.fcad");
-        let out = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("fillet-edge-copy")
-            .arg(&path)
-            .arg("--body")
-            .arg(source.fillet_bodies[0].body.to_string())
-            .arg("--expect-version")
-            .arg(source.version.content.to_string())
-            .arg("--request")
-            .arg(&input)
-            .arg("-o")
-            .arg(&peer)
-            .arg("--json")
-            .output()
-            .expect("peer");
-        assert!(out.status.success(), "{out:?}");
-
-        same_publication(&ui, &peer);
-        assert_eq!(std::fs::read(&path).expect("source"), before);
-    }
-
-    /// The worker's copy and the command line's are one publication: every
-    /// SQL cell is the same once the identifiers the operation minted — the
-    /// Fillet, then each new name by what it means — are matched, and the
-    /// STL and FBX exports are the same bytes.
-    pub(crate) fn same_publication(ui: &Path, peer: &Path) {
-        // Match the minted identifiers: the Fillet, then each new name by
-        // what it means. Nothing else may differ.
-        let a_doc = Document::open_read_only(ui).expect("worker copy");
-        let b_doc = Document::open_read_only(peer).expect("CLI copy");
-        // The new Fillet is the Body's tip: the only one, or the last of up
-        // to four (§28G, §28L).
-        let minted = |d: &Document| {
-            let refs = d.topology_refs().expect("refs");
-            let fillet = d
-                .objects()
-                .expect("objects")
-                .into_iter()
-                .find_map(|o| match o.payload {
-                    ObjectPayload::Body(Body { tip_feature }) => tip_feature,
-                    _ => None,
-                })
-                .expect("a tip");
-            (
-                fillet,
-                refs.into_iter()
-                    .filter(|r| r.owner == fillet)
-                    .collect::<Vec<_>>(),
-            )
-        };
-        let (mine, my_refs) = minted(&a_doc);
-        let (theirs, their_refs) = minted(&b_doc);
-        a_doc.close().expect("close");
-        b_doc.close().expect("close");
-        assert_eq!(my_refs.len(), their_refs.len());
-        assert!(matches!(my_refs.len(), 7..=10), "{}", my_refs.len());
-        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> =
-            vec![(theirs.to_bytes().to_vec(), mine.to_bytes().to_vec())];
-        for reference in &their_refs {
-            let matched = my_refs
-                .iter()
-                .find(|m| {
-                    m.output_role == reference.output_role && m.selection == reference.selection
-                })
-                .expect("the same meaning");
-            pairs.push((
-                reference.id.to_bytes().to_vec(),
-                matched.id.to_bytes().to_vec(),
-            ));
-        }
-        let map = |value: &rusqlite::types::Value| -> rusqlite::types::Value {
-            use rusqlite::types::Value;
-            match value {
-                Value::Blob(bytes) => {
-                    let mut out = bytes.clone();
-                    for (from, to) in &pairs {
-                        let mut i = 0;
-                        while i + 16 <= out.len() {
-                            if out[i..i + 16] == from[..] {
-                                out[i..i + 16].copy_from_slice(to);
-                                i += 16;
-                            } else {
-                                i += 1;
-                            }
-                        }
-                    }
-                    Value::Blob(out)
-                }
-                other => other.clone(),
-            }
-        };
-        let (left, right) = (tables(ui), tables(peer));
-        assert_eq!(
-            left.keys().collect::<Vec<_>>(),
-            right.keys().collect::<Vec<_>>()
-        );
-        for (table, (columns, rows)) in &left {
-            let (their_columns, theirs) = &right[table];
-            assert_eq!(columns, their_columns, "{table} columns");
-            assert_eq!(rows.len(), theirs.len(), "{table} rows");
-            for (l, r) in rows.iter().zip(theirs) {
-                let r: Vec<_> = r.iter().map(map).collect();
-                for (i, column) in columns.iter().enumerate() {
-                    match (table.as_str(), column.as_str()) {
-                        // The copy's own timestamp.
-                        ("meta", "modified_at") => {}
-                        // A payload hash covers the minted identifiers, so it
-                        // is compared through the payload it hashes.
-                        ("objects", "payload_hash") => {
-                            let payload = columns
-                                .iter()
-                                .position(|c| c == "payload")
-                                .expect("payload column");
-                            assert_eq!(l[payload], r[payload], "objects payload");
-                            let rusqlite::types::Value::Blob(bytes) = &l[payload] else {
-                                panic!("a payload blob");
-                            };
-                            assert_eq!(
-                                l[i],
-                                rusqlite::types::Value::Blob(
-                                    ferritecad_types::ContentHash::of_bytes(bytes)
-                                        .as_bytes()
-                                        .to_vec()
-                                ),
-                                "the stored hash is the payload's"
-                            );
-                        }
-                        _ => assert_eq!(l[i], r[i], "{table}.{column} differs"),
-                    }
-                }
-            }
-        }
-
-        // The exports are the same bytes.
-        for format in ["stl", "fbx"] {
-            let mut exports = Vec::new();
-            for model in [ui, peer] {
-                let output = model.with_extension(format);
-                let result = std::process::Command::new(crate::creates::tests::ferritecad())
-                    .arg(format!("export-{format}"))
-                    .arg(model)
-                    .arg("-o")
-                    .arg(&output)
-                    .arg("--json")
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                exports.push(std::fs::read(output).expect("export bytes"));
-            }
-            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
-        }
     }
 
     /// §28F: [`plate`], dimensioned by the shipped preparation and writer
@@ -1404,209 +920,6 @@ pub(crate) mod tests {
         (root, path, source)
     }
 
-    /// §28F: on a dimensioned plate the form says the numbers are the stored
-    /// drawing's, lists the corners by their Lines, applies a radius beyond
-    /// the stored bound (the solved plate decides it), refuses what the
-    /// value policy refuses, and asks for the same request. No kernel.
-    #[test]
-    fn fillet_widgets_on_a_dimensioned_plate_label_stored_numbers_and_defer_the_bound() {
-        let (_root, path, source) = dimensioned();
-        let choice = source.fillet_bodies[0].clone();
-        assert_eq!(choice.refusal, None);
-        let target = choice.target.clone().expect("a target");
-        assert!(target.constrained);
-        let mut e = Editor::default();
-        begin_by_button(&mut e, &path, &source);
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(&out, "This plate's Sketch carries constraints"));
-        assert!(painted(&out, "the solver's starting guess"));
-        for corner in &target.corners {
-            let [a, b] = corner.joint.segments();
-            let label = format!(
-                "Lines {a} | {b} — stored corner ({}, {}), stored sides",
-                corner.corner_mm[0], corner.corner_mm[1]
-            );
-            assert!(painted(&out, &label), "{label}");
-        }
-        assert!(painted(&out, "r limit from the solved plate"));
-        assert!(!painted(&out, "r ≤"), "no bound read off the stored sides");
-
-        let chosen = target
-            .corners
-            .iter()
-            .position(|c| c.corner_mm == [33., 3.25])
-            .expect("that corner");
-        let [a, b] = target.corners[chosen].joint.segments();
-        click(&ctx, &mut e, &format!("Lines {a} | {b}"));
-        for (text, why) in [
-            ("banana", "finite"),
-            ("0.005", "at least"),
-            ("inf", "finite"),
-        ] {
-            radius(&ctx, &mut e, text);
-            click(&ctx, &mut e, "Confirm draft edge and radius");
-            let draft = e.draft.as_ref().expect("draft");
-            assert!(draft.applied.is_none(), "{text} was applied");
-            assert!(
-                draft.refusal.as_deref().expect("a refusal").contains(why),
-                "{text}: {:?}",
-                draft.refusal
-            );
-        }
-        radius(&ctx, &mut e, "6.5");
-        click(&ctx, &mut e, "Confirm draft edge and radius");
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(
-            &out,
-            &format!(
-                "Ready: round the edge between Lines {a} | {b} with r6.5 mm; the radius is \
-                 checked on the solved plate when saved"
-            )
-        ));
-        click(&ctx, &mut e, "Save fillet copy…");
-        let request = e.take_request().expect("the widgets' request");
-        assert_eq!(request.body, choice.body);
-        assert_eq!(request.expected, source.version);
-        assert_eq!(request.fillet.edge.joint, target.corners[chosen].joint);
-        assert_eq!(request.fillet.radius_mm, 6.5);
-        assert!(e.active(), "the draft stays until publication");
-    }
-
-    /// §28F: the same widget request through the worker and the shipped
-    /// command publishes one part on a dimensioned plate, at the solved
-    /// corner; before that, a radius the solved plate cannot carry is
-    /// refused by the worker, keeping the draft and publishing nothing.
-    #[test]
-    fn native_dimensioned_fillet_worker_and_cli_publish_the_same_part() {
-        if !ferritecad_fixtures::native_dependencies(&[
-            (ferritecad_occt::is_available(), "OCCT"),
-            (ferritecad_eval::solver_available(), "PLANEGCS"),
-        ]) {
-            return;
-        }
-        let (root, path, source) = dimensioned();
-        let before = std::fs::read(&path).expect("source");
-        let target = source.fillet_bodies[0].target.clone().expect("a target");
-        let corner = target
-            .corners
-            .iter()
-            .find(|c| c.corner_mm == [33., 3.25])
-            .expect("that corner");
-        let [a, b] = corner.joint.segments();
-        let mut e = Editor::default();
-        begin_by_button(&mut e, &path, &source);
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        click(&ctx, &mut e, &format!("Lines {a} | {b}"));
-        let run = |e: &mut Editor, destination: &Path| {
-            click(&ctx, e, "Confirm draft edge and radius");
-            click(&ctx, e, "Save fillet copy…");
-            let mut request = e.take_request().expect("widget request");
-            request.destination = destination.to_path_buf();
-            let fillet = request.fillet;
-            let mut edits = crate::edits::Edits::default();
-            let (tx, rx) = std::sync::mpsc::channel();
-            edits
-                .start_fillet(request, move |r, g, c| {
-                    crate::edits::spawn_fillet(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
-                })
-                .expect("worker");
-            let (generation, result) = rx
-                .recv_timeout(std::time::Duration::from_secs(120))
-                .expect("worker response");
-            (edits, generation, result, fillet)
-        };
-
-        // 7.5 mm: within nothing the stored drawing says, and beyond half of
-        // the solved 14.25 mm side. Refused by the worker; the draft stays.
-        radius(&ctx, &mut e, "7.5");
-        let refused = root.path().join("too-large.fcad");
-        let (mut edits, generation, result, _) = run(&mut e, &refused);
-        let error = result.as_ref().expect_err("refused").to_string();
-        assert!(error.contains("too short"), "{error}");
-        let typed = e.draft.as_ref().expect("draft").typed.clone();
-        let mut editor = crate::sketch::Editor::default();
-        editor.fillets = e;
-        assert_eq!(
-            finish_fillet(&mut editor, &mut edits, generation, result),
-            None
-        );
-        assert!(editor.fillets.active(), "a refusal keeps the draft");
-        assert_eq!(editor.fillets.draft.as_ref().expect("draft").typed, typed);
-        assert!(!refused.exists());
-        let mut e = std::mem::take(&mut editor.fillets);
-
-        // 6.5 mm: beyond the stored 6.125 mm, within the solved 7.125 mm.
-        radius(&ctx, &mut e, "6.5");
-        let ui = root.path().join("worker.fcad");
-        let (mut edits, generation, result, fillet) = run(&mut e, &ui);
-        let published = result.as_ref().expect("published").clone();
-        assert!(published.profile_constrained);
-        assert_eq!(published.corner.corner_mm, [33., 3.25], "stored");
-        let near = |p: [f64; 2]| (p[0] - 36.5).abs() < 1e-9 && (p[1] - 3.5).abs() < 1e-9;
-        assert!(
-            near(published.built_corner.corner_mm),
-            "solved: {:?}",
-            published.built_corner.corner_mm
-        );
-        let mut editor = crate::sketch::Editor::default();
-        editor.fillets = e;
-        assert_eq!(
-            finish_fillet(&mut editor, &mut edits, generation, result),
-            Some(ui.clone()),
-            "publication goes to the ordinary async Open"
-        );
-        editor.draft_published(&ui);
-        editor.draft_load_finished(&ui, true);
-        assert!(!editor.active());
-
-        let input = root.path().join("request.json");
-        std::fs::write(
-            &input,
-            format!(
-                r#"{{"request_version":1,"edge":{{"feature_id":"{}","joint":["{b}","{a}"]}},"radius_mm":{}}}"#,
-                fillet.edge.feature, fillet.radius_mm
-            ),
-        )
-        .expect("input");
-        let peer = root.path().join("peer.fcad");
-        let out = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("fillet-edge-copy")
-            .arg(&path)
-            .arg("--body")
-            .arg(source.fillet_bodies[0].body.to_string())
-            .arg("--expect-version")
-            .arg(source.version.content.to_string())
-            .arg("--request")
-            .arg(&input)
-            .arg("-o")
-            .arg(&peer)
-            .arg("--json")
-            .output()
-            .expect("peer");
-        assert!(out.status.success(), "{out:?}");
-        // The command's own report names the solved corner (compact JSON v1).
-        let text = String::from_utf8(out.stdout).expect("UTF-8");
-        let pair = |key: &str| -> [f64; 2] {
-            let at = text.find(&format!("\"{key}\":[")).expect(key) + key.len() + 4;
-            let inner = &text[at..at + text[at..].find(']').expect("pair")];
-            let mut xy = inner.split(',').map(|v| v.parse::<f64>().expect("number"));
-            [xy.next().expect("x"), xy.next().expect("y")]
-        };
-        assert!(near(pair("corner_mm")), "{text}");
-        assert_eq!(pair("stored_corner_mm"), [33., 3.25], "{text}");
-        same_publication(&ui, &peer);
-        assert_eq!(std::fs::read(&path).expect("source"), before);
-    }
-
     /// §28B: the plate of [`plate`], with a §28A Fillet on its (33, 3.25)
     /// corner written by the shipped preparation and writer, and no kernel.
     /// §28C's height form tests use it too.
@@ -1666,19 +979,21 @@ pub(crate) mod tests {
             .find(|c| c.corner_mm == [33., 3.25])
             .expect("that corner");
         let mut d = Document::open(&path).expect("writable");
-        let prepared = ferritecad_document::prepare_edge_fillet(
-            &d,
-            source.fillet_bodies[0].body,
-            &EdgeFillet {
-                edge: FilletEdge {
-                    feature: target.base_feature,
-                    joint: corner.joint,
-                },
-                radius_mm: radius,
-            },
-        )
-        .expect("prepared");
-        d.write_edge_fillet(&prepared).expect("written");
+        let changes = target
+            .addition(
+                (EdgeFillet {
+                    edge: SweptEdge {
+                        feature: target.base_feature,
+                        joint: corner.joint,
+                    },
+                    radius_mm: radius,
+                })
+                .feature()
+                .expect("number"),
+                "Fillet",
+            )
+            .expect("changes");
+        d.write_changes(&changes).expect("written");
         let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
@@ -1771,211 +1086,6 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
-    /// §28G: on a rounded plate the form shows the history, lists only the
-    /// three other corners with the neighbours of the saved Fillet marked,
-    /// refuses a radius the pair policy refuses, hands over the widgets'
-    /// request against the Fillet's result, and keeps its draft through a
-    /// cancelled Save and a worker refusal. No kernel is involved.
-    #[test]
-    fn second_fillet_widgets_show_the_history_and_keep_the_draft() {
-        let (_root, path, source) = rounded(6.125);
-        let choice = source.fillet_bodies[0].clone();
-        let target = choice.target.clone().expect("a second target");
-        let first = target.fillets[0];
-        assert_eq!(target.previous_feature, first.feature);
-        let mut e = Editor::default();
-        begin_by_button(&mut e, &path, &source);
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(
-            &out,
-            &format!(
-                "History: Extrude {} -> Fillet {}",
-                target.base_feature, first.feature
-            )
-        ));
-        assert!(painted(
-            &out,
-            "With several Fillets their radii, the plate's height, its base Sketch's coordinates and its constraints can be edited"
-        ));
-        assert_eq!(target.corners.len(), 3);
-        for corner in &target.corners {
-            assert!(painted(
-                &out,
-                &format!("Corner ({}, {})", corner.corner_mm[0], corner.corner_mm[1])
-            ));
-        }
-        assert!(
-            !painted(&out, "Corner (33, 3.25)"),
-            "the rounded corner is not offered"
-        );
-        assert!(painted(
-            &out,
-            &format!("shares Line {}", {
-                let short = target
-                    .corners
-                    .iter()
-                    .find(|c| c.corner_mm == [33., 15.5])
-                    .expect("that corner");
-                target.adjacent_fillets(short)[0].1
-            })
-        ));
-
-        click(&ctx, &mut e, "Corner (33, 15.5)");
-        for text in ["6.125", "6.12"] {
-            radius(&ctx, &mut e, text);
-            click(&ctx, &mut e, "Confirm draft edge and radius");
-            let draft = e.draft.as_ref().expect("draft");
-            assert!(draft.applied.is_none(), "{text} was applied");
-            assert!(
-                draft
-                    .refusal
-                    .as_deref()
-                    .expect("a refusal")
-                    .contains("flat"),
-                "{text}: {:?}",
-                draft.refusal
-            );
-        }
-        radius(&ctx, &mut e, "3.5");
-        click(&ctx, &mut e, "Confirm draft edge and radius");
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(
-            &out,
-            "Ready: round the edge at (33, 15.5) with r3.5 mm"
-        ));
-        click(&ctx, &mut e, "Save fillet copy…");
-        let request = e.take_request().expect("the widgets' request");
-        assert_eq!(request.source, path);
-        assert_eq!(request.expected, source.version);
-        assert_eq!(request.body, choice.body);
-        assert_eq!(
-            request.fillet.edge.feature, target.base_feature,
-            "named by the base"
-        );
-        assert_ne!(request.fillet.edge.joint, first.edge.joint);
-        assert_eq!(request.fillet.radius_mm, 3.5);
-        let typed = e.draft.as_ref().expect("draft").typed.clone();
-        // The Save dialog was cancelled: the draft is as it was.
-        assert!(e.active());
-
-        // A worker refusal leaves the draft in place.
-        let mut editor = crate::sketch::Editor::default();
-        editor.fillets = e;
-        let mut edits = crate::edits::Edits::default();
-        let generation = edits
-            .start_fillet(request, |_, _, _| std::thread::spawn(|| {}))
-            .expect("started");
-        assert_eq!(
-            finish_fillet(
-                &mut editor,
-                &mut edits,
-                generation,
-                Err(ferritecad_types::CadError::input("refused by the worker"))
-            ),
-            None
-        );
-        assert!(editor.fillets.active(), "a refusal keeps the draft");
-        assert_eq!(editor.fillets.draft.as_ref().expect("draft").typed, typed);
-    }
-
-    /// §28G: the same second-Fillet widget request through the app's worker
-    /// and through the shipped CLI publishes one document, the new Fillet and
-    /// its eight names matched; the exports are the same bytes; the copy goes
-    /// to the ordinary async Open.
-    #[test]
-    fn native_second_fillet_worker_and_cli_publish_the_same_part() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let (root, path, source) = rounded(2.375);
-        let before = std::fs::read(&path).expect("source");
-        let mut e = Editor::default();
-        begin_by_button(&mut e, &path, &source);
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        click(&ctx, &mut e, "Corner (33, 15.5)");
-        radius(&ctx, &mut e, "3.0625");
-        click(&ctx, &mut e, "Confirm draft edge and radius");
-        click(&ctx, &mut e, "Save fillet copy…");
-        let mut request = e.take_request().expect("widget request");
-        let fillet = request.fillet;
-
-        let ui = root.path().join("worker.fcad");
-        request.destination = ui.clone();
-        let mut edits = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        edits
-            .start_fillet(request, move |r, g, c| {
-                crate::edits::spawn_fillet(r, c, move |result| tx.send((g, result)).expect("reply"))
-            })
-            .expect("worker");
-        let (generation, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        let published = result.as_ref().expect("published").clone();
-        assert_eq!(published.corner.corner_mm, [33., 15.5]);
-        assert_eq!(
-            published.previous,
-            source.fillet_bodies[0]
-                .target
-                .as_ref()
-                .expect("target")
-                .fillets[0]
-                .feature
-        );
-        assert_eq!(published.references.len(), 8);
-        let typed = e.draft.as_ref().expect("draft").typed.clone();
-        let mut editor = crate::sketch::Editor::default();
-        editor.fillets = e;
-        assert_eq!(
-            finish_fillet(&mut editor, &mut edits, generation, result),
-            Some(ui.clone()),
-            "publication goes to the ordinary async Open"
-        );
-        editor.draft_load_finished(&ui, false);
-        assert!(editor.fillets.active(), "a refused Open restores the draft");
-        assert_eq!(editor.fillets.draft.as_ref().expect("draft").typed, typed);
-        editor.draft_published(&ui);
-        editor.draft_load_finished(&ui, true);
-        assert!(!editor.active());
-
-        let input = root.path().join("request.json");
-        let [a, b] = fillet.edge.joint.segments();
-        std::fs::write(
-            &input,
-            format!(
-                r#"{{"request_version":1,"edge":{{"feature_id":"{}","joint":["{b}","{a}"]}},"radius_mm":{}}}"#,
-                fillet.edge.feature, fillet.radius_mm
-            ),
-        )
-        .expect("input");
-        let peer = root.path().join("peer.fcad");
-        let out = std::process::Command::new(crate::creates::tests::ferritecad())
-            .arg("fillet-edge-copy")
-            .arg(&path)
-            .arg("--body")
-            .arg(source.fillet_bodies[0].body.to_string())
-            .arg("--expect-version")
-            .arg(source.version.content.to_string())
-            .arg("--request")
-            .arg(&input)
-            .arg("-o")
-            .arg(&peer)
-            .arg("--json")
-            .output()
-            .expect("peer");
-        assert!(out.status.success(), "{out:?}");
-        same_publication(&ui, &peer);
-        assert_eq!(std::fs::read(&path).expect("source"), before);
-    }
-
     /// §28H: [`rounded`] with a second Fillet at (33, 15.5), across the 12.25
     /// mm side, written by the shipped preparation and writer.
     pub(crate) fn rounded_twice(
@@ -1993,19 +1103,21 @@ pub(crate) mod tests {
             .find(|c| c.corner_mm == [33., 15.5])
             .expect("that corner");
         let mut d = Document::open(&path).expect("writable");
-        let prepared = ferritecad_document::prepare_edge_fillet(
-            &d,
-            source.fillet_bodies[0].body,
-            &EdgeFillet {
-                edge: FilletEdge {
-                    feature: target.base_feature,
-                    joint: corner.joint,
-                },
-                radius_mm: r2,
-            },
-        )
-        .expect("prepared");
-        d.write_edge_fillet(&prepared).expect("written");
+        let changes = target
+            .addition(
+                (EdgeFillet {
+                    edge: SweptEdge {
+                        feature: target.base_feature,
+                        joint: corner.joint,
+                    },
+                    radius_mm: r2,
+                })
+                .feature()
+                .expect("number"),
+                "Fillet",
+            )
+            .expect("changes");
+        d.write_changes(&changes).expect("written");
         let source = crate::sketch_facts::Source::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
@@ -2107,298 +1219,24 @@ pub(crate) mod tests {
                 .find(|c| c.corner_mm == *at)
                 .expect("a candidate corner");
             let mut d = Document::open(&path).expect("writable");
-            let prepared = ferritecad_document::prepare_edge_fillet(
-                &d,
-                choice.body,
-                &EdgeFillet {
-                    edge: FilletEdge {
-                        feature: target.base_feature,
-                        joint: corner.joint,
-                    },
-                    radius_mm: *r,
-                },
-            )
-            .expect("prepared");
-            d.write_edge_fillet(&prepared).expect("written");
+            let changes = target
+                .addition(
+                    (EdgeFillet {
+                        edge: SweptEdge {
+                            feature: target.base_feature,
+                            joint: corner.joint,
+                        },
+                        radius_mm: *r,
+                    })
+                    .feature()
+                    .expect("number"),
+                    "Fillet",
+                )
+                .expect("changes");
+            d.write_changes(&changes).expect("written");
             source = crate::sketch_facts::Source::read(&d).expect("snapshot");
             d.close().expect("close");
         }
         (root, path, source)
-    }
-
-    /// Where a painted label is, if it is.
-    fn at(out: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
-        find(out, label)
-    }
-
-    /// §28L: with three Fillets saved, the form that adds the fourth lists
-    /// the history in a bounded area and the one corner left with every saved
-    /// Fillet beside it; the pair bound is the minimum over both; the form
-    /// refuses what the document refuses naming the Fillet in the way; and
-    /// Save and Cancel stay on the screen. No kernel is involved.
-    #[test]
-    fn the_fourth_fillet_widgets_name_the_history_and_keep_save_in_reach() {
-        let (_root, path, source) = rounded_n(&[
-            ([33., 3.25], 6.12),
-            ([-4.5, 15.5], 3.0625),
-            ([-4.5, 3.25], 1.5),
-        ]);
-        let choice = source.fillet_bodies[0].clone();
-        let target = choice.target.clone().expect("a fourth target");
-        assert_eq!(target.fillets.len(), 3);
-        assert_eq!(target.corners.len(), 1);
-        let (one, three) = (target.fillets[0], target.fillets[2]);
-        assert_eq!(target.previous_feature, three.feature);
-        let corner = target.corners[0];
-        assert_eq!(corner.corner_mm, [33., 15.5]);
-        let max = target.max_radius_mm(&corner).expect("unconstrained");
-        assert_eq!(max, 12.25 - 6.12 - ferritecad_document::MIN_RADIUS_MM);
-        let mut e = Editor::default();
-        begin_by_button(&mut e, &path, &source);
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, false);
-        }
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(
-            &out,
-            &format!(
-                "History: Extrude {} -> Fillet {}",
-                target.base_feature, one.feature
-            )
-        ));
-        assert!(painted(&out, "-> new Fillet."));
-        assert!(painted(
-            &out,
-            "With several Fillets their radii, the plate's height"
-        ));
-        assert!(
-            painted(&out, &format!("r ≤ {max} mm")),
-            "the minimum of both neighbours"
-        );
-        let beside = out
-            .shapes
-            .iter()
-            .filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) if t.galley.text().starts_with("Corner (33, 15.5)") => {
-                    Some(t.galley.text().to_owned())
-                }
-                _ => None,
-            })
-            .next()
-            .expect("the candidate");
-        assert_eq!(beside.matches("shares Line").count(), 2, "{beside}");
-        // The form fits the screen with Save and Cancel in reach.
-        for label in ["Cancel fillet draft", "Confirm draft edge and radius"] {
-            let p = at(&out, label).unwrap_or_else(|| panic!("not painted: {label}"));
-            assert!(
-                p.y > 0. && p.y < 768. && p.x > 0. && p.x < 988.,
-                "{label} at {p:?}"
-            );
-        }
-        assert!(
-            ctx.globally_used_rect().max.y <= 768.,
-            "{:?}",
-            ctx.globally_used_rect()
-        );
-
-        click(&ctx, &mut e, "Corner (33, 15.5)");
-        for text in [max.next_up().to_string(), "6.121".to_owned()] {
-            radius(&ctx, &mut e, &text);
-            click(&ctx, &mut e, "Confirm draft edge and radius");
-            let draft = e.draft.as_ref().expect("draft");
-            assert!(draft.applied.is_none(), "{text} was applied");
-            let reason = draft.refusal.as_deref().expect("a refusal");
-            assert!(reason.contains("flat"), "{text}: {reason}");
-            assert!(
-                reason.contains(&one.feature.to_string()),
-                "the Fillet in the way: {reason}"
-            );
-        }
-        radius(&ctx, &mut e, &max.to_string());
-        click(&ctx, &mut e, "Confirm draft edge and radius");
-        let out = frame(&ctx, &mut e, false);
-        assert!(painted(
-            &out,
-            &format!("Ready: round the edge at (33, 15.5) with r{max} mm")
-        ));
-        let save = at(&out, "Save fillet copy…").expect("Save is painted");
-        assert!(save.y > 0. && save.y < 768., "Save at {save:?}");
-        click(&ctx, &mut e, "Save fillet copy…");
-        let request = e.take_request().expect("the widgets' request");
-        assert_eq!(request.expected, source.version);
-        assert_eq!(
-            request.fillet.edge.feature, target.base_feature,
-            "named by the base"
-        );
-        assert_eq!(request.fillet.radius_mm, max);
-        assert!(e.active(), "Save Cancel keeps the draft");
-        // A worker refusal keeps the draft.
-        let typed = e.draft.as_ref().expect("draft").typed.clone();
-        let mut editor = crate::sketch::Editor::default();
-        editor.fillets = e;
-        let mut edits = crate::edits::Edits::default();
-        let generation = edits
-            .start_fillet(request, |_, _, _| std::thread::spawn(|| {}))
-            .expect("started");
-        assert_eq!(
-            finish_fillet(
-                &mut editor,
-                &mut edits,
-                generation,
-                Err(ferritecad_types::CadError::input("refused by the worker"))
-            ),
-            None
-        );
-        assert_eq!(editor.fillets.draft.as_ref().expect("draft").typed, typed);
-        // Cancel, when nothing runs, leaves nothing.
-        let mut e = std::mem::take(&mut editor.fillets);
-        click(&ctx, &mut e, "Cancel fillet draft");
-        assert!(!e.active());
-
-        // With all four rounded the form is not offered, with its reason.
-        let (_r, _p, full) = rounded_n(&[
-            ([33., 3.25], 2.0),
-            ([-4.5, 15.5], 2.0),
-            ([-4.5, 3.25], 2.0),
-            ([33., 15.5], 2.0),
-        ]);
-        let row = &full.fillet_bodies[0];
-        assert!(row.target.is_none());
-        assert!(
-            row.refusal
-                .as_deref()
-                .is_some_and(|r| r.contains("every corner")),
-            "{row:?}"
-        );
-        assert_eq!(
-            full.expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::FilletRadius)
-                .cloned()
-                .collect::<Vec<_>>()
-                .len(),
-            4
-        );
-        assert!(
-            full.expression_slots
-                .iter()
-                .filter(|s| s.slot == ferritecad_document::ExpressionSlot::FilletRadius)
-                .cloned()
-                .collect::<Vec<_>>()
-                .iter()
-                .all(|c| c.refusal.is_none())
-        );
-    }
-
-    /// §28L, native: the third and the fourth Fillet from the widgets through
-    /// the app's worker and through the shipped CLI publish one document, the
-    /// new Fillet and its nine or ten names matched; the exports are the same
-    /// bytes; the copy goes to the ordinary async Open.
-    #[test]
-    fn native_third_and_fourth_fillet_worker_and_cli_publish_the_same_part() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        for (done, corner, label, radius_text, names) in [
-            (
-                &[([33., 3.25], 2.375), ([-4.5, 15.5], 3.0625)][..],
-                [-4.5, 3.25],
-                "Corner (-4.5, 3.25)",
-                "1.5",
-                9usize,
-            ),
-            (
-                &[
-                    ([33., 3.25], 2.375),
-                    ([-4.5, 15.5], 3.0625),
-                    ([-4.5, 3.25], 1.5),
-                ][..],
-                [33., 15.5],
-                "Corner (33, 15.5)",
-                "4.125",
-                10usize,
-            ),
-        ] {
-            let (root, path, source) = rounded_n(done);
-            let before = std::fs::read(&path).expect("source");
-            let mut e = Editor::default();
-            begin_by_button(&mut e, &path, &source);
-            let ctx = egui::Context::default();
-            for _ in 0..3 {
-                frame(&ctx, &mut e, false);
-            }
-            click(&ctx, &mut e, label);
-            radius(&ctx, &mut e, radius_text);
-            click(&ctx, &mut e, "Confirm draft edge and radius");
-            click(&ctx, &mut e, "Save fillet copy…");
-            let mut request = e.take_request().expect("widget request");
-            let fillet = request.fillet;
-
-            let ui = root.path().join("worker.fcad");
-            request.destination = ui.clone();
-            let mut edits = crate::edits::Edits::default();
-            let (tx, rx) = std::sync::mpsc::channel();
-            edits
-                .start_fillet(request, move |r, g, c| {
-                    crate::edits::spawn_fillet(r, c, move |result| {
-                        tx.send((g, result)).expect("reply")
-                    })
-                })
-                .expect("worker");
-            let (generation, result) = rx
-                .recv_timeout(std::time::Duration::from_secs(120))
-                .expect("worker response");
-            let published = result.as_ref().expect("published").clone();
-            assert_eq!(published.corner.corner_mm, corner);
-            let target = source.fillet_bodies[0].target.as_ref().expect("target");
-            assert_eq!(
-                published.previous,
-                target.fillets.last().expect("a Fillet").feature
-            );
-            assert_eq!(published.references.len(), names);
-            let mut editor = crate::sketch::Editor::default();
-            editor.fillets = e;
-            assert_eq!(
-                finish_fillet(&mut editor, &mut edits, generation, result),
-                Some(ui.clone()),
-                "publication goes to the ordinary async Open"
-            );
-            editor.draft_load_finished(&ui, false);
-            assert!(editor.fillets.active(), "a refused Open restores the draft");
-            editor.draft_published(&ui);
-            editor.draft_load_finished(&ui, true);
-            assert!(!editor.active());
-
-            let input = root.path().join("request.json");
-            let [a, b] = fillet.edge.joint.segments();
-            std::fs::write(
-                &input,
-                format!(
-                    r#"{{"request_version":1,"edge":{{"feature_id":"{}","joint":["{b}","{a}"]}},"radius_mm":{}}}"#,
-                    fillet.edge.feature, fillet.radius_mm
-                ),
-            )
-            .expect("input");
-            let peer = root.path().join("peer.fcad");
-            let out = std::process::Command::new(crate::creates::tests::ferritecad())
-                .arg("fillet-edge-copy")
-                .arg(&path)
-                .arg("--body")
-                .arg(source.fillet_bodies[0].body.to_string())
-                .arg("--expect-version")
-                .arg(source.version.content.to_string())
-                .arg("--request")
-                .arg(&input)
-                .arg("-o")
-                .arg(&peer)
-                .arg("--json")
-                .output()
-                .expect("peer");
-            assert!(out.status.success(), "{out:?}");
-            same_publication(&ui, &peer);
-            assert_eq!(std::fs::read(&path).expect("source"), before);
-        }
     }
 }

@@ -14,7 +14,6 @@ pub(crate) const CORNER: [f64; 2] = [-4.5, 3.25];
 /// and an optional capability and an unrelated table ride along.
 pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let (root, path, source) = crate::fillets::tests::plate();
-    let body = source.chamfer_bodies[0].body;
     let target = source.chamfer_bodies[0].target.clone().expect("a target");
     let corner = target
         .corners
@@ -22,19 +21,21 @@ pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         .find(|c| c.corner_mm == CORNER)
         .expect("that corner");
     let mut d = Document::open(&path).expect("writable");
-    let prepared = ferritecad_document::prepare_edge_chamfer(
-        &d,
-        body,
-        &EdgeChamfer {
-            edge: SweptEdge {
-                feature: corner.feature,
-                joint: corner.joint,
-            },
-            distance_mm: 2.375,
-        },
-    )
-    .expect("prepared");
-    d.write_edge_chamfer(&prepared).expect("written");
+    let changes = target
+        .addition(
+            (EdgeChamfer {
+                edge: SweptEdge {
+                    feature: corner.feature,
+                    joint: corner.joint,
+                },
+                distance_mm: 2.375,
+            })
+            .feature()
+            .expect("number"),
+            "Chamfer",
+        )
+        .expect("changes");
+    d.write_changes(&changes).expect("written");
     let mut extra = d
         .topology_refs()
         .expect("refs")
@@ -58,11 +59,8 @@ pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let reading = crate::sketch_facts::read(&path).expect("reading");
     (root, path, reading)
 }
-pub(crate) fn saved_of(path: &std::path::Path) -> ferritecad_document::SavedChamfer {
-    let d = ferritecad_document::Document::open_read_only(path).expect("document");
-    ferritecad_document::saved_chamfer(&d, &d.objects().expect("objects"))
-        .expect("read chamfer")
-        .expect("chamfer")
+pub(crate) fn saved_of(path: &std::path::Path) -> crate::feature_tests::EdgeObservation {
+    crate::feature_tests::edge_history(path, true).remove(0)
 }
 
 fn ready(c: &creates::Creates, s: &sessions::Sessions) -> bool {

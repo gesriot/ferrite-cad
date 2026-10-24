@@ -202,7 +202,7 @@ both prints `FCAD_28F_RECIPE_OK` with the measured and exact volumes.
 
 ```python
 # FCAD_28F_AGENT_RECIPE
-import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid, time
 sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
 from edit_requests import constraint_request, line_request, line_rule, distance, fixed as pin_rule
 cli = os.environ["FERRITECAD"]
@@ -214,6 +214,32 @@ def edit_args(source, feature, height, version, out):
         {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 CONSTRAIN = "edit"
+
+def new_id():
+    raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
+    raw[6] = (raw[6] & 15) | 112
+    raw[8] = (raw[8] & 63) | 128
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+def edge_at(catalog, corner):
+    body = catalog["bodies"][0]
+    base = next(f for f in catalog["features"] if f["feature_id"] == body["history"][0])
+    sketch = next(s for s in catalog["sketches"] if s["sketch_id"] == base["profile_sketch_id"])
+    joint = sorted(c["curve_id"] for c in sketch["curves"] if not c["construction"]
+                   and c["geometry"]["kind"] == "line"
+                   and corner in [c["geometry"]["start_mm"], c["geometry"]["end_mm"]])
+    assert len(joint) == 2, (corner, joint)
+    return {"edge": {"feature_id": base["feature_id"], "joint": joint}}
+
+def addition(catalog, kind, edge, value):
+    field = "radius" if kind == "fillet" else "distance"
+    return {"request_version": 1, "changes": [{"kind": "add_feature", "object": new_id(),
+        "body": catalog["bodies"][0]["body_id"], "name": kind.title(),
+        "feature": {"kind": kind, "edge": {"feature": edge["feature_id"], "joint": edge["joint"]},
+                    field: {"value": value, "unit": "mm"}}}]}
+
+def tip(catalog, kind="fillets"):
+    return next(f for f in catalog[kind] if f["feature_id"] == catalog["bodies"][0]["history"][-1])
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -330,7 +356,7 @@ catalog = inspect(plate)
 (sketch,) = catalog["sketches"]
 editor = sketch
 
-assert catalog["bodies"][0]["fillet_edge"]["target"]["profile_constrained"] is False
+assert not catalog["sketches"][0]["constraints"]
 lines = [c["curve_id"] for c in editor["curves"]]
 starts = [c["geometry"]["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
@@ -364,31 +390,23 @@ result = constrain(plate, catalog["content_version"], [], dimensioned(AT, WIDTH,
 # 3. Discovery: a structural target whose numbers are the stored drawing's.
 catalog = inspect(dim)
 body = catalog["bodies"][0]
-edge = body["fillet_edge"]
-assert edge["available"] is True, edge
-target = edge["target"]
-assert target["profile_constrained"] is True, target
-for c in target["candidates"]:
-    assert c["corner_mm"] is None and c["max_radius_mm"] is None, c
-chosen = next(c for c in target["candidates"] if c["stored_corner_mm"] == STORED)
-assert min(chosen["stored_adjacent_lengths_mm"]) / 2 == 6.125, chosen
+assert catalog["sketches"][0]["constraints"]
+chosen = edge_at(catalog, STORED)
 
 # 4. Round it at 7 mm: beyond the stored rectangle's 6.125 mm, within the
 #    solved plate's 7.75 mm.
 r = 7.0
 request = root / "fillet.json"
-request.write_text(json.dumps({"request_version": 1, "edge": {
+request.write_text(json.dumps(addition(catalog, "fillet", {
     "feature_id": chosen["edge"]["feature_id"],
-    "joint": chosen["edge"]["joint"][::-1]}, "radius_mm": r}))
+    "joint": chosen["edge"]["joint"][::-1]}, r)))
 rounded = root / "rounded.fcad"
 before = dim.read_bytes()
-done = run(["fillet-edge-copy", dim, "--body", body["body_id"], "--expect-version",
-            catalog["content_version"], "--request", request, "-o", rounded, "--json"])["result"]
+done = run(["edit", dim, "--expect-version", catalog["content_version"], "--request", request, "-o", rounded, "--json"])["result"]
 assert dim.read_bytes() == before
 solved = [AT[0] + WIDTH, AT[1]]
-assert done["profile_constrained"] is True and done["stored_corner_mm"] == STORED, done
-assert all(abs(u - v) < 1e-9 for u, v in zip(done["corner_mm"], solved)), done
-assert done["edge"] == chosen["edge"] and done["radius_mm"] == r, done
+done = tip(inspect(rounded))
+assert done["edge"] == chosen["edge"] and done["expression"]["value"] == r
 fillet_allowlist(dim, rounded, body["body_id"])
 after = inspect(rounded)
 (fillet,) = after["fillets"]
@@ -425,16 +443,13 @@ v4, e4 = measured(taller, rect2, [AT[0] + 30.25, AT[1]], 5.0, 9.75)
 narrow = root / "narrow.fcad"
 constrain(plate, inspect(plate)["content_version"], [], dimensioned([1.0, 1.0], 30.0, 8.5), narrow)
 cat4 = inspect(narrow)
-chosen4 = next(c for c in cat4["bodies"][0]["fillet_edge"]["target"]["candidates"]
-               if c["stored_corner_mm"] == STORED)
-request.write_text(json.dumps({"request_version": 1, "edge": chosen4["edge"], "radius_mm": 5.0}))
+chosen4 = edge_at(cat4, STORED)
+request.write_text(json.dumps(addition(cat4, "fillet", chosen4["edge"], 5.0)))
 names = sorted(p.name for p in root.iterdir())
 never = root / "never.fcad"
-error = run(["fillet-edge-copy", narrow, "--body", cat4["bodies"][0]["body_id"], "--expect-version",
-             cat4["content_version"], "--request", request, "-o", never, "--json"], 2)["error"]
+error = run(["edit", narrow, "--expect-version", cat4["content_version"], "--request", request, "-o", never, "--json"], 2)["error"]
 assert error["kind"] == "input" and "too short" in error["message"], error
-error = run(["fillet-edge-copy", narrow, "--body", cat4["bodies"][0]["body_id"], "--expect-version",
-             catalog["content_version"], "--request", request, "-o", never, "--json"], 2)["error"]
+error = run(["edit", narrow, "--expect-version", catalog["content_version"], "--request", request, "-o", never, "--json"], 2)["error"]
 assert error["kind"] == "input", error
 assert not never.exists()
 assert sorted(p.name for p in root.iterdir()) == names

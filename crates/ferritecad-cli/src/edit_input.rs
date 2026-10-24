@@ -9,6 +9,23 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Change {
+    AddSketch {
+        object: ObjectId,
+        name: Option<String>,
+        plane: ObjectId,
+        curves: Vec<Curve>,
+        constraints: Vec<Constraint>,
+    },
+    AddFeature {
+        object: ObjectId,
+        body: ObjectId,
+        name: Option<String>,
+        feature: Feature,
+    },
+    SetEndCondition {
+        object: ObjectId,
+        end_condition: End,
+    },
     SetExpression {
         object: ObjectId,
         slot: ExpressionSlot,
@@ -33,6 +50,51 @@ pub(super) enum Change {
 impl Change {
     pub(super) fn into_edit(self) -> Result<EditChange> {
         Ok(match self {
+            Self::AddSketch {
+                object,
+                name,
+                plane,
+                curves,
+                constraints,
+            } => EditChange::AddSketch {
+                object,
+                name,
+                sketch: ferritecad_document::Sketch {
+                    plane,
+                    curves: curves
+                        .into_iter()
+                        .map(|c| {
+                            Ok(ferritecad_document::SketchCurve {
+                                id: c.id,
+                                construction: c.construction,
+                                geometry: c.geometry.into_geometry()?,
+                            })
+                        })
+                        .collect::<Result<_>>()?,
+                    constraints: constraints
+                        .into_iter()
+                        .map(Constraint::into_constraint)
+                        .collect::<Result<_>>()?,
+                },
+            },
+            Self::AddFeature {
+                object,
+                body,
+                name,
+                feature,
+            } => EditChange::AddFeature {
+                object,
+                body,
+                name,
+                feature: feature.into_feature()?,
+            },
+            Self::SetEndCondition {
+                object,
+                end_condition,
+            } => EditChange::SetEndCondition {
+                object,
+                end_condition: end_condition.into_end()?,
+            },
             Self::SetExpression {
                 object,
                 slot,
@@ -52,10 +114,7 @@ impl Change {
             },
             Self::AddConstraint { sketch, constraint } => EditChange::AddConstraint {
                 sketch,
-                constraint: SketchConstraint {
-                    id: constraint.id,
-                    rule: constraint.rule.into_rule()?,
-                },
+                constraint: constraint.into_constraint()?,
             },
             Self::RemoveConstraint { sketch, constraint } => {
                 EditChange::RemoveConstraint { sketch, constraint }
@@ -289,6 +348,94 @@ impl Rule {
                     })?
                 },
             },
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Curve {
+    id: StableEntityId,
+    construction: bool,
+    geometry: Geometry,
+}
+impl Constraint {
+    fn into_constraint(self) -> Result<SketchConstraint> {
+        Ok(SketchConstraint {
+            id: self.id,
+            rule: self.rule.into_rule()?,
+        })
+    }
+}
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum End {
+    Blind { distance: Number },
+    ThroughAll,
+}
+impl End {
+    fn into_end(self) -> Result<ferritecad_document::EndCondition> {
+        Ok(match self {
+            Self::Blind { distance } => ferritecad_document::EndCondition::Blind {
+                distance: distance.expression(Dimension::Length)?,
+            },
+            Self::ThroughAll => ferritecad_document::EndCondition::ThroughAll,
+        })
+    }
+}
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum Feature {
+    Cut {
+        profile: ObjectId,
+        end_condition: End,
+        reversed: bool,
+    },
+    Fillet {
+        edge: Edge,
+        radius: Number,
+    },
+    Chamfer {
+        edge: Edge,
+        distance: Number,
+    },
+}
+impl Feature {
+    fn into_feature(self) -> Result<ferritecad_document::FeatureAddition> {
+        use ferritecad_document::FeatureAddition as F;
+        Ok(match self {
+            Self::Cut {
+                profile,
+                end_condition,
+                reversed,
+            } => F::Cut {
+                profile,
+                end_condition: end_condition.into_end()?,
+                reversed,
+            },
+            Self::Fillet { edge, radius } => F::Fillet {
+                edge: edge.into_edge()?,
+                radius_mm: radius.expression(Dimension::Length)?,
+            },
+            Self::Chamfer { edge, distance } => F::Chamfer {
+                edge: edge.into_edge()?,
+                distance_mm: distance.expression(Dimension::Length)?,
+            },
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Edge {
+    feature: ObjectId,
+    joint: [StableEntityId; 2],
+}
+impl Edge {
+    fn into_edge(self) -> Result<ferritecad_document::SweptEdge> {
+        Ok(ferritecad_document::SweptEdge {
+            feature: self.feature,
+            joint: ferritecad_types::ProfileJoint::new(self.joint[0], self.joint[1])?,
         })
     }
 }

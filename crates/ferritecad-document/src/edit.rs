@@ -15,19 +15,13 @@ pub struct ExtrudeEditSource {
     pub model_tree: crate::ModelTree,
     pub version: DocumentVersion,
     pub expression_slots: Vec<crate::ExpressionSlotValue>,
-    pub cut_bodies: Vec<crate::CutChoice>,
-    pub cut_features: Vec<crate::CutParameterChoice>,
     pub revolves: Vec<crate::RevolveChoice>,
-    pub fillet_bodies: Vec<crate::FilletChoice>,
-    pub chamfer_bodies: Vec<crate::ChamferChoice>,
     pub refusal: Option<String>,
 }
 
 impl ExtrudeEditSource {
     pub fn read(document: &Document) -> Result<Self> {
         let objects = document.objects()?;
-        let crate::cut_edit::CutCatalog { bodies, features } =
-            crate::cut_edit::cut_catalog(document, &objects);
         Ok(Self {
             model_tree: crate::ModelTree::from_dependencies(&objects, document.dependencies()),
             objects: objects.clone(),
@@ -36,11 +30,7 @@ impl ExtrudeEditSource {
                 content: document.content_version()?,
             },
             expression_slots: document.expression_slots()?,
-            cut_bodies: bodies,
-            cut_features: features,
             revolves: crate::revolve_choices(document, &objects),
-            fillet_bodies: crate::fillet_choices(document, &objects),
-            chamfer_bodies: crate::chamfer_choices(document, &objects),
             refusal: match document.copy_access()? {
                 Access::ReadOnly { reason } => Some(reason),
                 _ => None,

@@ -59,34 +59,25 @@ A hollow circular part uses **Profile: Circle with hole** or
 Its shared centre and both radii can be changed through **Edit annulus …** or
 `edit`, preserving both circle identities and the height in a new copy.
 [Editing contract and recipe](docs/edit-transactions.md).
-A saved, unconstrained rectangular plate can receive up to 16 separate circular holes or pockets
-through **Cut circle into Body…** or `cut-circular-copy`. Both save a new copy
-with the original features and a real Cut in the body's history. The tool starts
-on the base XY plane; a shallow pocket opens on that side.
-[Supported source, spacing/depth rules and agent recipe](docs/circular-cut-history.md).
-Any saved Cut can have its centre, radius and depth changed through **Edit cut …**
-or `edit-circular-cut`, preserving the feature and tool identities in a new copy.
-In the viewer, **Apply cut** edits that existing Cut inside the open document,
-including after unsaved base height/vertices changes. Document Undo/Redo and
-exports use the accepted model; the user's file changes only on Save. Draft
-confirmation stays separate. **Add cut** adds a new Cut inside the open document as
-well (also after unsaved edits), one step of the same history; Save cut copy stays
-clean-only. [Session contract](docs/cut-session-apply.md),
-[Add contract](docs/add-circular-cut-session.md).
-A through hole can become a pocket; cutting away a named pocket floor is refused.
-Editing a Cut rebuilds its descendants while preserving history and face origins.
-At 16 Cuts, addition is unavailable and every Cut remains editable.
-See [bounded history contract and recipe](docs/circular-cut-history.md).
-A Cut can also say **Through all** instead of a depth (the `End` choice in the
-Cut editor, or request v2 of `cut-circular-copy`/`edit-circular-cut`); it stays
-through after the base height changes, where a Blind depth stays absolute.
-[Contract, compatibility and recipe](docs/circular-cut-through-all.md).
-The part under those Cuts may be any simple, unconstrained Line polygon of
-3–256 sides, concave L-shapes and sloped walls included: a tool must clear the
-real outline, not its bounding box, for structural Cut commands. General edits may also create an open slot; tangent
-rims are refused at rebuild. Structural Cut commands remain unavailable while the
-tool is outside or constrained. Use `edit` or Undo to restore their supported geometry.
-[Polygon contract and recipe](docs/polygon-cut-history.md).
+Cut, Fillet and Chamfer additions and edits use the same ordered `edit` request
+as numbers, curves and constraints. The window's **Add cut**, **Apply cut**,
+**Add fillet** and **Add chamfer** use that transaction inside the open document,
+including after unsaved edits. Undo/Redo and exports use the accepted model;
+the user's file changes on Save. CLI `edit` publishes a new copy.
+
+A Cut request adds its tool Sketch and then the Cut to a Body. It can also change
+the tool's circle, depth or end condition together with the plate. **Through all**
+stays through after the plate height changes; Blind depth stays absolute. Open
+slots, overlapping tools and constrained tool sketches can be edited and extended
+when the rebuild succeeds. Tangent rims are refused by the evaluator. Turning a
+through hole into a pocket adds floor names; removing a named floor is refused.
+There is no Cut-count limit in the edit path.
+
+`inspect --json` exposes each Body's ordered history, the saved sketches and their
+planes, Cut profiles and end conditions, and Fillet/Chamfer edges and values.
+The forms display saved geometry; Apply decides whether the candidate builds
+without newly failing features or lost names.
+[Request format and publication rules](docs/edit-transactions.md).
 A simple Line polygon drawn entirely at X > 0 can instead be turned one full
 turn about the sketch Y axis: **Feature: Revolve 360°** in the same sketch
 window, or `create-sketch-revolve`. The new Body is a real revolution and each
@@ -128,7 +119,7 @@ vertical, and nothing is snapped. A solution that leaves the axis is refused.
 A saved rectangular plate — one XY rectangle of four Lines with a forward
 Blind extrusion, unconstrained or already dimensioned with the constraint
 editor's Line constraints — can have one of its four vertical edges rounded
-with **Fillet edge of …** or `fillet-edge-copy`. The edge is chosen from a list
+with **Fillet edge of …** or `edit`. The edge is chosen from a list
 by the two Lines that meet there, and the radius is from 0.01 mm to half the
 shorter adjacent side; on a dimensioned plate the sides are the solved ones,
 checked when the copy is built, and the stored drawing only names the
@@ -151,7 +142,7 @@ constraints** form or `edit` (H/V, lengths, one fixed
 point, equal length, Parallel/Perpendicular): the part is built from the
 solved sketch, and the new copy is saved only if the solved plate still has
 room for the radius at the same corner. The same **Fillet edge of …** form or
-`fillet-edge-copy` can then round a second, a third and a fourth, different
+`edit` can then round a second, a third and a fourth, different
 vertical corner as its own Fillet: the history is Extrude → Fillet 1 → … →
 Fillet *n* → Body tip, *n* from 0 to 4, each Fillet a real fillet of its
 predecessor's result and each corner rounded once. Adjacent corners must leave
@@ -169,13 +160,11 @@ corners and judging every radius and every flat between adjacent arcs on the
 new sides, and the existing **Edit constraints** form or
 `edit` adds, replaces or removes its Line constraints,
 the solved rectangle being the new plate with every radius and every flat
-judged on the solved Lines at every rebuild. A document with three or four
-Fillets is read by the previous build as a typed refusal, never a partial
-Body. A fifth Fillet, touching arcs, cap edges, Cut with Fillet and arbitrary
+judged on the solved Lines at every rebuild. A fifth Fillet, touching arcs, cap edges, Cut with Fillet and arbitrary
 edges are not supported yet.
 
 A plate with nothing else on it can instead have one vertical edge cut away by
-a **Chamfer** with **Chamfer edge of …** or `chamfer-edge-copy`: one equal
+a **Chamfer** with **Chamfer edge of …** or `edit`: one equal
 distance in millimetres from the edge along each of its two faces (the slanted
 flat is that × √2 wide), from 0.001 mm to the shorter adjacent side less
 0.01 mm. The copy's Body ends in a real, named `feature.chamfer` whose face is
@@ -186,7 +175,7 @@ document Undo/Redo, unsaved exports and Save/Save As share the existing session.
 **Confirm draft number** serves only the clean-copy workflow.
 [Session contract](docs/chamfer-distance-session-apply.md).
 **Add chamfer** adds the plate's one Chamfer inside the open document in the same way,
-including after unsaved base changes, on a free or closure-only plate only;
+including after unsaved base changes;
 **Confirm draft edge and distance** only records the form's request for the clean
 Chamfer copy. [Add Chamfer session contract](docs/add-chamfer-session.md).
 `edit` with `chamfer_distance` publishes a new copy, every name kept. The

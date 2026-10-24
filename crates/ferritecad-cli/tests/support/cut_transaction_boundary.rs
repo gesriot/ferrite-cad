@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 use super::*;
-use ferritecad_document::{EditChange, ExpressionSlot, SavedCircularCut};
+use crate::cut_facts::CutObservation;
+use ferritecad_document::{EditChange, ExpressionSlot};
 use ferritecad_jobs::DocumentSession;
 use ferritecad_kernel::OperationContext;
 
@@ -14,7 +15,7 @@ struct Pair {
     count: usize,
 }
 impl Pair {
-    fn new(tools: &[CircularCut]) -> Self {
+    fn new(tools: &[CutSpec]) -> Self {
         let root = tempfile::tempdir().expect("root");
         let path = history::fixture(root.path(), tools);
         let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
@@ -113,33 +114,52 @@ impl Pair {
             self.original_bytes
         );
     }
-    fn structural(&self, saved: &SavedCircularCut, allowed: bool) {
+    fn continue_cut(&mut self, saved: &CutObservation) {
         let dest = self
             .root
             .path()
-            .join(format!("structural-{}.fcad", self.count));
-        let output = edits::edit(
+            .join(format!("continued-{}.fcad", self.count));
+        edits::edit(
             &self.path,
             &dest,
             saved,
-            CircularCut {
+            CutSpec {
                 center_mm: saved.center_mm,
                 radius_mm: 0.75,
                 extent: saved.extent,
             },
-            if allowed { 0 } else { 2 },
+            0,
         );
-        if !allowed {
-            for fragment in [
-                saved.feature.to_string(),
-                "saved Cut".into(),
-                "only the saved Cut histories it can read".into(),
-                "use edit to change the part or tool".into(),
-            ] {
-                assert!(output.to_string().contains(&fragment), "{output}");
-            }
-            assert!(!dest.exists());
+        cold(&dest, &mut self.kernel);
+        let d = Document::open_read_only(&dest).expect("reopen");
+        let body = tip(&d).0;
+        let changes = CutSpec {
+            center_mm: [60., 40.],
+            radius_mm: 1.,
+            extent: CutDepth::Blind { depth_mm: 3. },
         }
+        .additions(&d, body);
+        let request = self.root.path().join("add-after-edit.json");
+        write(&request, &ferritecad_fixtures::edit_request_json(&changes));
+        let added = self
+            .root
+            .path()
+            .join(format!("continued-add-{}.fcad", self.count));
+        reply(
+            crate::transaction::command(
+                &dest,
+                &d.content_version().expect("version").to_string(),
+                &request,
+                &added,
+            )
+            .output()
+            .expect("CLI"),
+            "edit",
+            0,
+        );
+        let old_volume = cold(&dest, &mut self.kernel);
+        let new_volume = cold(&added, &mut self.kernel);
+        assert!((old_volume - new_volume - std::f64::consts::PI * 3.).abs() < 1e-6);
     }
 }
 fn cold(path: &Path, kernel: &mut ferritecad_occt::OcctKernel) -> f64 {
@@ -161,7 +181,7 @@ fn cold(path: &Path, kernel: &mut ferritecad_occt::OcctKernel) -> f64 {
     built.release_all(kernel);
     volume
 }
-fn circle(saved: &SavedCircularCut, center: [f64; 2], radius: f64) -> EditChange {
+fn circle(saved: &CutObservation, center: [f64; 2], radius: f64) -> EditChange {
     EditChange::SetCurveGeometry {
         sketch: saved.tool_sketch,
         curve: saved.tool_curve,
@@ -176,10 +196,10 @@ fn circle(saved: &SavedCircularCut, center: [f64; 2], radius: f64) -> EditChange
 }
 
 pub(super) fn run() {
-    let tool = CircularCut {
+    let tool = CutSpec {
         center_mm: [4., 7.],
         radius_mm: 1.5,
-        extent: CutExtent::Blind { depth_mm: 12. },
+        extent: CutDepth::Blind { depth_mm: 12. },
     };
     let mut p = Pair::new(&[tool]);
     let saved = history::ordered(&p.path).remove(0);
@@ -199,31 +219,27 @@ pub(super) fn run() {
         let actual = cold(&p.path, &mut p.kernel);
         assert!((actual - expected).abs() < 1e-6, "{actual} vs {expected}");
     }
-    p.structural(&saved, false);
-    // Undo is an immediate route back to the supported inside document.
+    p.continue_cut(&saved);
+    // Undo and Redo preserve the original slot snapshots.
     let outside = p.session.current().version();
     let undo = p.session.begin_undo().expect("undo");
     p.session.commit_move(undo).expect("undo commit");
     assert!(
-        ExtrudeEditSource::read(
-            &Document::open_read_only(p.session.current().path()).expect("document")
-        )
-        .expect("source")
-        .cut_features
-        .iter()
-        .any(|c| c.feature == saved.feature && c.saved.is_some())
+        crate::cut_facts::observed(p.session.current().path())
+            .iter()
+            .any(|c| c.feature == saved.feature)
     );
     let redo = p.session.begin_redo().expect("redo");
     p.session.commit_move(redo).expect("redo commit");
     assert_eq!(p.session.current().version(), outside);
     p.apply(p.wall(saved.profile_sketch, 0.), &[]);
-    p.structural(&saved, true);
+    p.continue_cut(&saved);
     p.apply(p.wall(saved.profile_sketch, 2.75), &[]);
     p.apply(vec![circle(&saved, [4., 7.], 1.)], &[]);
-    p.structural(&saved, true);
-    // A floor must acquire its name while the command reader is unavailable.
+    p.continue_cut(&saved);
+    // An open slot must acquire its floor name when the base grows.
     p.apply(vec![circle(&saved, [4., 7.], 1.5)], &[]);
-    p.structural(&saved, false);
+    p.continue_cut(&saved);
     p.apply(
         vec![
             EditChange::constant(saved.base_feature, ExpressionSlot::ExtrudeDistance, 15.)
@@ -246,10 +262,10 @@ pub(super) fn run() {
                         })
         );
     }
-    p.structural(&saved, true);
+    p.continue_cut(&saved);
     let mut p = Pair::new(&[
         tool,
-        CircularCut {
+        CutSpec {
             center_mm: [12., 7.],
             ..tool
         },
@@ -264,6 +280,7 @@ pub(super) fn run() {
         ],
     );
     p.apply(vec![circle(&cuts[1], [6.75, 7.], 1.5)], &[]);
+    p.continue_cut(&cuts[0]);
 }
 
 #[test]
@@ -275,10 +292,10 @@ fn native_contacts_use_the_solved_tool_and_solved_base_lines() {
         return;
     }
     use ferritecad_document::*;
-    let tool = CircularCut {
+    let tool = CutSpec {
         center_mm: [4., 7.],
         radius_mm: 1.5,
-        extent: CutExtent::Blind { depth_mm: 12. },
+        extent: CutDepth::Blind { depth_mm: 12. },
     };
     let mut pair = Pair::new(&[tool]);
     let saved = history::ordered(&pair.path).remove(0);
@@ -298,7 +315,7 @@ fn native_contacts_use_the_solved_tool_and_solved_base_lines() {
         &[saved.feature.to_string(), "touches side or vertex".into()],
     );
     pair.apply(vec![radius(3.75)], &[]);
-    pair.structural(&saved, false);
+    pair.continue_cut(&saved);
     pair.apply(
         vec![EditChange::RemoveConstraint {
             sketch: saved.tool_sketch,
@@ -306,7 +323,7 @@ fn native_contacts_use_the_solved_tool_and_solved_base_lines() {
         }],
         &[],
     );
-    pair.structural(&saved, true);
+    pair.continue_cut(&saved);
     let d = Document::open_read_only(&pair.path).expect("document");
     let ObjectPayload::Sketch(sketch) = d
         .object(saved.profile_sketch)

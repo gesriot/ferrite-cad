@@ -35,38 +35,28 @@
 mod cache;
 mod chamfer;
 mod cut_boundary;
-mod cut_edit;
 mod document;
 mod edit;
 mod expression_edit;
-pub use expression_edit::{EditChange, ExpressionSlot, ExpressionSlotValue};
+mod output_names;
+pub use expression_edit::{EditChange, ExpressionSlot, ExpressionSlotValue, FeatureAddition};
 mod fillet;
-mod fillet_radius;
 mod height_edit;
 mod polygon;
 mod revolve;
 mod sketch_changes;
 pub use chamfer::{
-    ChamferChoice, ChamferCorner, EdgeChamfer, MIN_DISTANCE_MM, MIN_FLAT_MM, PreparedEdgeChamfer,
-    SavedChamfer, SavedChamferTarget, chamfer_choices, check_distance_value, evaluable_chamfer,
-    max_distance_of, prepare_edge_chamfer, saved_chamfer,
+    ChamferCorner, MIN_DISTANCE_MM, MIN_FLAT_MM, check_distance_value, evaluable_chamfer,
+    max_distance_of,
 };
 pub use cut_boundary::{
     BoundaryOrientation, BoundarySegment, CutBoundary, DiskClearance, circle_clearances,
 };
-pub use cut_edit::{
-    CircularCut, CircularCutEdit, CutChoice, CutExtent, CutParameterChoice, ExtentVocabulary,
-    MAX_CIRCULAR_CUTS, NewObject, PreparedCircularCut, PreparedCutParameters, SavedCircularCut,
-    SavedCutTarget, SavedCutTool, WALL_CLEARANCE_MM, cut_choices, cut_parameter_choices,
-    cut_plane_placement, prepare_circular_cut, prepare_cut_parameters,
-};
+pub const WALL_CLEARANCE_MM: f64 = ferritecad_types::Tolerance::DEFAULT_LINEAR;
 pub use fillet::{
-    EdgeFillet, ExistingFillet, FilletChoice, FilletCorner, MAX_PLATE_FILLETS, MAX_RADIUS_FRACTION,
-    MIN_RADIUS_MM, PreparedEdgeFillet, SavedFilletTarget, check_pair, check_radius_value,
-    corner_for, evaluable_fillet, fillet_choices, pair_bound, prepare_edge_fillet,
-    rectangle_corners, shared_side,
+    FilletCorner, MAX_PLATE_FILLETS, MAX_RADIUS_FRACTION, MIN_RADIUS_MM, check_pair,
+    check_radius_value, corner_for, evaluable_fillet, pair_bound, rectangle_corners, shared_side,
 };
-pub use fillet_radius::{NeighbourFillet, SavedFillet, saved_fillets};
 pub use polygon::{
     AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion, RevolutionClosure,
 };

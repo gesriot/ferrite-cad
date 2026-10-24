@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """§30G real-window inputs and comparison. Generator never creates outputs."""
+from feature_requests import edge_addition
 import hashlib
 import json
 import math
@@ -47,11 +48,10 @@ def main():
                                             ([33, 15.5], 1.5), ([-4.5, 3.25], 4.25))):
             catalog = inspect(current)
             body = catalog["bodies"][0]
-            chosen = next(c for c in body["fillet_edge"]["target"]["candidates"] if c["corner_mm"] == corner)
             request = root / f"fillet-{i}.json"
-            request.write_text(json.dumps({"request_version": 1, "edge": chosen["edge"], "radius_mm": radius}))
+            request.write_text(json.dumps(edge_addition(catalog, "fillet", corner, radius)))
             out = root / "source" / ("fillets.fcad" if i == 3 else f"fillets-{i}.fcad")
-            run("fillet-edge-copy", current, "--body", body["body_id"], "--expect-version",
+            run("edit", current, "--expect-version",
                 catalog["content_version"], "--request", request, "-o", out, "--json")
             current = out
         with sqlite3.connect(current) as db:

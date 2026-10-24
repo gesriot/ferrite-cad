@@ -3,6 +3,7 @@
 //! predicate (`can_add_cut`) the window handler uses. Kernel-free fixtures.
 use super::session_apply::{fixture, selected};
 use super::*;
+use crate::feature_tests::RequestFacts;
 use crate::{Loads, can_add_cut, can_apply_cut, creates, edits, exports, sessions};
 
 /// A disk inside the real concave outline and clear of the fixture's three tools.
@@ -49,7 +50,7 @@ pub(crate) fn typed_add(
     reading: &ExtrudeEditSource,
     s: &sessions::Sessions,
     (x, y, radius, depth): (&str, &str, &str, Option<&str>),
-) -> (crate::sketch::Editor, CircularCutRequest) {
+) -> (crate::sketch::Editor, EditRequest) {
     let mut c = creates::Creates::default();
     assert!(
         c.sketch
@@ -154,12 +155,15 @@ fn add_cut_reads_current_fields_draft_history_stays_separate_and_copy_is_clean_o
     click(&ctx, e, "Add cut");
     let request = e.take_add_request().expect("unconfirmed current fields");
     assert!(e.take_add_request().is_none(), "one press, one request");
-    assert_eq!(request.body, body);
+    assert_eq!(request.addition().1, body);
     assert_eq!(request.expected, reading.version);
     assert_eq!(request.source, path);
-    assert_eq!(request.cut.center_mm, [19.25, 30.5]);
-    assert_eq!(request.cut.radius_mm, 2.125);
-    assert_eq!(request.cut.extent, CutExtent::Blind { depth_mm: 4.875 });
+    assert_eq!(request.circle().center_mm, [19.25, 30.5]);
+    assert_eq!(request.circle().radius_mm, 2.125);
+    assert_eq!(
+        request.circle().extent,
+        CutExtent::Blind { depth_mm: 4.875 }
+    );
     assert!(
         e.draft.as_ref().expect("draft").history.undo.is_empty(),
         "Add did not confirm the draft"
@@ -169,7 +173,7 @@ fn add_cut_reads_current_fields_draft_history_stays_separate_and_copy_is_clean_o
     click(&ctx, e, "Through all");
     click(&ctx, e, "Add cut");
     assert_eq!(
-        e.take_add_request().expect("through").cut.extent,
+        e.take_add_request().expect("through").circle().extent,
         CutExtent::ThroughAll
     );
     click(&ctx, e, "Blind depth");
@@ -409,17 +413,20 @@ fn add_cut_dirty_discovery_refusals_keep_text_status_dismissal_and_unsupported_b
     settle(&ctx, e);
     // Inside the box but outside the concave outline; on an existing disk; a
     // negative radius; not a number: the form keeps the text and asks nothing.
-    for (x, y, radius) in [
-        ("70", "42", "1.375"),
-        ("31.125", "42.375", "1.625"),
-        ("19.25", "30.5", "-1"),
-        ("19.25", "30.5", "NaN"),
-    ] {
+    for (x, y, radius) in [("19.25", "30.5", "-1"), ("19.25", "30.5", "NaN")] {
         fill(&ctx, e, x, y, radius, "4.875");
         click(&ctx, e, "Add cut");
         assert!(e.take_add_request().is_none(), "({x}, {y}) r{radius}");
         assert_eq!(typed(e).center_x, x);
         assert_eq!(typed(e).radius, radius);
+    }
+    for (x, y) in [("70", "42"), ("31.125", "42.375")] {
+        fill(&ctx, e, x, y, "1.625", "4.875");
+        click(&ctx, e, "Add cut");
+        assert!(
+            e.take_add_request().is_some(),
+            "geometry is decided by Apply"
+        );
     }
     // The document's line is drawn inside the open form, where it can be read.
     e.set_outcome("Could not apply the change: the tool touches Cut 0190");
@@ -446,17 +453,18 @@ fn add_cut_dirty_discovery_refusals_keep_text_status_dismissal_and_unsupported_b
     );
     assert_eq!(std::fs::read(&path).expect("source"), original);
 
-    // At 16 Cuts the Body offers no Add; a constrained base offers none either.
+    // Stored geometry remains available after sixteen Cuts and with constraints.
     let (_root16, path16, full) = fixture(16);
     assert!(
-        full.cut_bodies[0].refusal.is_some(),
-        "the 17th Cut is offered"
+        full.cut_bodies[0].refusal.is_none(),
+        "the form leaves the history length to Apply"
     );
-    assert!(!creates::Creates::default().sketch.cuts.begin(
-        &path16,
-        &full,
-        full.cut_bodies[0].body
-    ));
+    assert!(
+        creates::Creates::default()
+            .sketch
+            .cuts
+            .begin(&path16, &full, full.cut_bodies[0].body)
+    );
     let (_rootc, pathc, plain) = fixture(0);
     let base = plain
         .sketches
@@ -483,10 +491,10 @@ fn add_cut_dirty_discovery_refusals_keep_text_status_dismissal_and_unsupported_b
     d.close().expect("close");
     let constrained = crate::sketch_facts::read(&pathc).expect("reading");
     assert!(
-        constrained.cut_bodies[0].refusal.is_some(),
-        "a constrained base is not a Cut base"
+        constrained.cut_bodies[0].refusal.is_none(),
+        "stored constraints do not close the form"
     );
-    assert!(!creates::Creates::default().sketch.cuts.begin(
+    assert!(creates::Creates::default().sketch.cuts.begin(
         &pathc,
         &constrained,
         constrained.cut_bodies[0].body

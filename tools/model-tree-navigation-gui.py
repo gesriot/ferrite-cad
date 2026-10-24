@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """§31A: input-only fixtures; comparator requires actual window outputs."""
+from feature_requests import circular_cut, edge_addition
 import hashlib
 import json
 import os
@@ -72,11 +73,9 @@ def main():
     for i in range(3):
         catalog = run("inspect", current, "--json")
         slot = i * 7 % 16
-        req = request(f"cut-{i}", {"request_version": 2,
-            "center_mm": [7.125 + slot % 4 * 12, 6.375 + slot // 4 * 12], "radius_mm": 1.375 + i % 3 * .25,
-            "extent": {"kind": "through_all"} if i % 2 == 0 else {"kind": "blind", "depth_mm": 4.375 + i % 3}})
+        req = request(f"cut-{i}", circular_cut(catalog, [7.125 + slot % 4 * 12, 6.375 + slot // 4 * 12], 1.375 + i % 3 * .25, None if i % 2 == 0 else 4.375 + i % 3))
         out = root / "inputs" / ("cuts.fcad" if i == 2 else f"cut-{i}.fcad")
-        run("cut-circular-copy", current, "--body", catalog["bodies"][0]["body_id"], "--expect-version",
+        run("edit", current, "--expect-version",
             catalog["content_version"], "--request", req, "-o", out, "--json")
         current = out
     shutil.copyfile(current, root / "inputs/copy.fcad")
@@ -86,11 +85,9 @@ def main():
     for feature, corner, value in (("fillet", [33, 3.25], 2.375), ("chamfer", [-4.5, 3.25], 2.375)):
         catalog = run("inspect", corner_plate, "--json")
         body = catalog["bodies"][0]
-        chosen = next(c for c in body[f"{feature}_edge"]["target"]["candidates"] if c["corner_mm"] == corner)
-        req = request(feature, {"request_version": 1, "edge": chosen["edge"],
-                               "radius_mm" if feature == "fillet" else "distance_mm": value})
+        req = request(feature, edge_addition(catalog, feature, corner, value))
         out = root / "inputs" / ("fillets.fcad" if feature == "fillet" else "chamfer.fcad")
-        run(f"{feature}-edge-copy", corner_plate, "--body", body["body_id"], "--expect-version",
+        run("edit", corner_plate, "--expect-version",
             catalog["content_version"], "--request", req, "-o", out, "--json")
     req = request("revolve", {"request_version": 2, "points_mm": [[2, 0], [8, 0], [8, 10], [2, 10]],
                               "axis": "sketch_y", "extent": {"kind": "angle", "degrees": 210}})

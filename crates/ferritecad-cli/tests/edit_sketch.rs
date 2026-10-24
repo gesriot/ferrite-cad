@@ -177,22 +177,37 @@ fn native_edit_sketch_process_identity_geometry_and_delivery() {
     let after = inspect(&out);
     assert_ne!(after["content_version"], f.catalog["content_version"]);
     assert_eq!(after["features"], f.catalog["features"]);
-    // §26I: `cut_edit_v3` states the part's real outline, which this edit
-    // changed; every other Body block says what it said before.
-    let without_v3 = |bodies: &Value| {
-        let mut bodies = bodies.clone();
-        for body in bodies.as_array_mut().expect("bodies") {
-            body.as_object_mut().expect("body").remove("cut_edit_v3");
-        }
-        bodies
-    };
-    assert_eq!(
-        without_v3(&after["bodies"]),
-        without_v3(&f.catalog["bodies"])
-    );
-    let target = &after["bodies"][0]["cut_edit_v3"]["target"];
-    assert_eq!(target["bounds_mm"], json!([[0., 0.], [80., 40.]]));
-    assert_eq!(target["boundary"]["area_mm2"], json!(2000.));
+    assert_eq!(after["bodies"], f.catalog["bodies"]);
+    let points = after["sketches"][0]["curves"]
+        .as_array()
+        .expect("curves")
+        .iter()
+        .map(|c| {
+            let p = &c["geometry"]["start_mm"];
+            [p[0].as_f64().expect("x"), p[1].as_f64().expect("y")]
+        })
+        .collect::<Vec<_>>();
+    let bounds = [
+        std::array::from_fn::<_, 2, _>(|i| {
+            points.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min)
+        }),
+        std::array::from_fn::<_, 2, _>(|i| {
+            points
+                .iter()
+                .map(|p| p[i])
+                .fold(f64::NEG_INFINITY, f64::max)
+        }),
+    ];
+    let area = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
+        .sum::<f64>()
+        .abs()
+        / 2.;
+    assert_eq!(bounds, [[0., 0.], [80., 40.]]);
+    assert_eq!(area, 2000.);
     assert_eq!(
         after["sketches"][0]["curves"][1]["geometry"]["start_mm"],
         json!([80., 0.])

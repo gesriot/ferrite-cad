@@ -202,9 +202,35 @@ measured mesh and exact volumes.
 
 ```python
 # FCAD_28G_AGENT_RECIPE
-import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid, time
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28g-"))
+
+def new_id():
+    raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
+    raw[6] = (raw[6] & 15) | 112
+    raw[8] = (raw[8] & 63) | 128
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+def edge_at(catalog, corner):
+    body = catalog["bodies"][0]
+    base = next(f for f in catalog["features"] if f["feature_id"] == body["history"][0])
+    sketch = next(s for s in catalog["sketches"] if s["sketch_id"] == base["profile_sketch_id"])
+    joint = sorted(c["curve_id"] for c in sketch["curves"] if not c["construction"]
+                   and c["geometry"]["kind"] == "line"
+                   and corner in [c["geometry"]["start_mm"], c["geometry"]["end_mm"]])
+    assert len(joint) == 2, (corner, joint)
+    return {"edge": {"feature_id": base["feature_id"], "joint": joint}}
+
+def addition(catalog, kind, edge, value):
+    field = "radius" if kind == "fillet" else "distance"
+    return {"request_version": 1, "changes": [{"kind": "add_feature", "object": new_id(),
+        "body": catalog["bodies"][0]["body_id"], "name": kind.title(),
+        "feature": {"kind": kind, "edge": {"feature": edge["feature_id"], "joint": edge["joint"]},
+                    field: {"value": value, "unit": "mm"}}}]}
+
+def tip(catalog, kind="fillets"):
+    return next(f for f in catalog[kind] if f["feature_id"] == catalog["bodies"][0]["history"][-1])
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -306,15 +332,14 @@ def measured(copy, rounded):
 
 def ask(candidate, radius):
     path = root / "fillet.json"
-    path.write_text(json.dumps({"request_version": 1, "edge": {
+    path.write_text(json.dumps(addition(catalog, "fillet", {
         "feature_id": candidate["edge"]["feature_id"],
-        "joint": candidate["edge"]["joint"][::-1]}, "radius_mm": radius}))
+        "joint": candidate["edge"]["joint"][::-1]}, radius)))
     return path
 
 def fillet(source, catalog, request, out, code=0):
     body = catalog["bodies"][0]["body_id"]
-    return run(["fillet-edge-copy", source, "--body", body, "--expect-version",
-                catalog["content_version"], "--request", request, "-o", out, "--json"], code)
+    return run(["edit", source, "--expect-version", catalog["content_version"], "--request", request, "-o", out, "--json"], code)
 
 # 1. A plate.
 create = root / "create.json"
@@ -324,59 +349,41 @@ geometry(["create-sketch-extrude", create, "-o", plate, "--json"], plate)
 
 # 2. The first Fillet.
 catalog = inspect(plate)
-at = lambda cat, c: next(x for x in cat["bodies"][0]["fillet_edge"]["target"]["candidates"]
-                         if x["stored_corner_mm"] == c)
+at = edge_at
 FIRST, R1 = [X0 + W, Y0], 2.375
 first = root / "first.fcad"
-done1 = geometry(["fillet-edge-copy", plate, "--body", catalog["bodies"][0]["body_id"],
-                  "--expect-version", catalog["content_version"], "--request",
-                  ask(at(catalog, FIRST), R1), "-o", first, "--json"], first)["result"]
+done1 = geometry(["edit", plate, "--expect-version", catalog["content_version"], "--request", ask(at(catalog, FIRST), R1), "-o", first, "--json"], first)["result"]
 v1, e1 = measured(first, [(FIRST, R1)])
 
-# 3. Discovery on the rounded plate: its history and the three other corners.
+# 3. Stored history supplies the predecessor; the profile supplies the edge.
 catalog = inspect(first)
-edge = catalog["bodies"][0]["fillet_edge"]
-assert edge["available"] is True, edge
-target = edge["target"]
-assert target["previous_feature_id"] == done1["feature_id"], target
-(saved,) = target["fillets"]
-assert saved["feature_id"] == done1["feature_id"] and saved["radius_mm"] == R1, saved
-assert len(target["candidates"]) == 3
+done1 = tip(catalog)
+saved = done1
+assert saved["expression"]["value"] == R1
 SECOND, R2 = [X0 + W, Y0 + D], 3.0625
 chosen = at(catalog, SECOND)
-assert chosen["adjacent_fillet_feature_id"] == done1["feature_id"], chosen
-assert chosen["edge"]["feature_id"] == target["base_feature_id"], "named by the plate"
-assert at(catalog, [X0, Y0 + D])["adjacent_fillet_feature_id"] is None
 
 # 4. The second Fillet, into a new copy.
 second = root / "second.fcad"
 before = first.read_bytes()
 done2 = fillet(first, catalog, ask(chosen, R2), second)["result"]
 assert first.read_bytes() == before, "the source is untouched"
+done2 = tip(inspect(second))
 assert done2["previous_feature_id"] == done1["feature_id"], done2
-assert done2["edge"] == chosen["edge"] and done2["corner_mm"] == SECOND, done2
-assert sorted(r["role"] for r in done2["references"]).count("origin_fillet_face") == 1
+assert done2["edge"] == chosen["edge"] and done2["expression"]["value"] == R2, done2
+assert len(inspect(second)["bodies"][0]["history"]) == 3
 second_allowlist(first, second, catalog["bodies"][0]["body_id"])
 v2, e2 = measured(second, [(FIRST, R1), (SECOND, R2)])
 after = inspect(second)
-# §28L: two corners are still sharp, so a third Fillet is offered.
-assert after["bodies"][0]["fillet_edge"]["available"] is True, "a third Fillet is offered (§28L)"
-assert len(after["bodies"][0]["fillet_edge"]["target"]["candidates"]) == 2
-# §28H: either radius is editable; nothing else of this history is.
-
 # 5. Refusals write nothing: the same corner (twice), a stale version.
 names = sorted(p.name for p in root.iterdir())
 never = root / "never.fcad"
 error = fillet(first, catalog, ask({"edge": saved["edge"]}, 1.0), never, 2)["error"]
 assert error["kind"] == "input" and "already rounded" in error["message"], error
 request = ask(at(catalog, [X0, Y0 + D]), 1.0)
-error = run(["fillet-edge-copy", second, "--body", after["bodies"][0]["body_id"],
-             "--expect-version", after["content_version"], "--request", ask({"edge": saved["edge"]}, 1.0),
-             "-o", never, "--json"], 2)["error"]
+error = run(["edit", second, "--expect-version", after["content_version"], "--request", ask({"edge": saved["edge"]}, 1.0), "-o", never, "--json"], 2)["error"]
 assert error["kind"] == "input" and "already rounded" in error["message"], error
-error = run(["fillet-edge-copy", second, "--body", after["bodies"][0]["body_id"],
-             "--expect-version", catalog["content_version"], "--request", request,
-             "-o", never, "--json"], 2)["error"]
+error = run(["edit", second, "--expect-version", catalog["content_version"], "--request", request, "-o", never, "--json"], 2)["error"]
 assert error["kind"] == "input", error
 assert not never.exists()
 assert sorted(p.name for p in root.iterdir()) == names

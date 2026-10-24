@@ -484,17 +484,23 @@ fn recovery_child_entry() {
             let target = reading.fillet_bodies[0].target.clone().expect("target");
             let edited = super::add_fillet::add(
                 &mut s,
-                &ferritecad_jobs::EdgeFilletRequest {
+                &ferritecad_jobs::EditRequest {
                     source: current,
                     expected: reading.version,
-                    body: target.body,
-                    fillet: ferritecad_document::EdgeFillet {
-                        edge: ferritecad_document::FilletEdge {
-                            feature: target.base_feature,
-                            joint: target.corners[0].joint,
-                        },
-                        radius_mm: 2.5,
-                    },
+                    changes: vec![ferritecad_document::EditChange::AddFeature {
+                        object: ObjectId::new(),
+                        body: target.body,
+                        name: Some("Fillet".into()),
+                        feature: (crate::feature_facts::EdgeFillet {
+                            edge: ferritecad_document::SweptEdge {
+                                feature: target.base_feature,
+                                joint: target.corners[0].joint,
+                            },
+                            radius_mm: 2.5,
+                        })
+                        .feature()
+                        .expect("feature"),
+                    }],
                     destination: PathBuf::new(),
                 },
             );

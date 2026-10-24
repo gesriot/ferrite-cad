@@ -75,12 +75,7 @@ pub use create::{
     CreateDocumentRequest, CreatedAnnulus, CreatedDocument, NewDocument, PlateSize,
     create_document, create_document_with_kernel,
 };
-pub use edit::{
-    AddedCircularCut, AddedEdgeChamfer, AddedEdgeFillet, CircularCutRequest, EdgeChamferRequest,
-    EdgeFilletRequest, EditCircularCutRequest, EditRequest, EditedCircularCut, EditedDocument,
-    chamfer_edge_copy, circular_cut_copy, edit_circular_cut_copy, edit_copy, fillet_edge_copy,
-    read_extrude_source,
-};
+pub use edit::{EditRequest, EditedDocument, edit_copy, read_extrude_source};
 pub use fbx::{FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx};
 pub use import::{
     ImportStepRequest, PublishedStepImport, STEP_SOURCE_IS_DESTINATION, StepImportOutcome,

@@ -11,18 +11,17 @@ use super::fillet::{saved, sql, state};
 use super::*;
 use crate::chamfers::tests::add_session::{add_draft_state, plate, typed_add};
 use crate::chamfers::tests::session_apply::{saved_of, typed_distance, visible_outcome};
-use ferritecad_document::{EdgeChamfer, ObjectPayload};
-use ferritecad_jobs::EdgeChamferRequest;
+use crate::feature_facts::EdgeChamfer;
+use crate::feature_tests::RequestFacts;
+use ferritecad_document::ObjectPayload;
+use ferritecad_jobs::EditRequest;
 use std::collections::BTreeMap;
 
-fn start(
-    s: &mut Sessions,
-    r: &EdgeChamferRequest,
-) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_add_chamfer(t, r.body, r.chamfer, r.expected, c.clone(), move |v| {
+            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
                 tx.send(v).expect("deliver")
             })
         })
@@ -30,7 +29,7 @@ fn start(
     (g, rx)
 }
 /// The window's own Add: the worker, the picture, the version becoming current.
-fn add(s: &mut Sessions, r: &EdgeChamferRequest) -> Edited {
+fn add(s: &mut Sessions, r: &EditRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(
         g,
@@ -52,43 +51,30 @@ fn add(s: &mut Sessions, r: &EdgeChamferRequest) -> Edited {
     edited
 }
 /// A refused Add changes nothing the session owns and leaves no file.
-fn refuse(s: &mut Sessions, r: &EdgeChamferRequest) -> String {
+fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     let before = state(s);
     assert_eq!(add(s, r), Edited::Failed, "{}", s.status);
     assert_eq!(state(s), before);
     s.status.clone()
 }
-/// `chamfer-edge-copy` on `source`, naming the Body and the edge by UUID; the
+/// `edit` on `source`, naming the Body and the edge by UUID; the
 /// joint is written in the other order, as the CLI accepts.
-fn peer_add(source: &Path, body: ObjectId, chamfer: &EdgeChamfer, out: &Path) {
-    let file = out.with_extension("json");
-    let [a, b] = chamfer.edge.joint.segments();
-    std::fs::write(
-        &file,
-        format!(
-            r#"{{"request_version":1,"edge":{{"feature_id":"{}","joint":["{b}","{a}"]}},"distance_mm":{}}}"#,
-            chamfer.edge.feature, chamfer.distance_mm
-        ),
-    )
-    .expect("request");
-    cli(&[
-        "chamfer-edge-copy".as_ref(),
-        source.as_os_str(),
-        "--body".as_ref(),
-        body.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        crate::sketch_facts::read(source)
-            .expect("reading")
-            .version
-            .content
-            .to_string()
-            .as_ref(),
-        "--request".as_ref(),
-        file.as_os_str(),
-        "-o".as_ref(),
-        out.as_os_str(),
-        "--json".as_ref(),
-    ]);
+fn peer_add(source: &Path, body: ObjectId, value: &EdgeChamfer, out: &Path) {
+    let d = Document::open_read_only(source).expect("source");
+    let r = EditRequest {
+        source: source.into(),
+        expected: crate::sketch_facts::Source::read(&d)
+            .expect("version")
+            .version,
+        changes: vec![ferritecad_document::EditChange::AddFeature {
+            object: ObjectId::new(),
+            body,
+            name: Some("Chamfer".into()),
+            feature: value.feature().expect("feature"),
+        }],
+        destination: out.into(),
+    };
+    super::cut::peer(source, &r, out.parent().expect("parent"), out);
 }
 /// The one Chamfer new in `after` (since `before`), if any.
 fn new_chamfer(before: &Path, after: &Path) -> Option<ObjectId> {
@@ -279,16 +265,16 @@ fn gate(name: &str) {
     // One Add through the form's own widgets, without confirming the draft.
     let reading = crate::sketch_facts::read(&before_add).expect("reading");
     let (mut form, r) = typed_add(&before_add, &reading, &s, A.0, A.1);
-    assert_eq!(r.body, body, "the Body is its saved UUID");
+    assert_eq!(r.addition().1, body, "the Body is its saved UUID");
     assert_eq!(r.expected, reading.version, "the accepted version");
     assert_eq!(
         r.source, before_add,
         "the accepted snapshot, not the user's file"
     );
     let independent = root.path().join("peer-add.fcad");
-    peer_add(&peer_base, body, &r.chamfer, &independent);
+    peer_add(&peer_base, body, &r.chamfer(), &independent);
     let exact = root.path().join("exact-add.fcad");
-    peer_add(&before_add, body, &r.chamfer, &exact);
+    peer_add(&before_add, body, &r.chamfer(), &exact);
     assert!(matches!(add(&mut s, &r), Edited::Show(_)), "{}", s.status);
     form.finish_session_change();
     assert!(!form.active(), "the form outlived the picture it described");
@@ -299,7 +285,7 @@ fn gate(name: &str) {
         original,
         "Add wrote the file"
     );
-    let feature = assert_allowlist(&before_add, &added, body, &r.chamfer);
+    let feature = assert_allowlist(&before_add, &added, body, &r.chamfer());
     let after = crate::sketch_facts::read(&added).expect("reading");
     assert_eq!(
         saved_of(&added).feature,
@@ -327,37 +313,40 @@ fn gate(name: &str) {
 
     // A second Chamfer is the domain's refusal; nothing moves.
     assert!(
-        after.chamfer_bodies[0].target.is_none(),
-        "a second Chamfer is offered"
+        after.chamfer_bodies[0].target.is_some(),
+        "the stored edges remain visible; Apply decides"
     );
     let second = refuse(
         &mut s,
-        &EdgeChamferRequest {
+        &EditRequest {
             source: added.clone(),
             expected: after.version,
-            body,
-            chamfer: EdgeChamfer {
-                edge: ferritecad_document::SweptEdge {
-                    feature: r.chamfer.edge.feature,
-                    joint: reading.chamfer_bodies[0]
-                        .target
-                        .as_ref()
-                        .expect("target")
-                        .corners
-                        .iter()
-                        .find(|c| c.corner_mm == B.0)
-                        .expect("corner")
-                        .joint,
-                },
-                distance_mm: 1.,
-            },
+            changes: vec![ferritecad_document::EditChange::AddFeature {
+                object: ObjectId::new(),
+                body,
+                name: Some("Chamfer".into()),
+                feature: (EdgeChamfer {
+                    edge: ferritecad_document::SweptEdge {
+                        feature: r.chamfer().edge.feature,
+                        joint: reading.chamfer_bodies[0]
+                            .target
+                            .as_ref()
+                            .expect("target")
+                            .corners
+                            .iter()
+                            .find(|c| c.corner_mm == B.0)
+                            .expect("corner")
+                            .joint,
+                    },
+                    distance_mm: 1.,
+                })
+                .feature()
+                .expect("feature"),
+            }],
             destination: PathBuf::new(),
         },
     );
-    assert!(
-        second.contains("and a second Chamfer are not supported yet"),
-        "{second}"
-    );
+    assert!(second.contains("feature a Chamfer consumes"), "{second}");
 
     // The new Chamfer's distance is changed at once through §30H's own form.
     let (mut form, d) = typed_distance(&added, &after, &s, feature, A_DISTANCE);
@@ -447,9 +436,25 @@ fn gate(name: &str) {
     );
     r = fresh.clone();
     // Past the shorter side (12.25) less 0.01 mm: refused, never clamped.
-    r.chamfer.distance_mm = 12.2401;
+    if let ferritecad_document::EditChange::AddFeature {
+        feature: ferritecad_document::FeatureAddition::Chamfer { distance_mm, .. },
+        ..
+    } = &mut r.changes[0]
+    {
+        *distance_mm = ferritecad_document::Expression::constant(12.2401).expect("number");
+    } else {
+        panic!("feature request")
+    }
     assert!(refuse(&mut s, &r).contains("too large"), "bound");
-    r.chamfer.distance_mm = 0.0005;
+    if let ferritecad_document::EditChange::AddFeature {
+        feature: ferritecad_document::FeatureAddition::Chamfer { distance_mm, .. },
+        ..
+    } = &mut r.changes[0]
+    {
+        *distance_mm = ferritecad_document::Expression::constant(0.0005).expect("number");
+    } else {
+        panic!("feature request")
+    }
     assert!(refuse(&mut s, &r).contains("at least 0.001 mm"), "minimum");
     // 0 cancel after the answer, 1 stale answer, 2 failed scene, 3 failed GPU,
     // 4 cancel during binding, 5 cancel before the answer.
@@ -548,7 +553,7 @@ fn gate(name: &str) {
     saved(&mut s, SaveTarget::As(branch.clone()));
     assert_eq!(std::fs::read(&source).expect("source"), saved_bytes);
     let peer_branch = root.path().join("peer-branch.fcad");
-    peer_add(&peer_base, body, &fresh.chamfer, &peer_branch);
+    peer_add(&peer_base, body, &fresh.chamfer(), &peer_branch);
     let mut branch_map = BTreeMap::new();
     pair_chamfer(
         &mut branch_map,
@@ -600,11 +605,21 @@ fn native_every_corner_adds_its_own_plane_like_the_cli() {
         s.adopt(crate::sessions::test_open::open(&source).expect("session"));
         let (_form, r) = typed_add(&source, &reading, &s, at, distance);
         let exact = root.path().join("exact.fcad");
-        peer_add(&source, reading.chamfer_bodies[0].body, &r.chamfer, &exact);
+        peer_add(
+            &source,
+            reading.chamfer_bodies[0].body,
+            &r.chamfer(),
+            &exact,
+        );
         let before = s.export_path().expect("opened");
         assert!(matches!(add(&mut s, &r), Edited::Show(_)), "{}", s.status);
         let added = s.export_path().expect("added");
-        assert_allowlist(&before, &added, reading.chamfer_bodies[0].body, &r.chamfer);
+        assert_allowlist(
+            &before,
+            &added,
+            reading.chamfer_bodies[0].body,
+            &r.chamfer(),
+        );
         let mut map = BTreeMap::new();
         pair_chamfer(&mut map, &before, &added, &source, &exact);
         same_model(&added, &exact, &map, "corner Add against the CLI");
@@ -678,12 +693,9 @@ fn solved_rectangle(path: &Path) -> ferritecad_jobs::EditRequest {
     }
 }
 
-/// An unsaved constraint Apply closes Add Chamfer for its own domain reason (a
-/// managed family under a saved Chamfer is not a creation target), keeping state
-/// and draft. After an accepted Add, the same constraint Apply and Apply distance
-/// on the solved plate still work exactly like the CLI on the same snapshot.
+/// Constraints before or after Add use the same rebuild and preserve the source.
 #[test]
-fn native_constraints_close_add_but_constraints_and_distance_after_add_still_apply() {
+fn native_constraints_before_or_after_add_and_distance_use_the_solved_plate() {
     if !native() {
         return;
     }
@@ -691,8 +703,8 @@ fn native_constraints_close_add_but_constraints_and_distance_after_add_still_app
         ferritecad_fixtures::native_dependencies(&[(false, "PLANEGCS")]);
         return;
     }
-    // Constraints first: no Add on the constrained plate.
-    let (_root, source, reading) = plate();
+    // The form shows stored edges; Apply builds the solved plate.
+    let (root, source, reading) = plate();
     let original = std::fs::read(&source).expect("source");
     let body = reading.chamfer_bodies[0].body;
     let mut s = Sessions::default();
@@ -702,20 +714,25 @@ fn native_constraints_close_add_but_constraints_and_distance_after_add_still_app
     apply_constraints_native(&mut s, &solved_rectangle(&source));
     let current = s.export_path().expect("constraints");
     let constrained = crate::sketch_facts::read(&current).expect("reading");
-    let reason = constrained.chamfer_bodies[0]
-        .refusal
-        .clone()
-        .expect("a constrained plate is not a creation target");
-    assert!(reason.contains("free or closure-only plate"), "{reason}");
-    assert!(!crate::creates::Creates::default().sketch.chamfers.begin(
-        &current,
-        &constrained,
-        body
-    ));
+    assert!(constrained.chamfer_bodies[0].target.is_some());
+    assert!(
+        crate::creates::Creates::default()
+            .sketch
+            .chamfers
+            .begin(&current, &constrained, body)
+    );
     let mut fresh = r;
     fresh.expected = constrained.version;
-    let refused = refuse(&mut s, &fresh);
-    assert!(refused.contains("free or closure-only plate"), "{refused}");
+    let peer = root.path().join("constrained-add.fcad");
+    super::cut::peer(&current, &fresh, root.path(), &peer);
+    assert!(
+        matches!(add(&mut s, &fresh), Edited::Show(_)),
+        "{}",
+        s.status
+    );
+    let added = s.export_path().expect("added");
+    super::cut::same_sql(&added, &peer, &current);
+    cold(&added, [-8., 1.25, 33., 15.5], [-8., 1.25], 6.75);
     visible_outcome(&mut form, &s.status);
     assert_eq!(add_draft_state(&form), draft, "the draft is kept");
     assert_eq!(std::fs::read(&source).expect("source"), original);
@@ -1114,7 +1131,17 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
     let current = s.export_path().expect("pre-Add");
     let reading = crate::sketch_facts::read(&current).expect("reading");
     let (_, mut bound) = typed_add(&current, &reading, &s, WINDOW_A.0, WINDOW_A.1);
-    bound.chamfer.distance_mm = WINDOW_BOUND.parse().expect("bound");
+    if let ferritecad_document::EditChange::AddFeature {
+        feature: ferritecad_document::FeatureAddition::Chamfer { distance_mm, .. },
+        ..
+    } = &mut bound.changes[0]
+    {
+        *distance_mm =
+            ferritecad_document::Expression::constant(WINDOW_BOUND.parse().expect("bound"))
+                .expect("number");
+    } else {
+        panic!("feature request")
+    }
     assert!(refuse(&mut s, &bound).contains("too large"));
     put(
         "after-refusal.fcad",

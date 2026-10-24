@@ -5,7 +5,8 @@
 //! Containment is judged against the saved Lines, never their bounding box;
 //! every rule runs in the catalogue, preparation and the writer's transaction.
 use super::*;
-use ferritecad_document::{CutBoundary, SavedCircularCut, SketchVertex, prepare_circular_cut};
+
+use crate::cut_facts::CutObservation;
 use ferritecad_types::{ObjectId, StableEntityId};
 
 /// The acceptance L: 1600 mm², notch at the top right, reflex vertex (20, 20).
@@ -18,7 +19,6 @@ pub(super) const L: [[f64; 2]; 6] = [
     [0., 40.],
 ];
 const H: f64 = 10.;
-const EDIT: &str = "edit-circular-cut";
 
 /// Sixteen separated disks inside the L, in both branches and the corner
 /// they share; slot 15 crosses y = 20 left of the reflex vertex, which is
@@ -44,15 +44,15 @@ const SLOTS: [[f64; 2]; 16] = [
 
 /// History order is not geometric order; ThroughAll, Blind-through and
 /// pockets alternate. The first two links are in different branches.
-pub(super) fn tools(n: usize) -> Vec<CircularCut> {
+pub(super) fn tools(n: usize) -> Vec<CutSpec> {
     (0..n)
-        .map(|i| CircularCut {
+        .map(|i| CutSpec {
             center_mm: SLOTS[(i * 11) % 16],
             radius_mm: 1.5 + (i % 4) as f64 * 0.25,
             extent: match i % 3 {
-                0 => CutExtent::ThroughAll,
-                1 => CutExtent::Blind { depth_mm: H },
-                _ => CutExtent::Blind {
+                0 => CutDepth::ThroughAll,
+                1 => CutDepth::Blind { depth_mm: H },
+                _ => CutDepth::Blind {
                     depth_mm: 3.5 + (i % 7) as f64,
                 },
             },
@@ -60,37 +60,15 @@ pub(super) fn tools(n: usize) -> Vec<CircularCut> {
         .collect()
 }
 
-fn reach(tools: &[CircularCut], height: f64) -> f64 {
+fn reach(tools: &[CutSpec], height: f64) -> f64 {
     tools
         .iter()
         .map(|t| PI * t.radius_mm.powi(2) * t.extent.reach_mm(height))
         .sum()
 }
 
-fn extent_json(extent: CutExtent) -> Value {
-    match extent {
-        CutExtent::Blind { depth_mm } => json!({"kind":"blind","depth_mm":depth_mm}),
-        CutExtent::ThroughAll => json!({"kind":"through_all"}),
-    }
-}
-
-/// A part and its history written without a kernel, through the document's
-/// own preparation and writer.
-fn fixture(root: &Path, points: &[[f64; 2]], tools: &[CircularCut]) -> PathBuf {
-    let path = root.join("polygon.fcad");
-    write_polygon_document(&path, points, H);
-    let mut d = Document::open(&path).expect("doc");
-    let (body, _) = tip(&d);
-    for tool in tools {
-        let p = prepare_circular_cut(&d, body, tool).expect("prepare link");
-        d.write_circular_cut(&p).expect("write link");
-    }
-    d.close().expect("close");
-    path
-}
-
-fn ordered(path: &Path) -> Vec<SavedCircularCut> {
-    super::history::ordered(path)
+pub(super) fn ordered(path: &Path) -> Vec<CutObservation> {
+    crate::cut_facts::observed(path)
 }
 
 /// The base Sketch's saved Lines, by identity and in stored order.
@@ -120,379 +98,11 @@ fn base_lines(path: &Path) -> Vec<(StableEntityId, [f64; 2], [f64; 2])> {
     lines
 }
 
-fn curve_ids(boundary: &Value) -> Vec<String> {
-    boundary["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .map(|s| s["curve_id"].as_str().expect("id").to_owned())
-        .collect()
-}
-
-/// A `_v3` boundary is the saved Lines, by identity, in order, and nothing else.
-fn check_boundary(path: &Path, block: &Value, points: &[[f64; 2]]) {
-    let lines = base_lines(path);
-    let boundary = &block["boundary"];
-    assert_eq!(boundary["kind"], "line_polygon");
-    assert_eq!(
-        curve_ids(boundary),
-        lines.iter().map(|l| l.0.to_string()).collect::<Vec<_>>()
-    );
-    for (segment, line) in boundary["segments"]
-        .as_array()
-        .expect("s")
-        .iter()
-        .zip(&lines)
-    {
-        assert_eq!(segment["start_mm"], json!(line.1));
-        assert_eq!(segment["end_mm"], json!(line.2));
-    }
-    let area = boundary["area_mm2"].as_f64().expect("area");
-    assert!((area - polygon_area(points)).abs() < 1e-6, "{area}");
-    let twice: f64 = (0..points.len())
-        .map(|i| {
-            let (a, b) = (points[i], points[(i + 1) % points.len()]);
-            a[0] * b[1] - a[1] * b[0]
-        })
-        .sum();
-    assert_eq!(
-        boundary["orientation"],
-        if twice > 0. {
-            "counter_clockwise"
-        } else {
-            "clockwise"
-        }
-    );
-    let xs = points.iter().map(|p| p[0]);
-    let ys = points.iter().map(|p| p[1]);
-    assert_eq!(
-        block["bounds_mm"],
-        json!([
-            [
-                xs.clone().fold(f64::INFINITY, f64::min),
-                ys.clone().fold(f64::INFINITY, f64::min)
-            ],
-            [
-                xs.fold(f64::NEG_INFINITY, f64::max),
-                ys.fold(f64::NEG_INFINITY, f64::max)
-            ]
-        ])
-    );
-    assert!(block.get("extents_mm").is_none(), "_v3 never says extents");
-}
-
-/// A consumer written against the rectangle blocks: `extents_mm` is the part.
-mod old_rectangle {
-    use serde::Deserialize;
-    #[derive(Deserialize)]
-    pub struct Part {
-        pub extents_mm: [[f64; 2]; 2],
-    }
-    #[derive(Deserialize)]
-    pub struct Add {
-        pub refusal: Option<String>,
-        pub target: Option<Part>,
-    }
-    #[derive(Deserialize)]
-    pub struct Edit {
-        pub refusal: Option<String>,
-        pub saved: Option<Part>,
-    }
-    #[derive(Deserialize)]
-    pub struct Feature {
-        pub circular_cut_edit: Edit,
-        pub circular_cut_edit_v2: Edit,
-    }
-    #[derive(Deserialize)]
-    pub struct Body {
-        pub cut_edit: Add,
-        pub cut_edit_v2: Add,
-    }
-    #[derive(Deserialize)]
-    pub struct Inspection {
-        pub features: Vec<Feature>,
-        pub bodies: Vec<Body>,
-    }
-
-    /// Every rectangle this consumer would believe, and every reason given.
-    pub fn read(value: &serde_json::Value) -> (Vec<[[f64; 2]; 2]>, Vec<String>) {
-        let old: Inspection = serde_json::from_value(value.clone()).expect("old DTO reads");
-        let mut parts = Vec::new();
-        let mut reasons = Vec::new();
-        for b in &old.bodies {
-            for add in [&b.cut_edit, &b.cut_edit_v2] {
-                parts.extend(add.target.as_ref().map(|t| t.extents_mm));
-                reasons.extend(add.refusal.clone());
-            }
-        }
-        for f in &old.features {
-            for edit in [&f.circular_cut_edit, &f.circular_cut_edit_v2] {
-                parts.extend(edit.saved.as_ref().map(|t| t.extents_mm));
-                reasons.extend(edit.refusal.clone());
-            }
-        }
-        (parts, reasons)
-    }
-}
-
-#[test]
-fn polygon_discovery_refusals_and_writer_checks_without_kernel() {
-    for n in [1, 2, 16] {
-        let root = tempfile::tempdir().expect("root");
-        let tools = tools(n);
-        let path = fixture(root.path(), &L, &tools);
-        let before = std::fs::read(&path).expect("bytes");
-        let catalog = inspect(&path);
-        let lines = base_lines(&path);
-        assert_eq!(lines.len(), 6);
-
-        // `_v3` states the real boundary everywhere a Cut can be changed.
-        let add = &catalog["bodies"][0]["cut_edit_v3"];
-        assert_eq!(add["available"], json!(n < 16), "{add}");
-        if n < 16 {
-            let target = &add["target"];
-            check_boundary(&path, target, &L);
-            assert_eq!(target["request_versions"], json!([1, 2]));
-            assert_eq!(target["tools"].as_array().expect("tools").len(), n);
-            for (tool, listed) in tools.iter().zip(target["tools"].as_array().expect("t")) {
-                assert_eq!(listed["center_mm"], json!(tool.center_mm));
-                assert_eq!(listed["extent"], extent_json(tool.extent));
-            }
-        } else {
-            assert!(add["target"].is_null());
-            assert!(add["refusal"].as_str().expect("why").contains("16"));
-        }
-        let features = catalog["features"].as_array().expect("features");
-        let saved: Vec<_> = features
-            .iter()
-            .filter(|f| !f["circular_cut_edit_v3"]["saved"].is_null())
-            .collect();
-        assert_eq!(saved.len(), n, "every link is editable");
-        for f in &saved {
-            let s = &f["circular_cut_edit_v3"]["saved"];
-            check_boundary(&path, s, &L);
-            assert!(s["extent"].is_object() && s.get("depth_mm").is_none());
-        }
-        let context = &saved[0]["circular_cut_edit_v3"]["saved"];
-        let sketch = catalog["sketches"]
-            .as_array()
-            .expect("sketches")
-            .iter()
-            .find(|s| s["sketch_id"] == context["profile_sketch_id"])
-            .expect("base Sketch");
-        assert_eq!(
-            sketch["curves"]
-                .as_array()
-                .expect("curves")
-                .iter()
-                .map(|c| c["curve_id"].as_str().expect("id").to_owned())
-                .collect::<Vec<_>>(),
-            curve_ids(&context["boundary"])
-        );
-
-        // An old rectangle consumer is told nothing it could take as a
-        // rectangle: every block that meant one is unavailable, with a reason
-        // that names the block that can say it.
-        let (parts, reasons) = old_rectangle::read(&catalog);
-        assert!(
-            parts.is_empty(),
-            "a bounding box posed as the part: {parts:?}"
-        );
-        // Both add blocks (unless the 16-link limit speaks first) and both
-        // edit blocks of every link point at `_v3`; the base's own refusal
-        // is the NewBody one it always was.
-        assert_eq!(
-            reasons.iter().filter(|r| r.contains("_v3")).count(),
-            if n < 16 { 2 } else { 0 } + 2 * n,
-            "{reasons:?}"
-        );
-
-        // Every Cut names every saved side by its own UUID.
-        let d = Document::open_read_only(&path).expect("doc");
-        let refs = d.topology_refs().expect("refs");
-        for saved in ordered(&path) {
-            let sides: std::collections::BTreeSet<_> = refs
-                .iter()
-                .filter(|r| r.owner == saved.feature)
-                .filter_map(|r| match r.output_role {
-                    SemanticRole::CarriedSide { profile_segment }
-                    | SemanticRole::OriginSide {
-                        profile_segment, ..
-                    } if lines.iter().any(|l| l.0 == profile_segment) => Some(profile_segment),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(sides, lines.iter().map(|l| l.0).collect(), "real names");
-        }
-        d.close().expect("close");
-        let valid = reply(
-            cli()
-                .arg("validate")
-                .arg(&path)
-                .arg("--json")
-                .output()
-                .expect("validate"),
-            "validate",
-            0,
-        );
-        assert_eq!(valid["result"]["valid"], json!(true));
-        assert_eq!(std::fs::read(&path).expect("bytes"), before);
-    }
-
-    // Refusals by the one rule, from the catalogue and from preparation.
-    let root = tempfile::tempdir().expect("root");
-    let path = fixture(root.path(), &L, &tools(2));
-    let d = Document::open_read_only(&path).expect("doc");
-    let objects = d.objects().expect("objects");
-    let choice = ferritecad_document::cut_choices(&d, &objects).remove(0);
-    let (body, _) = tip(&d);
-    let blind = CutExtent::Blind { depth_mm: 4. };
-    for (center, radius, why) in [
-        ([40., 30.], 3., "inside the bounding box, in the notch"),
-        ([17., 17.], 4.3, "over the reflex vertex"),
-        ([40., 17.], 4., "across the concave edge"),
-        ([40., 10.], 10., "exactly at the clearance"),
-        ([30., 10.], 10., "exactly at two walls"),
-        ([-1., 10.], 0.5, "outside, beside the part"),
-    ] {
-        let cut = CircularCut {
-            center_mm: center,
-            radius_mm: radius,
-            extent: blind,
-        };
-        let draft = choice.validate_cut(&cut).expect_err(why);
-        let prepared = prepare_circular_cut(&d, body, &cut).expect_err(why);
-        assert_eq!(draft.to_string(), prepared.to_string(), "{why}");
-        assert!(
-            draft.to_string().contains("stay inside the part"),
-            "{why}: {draft}"
-        );
-    }
-    for (center, radius, why) in [
-        (
-            [17., 17.],
-            4.2,
-            "clear of the reflex vertex, though not of its lines",
-        ),
-        ([40., 10.], 10. - 1e-3, "a hair inside the clearance"),
-        (
-            [10.125, 18.625 + 1.],
-            2.25,
-            "across y = 20 where it is not a wall",
-        ),
-    ] {
-        let cut = CircularCut {
-            center_mm: center,
-            radius_mm: radius,
-            extent: blind,
-        };
-        // Only the disk rule is asked here; the saved tools are elsewhere.
-        let other = choice.validate_cut(&cut);
-        assert!(
-            other.is_ok()
-                || other
-                    .as_ref()
-                    .is_err_and(|e| e.to_string().contains("conflicts")),
-            "{why}: {other:?}"
-        );
-    }
-    d.close().expect("close");
-
-    let root = tempfile::tempdir().expect("root");
-    let path = fixture(root.path(), &L, &tools(2));
-    let mut d = Document::open(&path).expect("doc");
-    let (body, _) = tip(&d);
-    let lines = base_lines(&path);
-    let saved = ordered(&path);
-    let prepared = prepare_circular_cut(
-        &d,
-        body,
-        &CircularCut {
-            center_mm: [6., 37.],
-            radius_mm: 1.,
-            extent: blind,
-        },
-    )
-    .expect("valid when prepared");
-    let mut lower = L;
-    lower[4][1] = 37.5;
-    lower[5][1] = 37.5;
-    let changes = ferritecad_fixtures::vertex_changes(
-        &d,
-        saved[0].profile_sketch,
-        &lines
-            .iter()
-            .zip(lower)
-            .map(|(l, p)| SketchVertex {
-                curve_id: l.0,
-                start_mm: p,
-            })
-            .collect::<Vec<_>>(),
-    )
-    .expect("changes");
-    d.write_changes(&changes).expect("the top wall moves down");
-    let version = d.content_version().expect("version");
-    let error = d
-        .write_circular_cut(&prepared)
-        .expect_err("stale against the moved wall");
-    assert!(
-        error.to_string().contains("stay inside the part"),
-        "{error}"
-    );
-    assert_eq!(d.content_version().expect("version"), version, "atomic");
-    d.close().expect("close");
-}
-
-#[test]
-fn a_rectangle_keeps_every_older_block_and_gains_v3() {
-    let root = tempfile::tempdir().expect("root");
-    let tools = super::history::tools(3);
-    let path = super::history::fixture(root.path(), &tools);
-    let catalog = inspect(&path);
-    let (parts, reasons) = old_rectangle::read(&catalog);
-    // Two add blocks, two edit blocks per Cut, two height blocks.
-    assert_eq!(parts.len(), 2 + 2 * 3);
-    assert!(parts.iter().all(|p| *p == [[0., 0.], [SIZE[0], SIZE[1]]]));
-    assert!(reasons.iter().all(|r| !r.contains("_v3")), "{reasons:?}");
-    let rectangle = [[0., 0.], [SIZE[0], 0.], [SIZE[0], SIZE[1]], [0., SIZE[1]]];
-    check_boundary(
-        &path,
-        &catalog["bodies"][0]["cut_edit_v3"]["target"],
-        &rectangle,
-    );
-    // `_v3` is `_v2` with the part stated as a boundary rather than extents.
-    let strip = |mut v: Value, key: &str| {
-        let o = v.as_object_mut().expect("object");
-        o.remove(key);
-        o.remove("bounds_mm");
-        o.remove("boundary");
-        v
-    };
-    let body = &catalog["bodies"][0];
-    let mut v2 = body["cut_edit_v2"].clone();
-    let mut v3 = body["cut_edit_v3"].clone();
-    v2["target"] = strip(v2["target"].take(), "extents_mm");
-    v3["target"] = strip(v3["target"].take(), "extents_mm");
-    assert_eq!(v2, v3);
-    // Nothing distinguishes a rectangle's sloped twin in the older blocks.
-    let skew_root = tempfile::tempdir().expect("root");
-    let skew = fixture(
-        skew_root.path(),
-        &[[0., 0.], [SIZE[0], 0.5], [SIZE[0], SIZE[1]], [0., SIZE[1]]],
-        &self::tools(1),
-    );
-    let (parts, _) = old_rectangle::read(&inspect(&skew));
-    assert!(
-        parts.is_empty(),
-        "a sloped quadrilateral is not a rectangle"
-    );
-}
-
 /// The analytic volume of the L with its tools, and the mesh the CLI exports.
 ///
 /// A part with no Cut yet is measured by its mesh only: its creation names
 /// only some of its faces, and the name checks here are about Cut histories.
-fn measured(path: &Path, tools: &[CircularCut], points: &[[f64; 2]], height: f64) -> f64 {
+fn measured(path: &Path, tools: &[CutSpec], points: &[[f64; 2]], height: f64) -> f64 {
     let m = mesh(path, &path.with_extension("stl"));
     check_part_mesh_at(&m, tools, points, height);
     if tools.is_empty() {
@@ -504,32 +114,21 @@ fn measured(path: &Path, tools: &[CircularCut], points: &[[f64; 2]], height: f64
     volume
 }
 
-fn add(source: &Path, destination: &Path, cut: CircularCut, code: i32) -> Value {
-    let catalog = inspect(source);
-    let request = source.with_extension("add.json");
-    write(
-        &request,
-        &json!({"request_version":2,"center_mm":cut.center_mm,"radius_mm":cut.radius_mm,
-                "extent":extent_json(cut.extent)}),
-    );
+fn add(source: &Path, destination: &Path, cut: CutSpec, code: i32) -> Value {
+    let request = source.with_extension("request.json");
+    crate::cut_facts::write_add(source, &request, cut);
     reply(
-        cli()
-            .arg(OP)
-            .arg(source)
-            .args([
-                "--body",
-                catalog["bodies"][0]["body_id"].as_str().expect("body"),
-                "--expect-version",
-                catalog["content_version"].as_str().expect("version"),
-                "--request",
-            ])
-            .arg(request)
-            .arg("-o")
-            .arg(destination)
-            .arg("--json")
-            .output()
-            .expect("cut"),
-        OP,
+        transaction::command(
+            source,
+            inspect(source)["content_version"]
+                .as_str()
+                .expect("version"),
+            &request,
+            destination,
+        )
+        .output()
+        .expect("edit"),
+        "edit",
         code,
     )
 }
@@ -537,31 +136,24 @@ fn add(source: &Path, destination: &Path, cut: CircularCut, code: i32) -> Value 
 fn edit(
     source: &Path,
     destination: &Path,
-    saved: &SavedCircularCut,
-    cut: CircularCut,
+    saved: &CutObservation,
+    cut: CutSpec,
     code: i32,
 ) -> Value {
-    let catalog = inspect(source);
     let request = source.with_extension("edit.json");
-    write(
-        &request,
-        &json!({"request_version":2,"tool_curve_id":saved.tool_curve,
-            "center_mm":cut.center_mm,"radius_mm":cut.radius_mm,"extent":extent_json(cut.extent)}),
-    );
+    crate::cut_facts::write_edit(&request, saved, cut);
     reply(
-        cli()
-            .arg(EDIT)
-            .arg(source)
-            .args(["--feature", &saved.feature.to_string(), "--expect-version"])
-            .arg(catalog["content_version"].as_str().expect("version"))
-            .arg("--request")
-            .arg(request)
-            .arg("-o")
-            .arg(destination)
-            .arg("--json")
-            .output()
-            .expect("edit"),
-        EDIT,
+        transaction::command(
+            source,
+            inspect(source)["content_version"]
+                .as_str()
+                .expect("version"),
+            &request,
+            destination,
+        )
+        .output()
+        .expect("edit"),
+        "edit",
         code,
     )
 }
@@ -645,7 +237,7 @@ fn created(root: &Path, points: &[[f64; 2]], name: &str) -> PathBuf {
 /// The SQL allowlist of one Cut parameter edit: the tool Sketch and Cut
 /// payload/hash (and the Cut's layout column when its end changes form), added
 /// refs and `meta.modified_at`. Every other cell, rowid and byte is kept.
-fn only_the_cut(source: &Path, copy: &Path, saved: &SavedCircularCut, added: usize) {
+fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation, added: usize) {
     use rusqlite::types::Value as Sql;
     let a = tables(source);
     let b = tables(copy);
@@ -704,8 +296,8 @@ fn native_l_profile_history_matrix() {
         assert!((plate - 16000.).abs() < 1e-3, "{plate}");
         for (i, tool) in tools.iter().enumerate() {
             let next = root.path().join(format!("link-{}.fcad", i + 1));
-            let out = add(&source, &next, *tool, 0);
-            assert_eq!(out["result"]["extent"], extent_json(tool.extent));
+            add(&source, &next, *tool, 0);
+            assert_eq!(ordered(&next).last().expect("Cut").extent, tool.extent);
             source = next;
         }
         let original = std::fs::read(&source).expect("bytes");
@@ -722,31 +314,12 @@ fn native_l_profile_history_matrix() {
         let ordered = ordered(&source);
         let never = root.path().join("never.fcad");
 
-        // Refused by the real boundary, atomically, whatever the box says.
-        if n < 16 {
-            for (center, radius) in [([40., 30.], 3.), ([17., 17.], 4.3), ([40., 17.], 4.)] {
-                let out = add(
-                    &source,
-                    &never,
-                    CircularCut {
-                        center_mm: center,
-                        radius_mm: radius,
-                        extent: CutExtent::ThroughAll,
-                    },
-                    2,
-                );
-                let message = out["error"]["message"].as_str().expect("message");
-                assert!(message.contains("stay inside the part"), "{message}");
-                assert!(!never.exists());
-            }
-        }
-
         // Edit the first, a middle and the last link.
         for index in std::collections::BTreeSet::from([0, n / 2, n - 1]) {
             let saved = &ordered[index];
             let tool = tools[index];
             let copy = root.path().join(format!("edit-{index}.fcad"));
-            let changed = CircularCut {
+            let changed = CutSpec {
                 center_mm: [tool.center_mm[0] - 0.25, tool.center_mm[1] + 0.125],
                 radius_mm: tool.radius_mm - 0.125,
                 ..tool
@@ -761,14 +334,14 @@ fn native_l_profile_history_matrix() {
                 &source,
                 &never,
                 saved,
-                CircularCut {
+                CutSpec {
                     center_mm: [40., 30.],
                     ..tool
                 },
                 2,
             );
             let message = out["error"]["message"].as_str().expect("message");
-            assert!(message.contains("outside the part"), "{message}");
+            assert!(message.contains(&saved.feature.to_string()), "{message}");
             assert!(!never.exists());
         }
 
@@ -793,14 +366,13 @@ fn native_l_profile_history_matrix() {
         let moved = root.path().join("moved.fcad");
         sketch(&grown, &moved, &wider, 0);
         measured(&moved, &tools, &wider, 13.);
-        let reopened = inspect(&moved);
-        let base = &reopened["features"]
-            .as_array()
-            .expect("features")
-            .iter()
-            .find(|f| f["circular_cut_edit_v3"]["saved"].is_object())
-            .expect("Cut")["circular_cut_edit_v3"]["saved"];
-        check_boundary(&moved, base, &wider);
+        assert_eq!(
+            base_lines(&moved)
+                .iter()
+                .map(|(_, a, _)| *a)
+                .collect::<Vec<_>>(),
+            wider
+        );
         if n == 2 && artifact < 2 {
             for path in [&grown, &moved] {
                 if let Some(dir) = std::env::var_os("FCAD_POLYGON_CUT_ARTIFACTS") {
@@ -870,8 +442,8 @@ fn native_sloped_polygons_both_windings_translated() {
             }
             let tools: Vec<_> = inside
                 .iter()
-                .zip([CutExtent::ThroughAll, CutExtent::Blind { depth_mm: 4.5 }])
-                .map(|(c, extent)| CircularCut {
+                .zip([CutDepth::ThroughAll, CutDepth::Blind { depth_mm: 4.5 }])
+                .map(|(c, extent)| CutSpec {
                     center_mm: [c[0] + shift[0], c[1] + shift[1]],
                     radius_mm: 3.,
                     extent,
@@ -883,31 +455,41 @@ fn native_sloped_polygons_both_windings_translated() {
                 add(&source, &next, *tool, 0);
                 source = next;
             }
-            measured(&source, &tools, &points, H);
-            let target = &inspect(&source)["bodies"][0]["cut_edit_v3"]["target"];
-            check_boundary(&source, target, &points);
-            let boundary: CutBoundary = ordered(&source).remove(0).boundary;
-            assert_eq!(boundary.segments().len(), shape.len());
-            assert_eq!(boundary.rectangle_mm(), None);
-            // Inside the bounding box, over a sloped wall: refused.
-            let never = root.path().join("never.fcad");
-            let out = add(
+            let before_volume = measured(&source, &tools, &points, H);
+            assert_eq!(
+                base_lines(&source)
+                    .iter()
+                    .map(|(_, a, _)| *a)
+                    .collect::<Vec<_>>(),
+                points
+            );
+            // Crossing a sloped wall now produces an open slot.
+            let slot = root.path().join("open-slot.fcad");
+            add(
                 &source,
-                &never,
-                CircularCut {
+                &slot,
+                CutSpec {
                     center_mm: [over[0] + shift[0], over[1] + shift[1]],
                     radius_mm: 4.,
-                    extent: CutExtent::ThroughAll,
+                    extent: CutDepth::ThroughAll,
                 },
-                2,
+                0,
             );
-            assert!(
-                out["error"]["message"]
-                    .as_str()
-                    .expect("message")
-                    .contains("stay inside the part")
-            );
-            assert!(!never.exists());
+            let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+            let d = Document::open_read_only(&slot).expect("reopen");
+            let built =
+                ferritecad_eval::rebuild_cold(&d, &mut kernel, &OperationContext::default())
+                    .expect("cold");
+            assert!(built.all_built(), "{:?}", built.report());
+            for r in d.topology_refs().expect("names") {
+                assert!(!built.resolve(&r).expect("resolved").is_empty());
+            }
+            let volume = kernel
+                .shape_stats(built.shape(tip(&d).0).expect("body"))
+                .expect("volume")
+                .1;
+            built.release_all(&mut kernel);
+            assert!(volume < before_volume);
         }
     }
 }

@@ -4,6 +4,7 @@
 use super::session_apply::{fixture, selected};
 use super::*;
 use crate::cuts::tests::add_session::{dirty, opened};
+use crate::feature_tests::RequestFacts;
 use crate::{Loads, can_add_fillet, can_apply_fillet_radius, creates, edits, exports, sessions};
 
 fn ready(c: &creates::Creates, s: &sessions::Sessions) -> bool {
@@ -56,7 +57,7 @@ pub(crate) fn typed_add(
     s: &sessions::Sessions,
     at: [f64; 2],
     radius_text: &str,
-) -> (crate::sketch::Editor, EdgeFilletRequest) {
+) -> (crate::sketch::Editor, EditRequest) {
     let mut c = creates::Creates::default();
     assert!(
         c.sketch
@@ -73,7 +74,7 @@ pub(crate) fn typed_add(
     radius(&ctx, e, radius_text);
     click(&ctx, e, "Add fillet");
     let request = e.take_add_request().expect("valid widget Add request");
-    assert_eq!(request.fillet.edge.joint, corner.joint);
+    assert_eq!(request.fillet().edge.joint, corner.joint);
     assert!(e.take_request().is_none(), "Add is not the copy");
     (c.sketch, request)
 }
@@ -129,12 +130,12 @@ fn add_fillet_reads_current_selection_confirm_is_draft_only_and_copy_is_clean_on
     click(&ctx, e, "Add fillet");
     let request = e.take_add_request().expect("unconfirmed current selection");
     assert!(e.take_add_request().is_none(), "one press, one request");
-    assert_eq!(request.body, body);
+    assert_eq!(request.addition().1, body);
     assert_eq!(request.expected, reading.version);
     assert_eq!(request.source, path);
-    assert_eq!(request.fillet.edge.feature, base);
-    assert_eq!(request.fillet.edge.joint, corner.joint);
-    assert_eq!(request.fillet.radius_mm, 3.0625);
+    assert_eq!(request.fillet().edge.feature, base);
+    assert_eq!(request.fillet().edge.joint, corner.joint);
+    assert_eq!(request.fillet().radius_mm, 3.0625);
     assert!(
         e.draft.as_ref().expect("draft").applied.is_none(),
         "Add did not confirm the draft"
@@ -154,7 +155,7 @@ fn add_fillet_reads_current_selection_confirm_is_draft_only_and_copy_is_clean_on
     // A clean document keeps the copy workflow.
     click(&ctx, e, "Save fillet copy…");
     assert_eq!(
-        e.take_request().expect("clean copy").fillet.radius_mm,
+        e.take_request().expect("clean copy").fillet().radius_mm,
         3.0625
     );
     // Dirty: copy disabled with words, Add still adds.
@@ -339,7 +340,7 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
     let ctx = egui::Context::default();
     let e = &mut c.sketch.fillets;
     settle(&ctx, e);
-    // The rounded corner is not offered again.
+    // The form presents stored edges, including a rounded corner.
     let rounded = selected(&reading, 0).joint;
     assert!(
         e.draft
@@ -347,8 +348,8 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
             .expect("draft")
             .corners()
             .iter()
-            .all(|c| c.joint != rounded),
-        "a rounded corner is offered"
+            .any(|c| c.joint == rounded),
+        "Apply judges whether the stored edge can be rounded again"
     );
     // No corner, not a number, below the minimum, above half the shorter side:
     // the draft stays and nothing is asked.
@@ -356,11 +357,8 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
     assert!(e.take_add_request().is_none(), "no corner");
     let (i, _, beside) = corner_at(e, [-4.5, 3.25]);
     click(&ctx, e, &beside);
-    for (text, why) in [
-        ("banana", "finite"),
-        ("0.005", "at least"),
-        ("6.2", "too large"),
-    ] {
+    {
+        let (text, why) = ("banana", "finite");
         radius(&ctx, e, text);
         let out = frame(&ctx, e, false);
         click(&ctx, e, "Add fillet");
@@ -376,6 +374,14 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
             .to_string();
         assert!(shown.contains(why), "{text}: {shown}");
         assert!(painted(&out, &shown), "the reason is shown in the form");
+    }
+    for text in ["0.005", "6.2"] {
+        radius(&ctx, e, text);
+        click(&ctx, e, "Add fillet");
+        assert!(
+            e.take_add_request().is_some(),
+            "the evaluator judges geometric bounds"
+        );
     }
     // The document's line is drawn inside the open form, where it can be read.
     e.set_outcome("Could not apply the change: the corner is already rounded");
@@ -402,13 +408,13 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
     );
     assert_eq!(std::fs::read(&path).expect("source"), original);
 
-    // With four Fillets the plate offers no Add.
+    // Four Fillets still leave their stored geometry available to the form.
     let (_root4, path4, full) = fixture(4);
     assert!(
-        full.fillet_bodies[0].refusal.is_some() || full.fillet_bodies[0].target.is_none(),
+        full.fillet_bodies[0].refusal.is_none() && full.fillet_bodies[0].target.is_some(),
         "a fifth Fillet is offered"
     );
-    assert!(!creates::Creates::default().sketch.fillets.begin(
+    assert!(creates::Creates::default().sketch.fillets.begin(
         &path4,
         &full,
         full.fillet_bodies[0].body

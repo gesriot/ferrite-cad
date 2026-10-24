@@ -3,6 +3,7 @@
 //! same predicate (`can_add_chamfer`) the window handler uses. Kernel-free fixtures.
 use super::*;
 use crate::cuts::tests::add_session::{dirty, opened};
+use crate::feature_tests::RequestFacts;
 use crate::{
     Loads, can_add_chamfer, can_apply_chamfer_distance, creates, edits, exports, sessions,
 };
@@ -66,7 +67,7 @@ pub(crate) fn typed_add(
     s: &sessions::Sessions,
     at: [f64; 2],
     distance_text: &str,
-) -> (crate::sketch::Editor, EdgeChamferRequest) {
+) -> (crate::sketch::Editor, EditRequest) {
     let mut c = creates::Creates::default();
     assert!(
         c.sketch
@@ -83,7 +84,7 @@ pub(crate) fn typed_add(
     distance(&ctx, e, distance_text);
     click(&ctx, e, "Add chamfer");
     let request = e.take_add_request().expect("valid widget Add request");
-    assert_eq!(request.chamfer.edge.joint, corner.joint);
+    assert_eq!(request.chamfer().edge.joint, corner.joint);
     assert!(e.take_request().is_none(), "Add is not the copy");
     assert!(!history(e).can_undo(), "Add confirmed nothing");
     (c.sketch, request)
@@ -148,12 +149,12 @@ fn add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_c
     click(&ctx, e, "Add chamfer");
     let request = e.take_add_request().expect("unconfirmed current fields");
     assert!(e.take_add_request().is_none(), "one press, one request");
-    assert_eq!(request.body, body);
+    assert_eq!(request.addition().1, body);
     assert_eq!(request.expected, reading.version);
     assert_eq!(request.source, path);
-    assert_eq!(request.chamfer.edge.feature, base);
-    assert_eq!(request.chamfer.edge.joint, corner.joint);
-    assert_eq!(request.chamfer.distance_mm, 1.0625);
+    assert_eq!(request.chamfer().edge.feature, base);
+    assert_eq!(request.chamfer().edge.joint, corner.joint);
+    assert_eq!(request.chamfer().distance_mm, 1.0625);
     assert!(!history(e).can_undo(), "Add confirmed nothing");
     assert!(e.take_request().is_none() && e.take_apply_request().is_none());
     // Confirm records the request in the form's own history only.
@@ -180,7 +181,7 @@ fn add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_c
     assert_eq!(
         e.take_add_request()
             .expect("restored fields")
-            .chamfer
+            .chamfer()
             .distance_mm,
         1.0625
     );
@@ -188,7 +189,7 @@ fn add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_c
     // A clean document keeps the copy workflow for the confirmed request.
     click(&ctx, e, "Save chamfer copy…");
     assert_eq!(
-        e.take_request().expect("clean copy").chamfer.distance_mm,
+        e.take_request().expect("clean copy").chamfer().distance_mm,
         1.0625
     );
     // Dirty: copy disabled with words, Add still adds.
@@ -382,11 +383,8 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
     assert!(e.take_add_request().is_none(), "no corner");
     let (i, _, at) = corner_at(e, [-4.5, 3.25]);
     click(&ctx, e, &at);
-    for (text, why) in [
-        ("banana", "finite"),
-        ("0.0005", "at least 0.001 mm"),
-        ("12.2401", "too large"),
-    ] {
+    {
+        let (text, why) = ("banana", "finite");
         distance(&ctx, e, text);
         let out = frame(&ctx, e, false);
         click(&ctx, e, "Add chamfer");
@@ -408,10 +406,18 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
     assert_eq!(
         e.take_add_request()
             .expect("the bound itself")
-            .chamfer
+            .chamfer()
             .distance_mm,
         12.24
     );
+    for text in ["0.0005", "12.2401"] {
+        distance(&ctx, e, text);
+        click(&ctx, e, "Add chamfer");
+        assert!(
+            e.take_add_request().is_some(),
+            "the evaluator judges geometric bounds"
+        );
+    }
     // The document's line is drawn inside the open form, where it can be read.
     e.set_outcome("Could not apply the change: this slice chamfers a free plate");
     let out = frame(&ctx, e, false);
@@ -440,10 +446,10 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
     // A plate with a Chamfer offers no second one.
     let (_rootc, pathc, chamfered) = chamfered(1.5);
     assert!(
-        chamfered.chamfer_bodies[0].target.is_none(),
+        chamfered.chamfer_bodies[0].target.is_some(),
         "a second Chamfer is offered"
     );
-    assert!(!creates::Creates::default().sketch.chamfers.begin(
+    assert!(creates::Creates::default().sketch.chamfers.begin(
         &pathc,
         &chamfered,
         chamfered.chamfer_bodies[0].body
@@ -478,12 +484,8 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
     d.write_changes(&prepared).expect("write");
     d.close().expect("close");
     let constrained = crate::sketch_facts::read(&pathk).expect("reading");
-    let refusal = constrained.chamfer_bodies[0]
-        .refusal
-        .as_deref()
-        .expect("a constrained plate is refused");
-    assert!(refusal.contains("free or closure-only plate"), "{refusal}");
-    assert!(!creates::Creates::default().sketch.chamfers.begin(
+    assert!(constrained.chamfer_bodies[0].refusal.is_none());
+    assert!(creates::Creates::default().sketch.chamfers.begin(
         &pathk,
         &constrained,
         constrained.chamfer_bodies[0].body

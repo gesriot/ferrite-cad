@@ -7,22 +7,19 @@ use super::cut::{apply, cold, mesh, peer, refs, saved};
 use super::*;
 use crate::cuts::tests::add_session::typed_add;
 use crate::cuts::tests::session_apply::{draft_state, fixture, selected, typed_cut};
-use ferritecad_document::{
-    CircularCut, CircularCutEdit, CutExtent, ExtentVocabulary, ObjectPayload,
-};
-use ferritecad_jobs::{CircularCutRequest, EditCircularCutRequest};
+use crate::feature_facts::{CircularCut, CutExtent};
+use crate::feature_tests::RequestFacts;
+use ferritecad_document::ObjectPayload;
+use ferritecad_jobs::EditRequest;
 use std::collections::BTreeMap;
 
 pub(super) type Id = [u8; 16];
 
-fn start(
-    s: &mut Sessions,
-    r: &CircularCutRequest,
-) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_add_cut(t, r.body, r.cut, r.expected, c.clone(), move |v| {
+            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
                 tx.send(v).expect("deliver")
             })
         })
@@ -30,7 +27,7 @@ fn start(
     (g, rx)
 }
 /// The window's own Add: the worker, the picture, the version becoming current.
-fn add(s: &mut Sessions, r: &CircularCutRequest) -> Edited {
+fn add(s: &mut Sessions, r: &EditRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(
         g,
@@ -51,7 +48,7 @@ fn add(s: &mut Sessions, r: &CircularCutRequest) -> Edited {
     edited
 }
 /// A refused Add changes nothing the session owns and leaves no file.
-fn refuse(s: &mut Sessions, r: &CircularCutRequest) -> String {
+fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     let state = (
         s.export_path(),
         s.dirty(),
@@ -74,39 +71,26 @@ fn refuse(s: &mut Sessions, r: &CircularCutRequest) -> String {
     );
     s.status.clone()
 }
-/// `cut-circular-copy` on `source`, naming the Body by its UUID there.
-fn peer_add(source: &Path, body: ObjectId, cut: &CircularCut, out: &Path) {
-    let file = out.with_extension("json");
-    let extent = match cut.extent {
-        CutExtent::ThroughAll => r#"{"kind":"through_all"}"#.to_owned(),
-        CutExtent::Blind { depth_mm } => format!(r#"{{"kind":"blind","depth_mm":{depth_mm}}}"#),
+/// `edit` on `source`, naming the Body by its UUID there.
+fn peer_add(source: &Path, body: ObjectId, value: &CircularCut, out: &Path) {
+    let d = Document::open_read_only(source).expect("source");
+    let r = EditRequest {
+        source: source.into(),
+        expected: crate::sketch_facts::Source::read(&d)
+            .expect("version")
+            .version,
+        changes: ferritecad_fixtures::feature_changes::circular_tool(
+            &d,
+            body,
+            value.center_mm,
+            value.radius_mm,
+            value.extent.end().expect("end"),
+        )
+        .expect("tool")
+        .changes,
+        destination: out.into(),
     };
-    std::fs::write(
-        &file,
-        format!(
-            r#"{{"request_version":2,"center_mm":[{},{}],"radius_mm":{},"extent":{extent}}}"#,
-            cut.center_mm[0], cut.center_mm[1], cut.radius_mm
-        ),
-    )
-    .expect("request");
-    cli(&[
-        "cut-circular-copy".as_ref(),
-        source.as_os_str(),
-        "--body".as_ref(),
-        body.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        crate::sketch_facts::read(source)
-            .expect("reading")
-            .version
-            .content
-            .to_string()
-            .as_ref(),
-        "--request".as_ref(),
-        file.as_os_str(),
-        "-o".as_ref(),
-        out.as_os_str(),
-        "--json".as_ref(),
-    ]);
+    super::cut::peer(source, &r, out.parent().expect("parent"), out);
 }
 
 /// Replaces a mapped UUID: a blob equal to it, and every CBOR byte string
@@ -496,12 +480,12 @@ fn gate(name: &str) {
         let current = s.export_path().expect("current");
         let reading = crate::sketch_facts::read(&current).expect("reading");
         let (mut form, r) = typed_add(&current, &reading, &s, typed);
-        assert_eq!(r.body, body, "the Body is its saved UUID");
+        assert_eq!(r.addition().1, body, "the Body is its saved UUID");
         assert_eq!(r.expected, reading.version);
         let independent = root.path().join(format!("peer-add-{step}.fcad"));
-        peer_add(&peer_before, body, &r.cut, &independent);
+        super::cut::peer(&peer_before, &r, root.path(), &independent);
         let exact = root.path().join(format!("exact-add-{step}.fcad"));
-        peer_add(&current, body, &r.cut, &exact);
+        super::cut::peer(&current, &r, root.path(), &exact);
         assert!(matches!(add(&mut s, &r), Edited::Show(_)), "{}", s.status);
         form.finish_session_change();
         assert!(!form.active(), "the form outlived the picture it described");
@@ -554,13 +538,22 @@ fn gate(name: &str) {
         .position(|t| t.feature == added[1])
         .expect("new Cut is a tool");
     let (mut form, r) = typed_cut(&current, &reading, &s, index, "66.25", "2", None);
-    assert_eq!(r.cut, added[1]);
+    assert_eq!(r.cut_id(), added[1]);
     let mut theirs = r.clone();
     let back = |id: &Id| -> Id { map[id] };
-    theirs.cut = ObjectId::from_bytes(back(&r.cut.to_bytes())).expect("id");
-    theirs.edit.tool_curve =
-        ferritecad_types::StableEntityId::from_bytes(back(&r.edit.tool_curve.to_bytes()))
-            .expect("id");
+    for change in &mut theirs.changes {
+        match change {
+            ferritecad_document::EditChange::SetCurveGeometry { sketch, curve, .. } => {
+                *sketch = ObjectId::from_bytes(back(&sketch.to_bytes())).expect("sketch");
+                *curve = ferritecad_types::StableEntityId::from_bytes(back(&curve.to_bytes()))
+                    .expect("curve");
+            }
+            ferritecad_document::EditChange::SetEndCondition { object, .. } => {
+                *object = ObjectId::from_bytes(back(&object.to_bytes())).expect("Cut")
+            }
+            _ => panic!("Cut request"),
+        }
+    }
     let edited_peer = root.path().join("peer-edit.fcad");
     peer(&peer_before, &theirs, root.path(), &edited_peer);
     assert!(matches!(apply(&mut s, &r), Edited::Show(_)), "{}", s.status);
@@ -662,21 +655,26 @@ fn gate(name: &str) {
         "stale form"
     );
     r = fresh.clone();
-    r.cut = CircularCut {
+    r.changes = (CircularCut {
         center_mm: [66.5, 10.75],
         radius_mm: 1.875,
         extent: CutExtent::ThroughAll,
-    };
+    })
+    .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
+    .expect("changes");
     let repeated = refuse(&mut s, &r);
     assert!(
         repeated.contains(&added[1].to_string()),
         "the same disk again: {repeated}"
     );
-    r.cut.center_mm = [70., 42.];
-    assert!(
-        refuse(&mut s, &r).contains("stay inside"),
-        "outline, not box"
-    );
+    if let ferritecad_document::EditChange::AddSketch { sketch, .. } = &mut r.changes[0] {
+        sketch.curves[0].geometry = ferritecad_document::SketchGeometry::Circle {
+            center: ferritecad_document::Point2::new(70., 42.).expect("point"),
+            radius: 1.875,
+        };
+    }
+    let outside = refuse(&mut s, &r);
+    assert!(outside.contains(&r.addition().0.to_string()), "{outside}");
     let saved_bytes = std::fs::read(&source).expect("saved");
     // 0 cancel after the answer, 1 stale answer, 2 failed scene, 3 failed GPU,
     // 4 cancel before the answer.
@@ -748,7 +746,7 @@ fn gate(name: &str) {
     assert_eq!(cut_ids(&branch).len(), 6);
     let peer_branch = root.path().join("peer-branch.fcad");
     let peer_base = root.path().join("peer-add-1.fcad");
-    peer_add(&peer_base, body, &fresh.cut, &peer_branch);
+    super::cut::peer(&peer_base, &fresh, root.path(), &peer_branch);
     pair_new(&mut map, 1, &accepted[2], &branch, &peer_base, &peer_branch);
     same_model(&branch, &peer_branch, &map, "the branch saved as");
     let (branch_stl, branch_fbx) = export_bytes(&branch, &branch, root.path(), "branch");
@@ -890,17 +888,16 @@ fn compare_gui(root: &Path) {
         .position(|t| t.feature == added_feature(&first, &second))
         .expect("the second new Cut");
     let s = selected(&reading, index);
-    let edit = EditCircularCutRequest {
+    let edit = EditRequest {
         source: second.clone(),
         expected: reading.version,
-        cut: s.feature,
-        edit: CircularCutEdit {
-            tool_curve: s.tool_curve,
+        changes: (crate::feature_facts::CircularCut {
             center_mm: [66.25, s.center_mm[1]],
             radius_mm: 2.,
             extent: s.extent,
-            vocabulary: ExtentVocabulary::BlindOrThroughAll,
-        },
+        })
+        .changes(&s)
+        .expect("Cut changes"),
         destination: PathBuf::new(),
     };
     let last = tmp.path().join("last.fcad");
@@ -1027,36 +1024,45 @@ fn native_dirty_base_two_adds_edit_history_save_branch_match_cli() {
 
 /// At 16 Cuts the 17th is the domain's refusal; nothing moves.
 #[test]
-fn native_seventeenth_cut_is_refused_and_keeps_history() {
+fn native_seventeenth_cut_builds_and_keeps_history() {
     if !native() {
         return;
     }
     let (_root, source, reading) = fixture(16);
     assert!(
-        reading.cut_bodies[0].refusal.is_some(),
-        "the catalogue offers no Add"
+        reading.cut_bodies[0].refusal.is_none(),
+        "stored outline is available"
     );
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
-    let r = CircularCutRequest {
+    let r = EditRequest {
         source: source.clone(),
         expected: reading.version,
-        body: reading.cut_bodies[0].body,
-        cut: CircularCut {
+        changes: (CircularCut {
             center_mm: [66.5, 10.75],
             radius_mm: 1.875,
             extent: CutExtent::ThroughAll,
-        },
+        })
+        .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
+        .expect("changes"),
         destination: PathBuf::new(),
     };
-    let refusal = refuse(&mut s, &r);
-    assert!(refusal.contains("16"), "{refusal}");
+    assert!(matches!(add(&mut s, &r), Edited::Show(_)), "{}", s.status);
+    assert_eq!(
+        selected(
+            &crate::sketch_facts::read(&s.export_path().expect("current")).expect("reading"),
+            0
+        )
+        .tools
+        .len(),
+        17
+    );
 }
 
 /// A constrained base is not a Cut base, also after constraints were applied
 /// through the session without Save; the support is not widened.
 #[test]
-fn native_constrained_base_refuses_add_even_after_an_unsaved_constraint_apply() {
+fn native_constrained_base_accepts_add_after_an_unsaved_constraint_apply() {
     if !native() {
         return;
     }
@@ -1101,29 +1107,30 @@ fn native_constrained_base_refuses_add_even_after_an_unsaved_constraint_apply() 
     let current = s.export_path().expect("constrained");
     let reading = crate::sketch_facts::read(&current).expect("reading");
     assert!(
-        reading.cut_bodies[0].refusal.is_some(),
+        reading.cut_bodies[0].refusal.is_none(),
         "the catalogue still refuses"
     );
     assert!(
-        !crate::creates::Creates::default().sketch.cuts.begin(
+        crate::creates::Creates::default().sketch.cuts.begin(
             &current,
             &reading,
             reading.cut_bodies[0].body
         ),
         "the Add form opened on a constrained base"
     );
-    let r = CircularCutRequest {
+    let r = EditRequest {
         source: current,
         expected: reading.version,
-        body: reading.cut_bodies[0].body,
-        cut: CircularCut {
+        changes: (CircularCut {
             center_mm: [19.25, 30.5],
             radius_mm: 2.125,
             extent: CutExtent::Blind { depth_mm: 4.875 },
-        },
+        })
+        .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
+        .expect("changes"),
         destination: PathBuf::new(),
     };
-    refuse(&mut s, &r);
+    assert!(matches!(add(&mut s, &r), Edited::Show(_)), "{}", s.status);
 }
 
 #[test]

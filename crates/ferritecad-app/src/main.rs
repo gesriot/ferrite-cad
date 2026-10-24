@@ -35,6 +35,7 @@ mod cuts;
 mod dialogs;
 mod edits;
 mod exports;
+mod feature_facts;
 mod fillets;
 mod journal;
 mod last_tabs;
@@ -292,25 +293,9 @@ enum AppEvent {
         generation: u64,
         result: Result<ferritecad_jobs::EditedDocument>,
     },
-    Cut {
-        generation: u64,
-        result: Result<ferritecad_jobs::AddedCircularCut>,
-    },
-    CutEdited {
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedCircularCut>,
-    },
-    Filleted {
-        generation: u64,
-        result: Result<ferritecad_jobs::AddedEdgeFillet>,
-    },
     FilletRadiusEdited {
         generation: u64,
         result: Result<ferritecad_jobs::EditedDocument>,
-    },
-    Chamfered {
-        generation: u64,
-        result: Result<ferritecad_jobs::AddedEdgeChamfer>,
     },
     ChamferDistanceEdited {
         generation: u64,
@@ -1387,17 +1372,6 @@ fn can_add_cut(
         && sessions.takes_form_apply()
 }
 
-/// §30I: Save cut copy reads a file and writes a new one; with unsaved changes
-/// that would drop them, so it is refused in words before any dialog.
-fn refuse_unsaved_cut_copy(sessions: &mut sessions::Sessions) -> bool {
-    if sessions.dirty() {
-        sessions.status = "Saving a Cut copy is unavailable while the document has unsaved \
-                           changes: Save or Undo them first, or use Add cut."
-            .to_owned();
-    }
-    sessions.dirty()
-}
-
 /// Shared by the existing Fillet radius form's button and its Apply handler.
 fn can_apply_fillet_radius(
     creates: &creates::Creates,
@@ -1426,17 +1400,6 @@ fn can_add_fillet(
         && sessions.takes_form_apply()
 }
 
-/// §30J: Save fillet copy reads a file and writes a new one; with unsaved changes
-/// that would drop them, so it is refused in words before any dialog.
-fn refuse_unsaved_fillet_copy(sessions: &mut sessions::Sessions) -> bool {
-    if sessions.dirty() {
-        sessions.status = "Saving a Fillet copy is unavailable while the document has unsaved \
-                           changes: Save or Undo them first, or use Add fillet."
-            .to_owned();
-    }
-    sessions.dirty()
-}
-
 /// Shared by the existing Chamfer distance form's button and its Apply handler.
 fn can_apply_chamfer_distance(
     creates: &creates::Creates,
@@ -1463,17 +1426,6 @@ fn can_add_chamfer(
         && document_io_idle(loads, exports)
         && !edits.busy()
         && sessions.takes_form_apply()
-}
-
-/// §30K: Save chamfer copy reads a file and writes a new one; with unsaved changes
-/// that would drop them, so it is refused in words before any dialog.
-fn refuse_unsaved_chamfer_copy(sessions: &mut sessions::Sessions) -> bool {
-    if sessions.dirty() {
-        sessions.status = "Saving a Chamfer copy is unavailable while the document has unsaved \
-                           changes: Save or Undo them first, or use Add chamfer."
-            .to_owned();
-    }
-    sessions.dirty()
 }
 
 fn ask_new(
@@ -3406,30 +3358,6 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
-            AppEvent::Cut { generation, result } => {
-                if let Some(path) = cuts::finish_cut(
-                    &mut self.creates.sketch,
-                    &mut self.edits,
-                    generation,
-                    result,
-                ) {
-                    self.open(path);
-                }
-                self.input.request_redraw();
-                self.request_frame_now(event_loop);
-            }
-            AppEvent::Filleted { generation, result } => {
-                if let Some(path) = fillets::finish_fillet(
-                    &mut self.creates.sketch,
-                    &mut self.edits,
-                    generation,
-                    result,
-                ) {
-                    self.open(path);
-                }
-                self.input.request_redraw();
-                self.request_frame_now(event_loop);
-            }
             AppEvent::FilletRadiusEdited { generation, result } => {
                 if let Some(path) = fillets::finish_fillet_radius(
                     &mut self.creates.sketch,
@@ -3442,32 +3370,8 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
-            AppEvent::Chamfered { generation, result } => {
-                if let Some(path) = chamfers::finish_chamfer(
-                    &mut self.creates.sketch,
-                    &mut self.edits,
-                    generation,
-                    result,
-                ) {
-                    self.open(path);
-                }
-                self.input.request_redraw();
-                self.request_frame_now(event_loop);
-            }
             AppEvent::ChamferDistanceEdited { generation, result } => {
                 if let Some(path) = chamfers::finish_chamfer_distance(
-                    &mut self.creates.sketch,
-                    &mut self.edits,
-                    generation,
-                    result,
-                ) {
-                    self.open(path);
-                }
-                self.input.request_redraw();
-                self.request_frame_now(event_loop);
-            }
-            AppEvent::CutEdited { generation, result } => {
-                if let Some(path) = cuts::finish_cut_edit(
                     &mut self.creates.sketch,
                     &mut self.edits,
                     generation,
@@ -4434,19 +4338,34 @@ impl ApplicationHandler<AppEvent> for App {
                             );
                         }
                         if let Some(request) = self.creates.sketch.take_cut_request() {
-                            self.ask_where_to_cut(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Cut,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.cuts.take_apply_request() {
-                            self.apply_cut(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.cuts.take_add_request() {
-                            self.add_cut(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_cut_edit_request() {
-                            self.ask_where_to_edit_cut(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Cut,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.take_fillet_request() {
-                            self.ask_where_to_fillet(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Fillet,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.take_fillet_radius_request() {
                             self.ask_where_to_edit(
@@ -4460,10 +4379,15 @@ impl ApplicationHandler<AppEvent> for App {
                             self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.fillets.take_add_request() {
-                            self.add_fillet(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_chamfer_request() {
-                            self.ask_where_to_chamfer(request);
+                            self.ask_where_to_edit(
+                                numeric::Form::Chamfer,
+                                request.source,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.take_chamfer_distance_request() {
                             self.ask_where_to_edit(
@@ -4477,7 +4401,7 @@ impl ApplicationHandler<AppEvent> for App {
                             self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.chamfers.take_add_request() {
-                            self.add_chamfer(request);
+                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(content) = self.creates.sketch.take_request() {
                             self.create_new(content);
@@ -5684,130 +5608,6 @@ impl App {
         )
     }
 
-    /// Apply one existing circular Cut to the accepted snapshot, without a dialog.
-    fn apply_cut(&mut self, request: ferritecad_jobs::EditCircularCutRequest) {
-        if !can_apply_cut(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply_cut(
-                ticket,
-                request.cut,
-                request.edit,
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
-    /// §30I: add one new circular Cut to the accepted snapshot, without a dialog.
-    fn add_cut(&mut self, request: ferritecad_jobs::CircularCutRequest) {
-        if !can_add_cut(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_add_cut(
-                ticket,
-                request.body,
-                request.cut,
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
-    /// §30J: add one Fillet to the accepted snapshot, without a dialog.
-    fn add_fillet(&mut self, request: ferritecad_jobs::EdgeFilletRequest) {
-        if !can_add_fillet(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_add_fillet(
-                ticket,
-                request.body,
-                request.fillet,
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
-    /// §30K: add one Chamfer to the accepted snapshot, without a dialog.
-    fn add_chamfer(&mut self, request: ferritecad_jobs::EdgeChamferRequest) {
-        if !can_add_chamfer(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        ) {
-            self.input.request_redraw();
-            return;
-        }
-        let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_add_chamfer(
-                ticket,
-                request.body,
-                request.chamfer,
-                request.expected,
-                cancel.clone(),
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::Applied {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
-        self.input.request_redraw();
-    }
-
     /// One accepted change back or forward. The version becomes current only when
     /// its picture has been built and shown.
     fn move_document(&mut self, undo: bool) {
@@ -5961,138 +5761,6 @@ impl App {
             self.edits.begin(path, source);
             self.input.request_redraw();
         }
-    }
-
-    fn ask_where_to_cut(&mut self, mut request: ferritecad_jobs::CircularCutRequest) {
-        if refuse_unsaved_cut_copy(&mut self.sessions) {
-            self.input.request_redraw();
-            return;
-        }
-        if self.sessions.busy() || self.edits.running() {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("cut.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_cut(request, move |request, generation, cancel| {
-                edits::spawn_cut(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::Cut { generation, result });
-                })
-            });
-        self.input.request_redraw();
-    }
-
-    fn ask_where_to_fillet(&mut self, mut request: ferritecad_jobs::EdgeFilletRequest) {
-        if refuse_unsaved_fillet_copy(&mut self.sessions) {
-            self.input.request_redraw();
-            return;
-        }
-        if self.sessions.busy() || self.edits.running() {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("fillet.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_fillet(request, move |request, generation, cancel| {
-                edits::spawn_fillet(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::Filleted { generation, result });
-                })
-            });
-        self.input.request_redraw();
-    }
-
-    fn ask_where_to_chamfer(&mut self, mut request: ferritecad_jobs::EdgeChamferRequest) {
-        if refuse_unsaved_chamfer_copy(&mut self.sessions) {
-            self.input.request_redraw();
-            return;
-        }
-        if self.sessions.busy() || self.edits.running() {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("chamfer.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_chamfer(request, move |request, generation, cancel| {
-                edits::spawn_chamfer(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::Chamfered { generation, result });
-                })
-            });
-        self.input.request_redraw();
-    }
-
-    fn ask_where_to_edit_cut(&mut self, mut request: ferritecad_jobs::EditCircularCutRequest) {
-        if self.sessions.dirty() || self.sessions.busy() || self.edits.running() {
-            return;
-        }
-        let Some(live) = &self.live else {
-            return;
-        };
-        let Some(chosen) = self.dialogs.choose(
-            dialogs::Action::Edit,
-            rfd::FileDialog::new()
-                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-                .set_directory(self.sessions.suggested_directory())
-                .set_file_name("edited-cut.fcad")
-                .set_parent(live.window.as_ref()),
-            &mut self.input,
-            self.sessions.private_directory(),
-        ) else {
-            return;
-        };
-        request.destination = chosen;
-        let proxy = self.proxy.clone();
-        self.edits
-            .start_cut_edit(request, move |request, generation, cancel| {
-                edits::spawn_cut_edit(request, cancel, move |result| {
-                    let _ = proxy.send_event(AppEvent::CutEdited { generation, result });
-                })
-            });
-        self.input.request_redraw();
     }
 
     /// Acts on a chosen destination, whether or not a dialog produced it.
@@ -7300,6 +6968,8 @@ fn named_view(key: &Key) -> Option<StandardView> {
         .find_map(|(view, _, shortcut)| (*shortcut == text.as_str()).then_some(*view))
 }
 
+#[cfg(test)]
+mod feature_tests;
 #[cfg(test)]
 mod transaction_tests;
 

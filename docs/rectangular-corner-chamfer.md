@@ -286,7 +286,7 @@ the exact and the measured volumes.
 
 ```python
 # FCAD_29A_AGENT_RECIPE
-import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid, time
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29a-"))
 
@@ -295,6 +295,32 @@ def edit_args(source, feature, height, version, out):
     request.write_text(json.dumps({"request_version": 1, "changes": [
         {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
+
+def new_id():
+    raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
+    raw[6] = (raw[6] & 15) | 112
+    raw[8] = (raw[8] & 63) | 128
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+def edge_at(catalog, corner):
+    body = catalog["bodies"][0]
+    base = next(f for f in catalog["features"] if f["feature_id"] == body["history"][0])
+    sketch = next(s for s in catalog["sketches"] if s["sketch_id"] == base["profile_sketch_id"])
+    joint = sorted(c["curve_id"] for c in sketch["curves"] if not c["construction"]
+                   and c["geometry"]["kind"] == "line"
+                   and corner in [c["geometry"]["start_mm"], c["geometry"]["end_mm"]])
+    assert len(joint) == 2, (corner, joint)
+    return {"edge": {"feature_id": base["feature_id"], "joint": joint}}
+
+def addition(catalog, kind, edge, value):
+    field = "radius" if kind == "fillet" else "distance"
+    return {"request_version": 1, "changes": [{"kind": "add_feature", "object": new_id(),
+        "body": catalog["bodies"][0]["body_id"], "name": kind.title(),
+        "feature": {"kind": kind, "edge": {"feature": edge["feature_id"], "joint": edge["joint"]},
+                    field: {"value": value, "unit": "mm"}}}]}
+
+def tip(catalog, kind="fillets"):
+    return next(f for f in catalog[kind] if f["feature_id"] == catalog["bodies"][0]["history"][-1])
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -400,39 +426,29 @@ geometry(["create-sketch-extrude", request, "-o", plate, "--json"], plate)
 # 2. Discovery: four candidates, each by the two Line UUIDs of its corner, and the
 #    bounds the policy states — never a guess.
 catalog = inspect(plate)
-row = catalog["bodies"][0]["chamfer_edge"]
-assert row["available"] is True and catalog["chamfers"] == []
-target = row["target"]
-assert target["distance_unit"] == "mm" and target["min_distance_mm"] == 0.001
-assert target["min_flat_mm"] == 0.01 and len(target["candidates"]) == 4
-candidate = next(c for c in target["candidates"] if c["corner_mm"] == CORNER)
-assert candidate["max_distance_mm"] == D - 0.01 and candidate["offerable"] is True
+assert catalog["chamfers"] == []
+candidate = edge_at(catalog, CORNER)
 
 # 3. Create. The pair may be written in either order; it is one edge.
 d1 = 2.375
 edge = candidate["edge"]
-request.write_text(json.dumps({"request_version": 1, "distance_mm": d1,
-                               "edge": {"feature_id": edge["feature_id"],
-                                        "joint": [edge["joint"][1], edge["joint"][0]]}}))
+request.write_text(json.dumps(addition(catalog, "chamfer", {"feature_id": edge["feature_id"],
+                                        "joint": [edge["joint"][1], edge["joint"][0]]}, d1)))
 one = root / "one.fcad"
 body, version = catalog["bodies"][0]["body_id"], catalog["content_version"]
-done = geometry(["chamfer-edge-copy", plate, "--body", body, "--expect-version", version,
-                 "--request", request, "-o", one, "--json"], one)["result"]
-assert done["body_id"] == body and done["distance_mm"] == d1 and done["distance_unit"] == "mm"
-assert done["edge"] == edge and done["corner_mm"] == CORNER
-roles = sorted(r["role"] for r in done["references"])
-assert roles == ["edge_chamfer_face"] + ["origin_cap"] * 2 + ["origin_side"] * 4, roles
+done = geometry(["edit", plate, "--expect-version", version, "--request", request, "-o", one, "--json"], one)["result"]
+done = tip(inspect(one), "chamfers")
+assert done["edge"] == edge and done["expression"]["value"] == d1
+assert len(tables(one)["topology_refs"][1]) - len(tables(plate)["topology_refs"][1]) == 7
 exact_one = measured(one, d1)
 
 # 4. The saved Chamfer, and every other editor's honest refusal.
 saved = inspect(one)
 chamfer = saved["chamfers"][0]
 assert chamfer["feature_id"] == done["feature_id"] and chamfer["expression"]["value"] == d1
-assert saved["bodies"][0]["chamfer_edge"]["available"] is False, "a second Chamfer"
 # §29B: the plate's height is edited through the base Extrude, with the Chamfer as context.
 
-assert saved["bodies"][0]["fillet_edge"]["available"] is False
-request.write_text(json.dumps({"request_version": 1, "radius_mm": 1.0, "edge": edge}))
+request.write_text(json.dumps(addition(catalog, "fillet", edge, 1.0)))
 never = root / "never.fcad"
 for args in (edit_args(one, chamfer["feature_id"], "9", saved["content_version"], never),):
     p = run(args, code=2)
@@ -456,4 +472,5 @@ request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_e
 refusal = run(["edit", one, "--expect-version", version, "--request", request, "-o", never, "--json"], code=2)
 assert refusal["error"]["kind"] == "input" and not never.exists()
 print("FCAD_29A_RECIPE_OK", f"d={d1} volume={exact_one:.6f}/{(W * D - d1 * d1 / 2) * H:.6f}")
+
 ```

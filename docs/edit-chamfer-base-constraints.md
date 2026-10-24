@@ -195,7 +195,7 @@ prints `FCAD_29D_RECIPE_OK` with the measured and exact volumes.
 
 ```python
 # FCAD_29D_AGENT_RECIPE
-import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid, time
 sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
 from edit_requests import constraint_request, line_request, line_rule, distance, fixed as pin_rule
 cli = os.environ["FERRITECAD"]
@@ -207,6 +207,32 @@ def edit_args(source, feature, height, version, out):
         {"kind": "set_expression", "object": feature, "slot": {"kind": "extrude_distance"}, "value": float(height), "unit": "mm"}]}))
     return ["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"]
 OP = "edit"
+
+def new_id():
+    raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
+    raw[6] = (raw[6] & 15) | 112
+    raw[8] = (raw[8] & 63) | 128
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+def edge_at(catalog, corner):
+    body = catalog["bodies"][0]
+    base = next(f for f in catalog["features"] if f["feature_id"] == body["history"][0])
+    sketch = next(s for s in catalog["sketches"] if s["sketch_id"] == base["profile_sketch_id"])
+    joint = sorted(c["curve_id"] for c in sketch["curves"] if not c["construction"]
+                   and c["geometry"]["kind"] == "line"
+                   and corner in [c["geometry"]["start_mm"], c["geometry"]["end_mm"]])
+    assert len(joint) == 2, (corner, joint)
+    return {"edge": {"feature_id": base["feature_id"], "joint": joint}}
+
+def addition(catalog, kind, edge, value):
+    field = "radius" if kind == "fillet" else "distance"
+    return {"request_version": 1, "changes": [{"kind": "add_feature", "object": new_id(),
+        "body": catalog["bodies"][0]["body_id"], "name": kind.title(),
+        "feature": {"kind": kind, "edge": {"feature": edge["feature_id"], "joint": edge["joint"]},
+                    field: {"value": value, "unit": "mm"}}}]}
+
+def tip(catalog, kind="fillets"):
+    return next(f for f in catalog[kind] if f["feature_id"] == catalog["bodies"][0]["history"][-1])
 
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
@@ -322,13 +348,10 @@ request.write_text(json.dumps({"request_version": 1, "height_mm": H,
 plate = root / "plate.fcad"
 geometry(["create-sketch-extrude", request, "-o", plate, "--json"], plate)
 catalog = inspect(plate)
-candidate = next(c for c in catalog["bodies"][0]["chamfer_edge"]["target"]["candidates"]
-                 if c["corner_mm"] == CORNER)
-request.write_text(json.dumps({"request_version": 1, "distance_mm": d1, "edge": candidate["edge"]}))
+candidate = edge_at(catalog, CORNER)
+request.write_text(json.dumps(addition(catalog, "chamfer", candidate["edge"], d1)))
 chamfered = root / "chamfered.fcad"
-geometry(["chamfer-edge-copy", plate, "--body", catalog["bodies"][0]["body_id"],
-          "--expect-version", catalog["content_version"], "--request", request,
-          "-o", chamfered, "--json"], chamfered)
+geometry(["edit", plate, "--expect-version", catalog["content_version"], "--request", request, "-o", chamfered, "--json"], chamfered)
 
 # 2. Discovery: the base Sketch's constraint editor is available, with the
 #    Chamfer as context and its corner named as stored.

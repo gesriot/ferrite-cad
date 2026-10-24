@@ -10,20 +10,19 @@ use super::fillet::{
     apply as apply_radius, cold, history, mesh, peer as radius_peer, saved, state,
 };
 use super::*;
+use crate::feature_facts::EdgeFillet;
+use crate::feature_tests::RequestFacts;
 use crate::fillets::tests::add_session::{add_draft_state, typed_add};
 use crate::fillets::tests::session_apply::{fixture, typed_radius, visible_outcome};
-use ferritecad_document::{EdgeFillet, ObjectPayload};
-use ferritecad_jobs::EdgeFilletRequest;
+use ferritecad_document::ObjectPayload;
+use ferritecad_jobs::EditRequest;
 use std::collections::BTreeMap;
 
-fn start(
-    s: &mut Sessions,
-    r: &EdgeFilletRequest,
-) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
+fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
         .begin_apply(|t, _, c| {
-            spawn_add_fillet(t, r.body, r.fillet, r.expected, c.clone(), move |v| {
+            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
                 tx.send(v).expect("deliver")
             })
         })
@@ -31,7 +30,7 @@ fn start(
     (g, rx)
 }
 /// The window's own Add: the worker, the picture, the version becoming current.
-pub(super) fn add(s: &mut Sessions, r: &EdgeFilletRequest) -> Edited {
+pub(super) fn add(s: &mut Sessions, r: &EditRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(
         g,
@@ -53,43 +52,30 @@ pub(super) fn add(s: &mut Sessions, r: &EdgeFilletRequest) -> Edited {
     edited
 }
 /// A refused Add changes nothing the session owns and leaves no file.
-fn refuse(s: &mut Sessions, r: &EdgeFilletRequest) -> String {
+fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     let before = state(s);
     assert_eq!(add(s, r), Edited::Failed, "{}", s.status);
     assert_eq!(state(s), before);
     s.status.clone()
 }
-/// `fillet-edge-copy` on `source`, naming the Body and the edge by UUID; the
+/// `edit` on `source`, naming the Body and the edge by UUID; the
 /// joint is written in the other order, as the CLI accepts.
-fn peer_add(source: &Path, body: ObjectId, fillet: &EdgeFillet, out: &Path) {
-    let file = out.with_extension("json");
-    let [a, b] = fillet.edge.joint.segments();
-    std::fs::write(
-        &file,
-        format!(
-            r#"{{"request_version":1,"edge":{{"feature_id":"{}","joint":["{b}","{a}"]}},"radius_mm":{}}}"#,
-            fillet.edge.feature, fillet.radius_mm
-        ),
-    )
-    .expect("request");
-    cli(&[
-        "fillet-edge-copy".as_ref(),
-        source.as_os_str(),
-        "--body".as_ref(),
-        body.to_string().as_ref(),
-        "--expect-version".as_ref(),
-        crate::sketch_facts::read(source)
-            .expect("reading")
-            .version
-            .content
-            .to_string()
-            .as_ref(),
-        "--request".as_ref(),
-        file.as_os_str(),
-        "-o".as_ref(),
-        out.as_os_str(),
-        "--json".as_ref(),
-    ]);
+fn peer_add(source: &Path, body: ObjectId, value: &EdgeFillet, out: &Path) {
+    let d = Document::open_read_only(source).expect("source");
+    let r = EditRequest {
+        source: source.into(),
+        expected: crate::sketch_facts::Source::read(&d)
+            .expect("version")
+            .version,
+        changes: vec![ferritecad_document::EditChange::AddFeature {
+            object: ObjectId::new(),
+            body,
+            name: Some("Fillet".into()),
+            feature: value.feature().expect("feature"),
+        }],
+        destination: out.into(),
+    };
+    super::cut::peer(source, &r, out.parent().expect("parent"), out);
 }
 
 /// The Fillets new in `after` (since `before`), in history order: each one's
@@ -307,17 +293,17 @@ fn gate(name: &str) {
         let current = s.export_path().expect("current");
         let reading = crate::sketch_facts::read(&current).expect("reading");
         let (mut form, r) = typed_add(&current, &reading, &s, at, radius);
-        assert_eq!(r.body, body, "the Body is its saved UUID");
+        assert_eq!(r.addition().1, body, "the Body is its saved UUID");
         assert_eq!(r.expected, reading.version, "the accepted version");
         assert_eq!(
             r.source, current,
             "the accepted snapshot, not the user's file"
         );
-        assert_eq!(r.fillet.edge.feature, base);
+        assert_eq!(r.fillet().edge.feature, base);
         let independent = root.path().join(format!("peer-add-{step}.fcad"));
-        peer_add(&peer_before, body, &r.fillet, &independent);
+        peer_add(&peer_before, body, &r.fillet(), &independent);
         let exact = root.path().join(format!("exact-add-{step}.fcad"));
-        peer_add(&current, body, &r.fillet, &exact);
+        peer_add(&current, body, &r.fillet(), &exact);
         assert!(matches!(add(&mut s, &r), Edited::Show(_)), "{}", s.status);
         form.finish_session_change();
         assert!(!form.active(), "the form outlived the picture it described");
@@ -328,7 +314,7 @@ fn gate(name: &str) {
             original,
             "Add wrote the file"
         );
-        let feature = assert_allowlist(&current, &applied, body, &r.fillet);
+        let feature = assert_allowlist(&current, &applied, body, &r.fillet());
         let saved = history(&applied);
         assert_eq!(saved.len(), step + 1);
         assert_eq!(
@@ -359,23 +345,29 @@ fn gate(name: &str) {
     let current = s.export_path().expect("four");
     let full = crate::sketch_facts::read(&current).expect("reading");
     assert!(
-        full.fillet_bodies[0].target.is_none() || full.fillet_bodies[0].refusal.is_some(),
-        "a fifth Fillet is offered"
+        full.fillet_bodies[0].target.is_some(),
+        "the stored edges remain visible; Apply decides"
     );
     let first = history(&current)[0].clone();
-    let fifth = EdgeFilletRequest {
+    let fifth = EditRequest {
         source: current.clone(),
         expected: full.version,
-        body,
-        fillet: EdgeFillet {
-            edge: first.edge,
-            radius_mm: 1.,
-        },
+        changes: vec![ferritecad_document::EditChange::AddFeature {
+            object: ObjectId::new(),
+            body,
+            name: Some("Fillet".into()),
+            feature: (EdgeFillet {
+                edge: first.edge,
+                radius_mm: 1.,
+            })
+            .feature()
+            .expect("feature"),
+        }],
         destination: PathBuf::new(),
     };
     let reason = refuse(&mut s, &fifth);
     assert!(
-        reason.contains("every corner of this plate is already rounded"),
+        reason.contains(&fifth.addition().0.to_string()) && reason.contains("at most 4"),
         "{reason}"
     );
 
@@ -482,14 +474,30 @@ fn gate(name: &str) {
     );
     // The same corner again is the domain's refusal naming the Fillet there.
     r = fresh.clone();
-    r.fillet.edge = history(&current)[0].edge;
+    if let ferritecad_document::EditChange::AddFeature {
+        feature: ferritecad_document::FeatureAddition::Fillet { edge, .. },
+        ..
+    } = &mut r.changes[0]
+    {
+        *edge = history(&current)[0].edge;
+    } else {
+        panic!("feature request")
+    }
     let repeated = refuse(&mut s, &r);
     assert!(
         repeated.contains("already rounded") && repeated.contains(&added[0].to_string()),
         "{repeated}"
     );
     r = fresh.clone();
-    r.fillet.radius_mm = 6.2;
+    if let ferritecad_document::EditChange::AddFeature {
+        feature: ferritecad_document::FeatureAddition::Fillet { radius_mm, .. },
+        ..
+    } = &mut r.changes[0]
+    {
+        *radius_mm = ferritecad_document::Expression::constant(6.2).expect("number");
+    } else {
+        panic!("feature request")
+    }
     assert!(
         refuse(&mut s, &r).contains("too large"),
         "half the shorter side"
@@ -592,7 +600,7 @@ fn gate(name: &str) {
     assert_eq!(std::fs::read(&source).expect("source"), saved_bytes);
     let peer_three = root.path().join("peer-add-2.fcad");
     let peer_branch = root.path().join("peer-branch.fcad");
-    peer_add(&peer_three, body, &fresh.fillet, &peer_branch);
+    peer_add(&peer_three, body, &fresh.fillet(), &peer_branch);
     pair_fillets(
         &mut map,
         1,
@@ -660,7 +668,7 @@ fn native_add_on_unsaved_constraints_is_measured_on_solved_lines() {
         .iter()
         .find(|c| c.corner_mm == [33., 15.5])
         .expect("corner");
-    assert!(corner.max_radius_mm >= 5.5, "the stored guess allows r 5.5");
+    assert!(corner.adjacent_lengths_mm.into_iter().all(|v| v > 5.5));
     let draft = add_draft_state(&form);
     let before = state(&s);
     let (g, rx) = start(&mut s, &r);
@@ -674,11 +682,11 @@ fn native_add_on_unsaved_constraints_is_measured_on_solved_lines() {
     // Accepted on the solved plate, same as the CLI on the same snapshot.
     let (mut form, r) = typed_add(&current, &reading, &s, [33., 15.5], "4.75");
     let exact = root.path().join("exact.fcad");
-    peer_add(&current, target.body, &r.fillet, &exact);
+    peer_add(&current, target.body, &r.fillet(), &exact);
     assert!(matches!(add(&mut s, &r), Edited::Show(_)), "{}", s.status);
     form.finish_session_change();
     let applied = s.export_path().expect("added");
-    assert_allowlist(&current, &applied, target.body, &r.fillet);
+    assert_allowlist(&current, &applied, target.body, &r.fillet());
     let mut map = BTreeMap::new();
     pair_fillets(&mut map, 1, &current, &applied, &current, &exact);
     same_model(&applied, &exact, &map, "constrained Add against the CLI");
@@ -847,7 +855,7 @@ fn fillet_of(at: [f64; 2], radius: &str, path: &Path) -> EdgeFillet {
         .find(|c| c.corner_mm == at)
         .expect("free corner");
     EdgeFillet {
-        edge: ferritecad_document::FilletEdge {
+        edge: ferritecad_document::SweptEdge {
             feature: target.base_feature,
             joint: corner.joint,
         },

@@ -384,3 +384,85 @@ fn a_payload_this_build_reads_only_in_part_is_refused_instead_of_losing_the_rest
     d.close().expect("close");
     assert_eq!(cells(&path), rows);
 }
+
+#[test]
+fn end_changes_and_body_tip_moves_preserve_unread_payload_fields() {
+    for body_tip in [false, true] {
+        let (root, d, profile) = fixture();
+        let path = root.path().join("source.fcad");
+        let object = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| {
+                if body_tip {
+                    matches!(o.payload, ObjectPayload::Body(_))
+                } else {
+                    matches!(o.payload, ObjectPayload::Extrude(_))
+                }
+            })
+            .expect("saved target");
+        let changes = if body_tip {
+            vec![EditChange::AddFeature {
+                object: ObjectId::new(),
+                body: object.id,
+                name: None,
+                feature: FeatureAddition::Cut {
+                    profile,
+                    end_condition: EndCondition::ThroughAll,
+                    reversed: false,
+                },
+            }]
+        } else {
+            vec![EditChange::SetEndCondition {
+                object: object.id,
+                end_condition: EndCondition::Blind {
+                    distance: Expression::constant(12.).expect("distance"),
+                },
+            }]
+        };
+        let mut envelope = Envelope::from_bytes(&object.payload.to_storage_bytes().expect("bytes"))
+            .expect("envelope");
+        d.close().expect("close");
+        let mut value: ciborium::value::Value =
+            ciborium::from_reader(envelope.payload.as_slice()).expect("CBOR");
+        let target = if body_tip {
+            &mut value
+        } else {
+            &mut value
+                .as_map_mut()
+                .expect("map")
+                .iter_mut()
+                .find(|(key, _)| key.as_text() == Some("end_condition"))
+                .expect("end condition")
+                .1
+        };
+        target
+            .as_map_mut()
+            .expect("map")
+            .push(("future_detail".into(), "preserve".into()));
+        envelope.payload.clear();
+        ciborium::into_writer(&value, &mut envelope.payload).expect("CBOR");
+        let bytes = envelope.to_bytes().expect("envelope");
+        let raw = Connection::open(&path).expect("SQL");
+        raw.execute(
+            "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+            rusqlite::params![
+                bytes,
+                ferritecad_types::ContentHash::of_bytes(&bytes)
+                    .as_bytes()
+                    .as_slice(),
+                object.id.to_bytes().as_slice()
+            ],
+        )
+        .expect("future field");
+        drop(raw);
+        let rows = cells(&path);
+        let mut d = Document::open(&path).expect("readable");
+        let error = d.write_changes(&changes).expect_err("lossless refusal");
+        assert!(error.to_string().contains("losslessly"), "{error}");
+        assert!(error.to_string().contains(&object.id.to_string()));
+        d.close().expect("close");
+        assert_eq!(cells(&path), rows);
+    }
+}
