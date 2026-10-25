@@ -23,6 +23,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use ferritecad_kernel::{
     ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext, PlanarPoint, Profile,
     ProfileLoop, ProfileSegment, SegmentGeometry, ShapeHandle, SketchPlane,
@@ -350,7 +353,7 @@ fn a_shell_is_either_sound_or_refused_at_every_thickness() {
                 .unwrap_or_else(|e| panic!("{}: {e}", part.provenance()));
 
             // Opened at the end cap, which the extrusion already named.
-            let open: Vec<_> = result.end_cap.clone();
+            let open = [naming::cap(&mut kernel, result.shape, true)];
             assert!(
                 !open.is_empty(),
                 "{}: no end cap to open",
@@ -438,8 +441,9 @@ fn the_same_fillet_and_shell_on_the_same_part_give_the_same_result_twice() {
             let result = kernel
                 .extrude(&request(&part).expect("a valid part"), &context)
                 .unwrap_or_else(|e| panic!("{}: {e}", part.provenance()));
+            let end_caps = [naming::cap(&mut kernel, result.shape, true)];
             let hollow = kernel
-                .shell(result.shape, thickness, &result.end_cap, &context)
+                .shell(result.shape, thickness, &end_caps, &context)
                 .unwrap_or_else(|e| {
                     panic!(
                         "{} at wall {thickness}: cannot measure determinism: {e}",
@@ -512,9 +516,10 @@ fn an_impossible_request_is_refused_rather_than_approximated() {
     let result = kernel
         .extrude(&request(part).expect("valid"), &context)
         .expect("builds");
+    let end_caps = [naming::cap(&mut kernel, result.shape, true)];
     for thickness in [0.0, -1.0, f64::NAN] {
         let err = kernel
-            .shell(result.shape, thickness, &result.end_cap, &context)
+            .shell(result.shape, thickness, &end_caps, &context)
             .err()
             .unwrap_or_else(|| panic!("wall {thickness} is not a wall"));
         assert_eq!(err.kind(), ErrorKind::Input);

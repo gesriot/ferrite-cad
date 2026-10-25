@@ -153,16 +153,21 @@ impl GeometryKernel for Observed {
     fn cut(
         &mut self,
         request: &ferritecad_kernel::CutRequest,
-        track: &[ferritecad_kernel::SubShapeHandle],
         context: &OperationContext,
-    ) -> Result<ferritecad_kernel::CutResult> {
-        self.inner.cut(request, track, context)
+    ) -> Result<ferritecad_kernel::OperationResult> {
+        self.inner.cut(request, context)
     }
 
+    fn shape_topology(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::ShapeTopology> {
+        self.inner.shape_topology(shape)
+    }
+    fn naming_history(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::NamingHistory> {
+        self.inner.naming_history(shape)
+    }
     fn identity(&self) -> &KernelIdentity {
         self.inner.identity()
     }
-    fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<ExtrudeResult> {
+    fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<OperationResult> {
         if self.fault == "rebuild" {
             return Err(CadError::kernel("rebuild refused"));
         }

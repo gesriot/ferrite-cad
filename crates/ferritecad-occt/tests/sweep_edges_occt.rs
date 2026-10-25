@@ -13,6 +13,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
@@ -120,9 +123,8 @@ fn build(request: &ExtrudeRequest) -> Built {
     let result = kernel
         .extrude(request, &OperationContext::default())
         .expect("builds");
-    let mut map = TopologyMap::new();
-    map.record_extrude(feature, request.profile(), &result)
-        .expect("records");
+    let map =
+        naming::bind(&mut kernel, feature, request.profile(), &result).expect("complete naming");
     let shape = result.shape;
     Built {
         kernel,
@@ -788,9 +790,8 @@ fn the_names_of_corners_survive_a_file_and_a_new_session_but_their_handles_do_no
         let result = writer
             .extrude(&request, &OperationContext::default())
             .expect("Open CASCADE builds the plate");
-        let mut map = TopologyMap::new();
-        map.record_extrude(feature, request.profile(), &result)
-            .expect("records");
+        let map = naming::bind(&mut writer, feature, request.profile(), &result)
+            .expect("complete naming");
 
         let mut named = Vec::new();
         for joint in &joints {
@@ -820,7 +821,7 @@ fn the_names_of_corners_survive_a_file_and_a_new_session_but_their_handles_do_no
         .expect("decodes");
     assert_eq!(decoded, archived);
 
-    let mut restored = TopologyMap::new();
+    let mut restored = naming::prepared(feature, request.profile(), false).expect("model roots");
     restore_feature(&mut reader, &decoded, &mut restored).expect("restores");
     let shape = restored
         .feature(feature)

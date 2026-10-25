@@ -60,9 +60,8 @@ pub use request::{
     RevolveAxis, RevolveRequest, RevolveTurn, TessellationParams,
 };
 pub use result::{
-    ArchiveSlot, BrepBlob, CarriedOutcome, ChamferResult, CutResult, ExtrudeResult, FilletResult,
-    History, HistoryInput, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange,
-    MeshVertices, OperationResult, RevolveResult,
+    ArchiveSlot, BrepBlob, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange,
+    MeshVertices, OperationResult,
 };
 
 pub use naming::{NamingHistory, NamingInput, NamingOperation, NamingRelation, ShapeTopology};

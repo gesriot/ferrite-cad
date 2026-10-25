@@ -516,6 +516,7 @@ mod tests {
         let mut kernel = Refusing {
             inner: MockKernel::new(),
             lose_ref: false,
+            missing_cap: None,
             sketch_fault: false,
         };
         let error =
@@ -712,6 +713,7 @@ mod tests {
     struct Refusing {
         inner: MockKernel,
         lose_ref: bool,
+        missing_cap: Option<ShapeHandle>,
         sketch_fault: bool,
     }
     impl GeometryKernel for Refusing {
@@ -720,24 +722,41 @@ mod tests {
         fn cut(
             &mut self,
             request: &ferritecad_kernel::CutRequest,
-            track: &[ferritecad_kernel::SubShapeHandle],
             context: &OperationContext,
-        ) -> Result<ferritecad_kernel::CutResult> {
-            self.inner.cut(request, track, context)
+        ) -> Result<ferritecad_kernel::OperationResult> {
+            self.inner.cut(request, context)
         }
 
+        fn shape_topology(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::ShapeTopology> {
+            self.inner.shape_topology(shape)
+        }
+        fn naming_history(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::NamingHistory> {
+            let mut history = self.inner.naming_history(shape)?;
+            if self.missing_cap == Some(shape) {
+                history
+                    .relations
+                    .retain(|(i, _, _)| *i != ferritecad_kernel::NamingInput::Cap { end: true });
+            }
+            Ok(history)
+        }
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }
-        fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<ExtrudeResult> {
+        fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<OperationResult> {
             let refuse = r.extent().total_length() == 27.0
                 || (self.sketch_fault && self.inner.extrude_count() == 1);
             if refuse && !self.lose_ref {
                 return Err(CadError::kernel("deterministic edited geometry refusal"));
             }
-            let mut result = self.inner.extrude(r, c)?;
+            let result = self.inner.extrude(r, c)?;
             if refuse {
-                result.end_cap.clear();
+                self.missing_cap = Some(result.shape);
             }
             Ok(result)
         }
@@ -790,6 +809,7 @@ mod tests {
             let mut kernel = Refusing {
                 inner: MockKernel::new(),
                 lose_ref,
+                missing_cap: None,
                 sketch_fault: false,
             };
             let error = edit_copy(&request, &mut kernel, &OperationContext::default())
@@ -1155,6 +1175,7 @@ mod tests {
             let mut kernel = Refusing {
                 inner: MockKernel::new(),
                 lose_ref: case == "references",
+                missing_cap: None,
                 sketch_fault: matches!(case, "geometry" | "references"),
             };
             // Reuse the fault seam after a successful baseline rebuild: the

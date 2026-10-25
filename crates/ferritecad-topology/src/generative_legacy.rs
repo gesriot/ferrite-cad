@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MIT
-//! Experimental translation of the existing meanings, independent of their resolver.
+//! Temporary translation of document roles through typed generative ancestry.
 use std::collections::BTreeSet;
 
-use ferritecad_document::{
-    CapSide, EntityKind, SelectionRule, SemanticRole, SweptEdge, TopologyRef,
-};
+use ferritecad_document::{CapSide, SemanticRole, SweptEdge, TopologyRef};
 use ferritecad_kernel::{NamingOperation, SubShapeHandle, SubShapeKind};
 use ferritecad_types::{CadError, ObjectId, Result};
 
@@ -48,38 +46,107 @@ impl ModelNaming {
     }
 
     pub fn swept_edge(&self, at: ObjectId, edge: SweptEdge) -> Result<SubShapeHandle> {
+        let found = self.swept_edges(at, edge)?;
+        one(found, &format!("swept edge {edge:?} at {at}"))
+    }
+
+    /// Every edge of `at` between the faces swept from the joint's two curves.
+    pub fn swept_edges(&self, at: ObjectId, edge: SweptEdge) -> Result<BTreeSet<SubShapeHandle>> {
         let plane = self.plane_of(edge.feature)?;
         let faces: Vec<_> = edge
             .joint
             .segments()
             .into_iter()
-            .map(|curve| self.family(at, curve_root(edge.feature, curve, Some(plane))))
+            .map(|curve| {
+                self.family(
+                    at,
+                    generated(
+                        edge.feature,
+                        NamingOperation::Extrude,
+                        curve_root(edge.feature, curve, Some(plane)),
+                        SubShapeKind::Face,
+                    ),
+                )
+            })
             .collect();
-        let found = self.boundary(at, SubShapeKind::Edge, &faces);
-        one(found, &format!("swept edge {edge:?} at {at}"))
+        Ok(self.boundary(at, SubShapeKind::Edge, &faces))
     }
 
-    /// Translates role meanings into root ancestry and named face incidence;
-    /// does not consult TopologyMap, resolve(), geometry or traversal positions.
     pub fn resolve_legacy(&self, reference: &TopologyRef) -> Result<BTreeSet<SubShapeHandle>> {
+        crate::resolve(self, reference).map(|v| v.into_iter().collect())
+    }
+    pub(crate) fn legacy_removed(&self, reference: &TopologyRef) -> bool {
+        self.legacy_seed(reference).is_some_and(|seed| {
+            self.features
+                .get(&reference.producer_feature)
+                .and_then(|f| f.ancestry.get(&seed))
+                .is_some_and(BTreeSet::is_empty)
+        })
+    }
+    fn face_seed(
+        &self,
+        origin: ObjectId,
+        curve: Option<ferritecad_types::StableEntityId>,
+        side: CapSide,
+    ) -> Option<Name> {
+        let plane = self.planes.get(&origin).copied()?;
+        let root = match curve {
+            Some(curve) => curve_root(origin, curve, Some(plane)),
+            None => cap_root(origin, end(side).ok()?, Some(plane)),
+        };
+        let operation = if self.operations.get(&origin) == Some(&NamingOperation::Revolve) {
+            NamingOperation::Revolve
+        } else {
+            NamingOperation::Extrude
+        };
+        Some(generated(origin, operation, root, SubShapeKind::Face))
+    }
+    fn rounded_seed(&self, origin: ObjectId, edge: SweptEdge) -> Option<Name> {
+        let before = *self.previous.get(&origin)?;
+        let selected = self.swept_edge(before, edge).ok()?;
+        let input = *self.features.get(&before)?.entities.get(&selected)?;
+        Some(generated(
+            origin,
+            *self.operations.get(&origin)?,
+            input,
+            SubShapeKind::Face,
+        ))
+    }
+    fn legacy_seed(&self, reference: &TopologyRef) -> Option<Name> {
         let at = reference.producer_feature;
-        if let SelectionRule::AllDerivedFrom { ancestor } = reference.selection {
-            let segment = match &reference.output_role {
-                SemanticRole::ExtrudeSide { profile_segment }
-                | SemanticRole::RevolveFace { profile_segment }
-                | SemanticRole::CarriedSide { profile_segment }
-                | SemanticRole::OriginSide {
-                    profile_segment, ..
-                } => Some(*profile_segment),
-                _ => None,
-            };
-            if segment != Some(ancestor) {
-                return Err(CadError::input(
-                    "reference selection contradicts its named ancestor",
-                ));
+        match reference.output_role {
+            SemanticRole::CarriedCap { side } => {
+                self.face_seed(*self.previous.get(&at)?, None, side)
             }
+            SemanticRole::CarriedSide { profile_segment } => self.face_seed(
+                *self.previous.get(&at)?,
+                Some(profile_segment),
+                CapSide::Start,
+            ),
+            SemanticRole::OriginCap {
+                origin_feature,
+                side,
+            } => self.face_seed(origin_feature, None, side),
+            SemanticRole::OriginSide {
+                origin_feature,
+                profile_segment,
+            } => self.face_seed(origin_feature, Some(profile_segment), CapSide::Start),
+            SemanticRole::OriginFilletFace {
+                origin_feature,
+                edge_feature,
+                joint,
+            } => self.rounded_seed(
+                origin_feature,
+                SweptEdge {
+                    feature: edge_feature,
+                    joint,
+                },
+            ),
+            _ => None,
         }
-
+    }
+    pub(crate) fn legacy_candidates(&self, reference: &TopologyRef) -> BTreeSet<SubShapeHandle> {
+        let at = reference.producer_feature;
         let operation = self.operations.get(&at).copied();
         let incompatible = match &reference.output_role {
             SemanticRole::ExtrudeCap { .. } | SemanticRole::ExtrudeSide { .. } => !matches!(
@@ -97,73 +164,71 @@ impl ModelNaming {
             _ => false,
         };
         if incompatible {
-            return Err(CadError::topology(
-                "reference names a different operation kind",
-            ));
+            return BTreeSet::new();
         }
 
-        let curve = |origin, id| -> Result<_> {
-            Ok(self.family(at, curve_root(origin, id, Some(self.plane_of(origin)?))))
+        let curve = |origin, id| {
+            self.face_seed(origin, Some(id), CapSide::Start)
+                .map(|seed| self.family(at, seed))
+                .unwrap_or_default()
         };
-        let cap = |origin, side| -> Result<_> {
-            Ok(self.family(
-                at,
-                cap_root(origin, end(side)?, Some(self.plane_of(origin)?)),
-            ))
+        let cap = |origin, side| {
+            self.face_seed(origin, None, side)
+                .map(|seed| self.family(at, seed))
+                .unwrap_or_default()
         };
-        let previous = |id| {
-            self.previous
-                .get(&id)
-                .copied()
-                .ok_or_else(|| CadError::topology("reference producer has no predecessor"))
+        let rounded = |origin, edge| {
+            self.rounded_seed(origin, edge)
+                .map(|seed| self.family(at, seed))
+                .unwrap_or_default()
         };
-        let rounded = |origin, edge| -> Result<_> {
-            let before = previous(origin)?;
-            let selected = self.swept_edge(before, edge)?;
-            let input = self.features[&before].entities[&selected];
-            Ok(self.family(
-                at,
-                generated(origin, self.operations[&origin], input, SubShapeKind::Face),
-            ))
-        };
-        let found = match &reference.output_role {
-            SemanticRole::ExtrudeCap { side } | SemanticRole::RevolveCap { side } => {
-                cap(at, *side)?
-            }
+        let previous = || self.previous.get(&at).copied();
+        match &reference.output_role {
+            SemanticRole::ExtrudeCap { side } | SemanticRole::RevolveCap { side } => cap(at, *side),
             SemanticRole::ExtrudeSide { profile_segment }
-            | SemanticRole::RevolveFace { profile_segment } => curve(at, *profile_segment)?,
-            SemanticRole::CarriedCap { side } => cap(previous(at)?, *side)?,
-            SemanticRole::CarriedSide { profile_segment } => {
-                curve(previous(at)?, *profile_segment)?
+            | SemanticRole::RevolveFace { profile_segment } => curve(at, *profile_segment),
+            SemanticRole::CarriedCap { side } => {
+                previous().map(|p| cap(p, *side)).unwrap_or_default()
             }
+            SemanticRole::CarriedSide { profile_segment } => previous()
+                .map(|p| curve(p, *profile_segment))
+                .unwrap_or_default(),
             SemanticRole::OriginCap {
                 origin_feature,
                 side,
-            } => cap(*origin_feature, *side)?,
+            } => cap(*origin_feature, *side),
             SemanticRole::OriginSide {
                 origin_feature,
                 profile_segment,
-            } => curve(*origin_feature, *profile_segment)?,
+            } => curve(*origin_feature, *profile_segment),
             SemanticRole::ExtrudeCapEdge {
                 side,
                 profile_segment,
             } => self.boundary(
                 at,
                 SubShapeKind::Edge,
-                &[cap(at, *side)?, curve(at, *profile_segment)?],
+                &[cap(at, *side), curve(at, *profile_segment)],
             ),
-            SemanticRole::ExtrudeSweepEdge { joint } => BTreeSet::from([self.swept_edge(
-                at,
-                SweptEdge {
-                    feature: at,
-                    joint: *joint,
-                },
-            )?]),
-            SemanticRole::ExtrudeCapVertex { side, joint } => {
-                let mut faces = vec![cap(at, *side)?];
-                for id in joint.segments() {
-                    faces.push(curve(at, id)?);
+            SemanticRole::ExtrudeSweepEdge { joint } => {
+                let faces: Vec<_> = joint.segments().iter().map(|id| curve(at, *id)).collect();
+                let edges = self.boundary(at, SubShapeKind::Edge, &faces);
+                // A segment pair meeting twice never defined a legacy ProfileJoint.
+                if edges.len() == 1 {
+                    edges
+                } else {
+                    BTreeSet::new()
                 }
+            }
+            SemanticRole::ExtrudeCapVertex { side, joint } => {
+                let mut faces: Vec<_> = joint
+                    .segments()
+                    .into_iter()
+                    .map(|id| curve(at, id))
+                    .collect();
+                if self.boundary(at, SubShapeKind::Edge, &faces).len() != 1 {
+                    return BTreeSet::new();
+                }
+                faces.push(cap(at, *side));
                 self.boundary(at, SubShapeKind::Vertex, &faces)
             }
             SemanticRole::EdgeFilletFace {
@@ -179,7 +244,7 @@ impl ModelNaming {
                     feature: *edge_feature,
                     joint: *joint,
                 },
-            )?,
+            ),
             SemanticRole::OriginFilletFace {
                 origin_feature,
                 edge_feature,
@@ -190,30 +255,8 @@ impl ModelNaming {
                     feature: *edge_feature,
                     joint: *joint,
                 },
-            )?,
-            _ => {
-                return Err(CadError::unsupported(
-                    "legacy meaning has no generative translation",
-                ));
-            }
-        };
-        let expected = match reference.expected_kind {
-            EntityKind::Face => SubShapeKind::Face,
-            EntityKind::Edge => SubShapeKind::Edge,
-            EntityKind::Vertex => SubShapeKind::Vertex,
-            _ => return Err(CadError::unsupported("unknown reference entity kind")),
-        };
-        let found: BTreeSet<_> = found.into_iter().filter(|s| s.kind() == expected).collect();
-        if found.is_empty() {
-            return Err(CadError::topology(format!(
-                "reference {} has no descendants",
-                reference.id
-            )));
-        }
-        match reference.selection {
-            SelectionRule::Exact => Ok(BTreeSet::from([one(found, &reference.id.to_string())?])),
-            SelectionRule::AllDerivedFrom { .. } => Ok(found),
-            _ => Err(CadError::unsupported("unknown reference selection")),
+            ),
+            _ => BTreeSet::new(),
         }
     }
 }

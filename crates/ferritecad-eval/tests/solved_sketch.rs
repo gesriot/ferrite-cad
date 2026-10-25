@@ -26,9 +26,8 @@ use ferritecad_document::{
 };
 use ferritecad_eval::{SketchPresentation, rebuild_cached, rebuild_cold};
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, ExtrudeRequest, ExtrudeResult, GeometryKernel, KernelIdentity, Mesh,
-    OperationContext, OperationResult, ShapeHandle, SubShapeHandle, TessellationParams,
-    mock::MockKernel,
+    ArchiveSlot, BrepBlob, ExtrudeRequest, GeometryKernel, KernelIdentity, Mesh, OperationContext,
+    OperationResult, ShapeHandle, SubShapeHandle, TessellationParams, mock::MockKernel,
 };
 use ferritecad_sketch_solver as solver;
 use ferritecad_types::{CadError, ErrorKind, ObjectId, Result, StableEntityId, Transform};
@@ -114,12 +113,17 @@ impl GeometryKernel for RecordingKernel {
     fn cut(
         &mut self,
         request: &ferritecad_kernel::CutRequest,
-        track: &[ferritecad_kernel::SubShapeHandle],
         context: &OperationContext,
-    ) -> Result<ferritecad_kernel::CutResult> {
-        self.inner.cut(request, track, context)
+    ) -> Result<ferritecad_kernel::OperationResult> {
+        self.inner.cut(request, context)
     }
 
+    fn shape_topology(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::ShapeTopology> {
+        self.inner.shape_topology(shape)
+    }
+    fn naming_history(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::NamingHistory> {
+        self.inner.naming_history(shape)
+    }
     fn identity(&self) -> &KernelIdentity {
         self.inner.identity()
     }
@@ -128,7 +132,7 @@ impl GeometryKernel for RecordingKernel {
         &mut self,
         request: &ExtrudeRequest,
         context: &OperationContext,
-    ) -> Result<ExtrudeResult> {
+    ) -> Result<OperationResult> {
         self.seen
             .lock()
             .expect("no test thread panics here")

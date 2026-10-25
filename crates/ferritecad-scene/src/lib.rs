@@ -1323,8 +1323,8 @@ mod tests {
     use ferritecad_kernel::ProgressSink;
     use ferritecad_kernel::mock::MockKernel;
     use ferritecad_kernel::{
-        ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, ExtrudeResult, KernelIdentity, Mesh,
-        OperationResult, ShapeHandle, SubShapeHandle, TessellationRefusal,
+        ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, KernelIdentity, Mesh, OperationResult,
+        ShapeHandle, SubShapeHandle, TessellationRefusal,
     };
     use ferritecad_types::ObjectId;
     use ferritecad_types::Transform;
@@ -3263,12 +3263,23 @@ mod tests {
         fn cut(
             &mut self,
             request: &ferritecad_kernel::CutRequest,
-            track: &[ferritecad_kernel::SubShapeHandle],
             context: &OperationContext,
-        ) -> Result<ferritecad_kernel::CutResult> {
-            self.inner.cut(request, track, context)
+        ) -> Result<ferritecad_kernel::OperationResult> {
+            self.inner.cut(request, context)
         }
 
+        fn shape_topology(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::ShapeTopology> {
+            self.inner.shape_topology(shape)
+        }
+        fn naming_history(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::NamingHistory> {
+            self.inner.naming_history(shape)
+        }
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }
@@ -3277,7 +3288,7 @@ mod tests {
             &mut self,
             request: &ExtrudeRequest,
             context: &OperationContext,
-        ) -> Result<ExtrudeResult> {
+        ) -> Result<OperationResult> {
             self.inner.extrude(request, context)
         }
 
@@ -4564,12 +4575,23 @@ mod tests {
         fn cut(
             &mut self,
             request: &ferritecad_kernel::CutRequest,
-            track: &[ferritecad_kernel::SubShapeHandle],
             context: &OperationContext,
-        ) -> Result<ferritecad_kernel::CutResult> {
-            self.inner.cut(request, track, context)
+        ) -> Result<ferritecad_kernel::OperationResult> {
+            self.inner.cut(request, context)
         }
 
+        fn shape_topology(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::ShapeTopology> {
+            self.inner.shape_topology(shape)
+        }
+        fn naming_history(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::NamingHistory> {
+            self.inner.naming_history(shape)
+        }
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }
@@ -4578,7 +4600,7 @@ mod tests {
             &mut self,
             request: &ExtrudeRequest,
             context: &OperationContext,
-        ) -> Result<ExtrudeResult> {
+        ) -> Result<OperationResult> {
             self.inner.extrude(request, context)
         }
 
@@ -4917,12 +4939,23 @@ mod tests {
         fn cut(
             &mut self,
             request: &ferritecad_kernel::CutRequest,
-            track: &[ferritecad_kernel::SubShapeHandle],
             context: &OperationContext,
-        ) -> Result<ferritecad_kernel::CutResult> {
-            self.inner.cut(request, track, context)
+        ) -> Result<ferritecad_kernel::OperationResult> {
+            self.inner.cut(request, context)
         }
 
+        fn shape_topology(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::ShapeTopology> {
+            self.inner.shape_topology(shape)
+        }
+        fn naming_history(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::NamingHistory> {
+            self.inner.naming_history(shape)
+        }
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }
@@ -4931,7 +4964,7 @@ mod tests {
             &mut self,
             request: &ExtrudeRequest,
             context: &OperationContext,
-        ) -> Result<ExtrudeResult> {
+        ) -> Result<OperationResult> {
             self.inner.extrude(request, context)
         }
 
@@ -5202,12 +5235,14 @@ mod tests {
     /// faces and an exact one names none.
     struct RaisesTwoFaces {
         inner: MockKernel,
+        extras: BTreeMap<ShapeHandle, (ferritecad_types::StableEntityId, SubShapeHandle)>,
     }
 
     impl RaisesTwoFaces {
         fn new() -> Self {
             Self {
                 inner: MockKernel::new(),
+                extras: BTreeMap::new(),
             }
         }
     }
@@ -5218,12 +5253,31 @@ mod tests {
         fn cut(
             &mut self,
             request: &ferritecad_kernel::CutRequest,
-            track: &[ferritecad_kernel::SubShapeHandle],
             context: &OperationContext,
-        ) -> Result<ferritecad_kernel::CutResult> {
-            self.inner.cut(request, track, context)
+        ) -> Result<ferritecad_kernel::OperationResult> {
+            self.inner.cut(request, context)
         }
 
+        fn shape_topology(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::ShapeTopology> {
+            self.inner.shape_topology(shape)
+        }
+        fn naming_history(
+            &mut self,
+            shape: ShapeHandle,
+        ) -> Result<ferritecad_kernel::NamingHistory> {
+            let mut history = self.inner.naming_history(shape)?;
+            if let Some((curve, cap)) = self.extras.get(&shape) {
+                history.relations.insert((
+                    ferritecad_kernel::NamingInput::Curve(*curve),
+                    ferritecad_kernel::NamingRelation::Generated,
+                    Some(*cap),
+                ));
+            }
+            Ok(history)
+        }
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }
@@ -5232,8 +5286,8 @@ mod tests {
             &mut self,
             request: &ExtrudeRequest,
             context: &OperationContext,
-        ) -> Result<ExtrudeResult> {
-            let mut result = self.inner.extrude(request, context)?;
+        ) -> Result<OperationResult> {
+            let result = self.inner.extrude(request, context)?;
             let first = request
                 .profile()
                 .outer()
@@ -5241,12 +5295,13 @@ mod tests {
                 .first()
                 .expect("a profile has segments")
                 .label;
-            // The start cap, recorded a second time as though it too had been
-            // raised from that segment.
-            if let Some(extra) = result.start_cap.first().copied() {
-                result
-                    .history
-                    .record_generated(ferritecad_kernel::HistoryInput::Segment(first), extra);
+            let history = self.inner.naming_history(result.shape)?;
+            if let Some(extra) = history.relations.iter().find_map(|(i, _, o)| {
+                (*i == ferritecad_kernel::NamingInput::Cap { end: false })
+                    .then_some(*o)
+                    .flatten()
+            }) {
+                self.extras.insert(result.shape, (first, extra));
             }
             Ok(result)
         }

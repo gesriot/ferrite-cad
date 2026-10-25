@@ -7,31 +7,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_document::{Document, EditChange, Expression, ObjectPayload};
 use ferritecad_eval::rebuild_cold;
-use ferritecad_kernel::{OperationContext, SubShapeKind};
+use ferritecad_kernel::{GeometryKernel, OperationContext, SubShapeKind};
 use ferritecad_occt::OcctKernel;
-use ferritecad_topology::generative::{ModelNaming, name_rebuilt};
+use ferritecad_topology::generative::ModelNaming;
 
 fn names(document: &Document) -> ModelNaming {
     let mut kernel = OcctKernel::new().expect("native kernel");
     let built = rebuild_cold(document, &mut kernel, &OperationContext::default()).expect("rebuild");
     assert!(built.all_built(), "{:?}", built.report());
-    let shapes = built
-        .order()
-        .iter()
-        .filter_map(|id| built.shape(*id).map(|shape| (*id, shape)))
-        .collect();
-    let names =
-        name_rebuilt(document, &shapes, &mut kernel).expect("complete operation provenance");
-    for reference in document.topology_refs().expect("stored references") {
-        let old = ferritecad_topology::resolve(built.topology(), &reference)
-            .map(|v| v.into_iter().collect::<BTreeSet<_>>());
-        let new = names.resolve_legacy(&reference);
-        match (old, new) {
-            (Ok(old), Ok(new)) => assert_eq!(old, new, "reference {reference:?}"),
-            (Err(_), Err(_)) => {}
-            (old, new) => panic!("reference {reference:?}: old={old:?}, new={new:?}"),
-        }
-    }
+    let names = built.topology().clone();
     for object in document.objects().expect("objects") {
         if let ObjectPayload::Extrude(e) = &object.payload
             && e.previous.is_some()
@@ -68,17 +52,13 @@ fn names(document: &Document) -> ModelNaming {
             ObjectPayload::Chamfer(c) => (c.previous, c.edge),
             _ => continue,
         };
-        let old = built
-            .topology()
-            .feature(previous)
-            .expect("predecessor names");
-        let old: BTreeSet<_> = if previous == edge.feature {
-            old.sweep_edge(edge.joint).collect()
-        } else {
-            old.origin_sweep_edge(edge.feature, edge.joint).collect()
-        };
-        let new = names.swept_edge(previous, edge).expect("generative edge");
-        assert_eq!(old, BTreeSet::from([new]), "consumed edge of {}", object.id);
+        let selected = names.swept_edge(previous, edge).expect("generative edge");
+        assert_eq!(selected.kind(), SubShapeKind::Edge);
+        assert_eq!(
+            selected.shape(),
+            built.shape(previous).expect("predecessor")
+        );
+        assert!(names.features[&previous].entities.contains_key(&selected));
     }
     for (feature, result) in &names.features {
         for entity in result.topology.adjacent_faces.keys() {
@@ -110,6 +90,53 @@ fn names(document: &Document) -> ModelNaming {
             }
         }
     }
+    let dir = tempfile::tempdir().expect("cache directory");
+    let mut cache = ferritecad_document::CacheStore::open(
+        dir.path().join("names.cache"),
+        document.meta().document_id,
+        kernel.identity().id(),
+        kernel.identity().version(),
+    )
+    .expect("cache");
+    let (prime, events) = ferritecad_eval::rebuild_cached(
+        document,
+        &mut kernel,
+        &mut cache,
+        &OperationContext::default(),
+    )
+    .expect("prime");
+    assert!(prime.all_built(), "{:?}", prime.report());
+    assert!(
+        events
+            .iter()
+            .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Miss)
+    );
+    assert_same_names(document, &names, prime.topology());
+    prime.release_all(&mut kernel);
+    let mut reader = OcctKernel::new().expect("new session");
+    let (restored, events) = ferritecad_eval::rebuild_cached(
+        document,
+        &mut reader,
+        &mut cache,
+        &OperationContext::default(),
+    )
+    .expect("restore");
+    assert!(restored.all_built());
+    assert!(
+        events
+            .iter()
+            .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit)
+    );
+    assert_same_names(document, &names, restored.topology());
+    for named in restored.topology().features.values() {
+        assert!(
+            reader
+                .naming_history(named.shape().expect("shape"))
+                .is_err()
+        );
+    }
+    restored.release_all(&mut reader);
+    assert_eq!(reader.live_shape_count(), 0);
     built.release_all(&mut kernel);
     assert_eq!(kernel.live_shape_count(), 0);
     names
@@ -290,7 +317,13 @@ fn name_boolean_intersections_pocket_births_and_periodic_seams() {
             let inside = names(&doc);
             let side_name = |curve| {
                 let root = curve_root(base, curve, Some(sketch.plane));
-                let face = inside.features[&base].ancestry[&root]
+                let face = inside.features[&base].ancestry
+                    [&ferritecad_topology::generative::generated(
+                        base,
+                        ferritecad_kernel::NamingOperation::Extrude,
+                        root,
+                        SubShapeKind::Face,
+                    )]
                     .iter()
                     .find(|s| s.kind() == SubShapeKind::Face)
                     .expect("side face");
@@ -404,7 +437,12 @@ fn keep_downstream_names_when_an_unrelated_upstream_cut_changes() {
     let (_, _, sketch) = base_profile(&doc, b).expect("base");
     let rim = |model: &ModelNaming| -> BTreeSet<_> {
         let result = &model.features[&second.feature];
-        let wall = &result.ancestry[&curve_root(second.feature, second.curve, Some(sketch.plane))];
+        let wall = &result.ancestry[&ferritecad_topology::generative::generated(
+            second.feature,
+            ferritecad_kernel::NamingOperation::Extrude,
+            curve_root(second.feature, second.curve, Some(sketch.plane)),
+            SubShapeKind::Face,
+        )];
         result
             .entities
             .iter()
@@ -485,12 +523,7 @@ fn restore_all_name_sets_with_their_brep_without_replaying_history() {
     let mut kernel = OcctKernel::new().expect("kernel");
     let built =
         rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("rebuild");
-    let shapes = built
-        .order()
-        .iter()
-        .filter_map(|id| built.shape(*id).map(|shape| (*id, shape)))
-        .collect();
-    let model = name_rebuilt(&document, &shapes, &mut kernel).expect("names");
+    let model = built.topology().clone();
     let named = model.features.values().next().expect("extrusion");
     let entities: Vec<_> = named.entities.keys().copied().collect();
     let shape = entities[0].shape();
@@ -540,11 +573,9 @@ fn restore_all_name_sets_with_their_brep_without_replaying_history() {
     let cut = kernel
         .cut(
             &CutRequest::new(bare, tool.shape).expect("cut request"),
-            &[],
             &OperationContext::default(),
         )
         .expect("cut");
-    assert!(cut.history.is_empty(), "legacy tracking remains opt-in");
     let trace = kernel.naming_history(cut.shape).expect("full history");
     for input in [bare, tool.shape] {
         let topology = kernel.shape_topology(input).expect("input inventory");
@@ -582,7 +613,6 @@ fn restore_all_name_sets_with_their_brep_without_replaying_history() {
             kernel
                 .chamfer_edge(
                     &ChamferRequest::new(input, edge, 1.).expect("chamfer request"),
-                    &[],
                     &OperationContext::default(),
                 )
                 .expect("chamfer")
@@ -591,7 +621,6 @@ fn restore_all_name_sets_with_their_brep_without_replaying_history() {
             kernel
                 .fillet_edge(
                     &FilletRequest::new(input, edge, 1.).expect("fillet request"),
-                    &[],
                     &OperationContext::default(),
                 )
                 .expect("fillet")
@@ -658,16 +687,15 @@ fn translate_cap_edges_sweep_edges_and_cap_vertices_independently() {
     let document = Document::open_read_only(&path).expect("open");
     let mut kernel = OcctKernel::new().expect("kernel");
     let built = rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("build");
-    let shapes = built
-        .order()
-        .iter()
-        .filter_map(|id| built.shape(*id).map(|shape| (*id, shape)))
-        .collect();
-    let model = name_rebuilt(&document, &shapes, &mut kernel).expect("names");
+    let model = built.topology().clone();
     let (feature, _) = model.features.iter().next().expect("extrusion");
-    let old = built.topology().feature(*feature).expect("old names");
+    let (_, _, sketch) = ferritecad_fixtures::feature_changes::base_profile(
+        &document,
+        ferritecad_fixtures::feature_changes::body(&document).expect("body"),
+    )
+    .expect("profile");
     let mut meanings = Vec::new();
-    for segment in old.named_segments() {
+    for segment in sketch.curves.iter().map(|c| c.id) {
         for side in [CapSide::Start, CapSide::End] {
             meanings.push((
                 EntityKind::Edge,
@@ -678,7 +706,12 @@ fn translate_cap_edges_sweep_edges_and_cap_vertices_independently() {
             ));
         }
     }
-    for joint in old.named_joints() {
+    for i in 0..sketch.curves.len() {
+        let joint = ferritecad_types::ProfileJoint::new(
+            sketch.curves[i].id,
+            sketch.curves[(i + 1) % sketch.curves.len()].id,
+        )
+        .expect("joint");
         meanings.push((EntityKind::Edge, SemanticRole::ExtrudeSweepEdge { joint }));
         for side in [CapSide::Start, CapSide::End] {
             meanings.push((
@@ -706,6 +739,7 @@ fn translate_cap_edges_sweep_edges_and_cap_vertices_independently() {
     assert!(ferritecad_topology::resolve(built.topology(), &wrong).is_err());
     assert!(model.resolve_legacy(&wrong).is_err());
 
+    let mut selected = BTreeSet::new();
     for (expected_kind, output_role) in meanings {
         let reference = TopologyRef {
             id: ferritecad_types::StableEntityId::new(),
@@ -716,15 +750,19 @@ fn translate_cap_edges_sweep_edges_and_cap_vertices_independently() {
             selection: SelectionRule::Exact,
             fallback_signature: None,
         };
-        let old: BTreeSet<_> = ferritecad_topology::resolve(built.topology(), &reference)
-            .expect("old reference")
-            .into_iter()
-            .collect();
+        let found = built.resolve(&reference).expect("translated reference");
+        assert_eq!(found.len(), 1);
         assert_eq!(
-            old,
-            model
-                .resolve_legacy(&reference)
-                .expect("translated reference")
+            found[0].kind(),
+            match expected_kind {
+                EntityKind::Edge => SubShapeKind::Edge,
+                EntityKind::Vertex => SubShapeKind::Vertex,
+                _ => unreachable!(),
+            }
+        );
+        assert!(
+            selected.insert(found[0]),
+            "distinct meanings name distinct boundaries"
         );
     }
     built.release_all(&mut kernel);
@@ -744,6 +782,7 @@ fn refuse_missing_wrong_kind_and_ambiguous_names_without_picking_a_neighbour() {
     };
     let members = BTreeSet::from([left, right]);
     let named = FeatureNaming {
+        derivations: BTreeMap::new(),
         topology: ShapeTopology::default(),
         entities: BTreeMap::from([(left, name), (right, name)]),
         bindings: BTreeMap::from([(name, members.clone())]),
@@ -772,4 +811,171 @@ fn refuse_missing_wrong_kind_and_ambiguous_names_without_picking_a_neighbour() {
             })
             .is_err()
     );
+}
+
+fn assert_same_names(document: &Document, a: &ModelNaming, b: &ModelNaming) {
+    assert_eq!(
+        a.features.keys().collect::<Vec<_>>(),
+        b.features.keys().collect::<Vec<_>>()
+    );
+    for (id, x) in &a.features {
+        let y = &b.features[id];
+        assert_eq!(x.derivations, y.derivations);
+        let bindings = |n: &ferritecad_topology::generative::FeatureNaming| {
+            n.bindings
+                .iter()
+                .map(|(name, set)| (*name, set.len()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let ancestry = |n: &ferritecad_topology::generative::FeatureNaming| {
+            n.ancestry
+                .iter()
+                .map(|(name, set)| (*name, set.iter().map(|s| n.entities[s]).collect::<Vec<_>>()))
+                .map(|(name, mut set)| {
+                    set.sort();
+                    (name, set)
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let incidence = |n: &ferritecad_topology::generative::FeatureNaming| {
+            let mut rows = n
+                .topology
+                .adjacent_faces
+                .iter()
+                .map(|(s, f)| {
+                    let mut names = f.iter().map(|v| n.entities[v]).collect::<Vec<_>>();
+                    names.sort();
+                    (n.entities[s], names)
+                })
+                .collect::<Vec<_>>();
+            rows.sort();
+            rows
+        };
+        assert_eq!(bindings(x), bindings(y), "bindings {id}");
+        assert_eq!(ancestry(x), ancestry(y), "ancestry {id}");
+        assert_eq!(incidence(x), incidence(y), "incidence {id}");
+    }
+    for reference in document.topology_refs().expect("references") {
+        let resolution = |m: &ModelNaming| {
+            m.resolve_legacy(&reference)
+                .map(|set| {
+                    let mut names = set
+                        .iter()
+                        .map(|s| m.features[&reference.producer_feature].entities[s])
+                        .collect::<Vec<_>>();
+                    names.sort();
+                    names
+                })
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(resolution(a), resolution(b), "reference {}", reference.id);
+    }
+}
+
+#[test]
+fn cold_operations_after_restored_predecessors_match_fully_cold_chains() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    use ferritecad_fixtures::feature_changes::{base_profile, body, circular_tool, edge_addition};
+    for cut_chain in [false, true] {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("partial.fcad");
+        ferritecad_fixtures::write_plate(&path).expect("plate");
+        let mut doc = Document::open(path).expect("open");
+        let b = body(&doc).expect("body");
+        let (predecessor, edited, slot, value) = if cut_chain {
+            let cut = circular_tool(
+                &doc,
+                b,
+                [20., 20.],
+                2.,
+                ferritecad_document::EndCondition::ThroughAll,
+            )
+            .expect("cut");
+            doc.write_changes(&cut.changes).expect("add cut");
+            let next = circular_tool(
+                &doc,
+                b,
+                [35., 20.],
+                3.,
+                ferritecad_document::EndCondition::Blind {
+                    distance: Expression::constant(2.).expect("depth"),
+                },
+            )
+            .expect("second cut");
+            doc.write_changes(&next.changes).expect("add second cut");
+            (
+                cut.feature,
+                next.feature,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                3.,
+            )
+        } else {
+            let base = base_profile(&doc, b).expect("base").0;
+            let addition = edge_addition(&doc, b, 0, 1., false).expect("fillet");
+            let EditChange::AddFeature { object: fillet, .. } = addition else {
+                unreachable!()
+            };
+            doc.write_changes(&[addition]).expect("add fillet");
+            (
+                base,
+                fillet,
+                ferritecad_document::ExpressionSlot::FilletRadius,
+                1.2,
+            )
+        };
+        let mut kernel = OcctKernel::new().expect("kernel");
+        let mut cache = ferritecad_document::CacheStore::open(
+            dir.path().join("partial.cache"),
+            doc.meta().document_id,
+            kernel.identity().id(),
+            kernel.identity().version(),
+        )
+        .expect("cache");
+        let (prime, _) = ferritecad_eval::rebuild_cached(
+            &doc,
+            &mut kernel,
+            &mut cache,
+            &OperationContext::default(),
+        )
+        .expect("prime");
+        assert!(prime.all_built(), "{:?}", prime.report());
+        prime.release_all(&mut kernel);
+        doc.write_changes(&[EditChange::SetExpression {
+            object: edited,
+            slot,
+            expression: Expression::constant(value).expect("amount"),
+        }])
+        .expect("edit");
+        let (warm, events) = ferritecad_eval::rebuild_cached(
+            &doc,
+            &mut kernel,
+            &mut cache,
+            &OperationContext::default(),
+        )
+        .expect("partial");
+        assert!(warm.all_built(), "{:?}", warm.report());
+        assert!(
+            events.iter().any(
+                |e| e.feature == predecessor && e.outcome == ferritecad_eval::CacheOutcome::Hit
+            )
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.feature == edited && e.outcome == ferritecad_eval::CacheOutcome::Miss)
+        );
+        let restored = warm.shape(predecessor).expect("restored input");
+        assert!(
+            kernel.naming_history(restored).is_err(),
+            "the cold operation cannot query its input history"
+        );
+        let cold = rebuild_cold(&doc, &mut kernel, &OperationContext::default()).expect("cold");
+        assert!(cold.all_built());
+        assert_same_names(&doc, cold.topology(), warm.topology());
+        warm.release_all(&mut kernel);
+        cold.release_all(&mut kernel);
+        assert_eq!(kernel.live_shape_count(), 0);
+    }
 }

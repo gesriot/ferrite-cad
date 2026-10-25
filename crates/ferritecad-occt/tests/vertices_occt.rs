@@ -9,6 +9,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use std::collections::BTreeSet;
 
 use ferritecad_kernel::{
@@ -377,12 +380,6 @@ fn an_assembly_read_from_a_file_names_the_corners_of_every_part() {
 }
 
 /// Every cap vertex the kernel named for one sweep, by side.
-fn cap_vertices(result: &ferritecad_kernel::ExtrudeResult) -> (usize, usize) {
-    (
-        result.start_cap_vertices.len(),
-        result.end_cap_vertices.len(),
-    )
-}
 
 #[test]
 fn the_eight_corners_of_a_plate_are_named_by_the_joint_and_the_cap() {
@@ -396,17 +393,16 @@ fn the_eight_corners_of_a_plate_are_named_by_the_joint_and_the_cap() {
     let result = kernel
         .extrude(&request, &OperationContext::default())
         .expect("Open CASCADE builds the plate");
+    let start_vertices = naming::cap_vertices(&mut kernel, result.shape, false);
+    let end_vertices = naming::cap_vertices(&mut kernel, result.shape, true);
 
-    let (start, end) = cap_vertices(&result);
+    let (start, end) = (start_vertices.len(), end_vertices.len());
     assert_eq!(start, 4, "four corners reach the start cap");
     assert_eq!(end, 4, "four corners reach the end cap");
 
     // Eight distinct vertices of this shape, and no corner named twice.
     let mut seen = BTreeSet::new();
-    for (side, named) in [
-        ("start", &result.start_cap_vertices),
-        ("end", &result.end_cap_vertices),
-    ] {
+    for (side, named) in [("start", &start_vertices), ("end", &end_vertices)] {
         for (joint, vertex) in named {
             assert_eq!(vertex.kind(), SubShapeKind::Vertex, "{side} {joint}");
             assert_eq!(vertex.shape(), result.shape, "{side} {joint}");
@@ -454,6 +450,11 @@ fn a_named_cap_vertex_is_on_its_cap_and_ends_its_joints_sweep_edge() {
     let result = kernel
         .extrude(&request, &OperationContext::default())
         .expect("builds");
+    let start_vertices = naming::cap_vertices(&mut kernel, result.shape, false);
+    let end_vertices = naming::cap_vertices(&mut kernel, result.shape, true);
+    let swept = naming::sweep_edges(&mut kernel, result.shape);
+    let start_caps = [naming::cap(&mut kernel, result.shape, false)];
+    let end_caps = [naming::cap(&mut kernel, result.shape, true)];
     let mesh = kernel
         .tessellate(
             result.shape,
@@ -521,8 +522,8 @@ fn a_named_cap_vertex_is_on_its_cap_and_ends_its_joints_sweep_edge() {
 
     let mut named = BTreeSet::new();
     for (side, entries, caps) in [
-        ("start", &result.start_cap_vertices, &result.start_cap),
-        ("end", &result.end_cap_vertices, &result.end_cap),
+        ("start", &start_vertices, &start_caps),
+        ("end", &end_vertices, &end_caps),
     ] {
         for (joint, vertex) in entries {
             named.insert(*vertex);
@@ -544,8 +545,7 @@ fn a_named_cap_vertex_is_on_its_cap_and_ends_its_joints_sweep_edge() {
 
             // And it ends the edge swept from its own joint: one of its
             // occurrences is a position that edge is drawn through.
-            let swept = result
-                .sweep_edges
+            let swept = swept
                 .get(joint)
                 .unwrap_or_else(|| panic!("{joint} swept no edge"));
             assert_eq!(swept.kind(), SubShapeKind::Edge);
@@ -560,9 +560,9 @@ fn a_named_cap_vertex_is_on_its_cap_and_ends_its_joints_sweep_edge() {
     assert_eq!(named, drawn, "the eight names do not cover the plate");
 
     // Start and End of one joint are different vertices and cannot be swapped.
-    for joint in result.start_cap_vertices.keys() {
-        let start = result.start_cap_vertices[joint];
-        let end = result.end_cap_vertices[joint];
+    for joint in start_vertices.keys() {
+        let start = start_vertices[joint];
+        let end = end_vertices[joint];
         assert_ne!(start, end, "{joint} named one vertex on both caps");
     }
 
@@ -594,16 +594,18 @@ fn every_way_of_sweeping_a_profile_keeps_the_side_meanings() {
         let result = kernel
             .extrude(&request, &OperationContext::default())
             .unwrap_or_else(|e| panic!("{what}: {e}"));
-        assert_eq!(result.start_cap_vertices.len(), 4, "{what}");
-        assert_eq!(result.end_cap_vertices.len(), 4, "{what}");
+        let start_vertices = naming::cap_vertices(&mut kernel, result.shape, false);
+        let end_vertices = naming::cap_vertices(&mut kernel, result.shape, true);
+        assert_eq!(start_vertices.len(), 4, "{what}");
+        assert_eq!(end_vertices.len(), 4, "{what}");
         // The two sides never name one vertex, however the sweep ran.
-        for joint in result.start_cap_vertices.keys() {
+        for joint in start_vertices.keys() {
             assert_ne!(
-                result.start_cap_vertices[joint], result.end_cap_vertices[joint],
+                start_vertices[joint], end_vertices[joint],
                 "{what}: {joint} named one vertex on both caps"
             );
         }
-        let joints: BTreeSet<_> = result.start_cap_vertices.keys().copied().collect();
+        let joints: BTreeSet<_> = start_vertices.keys().copied().collect();
         answers.push((what, joints));
         kernel.release(result.shape);
     }
@@ -626,8 +628,10 @@ fn a_triangle_names_six_and_an_arc_profile_names_all_its_unique_joints() {
     let result = kernel
         .extrude(&triangle, &OperationContext::default())
         .expect("builds");
-    assert_eq!(result.start_cap_vertices.len(), 3);
-    assert_eq!(result.end_cap_vertices.len(), 3);
+    let start_vertices = naming::cap_vertices(&mut kernel, result.shape, false);
+    let end_vertices = naming::cap_vertices(&mut kernel, result.shape, true);
+    assert_eq!(start_vertices.len(), 3);
+    assert_eq!(end_vertices.len(), 3);
     kernel.release(result.shape);
 
     // Three segments, one of them curved, blind and symmetric.
@@ -674,8 +678,10 @@ fn a_triangle_names_six_and_an_arc_profile_names_all_its_unique_joints() {
         let result = kernel
             .extrude(&request, &OperationContext::default())
             .expect("builds");
-        assert_eq!(result.start_cap_vertices.len(), 3, "every joint is unique");
-        assert_eq!(result.end_cap_vertices.len(), 3);
+        let start_vertices = naming::cap_vertices(&mut kernel, result.shape, false);
+        let end_vertices = naming::cap_vertices(&mut kernel, result.shape, true);
+        assert_eq!(start_vertices.len(), 3, "every joint is unique");
+        assert_eq!(end_vertices.len(), 3);
         kernel.release(result.shape);
     }
 }
@@ -722,18 +728,21 @@ fn a_pair_that_meets_at_two_corners_names_neither_cap_vertex() {
     let result = kernel
         .extrude(&request, &OperationContext::default())
         .expect("builds");
+    let start_vertices = naming::cap_vertices(&mut kernel, result.shape, false);
+    let end_vertices = naming::cap_vertices(&mut kernel, result.shape, true);
+    let start_edges = naming::cap_edges(&mut kernel, result.shape, false);
 
     assert!(
-        result.start_cap_vertices.is_empty(),
+        start_vertices.is_empty(),
         "an ambiguous pair named a start cap vertex"
     );
     assert!(
-        result.end_cap_vertices.is_empty(),
+        end_vertices.is_empty(),
         "an ambiguous pair named an end cap vertex"
     );
     // And the cap edges of the same shape are still named, so the refusal is
     // about this pair rather than about the shape being unnameable.
-    assert_eq!(result.start_cap_edges.len(), 2);
+    assert_eq!(start_edges.len(), 2);
 
     kernel.release(result.shape);
 }
@@ -778,8 +787,9 @@ fn reordering_the_profile_keeps_each_joint_owning_its_cap_vertices() {
         let result = kernel
             .extrude(&request, &OperationContext::default())
             .expect("builds");
-        assert_eq!(result.start_cap_vertices.len(), 4, "start at {start}");
-        owners.push(result.start_cap_vertices.keys().copied().collect());
+        let start_vertices = naming::cap_vertices(&mut kernel, result.shape, false);
+        assert_eq!(start_vertices.len(), 4, "start at {start}");
+        owners.push(start_vertices.keys().copied().collect());
         kernel.release(result.shape);
     }
 

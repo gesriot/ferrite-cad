@@ -11,7 +11,7 @@
 //! history, handle scoping, blob identity and determinism — because those are
 //! what the layers above depend on.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_types::{CadError, Point3, Result, StableEntityId, Transform};
 
@@ -20,10 +20,7 @@ use crate::handle::{SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
 use crate::identity::KernelIdentity;
 use crate::kernel::GeometryKernel;
 use crate::request::{CutRequest, ExtrudeExtent, ExtrudeRequest, TessellationParams};
-use crate::result::{
-    ArchiveSlot, BrepBlob, CutResult, ExtrudeResult, History, HistoryInput, Mesh, MeshFaceRange,
-    OperationResult,
-};
+use crate::result::{ArchiveSlot, BrepBlob, Mesh, MeshFaceRange, OperationResult};
 
 /// Marks the mock's own blob format, so a stray blob is refused early.
 const BLOB_MAGIC: &[u8; 4] = b"FCMK";
@@ -63,6 +60,7 @@ impl Prism {
 /// A geometry kernel that computes prisms and nothing else.
 #[derive(Debug)]
 pub struct MockKernel {
+    histories: BTreeMap<ShapeHandle, crate::NamingHistory>,
     identity: KernelIdentity,
     session: SessionId,
     shapes: BTreeMap<u64, Prism>,
@@ -93,6 +91,7 @@ impl MockKernel {
 
     fn with_identity(version: &str, build: &str) -> Self {
         Self {
+            histories: BTreeMap::new(),
             identity: KernelIdentity::new("mock", version, build)
                 .expect("the mock's own identity is well formed"),
             session: SessionId::new(),
@@ -252,6 +251,44 @@ impl GeometryKernel for MockKernel {
         &self.identity
     }
 
+    fn shape_topology(&mut self, shape: ShapeHandle) -> Result<crate::ShapeTopology> {
+        let n = self.lookup(shape)?.base.len() as u64;
+        let mut topology = crate::ShapeTopology::default();
+        for i in 0..n + 2 {
+            let face = self.face(shape, i);
+            topology.adjacent_faces.insert(face, BTreeSet::new());
+        }
+        for i in 0..n {
+            let previous = self.face(shape, (i + n - 1) % n);
+            let side = self.face(shape, i);
+            let start = self.face(shape, n);
+            let end = self.face(shape, n + 1);
+            for (index, faces) in [
+                (n + 2 + 3 * i, BTreeSet::from([side, start])),
+                (n + 3 + 3 * i, BTreeSet::from([side, end])),
+                (n + 4 + 3 * i, BTreeSet::from([previous, side])),
+            ] {
+                topology
+                    .adjacent_faces
+                    .insert(SubShapeHandle::new(shape, SubShapeKind::Edge, index), faces);
+            }
+            for (index, cap) in [(4 * n + 2 + 2 * i, start), (4 * n + 3 + 2 * i, end)] {
+                topology.adjacent_faces.insert(
+                    SubShapeHandle::new(shape, SubShapeKind::Vertex, index),
+                    BTreeSet::from([previous, side, cap]),
+                );
+            }
+        }
+        Ok(topology)
+    }
+
+    fn naming_history(&mut self, shape: ShapeHandle) -> Result<crate::NamingHistory> {
+        self.lookup(shape)?;
+        self.histories.get(&shape).cloned().ok_or_else(|| {
+            CadError::unsupported("the restored prism has no live operation provenance")
+        })
+    }
+
     /// The mock draws every curve as its chord, and a revolution is curved
     /// everywhere. Refused explicitly rather than approximated by a prism,
     /// which would be a solid of the wrong shape under the right name.
@@ -259,7 +296,7 @@ impl GeometryKernel for MockKernel {
         &mut self,
         _request: &crate::request::RevolveRequest,
         context: &OperationContext,
-    ) -> Result<crate::result::RevolveResult> {
+    ) -> Result<OperationResult> {
         context.check_cancelled()?;
         Err(CadError::unsupported(
             "the mock kernel represents every solid as a straight prism and cannot turn a \
@@ -271,7 +308,7 @@ impl GeometryKernel for MockKernel {
         &mut self,
         request: &ExtrudeRequest,
         context: &OperationContext,
-    ) -> Result<ExtrudeResult> {
+    ) -> Result<OperationResult> {
         context.check_cancelled()?;
         self.extrusions += 1;
         if self.fail_extrude_at == Some(self.extrusions) {
@@ -339,38 +376,54 @@ impl GeometryKernel for MockKernel {
         context.check_cancelled()?;
 
         let prism = Prism { base, top, labels };
-        let side_faces = prism.side_face_count();
-        let start_cap_index = prism.start_cap_index();
-        let end_cap_index = prism.end_cap_index();
         let labels = prism.labels.clone();
+        let n = labels.len() as u64;
         let shape = self.store(prism);
-
-        // Each side face is generated from the segment it was raised from.
-        // The caps come from no input at all, which is why they are reported
-        // separately rather than squeezed into the history.
-        let mut history = History::new();
-        for (index, label) in labels.iter().enumerate().take(side_faces) {
-            history.record_generated(
-                HistoryInput::Segment(*label),
-                self.face(shape, index as u64),
-            );
+        let mut history = crate::NamingHistory {
+            operation: Some(crate::NamingOperation::Extrude),
+            ..Default::default()
+        };
+        let sub = |kind, index| SubShapeHandle::new(shape, kind, index);
+        for (i, curve) in labels.into_iter().enumerate() {
+            let i = i as u64;
+            let input = crate::NamingInput::Curve(curve);
+            for output in [
+                self.face(shape, i),
+                sub(SubShapeKind::Edge, n + 2 + 3 * i),
+                sub(SubShapeKind::Edge, n + 3 + 3 * i),
+            ] {
+                history
+                    .relations
+                    .insert((input, crate::NamingRelation::Generated, Some(output)));
+            }
+            for end in [false, true] {
+                let j = (i + u64::from(end)) % n;
+                let input = crate::NamingInput::CurveEnd { curve, end };
+                for output in [
+                    sub(SubShapeKind::Edge, n + 4 + 3 * j),
+                    sub(SubShapeKind::Vertex, 4 * n + 2 + 2 * j),
+                    sub(SubShapeKind::Vertex, 4 * n + 3 + 2 * j),
+                ] {
+                    history.relations.insert((
+                        input,
+                        crate::NamingRelation::Generated,
+                        Some(output),
+                    ));
+                }
+            }
         }
-
+        for end in [false, true] {
+            history.relations.insert((
+                crate::NamingInput::Cap { end },
+                crate::NamingRelation::Generated,
+                Some(self.face(shape, n + u64::from(end))),
+            ));
+        }
+        self.histories.insert(shape, history);
         context.progress().report(1.0);
-        Ok(ExtrudeResult {
-            start_cap_vertices: BTreeMap::new(),
-            end_cap_vertices: BTreeMap::new(),
+        Ok(OperationResult {
             shape,
-            history,
-            start_cap: vec![self.face(shape, start_cap_index)],
-            end_cap: vec![self.face(shape, end_cap_index)],
-            // The mock sweeps a prism without building edges for its caps, so
-            // it names none. Absent rather than invented: a reference to one
-            // must fail to resolve against this kernel, not resolve wrongly.
-            start_cap_edges: BTreeMap::new(),
-            end_cap_edges: BTreeMap::new(),
-            // And no edges along the sweep either, for the same reason.
-            sweep_edges: BTreeMap::new(),
+            removed_volume: 0.0,
         })
     }
 
@@ -384,9 +437,8 @@ impl GeometryKernel for MockKernel {
     fn cut(
         &mut self,
         _request: &CutRequest,
-        _track: &[SubShapeHandle],
         context: &OperationContext,
-    ) -> Result<CutResult> {
+    ) -> Result<OperationResult> {
         context.check_cancelled()?;
         Err(CadError::unsupported(
             "the mock kernel computes prisms and implements no boolean; a cut needs a real kernel",
@@ -415,22 +467,11 @@ impl GeometryKernel for MockKernel {
         }
         context.check_cancelled()?;
 
-        let face_count = source.side_face_count() as u64 + 2;
         let result = self.store(moved);
-
-        // A transform preserves every face; each one is modified, not replaced.
-        let mut history = History::new();
-        for index in 0..face_count {
-            history.record_modified(
-                HistoryInput::SubShape(self.face(shape, index)),
-                self.face(result, index),
-            );
-        }
-
         context.progress().report(1.0);
         Ok(OperationResult {
             shape: result,
-            history,
+            removed_volume: 0.0,
         })
     }
 
@@ -551,6 +592,7 @@ impl GeometryKernel for MockKernel {
         }
         let prism = self.lookup(shape)?;
         let face_count = prism.side_face_count() as u64 + 2;
+        let n = prism.side_face_count() as u64;
 
         let mut named = Vec::with_capacity(sub_shapes.len());
         let mut slots = Vec::with_capacity(sub_shapes.len());
@@ -560,9 +602,16 @@ impl GeometryKernel for MockKernel {
                     "{sub} does not belong to the shape being archived"
                 )));
             }
-            if sub.kind() != SubShapeKind::Face || sub.index() >= face_count {
+            let expected = if sub.index() < face_count {
+                SubShapeKind::Face
+            } else if sub.index() < 4 * n + 2 {
+                SubShapeKind::Edge
+            } else {
+                SubShapeKind::Vertex
+            };
+            if sub.kind() != expected || sub.index() >= 6 * n + 2 {
                 return Err(CadError::kernel(format!(
-                    "{sub} is not a face of the shape being archived"
+                    "{sub} is not a sub-shape of the shape being archived"
                 )));
             }
             named.push(sub.index());
@@ -615,9 +664,11 @@ impl GeometryKernel for MockKernel {
         }
 
         let face_count = prism.side_face_count() as u64 + 2;
-        if let Some(invalid) = named.iter().find(|face| **face >= face_count) {
+        let n = prism.side_face_count() as u64;
+        if let Some(invalid) = named.iter().find(|index| **index >= 6 * n + 2) {
             return Err(CadError::kernel(format!(
-                "the archive names face {invalid}, but the restored shape has {face_count} faces"
+                "the archive names sub-shape {invalid}, but the restored shape has {} sub-shapes",
+                6 * n + 2
             )));
         }
 
@@ -643,7 +694,19 @@ impl GeometryKernel for MockKernel {
         let shape = self.store(prism);
         let resolved = requested
             .into_iter()
-            .map(|face| self.face(shape, face))
+            .map(|index| {
+                SubShapeHandle::new(
+                    shape,
+                    if index < face_count {
+                        SubShapeKind::Face
+                    } else if index < 4 * n + 2 {
+                        SubShapeKind::Edge
+                    } else {
+                        SubShapeKind::Vertex
+                    },
+                    index,
+                )
+            })
             .collect();
         Ok((shape, resolved))
     }
@@ -669,6 +732,7 @@ impl GeometryKernel for MockKernel {
     fn release(&mut self, shape: ShapeHandle) {
         if shape.session() == self.session {
             self.shapes.remove(&shape.index());
+            self.histories.remove(&shape);
         }
     }
 }

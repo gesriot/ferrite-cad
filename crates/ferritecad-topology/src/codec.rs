@@ -1,1335 +1,366 @@
 // SPDX-License-Identifier: MIT
-//! Writing an archive down, and reading one back with suspicion.
-//!
-//! An [`ArchivedFeature`] is only useful if it outlives the process that made
-//! it, so it needs a byte form. This module is that form and nothing else: it
-//! produces and consumes `Vec<u8>`, and knows nothing about where those bytes
-//! are kept. Storage is somebody else's problem, which is what lets this crate
-//! keep its promise to hold no cache.
-//!
-//! # Every name is written as a number chosen on purpose
-//!
-//! [`BoundName`] is encoded with explicit tag constants, never with its
-//! `Debug` text and never with its declaration order. Both of those would tie
-//! the on-disk meaning of an old cache to the source layout of a newer build:
-//! reordering an enum or renaming a variant would silently re-point every
-//! stored name at different geometry. A tag is a decision that can be kept.
-//!
-//! # Reading is fail-closed
-//!
-//! Nothing here repairs, guesses or skips. A version from the future, an
-//! unknown tag, a short read, trailing bytes, the wrong producer, another
-//! kernel build, a checksum that disagrees — each is an error, and the caller's
-//! only recourse is to discard the entry and rebuild. That is cheap. The
-//! alternative is a name resolving to a face that is not the one it means.
+use std::collections::{BTreeMap, BTreeSet};
 
-use std::mem::size_of;
+use ferritecad_kernel::{ArchiveSlot, BrepBlob, KernelIdentity, SubShapeKind};
+use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
-use ferritecad_kernel::{ArchiveSlot, BrepBlob, KernelIdentity};
-use ferritecad_types::{CadError, ContentHash, ObjectId, ProfileJoint, Result, StableEntityId};
+use crate::{ArchivedFeature, generative::Name};
 
-use crate::archive::{ArchivedFeature, BoundName};
-
-/// What a cache entry holding an encoded archive is called.
-///
-/// The B-Rep and the names that reach into it are one entry under one kind.
-/// Two kinds could not be written atomically, and a store holding the geometry
-/// of one rebuild beside the table of another is exactly the failure this
-/// design exists to prevent.
-pub const ARCHIVE_CACHE_KIND: &str = "brep.named.v1";
-
-const MAGIC: &[u8; 4] = b"FCNA";
-
-/// Bumped when the meaning of these bytes changes.
-///
-/// A reader refuses anything higher rather than interpreting a layout it
-/// predates. An older version could be read by a future build if it ever
-/// becomes worth the code; today there is nothing older to read.
-///
-/// v2 appended the list of names the feature removed. A v1 entry is refused
-/// rather than read as a v2 one with none: "this feature never named that" and
-/// "this feature took that away" are different answers to a lost reference, and
-/// an entry that could not say which is not one to guess at. Refusing costs a
-/// rebuild, which is what a cache is for.
-// v3 adds the immediate predecessor and qualified ancestor names. v2
-// cannot supply that provenance, so it is rejected and rebuilt in full.
-// v4 (§28G) carries sweep edges and a predecessor Fillet's face under their
-// origin. A v3 entry of a Fillet has neither, and a second Fillet restored on
-// it would find no edge to round, so v3 is refused and rebuilt, never read as
-// a v4 entry that happens to carry none.
-const FORMAT_VERSION: u16 = 4;
-
-/// Bytes before the checksummed archive payload.
-const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>() + size_of::<u64>() + 32;
-
-// Stable on disk. Never reuse a number for a different meaning, and never
-// renumber one: an old cache entry outlives the build that wrote it.
-const TAG_START_CAP: u16 = 1;
-const TAG_END_CAP: u16 = 2;
-const TAG_SIDE: u16 = 3;
-/// The cap edges. New tags rather than a new format version: an older build
-/// reading one refuses the whole entry as malformed, and this is a cache, so a
-/// refused entry is rebuilt rather than lost.
-const TAG_START_CAP_EDGE: u16 = 4;
-const TAG_END_CAP_EDGE: u16 = 5;
-/// The edges along the sweep. A new tag again, and again not a new format
-/// version: the layout of an entry is unchanged and only the vocabulary of
-/// names grew. An older build meeting this tag refuses the whole entry as
-/// malformed rather than reading past it, so it cannot restore a partial set
-/// of names and believe it has them all; the entry is a cache and is rebuilt.
-const TAG_SWEEP_EDGE: u16 = 6;
-/// The vertices where those corners reach each cap. Two more tags, chosen next
-/// in sequence and never reused from the six above: an old entry outlives the
-/// build that wrote it, and a tag that changed meaning would re-point a stored
-/// name at different geometry rather than fail. Not a new format version
-/// either, for the reason the sweep edge was not: the layout of an entry is
-/// unchanged and only the vocabulary grew, so an older build refuses the whole
-/// entry as malformed and rebuilds the cache instead of restoring a partial
-/// set of names and believing it complete.
-const TAG_START_CAP_VERTEX: u16 = 7;
-const TAG_END_CAP_VERTEX: u16 = 8;
-/// What a boolean left of the feature it consumed. Three more tags, chosen
-/// next in sequence and never reused, for the reason every tag above was.
-///
-/// Unlike those, these arrive with a format version bump, because the entry's
-/// *layout* grew as well: a removed-name list follows the bindings, and a
-/// reader that stopped after the bindings would find trailing bytes it could
-/// not account for. See [`FORMAT_VERSION`].
-const TAG_CARRIED_START_CAP: u16 = 9;
-const TAG_CARRIED_END_CAP: u16 = 10;
-const TAG_CARRIED_SIDE: u16 = 11;
-const TAG_ORIGIN_START_CAP: u16 = 12;
-const TAG_ORIGIN_END_CAP: u16 = 13;
-const TAG_ORIGIN_SIDE: u16 = 14;
-/// The face of revolution one Line raised (§27A). A new tag rather than
-/// `TAG_SIDE`: a turned face must never come back as an extrusion side.
-const TAG_REVOLVED_FACE: u16 = 15;
-
-/// The start and end faces of a partial revolution (§27D). New tags rather
-/// than `TAG_START_CAP`/`TAG_END_CAP`: a sector's end face must never come
-/// back as an extrusion cap. A reader that predates them refuses the unknown
-/// tag and rebuilds, which is what the format promises.
-const TAG_REVOLVED_START_CAP: u16 = 16;
-const TAG_REVOLVED_END_CAP: u16 = 17;
-
-/// §28A: the face a Fillet made from one producer's edge at one corner. A new
-/// tag, the vocabulary-only route: the layout of an entry is unchanged, so
-/// the format version is not, and a reader that predates the tag refuses the
-/// whole entry as malformed and rebuilds.
-const TAG_EDGE_FILLET_FACE: u16 = 18;
-
-/// §28G: an edge an origin feature swept at one corner, carried by a later
-/// feature, and the face an origin Fillet made, carried the same way. Kept
-/// apart from every face tag so an edge name can never come back as a face.
-const TAG_ORIGIN_SWEEP_EDGE: u16 = 19;
-const TAG_ORIGIN_FILLET_FACE: u16 = 20;
-
-/// §29A: the planar face a Chamfer made from one producer's edge at one corner.
-/// Appended in the same vocabulary-only way as [`TAG_EDGE_FILLET_FACE`]: the
-/// layout of an entry is unchanged, so the format version is not, and a reader
-/// that predates the tag refuses the whole entry as malformed and rebuilds.
-const TAG_EDGE_CHAMFER_FACE: u16 = 21;
-
-/// Writes a §28G origin name, which may be bound or removed alike. Answers
-/// whether `name` was one.
-fn put_sequential_origin(payload: &mut Vec<u8>, name: BoundName) -> bool {
-    match name {
-        BoundName::OriginSweepEdge {
-            origin_feature,
-            joint,
-        } => {
-            payload.extend_from_slice(&TAG_ORIGIN_SWEEP_EDGE.to_le_bytes());
-            payload.extend_from_slice(&origin_feature.to_bytes());
-            for segment in joint.segments() {
-                payload.extend_from_slice(&segment.to_bytes());
-            }
-            true
-        }
-        BoundName::OriginFilletFace {
-            origin_feature,
-            edge_feature,
-            joint,
-        } => {
-            payload.extend_from_slice(&TAG_ORIGIN_FILLET_FACE.to_le_bytes());
-            payload.extend_from_slice(&origin_feature.to_bytes());
-            payload.extend_from_slice(&edge_feature.to_bytes());
-            for segment in joint.segments() {
-                payload.extend_from_slice(&segment.to_bytes());
-            }
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Reads the §28G origin name `tag` introduces, if it is one of theirs.
-fn take_sequential_origin(tag: u16, reader: &mut Reader<'_>) -> Result<Option<BoundName>> {
-    Ok(match tag {
-        TAG_ORIGIN_SWEEP_EDGE => Some(BoundName::OriginSweepEdge {
-            origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
-            joint: ProfileJoint::from_canonical([
-                StableEntityId::from_bytes(reader.array("first profile segment")?)?,
-                StableEntityId::from_bytes(reader.array("second profile segment")?)?,
-            ])?,
-        }),
-        TAG_ORIGIN_FILLET_FACE => Some(BoundName::OriginFilletFace {
-            origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
-            edge_feature: ObjectId::from_bytes(reader.array("edge feature")?)?,
-            joint: ProfileJoint::from_canonical([
-                StableEntityId::from_bytes(reader.array("first profile segment")?)?,
-                StableEntityId::from_bytes(reader.array("second profile segment")?)?,
-            ])?,
-        }),
-        _ => None,
-    })
-}
+pub const ARCHIVE_CACHE_KIND: &str = "brep.generative.v1";
 
 impl ArchivedFeature {
-    /// Writes the archive out as bytes.
-    ///
-    /// Deterministic: the binding table is already ordered, so the same
-    /// archive encodes to the same bytes on every machine and the cache can
-    /// address the result by its content.
     pub fn encode(&self) -> Result<Vec<u8>> {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&self.producer().to_bytes());
-        payload.push(u8::from(self.previous.is_some()));
-        if let Some(previous) = self.previous {
-            payload.extend_from_slice(&previous.to_bytes());
+        self.validate()?;
+        let mut out = self.producer.to_bytes().to_vec();
+        for part in [
+            self.blob.kernel().id().as_bytes(),
+            self.blob.kernel().version().as_bytes(),
+            self.blob.kernel().build().as_bytes(),
+            self.blob.bytes(),
+        ] {
+            put_bytes(&mut out, part)?;
         }
-
-        let kernel = self.blob().kernel();
-        put_str(&mut payload, kernel.id())?;
-        put_str(&mut payload, kernel.version())?;
-        put_str(&mut payload, kernel.build())?;
-
-        payload.extend_from_slice(self.blob_hash().as_bytes());
-        let bytes = self.blob().bytes();
-        let blob_length = u64::try_from(bytes.len())
-            .map_err(|_| malformed("the B-Rep is too large to archive"))?;
-        payload.extend_from_slice(&blob_length.to_le_bytes());
-        payload.extend_from_slice(bytes);
-
-        let bindings = self.bindings();
-        let binding_count = u32::try_from(bindings.len())
-            .map_err(|_| malformed("there are too many topology names to archive"))?;
-        payload.extend_from_slice(&binding_count.to_le_bytes());
-        for (name, slot) in bindings {
-            match name {
-                BoundName::StartCap => payload.extend_from_slice(&TAG_START_CAP.to_le_bytes()),
-                BoundName::EndCap => payload.extend_from_slice(&TAG_END_CAP.to_le_bytes()),
-                BoundName::RevolvedFace { profile_segment } => {
-                    payload.extend_from_slice(&TAG_REVOLVED_FACE.to_le_bytes());
-                    payload.extend_from_slice(&profile_segment.to_bytes());
-                }
-                BoundName::RevolvedStartCap => {
-                    payload.extend_from_slice(&TAG_REVOLVED_START_CAP.to_le_bytes())
-                }
-                BoundName::RevolvedEndCap => {
-                    payload.extend_from_slice(&TAG_REVOLVED_END_CAP.to_le_bytes())
-                }
-                BoundName::Side { profile_segment } => {
-                    payload.extend_from_slice(&TAG_SIDE.to_le_bytes());
-                    payload.extend_from_slice(&profile_segment.to_bytes());
-                }
-                BoundName::StartCapEdge { profile_segment } => {
-                    payload.extend_from_slice(&TAG_START_CAP_EDGE.to_le_bytes());
-                    payload.extend_from_slice(&profile_segment.to_bytes());
-                }
-                BoundName::EndCapEdge { profile_segment } => {
-                    payload.extend_from_slice(&TAG_END_CAP_EDGE.to_le_bytes());
-                    payload.extend_from_slice(&profile_segment.to_bytes());
-                }
-                BoundName::SweepEdge { joint } => {
-                    payload.extend_from_slice(&TAG_SWEEP_EDGE.to_le_bytes());
-                    for segment in joint.segments() {
-                        payload.extend_from_slice(&segment.to_bytes());
-                    }
-                }
-                // The side is the tag, and both segments follow it. Writing
-                // one segment would make two neighbouring corners one stored
-                // name, and writing no side would make the two ends of one
-                // corner one stored name.
-                BoundName::StartCapVertex { joint } => {
-                    payload.extend_from_slice(&TAG_START_CAP_VERTEX.to_le_bytes());
-                    for segment in joint.segments() {
-                        payload.extend_from_slice(&segment.to_bytes());
-                    }
-                }
-                BoundName::EndCapVertex { joint } => {
-                    payload.extend_from_slice(&TAG_END_CAP_VERTEX.to_le_bytes());
-                    for segment in joint.segments() {
-                        payload.extend_from_slice(&segment.to_bytes());
-                    }
-                }
-                BoundName::CarriedStartCap => {
-                    payload.extend_from_slice(&TAG_CARRIED_START_CAP.to_le_bytes())
-                }
-                BoundName::CarriedEndCap => {
-                    payload.extend_from_slice(&TAG_CARRIED_END_CAP.to_le_bytes())
-                }
-                BoundName::CarriedSide { profile_segment } => {
-                    payload.extend_from_slice(&TAG_CARRIED_SIDE.to_le_bytes());
-                    payload.extend_from_slice(&profile_segment.to_bytes());
-                }
-                BoundName::OriginCap {
-                    origin_feature,
-                    side,
-                } => {
-                    let tag = match side {
-                        ferritecad_document::CapSide::Start => TAG_ORIGIN_START_CAP,
-                        ferritecad_document::CapSide::End => TAG_ORIGIN_END_CAP,
-                        _ => return Err(malformed("unknown origin cap")),
-                    };
-                    payload.extend_from_slice(&tag.to_le_bytes());
-                    payload.extend_from_slice(&origin_feature.to_bytes());
-                }
-                BoundName::OriginSide {
-                    origin_feature,
-                    profile_segment,
-                } => {
-                    payload.extend_from_slice(&TAG_ORIGIN_SIDE.to_le_bytes());
-                    payload.extend_from_slice(&origin_feature.to_bytes());
-                    payload.extend_from_slice(&profile_segment.to_bytes());
-                }
-                BoundName::EdgeFilletFace {
-                    edge_feature,
-                    joint,
-                } => {
-                    payload.extend_from_slice(&TAG_EDGE_FILLET_FACE.to_le_bytes());
-                    payload.extend_from_slice(&edge_feature.to_bytes());
-                    for segment in joint.segments() {
-                        payload.extend_from_slice(&segment.to_bytes());
-                    }
-                }
-                BoundName::EdgeChamferFace {
-                    edge_feature,
-                    joint,
-                } => {
-                    payload.extend_from_slice(&TAG_EDGE_CHAMFER_FACE.to_le_bytes());
-                    payload.extend_from_slice(&edge_feature.to_bytes());
-                    for segment in joint.segments() {
-                        payload.extend_from_slice(&segment.to_bytes());
-                    }
-                }
-                BoundName::OriginSweepEdge { .. } | BoundName::OriginFilletFace { .. } => {
-                    put_sequential_origin(&mut payload, name);
-                }
-            }
-            payload.extend_from_slice(&slot.index().to_le_bytes());
+        put_count(&mut out, self.derivations.len())?;
+        for (digest, node) in &self.derivations {
+            out.extend_from_slice(digest.as_bytes());
+            put_derivation(&mut out, node)?;
         }
-
-        // The names this feature removed, after the bindings and in the same
-        // ordered sequence, each without a slot because there is no geometry
-        // for one to point at.
-        let removed: Vec<BoundName> = self.removed().collect();
-        let removed_count = u32::try_from(removed.len())
-            .map_err(|_| malformed("there are too many removed names to archive"))?;
-        payload.extend_from_slice(&removed_count.to_le_bytes());
-        for name in removed {
-            match name {
-                BoundName::CarriedStartCap => {
-                    payload.extend_from_slice(&TAG_CARRIED_START_CAP.to_le_bytes())
-                }
-                BoundName::CarriedEndCap => {
-                    payload.extend_from_slice(&TAG_CARRIED_END_CAP.to_le_bytes())
-                }
-                BoundName::CarriedSide { profile_segment } => {
-                    payload.extend_from_slice(&TAG_CARRIED_SIDE.to_le_bytes());
-                    payload.extend_from_slice(&profile_segment.to_bytes());
-                }
-                BoundName::OriginCap {
-                    origin_feature,
-                    side,
-                } => {
-                    let tag = match side {
-                        ferritecad_document::CapSide::Start => TAG_ORIGIN_START_CAP,
-                        ferritecad_document::CapSide::End => TAG_ORIGIN_END_CAP,
-                        _ => return Err(malformed("unknown origin cap")),
-                    };
-                    payload.extend_from_slice(&tag.to_le_bytes());
-                    payload.extend_from_slice(&origin_feature.to_bytes());
-                }
-                BoundName::OriginSide {
-                    origin_feature,
-                    profile_segment,
-                } => {
-                    payload.extend_from_slice(&TAG_ORIGIN_SIDE.to_le_bytes());
-                    payload.extend_from_slice(&origin_feature.to_bytes());
-                    payload.extend_from_slice(&profile_segment.to_bytes());
-                }
-                other => {
-                    if !put_sequential_origin(&mut payload, other) {
-                        return Err(malformed(format!(
-                            "only a carried name can be removed, and {other:?} is not one"
-                        )));
-                    }
-                }
-            }
+        put_count(&mut out, self.entities.len())?;
+        for (slot, name) in &self.entities {
+            put_slot(&mut out, *slot);
+            put_name(&mut out, *name);
         }
-
-        let payload_length = u64::try_from(payload.len())
-            .map_err(|_| malformed("the named archive is too large to frame"))?;
-        let payload_hash = ContentHash::of_bytes(&payload);
-        let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
-        out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-        out.extend_from_slice(&payload_length.to_le_bytes());
-        out.extend_from_slice(payload_hash.as_bytes());
-        out.extend_from_slice(&payload);
+        put_count(&mut out, self.ancestry.len())?;
+        for (name, slots) in &self.ancestry {
+            put_name(&mut out, *name);
+            put_slots(&mut out, slots)?;
+        }
+        put_count(&mut out, self.incidence.len())?;
+        for (slot, faces) in &self.incidence {
+            put_slot(&mut out, *slot);
+            put_slots(&mut out, faces)?;
+        }
+        let hash = ContentHash::of_bytes(&out);
+        out.extend_from_slice(hash.as_bytes());
         Ok(out)
     }
 
-    /// Reads an archive back, refusing anything that is not exactly one.
-    ///
-    /// The caller must say which feature it expects and which kernel is
-    /// loaded. Both are checked against what the bytes claim, so an entry that
-    /// was reached by a stale key or written by another build is rejected here
-    /// even if the lookup that found it was satisfied.
     pub fn decode(bytes: &[u8], producer: ObjectId, kernel: &KernelIdentity) -> Result<Self> {
-        let mut reader = Reader::new(bytes);
-
-        if reader.take(MAGIC.len(), "magic")? != MAGIC {
-            return Err(malformed("these bytes are not a named archive"));
+        let end = bytes.len().checked_sub(32).ok_or_else(malformed)?;
+        let (payload, hash) = bytes.split_at(end);
+        if ContentHash::of_bytes(payload).as_bytes() != hash {
+            return Err(malformed());
         }
-
-        let version = reader.u16("format version")?;
-        if version != FORMAT_VERSION {
-            return Err(malformed(format!(
-                "this archive is version {version} and this build reads version {FORMAT_VERSION}; \
-                 discard the entry and rebuild"
-            )));
+        let mut reader = Reader(payload);
+        if ObjectId::from_slice(reader.take(16)?)? != producer {
+            return Err(malformed());
         }
-
-        let payload_length = usize::try_from(reader.u64("archive payload length")?)
-            .map_err(|_| malformed("this archive claims a payload larger than memory"))?;
-        let payload_hash = ContentHash::from_bytes(reader.array("archive payload checksum")?);
-        let payload = reader.take(payload_length, "archive payload")?;
-        reader.finish("archive payload")?;
-
-        if ContentHash::of_bytes(payload) != payload_hash {
-            return Err(malformed(
-                "the named archive payload does not match its checksum",
-            ));
+        for part in [
+            kernel.id().as_bytes(),
+            kernel.version().as_bytes(),
+            kernel.build().as_bytes(),
+        ] {
+            if reader.bytes()? != part {
+                return Err(malformed());
+            }
         }
-
-        let mut reader = Reader::new(payload);
-        let stored_producer = ObjectId::from_bytes(reader.array("producer")?)?;
-        if stored_producer != producer {
-            return Err(malformed(format!(
-                "this archive belongs to feature {stored_producer}, not to {producer}"
-            )));
+        let blob = BrepBlob::new(kernel.clone(), reader.bytes()?.to_vec());
+        let mut derivations = crate::derivation::Derivations::new();
+        for _ in 0..reader.count()? {
+            let digest = ContentHash::from_slice(reader.take(32)?)?;
+            let node = std::sync::Arc::new(reader.derivation()?);
+            if derivations.insert(digest, node).is_some() {
+                return Err(malformed());
+            }
         }
-
-        let previous = match reader.take(1, "predecessor flag")?[0] {
-            0 => None,
-            1 => Some(ObjectId::from_bytes(reader.array("predecessor")?)?),
-            _ => return Err(malformed("invalid predecessor flag")),
+        let mut entities = BTreeMap::new();
+        for _ in 0..reader.count()? {
+            let slot = reader.slot()?;
+            if entities.insert(slot, reader.name()?).is_some() {
+                return Err(malformed());
+            }
+        }
+        let mut ancestry = BTreeMap::new();
+        for _ in 0..reader.count()? {
+            let name = reader.name()?;
+            if ancestry.insert(name, reader.slots()?).is_some() {
+                return Err(malformed());
+            }
+        }
+        let mut incidence = BTreeMap::new();
+        for _ in 0..reader.count()? {
+            let slot = reader.slot()?;
+            if incidence.insert(slot, reader.slots()?).is_some() {
+                return Err(malformed());
+            }
+        }
+        if !reader.0.is_empty() {
+            return Err(malformed());
+        }
+        let archived = Self {
+            derivations,
+            producer,
+            blob,
+            entities,
+            ancestry,
+            incidence,
         };
-        if previous == Some(producer) {
-            return Err(malformed("archive is its own predecessor"));
-        }
-        let stored_kernel = KernelIdentity::new(
-            reader.string("kernel id")?,
-            reader.string("kernel version")?,
-            reader.string("kernel build")?,
-        )?;
-
-        let blob_hash = ContentHash::from_bytes(reader.array("payload checksum")?);
-        let length = usize::try_from(reader.u64("payload length")?)
-            .map_err(|_| malformed("this archive claims a payload larger than memory"))?;
-        let blob = BrepBlob::new(stored_kernel, reader.take(length, "payload")?.to_vec());
-
-        // Before anything is believed about the geometry: the identity check
-        // is what stops a blob from a different bridge build being handed to
-        // this one, which the sidecar's own metadata does not record.
-        blob.require_kernel(kernel)?;
-
-        let count = reader.u32("binding count")?;
-        let mut bindings = Vec::with_capacity(count.min(1024) as usize);
-        for _ in 0..count {
-            let tag = reader.u16("binding tag")?;
-            let name = match tag {
-                TAG_START_CAP => BoundName::StartCap,
-                TAG_END_CAP => BoundName::EndCap,
-                TAG_SIDE => BoundName::Side {
-                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
-                },
-                TAG_REVOLVED_FACE => BoundName::RevolvedFace {
-                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
-                },
-                TAG_REVOLVED_START_CAP => BoundName::RevolvedStartCap,
-                TAG_REVOLVED_END_CAP => BoundName::RevolvedEndCap,
-                TAG_EDGE_FILLET_FACE => BoundName::EdgeFilletFace {
-                    edge_feature: ObjectId::from_bytes(reader.array("edge feature")?)?,
-                    joint: ProfileJoint::from_canonical([
-                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
-                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
-                    ])?,
-                },
-                TAG_EDGE_CHAMFER_FACE => BoundName::EdgeChamferFace {
-                    edge_feature: ObjectId::from_bytes(reader.array("edge feature")?)?,
-                    joint: ProfileJoint::from_canonical([
-                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
-                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
-                    ])?,
-                },
-                TAG_START_CAP_EDGE => BoundName::StartCapEdge {
-                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
-                },
-                TAG_END_CAP_EDGE => BoundName::EndCapEdge {
-                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
-                },
-                TAG_SWEEP_EDGE => BoundName::SweepEdge {
-                    joint: ProfileJoint::from_canonical([
-                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
-                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
-                    ])?,
-                },
-                TAG_START_CAP_VERTEX => BoundName::StartCapVertex {
-                    joint: ProfileJoint::from_canonical([
-                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
-                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
-                    ])?,
-                },
-                TAG_END_CAP_VERTEX => BoundName::EndCapVertex {
-                    joint: ProfileJoint::from_canonical([
-                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
-                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
-                    ])?,
-                },
-                TAG_CARRIED_START_CAP => BoundName::CarriedStartCap,
-                TAG_CARRIED_END_CAP => BoundName::CarriedEndCap,
-                TAG_CARRIED_SIDE => BoundName::CarriedSide {
-                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
-                },
-                TAG_ORIGIN_START_CAP | TAG_ORIGIN_END_CAP => BoundName::OriginCap {
-                    origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
-                    side: if tag == TAG_ORIGIN_START_CAP {
-                        ferritecad_document::CapSide::Start
-                    } else {
-                        ferritecad_document::CapSide::End
-                    },
-                },
-                TAG_ORIGIN_SIDE => BoundName::OriginSide {
-                    origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
-                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
-                },
-                unknown => match take_sequential_origin(unknown, &mut reader)? {
-                    Some(name) => name,
-                    None => {
-                        return Err(malformed(format!(
-                            "this archive names something with tag {unknown}, which this build \
-                             does not know; a name it cannot read is not a name it may ignore"
-                        )));
-                    }
-                },
-            };
-            bindings.push((name, ArchiveSlot::new(reader.u32("slot")?)));
-        }
-
-        let removed_count = reader.u32("removed count")?;
-        let mut removed = Vec::with_capacity(removed_count.min(1024) as usize);
-        for _ in 0..removed_count {
-            let tag = reader.u16("removed tag")?;
-            removed.push(match tag {
-                TAG_CARRIED_START_CAP => BoundName::CarriedStartCap,
-                TAG_CARRIED_END_CAP => BoundName::CarriedEndCap,
-                TAG_CARRIED_SIDE => BoundName::CarriedSide {
-                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
-                },
-                TAG_ORIGIN_START_CAP | TAG_ORIGIN_END_CAP => BoundName::OriginCap {
-                    origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
-                    side: if tag == TAG_ORIGIN_START_CAP {
-                        ferritecad_document::CapSide::Start
-                    } else {
-                        ferritecad_document::CapSide::End
-                    },
-                },
-                TAG_ORIGIN_SIDE => BoundName::OriginSide {
-                    origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
-                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
-                },
-                unknown => match take_sequential_origin(unknown, &mut reader)? {
-                    Some(name) => name,
-                    None => {
-                        return Err(malformed(format!(
-                            "this archive says tag {unknown} was removed, and only a carried \
-                             name can be"
-                        )));
-                    }
-                },
-            });
-        }
-
-        reader.finish("last removed name")?;
-
-        // `from_parts_with_removed` is the single gate on what a table may say:
-        // no root slot, no repeated name, no shared slot, no empty table, no
-        // name both present and removed, and a checksum that matches the
-        // payload it arrived with.
-        let mut archived =
-            Self::from_parts_with_removed(producer, blob, blob_hash, bindings, removed)?;
-        archived.previous = previous;
+        archived.validate()?;
         Ok(archived)
     }
 }
 
-fn put_str(out: &mut Vec<u8>, value: &str) -> Result<()> {
-    let length = u32::try_from(value.len())
-        .map_err(|_| malformed("a kernel identity field is too large to archive"))?;
-    out.extend_from_slice(&length.to_le_bytes());
-    out.extend_from_slice(value.as_bytes());
+fn malformed() -> CadError {
+    CadError::input("invalid generative archive; discard the complete entry")
+}
+fn put_count(out: &mut Vec<u8>, count: usize) -> Result<()> {
+    out.extend_from_slice(&u32::try_from(count).map_err(|_| malformed())?.to_le_bytes());
     Ok(())
 }
-
-fn malformed(what: impl Into<String>) -> CadError {
-    CadError::input(what)
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
+    put_count(out, bytes.len())?;
+    out.extend_from_slice(bytes);
+    Ok(())
 }
-
-/// A cursor that treats every short read as corruption.
-struct Reader<'a> {
-    bytes: &'a [u8],
-    at: usize,
+fn put_slot(out: &mut Vec<u8>, slot: ArchiveSlot) {
+    out.extend_from_slice(&slot.index().to_le_bytes());
 }
-
+fn put_slots(out: &mut Vec<u8>, slots: &BTreeSet<ArchiveSlot>) -> Result<()> {
+    put_count(out, slots.len())?;
+    for slot in slots {
+        put_slot(out, *slot);
+    }
+    Ok(())
+}
+fn put_name(out: &mut Vec<u8>, name: Name) {
+    out.push(match name.kind {
+        SubShapeKind::Face => 0,
+        SubShapeKind::Edge => 1,
+        SubShapeKind::Vertex => 2,
+        _ => 255,
+    });
+    out.extend_from_slice(name.digest.as_bytes());
+}
+struct Reader<'a>(&'a [u8]);
 impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, at: 0 }
+    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let part = self.0.get(..n).ok_or_else(malformed)?;
+        self.0 = &self.0[n..];
+        Ok(part)
     }
-
-    fn take(&mut self, count: usize, what: &str) -> Result<&'a [u8]> {
-        let end = self
-            .at
-            .checked_add(count)
-            .filter(|end| *end <= self.bytes.len())
-            .ok_or_else(|| {
-                malformed(format!(
-                    "this archive ends inside its {what}: {count} more byte(s) were needed and {} \
-                     remain",
-                    self.bytes.len() - self.at
-                ))
-            })?;
-        let slice = &self.bytes[self.at..end];
-        self.at = end;
-        Ok(slice)
+    fn count(&mut self) -> Result<usize> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(|_| malformed())?) as usize)
     }
-
-    fn array<const N: usize>(&mut self, what: &str) -> Result<[u8; N]> {
-        let mut out = [0u8; N];
-        out.copy_from_slice(self.take(N, what)?);
-        Ok(out)
+    fn bytes(&mut self) -> Result<&'a [u8]> {
+        let n = self.count()?;
+        self.take(n)
     }
-
-    fn u16(&mut self, what: &str) -> Result<u16> {
-        Ok(u16::from_le_bytes(self.array(what)?))
+    fn slot(&mut self) -> Result<ArchiveSlot> {
+        Ok(ArchiveSlot::new(
+            u32::try_from(self.count()?).map_err(|_| malformed())?,
+        ))
     }
-
-    fn u32(&mut self, what: &str) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.array(what)?))
-    }
-
-    fn u64(&mut self, what: &str) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.array(what)?))
-    }
-
-    fn string(&mut self, what: &str) -> Result<String> {
-        let length = usize::try_from(self.u32(what)?)
-            .map_err(|_| malformed(format!("this archive claims an unreadable {what}")))?;
-        let bytes = self.take(length, what)?;
-        String::from_utf8(bytes.to_vec())
-            .map_err(|_| malformed(format!("this archive's {what} is not text")))
-    }
-
-    /// Refuses anything left over.
-    ///
-    /// Trailing bytes mean the writer and this reader disagree about the
-    /// layout. Ignoring them would let a longer record be read as a shorter
-    /// one, which is how a partial parse becomes a confident wrong answer.
-    fn finish(self, what: &str) -> Result<()> {
-        let left = self.bytes.len() - self.at;
-        if left > 0 {
-            return Err(malformed(format!(
-                "this archive has {left} byte(s) after its {what}"
-            )));
+    fn slots(&mut self) -> Result<BTreeSet<ArchiveSlot>> {
+        let n = self.count()?;
+        let mut set = BTreeSet::new();
+        for _ in 0..n {
+            if !set.insert(self.slot()?) {
+                return Err(malformed());
+            }
         }
-        Ok(())
+        Ok(set)
+    }
+    fn name(&mut self) -> Result<Name> {
+        let kind = match self.take(1)?[0] {
+            0 => SubShapeKind::Face,
+            1 => SubShapeKind::Edge,
+            2 => SubShapeKind::Vertex,
+            _ => return Err(malformed()),
+        };
+        Ok(Name {
+            kind,
+            digest: ContentHash::from_slice(self.take(32)?)?,
+        })
+    }
+}
+
+const EXPRESSION_TAGS: [&str; 7] = [
+    "curve-end",
+    "generated",
+    "modified",
+    "merge",
+    "split-boundary-history",
+    "incident-faces",
+    "boundary",
+];
+fn put_optional_id(out: &mut Vec<u8>, id: Option<ObjectId>) {
+    out.push(u8::from(id.is_some()));
+    if let Some(id) = id {
+        out.extend_from_slice(&id.to_bytes());
+    }
+}
+fn put_derivation(out: &mut Vec<u8>, node: &crate::derivation::Derivation) -> Result<()> {
+    use crate::derivation::Derivation;
+    match node {
+        Derivation::Curve(feature, curve, plane) => {
+            out.push(0);
+            out.extend_from_slice(&feature.to_bytes());
+            out.extend_from_slice(&curve.to_bytes());
+            put_optional_id(out, *plane);
+        }
+        Derivation::Cap(feature, end, plane) => {
+            out.push(1);
+            out.extend_from_slice(&feature.to_bytes());
+            out.push(u8::from(*end));
+            put_optional_id(out, *plane);
+        }
+        Derivation::Expression {
+            kind,
+            tag,
+            feature,
+            inputs,
+            extra,
+        } => {
+            out.push(2);
+            out.push(
+                EXPRESSION_TAGS
+                    .iter()
+                    .position(|t| t == tag)
+                    .ok_or_else(malformed)? as u8,
+            );
+            out.push(match kind {
+                SubShapeKind::Face => 0,
+                SubShapeKind::Edge => 1,
+                SubShapeKind::Vertex => 2,
+                _ => return Err(malformed()),
+            });
+            put_optional_id(out, *feature);
+            out.push(*extra);
+            put_count(out, inputs.len())?;
+            for input in inputs {
+                put_name(out, *input);
+            }
+        }
+    }
+    Ok(())
+}
+impl Reader<'_> {
+    fn boolean(&mut self) -> Result<bool> {
+        match self.take(1)?[0] {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(malformed()),
+        }
+    }
+    fn optional_id(&mut self) -> Result<Option<ObjectId>> {
+        if self.boolean()? {
+            Ok(Some(ObjectId::from_slice(self.take(16)?)?))
+        } else {
+            Ok(None)
+        }
+    }
+    fn derivation(&mut self) -> Result<crate::derivation::Derivation> {
+        use crate::derivation::Derivation;
+        Ok(match self.take(1)?[0] {
+            0 => Derivation::Curve(
+                ObjectId::from_slice(self.take(16)?)?,
+                ferritecad_types::StableEntityId::from_slice(self.take(16)?)?,
+                self.optional_id()?,
+            ),
+            1 => Derivation::Cap(
+                ObjectId::from_slice(self.take(16)?)?,
+                self.boolean()?,
+                self.optional_id()?,
+            ),
+            2 => {
+                let tag = *EXPRESSION_TAGS
+                    .get(self.take(1)?[0] as usize)
+                    .ok_or_else(malformed)?;
+                let kind = match self.take(1)?[0] {
+                    0 => SubShapeKind::Face,
+                    1 => SubShapeKind::Edge,
+                    2 => SubShapeKind::Vertex,
+                    _ => return Err(malformed()),
+                };
+                let feature = self.optional_id()?;
+                let extra = self.take(1)?[0];
+                let mut inputs = BTreeSet::new();
+                for _ in 0..self.count()? {
+                    if !inputs.insert(self.name()?) {
+                        return Err(malformed());
+                    }
+                }
+                Derivation::Expression {
+                    kind,
+                    tag,
+                    feature,
+                    inputs,
+                    extra,
+                }
+            }
+            _ => return Err(malformed()),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{archive_feature, map::TopologyMap};
-    use ferritecad_kernel::SubShapeKind;
-    use ferritecad_kernel::{
-        ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext, PlanarPoint, Profile,
-        ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, mock::MockKernel,
-    };
+    use ferritecad_kernel::GeometryKernel;
 
-    fn archived() -> (ArchivedFeature, ObjectId, KernelIdentity) {
-        let corners = [(0.0, 0.0), (30.0, 0.0), (30.0, 20.0), (0.0, 20.0)];
-        let points: Vec<PlanarPoint> = corners
-            .iter()
-            .map(|(x, y)| PlanarPoint::new(*x, *y).expect("a finite point"))
-            .collect();
-        let segments: Vec<ProfileSegment> = (0..points.len())
-            .map(|i| {
-                ProfileSegment::new(
-                    StableEntityId::new(),
-                    SegmentGeometry::line(points[i], points[(i + 1) % points.len()])
-                        .expect("a line"),
-                )
-            })
-            .collect();
-        let profile = Profile::new(
-            SketchPlane::world_xy(),
-            ProfileLoop::new(segments).expect("a closed loop"),
-            Vec::new(),
-        )
-        .expect("a valid profile");
-        let request = ExtrudeRequest::new(
-            profile,
-            ExtrudeExtent::blind(5.0).expect("a positive distance"),
-            false,
-        );
-
-        let mut kernel = MockKernel::new();
-        let result = kernel
-            .extrude(&request, &OperationContext::default())
-            .expect("the mock builds");
-        let producer = ObjectId::new();
-        let mut map = TopologyMap::new();
-        map.record_extrude(producer, request.profile(), &result)
-            .expect("records");
-
-        let identity = kernel.identity().clone();
-        let archived = archive_feature(&mut kernel, &map, producer).expect("archives");
-        (archived, producer, identity)
-    }
-
-    /// §27D: a sector's end faces are written under their own tags and read
-    /// back as themselves, never as an extrusion's caps.
     #[test]
-    fn a_sectors_end_faces_keep_their_own_tags() {
-        let kernel = MockKernel::new();
-        let identity = kernel.identity().clone();
-        let blob = BrepBlob::new(identity.clone(), vec![1, 2, 3]);
-        let hash = blob.content_hash();
-        let producer = ObjectId::new();
-        let archive = ArchivedFeature::from_parts(
-            producer,
-            blob,
-            hash,
-            [
-                (BoundName::RevolvedStartCap, ArchiveSlot::new(1)),
-                (BoundName::RevolvedEndCap, ArchiveSlot::new(2)),
-            ],
-        )
-        .expect("an archive");
-        let bytes = archive.encode().expect("encodes");
-        let back = ArchivedFeature::decode(&bytes, producer, &identity).expect("reads back");
-        assert_eq!(back, archive);
-        let names: Vec<_> = back.bindings().map(|(name, _)| name).collect();
-        assert!(names.contains(&BoundName::RevolvedStartCap));
-        assert!(names.contains(&BoundName::RevolvedEndCap));
-        assert!(!names.contains(&BoundName::StartCap) && !names.contains(&BoundName::EndCap));
-        assert_eq!(BoundName::RevolvedStartCap.kind(), SubShapeKind::Face);
-        for tag in [TAG_REVOLVED_START_CAP, TAG_REVOLVED_END_CAP] {
-            assert!(
-                bytes.windows(2).any(|w| w == tag.to_le_bytes()),
-                "tag {tag} written"
-            );
+    fn duplicate_rows_and_unknown_tags_are_refused_even_with_a_valid_checksum() {
+        let (mut kernel, model, feature, _) = crate::archive::tests::plate();
+        let archive = crate::archive_feature(&mut kernel, &model, feature).expect("archive");
+        let bytes = archive.encode().expect("encode");
+        let payload = &bytes[..bytes.len() - 32];
+        let mut reader = Reader(payload);
+        reader.take(16).expect("producer");
+        for _ in 0..4 {
+            reader.bytes().expect("identity and B-Rep");
         }
-    }
-
-    #[test]
-    fn an_archive_survives_its_byte_form() {
-        let (original, producer, kernel) = archived();
-        let bytes = original.encode().expect("encodes");
-        let restored = ArchivedFeature::decode(&bytes, producer, &kernel).expect("reads back");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn the_same_archive_encodes_the_same_way_every_time() {
-        let (archive, _, _) = archived();
-        assert_eq!(
-            archive.encode().expect("encodes"),
-            archive.encode().expect("encodes")
-        );
-    }
-
-    #[test]
-    fn another_features_archive_is_refused() {
-        let (archive, _, kernel) = archived();
-        let bytes = archive.encode().expect("encodes");
-        let err = ArchivedFeature::decode(&bytes, ObjectId::new(), &kernel)
-            .expect_err("the producer does not match");
-        assert!(err.to_string().contains("belongs to feature"));
-    }
-
-    #[test]
-    fn another_kernel_build_is_refused() {
-        let (archive, producer, _) = archived();
-        let other = KernelIdentity::new("mock", "1.0.0", "another-compiler").expect("valid");
-        let bytes = archive.encode().expect("encodes");
-        assert!(ArchivedFeature::decode(&bytes, producer, &other).is_err());
-    }
-
-    #[test]
-    fn a_version_from_the_future_is_refused() {
-        let (archive, producer, kernel) = archived();
-        let mut bytes = archive.encode().expect("encodes");
-        bytes[4..6].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
-
-        let err = ArchivedFeature::decode(&bytes, producer, &kernel)
-            .expect_err("a newer layout is not readable");
-        assert!(err.to_string().contains("discard the entry"));
-    }
-
-    #[test]
-    fn an_unknown_name_tag_is_refused_rather_than_skipped() {
-        let (archive, producer, kernel) = archived();
-        let bytes = archive.encode().expect("encodes");
-
-        // The first tag sits directly after the binding count, which is
-        // followed by every binding and then the removed-name count.
-        let at = bytes.len()
-            - size_of::<u32>()
-            - archive
-                .bindings()
-                .map(|(name, _)| match name {
-                    BoundName::Side { .. } => 2 + 16 + 4,
-                    _ => 2 + 4,
-                })
-                .sum::<usize>();
-        let mut damaged = bytes.clone();
-        damaged[at..at + 2].copy_from_slice(&u16::MAX.to_le_bytes());
-        reseal(&mut damaged);
-
-        let err = ArchivedFeature::decode(&damaged, producer, &kernel)
-            .expect_err("an unreadable name is not an ignorable one");
-        assert!(err.to_string().contains("does not know"));
-    }
-
-    #[test]
-    fn trailing_bytes_are_refused() {
-        let (archive, producer, kernel) = archived();
-        let mut bytes = archive.encode().expect("encodes");
-        bytes.push(0);
-
-        let err = ArchivedFeature::decode(&bytes, producer, &kernel).expect_err("there is more");
-        assert!(err.to_string().contains("after its archive payload"));
-    }
-
-    #[test]
-    fn a_truncated_archive_is_refused_at_every_length() {
-        let (archive, producer, kernel) = archived();
-        let bytes = archive.encode().expect("encodes");
-
-        for length in 0..bytes.len() {
-            assert!(
-                ArchivedFeature::decode(&bytes[..length], producer, &kernel).is_err(),
-                "{length} bytes of an archive is not an archive"
-            );
-        }
-        assert!(ArchivedFeature::decode(&bytes, producer, &kernel).is_ok());
-    }
-
-    #[test]
-    fn a_damaged_payload_is_refused_by_its_checksum() {
-        let (archive, producer, kernel) = archived();
-        let mut bytes = archive.encode().expect("encodes");
-
-        // Somewhere inside the payload, past every header field.
-        let at = bytes.len() / 2;
-        bytes[at] ^= 0xff;
-        reseal(&mut bytes);
-
-        let err = ArchivedFeature::decode(&bytes, producer, &kernel)
-            .expect_err("the payload no longer matches its checksum");
-        assert!(err.to_string().contains("different archive"));
-    }
-
-    #[test]
-    fn a_changed_binding_is_refused_by_the_archive_checksum() {
-        let (archive, producer, kernel) = archived();
-        let mut bytes = archive.encode().expect("encodes");
-
-        // A slot is semantic data just as much as the B-Rep. Without the
-        // archive-level checksum, changing this to another valid slot could
-        // silently make a durable name resolve to the wrong face.
-        *bytes.last_mut().expect("the archive has a binding") ^= 0x01;
-
-        let err = ArchivedFeature::decode(&bytes, producer, &kernel)
-            .expect_err("a changed binding is not an intact archive");
-        assert!(
-            err.to_string()
-                .contains("payload does not match its checksum")
-        );
-    }
-
-    #[test]
-    fn a_table_naming_one_slot_twice_is_refused() {
-        let (archive, producer, kernel) = archived();
-        let bytes = archive.encode().expect("encodes");
-
-        // Rewrite every slot as 1, which two names may not share.
-        let mut damaged = bytes.clone();
-        let mut at = bytes.len();
-        for (name, _) in archive.bindings() {
-            at -= match name {
-                BoundName::Side { .. } => 2 + 16 + 4,
-                _ => 2 + 4,
-            };
-        }
-        for (name, _) in archive.bindings() {
-            let width = match name {
-                BoundName::Side { .. } => 2 + 16 + 4,
-                _ => 2 + 4,
-            };
-            damaged[at + width - 4..at + width].copy_from_slice(&1u32.to_le_bytes());
-            at += width;
-        }
-        reseal(&mut damaged);
-
-        assert!(ArchivedFeature::decode(&damaged, producer, &kernel).is_err());
-    }
-
-    /// A joint of two fresh segments, in the order the canonical pair keeps.
-    fn a_joint() -> ProfileJoint {
-        ProfileJoint::new(StableEntityId::new(), StableEntityId::new()).expect("two segments")
-    }
-
-    /// An archive carrying a face, an edge and both ends of two corners.
-    fn with_cap_vertices() -> (ArchivedFeature, ObjectId, KernelIdentity, [ProfileJoint; 2]) {
-        let kernel = MockKernel::new();
-        let identity = kernel.identity().clone();
-        let blob = BrepBlob::new(identity.clone(), vec![7, 7, 7, 7]);
-        let hash = blob.content_hash();
-        let producer = ObjectId::new();
-        let joints = [a_joint(), a_joint()];
-
-        let archive = ArchivedFeature::from_parts(
-            producer,
-            blob,
-            hash,
-            [
-                (BoundName::StartCap, ArchiveSlot::new(1)),
-                (
-                    BoundName::SweepEdge { joint: joints[0] },
-                    ArchiveSlot::new(2),
-                ),
-                (
-                    BoundName::StartCapVertex { joint: joints[0] },
-                    ArchiveSlot::new(3),
-                ),
-                (
-                    BoundName::EndCapVertex { joint: joints[0] },
-                    ArchiveSlot::new(4),
-                ),
-                (
-                    BoundName::StartCapVertex { joint: joints[1] },
-                    ArchiveSlot::new(5),
-                ),
-                (
-                    BoundName::EndCapVertex { joint: joints[1] },
-                    ArchiveSlot::new(6),
-                ),
-            ],
-        )
-        .expect("a table of six distinct names");
-        (archive, producer, identity, joints)
-    }
-
-    #[test]
-    fn a_corner_name_survives_its_byte_form_with_its_side_and_both_segments() {
-        let (archive, producer, kernel, joints) = with_cap_vertices();
-        let bytes = archive.encode().expect("encodes");
-        let restored = ArchivedFeature::decode(&bytes, producer, &kernel).expect("reads back");
-        assert_eq!(restored, archive);
-
-        // Not merely equal as a whole: each corner came back under its own
-        // side and its own pair, which is what distinguishes the four vertex
-        // names from one another.
-        for (name, slot) in [
-            (BoundName::StartCapVertex { joint: joints[0] }, 3),
-            (BoundName::EndCapVertex { joint: joints[0] }, 4),
-            (BoundName::StartCapVertex { joint: joints[1] }, 5),
-            (BoundName::EndCapVertex { joint: joints[1] }, 6),
-        ] {
-            assert_eq!(
-                restored.slot(name).map(|s| s.index()),
-                Some(slot),
-                "{name:?} did not come back where it went in"
-            );
-        }
-        assert_eq!(restored.bindings().len(), 6);
-    }
-
-    #[test]
-    fn an_archive_of_corners_encodes_the_same_way_every_time() {
-        let (archive, producer, kernel, _) = with_cap_vertices();
-        let once = archive.encode().expect("encodes");
-        assert_eq!(once, archive.encode().expect("encodes"));
-
-        // And the order is the table's own, not the order the names were
-        // handed in: decoding and re-encoding produces the same bytes.
-        let restored = ArchivedFeature::decode(&once, producer, &kernel).expect("reads back");
-        assert_eq!(restored.encode().expect("encodes"), once);
-        let names: Vec<BoundName> = restored.bindings().map(|(name, _)| name).collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        assert_eq!(names, sorted, "the table is written in name order");
-    }
-
-    #[test]
-    fn no_two_stored_names_share_a_tag() {
-        // Reusing a number would re-point every stored name written under the
-        // old meaning, silently, at geometry of a different sort. Listed
-        // explicitly so adding a tag that collides fails here rather than in a
-        // user's cache.
-        let tags = [
-            ("start cap", TAG_START_CAP),
-            ("end cap", TAG_END_CAP),
-            ("side", TAG_SIDE),
-            ("start cap edge", TAG_START_CAP_EDGE),
-            ("end cap edge", TAG_END_CAP_EDGE),
-            ("sweep edge", TAG_SWEEP_EDGE),
-            ("start cap vertex", TAG_START_CAP_VERTEX),
-            ("end cap vertex", TAG_END_CAP_VERTEX),
-            ("carried start cap", TAG_CARRIED_START_CAP),
-            ("carried end cap", TAG_CARRIED_END_CAP),
-            ("carried side", TAG_CARRIED_SIDE),
-            ("origin start cap", TAG_ORIGIN_START_CAP),
-            ("origin end cap", TAG_ORIGIN_END_CAP),
-            ("origin side", TAG_ORIGIN_SIDE),
-            ("revolved face", TAG_REVOLVED_FACE),
-            ("revolved start cap", TAG_REVOLVED_START_CAP),
-            ("revolved end cap", TAG_REVOLVED_END_CAP),
-            ("edge fillet face", TAG_EDGE_FILLET_FACE),
-            ("origin sweep edge", TAG_ORIGIN_SWEEP_EDGE),
-            ("origin fillet face", TAG_ORIGIN_FILLET_FACE),
-            ("edge chamfer face", TAG_EDGE_CHAMFER_FACE),
-        ];
-        for (index, (what, tag)) in tags.iter().enumerate() {
-            for (other_what, other) in &tags[index + 1..] {
-                assert_ne!(tag, other, "{what} and {other_what} share tag {tag}");
+        let mut malformed = Vec::new();
+        for table in 0..4 {
+            let count_at = payload.len() - reader.0.len();
+            let count = reader.count().expect("count");
+            let first = payload.len() - reader.0.len();
+            let mut end = first;
+            for row in 0..count {
+                match table {
+                    0 => {
+                        reader.take(32).expect("digest");
+                        reader.derivation().expect("node");
+                    }
+                    1 => {
+                        reader.slot().expect("slot");
+                        reader.name().expect("name");
+                    }
+                    2 => {
+                        reader.name().expect("name");
+                        reader.slots().expect("ancestry");
+                    }
+                    _ => {
+                        reader.slot().expect("slot");
+                        reader.slots().expect("incidence");
+                    }
+                }
+                if row == 0 {
+                    end = payload.len() - reader.0.len();
+                }
+            }
+            let mut duplicate = payload.to_vec();
+            duplicate.splice(first..first, payload[first..end].iter().copied());
+            duplicate[count_at..count_at + 4].copy_from_slice(&(count as u32 + 1).to_le_bytes());
+            malformed.push(duplicate);
+            if table == 0 || table == 1 {
+                let mut unknown = payload.to_vec();
+                unknown[first + if table == 0 { 32 } else { 4 }] = 255;
+                malformed.push(unknown);
             }
         }
-        // The six that were already on disk keep the numbers they had.
-        assert_eq!(
-            [
-                TAG_START_CAP,
-                TAG_END_CAP,
-                TAG_SIDE,
-                TAG_START_CAP_EDGE,
-                TAG_END_CAP_EDGE,
-                TAG_SWEEP_EDGE
-            ],
-            [1, 2, 3, 4, 5, 6]
-        );
-        assert_eq!(
-            [
-                TAG_START_CAP_VERTEX,
-                TAG_END_CAP_VERTEX,
-                TAG_CARRIED_START_CAP,
-                TAG_CARRIED_END_CAP,
-                TAG_CARRIED_SIDE
-            ],
-            [7, 8, 9, 10, 11]
-        );
-        assert_eq!(TAG_EDGE_FILLET_FACE, 18, "§28A appends; it never reuses");
-        // v2 appended the removed-name list, which is a layout change and not
-        // only a wider vocabulary; see the note on `FORMAT_VERSION`.
-        assert_eq!(
-            [TAG_ORIGIN_SWEEP_EDGE, TAG_ORIGIN_FILLET_FACE],
-            [19, 20],
-            "§28G appends; it never reuses"
-        );
-        assert_eq!(TAG_EDGE_CHAMFER_FACE, 21, "§29A appends; it never reuses");
-        assert_eq!(
-            FORMAT_VERSION, 4,
-            "carried sweep edges and fillet faces require v4"
-        );
-    }
-
-    #[test]
-    fn an_archive_written_before_corners_were_named_still_reads_the_same() {
-        // The six older tags alone, exactly as a previous build wrote them.
-        // Adding a vocabulary must not change what an existing entry means.
-        let (archive, producer, kernel) = archived();
-        assert!(
-            archive.bindings().all(|(name, _)| !matches!(
-                name,
-                BoundName::StartCapVertex { .. } | BoundName::EndCapVertex { .. }
-            )),
-            "the mock names no corners, which is what makes this an old entry"
-        );
-        let bytes = archive.encode().expect("encodes");
-        let restored = ArchivedFeature::decode(&bytes, producer, &kernel).expect("reads back");
-        assert_eq!(restored, archive);
-        assert_eq!(restored.bindings().len(), archive.bindings().len());
-    }
-
-    #[test]
-    fn a_corner_written_with_its_segments_swapped_is_refused_rather_than_sorted() {
-        let (archive, producer, kernel, joints) = with_cap_vertices();
-        let bytes = archive.encode().expect("encodes");
-
-        // Find the first cap-vertex record and swap its two segments. The pair
-        // is canonical on the way in, so a reader that quietly re-sorted would
-        // accept a pair that was never written by this build.
-        let [one, other] = joints[0].segments();
-        let mut needle = TAG_START_CAP_VERTEX.to_le_bytes().to_vec();
-        needle.extend_from_slice(&one.to_bytes());
-        needle.extend_from_slice(&other.to_bytes());
-        let at = bytes
-            .windows(needle.len())
-            .position(|window| window == needle)
-            .expect("the corner is written as its tag and both segments");
-
-        let mut damaged = bytes.clone();
-        damaged[at + 2..at + 18].copy_from_slice(&other.to_bytes());
-        damaged[at + 18..at + 34].copy_from_slice(&one.to_bytes());
-        reseal(&mut damaged);
-
-        let refusal = ArchivedFeature::decode(&damaged, producer, &kernel)
-            .expect_err("a swapped pair is not the pair that was written");
-        assert!(refusal.to_string().contains("canonical order"), "{refusal}");
-    }
-
-    #[test]
-    fn unqualified_v2_archives_are_rejected_and_origin_names_round_trip() {
-        let (mut archive, producer, kernel) = archived();
-        let previous = ObjectId::new();
-        let origin = ObjectId::new();
-        archive.previous = Some(previous);
-        let removed = [
-            BoundName::OriginCap {
-                origin_feature: origin,
-                side: ferritecad_document::CapSide::End,
-            },
-            BoundName::OriginSide {
-                origin_feature: origin,
-                profile_segment: StableEntityId::new(),
-            },
-        ];
-        let mut rebuilt = ArchivedFeature::from_parts_with_removed(
-            producer,
-            archive.blob().clone(),
-            archive.blob_hash(),
-            archive.bindings(),
-            removed,
-        )
-        .expect("parts");
-        rebuilt.previous = Some(previous);
-        let bytes = rebuilt.encode().expect("encode");
-        assert_eq!(
-            ArchivedFeature::decode(&bytes, producer, &kernel).expect("restore"),
-            rebuilt
-        );
-        for version in [1u16, 2, 3] {
-            let mut old = bytes.clone();
-            old[4..6].copy_from_slice(&version.to_le_bytes());
-            let err = ArchivedFeature::decode(&old, producer, &kernel)
-                .expect_err("old provenance rejected");
-            assert!(err.to_string().contains("discard the entry and rebuild"));
+        for mut payload in malformed {
+            payload.extend_from_slice(ContentHash::of_bytes(&payload).as_bytes());
+            assert!(ArchivedFeature::decode(&payload, feature, kernel.identity()).is_err());
         }
-    }
-
-    /// §28A: a Fillet's face comes back under its producer and its joint, a
-    /// swapped joint is refused rather than sorted, and a reader that does not
-    /// know the tag refuses the entry rather than restoring part of it.
-    /// §29A: a chamfer face survives its byte form under its own tag, and the
-    /// same bytes under a fillet's tag are a different name.
-    #[test]
-    fn an_edge_chamfer_face_survives_its_byte_form_and_is_not_a_fillet_face() {
-        let kernel = MockKernel::new();
-        let identity = kernel.identity().clone();
-        let blob = BrepBlob::new(identity.clone(), vec![5, 5, 5, 5]);
-        let hash = blob.content_hash();
-        let producer = ObjectId::new();
-        let base = ObjectId::new();
-        let joint = a_joint();
-        let name = BoundName::EdgeChamferFace {
-            edge_feature: base,
-            joint,
-        };
-        let mut archive = ArchivedFeature::from_parts_with_removed(
-            producer,
-            blob,
-            hash,
-            [
-                (name, ArchiveSlot::new(1)),
-                (
-                    BoundName::OriginCap {
-                        origin_feature: base,
-                        side: ferritecad_document::CapSide::Start,
-                    },
-                    ArchiveSlot::new(2),
-                ),
-            ],
-            [],
-        )
-        .expect("parts");
-        archive.previous = Some(base);
-        let bytes = archive.encode().expect("encodes");
-        let restored = ArchivedFeature::decode(&bytes, producer, &identity).expect("reads back");
-        assert_eq!(restored, archive);
-        assert_eq!(restored.slot(name).map(|s| s.index()), Some(1));
-        assert_eq!(
-            restored.slot(BoundName::EdgeFilletFace {
-                edge_feature: base,
-                joint,
-            }),
-            None,
-            "a chamfer face is not a fillet face"
-        );
-        assert_eq!(name.kind(), SubShapeKind::Face);
-        let mut needle = TAG_EDGE_CHAMFER_FACE.to_le_bytes().to_vec();
-        needle.extend_from_slice(&base.to_bytes());
-        let at = bytes
-            .windows(needle.len())
-            .position(|window| window == needle)
-            .expect("the face is written under its own tag and its producer");
-        let mut as_fillet = bytes.clone();
-        as_fillet[at..at + 2].copy_from_slice(&TAG_EDGE_FILLET_FACE.to_le_bytes());
-        let read = ArchivedFeature::decode(&as_fillet, producer, &identity);
-        assert!(
-            read.is_err() || read.expect("decoded").slot(name).is_none(),
-            "the same bytes under a fillet's tag are not a chamfer face"
-        );
-    }
-
-    #[test]
-    fn an_edge_fillet_face_survives_its_byte_form_and_nothing_else_reads_as_it() {
-        let kernel = MockKernel::new();
-        let identity = kernel.identity().clone();
-        let blob = BrepBlob::new(identity.clone(), vec![5, 5, 5, 5]);
-        let hash = blob.content_hash();
-        let producer = ObjectId::new();
-        let base = ObjectId::new();
-        let joint = a_joint();
-        let name = BoundName::EdgeFilletFace {
-            edge_feature: base,
-            joint,
-        };
-        let mut archive = ArchivedFeature::from_parts_with_removed(
-            producer,
-            blob,
-            hash,
-            [
-                (name, ArchiveSlot::new(1)),
-                (
-                    BoundName::OriginCap {
-                        origin_feature: base,
-                        side: ferritecad_document::CapSide::Start,
-                    },
-                    ArchiveSlot::new(2),
-                ),
-            ],
-            [],
-        )
-        .expect("parts");
-        archive.previous = Some(base);
-        let bytes = archive.encode().expect("encodes");
-        let restored = ArchivedFeature::decode(&bytes, producer, &identity).expect("reads back");
-        assert_eq!(restored, archive);
-        assert_eq!(restored.slot(name).map(|s| s.index()), Some(1));
-        assert_eq!(
-            restored.slot(BoundName::EdgeFilletFace {
-                edge_feature: ObjectId::new(),
-                joint,
-            }),
-            None,
-            "the producer of the edge is part of the name"
-        );
-
-        let [one, other] = joint.segments();
-        let mut needle = TAG_EDGE_FILLET_FACE.to_le_bytes().to_vec();
-        needle.extend_from_slice(&base.to_bytes());
-        needle.extend_from_slice(&one.to_bytes());
-        needle.extend_from_slice(&other.to_bytes());
-        let at = bytes
-            .windows(needle.len())
-            .position(|window| window == needle)
-            .expect("the face is written as its tag, its producer and both segments");
-        let mut swapped = bytes.clone();
-        swapped[at + 18..at + 34].copy_from_slice(&other.to_bytes());
-        swapped[at + 34..at + 50].copy_from_slice(&one.to_bytes());
-        reseal(&mut swapped);
-        let refusal = ArchivedFeature::decode(&swapped, producer, &identity)
-            .expect_err("a swapped pair is not the pair that was written");
-        assert!(refusal.to_string().contains("canonical order"), "{refusal}");
-
-        let mut unknown = bytes.clone();
-        unknown[at..at + 2].copy_from_slice(&99u16.to_le_bytes());
-        reseal(&mut unknown);
-        assert!(ArchivedFeature::decode(&unknown, producer, &identity).is_err());
-    }
-
-    /// §28G: an origin's sweep edge and an earlier Fillet's face, bound and
-    /// removed, come back as themselves under their own tags; a v3 entry is
-    /// refused and rebuilt rather than read as a v4 one that carries none.
-    #[test]
-    fn origin_edges_and_fillet_faces_survive_their_byte_form_and_v3_is_refused() {
-        let kernel = MockKernel::new();
-        let identity = kernel.identity().clone();
-        let blob = BrepBlob::new(identity.clone(), vec![7, 7, 7]);
-        let hash = blob.content_hash();
-        let producer = ObjectId::new();
-        let first = ObjectId::new();
-        let base = ObjectId::new();
-        let [kept, rounded, other] = [a_joint(), a_joint(), a_joint()];
-        let edge = BoundName::OriginSweepEdge {
-            origin_feature: base,
-            joint: kept,
-        };
-        let face = BoundName::OriginFilletFace {
-            origin_feature: first,
-            edge_feature: base,
-            joint: rounded,
-        };
-        let gone = BoundName::OriginSweepEdge {
-            origin_feature: base,
-            joint: other,
-        };
-        let gone_face = BoundName::OriginFilletFace {
-            origin_feature: first,
-            edge_feature: base,
-            joint: other,
-        };
-        let mut archive = ArchivedFeature::from_parts_with_removed(
-            producer,
-            blob,
-            hash,
-            [(edge, ArchiveSlot::new(1)), (face, ArchiveSlot::new(2))],
-            [gone, gone_face],
-        )
-        .expect("parts");
-        archive.previous = Some(first);
-        let bytes = archive.encode().expect("encodes");
-        let restored = ArchivedFeature::decode(&bytes, producer, &identity).expect("reads back");
-        assert_eq!(restored, archive);
-        assert_eq!(restored.slot(edge).map(|s| s.index()), Some(1));
-        assert_eq!(restored.slot(face).map(|s| s.index()), Some(2));
-        assert_eq!(restored.removed().collect::<Vec<_>>().len(), 2);
-        assert_eq!(edge.kind(), ferritecad_kernel::SubShapeKind::Edge);
-        assert_eq!(face.kind(), ferritecad_kernel::SubShapeKind::Face);
-
-        let mut old = bytes.clone();
-        old[4..6].copy_from_slice(&3u16.to_le_bytes());
-        let err = ArchivedFeature::decode(&old, producer, &identity).expect_err("v3");
-        assert!(
-            err.to_string().contains("discard the entry and rebuild"),
-            "{err}"
-        );
-    }
-
-    fn reseal(bytes: &mut [u8]) {
-        let payload_hash = ContentHash::of_bytes(&bytes[HEADER_LEN..]);
-        bytes[HEADER_LEN - 32..HEADER_LEN].copy_from_slice(payload_hash.as_bytes());
     }
 }

@@ -10,15 +10,16 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef};
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext,
     PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_topology::{
-    ArchivedFeature, BoundName, TopologyMap, archive_feature, resolve, restore_feature,
-};
+use ferritecad_topology::{archive_feature, resolve, restore_feature};
 use ferritecad_types::{ContentHash, ErrorKind, ObjectId, Result, StableEntityId};
 
 fn plate(height: f64) -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
@@ -93,9 +94,8 @@ fn open_cascade_names_survive_the_session_that_made_them() {
             .extrude(&request, &OperationContext::default())
             .expect("Open CASCADE builds the plate");
 
-        let mut map = TopologyMap::new();
-        map.record_extrude(feature, request.profile(), &result)
-            .expect("records");
+        let map = naming::bind(&mut writer, feature, request.profile(), &result)
+            .expect("complete naming");
 
         let start = resolve(&map, &cap_reference(feature, CapSide::Start))
             .expect("the start cap resolves while the session lives");
@@ -108,7 +108,7 @@ fn open_cascade_names_survive_the_session_that_made_them() {
 
     // A session that never saw the original.
     let mut reader = OcctKernel::new().expect("opens");
-    let mut restored = TopologyMap::new();
+    let mut restored = naming::prepared(feature, request.profile(), false).expect("model roots");
     restore_feature(&mut reader, &archived, &mut restored).expect("restores");
 
     let shape = restored
@@ -173,16 +173,15 @@ fn a_restored_open_cascade_shape_refuses_a_name_it_never_had() {
         let result = writer
             .extrude(&request, &OperationContext::default())
             .expect("builds");
-        let mut map = TopologyMap::new();
-        map.record_extrude(feature, request.profile(), &result)
-            .expect("records");
+        let map = naming::bind(&mut writer, feature, request.profile(), &result)
+            .expect("complete naming");
         let archived = archive_feature(&mut writer, &map, feature).expect("archives");
         writer.release(result.shape);
         archived
     };
 
     let mut reader = OcctKernel::new().expect("opens");
-    let mut restored = TopologyMap::new();
+    let mut restored = naming::prepared(feature, request.profile(), false).expect("model roots");
     restore_feature(&mut reader, &archived, &mut restored).expect("restores");
 
     let err = resolve(&restored, &side_reference(feature, StableEntityId::new()))
@@ -216,26 +215,19 @@ fn a_bad_open_cascade_slot_leaves_no_decoded_shape() {
         let result = writer
             .extrude(&request, &OperationContext::default())
             .expect("builds");
-        let mut map = TopologyMap::new();
-        map.record_extrude(feature, request.profile(), &result)
-            .expect("records");
+        let map = naming::bind(&mut writer, feature, request.profile(), &result)
+            .expect("complete naming");
         let archived = archive_feature(&mut writer, &map, feature).expect("archives");
         writer.release(result.shape);
         archived
     };
 
-    let bogus = ArchivedFeature::from_parts(
-        archived.producer(),
-        archived.blob().clone(),
-        archived.blob().content_hash(),
-        [(BoundName::StartCap, ArchiveSlot::new(9_999))],
-    )
-    .expect("the table is structurally valid before the archive is read");
-
     let mut reader = OcctKernel::new().expect("opens");
-    let mut restored = TopologyMap::new();
-    assert!(restore_feature(&mut reader, &bogus, &mut restored).is_err());
-    assert!(restored.is_empty());
+    assert!(
+        reader
+            .decode_shape_with(archived.blob(), &[ArchiveSlot::new(9_999)])
+            .is_err()
+    );
     assert_eq!(reader.live_shape_count(), 0);
 }
 
@@ -256,13 +248,14 @@ fn trailing_bytes_in_a_named_open_cascade_archive_are_refused() {
     let result = kernel
         .extrude(&request, &OperationContext::default())
         .expect("builds");
-    let mut map = TopologyMap::new();
-    map.record_extrude(feature, request.profile(), &result)
-        .expect("records");
+    let map =
+        naming::bind(&mut kernel, feature, request.profile(), &result).expect("complete naming");
     let archived = archive_feature(&mut kernel, &map, feature).expect("archives");
     let slot = archived
-        .slot(BoundName::StartCap)
-        .expect("the start cap was archived");
+        .entities()
+        .find(|(_, n)| n.kind == ferritecad_kernel::SubShapeKind::Face)
+        .expect("a face was archived")
+        .0;
 
     // Keep FerriteCAD's framing internally consistent so the payload reaches
     // the bridge. The named B-Rep decoder itself must reject what BinTools did
@@ -296,9 +289,8 @@ fn an_open_cascade_archive_is_not_readable_as_a_bare_shape() {
     let result = kernel
         .extrude(&request, &OperationContext::default())
         .expect("builds");
-    let mut map = TopologyMap::new();
-    map.record_extrude(feature, request.profile(), &result)
-        .expect("records");
+    let map =
+        naming::bind(&mut kernel, feature, request.profile(), &result).expect("complete naming");
     let archived = archive_feature(&mut kernel, &map, feature).expect("archives");
 
     // An archive read as a plain shape would hand back the compound instead of

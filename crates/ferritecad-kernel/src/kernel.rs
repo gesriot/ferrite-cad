@@ -7,10 +7,7 @@ use crate::identity::KernelIdentity;
 use crate::request::{
     ChamferRequest, CutRequest, ExtrudeRequest, FilletRequest, RevolveRequest, TessellationParams,
 };
-use crate::result::{
-    ArchiveSlot, BrepBlob, ChamferResult, CutResult, ExtrudeResult, FilletResult, Mesh,
-    OperationResult, RevolveResult,
-};
+use crate::result::{ArchiveSlot, BrepBlob, Mesh, OperationResult};
 
 /// The operations FerriteCAD needs from a geometry kernel.
 ///
@@ -48,7 +45,7 @@ pub trait GeometryKernel {
         ))
     }
 
-    /// Reads complete operation provenance, independent of caller tracking.
+    /// Reads complete operation provenance for every elementary input.
     /// An archive without provenance must refuse rather than report no history.
     fn naming_history(&mut self, shape: ShapeHandle) -> Result<crate::NamingHistory> {
         let _ = shape;
@@ -62,7 +59,7 @@ pub trait GeometryKernel {
         &mut self,
         request: &ExtrudeRequest,
         context: &OperationContext,
-    ) -> Result<ExtrudeResult>;
+    ) -> Result<OperationResult>;
 
     /// Turns a planar profile about an axis in its plane into a solid.
     ///
@@ -75,7 +72,7 @@ pub trait GeometryKernel {
         &mut self,
         request: &RevolveRequest,
         context: &OperationContext,
-    ) -> Result<RevolveResult> {
+    ) -> Result<OperationResult> {
         let _ = (request, context);
         Err(ferritecad_types::CadError::unsupported(format!(
             "the {} kernel does not build revolutions",
@@ -94,25 +91,15 @@ pub trait GeometryKernel {
     /// and calling that a cut would put a feature in the history that did
     /// nothing.
     ///
-    /// `track` names the sub-shapes of either input the caller wants an
-    /// account of. The kernel answers for exactly those and invents nothing:
-    /// what a face of the target became is a fact the boolean knows, and a
-    /// caller that had to work it out from the result would be matching
-    /// geometry rather than reading history.
-    fn cut(
-        &mut self,
-        request: &CutRequest,
-        track: &[SubShapeHandle],
-        context: &OperationContext,
-    ) -> Result<CutResult>;
+    /// Complete provenance is available through `naming_history`.
+    fn cut(&mut self, request: &CutRequest, context: &OperationContext) -> Result<OperationResult>;
 
     /// Rounds exactly one edge of a shape to one constant radius (§28A).
     ///
     /// The edge is named by the caller from the target's own names. The
-    /// result is one valid solid that lost material, with the rounded edge
-    /// reported gone and the face generated from it reported, or a refusal.
-    /// `track` names the sub-shapes of the target the caller wants an account
-    /// of, as for [`Self::cut`].
+    /// result is one valid solid that lost material, or a refusal; its
+    /// `naming_history` reports the rounded edge gone and the one face
+    /// generated from it.
     ///
     /// A kernel that cannot round a selected edge refuses with
     /// [`ferritecad_types::CadError::Unsupported`]; that is the default, so a
@@ -120,10 +107,9 @@ pub trait GeometryKernel {
     fn fillet_edge(
         &mut self,
         request: &FilletRequest,
-        track: &[SubShapeHandle],
         context: &OperationContext,
-    ) -> Result<FilletResult> {
-        let _ = (request, track, context);
+    ) -> Result<OperationResult> {
+        let _ = (request, context);
         Err(ferritecad_types::CadError::unsupported(format!(
             "the {} kernel does not round edges",
             self.identity().id()
@@ -134,17 +120,16 @@ pub trait GeometryKernel {
     /// of its faces (§29A).
     ///
     /// Named and answered like [`Self::fillet_edge`]: the result is one valid
-    /// solid that lost material, with the cut edge reported gone and the one
-    /// planar face generated from it reported, or a refusal. A kernel that
+    /// solid that lost material, or a refusal; its `naming_history` reports
+    /// the cut edge gone and the one planar face generated from it. A kernel that
     /// cannot chamfer refuses with [`ferritecad_types::CadError::Unsupported`],
     /// which is the default.
     fn chamfer_edge(
         &mut self,
         request: &ChamferRequest,
-        track: &[SubShapeHandle],
         context: &OperationContext,
-    ) -> Result<ChamferResult> {
-        let _ = (request, track, context);
+    ) -> Result<OperationResult> {
+        let _ = (request, context);
         Err(ferritecad_types::CadError::unsupported(format!(
             "the {} kernel does not chamfer edges",
             self.identity().id()

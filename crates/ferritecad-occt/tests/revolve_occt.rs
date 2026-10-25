@@ -8,11 +8,14 @@
 
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use std::collections::BTreeSet;
 use std::f64::consts::PI;
 
 use ferritecad_kernel::{
-    CancelToken, FaceSurface, GeometryKernel, HistoryInput, OperationContext, PartialTurn,
+    CancelToken, FaceSurface, GeometryKernel, NamingInput, OperationContext, PartialTurn,
     PlanarPoint, Profile, ProfileLoop, ProfileSegment, RevolveAxis, RevolveRequest, RevolveTurn,
     SegmentGeometry, SketchPlane, SubShapeHandle, TessellationParams,
 };
@@ -93,10 +96,14 @@ fn check(points: &[[f64; 2]], volume: f64) {
     let mut seen: BTreeSet<SubShapeHandle> = BTreeSet::new();
     let n = points.len();
     for (i, label) in labels.iter().enumerate() {
-        let generated: Vec<_> = result
-            .history
-            .generated(HistoryInput::Segment(*label))
-            .collect();
+        let generated: Vec<_> = naming::generated(
+            &mut kernel,
+            result.shape,
+            NamingInput::Curve(*label),
+            ferritecad_kernel::SubShapeKind::Face,
+        )
+        .into_iter()
+        .collect();
         let [face] = generated.as_slice() else {
             panic!("Line {i} raised {generated:?}")
         };
@@ -268,11 +275,15 @@ fn native_a_revolution_survives_the_named_archive_face_by_face() {
     let faces: Vec<SubShapeHandle> = labels
         .iter()
         .map(|l| {
-            result
-                .history
-                .generated(HistoryInput::Segment(*l))
-                .next()
-                .expect("face")
+            naming::generated(
+                &mut kernel,
+                result.shape,
+                NamingInput::Curve(*l),
+                ferritecad_kernel::SubShapeKind::Face,
+            )
+            .into_iter()
+            .next()
+            .expect("face")
         })
         .collect();
     let surfaces: Vec<_> = faces
@@ -326,10 +337,14 @@ fn check_solid(points: &[[f64; 2]], axis: usize, volume: f64) {
     let n = points.len();
     let mut seen = BTreeSet::new();
     for (i, label) in labels.iter().enumerate() {
-        let generated: Vec<_> = result
-            .history
-            .generated(HistoryInput::Segment(*label))
-            .collect();
+        let generated: Vec<_> = naming::generated(
+            &mut kernel,
+            result.shape,
+            NamingInput::Curve(*label),
+            ferritecad_kernel::SubShapeKind::Face,
+        )
+        .into_iter()
+        .collect();
         if i == axis {
             assert!(generated.is_empty(), "the axis Line raised {generated:?}");
             continue;
@@ -437,70 +452,30 @@ fn native_axis_closed_requests_are_checked_not_trusted() {
     let (bore, _) = solid_request(&[[4., 0.], [10., 0.], [10., 15.], [4., 15.]], 3);
     let error = kernel.revolve(&bore, &context).expect_err("a bore");
     assert!(error.to_string().contains("not on the axis"), "{error}");
-    // The topology map checks the same fact against the kernel's history:
-    // the stated axis Line must raise nothing, every other Line one face.
     let (solid, labels) = solid_request(&cylinder, 3);
     let result = kernel.revolve(&solid, &context).expect("revolve");
     let producer = ferritecad_types::ObjectId::new();
-    let mut map = ferritecad_topology::TopologyMap::new();
-    map.record_revolve(
-        producer,
-        solid.profile(),
-        Some(labels[3]),
-        RevolveTurn::Full,
-        &result,
-    )
-    .expect("the axis Line raised nothing");
-    // Lines are checked in label order, so a swapped statement is refused at
-    // whichever of its two false Lines comes first.
-    for (stated, refusals) in [
-        (None, &["raised no face"][..]),
-        (
-            Some(labels[1]),
-            &["reported a face for axis Line", "raised no face"][..],
-        ),
-        (
-            Some(StableEntityId::new()),
-            &["not in the turned profile"][..],
-        ),
-    ] {
-        let error = ferritecad_topology::TopologyMap::new()
-            .record_revolve(
-                producer,
-                solid.profile(),
-                stated,
-                RevolveTurn::Full,
-                &result,
+    let map =
+        naming::bind(&mut kernel, producer, solid.profile(), &result).expect("complete provenance");
+    let trace = kernel.naming_history(result.shape).expect("history");
+    for (i, label) in labels.iter().enumerate() {
+        assert_eq!(
+            naming::generated(
+                &mut kernel,
+                result.shape,
+                NamingInput::Curve(*label),
+                ferritecad_kernel::SubShapeKind::Face
             )
-            .expect_err("a false statement of the axis Line")
-            .to_string();
-        assert!(
-            refusals.iter().any(|r| error.contains(r)),
-            "{stated:?}: {error}"
+            .len(),
+            usize::from(i != 3)
         );
     }
-    // A history that also files a real face under the axis Line — a face of
-    // this solid, already another Line's — is a false name, refused as such.
-    let mut forged = result.clone();
-    let face = result
-        .history
-        .generated(HistoryInput::Segment(labels[0]))
-        .next()
-        .expect("a face");
-    forged
-        .history
-        .record_generated(HistoryInput::Segment(labels[3]), face);
-    let error = ferritecad_topology::TopologyMap::new()
-        .record_revolve(
-            producer,
-            solid.profile(),
-            Some(labels[3]),
-            RevolveTurn::Full,
-            &forged,
-        )
-        .expect_err("a face named for the axis Line")
-        .to_string();
-    assert!(error.contains("reported a face for axis Line"), "{error}");
+    assert!(trace.relations.contains(&(
+        NamingInput::Curve(labels[3]),
+        ferritecad_kernel::NamingRelation::Deleted,
+        None
+    )));
+    assert_eq!(map.features[&producer].named_face_count(), 3);
     kernel.release(result.shape);
     // A label from another profile is refused before any kernel work.
     let (plain, _) = request(&cylinder).expect("request");
@@ -603,16 +578,18 @@ fn native_partial_revolutions_name_two_caps_from_the_sweep_history() {
                 assert!((volume - expected).abs() < 1e-9 * expected, "{volume}");
                 let raised = labels.len() - usize::from(axis.is_some());
                 assert_eq!(faces as usize, raised + 2);
-                let ([start], [end]) = (result.start_cap.as_slice(), result.end_cap.as_slice())
-                else {
-                    panic!("one start and one end face: {result:?}")
-                };
+                let start = &naming::cap(&mut kernel, result.shape, false);
+                let end = &naming::cap(&mut kernel, result.shape, true);
                 let mut line_faces = BTreeSet::new();
                 for label in &labels {
-                    let faces: Vec<_> = result
-                        .history
-                        .generated(HistoryInput::Segment(*label))
-                        .collect();
+                    let faces: Vec<_> = naming::generated(
+                        &mut kernel,
+                        result.shape,
+                        NamingInput::Curve(*label),
+                        ferritecad_kernel::SubShapeKind::Face,
+                    )
+                    .into_iter()
+                    .collect();
                     assert_eq!(faces.len(), usize::from(Some(*label) != axis));
                     line_faces.extend(faces);
                 }
@@ -635,44 +612,24 @@ fn native_partial_revolutions_name_two_caps_from_the_sweep_history() {
                         assert!(off.abs() < 1e-5, "{p:?} off its plane");
                     }
                 }
-                // The names go only where the request says: a sector needs its
-                // two caps, a full turn may have none.
                 let producer = ferritecad_types::ObjectId::new();
-                let mut map = ferritecad_topology::TopologyMap::new();
-                map.record_revolve(producer, request.profile(), axis, request.turn(), &result)
-                    .expect("a sector's names");
-                let names = map.feature(producer).expect("named");
+                let map = naming::bind(&mut kernel, producer, request.profile(), &result)
+                    .expect("sector provenance");
+                let reference = ferritecad_document::TopologyRef {
+                    id: StableEntityId::new(),
+                    owner: producer,
+                    producer_feature: producer,
+                    expected_kind: ferritecad_document::EntityKind::Face,
+                    output_role: ferritecad_document::SemanticRole::RevolveCap {
+                        side: ferritecad_document::CapSide::Start,
+                    },
+                    selection: ferritecad_document::SelectionRule::Exact,
+                    fallback_signature: None,
+                };
                 assert_eq!(
-                    names
-                        .revolved_cap(ferritecad_document::CapSide::Start)
-                        .expect("start")
-                        .collect::<Vec<_>>(),
+                    ferritecad_topology::resolve(&map, &reference).expect("start"),
                     vec![*start]
                 );
-                let error = ferritecad_topology::TopologyMap::new()
-                    .record_revolve(
-                        producer,
-                        request.profile(),
-                        axis,
-                        RevolveTurn::Full,
-                        &result,
-                    )
-                    .expect_err("a full turn has no caps")
-                    .to_string();
-                assert!(
-                    error.contains("full turn, which has no end faces"),
-                    "{error}"
-                );
-                let mut forged = result.clone();
-                forged.end_cap.clear();
-                assert!(
-                    ferritecad_topology::TopologyMap::new()
-                        .record_revolve(producer, request.profile(), axis, request.turn(), &forged)
-                        .is_err()
-                );
-                let mut forged = result.clone();
-                forged.end_cap = vec![*line_faces.iter().next().expect("a Line face")];
-                assert!(forged.validate().is_err(), "a cap that is a Line's face");
                 // Both caps survive the named archive as the faces they were.
                 let slots = [*start, *end];
                 let (blob, archived) = kernel

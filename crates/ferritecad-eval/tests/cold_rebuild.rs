@@ -8,6 +8,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use ferritecad_document::{
     Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression,
     Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
@@ -157,10 +160,7 @@ fn a_plate_rebuilds_into_a_solid_with_named_faces() {
 
     // Asked by name, which is the only account a rebuild keeps. Every profile
     // segment raised exactly one side face, and the two caps are two faces.
-    let names = built
-        .topology()
-        .feature(plate.extrude)
-        .expect("the extrude named its faces");
+    let names = naming::view(built.topology(), plate.extrude);
     for segment in &plate.segments {
         assert_eq!(
             names.side(*segment).count(),

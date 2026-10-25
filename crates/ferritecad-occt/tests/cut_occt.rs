@@ -9,12 +9,15 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use std::f64::consts::PI;
 
 use ferritecad_kernel::{
-    CancelToken, CarriedOutcome, CutRequest, ExtrudeExtent, ExtrudeRequest, ExtrudeResult,
-    FaceSurface, GeometryKernel, HistoryInput, OperationContext, PlanarPoint, Profile, ProfileLoop,
-    ProfileSegment, SegmentGeometry, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
+    CancelToken, CutRequest, ExtrudeExtent, ExtrudeRequest, FaceSurface, GeometryKernel,
+    NamingRelation, OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
+    SegmentGeometry, ShapeHandle, SketchPlane, SubShapeHandle,
 };
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_types::{ErrorKind, Point3, Result, StableEntityId, Vec3};
@@ -75,22 +78,6 @@ fn tool(center: (f64, f64), radius: f64, depth: f64) -> Result<(ExtrudeRequest, 
     ))
 }
 
-/// The faces an extrusion named, read out of its own result.
-///
-/// Not an index range: sub-shape identifiers are handed out in the order the
-/// adapter asked for them and include edges and vertices, so counting from
-/// zero would track a mixture. These are exactly the names the topology layer
-/// keeps, which is what a boolean has to be asked about.
-fn named_faces(result: &ExtrudeResult, labels: &[StableEntityId]) -> Vec<SubShapeHandle> {
-    let mut faces: Vec<SubShapeHandle> = labels
-        .iter()
-        .flat_map(|label| result.history.generated(HistoryInput::Segment(*label)))
-        .collect();
-    faces.extend(result.start_cap.iter().copied());
-    faces.extend(result.end_cap.iter().copied());
-    faces
-}
-
 #[test]
 fn a_blind_tool_through_a_plate_leaves_one_solid_with_a_cylindrical_hole() {
     let mut kernel = kernel_or_skip!();
@@ -102,9 +89,9 @@ fn a_blind_tool_through_a_plate_leaves_one_solid_with_a_cylindrical_hole() {
     let cutter = kernel.extrude(&tool_request, &context).expect("the tool");
 
     // What the plate's own faces are called, before anything is removed.
-    let plate_faces = named_faces(&built, &plate_labels);
+    let plate_faces = naming::faces(&mut kernel, &built, &plate_labels);
     assert_eq!(plate_faces.len(), 6, "a plate has six named faces");
-    let tool_faces = named_faces(&cutter, &[circle]);
+    let tool_faces = naming::faces(&mut kernel, &cutter, &[circle]);
     assert_eq!(tool_faces.len(), 3, "a cylinder has three named faces");
 
     let mut track = plate_faces.clone();
@@ -112,7 +99,10 @@ fn a_blind_tool_through_a_plate_leaves_one_solid_with_a_cylindrical_hole() {
     let target_before = kernel.encode_shape(built.shape).expect("archive target");
     let tool_before = kernel.encode_shape(cutter.shape).expect("archive tool");
     let request = CutRequest::new(built.shape, cutter.shape).expect("two shapes");
-    let result = kernel.cut(&request, &track, &context).expect("a real cut");
+    let result = kernel.cut(&request, &context).expect("a real cut");
+    let trace = kernel
+        .naming_history(result.shape)
+        .expect("complete history");
     assert!(
         kernel.encode_shape(built.shape).expect("target after") == target_before,
         "a cut must not mutate the historical feature"
@@ -143,14 +133,11 @@ fn a_blind_tool_through_a_plate_leaves_one_solid_with_a_cylindrical_hole() {
     // input, and the measured surface below verifies the result.
     let wall_input = tool_faces[0];
     assert_eq!(
-        result.carried.get(&wall_input),
-        Some(&CarriedOutcome::Modified),
+        Some(&naming::survival(&trace, wall_input)),
+        Some(&NamingRelation::Modified),
         "the tool's own wall is what bounds the bore"
     );
-    let carried: Vec<SubShapeHandle> = result
-        .history
-        .modified(HistoryInput::SubShape(wall_input))
-        .collect();
+    let carried: Vec<SubShapeHandle> = naming::surviving(&trace, wall_input).collect();
     assert_eq!(carried.len(), 1, "one wall came from one tool face");
     assert_eq!(
         kernel.face_surface(carried[0]).expect("a surface"),
@@ -164,10 +151,10 @@ fn a_blind_tool_through_a_plate_leaves_one_solid_with_a_cylindrical_hole() {
     let mut kept = 0;
     let mut modified = 0;
     for face in &plate_faces {
-        match result.carried.get(face).copied().expect("an answer") {
-            CarriedOutcome::Kept => kept += 1,
-            CarriedOutcome::Modified => modified += 1,
-            CarriedOutcome::Deleted => panic!("a through hole deleted a face of the plate"),
+        match naming::survival(&trace, *face) {
+            NamingRelation::Kept => kept += 1,
+            NamingRelation::Modified => modified += 1,
+            NamingRelation::Deleted => panic!("a through hole deleted a face of the plate"),
             other => panic!("this build has no reading of {other:?}"),
         }
     }
@@ -180,7 +167,7 @@ fn a_blind_tool_through_a_plate_leaves_one_solid_with_a_cylindrical_hole() {
     // The tool's caps are gone: a through hole has no floor.
     let vanished = tool_faces
         .iter()
-        .filter(|face| result.carried.get(face) == Some(&CarriedOutcome::Deleted))
+        .filter(|face| Some(&naming::survival(&trace, **face)) == Some(&NamingRelation::Deleted))
         .count();
     assert_eq!(vanished, 2, "both caps of a through tool are removed");
     for shape in [built.shape, cutter.shape, result.shape] {
@@ -199,11 +186,12 @@ fn a_shallow_tool_leaves_a_pocket_with_a_floor() {
     let (tool_request, circle) = tool((20.0, 15.0), 5.0, 4.0).expect("a tool");
     let cutter = kernel.extrude(&tool_request, &context).expect("the tool");
 
-    let tool_faces = named_faces(&cutter, &[circle]);
+    let tool_faces = naming::faces(&mut kernel, &cutter, &[circle]);
     let request = CutRequest::new(built.shape, cutter.shape).expect("two shapes");
-    let result = kernel
-        .cut(&request, &tool_faces, &context)
-        .expect("a real cut");
+    let result = kernel.cut(&request, &context).expect("a real cut");
+    let trace = kernel
+        .naming_history(result.shape)
+        .expect("complete history");
 
     let expected = PI * 25.0 * 4.0;
     assert!((result.removed_volume - expected).abs() < 1e-6 * expected);
@@ -216,8 +204,8 @@ fn a_shallow_tool_leaves_a_pocket_with_a_floor() {
     // opens onto.
     let surviving: Vec<(SubShapeHandle, FaceSurface)> = tool_faces
         .iter()
-        .filter(|face| result.carried.get(face) != Some(&CarriedOutcome::Deleted))
-        .flat_map(|face| result.history.modified(HistoryInput::SubShape(*face)))
+        .filter(|face| Some(&naming::survival(&trace, **face)) != Some(&NamingRelation::Deleted))
+        .flat_map(|face| naming::surviving(&trace, *face))
         .map(|out| (out, kernel.face_surface(out).expect("a surface")))
         .collect();
     assert_eq!(surviving.len(), 2, "the wall and the floor");
@@ -230,7 +218,7 @@ fn a_shallow_tool_leaves_a_pocket_with_a_floor() {
     assert_eq!(
         tool_faces
             .iter()
-            .filter(|face| result.carried.get(face) == Some(&CarriedOutcome::Deleted))
+            .filter(|face| Some(&naming::survival(&trace,**face)) == Some(&NamingRelation::Deleted))
             .count(),
         1,
         "only the cap the pocket opens onto is removed"
@@ -257,7 +245,6 @@ fn a_tool_that_misses_a_foreign_handle_and_a_cancelled_run_are_all_refused() {
     let error = kernel
         .cut(
             &CutRequest::new(built.shape, missed.shape).expect("two shapes"),
-            &[],
             &context,
         )
         .expect_err("a tool that misses is refused");
@@ -269,25 +256,13 @@ fn a_tool_that_misses_a_foreign_handle_and_a_cancelled_run_are_all_refused() {
     let error = kernel
         .cut(
             &CutRequest::new(built.shape, big.shape).expect("two shapes"),
-            &[],
             &context,
         )
         .expect_err("a cut that leaves nothing is refused");
     assert_eq!(error.kind(), ErrorKind::Unsupported, "{error}");
 
-    // A tracked sub-shape belonging to neither input.
     let (other_request, _) = tool((20.0, 15.0), 5.0, 10.0).expect("a tool");
     let other = kernel.extrude(&other_request, &context).expect("the tool");
-    let third = kernel.extrude(&plate(10.0, 10.0, 10.0).expect("a plate").0, &context);
-    let third = third.expect("a third solid");
-    let error = kernel
-        .cut(
-            &CutRequest::new(built.shape, other.shape).expect("two shapes"),
-            &[SubShapeHandle::new(third.shape, SubShapeKind::Face, 0)],
-            &context,
-        )
-        .expect_err("a handle from a third shape is refused");
-    assert_eq!(error.kind(), ErrorKind::Input, "{error}");
 
     // Cancellation before the boolean runs.
     let token = CancelToken::new();
@@ -296,19 +271,12 @@ fn a_tool_that_misses_a_foreign_handle_and_a_cancelled_run_are_all_refused() {
     let error = kernel
         .cut(
             &CutRequest::new(built.shape, other.shape).expect("two shapes"),
-            &[],
             &cancelled,
         )
         .expect_err("a cancelled cut is refused");
     assert_eq!(error.kind(), ErrorKind::Cancellation, "{error}");
 
-    for shape in [
-        built.shape,
-        missed.shape,
-        big.shape,
-        other.shape,
-        third.shape,
-    ] {
+    for shape in [built.shape, missed.shape, big.shape, other.shape] {
         kernel.release(shape);
     }
     assert_eq!(kernel.live_shape_count(), 0);

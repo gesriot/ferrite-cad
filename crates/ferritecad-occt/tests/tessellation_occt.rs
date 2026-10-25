@@ -10,6 +10,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     f64::consts::PI,
@@ -171,9 +174,8 @@ fn build() -> Built {
     let result = kernel
         .extrude(&request, &OperationContext::default())
         .expect("builds");
-    let mut map = TopologyMap::new();
-    map.record_extrude(feature, request.profile(), &result)
-        .expect("records");
+    let map =
+        naming::bind(&mut kernel, feature, request.profile(), &result).expect("complete naming");
     let shape = result.shape;
     Built {
         kernel,
@@ -552,7 +554,8 @@ fn a_restored_solid_draws_the_same_as_the_one_that_was_built() {
     built.kernel.release(built.shape);
 
     let mut reader = OcctKernel::new().expect("opens");
-    let mut restored_map = TopologyMap::new();
+    let mut restored_map = built.map.clone();
+    restored_map.features.clear();
     restore_feature(&mut reader, &archived, &mut restored_map).expect("restores");
     let shape = restored_map
         .feature(built.feature)
@@ -922,9 +925,8 @@ fn swept(extent: ExtrudeExtent, reversed: bool, arc: bool) -> (Built, ExtrudeReq
     let result = kernel
         .extrude(&request, &OperationContext::default())
         .expect("builds");
-    let mut map = TopologyMap::new();
-    map.record_extrude(feature, request.profile(), &result)
-        .expect("records");
+    let map =
+        naming::bind(&mut kernel, feature, request.profile(), &result).expect("complete naming");
     let shape = result.shape;
     (
         Built {

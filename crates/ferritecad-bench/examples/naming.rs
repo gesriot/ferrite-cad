@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -7,7 +6,6 @@ use ferritecad_document::{Document, EndCondition, Expression, ObjectPayload};
 use ferritecad_eval::rebuild_cold;
 use ferritecad_kernel::{OperationContext, SubShapeKind};
 use ferritecad_occt::OcctKernel;
-use ferritecad_topology::generative::name_rebuilt;
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -78,8 +76,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         let document = Document::open_read_only(root.join(format!("{case}.fcad")))?;
         let mut rebuild_samples = Vec::new();
-        let mut naming_samples = Vec::new();
-        let mut total_samples = Vec::new();
         let mut report = json!(null);
         for _ in 0..runs {
             let mut kernel = OcctKernel::new()?;
@@ -89,15 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("{case}: {:?}", built.report()).into());
             }
             let rebuild_ms = start.elapsed().as_secs_f64() * 1000.;
-            let naming_start = Instant::now();
-            let shapes: BTreeMap<_, _> = built
-                .order()
-                .iter()
-                .filter_map(|id| built.shape(*id).map(|s| (*id, s)))
-                .collect();
-            let model = name_rebuilt(&document, &shapes, &mut kernel)?;
-            let naming_ms = naming_start.elapsed().as_secs_f64() * 1000.;
-            let total_ms = start.elapsed().as_secs_f64() * 1000.;
+            let model = built.topology();
             let mut counts = [0; 3];
             let mut ambiguous = Vec::new();
             let mut features = Vec::new();
@@ -121,12 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let mut compared = 0;
             for reference in document.topology_refs()? {
-                let old: BTreeSet<_> = ferritecad_topology::resolve(built.topology(), &reference)?
-                    .into_iter()
-                    .collect();
-                if old != model.resolve_legacy(&reference)? {
-                    return Err(format!("reference {} differs", reference.id).into());
-                }
+                built.resolve(&reference)?;
                 compared += 1;
             }
             let mut swept = 0;
@@ -136,18 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ObjectPayload::Chamfer(c) => (c.previous, c.edge),
                     _ => continue,
                 };
-                let old = built
-                    .topology()
-                    .feature(previous)
-                    .ok_or("missing predecessor")?;
-                let old: BTreeSet<_> = if previous == edge.feature {
-                    old.sweep_edge(edge.joint).collect()
-                } else {
-                    old.origin_sweep_edge(edge.feature, edge.joint).collect()
-                };
-                if old != BTreeSet::from([model.swept_edge(previous, edge)?]) {
-                    return Err("swept edge differs".into());
-                }
+                model.swept_edge(previous, edge)?;
                 swept += 1;
             }
             report = json!({
@@ -156,19 +128,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "vertices": counts[2],
                 "features": features,
                 "ambiguous": ambiguous,
-                "compared_refs": compared,
-                "compared_swept_edges": swept,
+                "resolved_refs": compared,
+                "resolved_swept_edges": swept,
             });
             rebuild_samples.push(rebuild_ms);
-            naming_samples.push(naming_ms);
-            total_samples.push(total_ms);
             built.release_all(&mut kernel);
         }
         rows.push(json!({
             "case": case,
             "rebuild_ms": rebuild_samples,
-            "naming_ms": naming_samples,
-            "total_ms": total_samples,
             "report": report,
         }));
     }
