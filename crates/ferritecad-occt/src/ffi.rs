@@ -42,8 +42,6 @@ const SURFACE_CONE: i32 = 3;
 /// `FC_OCCT_NO_AXIS_SEGMENT`: no segment of a revolved profile is on the axis.
 const NO_AXIS_SEGMENT: usize = usize::MAX;
 
-/// Must match the `FC_OCCT_CARRIED_*` constants in `ferritecad_occt.h`.
-
 /// Must match the `FC_OCCT_SUB_SHAPE_*` constants in `ferritecad_occt.h`.
 const SUB_SHAPE_FACE: i32 = 0;
 const SUB_SHAPE_EDGE: i32 = 1;
@@ -736,10 +734,6 @@ impl Session {
         Ok(shape)
     }
 
-    /// The start (`end == false`) or end face of a partial revolution.
-
-    /// The face of revolution one profile segment raised.
-
     /// The analytic plane of one named planar face (§29A): a point on it, its
     /// outward unit normal and its area.
     pub(crate) fn face_plane(
@@ -865,24 +859,6 @@ impl Session {
         interpret(status, &error, "counting the sub-shapes a shape has named")?;
         Ok(count)
     }
-
-    /// What a cut did to one named sub-shape of one of its inputs.
-
-    /// The edge one profile segment left where a cap meets its swept face.
-    ///
-    /// Zero or one identifier: the bridge reports none for a segment that
-    /// produced no such edge rather than offering a neighbour.
-
-    /// The edge swept from one corner of the profile.
-    ///
-    /// Everything the bridge recorded there, so a count other than one is the
-    /// caller's to refuse rather than something silently trimmed here.
-
-    /// The vertex one corner of the profile reaches on one cap.
-    ///
-    /// Positional, as the bridge reports it. Everything recorded at that
-    /// corner comes back, so a count other than one is the caller's to refuse
-    /// rather than something quietly trimmed here.
 
     pub(crate) fn shape_stats(&mut self, shape: u64) -> Result<(u64, f64)> {
         let mut faces = 0u64;
@@ -1087,8 +1063,6 @@ impl Session {
         Ok((shape, removed))
     }
 
-    /// The faces the fillet generated from the rounded edge.
-
     /// Cuts exactly one edge of `target` away at one equal distance (§29A):
     /// the new shape and the volume removed, measured by the bridge as a
     /// difference.
@@ -1121,8 +1095,6 @@ impl Session {
         interpret(status, &error, "chamfering one edge")?;
         Ok((shape, removed))
     }
-
-    /// The faces the chamfer generated from the cut edge.
 
     /// Rounds every edge of a shape to one radius.
     pub(crate) fn fillet_all(
@@ -1482,36 +1454,6 @@ impl Session {
         // SAFETY: the session pointer is valid for this object's lifetime.
         unsafe { fc_occt_live_shape_count(self.raw) }
     }
-
-    /// Runs the bridge's two-call length protocol: ask for the count, then ask
-    /// again with a buffer that size.
-    fn collect_ids(
-        &mut self,
-        what: &str,
-        mut call: impl FnMut(*mut RawSession, *mut u64, usize, *mut usize, *mut RawError) -> i32,
-    ) -> Result<Vec<u64>> {
-        let mut count = 0usize;
-        let mut error = RawError::empty();
-
-        let status = call(self.raw, std::ptr::null_mut(), 0, &mut count, &mut error);
-        interpret(status, &error, what)?;
-
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut ids = vec![0u64; count];
-        let mut written = 0usize;
-        let status = call(self.raw, ids.as_mut_ptr(), count, &mut written, &mut error);
-        interpret(status, &error, what)?;
-
-        if written != count {
-            return Err(CadError::kernel(format!(
-                "{what}: the bridge first reported {count} entries and then wrote {written}"
-            )));
-        }
-        Ok(ids)
-    }
 }
 
 impl Drop for Session {
@@ -1535,6 +1477,58 @@ mod tests {
     use ferritecad_types::ErrorKind;
 
     use super::*;
+
+    fn links(
+        session: &mut Session,
+        shape: u64,
+        source: u64,
+        input: u64,
+        input_kind: u64,
+        relation: u64,
+        kind: u64,
+    ) -> Vec<u64> {
+        session
+            .naming_data(shape, true)
+            .expect("complete provenance")
+            .chunks_exact(6)
+            .filter(|r| {
+                r[0] == source
+                    && r[1] == input
+                    && r[2] == input_kind
+                    && r[3] == relation
+                    && r[5] == kind
+            })
+            .map(|r| r[4])
+            .collect()
+    }
+    fn sweep_face(session: &mut Session, shape: u64, curve: usize) -> Vec<u64> {
+        links(session, shape, 0, curve as u64, 3, 2, 0)
+    }
+    fn cap(session: &mut Session, shape: u64, end: bool) -> Vec<u64> {
+        links(session, shape, 0, u64::from(end), 6, 2, 0)
+    }
+    fn between(session: &mut Session, shape: u64, faces: &[u64], kind: u64) -> Vec<u64> {
+        let mut incidence =
+            std::collections::BTreeMap::<u64, std::collections::BTreeSet<u64>>::new();
+        for r in session
+            .naming_data(shape, false)
+            .expect("complete inventory")
+            .chunks_exact(3)
+            .filter(|r| r[1] == kind && r[2] != u64::MAX)
+        {
+            incidence.entry(r[0]).or_default().insert(r[2]);
+        }
+        incidence
+            .iter()
+            .filter(|(_, set)| faces.iter().all(|f| set.contains(f)))
+            .map(|(e, _)| *e)
+            .collect()
+    }
+    fn corner(session: &mut Session, shape: u64, index: usize) -> Vec<u64> {
+        let one = sweep_face(session, shape, index)[0];
+        let other = sweep_face(session, shape, (index + 3) % 4)[0];
+        between(session, shape, &[one, other], 1)
+    }
 
     #[test]
     fn incomplete_face_status_is_typed_and_an_ordinary_kernel_status_is_not() {
@@ -1732,8 +1726,8 @@ mod tests {
                 &token,
             )
             .expect("a sector");
-        let start = session.revolve_caps(sector, false).expect("start");
-        let end = session.revolve_caps(sector, true).expect("end");
+        let start = cap(&mut session, sector, false);
+        let end = cap(&mut session, sector, true);
         assert_eq!((start.len(), end.len()), (1, 1));
         assert_ne!(start, end);
         let (faces, volume) = session.shape_stats(sector).expect("stats");
@@ -1741,7 +1735,7 @@ mod tests {
         let quarter = std::f64::consts::PI * (100.0 - 16.0) * 15.0 / 4.0;
         assert!((volume - quarter).abs() < 1e-9 * quarter, "{volume}");
         for index in 0..ring.len() {
-            let face = session.revolve_faces(sector, index).expect("a Line's face");
+            let face = sweep_face(&mut session, sector, index);
             assert_eq!(face.len(), 1);
             assert!(face[0] != start[0] && face[0] != end[0]);
         }
@@ -1755,9 +1749,10 @@ mod tests {
             .revolve_full_turn(&plane, &ring, None, origin, y, &token)
             .expect("a full turn");
         for end in [false, true] {
-            let error = session.revolve_caps(full, end).expect_err("no caps");
-            assert_eq!(error.kind(), ErrorKind::Unsupported);
-            assert!(error.to_string().contains("full turn"), "{error}");
+            assert!(
+                cap(&mut session, full, end).is_empty(),
+                "a full turn has no cap ancestry"
+            );
         }
         session.release(sector);
         session.release(full);
@@ -1801,9 +1796,6 @@ mod tests {
             ("FC_OCCT_SURFACE_PLANE", SURFACE_PLANE),
             ("FC_OCCT_SURFACE_CYLINDER", SURFACE_CYLINDER),
             ("FC_OCCT_SURFACE_CONE", SURFACE_CONE),
-            ("FC_OCCT_CARRIED_KEPT", CARRIED_KEPT),
-            ("FC_OCCT_CARRIED_MODIFIED", CARRIED_MODIFIED),
-            ("FC_OCCT_CARRIED_DELETED", CARRIED_DELETED),
         ] {
             let found = header.split_once(&format!("{name} = "));
             assert!(found.is_some(), "{name} is declared in the header");
@@ -1956,7 +1948,7 @@ mod tests {
             "{volume} is not {exact}"
         );
 
-        let side = session.side_faces(shape, 0).expect("the swept face");
+        let side = sweep_face(&mut session, shape, 0);
         assert_eq!(side.len(), 1);
         assert_eq!(
             session.face_surface(shape, side[0]).expect("surface"),
@@ -1969,7 +1961,7 @@ mod tests {
         assert_eq!([axis[0].abs(), axis[1].abs(), axis[2].abs()], [0., 0., 1.]);
         assert!(session.cylinder_axis(shape, u64::MAX).is_err());
         for which in [0, 1] {
-            let cap = session.cap_faces(shape, which).expect("cap");
+            let cap = cap(&mut session, shape, which == 1);
             assert_eq!(cap.len(), 1);
             assert!(session.cylinder_axis(shape, cap[0]).is_err());
             assert_eq!(
@@ -1977,14 +1969,14 @@ mod tests {
                 FaceSurface::Plane
             );
             // A cap still meets the swept face along an edge.
-            assert_eq!(session.cap_edges(shape, 0, which).expect("edge").len(), 1);
+            assert_eq!(between(&mut session, shape, &[side[0], cap[0]], 1).len(), 1);
         }
 
         // There is no corner, so there is no corner to ask about.
-        assert!(session.sweep_edges(shape, 0).is_err());
-        assert!(session.cap_vertices(shape, 0, 0).is_err());
+        assert!(links(&mut session, shape, 0, 0, 4, 2, 1).is_empty());
+        assert!(links(&mut session, shape, 0, 0, 4, 2, 2).is_empty());
         // And a second segment asked for beyond the profile is still refused.
-        assert!(session.side_faces(shape, 1).is_err());
+        assert!(sweep_face(&mut session, shape, 1).is_empty());
 
         session.release(shape);
         assert!(session.cylinder_axis(shape, side[0]).is_err());
@@ -2033,7 +2025,7 @@ mod tests {
         // were given. Swapping these two answers is the failure a solid with
         // the right volume and the wrong identities would have.
         for (index, radius) in [(0, 10.0), (1, 4.0)] {
-            let side = session.side_faces(shape, index).expect("the swept face");
+            let side = sweep_face(&mut session, shape, index);
             assert_eq!(side.len(), 1, "loop {index} raised one wall");
             assert_eq!(
                 session.face_surface(shape, side[0]).expect("surface"),
@@ -2042,7 +2034,7 @@ mod tests {
             );
         }
         for which in [0, 1] {
-            let cap = session.cap_faces(shape, which).expect("cap");
+            let cap = cap(&mut session, shape, which == 1);
             assert_eq!(cap.len(), 1);
             assert_eq!(
                 session.face_surface(shape, cap[0]).expect("surface"),
@@ -2050,21 +2042,16 @@ mod tests {
             );
             // Both walls still meet both caps along an edge each.
             for segment in [0, 1] {
-                assert_eq!(
-                    session
-                        .cap_edges(shape, segment, which)
-                        .expect("edge")
-                        .len(),
-                    1
-                );
+                let side = sweep_face(&mut session, shape, segment)[0];
+                assert_eq!(between(&mut session, shape, &[side, cap[0]], 1).len(), 1);
             }
         }
 
         // Neither loop has a corner, so neither has one to ask about, and
         // nothing beyond the two loops exists to ask about either.
-        assert!(session.sweep_edges(shape, 0).is_err());
-        assert!(session.cap_vertices(shape, 0, 0).is_err());
-        assert!(session.side_faces(shape, 2).is_err());
+        assert!(links(&mut session, shape, 0, 0, 4, 2, 1).is_empty());
+        assert!(links(&mut session, shape, 0, 0, 4, 2, 2).is_empty());
+        assert!(sweep_face(&mut session, shape, 2).is_empty());
 
         // The mesh of that solid is a mesh of four faces, not of three.
         let mesh = session
@@ -2075,7 +2062,7 @@ mod tests {
 
         // And the names survive the archive the warm cache stores.
         let named: Vec<u64> = (0..2)
-            .map(|i| session.side_faces(shape, i).expect("side")[0])
+            .map(|i| sweep_face(&mut session, shape, i)[0])
             .collect();
         let (bytes, slots) = session
             .encode_shape_named(shape, &named)
@@ -2367,16 +2354,19 @@ mod tests {
         assert_eq!(session.live_shape_count(), 1);
 
         let decoded = session.decode_shape(&bytes).expect("decodes");
-        for err in [
+        assert_eq!(
             session
-                .side_faces(decoded, 0)
-                .expect_err("a decoded shape has no operation history"),
-            session
-                .cap_faces(decoded, 0)
-                .expect_err("a decoded shape has no operation caps"),
-        ] {
-            assert_eq!(err.kind(), ErrorKind::Unsupported);
-        }
+                .naming_data(decoded, true)
+                .expect_err("restored geometry has no provenance")
+                .kind(),
+            ErrorKind::Unsupported
+        );
+        assert!(
+            !session
+                .naming_data(decoded, false)
+                .expect("restored topology")
+                .is_empty()
+        );
 
         session.release(original);
         session.release(decoded);
@@ -2471,28 +2461,6 @@ mod tests {
                     "FcOcctError *out_error",
                 ][..],
             ),
-            (
-                "FcOcctStatus fc_occt_chamfer_faces(",
-                &[
-                    "FcOcctSession *session",
-                    "uint64_t shape",
-                    "uint64_t *out_ids",
-                    "size_t capacity",
-                    "size_t *out_count",
-                    "FcOcctError *out_error",
-                ][..],
-            ),
-            (
-                "FcOcctStatus fc_occt_fillet_faces(",
-                &[
-                    "FcOcctSession *session",
-                    "uint64_t shape",
-                    "uint64_t *out_ids",
-                    "size_t capacity",
-                    "size_t *out_count",
-                    "FcOcctError *out_error",
-                ][..],
-            ),
         ] {
             let declared = header
                 .split_once(entry)
@@ -2544,14 +2512,14 @@ mod tests {
         let shape = session
             .extrude(&plane, &segments, &[4], 0.0, h, &CancelToken::new())
             .expect("a plate");
-        let side = session.side_faces(shape, 0).expect("side")[0];
+        let side = sweep_face(&mut session, shape, 0)[0];
         let never = CancelToken::new();
 
         // Nothing but a fresh fillet result answers for its fillet faces.
-        assert!(session.fillet_faces(shape).is_err());
+        assert!(links(&mut session, shape, shape, 0, 1, 2, 0).is_empty());
         // An edge the target does not have, a face where an edge belongs, a
         // target the session does not hold, and a cancelled run.
-        let edge = session.sweep_edges(shape, 0).expect("edge")[0];
+        let edge = corner(&mut session, shape, 0)[0];
         assert!(session.fillet_edge(shape, u64::MAX, 2.5, &never).is_err());
         assert!(session.fillet_edge(shape, side, 2.5, &never).is_err());
         assert!(session.fillet_edge(u64::MAX, edge, 2.5, &never).is_err());
@@ -2565,7 +2533,7 @@ mod tests {
         let r = 2.375;
         let mut centres = Vec::new();
         for joint in 0..4 {
-            let edge = session.sweep_edges(shape, joint).expect("edge")[0];
+            let edge = corner(&mut session, shape, joint)[0];
             let (rounded, removed) = session
                 .fillet_edge(shape, edge, r, &never)
                 .expect("a real fillet");
@@ -2577,7 +2545,7 @@ mod tests {
             let (faces, volume) = session.shape_stats(rounded).expect("stats");
             assert_eq!(faces, 7);
             assert!((volume - (w * d * h - expected)).abs() < 1e-9 * w * d * h);
-            let generated = session.fillet_faces(rounded).expect("fillet faces");
+            let generated = links(&mut session, rounded, shape, edge, 1, 2, 0);
             assert_eq!(generated.len(), 1, "exactly one face replaced the edge");
             assert_eq!(
                 session
@@ -2592,8 +2560,13 @@ mod tests {
             assert!((axis[2].abs() - 1.0).abs() < 1e-12);
             centres.push([origin[0], origin[1]]);
             // The rounded edge is reported gone, not kept or moved.
-            let (outcome, _) = session.cut_carried(rounded, shape, edge).expect("carried");
-            assert_eq!(outcome, CARRIED_DELETED);
+            assert!(
+                session
+                    .naming_data(rounded, true)
+                    .expect("history")
+                    .chunks_exact(6)
+                    .any(|r| r[0] == shape && r[1] == edge && r[2] == 1 && r[3] == 3)
+            );
             session.release(rounded);
         }
         // Four joints, four different corners, each centre r inward of its own.

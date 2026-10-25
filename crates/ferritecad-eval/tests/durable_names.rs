@@ -9,6 +9,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use std::path::Path;
 
 use ferritecad_document::{
@@ -19,7 +22,7 @@ use ferritecad_kernel::{
     ExtrudeExtent, ExtrudeRequest, GeometryKernel, KernelIdentity, OperationContext, PlanarPoint,
     Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, mock::MockKernel,
 };
-use ferritecad_topology::{ARCHIVE_CACHE_KIND, TopologyMap, archive_feature, resolve};
+use ferritecad_topology::{ARCHIVE_CACHE_KIND, archive_feature, resolve};
 use ferritecad_types::{DocumentId, ErrorKind, ObjectId, Result, StableEntityId};
 
 struct Plate {
@@ -101,9 +104,8 @@ fn write(path: &Path, document: DocumentId, plate: &Plate) {
     let result = kernel
         .extrude(&plate.request, &OperationContext::default())
         .expect("builds");
-    let mut map = TopologyMap::new();
-    map.record_extrude(plate.feature, plate.request.profile(), &result)
-        .expect("records");
+    let map = naming::bind(&mut kernel, plate.feature, plate.request.profile(), &result)
+        .expect("complete naming");
 
     let archived = archive_feature(&mut kernel, &map, plate.feature).expect("archives");
     store_extrude_archive(
@@ -148,7 +150,8 @@ fn names_survive_a_closed_file_and_a_new_session() {
     .expect("reads")
     .expect("the entry written by the previous run is there");
 
-    let mut restored = TopologyMap::new();
+    let mut restored =
+        naming::prepared(plate.feature, plate.request.profile(), false).expect("model roots");
     ferritecad_topology::restore_feature(&mut kernel, &archived, &mut restored)
         .expect("restores into this session");
 
@@ -266,9 +269,8 @@ fn another_kernel_build_is_a_miss_and_cannot_write_under_that_key() {
     let result = kernel
         .extrude(&plate.request, &OperationContext::default())
         .expect("builds");
-    let mut map = TopologyMap::new();
-    map.record_extrude(plate.feature, plate.request.profile(), &result)
-        .expect("records");
+    let map = naming::bind(&mut kernel, plate.feature, plate.request.profile(), &result)
+        .expect("complete naming");
     let archived = archive_feature(&mut kernel, &map, plate.feature).expect("archives");
 
     let rebuilt = KernelIdentity::new(

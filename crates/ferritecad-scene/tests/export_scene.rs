@@ -28,10 +28,10 @@ use ferritecad_export::{
 };
 use ferritecad_kernel::mock::MockKernel;
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, CancelToken, ExtrudeExtent, ExtrudeRequest, ExtrudeResult,
-    GeometryKernel, KernelIdentity, Mesh, OperationContext, OperationResult, PlanarPoint, Profile,
-    ProfileLoop, ProfileSegment, SegmentGeometry, ShapeHandle, SketchPlane, SubShapeHandle,
-    TessellationParams, TessellationRefusal,
+    ArchiveSlot, BrepBlob, CancelToken, ExtrudeExtent, ExtrudeRequest, GeometryKernel,
+    KernelIdentity, Mesh, OperationContext, OperationResult, PlanarPoint, Profile, ProfileLoop,
+    ProfileSegment, SegmentGeometry, ShapeHandle, SketchPlane, SubShapeHandle, TessellationParams,
+    TessellationRefusal,
 };
 use ferritecad_scene::{export_scene, snapshot_of};
 use ferritecad_types::{
@@ -1182,12 +1182,18 @@ impl GeometryKernel for RefusesMesh {
     fn cut(
         &mut self,
         request: &ferritecad_kernel::CutRequest,
-        track: &[ferritecad_kernel::SubShapeHandle],
+
         context: &OperationContext,
-    ) -> Result<ferritecad_kernel::CutResult> {
-        self.inner.cut(request, track, context)
+    ) -> Result<ferritecad_kernel::OperationResult> {
+        self.inner.cut(request, context)
     }
 
+    fn shape_topology(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::ShapeTopology> {
+        self.inner.shape_topology(shape)
+    }
+    fn naming_history(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::NamingHistory> {
+        self.inner.naming_history(shape)
+    }
     fn identity(&self) -> &KernelIdentity {
         self.inner.identity()
     }
@@ -1196,7 +1202,7 @@ impl GeometryKernel for RefusesMesh {
         &mut self,
         request: &ExtrudeRequest,
         context: &OperationContext,
-    ) -> Result<ExtrudeResult> {
+    ) -> Result<OperationResult> {
         self.inner.extrude(request, context)
     }
 
@@ -1597,12 +1603,18 @@ impl GeometryKernel for Counting {
     fn cut(
         &mut self,
         request: &ferritecad_kernel::CutRequest,
-        track: &[ferritecad_kernel::SubShapeHandle],
+
         context: &OperationContext,
-    ) -> Result<ferritecad_kernel::CutResult> {
-        self.inner.cut(request, track, context)
+    ) -> Result<ferritecad_kernel::OperationResult> {
+        self.inner.cut(request, context)
     }
 
+    fn shape_topology(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::ShapeTopology> {
+        self.inner.shape_topology(shape)
+    }
+    fn naming_history(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::NamingHistory> {
+        self.inner.naming_history(shape)
+    }
     fn identity(&self) -> &KernelIdentity {
         self.inner.identity()
     }
@@ -1611,7 +1623,7 @@ impl GeometryKernel for Counting {
         &mut self,
         request: &ExtrudeRequest,
         context: &OperationContext,
-    ) -> Result<ExtrudeResult> {
+    ) -> Result<OperationResult> {
         self.extrusions += 1;
         self.inner.extrude(request, context)
     }

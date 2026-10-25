@@ -134,29 +134,24 @@ namespace {
 /// A shape the session owns, with the sub-shapes the caller may name.
 struct ShapeRecord {
   std::vector<uint64_t> naming_history;
+  TopTools_IndexedMapOfShape sub_shape_ids;
+  std::vector<uint64_t> naming_topology;
+  bool inventory_complete = false;
   TopoDS_Shape shape;
   /// True when the shape came back from a cache blob rather than an operation.
   ///
   /// Open CASCADE's B-Rep format stores a shape, not the history of what made
-  /// it, so a decoded shape has no side faces and no caps. Recording that lets
-  /// the queries refuse rather than answer with an empty list, which a naming
-  /// layer would read as "this feature produced nothing".
+  /// it. A restored shape therefore refuses provenance queries instead of
+  /// inventing an empty history.
   bool decoded = false;
   /// Identifier to sub-shape. The identifiers mean nothing outside this
   /// session, which is exactly what the Rust side promises about them.
   std::vector<TopoDS_Shape> sub_shapes;
   uint64_t remember(const TopoDS_Shape &sub) {
-    // The same OCCT face can be reported through more than one route. It must
-    // still have one session-local identity; otherwise two handles compare
-    // different even though they name the same topology, hiding precisely the
-    // silent retargeting the naming layer is meant to catch.
-    for (size_t i = 0; i < sub_shapes.size(); ++i) {
-      if (sub_shapes[i].IsSame(sub)) {
-        return static_cast<uint64_t>(i);
-      }
-    }
-    sub_shapes.push_back(sub);
-    return static_cast<uint64_t>(sub_shapes.size() - 1);
+    const int before = sub_shape_ids.Extent();
+    const int index = sub_shape_ids.Add(sub);
+    if (index > before) sub_shapes.push_back(sub);
+    return static_cast<uint64_t>(index - 1);
   }
 };
 
@@ -172,18 +167,18 @@ uint64_t naming_kind(const TopoDS_Shape &sub) {
 }
 
 void naming_inventory(ShapeRecord &record) {
+  if (record.inventory_complete) return;
   for (TopAbs_ShapeEnum kind : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
     TopTools_IndexedMapOfShape found;
     TopExp::MapShapes(record.shape, kind, found);
     for (int i = 1; i <= found.Extent(); ++i) record.remember(found(i));
   }
+  record.inventory_complete = true;
 }
 
 bool naming_contains(const ShapeRecord &record, const TopoDS_Shape &sub) {
   if (sub.IsNull()) return false;
-  for (const auto &candidate : record.sub_shapes)
-    if (candidate.IsSame(sub)) return true;
-  return false;
+  return record.sub_shape_ids.Contains(sub);
 }
 
 void naming_link(ShapeRecord &record, uint64_t shape, uint64_t input,
@@ -1376,19 +1371,31 @@ FcOcctStatus fc_occt_naming_data(FcOcctSession *session, uint64_t shape,
     std::vector<uint64_t> words;
     if (history) words = record.naming_history;
     else {
-      for (size_t i = 0; i < record.sub_shapes.size(); ++i) {
-        const auto &sub = record.sub_shapes[i];
-        const auto kind = naming_kind(sub);
-        words.insert(words.end(), {i, kind, UINT64_MAX});
-        if (kind == 0) continue;
+      if (record.naming_topology.empty()) {
+        // Visit each face boundary once; the index preserves IsSame identity,
+        // including seams with one incident face, without a scan per entity.
+        std::vector<std::vector<uint64_t>> incidence(record.sub_shapes.size());
         for (size_t f = 0; f < record.sub_shapes.size(); ++f) {
           const auto &face = record.sub_shapes[f];
           if (face.ShapeType() != TopAbs_FACE) continue;
-          TopTools_IndexedMapOfShape members;
-          TopExp::MapShapes(face, sub.ShapeType(), members);
-          if (members.Contains(sub)) words.insert(words.end(), {i, kind, f});
+          for (auto kind : {TopAbs_EDGE, TopAbs_VERTEX}) {
+            TopTools_IndexedMapOfShape members;
+            TopExp::MapShapes(face, kind, members);
+            for (int i = 1; i <= members.Extent(); ++i) {
+              const int index = record.sub_shape_ids.FindIndex(members(i));
+              if (!index) throw std::runtime_error("face boundary absent from inventory");
+              incidence[index - 1].push_back(f);
+            }
+          }
+        }
+        for (size_t i = 0; i < record.sub_shapes.size(); ++i) {
+          const auto kind = naming_kind(record.sub_shapes[i]);
+          record.naming_topology.insert(record.naming_topology.end(), {i, kind, UINT64_MAX});
+          for (auto f : incidence[i])
+            record.naming_topology.insert(record.naming_topology.end(), {i, kind, f});
         }
       }
+      words = record.naming_topology;
     }
     *count = words.size();
     if (!capacity) return FC_OCCT_OK;
@@ -1416,49 +1423,6 @@ FcOcctStatus fc_occt_sub_shape_count(FcOcctSession *session, uint64_t shape,
     return FC_OCCT_OK;
   });
 }
-
-namespace {
-
-FcOcctStatus copy_ids(const std::vector<uint64_t> &ids, uint64_t *out_ids,
-                      size_t capacity, size_t *out_count,
-                      FcOcctError *out_error) {
-  if (out_count == nullptr) {
-    write_error(out_error, "a count is required");
-    return FC_OCCT_INVALID_INPUT;
-  }
-  *out_count = ids.size();
-  if (capacity == 0) {
-    return FC_OCCT_OK;
-  }
-  if (out_ids == nullptr || capacity < ids.size()) {
-    write_error(out_error, "the buffer holds " + std::to_string(capacity) +
-                               " but " + std::to_string(ids.size()) +
-                               " were produced");
-    return FC_OCCT_INVALID_INPUT;
-  }
-  for (size_t i = 0; i < ids.size(); ++i) {
-    out_ids[i] = ids[i];
-  }
-  return FC_OCCT_OK;
-}
-
-} // namespace
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 FcOcctStatus fc_occt_shape_stats(FcOcctSession *session, uint64_t shape,
                                  uint64_t *out_face_count, double *out_volume,
@@ -1757,7 +1721,6 @@ bool well_formed(const TopoDS_Shape &shape) {
   BRepCheck_Analyzer analyzer(shape);
   return analyzer.IsValid() == Standard_True;
 }
-
 
 FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
                                  size_t length, uint8_t *out_buffer,
@@ -2289,8 +2252,6 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
   });
 }
 
-
-
 FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
                                  uint64_t edge, double radius,
                                  FcOcctCancelFn cancel, void *cancel_context,
@@ -2311,10 +2272,6 @@ FcOcctStatus fc_occt_chamfer_edge(FcOcctSession *session, uint64_t target,
                         cancel_context, out_shape, out_removed_volume,
                         out_error);
 }
-
-
-
-
 
 FcOcctStatus fc_occt_fillet_all(FcOcctSession *session, uint64_t shape,
                                 double radius, FcOcctCancelFn cancel,
@@ -3145,6 +3102,8 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
     // parser for a looser and undocumented format. Keep the root's own
     // occurrence rather than the separately archived copy so orientation also
     // comes from the restored shape.
+    TopTools_IndexedMapOfShape members;
+    TopExp::MapShapes(record.shape, members);
     std::vector<TopoDS_Shape> canonical(entries.size());
     canonical[0] = record.shape;
     for (size_t entry = 1; entry < entries.size(); ++entry) {
@@ -3161,15 +3120,9 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
         return FC_OCCT_INVALID_INPUT;
       }
 
-      bool contained = false;
-      for (TopExp_Explorer it(record.shape, kind); it.More(); it.Next()) {
-        if (it.Current().IsSame(sub_shape)) {
-          canonical[entry] = it.Current();
-          contained = true;
-          break;
-        }
-      }
-      if (!contained) {
+      const int member = members.FindIndex(sub_shape);
+      if (member) canonical[entry] = members(member);
+      if (!member) {
         write_error(out_error, "archive entry " + std::to_string(entry) +
                                    " is not part of the archived shape");
         return FC_OCCT_INVALID_INPUT;

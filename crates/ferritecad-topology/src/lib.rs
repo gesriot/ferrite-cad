@@ -12,3 +12,8 @@ pub use resolve::resolve;
 
 pub mod generative;
 mod generative_legacy;
+
+pub mod derivation;
+
+#[cfg(test)]
+extern crate self as ferritecad_topology;

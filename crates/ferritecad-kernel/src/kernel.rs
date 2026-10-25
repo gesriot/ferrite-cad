@@ -45,7 +45,7 @@ pub trait GeometryKernel {
         ))
     }
 
-    /// Reads complete operation provenance, independent of caller tracking.
+    /// Reads complete operation provenance for every elementary input.
     /// An archive without provenance must refuse rather than report no history.
     fn naming_history(&mut self, shape: ShapeHandle) -> Result<crate::NamingHistory> {
         let _ = shape;
@@ -91,11 +91,7 @@ pub trait GeometryKernel {
     /// and calling that a cut would put a feature in the history that did
     /// nothing.
     ///
-    /// `track` names the sub-shapes of either input the caller wants an
-    /// account of. The kernel answers for exactly those and invents nothing:
-    /// what a face of the target became is a fact the boolean knows, and a
-    /// caller that had to work it out from the result would be matching
-    /// geometry rather than reading history.
+    /// Complete provenance is available through `naming_history`.
     fn cut(&mut self, request: &CutRequest, context: &OperationContext) -> Result<OperationResult>;
 
     /// Rounds exactly one edge of a shape to one constant radius (§28A).
@@ -103,8 +99,6 @@ pub trait GeometryKernel {
     /// The edge is named by the caller from the target's own names. The
     /// result is one valid solid that lost material, with the rounded edge
     /// reported gone and the face generated from it reported, or a refusal.
-    /// `track` names the sub-shapes of the target the caller wants an account
-    /// of, as for [`Self::cut`].
     ///
     /// A kernel that cannot round a selected edge refuses with
     /// [`ferritecad_types::CadError::Unsupported`]; that is the default, so a

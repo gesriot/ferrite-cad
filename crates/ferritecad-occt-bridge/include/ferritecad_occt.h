@@ -244,15 +244,6 @@ void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
  * happened to put it — or, for a wire of no area, a solid with no cavity and no
  * complaint.
  *
- * # What the indices mean
- *
- * `segment_index` in fc_occt_extrude_side_faces and fc_occt_extrude_cap_edges
- * indexes `segments`, so it spans every loop in the order they were given.
- * `joint_index` in fc_occt_extrude_sweep_edges and
- * fc_occt_extrude_cap_vertices counts corners in that same loop order: the
- * corners of loop 0 first, then loop 1's, and a loop that is one closed curve
- * contributes none. For a one-loop profile both are what they always were.
- *
  * Cancellation: `cancel` is consulted before the profile is built and again
  * before the sweep, and is also installed as an Open CASCADE progress
  * indicator. Be aware that BRepPrimAPI_MakePrism does not poll that indicator
@@ -321,14 +312,6 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
                              FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
- * The face of revolution one profile segment raised, by that segment's index
- * in the `segments` array fc_occt_revolve was given. Two-call count/buffer
- * protocol, as for the extrusion queries. Refused for a shape that is not a
- * fresh revolution, including one decoded from a cache blob.
- */
-
-
-/*
  * §27D: turn the same profile through a partial angle: a sector with a start
  * and an end face.
  *
@@ -353,96 +336,6 @@ FcOcctStatus fc_occt_revolve_partial(
     uint64_t *out_shape, FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
- * The start (`which` 0) or end (`which` 1) face of a partial revolution, as
- * registered from the solid itself. Two-call count/buffer protocol. Refused
- * for a full turn, which has none, and for a shape that is not a fresh
- * revolution, including one decoded from a cache blob.
- */
-
-
-/*
- * The faces the sweep raised from one profile segment.
- *
- * `segment_index` indexes the `segments` array fc_occt_extrude was given, so on
- * a profile with holes it spans every loop in the order they were passed.
- *
- * Call with `capacity` 0 to learn the count, then again with a buffer. The
- * two-call shape keeps allocation on the caller's side.
- */
-
-
-/*
- * The edge one profile segment left where a cap meets the face swept from it.
- *
- * `which` is 0 for the start cap and 1 for the end cap, as for the cap faces.
- * Zero or one identifier comes back: a segment that produced no such edge is
- * reported as none rather than matched to a neighbour.
- *
- * The association is BRepPrimAPI_MakePrism's own — FirstShape and LastShape of
- * the input edge — and was measured before it was relied on. On 7.9.3, over a
- * plate swept blind, reversed and symmetrically and a profile with an arc
- * swept blind and symmetrically: every segment yielded an EDGE belonging to
- * the solid and bounding the cap it should, start and end never overlapped,
- * and every named edge was one the tessellation walk also reaches, so a name
- * and a drawn line are the same sub-shape.
- */
-
-
-/*
- * The edge swept from one corner of the profile.
- *
- * `joint_index` counts corners loop by loop, in the order the loops were
- * passed: within one loop, joint `j` is where that loop's segment `j - 1` meets
- * its segment `j`, so its joint 0 is where its last segment meets its first. A
- * loop that is one closed curve contributes no corners and so no indices.
- * Everything the algorithm generated there comes back, so a count other than
- * one is reported rather than trimmed.
- *
- * The association is BRepPrimAPI_MakePrism's own answer for the corner vertex
- * the two input edges already share, and was measured before it was relied on.
- * On 7.9.3, over a rectangular plate swept blind, reversed, symmetrically and
- * reversed-symmetrically, a three-segment profile containing an arc swept
- * blind and symmetrically, a triangle, and a two-segment profile: every corner
- * yielded exactly one EDGE that belongs to the solid, bounds exactly the two
- * side faces raised from the segments meeting there, is never a cap edge, is
- * never shared with another corner, and is one the tessellation walk reaches.
- * Rebuilding a profile from a different starting segment moved no association.
- */
-
-
-/*
- * The vertex one corner of the profile reaches on one cap.
- *
- * `joint_index` counts corners exactly as fc_occt_extrude_sweep_edges does:
- * loop by loop in the order the loops were passed, corner `j` of a loop being
- * where its segment `j - 1` meets its segment `j`. `which` is 0 for the start
- * cap and 1 for the end cap.
- *
- * Positional on purpose. Whether the unordered pair of segments meeting at a
- * corner names that corner uniquely is not a question this layer can answer: a
- * loop of two segments has one such pair at both of its corners. Keying these
- * answers by the pair here would merge them before the caller could see the
- * ambiguity, so the pairing is left to the caller and the answers are reported
- * per corner.
- *
- * Everything the algorithm recorded at that corner comes back, so a count
- * other than one is reported rather than trimmed. A vertex outside the
- * finished solid is refused when the shape is built, not passed on.
- *
- * The association is BRepPrimAPI_MakePrism's own FirstShape and LastShape of
- * the shared corner vertex, and was measured before it was relied on. See
- * tools/occt-smoke step 9, which the pin workflow runs on Linux, macOS and
- * Windows: over seven sweeps and forty-six positional answers, every one was a
- * TopoDS_VERTEX in the solid by IsSame, on the cap claimed for it, ending the
- * edge swept from the same corner, and reached by the tessellation
- * association.
- */
-
-
-/* The cap faces. `which` is 0 for the start cap and 1 for the end cap. */
-
-
-/*
  * Removes the material of `tool` from `target`.
  *
  * Both are shapes this session holds. Neither is consumed: a caller that wants
@@ -463,7 +356,7 @@ FcOcctStatus fc_occt_revolve_partial(
  * Open CASCADE answers what became of an input sub-shape only while the
  * algorithm object is alive, so every registered sub-shape of both inputs is
  * asked about here and the answers are stored with the result. Ask for them
- * afterwards with fc_occt_cut_carried.
+ * afterwards with fc_occt_naming_data.
  *
  * Cancellation: `cancel` is consulted before the boolean and is installed as an
  * Open CASCADE progress indicator, which BRepAlgoAPI_Cut does poll.
@@ -474,34 +367,6 @@ FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
                          FcOcctCancelFn cancel, void *cancel_context,
                          uint64_t *out_shape, double *out_removed_volume,
                          FcOcctError *out_error) FC_OCCT_NOEXCEPT;
-
-/* What a cut did to one registered sub-shape of one of its inputs. */
-typedef int32_t FcOcctCarried;
-enum {
-  /* The boolean returned the input unchanged, as itself. */
-  FC_OCCT_CARRIED_KEPT = 0,
-  /* The input survives as different geometry. */
-  FC_OCCT_CARRIED_MODIFIED = 1,
-  /* The input has no counterpart in the result. */
-  FC_OCCT_CARRIED_DELETED = 2
-};
-
-/*
- * What the cut did to one sub-shape of one of its inputs.
- *
- * `result` is the shape fc_occt_cut produced; `input` is the target or the tool
- * it was given, and `input_sub` indexes that shape's own sub-shape table. A
- * sub-shape of any other shape is refused rather than answered about.
- *
- * `*out_kind` receives one of the FC_OCCT_CARRIED_* values. The identifiers are
- * sub-shapes of `result`: none for a deleted input, and everything the
- * algorithm reported otherwise, so a count other than one reaches the caller
- * instead of being trimmed to fit.
- *
- * Call with `capacity` 0 to learn the count, then again with a buffer, exactly
- * as the extrusion queries do.
- */
-
 
 /*
  * Complete naming data; capacity/count are uint64_t words, not row counts.
@@ -524,8 +389,7 @@ FcOcctStatus fc_occt_naming_data(FcOcctSession *session, uint64_t shape,
 /*
  * How many sub-shapes of `shape` this session has registered.
  *
- * The bound for the `input_sub` argument of fc_occt_cut_carried, so a caller
- * can ask about every name a shape has without knowing how it got them.
+ * Session-local inventory size; durable names never use this ordering.
  */
 FcOcctStatus fc_occt_sub_shape_count(FcOcctSession *session, uint64_t shape,
                                      size_t *out_count,
@@ -540,7 +404,7 @@ FcOcctStatus fc_occt_sub_shape_count(FcOcctSession *session, uint64_t shape,
  * FC_OCCT_SURFACE_CYLINDER and is set to 0 otherwise.
  *
  * `face` is a sub-shape identifier this session handed out — from
- * fc_occt_extrude_side_faces or fc_occt_extrude_cap_faces — and must belong to
+ * fc_occt_naming_data or the tessellation inventory — and must belong to
  * `shape`. Anything that is not a face of that shape is refused rather than
  * described. */
 typedef int32_t FcOcctSurfaceKind;
@@ -625,26 +489,6 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
- * Archives a shape together with sub-shapes the caller wants to find again.
- *
- * The archive is a compound this bridge builds: the shape first, then each
- * requested sub-shape, in the order given. A slot is that position — 0 is the
- * shape itself and `k + 1` is the k-th sub-shape — and it means nothing
- * outside this one blob. It is not a traversal index and not a name.
- * This slice accepts faces only; later sub-shape kinds require carrying their
- * actual kind through the ABI rather than labelling everything as a face.
- *
- * The obvious alternative does not work. BinTools_ShapeSet hands out an index
- * per shape and can look one up again, but the lookup strips the location, and
- * the two caps of a prism share a TShape: both resolve to the same index, so a
- * reference to one would silently resolve to the other. Measured on OCCT
- * 7.9.3. Writing the wanted sub-shapes down explicitly avoids the question.
- *
- * `out_slots` receives one slot per requested sub-shape and must have room for
- * `sub_shape_count`. The bytes follow the usual two-call protocol: pass a zero
- * capacity to learn the length.
- */
-/*
  * Reads a STEP file that is already in memory.
  *
  * Bytes rather than a path: the bridge opens nothing. Where the data came
@@ -728,8 +572,8 @@ FcOcctStatus fc_occt_import_step(
  *
  * What became of every registered sub-shape of the target is asked while the
  * builder is alive and stored with the result; read it with
- * fc_occt_cut_carried, passing `target` as the input. The faces generated
- * from the rounded edge are read with fc_occt_fillet_faces.
+ * fc_occt_naming_data on the result. Relations identify their input shapes
+ * and include the faces generated from the rounded edge.
  *
  * Cancellation: consulted before the build and installed as a progress
  * indicator. On success `*out_shape` receives a session-local identifier.
@@ -741,13 +585,6 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
- * The faces fc_occt_fillet_edge reported as generated from the rounded edge,
- * as sub-shape identifiers of `shape`. Refuses a shape that is not the fresh
- * result of fc_occt_fillet_edge. Count-then-buffer, as the other queries.
- */
-
-
-/*
  * Cuts exactly one edge of a shape away at one equal distance along both of
  * its faces (§29A).
  *
@@ -756,21 +593,14 @@ FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
  * The builder is BRepFilletAPI_MakeChamfer's symmetric form, which takes no
  * reference face, so the two distances are equal by construction and no
  * arbitrary choice of face can change the result. The faces generated from
- * the edge are read with fc_occt_chamfer_faces; what became of every
- * registered sub-shape of the target is read with fc_occt_cut_carried.
+ * the edge are read with fc_occt_naming_data; what became of every
+ * registered sub-shape of the target is read with fc_occt_naming_data.
  */
 FcOcctStatus fc_occt_chamfer_edge(FcOcctSession *session, uint64_t target,
                                   uint64_t edge, double distance,
                                   FcOcctCancelFn cancel, void *cancel_context,
                                   uint64_t *out_shape, double *out_removed_volume,
                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
-
-/*
- * The faces fc_occt_chamfer_edge reported as generated from the cut edge, as
- * sub-shape identifiers of `shape`. Refuses a shape that is not the fresh
- * result of fc_occt_chamfer_edge. Count-then-buffer, as the other queries.
- */
-
 
 /*
  * Rounds every edge of a shape to one radius.
@@ -890,6 +720,10 @@ FcOcctStatus fc_occt_tessellate(
     size_t *out_vertex_count, size_t *out_index_count, size_t *out_face_count,
     FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
+/* Store the B-Rep and each requested elementary sub-shape in one compound.
+ * Slot zero is the root; out_slots records each sub-shape's explicit position.
+ * Explicit members preserve location and IsSame identity, including caps that
+ * share a TShape. Capacity zero measures the byte buffer. */
 FcOcctStatus fc_occt_encode_shape_named(
     FcOcctSession *session, uint64_t shape, const uint64_t *sub_shapes,
     size_t sub_shape_count, uint32_t *out_slots, uint8_t *out_bytes,

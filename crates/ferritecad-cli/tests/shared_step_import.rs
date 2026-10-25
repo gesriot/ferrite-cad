@@ -11,9 +11,9 @@ use ferritecad_document::Document;
 use ferritecad_exchange::Import;
 use ferritecad_jobs::{Existing, ImportStepRequest, StepImportOutcome, import_step_document};
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, ExtrudeResult, GeometryKernel,
-    KernelIdentity, Mesh, OperationContext, OperationResult, ProgressSink, ShapeHandle,
-    SubShapeHandle, TessellationParams,
+    ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, GeometryKernel, KernelIdentity, Mesh,
+    OperationContext, OperationResult, ProgressSink, ShapeHandle, SubShapeHandle,
+    TessellationParams,
 };
 use ferritecad_occt::OcctKernel;
 use ferritecad_types::{ContentHash, ErrorKind, Result, Transform};
@@ -94,6 +94,12 @@ impl Drop for ObservedKernel {
     }
 }
 impl GeometryKernel for ObservedKernel {
+    fn shape_topology(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::ShapeTopology> {
+        self.inner.shape_topology(shape)
+    }
+    fn naming_history(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::NamingHistory> {
+        self.inner.naming_history(shape)
+    }
     fn identity(&self) -> &KernelIdentity {
         self.inner.identity()
     }
@@ -104,16 +110,16 @@ impl GeometryKernel for ObservedKernel {
         assert!(owned.released.insert(shape), "duplicate release");
         self.inner.release(shape);
     }
-    fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<ExtrudeResult> {
+    fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<OperationResult> {
         self.inner.extrude(r, c)
     }
     fn cut(
         &mut self,
         r: &ferritecad_kernel::CutRequest,
-        track: &[ferritecad_kernel::SubShapeHandle],
+
         c: &OperationContext,
-    ) -> Result<ferritecad_kernel::CutResult> {
-        self.inner.cut(r, track, c)
+    ) -> Result<ferritecad_kernel::OperationResult> {
+        self.inner.cut(r, c)
     }
     fn transform(
         &mut self,

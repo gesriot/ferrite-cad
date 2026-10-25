@@ -4,8 +4,8 @@
 use super::*;
 use ferritecad_exchange::{ColourSource, Definition, Instance, Scene, Severity, Stage};
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, ExtrudeResult, KernelIdentity, Mesh,
-    OperationResult, ProgressSink, SessionId, ShapeHandle, SubShapeHandle, TessellationParams,
+    ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, KernelIdentity, Mesh, OperationResult,
+    ProgressSink, SessionId, ShapeHandle, SubShapeHandle, TessellationParams,
 };
 use ferritecad_types::{ErrorKind, Transform};
 use std::sync::{Arc, Mutex};
@@ -90,9 +90,9 @@ impl GeometryKernel for CountingKernel {
     fn cut(
         &mut self,
         _request: &ferritecad_kernel::CutRequest,
-        _track: &[ferritecad_kernel::SubShapeHandle],
+
         _context: &OperationContext,
-    ) -> Result<ferritecad_kernel::CutResult> {
+    ) -> Result<ferritecad_kernel::OperationResult> {
         Err(CadError::unsupported(
             "this test kernel implements no boolean",
         ))
@@ -108,7 +108,7 @@ impl GeometryKernel for CountingKernel {
         assert!(counts.live.remove(&shape), "double or foreign release");
         counts.releases += 1;
     }
-    fn extrude(&mut self, _: &ExtrudeRequest, _: &OperationContext) -> Result<ExtrudeResult> {
+    fn extrude(&mut self, _: &ExtrudeRequest, _: &OperationContext) -> Result<OperationResult> {
         unreachable!()
     }
     fn transform(

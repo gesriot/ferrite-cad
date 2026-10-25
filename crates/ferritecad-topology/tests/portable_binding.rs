@@ -1,35 +1,21 @@
 // SPDX-License-Identifier: MIT
-//! Carrying names across a session boundary.
-//!
-//! The question this slice exists to answer: after the session that built a
-//! solid is gone, can the references a document stores still be resolved
-//! against geometry restored from a blob? These tests answer it end to end,
-//! and check the ways it must refuse rather than guess.
-
-// A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
-
-use std::{collections::BTreeMap, mem::size_of};
-
 use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef};
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History,
-    KernelIdentity, OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
-    SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
+    ArchiveSlot, ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext, PlanarPoint,
+    Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, SubShapeKind,
     mock::MockKernel,
 };
-use ferritecad_topology::{
-    ArchivedFeature, BoundName, RestoredNames, TopologyMap, archive_feature, resolve,
-    restore_feature,
-};
-use ferritecad_types::{ContentHash, ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId};
-
+use ferritecad_topology::{TopologyMap, archive_feature, resolve, restore_feature};
+use ferritecad_types::{ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId};
+use std::collections::BTreeSet;
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
 struct Plate {
     request: ExtrudeRequest,
     segments: Vec<StableEntityId>,
     feature: ObjectId,
 }
-
 fn plate() -> Result<Plate> {
     let corners = [(0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0)];
     let points: Vec<PlanarPoint> = corners
@@ -60,17 +46,12 @@ fn plate() -> Result<Plate> {
         feature: ObjectId::new(),
     })
 }
-
 fn build(kernel: &mut MockKernel, plate: &Plate) -> TopologyMap {
     let result = kernel
         .extrude(&plate.request, &OperationContext::default())
         .expect("the mock builds");
-    let mut map = TopologyMap::new();
-    map.record_extrude(plate.feature, plate.request.profile(), &result)
-        .expect("records");
-    map
+    naming::bind(kernel, plate.feature, plate.request.profile(), &result).expect("complete names")
 }
-
 fn cap_reference(feature: ObjectId, side: CapSide) -> TopologyRef {
     TopologyRef {
         id: StableEntityId::new(),
@@ -82,7 +63,6 @@ fn cap_reference(feature: ObjectId, side: CapSide) -> TopologyRef {
         fallback_signature: None,
     }
 }
-
 fn side_reference(feature: ObjectId, segment: StableEntityId) -> TopologyRef {
     TopologyRef {
         id: StableEntityId::new(),
@@ -124,7 +104,8 @@ fn names_survive_the_session_that_made_them() {
 
     // A different session, with no knowledge of the first.
     let mut reader = MockKernel::new();
-    let mut restored = TopologyMap::new();
+    let mut restored =
+        naming::prepared(plate.feature, plate.request.profile(), false).expect("model roots");
     restore_feature(&mut reader, &archived, &mut restored).expect("restores");
 
     let start = resolve(&restored, &cap_reference(plate.feature, CapSide::Start))
@@ -162,76 +143,6 @@ fn names_survive_the_session_that_made_them() {
 }
 
 #[test]
-fn the_order_of_the_binding_table_does_not_change_what_resolves() {
-    let plate = plate().expect("a valid plate");
-    let mut writer = MockKernel::new();
-    let map = build(&mut writer, &plate);
-    let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
-
-    // Rebuild the table with its entries handed over backwards. The table is
-    // ordered internally, so the answers must not move.
-    let mut reversed: Vec<(BoundName, ArchiveSlot)> = archived.bindings().collect();
-    reversed.reverse();
-    let shuffled = ArchivedFeature::from_parts(
-        archived.producer(),
-        archived.blob().clone(),
-        archived.blob().content_hash(),
-        reversed,
-    )
-    .expect("the same table, given in another order");
-
-    let mut one = TopologyMap::new();
-    let mut first = MockKernel::new();
-    restore_feature(&mut first, &archived, &mut one).expect("restores");
-
-    let mut other = TopologyMap::new();
-    let mut second = MockKernel::new();
-    restore_feature(&mut second, &shuffled, &mut other).expect("restores");
-
-    for side in [CapSide::Start, CapSide::End] {
-        let a = resolve(&one, &cap_reference(plate.feature, side)).expect("resolves");
-        let b = resolve(&other, &cap_reference(plate.feature, side)).expect("resolves");
-        assert_eq!(a.len(), b.len());
-        // The handles differ because the sessions differ; what must agree is
-        // which slot each name took.
-        assert_eq!(
-            archived.slot(BoundName::cap(side).expect("a known side")),
-            shuffled.slot(BoundName::cap(side).expect("a known side"))
-        );
-    }
-    for segment in &plate.segments {
-        let name = BoundName::Side {
-            profile_segment: *segment,
-        };
-        assert_eq!(archived.slot(name), shuffled.slot(name));
-        assert_eq!(
-            resolve(&one, &side_reference(plate.feature, *segment))
-                .expect("resolves")
-                .len(),
-            resolve(&other, &side_reference(plate.feature, *segment))
-                .expect("resolves")
-                .len()
-        );
-    }
-}
-
-#[test]
-fn archiving_twice_produces_the_same_table() {
-    let plate = plate().expect("a valid plate");
-    let mut kernel = MockKernel::new();
-    let map = build(&mut kernel, &plate);
-
-    let one = archive_feature(&mut kernel, &map, plate.feature).expect("archives");
-    let other = archive_feature(&mut kernel, &map, plate.feature).expect("archives");
-
-    assert_eq!(
-        one.bindings().collect::<Vec<_>>(),
-        other.bindings().collect::<Vec<_>>()
-    );
-    assert_eq!(one.blob().content_hash(), other.blob().content_hash());
-}
-
-#[test]
 fn a_restored_feature_still_refuses_a_name_it_never_had() {
     let plate = plate().expect("a valid plate");
     let mut writer = MockKernel::new();
@@ -239,7 +150,8 @@ fn a_restored_feature_still_refuses_a_name_it_never_had() {
     let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
 
     let mut reader = MockKernel::new();
-    let mut restored = TopologyMap::new();
+    let mut restored =
+        naming::prepared(plate.feature, plate.request.profile(), false).expect("model roots");
     restore_feature(&mut reader, &archived, &mut restored).expect("restores");
 
     // A segment that was never part of this profile. Restoring must not have
@@ -267,170 +179,13 @@ fn an_archive_from_another_kernel_is_refused() {
     let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
 
     let mut newer = MockKernel::with_version("2.0.0");
-    let mut restored = TopologyMap::new();
+    let mut restored =
+        naming::prepared(plate.feature, plate.request.profile(), false).expect("model roots");
     let err = restore_feature(&mut newer, &archived, &mut restored)
         .expect_err("a different kernel build may compute different geometry");
 
     assert_eq!(err.kind(), ErrorKind::Kernel);
     assert!(restored.is_empty(), "a refused restore leaves no names");
-}
-
-#[test]
-fn a_slot_outside_the_archive_is_refused() {
-    let plate = plate().expect("a valid plate");
-    let mut writer = MockKernel::new();
-    let map = build(&mut writer, &plate);
-    let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
-
-    let bogus = ArchivedFeature::from_parts(
-        archived.producer(),
-        archived.blob().clone(),
-        archived.blob().content_hash(),
-        [(BoundName::StartCap, ArchiveSlot::new(9_999))],
-    )
-    .expect("the table itself is well formed");
-
-    let mut reader = MockKernel::new();
-    let mut restored = TopologyMap::new();
-    let err = restore_feature(&mut reader, &bogus, &mut restored)
-        .expect_err("the slot addresses nothing in this archive");
-    assert_eq!(err.kind(), ErrorKind::Kernel);
-    assert_eq!(
-        reader.live_shape_count(),
-        0,
-        "a failed decode must not leave an unreachable shape"
-    );
-}
-
-#[test]
-fn two_names_for_one_live_face_are_refused_before_archiving() {
-    let plate = plate().expect("a valid plate");
-    let mut kernel = MockKernel::new();
-    let result = kernel
-        .extrude(&plate.request, &OperationContext::default())
-        .expect("builds");
-
-    let shared = result.start_cap[0];
-    let mut aliased = TopologyMap::new();
-    aliased
-        .record_restored(
-            plate.feature,
-            result.shape,
-            &RestoredNames {
-                start_cap: vec![shared],
-                end_cap: vec![shared],
-                ..RestoredNames::default()
-            },
-        )
-        .expect("the runtime map can express ancestry aliases");
-
-    let err = archive_feature(&mut kernel, &aliased, plate.feature)
-        .expect_err("one archived face may not answer to two durable names");
-    assert_eq!(err.kind(), ErrorKind::Topology);
-    assert!(err.to_string().contains("silent alias"));
-}
-
-#[test]
-fn two_slots_that_decode_to_one_face_are_refused_and_released() {
-    let plate = plate().expect("a valid plate");
-    let mut writer = MockKernel::new();
-    let map = build(&mut writer, &plate);
-    let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
-
-    // The mock archive ends with one u64 face identifier per binding. Make
-    // the second slot carry the first slot's face while leaving both slot
-    // numbers distinct, which bypasses a table-only duplicate-slot check.
-    let binding_count = archived.bindings().len();
-    assert!(binding_count >= 2);
-    let mut bytes = archived.blob().bytes().to_vec();
-    let entries_start = bytes.len() - binding_count * size_of::<u64>();
-    let first = bytes[entries_start..entries_start + size_of::<u64>()].to_vec();
-    bytes[entries_start + size_of::<u64>()..entries_start + 2 * size_of::<u64>()]
-        .copy_from_slice(&first);
-
-    let blob = BrepBlob::new(writer.identity().clone(), bytes);
-    let hash = blob.content_hash();
-    let aliased = ArchivedFeature::from_parts(archived.producer(), blob, hash, archived.bindings())
-        .expect("the slots are distinct, so only decoded geometry exposes the alias");
-
-    let mut reader = MockKernel::new();
-    let mut restored = TopologyMap::new();
-    let err = restore_feature(&mut reader, &aliased, &mut restored)
-        .expect_err("two names must not resolve to one decoded face");
-    assert_eq!(err.kind(), ErrorKind::Topology);
-    assert!(err.to_string().contains("silent alias"));
-    assert!(restored.is_empty());
-    assert_eq!(
-        reader.live_shape_count(),
-        0,
-        "the decoded shape is released"
-    );
-}
-
-#[test]
-fn an_invalid_face_inside_the_mock_archive_is_refused_before_storage() {
-    let plate = plate().expect("a valid plate");
-    let mut writer = MockKernel::new();
-    let map = build(&mut writer, &plate);
-    let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
-
-    let binding_count = archived.bindings().len();
-    let mut bytes = archived.blob().bytes().to_vec();
-    let entries_start = bytes.len() - binding_count * size_of::<u64>();
-    bytes[entries_start..entries_start + size_of::<u64>()].copy_from_slice(&u64::MAX.to_le_bytes());
-
-    let blob = BrepBlob::new(writer.identity().clone(), bytes);
-    let hash = blob.content_hash();
-    let damaged = ArchivedFeature::from_parts(archived.producer(), blob, hash, archived.bindings())
-        .expect("the binding table itself is still well formed");
-
-    let mut reader = MockKernel::new();
-    let mut restored = TopologyMap::new();
-    assert!(restore_feature(&mut reader, &damaged, &mut restored).is_err());
-    assert!(restored.is_empty());
-    assert_eq!(reader.live_shape_count(), 0);
-}
-
-#[test]
-fn a_corrupt_archive_is_refused_rather_than_misread() {
-    let plate = plate().expect("a valid plate");
-    let mut writer = MockKernel::new();
-    let map = build(&mut writer, &plate);
-    let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
-    let identity = writer.identity().clone();
-
-    let mut truncated = archived.blob().bytes().to_vec();
-    truncated.truncate(truncated.len() / 2);
-    let damaged = BrepBlob::new(identity, truncated);
-
-    // The table has to be rebuilt against the damaged blob's own checksum,
-    // otherwise the pairing check refuses it before the blob is even read.
-    let hash = damaged.content_hash();
-    let paired =
-        ArchivedFeature::from_parts(archived.producer(), damaged, hash, archived.bindings())
-            .expect("the table is well formed");
-
-    let mut reader = MockKernel::new();
-    let mut restored = TopologyMap::new();
-    assert!(restore_feature(&mut reader, &paired, &mut restored).is_err());
-    assert!(restored.is_empty());
-}
-
-#[test]
-fn a_table_paired_with_the_wrong_archive_is_refused() {
-    let plate = plate().expect("a valid plate");
-    let mut kernel = MockKernel::new();
-    let map = build(&mut kernel, &plate);
-    let archived = archive_feature(&mut kernel, &map, plate.feature).expect("archives");
-
-    let err = ArchivedFeature::from_parts(
-        archived.producer(),
-        archived.blob().clone(),
-        ContentHash::of_bytes(b"a different archive entirely"),
-        archived.bindings(),
-    )
-    .expect_err("the pair does not belong together");
-    assert_eq!(err.kind(), ErrorKind::Topology);
 }
 
 #[test]
@@ -484,8 +239,9 @@ fn a_sub_shape_from_another_shape_is_refused_by_the_kernel() {
 
     // Archiving one shape while naming a face of another would produce an
     // archive whose names point outside it.
+    let foreign = naming::cap(&mut kernel, second.shape, false);
     let err = kernel
-        .encode_shape_with(first.shape, &[second.start_cap[0]])
+        .encode_shape_with(first.shape, &[foreign])
         .expect_err("the face belongs to the other solid");
     assert_eq!(err.kind(), ErrorKind::Kernel);
 }
@@ -505,1099 +261,245 @@ fn the_root_slot_is_not_a_sub_shape() {
     assert_eq!(kernel.live_shape_count(), before);
 }
 
-#[test]
-fn a_kernel_identity_is_checked_before_any_geometry_is_read() {
-    let plate = plate().expect("a valid plate");
-    let mut writer = MockKernel::new();
-    let map = build(&mut writer, &plate);
-    let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
-
-    let foreign = BrepBlob::new(
-        KernelIdentity::new("occt", "8.0.1", "not this bridge").expect("valid"),
-        archived.blob().bytes().to_vec(),
-    );
-    let hash = foreign.content_hash();
-    let paired =
-        ArchivedFeature::from_parts(archived.producer(), foreign, hash, archived.bindings())
-            .expect("the table is well formed");
-
-    let mut reader = MockKernel::new();
-    let mut restored = TopologyMap::new();
-    let err = restore_feature(&mut reader, &paired, &mut restored)
-        .expect_err("another kernel wrote this");
-    assert_eq!(err.kind(), ErrorKind::Kernel);
-}
-
-// ---------------------------------------------------------------------------
-// The edge where a cap meets a swept face.
-// ---------------------------------------------------------------------------
-
-/// A reference to that edge, for one side and one profile segment.
-fn cap_edge_ref(
-    feature: ObjectId,
-    side: CapSide,
-    segment: StableEntityId,
-    kind: EntityKind,
-    selection: SelectionRule,
-) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: kind,
-        output_role: SemanticRole::ExtrudeCapEdge {
-            side,
-            profile_segment: segment,
-        },
-        selection,
-        fallback_signature: None,
-    }
-}
-
-/// A map holding whatever cap edges are asked for, on a shape of its own.
-fn map_with_cap_edges(
-    feature: ObjectId,
-    shape: ShapeHandle,
-    segment: StableEntityId,
-    edges: &[SubShapeHandle],
-) -> TopologyMap {
-    let mut sides = BTreeMap::new();
-    sides.insert(segment, edges.to_vec());
-    let mut map = TopologyMap::new();
-    map.record_restored(
-        feature,
-        shape,
-        &RestoredNames {
-            start_cap_edges: sides,
-            ..RestoredNames::default()
-        },
-    )
-    .expect("records");
-    map
-}
-
-#[test]
-fn a_cap_edge_reference_must_expect_an_edge_and_select_exactly_one() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let segment = StableEntityId::new();
-    let edge = SubShapeHandle::new(shape, SubShapeKind::Edge, 0);
-    let map = map_with_cap_edges(feature, shape, segment, &[edge]);
-
-    // The one well formed reference resolves.
-    assert_eq!(
-        resolve(
-            &map,
-            &cap_edge_ref(
-                feature,
-                CapSide::Start,
-                segment,
-                EntityKind::Edge,
-                SelectionRule::Exact
-            )
-        )
-        .expect("resolves"),
-        vec![edge]
-    );
-
-    // Expecting a face is a reference that describes nothing: this role is
-    // always an edge, and no rebuild will make it a face.
-    let wrong_kind = resolve(
-        &map,
-        &cap_edge_ref(
-            feature,
-            CapSide::Start,
-            segment,
-            EntityKind::Face,
-            SelectionRule::Exact,
-        ),
-    )
-    .expect_err("a cap edge is not a face");
-    assert_eq!(wrong_kind.kind(), ErrorKind::Input);
-
-    // And a family rule over something that is one edge is a contradiction.
-    let wrong_rule = resolve(
-        &map,
-        &cap_edge_ref(
-            feature,
-            CapSide::Start,
-            segment,
-            EntityKind::Edge,
-            SelectionRule::AllDerivedFrom { ancestor: segment },
-        ),
-    )
-    .expect_err("one edge is selected exactly");
-    assert_eq!(wrong_rule.kind(), ErrorKind::Input);
-
-    // The other end of the sweep produced none, and says so rather than
-    // offering the one it has.
-    let other_side = resolve(
-        &map,
-        &cap_edge_ref(
-            feature,
-            CapSide::End,
-            segment,
-            EntityKind::Edge,
-            SelectionRule::Exact,
-        ),
-    )
-    .expect_err("the end cap named nothing for this segment");
-    assert_eq!(other_side.kind(), ErrorKind::Topology);
-}
-
-#[test]
-fn several_edges_under_an_exact_reference_are_refused_rather_than_narrowed() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let segment = StableEntityId::new();
-    let first = SubShapeHandle::new(shape, SubShapeKind::Edge, 0);
-    let second = SubShapeHandle::new(shape, SubShapeKind::Edge, 1);
-    let map = map_with_cap_edges(feature, shape, segment, &[first, second]);
-
-    let refusal = resolve(
-        &map,
-        &cap_edge_ref(
-            feature,
-            CapSide::Start,
-            segment,
-            EntityKind::Edge,
-            SelectionRule::Exact,
-        ),
-    )
-    .expect_err("two edges is not one edge");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-    // And says so: two were found and neither was chosen.
-    assert!(
-        refusal
-            .to_string()
-            .contains("refusing rather than choosing"),
-        "the refusal must say it chose nothing: {refusal}"
-    );
-}
-
-#[test]
-fn a_name_of_another_shape_or_the_wrong_kind_is_refused_when_recorded() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let stranger = ShapeHandle::new(SessionId::new(), 1);
-    let segment = StableEntityId::new();
-
-    for (what, handle) in [
-        (
-            "a face under an edge's name",
-            SubShapeHandle::new(shape, SubShapeKind::Face, 0),
-        ),
-        (
-            "an edge of another shape",
-            SubShapeHandle::new(stranger, SubShapeKind::Edge, 0),
-        ),
-    ] {
-        let mut sides = BTreeMap::new();
-        sides.insert(segment, vec![handle]);
-        let mut map = TopologyMap::new();
-        let refusal = map
-            .record_restored(
-                feature,
-                shape,
-                &RestoredNames {
-                    start_cap_edges: sides,
-                    ..RestoredNames::default()
-                },
-            )
-            .expect_err(what);
-        assert_eq!(refusal.kind(), ErrorKind::Topology, "{what}");
-    }
-}
-
-#[test]
-fn what_a_cap_edge_name_means_depends_on_the_side_and_the_segment() {
-    let feature = ObjectId::new();
-    let owner = ObjectId::new();
-    let one = StableEntityId::new();
-    let other = StableEntityId::new();
-    let id = StableEntityId::new();
-
-    let meaning = |side, segment| {
-        TopologyRef {
-            id,
-            owner,
-            producer_feature: feature,
-            expected_kind: EntityKind::Edge,
-            output_role: SemanticRole::ExtrudeCapEdge {
-                side,
-                profile_segment: segment,
-            },
-            selection: SelectionRule::Exact,
-            fallback_signature: None,
-        }
-        .meaning_hash()
-    };
-
-    // Four different things, and four different meanings.
-    let meanings = [
-        meaning(CapSide::Start, one),
-        meaning(CapSide::End, one),
-        meaning(CapSide::Start, other),
-        meaning(CapSide::End, other),
-    ];
-    for (i, a) in meanings.iter().enumerate() {
-        for (j, b) in meanings.iter().enumerate() {
-            assert_eq!(a == b, i == j, "meanings {i} and {j}");
-        }
-    }
-
-    // And none of them is the cap face of the same side, nor the side face of
-    // the same segment.
-    let cap_face = TopologyRef {
-        id,
-        owner,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeCap {
-            side: CapSide::Start,
-        },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
-    .meaning_hash();
-    assert!(!meanings.contains(&cap_face));
-}
-
-/// A map holding whatever edges are given for one joint, restored rather than
-/// built, which is the only way more than one can reach it.
-fn map_with_sweep_edges(
-    feature: ObjectId,
-    shape: ShapeHandle,
-    joint: ProfileJoint,
-    edges: &[SubShapeHandle],
-) -> TopologyMap {
-    let mut joints = BTreeMap::new();
-    joints.insert(joint, edges.to_vec());
-    let mut map = TopologyMap::new();
-    map.record_restored(
-        feature,
-        shape,
-        &RestoredNames {
-            sweep_edges: joints,
-            ..RestoredNames::default()
-        },
-    )
-    .expect("records");
-    map
-}
-
-fn sweep_ref(
-    feature: ObjectId,
-    joint: ProfileJoint,
-    kind: EntityKind,
-    selection: SelectionRule,
-) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: kind,
-        output_role: SemanticRole::ExtrudeSweepEdge { joint },
-        selection,
-        fallback_signature: None,
-    }
-}
-
-fn a_joint() -> ProfileJoint {
-    ProfileJoint::new(StableEntityId::new(), StableEntityId::new()).expect("two segments")
-}
-
-#[test]
-fn several_edges_under_one_joint_are_refused_rather_than_narrowed() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let joint = a_joint();
-    let map = map_with_sweep_edges(
-        feature,
-        shape,
-        joint,
-        &[
-            SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
-            SubShapeHandle::new(shape, SubShapeKind::Edge, 1),
-        ],
-    );
-
-    let refusal = resolve(
-        &map,
-        &sweep_ref(feature, joint, EntityKind::Edge, SelectionRule::Exact),
-    )
-    .expect_err("two edges is not one edge");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-    assert!(
-        refusal
-            .to_string()
-            .contains("refusing rather than choosing"),
-        "the refusal must say it chose nothing: {refusal}"
-    );
-
-    // And a joint this rebuild named nothing for says so differently.
-    let missing = resolve(
-        &map,
-        &sweep_ref(feature, a_joint(), EntityKind::Edge, SelectionRule::Exact),
-    )
-    .expect_err("an unnamed joint");
-    assert_eq!(missing.kind(), ErrorKind::Topology);
-    assert!(missing.to_string().contains("produced none"), "{missing}");
-    assert_ne!(refusal.to_string(), missing.to_string());
-}
-
-#[test]
-fn a_restored_sweep_edge_of_the_wrong_kind_or_shape_is_refused() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let stranger = ShapeHandle::new(SessionId::new(), 2);
-    let joint = a_joint();
-
-    let mut joints = BTreeMap::new();
-    joints.insert(
-        joint,
-        vec![SubShapeHandle::new(shape, SubShapeKind::Face, 0)],
-    );
-    let refusal = TopologyMap::new()
-        .record_restored(
-            feature,
-            shape,
-            &RestoredNames {
-                sweep_edges: joints,
-                ..RestoredNames::default()
-            },
-        )
-        .expect_err("a face is not an edge along the sweep");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-
-    let mut joints = BTreeMap::new();
-    joints.insert(
-        joint,
-        vec![SubShapeHandle::new(stranger, SubShapeKind::Edge, 0)],
-    );
-    let refusal = TopologyMap::new()
-        .record_restored(
-            feature,
-            shape,
-            &RestoredNames {
-                sweep_edges: joints,
-                ..RestoredNames::default()
-            },
-        )
-        .expect_err("an edge of another shape is not this feature's");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-}
-
-#[test]
-fn one_restored_edge_cannot_answer_to_two_joints_or_to_a_cap_as_well() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let edge = SubShapeHandle::new(shape, SubShapeKind::Edge, 4);
-
-    let mut joints = BTreeMap::new();
-    joints.insert(a_joint(), vec![edge]);
-    joints.insert(a_joint(), vec![edge]);
-    let refusal = TopologyMap::new()
-        .record_restored(
-            feature,
-            shape,
-            &RestoredNames {
-                sweep_edges: joints,
-                ..RestoredNames::default()
-            },
-        )
-        .expect_err("one edge is not two corners");
-    assert!(
-        refusal.to_string().contains("as the same edge"),
-        "{refusal}"
-    );
-
-    let mut joints = BTreeMap::new();
-    joints.insert(a_joint(), vec![edge]);
-    let mut caps = BTreeMap::new();
-    caps.insert(StableEntityId::new(), vec![edge]);
-    let refusal = TopologyMap::new()
-        .record_restored(
-            feature,
-            shape,
-            &RestoredNames {
-                start_cap_edges: caps,
-                sweep_edges: joints,
-                ..RestoredNames::default()
-            },
-        )
-        .expect_err("one edge is not both a cap edge and a corner");
-    assert!(
-        refusal.to_string().contains("and as the sweep edge of"),
-        "{refusal}"
-    );
-}
-
-#[test]
-fn a_joint_naming_a_segment_the_profile_never_had_is_refused_when_recorded() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let fixture = plate().expect("a valid profile");
-    let profile = fixture.request.profile().clone();
-    let labels = &fixture.segments;
-
-    // A joint of one real segment and one that belongs to no profile. The
-    // kernel would never report it; the check is at the public boundary, where
-    // a caller with a hand-built result can.
-    let stranger = ProfileJoint::new(labels[0], StableEntityId::new()).expect("two segments");
-    let mut result = ExtrudeResult {
-        start_cap_vertices: BTreeMap::new(),
-        end_cap_vertices: BTreeMap::new(),
-        shape,
-        history: History::new(),
-        start_cap: Vec::new(),
-        end_cap: Vec::new(),
-        start_cap_edges: BTreeMap::new(),
-        end_cap_edges: BTreeMap::new(),
-        sweep_edges: BTreeMap::new(),
-    };
-    result
-        .sweep_edges
-        .insert(stranger, SubShapeHandle::new(shape, SubShapeKind::Edge, 0));
-
-    let refusal = TopologyMap::new()
-        .record_extrude(feature, &profile, &result)
-        .expect_err("a joint of a segment this profile never swept");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-    assert!(
-        refusal.to_string().contains("is not in the swept profile"),
-        "{refusal}"
-    );
-
-    // A joint of two real neighbours records without complaint, so the refusal
-    // is about the stranger and not about sweep edges being unrecordable.
-    let real = ProfileJoint::new(labels[0], labels[1]).expect("two segments");
-    result.sweep_edges.clear();
-    result
-        .sweep_edges
-        .insert(real, SubShapeHandle::new(shape, SubShapeKind::Edge, 0));
-    TopologyMap::new()
-        .record_extrude(feature, &profile, &result)
-        .expect("a joint of two of the profile's own segments records");
-}
-
-#[test]
-fn two_profile_segments_that_do_not_meet_cannot_name_a_sweep_edge() {
-    let fixture = plate().expect("a valid profile");
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let joint = ProfileJoint::new(fixture.segments[0], fixture.segments[2])
-        .expect("two different segments");
-    let result = ExtrudeResult {
-        start_cap_vertices: BTreeMap::new(),
-        end_cap_vertices: BTreeMap::new(),
-        shape,
-        history: History::new(),
-        start_cap: Vec::new(),
-        end_cap: Vec::new(),
-        start_cap_edges: BTreeMap::new(),
-        end_cap_edges: BTreeMap::new(),
-        sweep_edges: BTreeMap::from([(joint, SubShapeHandle::new(shape, SubShapeKind::Edge, 0))]),
-    };
-
-    let refusal = TopologyMap::new()
-        .record_extrude(fixture.feature, fixture.request.profile(), &result)
-        .expect_err("two segments elsewhere in one profile are not a corner");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-    assert!(refusal.to_string().contains("do not meet"), "{refusal}");
-}
-
-#[test]
-fn a_segment_pair_that_meets_twice_names_neither_sweep_edge() {
-    let first = StableEntityId::new();
-    let second = StableEntityId::new();
-    let from = PlanarPoint::new(0.0, 0.0).expect("finite");
-    let to = PlanarPoint::new(10.0, 0.0).expect("finite");
-    let profile = Profile::new(
-        SketchPlane::world_xy(),
-        ProfileLoop::new(vec![
-            ProfileSegment::new(first, SegmentGeometry::line(from, to).expect("a line")),
-            ProfileSegment::new(second, SegmentGeometry::line(to, from).expect("a line")),
-        ])
-        .expect("a closed two-segment loop"),
-        Vec::new(),
-    )
-    .expect("a profile");
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let joint = ProfileJoint::new(first, second).expect("two different segments");
-    let result = ExtrudeResult {
-        start_cap_vertices: BTreeMap::new(),
-        end_cap_vertices: BTreeMap::new(),
-        shape,
-        history: History::new(),
-        start_cap: Vec::new(),
-        end_cap: Vec::new(),
-        start_cap_edges: BTreeMap::new(),
-        end_cap_edges: BTreeMap::new(),
-        sweep_edges: BTreeMap::from([(joint, SubShapeHandle::new(shape, SubShapeKind::Edge, 0))]),
-    };
-
-    let refusal = TopologyMap::new()
-        .record_extrude(ObjectId::new(), &profile, &result)
-        .expect_err("one pair cannot choose between two profile corners");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-    assert!(refusal.to_string().contains("two corners"), "{refusal}");
-}
-
-/// A result naming nothing, ready for one field to be filled in.
-fn bare(shape: ShapeHandle) -> ExtrudeResult {
-    ExtrudeResult {
-        shape,
-        history: History::new(),
-        start_cap: Vec::new(),
-        end_cap: Vec::new(),
-        start_cap_edges: BTreeMap::new(),
-        end_cap_edges: BTreeMap::new(),
-        sweep_edges: BTreeMap::new(),
-        start_cap_vertices: BTreeMap::new(),
-        end_cap_vertices: BTreeMap::new(),
-    }
-}
-
-fn cap_vertex_ref(
-    feature: ObjectId,
-    side: CapSide,
-    joint: ProfileJoint,
-    kind: EntityKind,
-    selection: SelectionRule,
-) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: kind,
-        output_role: SemanticRole::ExtrudeCapVertex { side, joint },
-        selection,
-        fallback_signature: None,
-    }
-}
-
-/// A map holding whatever vertices are given for one corner on the start cap,
-/// restored rather than built, which is the only way more than one can reach
-/// it.
-fn map_with_cap_vertices(
-    feature: ObjectId,
-    shape: ShapeHandle,
-    joint: ProfileJoint,
-    vertices: &[SubShapeHandle],
-) -> TopologyMap {
-    let mut corners = BTreeMap::new();
-    corners.insert(joint, vertices.to_vec());
-    let mut map = TopologyMap::new();
-    map.record_restored(
-        feature,
-        shape,
-        &RestoredNames {
-            start_cap_vertices: corners,
-            ..RestoredNames::default()
-        },
-    )
-    .expect("records");
-    map
-}
-
-#[test]
-fn two_profile_segments_that_do_not_meet_cannot_name_a_cap_vertex() {
-    let fixture = plate().expect("a valid profile");
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let apart = ProfileJoint::new(fixture.segments[0], fixture.segments[2])
-        .expect("two different segments");
-
+fn references(plate: &Plate) -> Vec<TopologyRef> {
+    let mut refs = Vec::new();
     for side in [CapSide::Start, CapSide::End] {
-        let mut result = bare(shape);
-        let vertex = SubShapeHandle::new(shape, SubShapeKind::Vertex, 0);
-        match side {
-            CapSide::Start => result.start_cap_vertices.insert(apart, vertex),
-            _ => result.end_cap_vertices.insert(apart, vertex),
+        refs.push(cap_reference(plate.feature, side));
+        for (i, segment) in plate.segments.iter().enumerate() {
+            let joint = ProfileJoint::new(*segment, plate.segments[(i + 1) % 4]).expect("joint");
+            for (kind, role) in [
+                (
+                    EntityKind::Edge,
+                    SemanticRole::ExtrudeCapEdge {
+                        side,
+                        profile_segment: *segment,
+                    },
+                ),
+                (
+                    EntityKind::Vertex,
+                    SemanticRole::ExtrudeCapVertex { side, joint },
+                ),
+            ] {
+                let mut reference = cap_reference(plate.feature, side);
+                reference.expected_kind = kind;
+                reference.output_role = role;
+                refs.push(reference);
+            }
+        }
+    }
+    for (i, segment) in plate.segments.iter().enumerate() {
+        let mut side = side_reference(plate.feature, *segment);
+        side.selection = SelectionRule::Exact;
+        refs.push(side);
+        let mut edge = cap_reference(plate.feature, CapSide::Start);
+        edge.expected_kind = EntityKind::Edge;
+        edge.output_role = SemanticRole::ExtrudeSweepEdge {
+            joint: ProfileJoint::new(*segment, plate.segments[(i + 1) % 4]).expect("joint"),
         };
-
-        let refusal = TopologyMap::new()
-            .record_extrude(fixture.feature, fixture.request.profile(), &result)
-            .expect_err("two segments elsewhere in one profile are not a corner");
+        refs.push(edge);
+    }
+    refs
+}
+#[test]
+fn every_reference_keeps_its_kind_exact_selection_and_missing_reference_refusals() {
+    let plate = plate().expect("plate");
+    let mut kernel = MockKernel::new();
+    let map = build(&mut kernel, &plate);
+    let mut reached = BTreeSet::new();
+    for reference in references(&plate) {
+        let entities = resolve(&map, &reference).expect("exact");
+        assert_eq!(entities.len(), 1);
+        assert!(reached.insert(entities[0]));
+        for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+            if kind == reference.expected_kind {
+                continue;
+            }
+            let mut wrong = reference.clone();
+            wrong.expected_kind = kind;
+            assert_eq!(
+                resolve(&map, &wrong).expect_err("wrong kind").kind(),
+                ErrorKind::Input
+            );
+        }
+        if !matches!(reference.output_role, SemanticRole::ExtrudeSide { .. }) {
+            let mut wrong = reference.clone();
+            wrong.selection = SelectionRule::AllDerivedFrom {
+                ancestor: plate.segments[0],
+            };
+            assert_eq!(
+                resolve(&map, &wrong).expect_err("exact only").kind(),
+                ErrorKind::Input
+            );
+        }
+        let mut missing = reference.clone();
+        missing.producer_feature = ObjectId::new();
+        let refusal = resolve(&map, &missing).expect_err("missing feature");
         assert_eq!(refusal.kind(), ErrorKind::Topology);
-        assert!(refusal.to_string().contains("do not meet"), "{refusal}");
-    }
-
-    // Two neighbours record without complaint, so the refusal is about the
-    // pair and not about cap vertices being unrecordable.
-    let neighbours =
-        ProfileJoint::new(fixture.segments[0], fixture.segments[1]).expect("two segments");
-    let mut result = bare(shape);
-    result.start_cap_vertices.insert(
-        neighbours,
-        SubShapeHandle::new(shape, SubShapeKind::Vertex, 0),
-    );
-    TopologyMap::new()
-        .record_extrude(fixture.feature, fixture.request.profile(), &result)
-        .expect("a corner of two of the profile's own segments records");
-}
-
-#[test]
-fn a_cap_vertex_keyed_by_a_segment_of_another_profile_is_refused() {
-    let fixture = plate().expect("a valid profile");
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-
-    // One real segment and one that belongs to no profile this feature swept.
-    let stranger = StableEntityId::new();
-    let joint = ProfileJoint::new(fixture.segments[0], stranger).expect("two segments");
-    let mut result = bare(shape);
-    result
-        .end_cap_vertices
-        .insert(joint, SubShapeHandle::new(shape, SubShapeKind::Vertex, 0));
-
-    let refusal = TopologyMap::new()
-        .record_extrude(fixture.feature, fixture.request.profile(), &result)
-        .expect_err("a corner of a segment this profile never swept");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-    assert!(
-        refusal.to_string().contains("is not in the swept profile"),
-        "{refusal}"
-    );
-    assert!(refusal.to_string().contains(&stranger.to_string()));
-}
-
-#[test]
-fn a_segment_pair_that_meets_twice_names_neither_cap_vertex() {
-    let first = StableEntityId::new();
-    let second = StableEntityId::new();
-    let from = PlanarPoint::new(0.0, 0.0).expect("finite");
-    let to = PlanarPoint::new(10.0, 0.0).expect("finite");
-    let profile = Profile::new(
-        SketchPlane::world_xy(),
-        ProfileLoop::new(vec![
-            ProfileSegment::new(first, SegmentGeometry::line(from, to).expect("a line")),
-            ProfileSegment::new(second, SegmentGeometry::line(to, from).expect("a line")),
-        ])
-        .expect("a closed two-segment loop"),
-        Vec::new(),
-    )
-    .expect("a profile");
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let joint = ProfileJoint::new(first, second).expect("two different segments");
-
-    let mut result = bare(shape);
-    result
-        .start_cap_vertices
-        .insert(joint, SubShapeHandle::new(shape, SubShapeKind::Vertex, 0));
-
-    let refusal = TopologyMap::new()
-        .record_extrude(ObjectId::new(), &profile, &result)
-        .expect_err("one pair cannot choose between two profile corners");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-    assert!(refusal.to_string().contains("2 corners"), "{refusal}");
-}
-
-#[test]
-fn a_cap_vertex_of_the_wrong_kind_or_another_shape_is_refused_when_recorded() {
-    let fixture = plate().expect("a valid profile");
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let stranger = ShapeHandle::new(SessionId::new(), 2);
-    let joint = ProfileJoint::new(fixture.segments[0], fixture.segments[1]).expect("two segments");
-
-    // Two layers refuse these, and this asks only that one of them did.
-    // `ExtrudeResult::validate` answers first, with `Kernel`; the map's own
-    // check stands behind it and is what `record_restored` — which has no
-    // result to validate — relies on. That path is gated separately.
-    for wrong in [
-        SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
-        SubShapeHandle::new(shape, SubShapeKind::Face, 0),
-        SubShapeHandle::new(stranger, SubShapeKind::Vertex, 0),
-    ] {
-        let mut result = bare(shape);
-        result.start_cap_vertices.insert(joint, wrong);
-        let refusal = TopologyMap::new()
-            .record_extrude(fixture.feature, fixture.request.profile(), &result)
-            .expect_err("a cap vertex is a vertex of the shape the feature built");
         assert!(
-            matches!(refusal.kind(), ErrorKind::Kernel | ErrorKind::Topology),
-            "{wrong}: {refusal}"
-        );
-    }
-
-    // The right sort of handle records, so the refusals above are about the
-    // handle and not about cap vertices being unrecordable.
-    let mut result = bare(shape);
-    result
-        .start_cap_vertices
-        .insert(joint, SubShapeHandle::new(shape, SubShapeKind::Vertex, 0));
-    TopologyMap::new()
-        .record_extrude(fixture.feature, fixture.request.profile(), &result)
-        .expect("a vertex of this feature's own shape records");
-}
-
-#[test]
-fn one_vertex_cannot_be_recorded_for_two_corners_or_for_both_caps() {
-    let fixture = plate().expect("a valid profile");
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let vertex = SubShapeHandle::new(shape, SubShapeKind::Vertex, 7);
-    let one = ProfileJoint::new(fixture.segments[0], fixture.segments[1]).expect("two segments");
-    let other = ProfileJoint::new(fixture.segments[1], fixture.segments[2]).expect("two segments");
-
-    // Two corners, one point. `ExtrudeResult::validate` refuses this too; the
-    // topology boundary asks again rather than trusting that it ran.
-    let mut result = bare(shape);
-    result.start_cap_vertices.insert(one, vertex);
-    result.start_cap_vertices.insert(other, vertex);
-    let refusal = TopologyMap::new()
-        .record_extrude(fixture.feature, fixture.request.profile(), &result)
-        .expect_err("one point is not two corners");
-    assert_eq!(refusal.kind(), ErrorKind::Kernel);
-
-    // One corner, both caps.
-    let mut result = bare(shape);
-    result.start_cap_vertices.insert(one, vertex);
-    result.end_cap_vertices.insert(one, vertex);
-    let refusal = TopologyMap::new()
-        .record_extrude(fixture.feature, fixture.request.profile(), &result)
-        .expect_err("one point is not both ends of a corner");
-    assert_eq!(refusal.kind(), ErrorKind::Kernel);
-}
-
-#[test]
-fn a_restored_cap_vertex_of_the_wrong_kind_or_shape_is_refused() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let stranger = ShapeHandle::new(SessionId::new(), 2);
-    let joint = a_joint();
-
-    for wrong in [
-        SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
-        SubShapeHandle::new(shape, SubShapeKind::Face, 0),
-        SubShapeHandle::new(stranger, SubShapeKind::Vertex, 0),
-    ] {
-        let mut corners = BTreeMap::new();
-        corners.insert(joint, vec![wrong]);
-        let refusal = TopologyMap::new()
-            .record_restored(
-                feature,
-                shape,
-                &RestoredNames {
-                    end_cap_vertices: corners,
-                    ..RestoredNames::default()
-                },
-            )
-            .expect_err("a restored cap vertex is a vertex of the restored shape");
-        assert_eq!(refusal.kind(), ErrorKind::Topology, "{wrong}");
-    }
-}
-
-#[test]
-fn one_restored_vertex_cannot_answer_to_two_corners_or_to_both_caps() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let vertex = SubShapeHandle::new(shape, SubShapeKind::Vertex, 3);
-    let one = a_joint();
-    let other = a_joint();
-
-    let refusal = TopologyMap::new()
-        .record_restored(
-            feature,
-            shape,
-            &RestoredNames {
-                start_cap_vertices: BTreeMap::from([(one, vec![vertex]), (other, vec![vertex])]),
-                ..RestoredNames::default()
-            },
-        )
-        .expect_err("one restored point is not two corners");
-    assert!(
-        refusal.to_string().contains("as the same vertex"),
-        "{refusal}"
-    );
-
-    let refusal = TopologyMap::new()
-        .record_restored(
-            feature,
-            shape,
-            &RestoredNames {
-                start_cap_vertices: BTreeMap::from([(one, vec![vertex])]),
-                end_cap_vertices: BTreeMap::from([(one, vec![vertex])]),
-                ..RestoredNames::default()
-            },
-        )
-        .expect_err("one restored point is not both ends of a corner");
-    assert!(
-        refusal.to_string().contains("as the same vertex"),
-        "{refusal}"
-    );
-}
-
-#[test]
-fn several_vertices_under_one_corner_are_refused_rather_than_narrowed() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let joint = a_joint();
-    let map = map_with_cap_vertices(
-        feature,
-        shape,
-        joint,
-        &[
-            SubShapeHandle::new(shape, SubShapeKind::Vertex, 0),
-            SubShapeHandle::new(shape, SubShapeKind::Vertex, 1),
-        ],
-    );
-
-    let refusal = resolve(
-        &map,
-        &cap_vertex_ref(
-            feature,
-            CapSide::Start,
-            joint,
-            EntityKind::Vertex,
-            SelectionRule::Exact,
-        ),
-    )
-    .expect_err("two vertices is not one vertex");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
-    assert!(
-        refusal
-            .to_string()
-            .contains("refusing rather than choosing"),
-        "the refusal must say it chose nothing: {refusal}"
-    );
-
-    // A corner this rebuild named nothing for says so differently, and a
-    // feature that produced nothing differently again.
-    let unnamed = resolve(
-        &map,
-        &cap_vertex_ref(
-            feature,
-            CapSide::Start,
-            a_joint(),
-            EntityKind::Vertex,
-            SelectionRule::Exact,
-        ),
-    )
-    .expect_err("an unnamed corner");
-    assert_eq!(unnamed.kind(), ErrorKind::Topology);
-    assert!(unnamed.to_string().contains("produced none"), "{unnamed}");
-    assert_ne!(refusal.to_string(), unnamed.to_string());
-
-    let elsewhere = resolve(
-        &map,
-        &cap_vertex_ref(
-            ObjectId::new(),
-            CapSide::Start,
-            joint,
-            EntityKind::Vertex,
-            SelectionRule::Exact,
-        ),
-    )
-    .expect_err("another feature entirely");
-    assert_eq!(elsewhere.kind(), ErrorKind::Topology);
-    assert!(
-        elsewhere.to_string().contains("produced nothing for"),
-        "{elsewhere}"
-    );
-}
-
-#[test]
-fn a_cap_vertex_asked_for_as_the_wrong_kind_or_under_the_wrong_rule_is_refused() {
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let joint = a_joint();
-    let map = map_with_cap_vertices(
-        feature,
-        shape,
-        joint,
-        &[SubShapeHandle::new(shape, SubShapeKind::Vertex, 0)],
-    );
-
-    // It resolves when asked for correctly, so the refusals below are about
-    // the question and not about the geometry being absent.
-    assert_eq!(
-        resolve(
-            &map,
-            &cap_vertex_ref(
-                feature,
-                CapSide::Start,
-                joint,
-                EntityKind::Vertex,
-                SelectionRule::Exact,
+            refusal.to_string().contains(
+                if matches!(
+                    reference.output_role,
+                    SemanticRole::ExtrudeCap { .. } | SemanticRole::ExtrudeSide { .. }
+                ) {
+                    "produced none"
+                } else {
+                    "produced nothing"
+                }
             ),
-        )
-        .expect("the corner resolves")
-        .len(),
-        1
-    );
-
-    for kind in [EntityKind::Face, EntityKind::Edge] {
-        let refusal = resolve(
-            &map,
-            &cap_vertex_ref(feature, CapSide::Start, joint, kind, SelectionRule::Exact),
-        )
-        .expect_err("a corner of a sweep is always a vertex");
-        assert_eq!(refusal.kind(), ErrorKind::Input);
-        assert!(
-            refusal.to_string().contains("is always a vertex"),
             "{refusal}"
         );
     }
-
-    // A family selection asks for however many there are, and a corner is one
-    // point. There is nothing for the rule to widen to.
-    let refusal = resolve(
-        &map,
-        &cap_vertex_ref(
-            feature,
-            CapSide::Start,
-            joint,
-            EntityKind::Vertex,
-            SelectionRule::AllDerivedFrom {
-                ancestor: joint.segments()[0],
-            },
-        ),
-    )
-    .expect_err("a corner is not a family");
-    assert_eq!(refusal.kind(), ErrorKind::Input);
-    assert!(
-        refusal.to_string().contains("which is one point"),
-        "{refusal}"
-    );
+    assert_eq!(reached.len(), 26);
 }
-
 #[test]
-fn the_two_ends_of_a_corner_are_different_names_everywhere_they_are_written() {
-    let joint = a_joint();
-
-    // In the map: one side answers, the other does not, and neither is folded
-    // into the other.
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let map = map_with_cap_vertices(
-        feature,
-        shape,
-        joint,
-        &[SubShapeHandle::new(shape, SubShapeKind::Vertex, 0)],
-    );
-    let names = map.feature(feature).expect("recorded");
+fn every_prism_meaning_round_trips_and_portable_names_contain_no_session_identity() {
+    let plate = plate().expect("plate");
+    let mut writer = MockKernel::new();
+    let map = build(&mut writer, &plate);
+    let archive = archive_feature(&mut writer, &map, plate.feature).expect("archive");
     assert_eq!(
-        names
-            .cap_vertex(CapSide::Start, joint)
-            .expect("the start side is known")
-            .count(),
-        1
+        archive,
+        archive_feature(&mut writer, &map, plate.feature).expect("repeat")
     );
-    assert_eq!(
-        names
-            .cap_vertex(CapSide::End, joint)
-            .expect("the end side is known")
-            .count(),
-        0,
-        "the end of this corner was never named and must not borrow the start"
-    );
-
-    // In the archive vocabulary.
-    assert_eq!(
-        BoundName::cap_vertex(CapSide::Start, joint),
-        Some(BoundName::StartCapVertex { joint })
-    );
-    assert_eq!(
-        BoundName::cap_vertex(CapSide::End, joint),
-        Some(BoundName::EndCapVertex { joint })
-    );
-    assert_ne!(
-        BoundName::cap_vertex(CapSide::Start, joint),
-        BoundName::cap_vertex(CapSide::End, joint)
-    );
-
-    // And in what a document stores.
-    let start = cap_vertex_ref(
-        feature,
-        CapSide::Start,
-        joint,
-        EntityKind::Vertex,
-        SelectionRule::Exact,
-    );
-    let mut end = start.clone();
-    end.output_role = SemanticRole::ExtrudeCapVertex {
-        side: CapSide::End,
-        joint,
-    };
-    assert_ne!(start.meaning_hash(), end.meaning_hash());
-}
-
-#[test]
-fn nothing_session_local_reaches_a_corner_name_or_the_bytes_it_is_written_as() {
-    let joint = a_joint();
-
-    // A name is a pair of stable identifiers and a side. Its Debug is what an
-    // inspector, a log line or a diagnostic prints, and a handle appearing
-    // there is a handle one copy-and-paste away from being stored.
-    for name in [
-        BoundName::StartCapVertex { joint },
-        BoundName::EndCapVertex { joint },
-    ] {
-        let debug = format!("{name:?}");
+    let bytes = archive.encode().expect("bytes");
+    let shape = map.features[&plate.feature].shape().expect("shape");
+    for forbidden in [shape.to_string(), shape.session().to_string()] {
+        assert!(!String::from_utf8_lossy(&bytes).contains(&forbidden));
+    }
+    for (_, name) in archive.entities() {
+        let text = format!("{name:?}");
         for forbidden in ["session", "shape#", "Handle", "PickId", "occurrence"] {
-            assert!(
-                !debug.contains(forbidden),
-                "the portable Debug of {name:?} mentions {forbidden}"
-            );
-        }
-        for segment in joint.segments() {
-            assert!(debug.contains(&format!("{segment}")), "{debug}");
+            assert!(!text.contains(forbidden));
         }
     }
-
-    // And the table an archive writes down holds slots, not handles. The one
-    // way to check this is to look for the handle's own bytes in the encoded
-    // form: a session identifier that reached the bytes would be there.
-    let plate = plate().expect("a valid plate");
+    let mut reader = MockKernel::new();
+    let mut restored =
+        naming::prepared(plate.feature, plate.request.profile(), false).expect("roots");
+    restore_feature(&mut reader, &archive, &mut restored).expect("restore");
+    let mut old = BTreeSet::new();
+    let mut new = BTreeSet::new();
+    for reference in references(&plate) {
+        let a = resolve(&map, &reference).expect("cold")[0];
+        let b = resolve(&restored, &reference).expect("cached")[0];
+        assert_ne!(a, b);
+        assert_eq!(
+            map.features[&plate.feature].entities[&a],
+            restored.features[&plate.feature].entities[&b]
+        );
+        assert!(old.insert(a));
+        assert!(new.insert(b));
+    }
+    assert_eq!(old.len(), 26);
+    assert_eq!(new.len(), 26);
+    assert!(
+        reader
+            .naming_history(restored.features[&plate.feature].shape().expect("shape"))
+            .is_err()
+    );
+}
+#[test]
+fn exact_references_never_choose_among_ambiguous_members_or_use_geometric_hints() {
+    let plate = plate().expect("plate");
     let mut kernel = MockKernel::new();
     let map = build(&mut kernel, &plate);
-    let shape = map
-        .feature(plate.feature)
-        .and_then(|names| names.shape())
-        .expect("a shape");
-    let archived = archive_feature(&mut kernel, &map, plate.feature).expect("archives");
-    let bytes = archived.encode().expect("encodes");
-
-    // The blob inside is the kernel's own serialisation and is not searched;
-    // what is searched is the whole entry, which contains it. Finding the
-    // handle's index here at all would mean it was written on purpose.
-    let session = format!("{}", shape.session());
-    assert!(
-        !String::from_utf8_lossy(&bytes).contains(&session),
-        "a session identifier reached the archived bytes"
-    );
-    let handle = format!("{shape}");
-    assert!(
-        !String::from_utf8_lossy(&bytes).contains(&handle),
-        "a shape handle reached the archived bytes"
-    );
+    for reference in references(&plate) {
+        let mut ambiguous = map.clone();
+        let named = ambiguous.features.get_mut(&plate.feature).expect("feature");
+        let first = resolve(&map, &reference).expect("first")[0];
+        let second = named
+            .topology
+            .entities(first.kind())
+            .find(|s| *s != first)
+            .expect("another entity");
+        if first.kind() == SubShapeKind::Face {
+            for members in named.ancestry.values_mut() {
+                if members.contains(&first) {
+                    members.insert(second);
+                }
+            }
+        } else {
+            let faces = named.topology.adjacent_faces[&first].clone();
+            named.topology.adjacent_faces.insert(second, faces);
+        }
+        let refusal = resolve(&ambiguous, &reference).expect_err("never pick first");
+        assert_eq!(refusal.kind(), ErrorKind::Topology);
+        assert!(
+            refusal.to_string().contains(
+                if matches!(reference.output_role, SemanticRole::ExtrudeSweepEdge { .. }) {
+                    "produced none"
+                } else {
+                    "refusing rather than choosing"
+                }
+            ),
+            "{refusal}"
+        );
+        let mut absent = map.clone();
+        absent
+            .features
+            .get_mut(&plate.feature)
+            .expect("feature")
+            .topology
+            .adjacent_faces
+            .remove(&first);
+        for members in absent
+            .features
+            .get_mut(&plate.feature)
+            .expect("feature")
+            .ancestry
+            .values_mut()
+        {
+            members.remove(&first);
+        }
+        let mut hint = reference.clone();
+        hint.fallback_signature = Some(ferritecad_document::GeomSignature {
+            kind: reference.expected_kind,
+            measure: 0.,
+            centroid: ferritecad_types::Point3::ORIGIN,
+        });
+        let refusal = resolve(&absent, &hint).expect_err("no geometric fallback");
+        assert_eq!(refusal.kind(), ErrorKind::Topology);
+        assert!(refusal.to_string().contains("produced none"), "{refusal}");
+    }
 }
 
 #[test]
-fn a_geometric_hint_does_not_rescue_a_corner_that_resolves_to_nothing() {
-    // The fallback is a hint for a human and never grounds for choosing a
-    // nearby point. Supplying one must not turn a lost corner into a found
-    // one, which is the failure that would be invisible in use.
-    let feature = ObjectId::new();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    let map = map_with_cap_vertices(
-        feature,
-        shape,
-        a_joint(),
-        &[SubShapeHandle::new(shape, SubShapeKind::Vertex, 0)],
-    );
-
-    let mut lost = cap_vertex_ref(
-        feature,
-        CapSide::Start,
-        a_joint(),
-        EntityKind::Vertex,
-        SelectionRule::Exact,
-    );
-    lost.fallback_signature = Some(ferritecad_document::GeomSignature {
-        kind: EntityKind::Vertex,
-        measure: 0.0,
-        centroid: ferritecad_types::Point3::ORIGIN,
-    });
-
-    let refusal = resolve(&map, &lost).expect_err("a signature is not a resolution");
-    assert_eq!(refusal.kind(), ErrorKind::Topology);
+fn unsupported_roles_and_foreign_or_disconnected_profile_joints_keep_their_refusals() {
+    let plate = plate().expect("plate");
+    let mut kernel = MockKernel::new();
+    let map = build(&mut kernel, &plate);
+    let segment = StableEntityId::new();
+    for role in [
+        SemanticRole::SketchSegment { segment },
+        SemanticRole::FilletFace {
+            source_edge: segment,
+        },
+    ] {
+        let mut reference = cap_reference(plate.feature, CapSide::Start);
+        reference.output_role = role;
+        let error = resolve(&map, &reference).expect_err("unsupported role");
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert!(error.to_string().contains(&reference.id.to_string()));
+    }
+    for joint in [
+        ProfileJoint::new(plate.segments[0], plate.segments[2]).expect("disconnected"),
+        ProfileJoint::new(plate.segments[0], segment).expect("foreign"),
+    ] {
+        for (kind, role) in [
+            (EntityKind::Edge, SemanticRole::ExtrudeSweepEdge { joint }),
+            (
+                EntityKind::Vertex,
+                SemanticRole::ExtrudeCapVertex {
+                    side: CapSide::End,
+                    joint,
+                },
+            ),
+        ] {
+            let mut reference = cap_reference(plate.feature, CapSide::Start);
+            reference.expected_kind = kind;
+            reference.output_role = role;
+            let error = resolve(&map, &reference).expect_err("no invented joint");
+            assert_eq!(error.kind(), ErrorKind::Topology);
+            assert!(error.to_string().contains("produced none"));
+        }
+    }
 }

@@ -20,6 +20,11 @@ impl ArchivedFeature {
         ] {
             put_bytes(&mut out, part)?;
         }
+        put_count(&mut out, self.derivations.len())?;
+        for (digest, node) in &self.derivations {
+            out.extend_from_slice(digest.as_bytes());
+            put_derivation(&mut out, node)?;
+        }
         put_count(&mut out, self.entities.len())?;
         for (slot, name) in &self.entities {
             put_slot(&mut out, *slot);
@@ -60,6 +65,14 @@ impl ArchivedFeature {
             }
         }
         let blob = BrepBlob::new(kernel.clone(), reader.bytes()?.to_vec());
+        let mut derivations = crate::derivation::Derivations::new();
+        for _ in 0..reader.count()? {
+            let digest = ContentHash::from_slice(reader.take(32)?)?;
+            let node = std::sync::Arc::new(reader.derivation()?);
+            if derivations.insert(digest, node).is_some() {
+                return Err(malformed());
+            }
+        }
         let mut entities = BTreeMap::new();
         for _ in 0..reader.count()? {
             let slot = reader.slot()?;
@@ -85,6 +98,7 @@ impl ArchivedFeature {
             return Err(malformed());
         }
         let archived = Self {
+            derivations,
             producer,
             blob,
             entities,
@@ -97,7 +111,7 @@ impl ArchivedFeature {
 }
 
 fn malformed() -> CadError {
-    CadError::topology("invalid generative archive; discard the complete entry")
+    CadError::input("invalid generative archive; discard the complete entry")
 }
 fn put_count(out: &mut Vec<u8>, count: usize) -> Result<()> {
     out.extend_from_slice(&u32::try_from(count).map_err(|_| malformed())?.to_le_bytes());
@@ -167,5 +181,186 @@ impl<'a> Reader<'a> {
             kind,
             digest: ContentHash::from_slice(self.take(32)?)?,
         })
+    }
+}
+
+const EXPRESSION_TAGS: [&str; 7] = [
+    "curve-end",
+    "generated",
+    "modified",
+    "merge",
+    "split-boundary-history",
+    "incident-faces",
+    "boundary",
+];
+fn put_optional_id(out: &mut Vec<u8>, id: Option<ObjectId>) {
+    out.push(u8::from(id.is_some()));
+    if let Some(id) = id {
+        out.extend_from_slice(&id.to_bytes());
+    }
+}
+fn put_derivation(out: &mut Vec<u8>, node: &crate::derivation::Derivation) -> Result<()> {
+    use crate::derivation::Derivation;
+    match node {
+        Derivation::Curve(feature, curve, plane) => {
+            out.push(0);
+            out.extend_from_slice(&feature.to_bytes());
+            out.extend_from_slice(&curve.to_bytes());
+            put_optional_id(out, *plane);
+        }
+        Derivation::Cap(feature, end, plane) => {
+            out.push(1);
+            out.extend_from_slice(&feature.to_bytes());
+            out.push(u8::from(*end));
+            put_optional_id(out, *plane);
+        }
+        Derivation::Expression {
+            kind,
+            tag,
+            feature,
+            inputs,
+            extra,
+        } => {
+            out.push(2);
+            out.push(
+                EXPRESSION_TAGS
+                    .iter()
+                    .position(|t| t == tag)
+                    .ok_or_else(malformed)? as u8,
+            );
+            out.push(match kind {
+                SubShapeKind::Face => 0,
+                SubShapeKind::Edge => 1,
+                SubShapeKind::Vertex => 2,
+                _ => return Err(malformed()),
+            });
+            put_optional_id(out, *feature);
+            out.push(*extra);
+            put_count(out, inputs.len())?;
+            for input in inputs {
+                put_name(out, *input);
+            }
+        }
+    }
+    Ok(())
+}
+impl Reader<'_> {
+    fn boolean(&mut self) -> Result<bool> {
+        match self.take(1)?[0] {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(malformed()),
+        }
+    }
+    fn optional_id(&mut self) -> Result<Option<ObjectId>> {
+        if self.boolean()? {
+            Ok(Some(ObjectId::from_slice(self.take(16)?)?))
+        } else {
+            Ok(None)
+        }
+    }
+    fn derivation(&mut self) -> Result<crate::derivation::Derivation> {
+        use crate::derivation::Derivation;
+        Ok(match self.take(1)?[0] {
+            0 => Derivation::Curve(
+                ObjectId::from_slice(self.take(16)?)?,
+                ferritecad_types::StableEntityId::from_slice(self.take(16)?)?,
+                self.optional_id()?,
+            ),
+            1 => Derivation::Cap(
+                ObjectId::from_slice(self.take(16)?)?,
+                self.boolean()?,
+                self.optional_id()?,
+            ),
+            2 => {
+                let tag = *EXPRESSION_TAGS
+                    .get(self.take(1)?[0] as usize)
+                    .ok_or_else(malformed)?;
+                let kind = match self.take(1)?[0] {
+                    0 => SubShapeKind::Face,
+                    1 => SubShapeKind::Edge,
+                    2 => SubShapeKind::Vertex,
+                    _ => return Err(malformed()),
+                };
+                let feature = self.optional_id()?;
+                let extra = self.take(1)?[0];
+                let mut inputs = BTreeSet::new();
+                for _ in 0..self.count()? {
+                    if !inputs.insert(self.name()?) {
+                        return Err(malformed());
+                    }
+                }
+                Derivation::Expression {
+                    kind,
+                    tag,
+                    feature,
+                    inputs,
+                    extra,
+                }
+            }
+            _ => return Err(malformed()),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferritecad_kernel::GeometryKernel;
+
+    #[test]
+    fn duplicate_rows_and_unknown_tags_are_refused_even_with_a_valid_checksum() {
+        let (mut kernel, model, feature, _) = crate::archive::tests::plate();
+        let archive = crate::archive_feature(&mut kernel, &model, feature).expect("archive");
+        let bytes = archive.encode().expect("encode");
+        let payload = &bytes[..bytes.len() - 32];
+        let mut reader = Reader(payload);
+        reader.take(16).expect("producer");
+        for _ in 0..4 {
+            reader.bytes().expect("identity and B-Rep");
+        }
+        let mut malformed = Vec::new();
+        for table in 0..4 {
+            let count_at = payload.len() - reader.0.len();
+            let count = reader.count().expect("count");
+            let first = payload.len() - reader.0.len();
+            let mut end = first;
+            for row in 0..count {
+                match table {
+                    0 => {
+                        reader.take(32).expect("digest");
+                        reader.derivation().expect("node");
+                    }
+                    1 => {
+                        reader.slot().expect("slot");
+                        reader.name().expect("name");
+                    }
+                    2 => {
+                        reader.name().expect("name");
+                        reader.slots().expect("ancestry");
+                    }
+                    _ => {
+                        reader.slot().expect("slot");
+                        reader.slots().expect("incidence");
+                    }
+                }
+                if row == 0 {
+                    end = payload.len() - reader.0.len();
+                }
+            }
+            let mut duplicate = payload.to_vec();
+            duplicate.splice(first..first, payload[first..end].iter().copied());
+            duplicate[count_at..count_at + 4].copy_from_slice(&(count as u32 + 1).to_le_bytes());
+            malformed.push(duplicate);
+            if table == 0 || table == 1 {
+                let mut unknown = payload.to_vec();
+                unknown[first + if table == 0 { 32 } else { 4 }] = 255;
+                malformed.push(unknown);
+            }
+        }
+        for mut payload in malformed {
+            payload.extend_from_slice(ContentHash::of_bytes(&payload).as_bytes());
+            assert!(ArchivedFeature::decode(&payload, feature, kernel.identity()).is_err());
+        }
     }
 }

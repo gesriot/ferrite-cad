@@ -9,6 +9,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
@@ -80,11 +83,12 @@ fn a_vertex_survives_the_named_archive_as_a_vertex_of_the_restored_shape() {
         let result = writer
             .extrude(&request, &OperationContext::default())
             .expect("Open CASCADE builds the plate");
+        let start_vertices = naming::cap_vertices(&mut writer, result.shape, false);
+        let end_vertices = naming::cap_vertices(&mut writer, result.shape, true);
 
-        let vertices: Vec<SubShapeHandle> = result
-            .start_cap_vertices
+        let vertices: Vec<SubShapeHandle> = start_vertices
             .values()
-            .chain(result.end_cap_vertices.values())
+            .chain(end_vertices.values())
             .copied()
             .collect();
         assert_eq!(vertices.len(), 8, "four corners on each cap");
@@ -383,9 +387,8 @@ fn build(request: &ExtrudeRequest) -> Built {
     let result = kernel
         .extrude(request, &OperationContext::default())
         .expect("Open CASCADE builds the profile");
-    let mut map = TopologyMap::new();
-    map.record_extrude(feature, request.profile(), &result)
-        .expect("records");
+    let map =
+        naming::bind(&mut kernel, feature, request.profile(), &result).expect("complete naming");
     let shape = result.shape;
     Built {
         kernel,
@@ -416,7 +419,7 @@ fn cap_vertex_of(built: &Built, side: CapSide, joint: ProfileJoint) -> Result<Su
 
 /// How many corners of a profile name a vertex on each cap.
 fn named_counts(built: &Built, labels: &[StableEntityId]) -> (usize, usize) {
-    let names = built.map.feature(built.feature).expect("recorded");
+    let names = naming::view(&built.map, built.feature);
     let mut counts = (0, 0);
     for index in 0..labels.len() {
         let joint = joint_at(labels, index);
@@ -777,7 +780,7 @@ fn walking_the_profile_from_another_segment_leaves_each_corner_owning_its_vertic
                 // durable terms and not a handle.
                 let mut touching = BTreeSet::new();
                 for (position, segment) in labels.iter().enumerate() {
-                    let names = built.map.feature(built.feature).expect("recorded");
+                    let names = naming::view(&built.map, built.feature);
                     for face in names.side(*segment) {
                         if let Some(positions) = picture.face_positions.get(&face)
                             && mine.iter().any(|at| positions.contains(at))
@@ -868,7 +871,7 @@ fn a_pair_that_meets_at_two_corners_names_neither_vertex() {
     // Four corner vertices in the solid, and one unordered pair to name them
     // with. The name cannot choose, so nothing is named.
     let joint = ProfileJoint::new(labels[0], labels[1]).expect("two different segments");
-    let names = built.map.feature(built.feature).expect("recorded");
+    let names = naming::view(&built.map, built.feature);
     for side in [CapSide::Start, CapSide::End] {
         assert_eq!(
             names
@@ -908,9 +911,8 @@ fn corner_names_survive_an_archive_and_a_session_that_never_built_them() {
         let result = writer
             .extrude(&request, &OperationContext::default())
             .expect("builds");
-        let mut map = TopologyMap::new();
-        map.record_extrude(feature, request.profile(), &result)
-            .expect("records");
+        let map = naming::bind(&mut writer, feature, request.profile(), &result)
+            .expect("complete naming");
         let archived = archive_feature(&mut writer, &map, feature).expect("archives");
         writer.release(result.shape);
         assert_eq!(writer.live_shape_count(), 0);
@@ -919,8 +921,8 @@ fn corner_names_survive_an_archive_and_a_session_that_never_built_them() {
 
     // Faces, edges and vertices are all in the table, each under its own kind.
     let mut kinds = BTreeMap::new();
-    for (name, _) in archived.bindings() {
-        *kinds.entry(name.kind()).or_insert(0usize) += 1;
+    for (_, name) in archived.entities() {
+        *kinds.entry(name.kind).or_insert(0usize) += 1;
     }
     assert_eq!(
         kinds.get(&SubShapeKind::Vertex).copied(),
@@ -940,7 +942,7 @@ fn corner_names_survive_an_archive_and_a_session_that_never_built_them() {
 
     // A session that never saw the original.
     let mut reader = OcctKernel::new().expect("opens");
-    let mut restored = TopologyMap::new();
+    let mut restored = naming::prepared(feature, request.profile(), false).expect("model roots");
     restore_feature(&mut reader, &archived, &mut restored).expect("restores");
 
     let shape = restored
@@ -997,10 +999,11 @@ fn a_named_archive_of_vertices_that_cannot_be_read_leaves_no_shape_behind() {
     let result = writer
         .extrude(&request, &OperationContext::default())
         .expect("builds");
-    let vertices: Vec<SubShapeHandle> = result
-        .start_cap_vertices
+    let start_vertices = naming::cap_vertices(&mut writer, result.shape, false);
+    let end_vertices = naming::cap_vertices(&mut writer, result.shape, true);
+    let vertices: Vec<SubShapeHandle> = start_vertices
         .values()
-        .chain(result.end_cap_vertices.values())
+        .chain(end_vertices.values())
         .copied()
         .collect();
     let (blob, slots) = writer
@@ -1112,10 +1115,7 @@ fn a_cache_hit_and_a_cold_rebuild_name_the_same_corners() {
             let mine: BTreeSet<u32> = corners.occurrences[first..last].iter().copied().collect();
 
             // Named in durable terms: the caps by side, the sides by segment.
-            let names = built
-                .topology()
-                .feature(plate.extrude)
-                .expect("the feature is named");
+            let names = naming::view(built.topology(), plate.extrude);
             let mut on = BTreeSet::new();
             for (label, side) in [("start cap", CapSide::Start), ("end cap", CapSide::End)] {
                 for face in names.cap(side).expect("the side is known") {

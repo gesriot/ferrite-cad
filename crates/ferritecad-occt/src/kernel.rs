@@ -104,10 +104,7 @@ impl OcctKernel {
         ferritecad_exchange::decode(&encoded, self.session_id)
     }
 
-    /// §29A: what the fillet and the chamfer require of the names they are
-    /// asked about: every one, the edge included, is the target's and was
-    /// handed out by this session. The bridge answers by (shape, index), and a
-    /// handle from elsewhere would describe another face.
+    /// Require the selected edge to belong to this live target.
     fn check_edge_operation_names(
         &mut self,
         request_target: ShapeHandle,
@@ -116,17 +113,15 @@ impl OcctKernel {
         what: &str,
         verb: &str,
     ) -> Result<()> {
-        for sub in [edge] {
-            if sub.shape() != request_target {
-                return Err(CadError::input(format!(
-                    "{sub} is not a sub-shape of the shape this {what} {verb}"
-                )));
-            }
-            if sub.index() >= self.session.sub_shape_count(target)? as u64 {
-                return Err(CadError::input(format!(
-                    "{sub} was never handed out by this session"
-                )));
-            }
+        if edge.shape() != request_target {
+            return Err(CadError::input(format!(
+                "{edge} is not a sub-shape of the shape this {what} {verb}"
+            )));
+        }
+        if edge.index() >= self.session.sub_shape_count(target)? as u64 {
+            return Err(CadError::input(format!(
+                "{edge} was never handed out by this session"
+            )));
         }
         Ok(())
     }
@@ -621,7 +616,7 @@ impl GeometryKernel for OcctKernel {
             context.check_cancelled()?;
             Ok(OperationResult {
                 shape,
-                removed_volume: removed_volume,
+                removed_volume,
             })
         })();
 
@@ -660,7 +655,7 @@ impl GeometryKernel for OcctKernel {
             context.check_cancelled()?;
             Ok(OperationResult {
                 shape,
-                removed_volume: removed_volume,
+                removed_volume,
             })
         })();
 
@@ -699,7 +694,7 @@ impl GeometryKernel for OcctKernel {
             context.check_cancelled()?;
             Ok(OperationResult {
                 shape,
-                removed_volume: removed_volume,
+                removed_volume,
             })
         })();
 

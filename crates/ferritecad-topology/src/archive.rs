@@ -7,9 +7,11 @@ use ferritecad_types::{CadError, ObjectId, Result};
 use crate::TopologyMap;
 use crate::generative::{FeatureNaming, Name};
 
-/// One atomic B-Rep and complete typed naming graph. Slots have no meaning outside this blob.
+/// One validated atomic B-Rep and typed naming graph. Both constructors validate
+/// the complete record; restore still verifies every slot against the live B-Rep.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArchivedFeature {
+    pub(crate) derivations: crate::derivation::Derivations,
     pub(crate) producer: ObjectId,
     pub(crate) blob: BrepBlob,
     pub(crate) entities: BTreeMap<ArchiveSlot, Name>,
@@ -21,17 +23,38 @@ impl ArchivedFeature {
     pub fn producer(&self) -> ObjectId {
         self.producer
     }
+    pub fn entities(&self) -> impl Iterator<Item = (ArchiveSlot, Name)> + '_ {
+        self.entities.iter().map(|(s, n)| (*s, *n))
+    }
     pub fn blob(&self) -> &BrepBlob {
         &self.blob
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        crate::derivation::validate(&self.derivations)?;
         let bad = || CadError::topology("incomplete or contradictory generative archive");
         if self.entities.is_empty()
             || self.entities.keys().any(|s| s.is_root())
             || self.entities.keys().ne(self.incidence.keys())
         {
             return Err(bad());
+        }
+        for name in self.entities.values().chain(self.ancestry.keys()) {
+            if self.derivations.get(&name.digest).is_none_or(|node| node.kind() != name.kind || !matches!(&**node, crate::derivation::Derivation::Expression {tag,..} if *tag!="curve-end")) { return Err(bad()); }
+        }
+        for (digest, node) in &self.derivations {
+            if matches!(
+                &**node,
+                crate::derivation::Derivation::Expression {
+                    tag: "generated" | "boundary" | "split-boundary-history",
+                    ..
+                }
+            ) && !self.ancestry.contains_key(&Name {
+                kind: node.kind(),
+                digest: *digest,
+            }) {
+                return Err(bad());
+            }
         }
         for (slot, name) in &self.entities {
             if !self
@@ -97,6 +120,7 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
             .collect()
     };
     let archived = ArchivedFeature {
+        derivations: named.derivations.clone(),
         producer,
         blob,
         entities: named.entities.iter().map(|(s, n)| (slots[s], *n)).collect(),
@@ -121,7 +145,6 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
     archived: &ArchivedFeature,
     into: &mut TopologyMap,
 ) -> Result<()> {
-    archived.validate()?;
     let slots: Vec<_> = archived.entities.keys().copied().collect();
     let (shape, restored) = kernel.decode_shape_with(&archived.blob, &slots)?;
     let result = (|| {
@@ -158,7 +181,9 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 "archive incidence disagrees with restored B-Rep",
             ));
         }
+        into.accept_derivations(archived.producer, &archived.derivations)?;
         Ok(FeatureNaming {
+            derivations: archived.derivations.clone(),
             topology,
             entities,
             bindings,
@@ -180,3 +205,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "archive_tests.rs"]
+pub(crate) mod tests;

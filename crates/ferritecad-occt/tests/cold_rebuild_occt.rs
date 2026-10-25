@@ -9,6 +9,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use ferritecad_document::{
     Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression,
     Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
@@ -154,10 +157,7 @@ fn a_saved_document_rebuilds_into_open_cascade_geometry() {
 
     // Every sketch segment is named by the face it raised. This is the whole
     // reason history exists, and the reason the bridge shares corner vertices.
-    let names = built
-        .topology()
-        .feature(plate.extrude)
-        .expect("the extrude named its faces");
+    let names = naming::view(built.topology(), plate.extrude);
     for segment in &plate.segments {
         assert_eq!(
             names.side(*segment).count(),

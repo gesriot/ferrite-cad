@@ -251,6 +251,7 @@ fn named_faces(built: &RebuildResult, plate: &Plate) -> Vec<String> {
 
 /// Where one extrusion keeps its archive.
 fn archive_key(document: &Document, kernel: &MockKernel, feature: ObjectId) -> ContentHash {
+    let owner = feature;
     let objects = document.objects().expect("reads objects");
     let sketch = objects
         .iter()
@@ -275,7 +276,14 @@ fn archive_key(document: &Document, kernel: &MockKernel, feature: ObjectId) -> C
     .expect("converts")
     .profile;
     let request = extrude_request(&feature, profile).expect("converts");
-    extrude_archive_key(kernel.identity(), &request, &OperationContext::default())
+    let mut names = ferritecad_topology::TopologyMap::new();
+    names
+        .prepare(&objects.into_iter().map(|o| (o.id, o)).collect())
+        .expect("roots");
+    names.cache_key(
+        owner,
+        extrude_archive_key(kernel.identity(), &request, &OperationContext::default()),
+    )
 }
 
 #[test]
@@ -702,4 +710,238 @@ fn failed_kernel_results_are_never_cached_and_independent_hits_keep_the_same_sta
     );
     warm.release_all(&mut warm_kernel);
     assert_eq!(warm_kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn every_damaged_naming_record_rebuilds_atomically_without_retargeting() {
+    let (dir, document, plate) = sample(10.);
+    let mut kernel = MockKernel::new();
+    let mut cache = store(dir.path(), &kernel, document.meta().document_id);
+    let (cold, _) = rebuild_cached(
+        &document,
+        &mut kernel,
+        &mut cache,
+        &OperationContext::default(),
+    )
+    .expect("prime");
+    let expected = cold.topology().features[&plate.extrude]
+        .bindings
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    cold.release_all(&mut kernel);
+    let key = archive_key(&document, &kernel, plate.extrude);
+    let bytes = cache
+        .get(plate.extrude, key, ARCHIVE_CACHE_KIND)
+        .expect("read")
+        .expect("entry")
+        .bytes;
+    // Locate the typed entity, ancestry and incidence tables in this codec's record.
+    fn count(bytes: &[u8], at: &mut usize) -> usize {
+        let n = u32::from_le_bytes(bytes[*at..*at + 4].try_into().expect("count")) as usize;
+        *at += 4;
+        n
+    }
+    fn optional_id(bytes: &[u8], at: &mut usize) {
+        let present = bytes[*at];
+        *at += 1 + 16 * usize::from(present);
+    }
+    let mut at = 16;
+    for _ in 0..4 {
+        let n = count(&bytes, &mut at);
+        at += n;
+    }
+    for _ in 0..count(&bytes, &mut at) {
+        at += 32;
+        let tag = bytes[at];
+        at += 1;
+        match tag {
+            0 => {
+                at += 32;
+                optional_id(&bytes, &mut at);
+            }
+            1 => {
+                at += 17;
+                optional_id(&bytes, &mut at);
+            }
+            2 => {
+                at += 2;
+                optional_id(&bytes, &mut at);
+                at += 1;
+                let n = count(&bytes, &mut at);
+                at += 33 * n;
+            }
+            _ => panic!("unexpected derivation"),
+        }
+    }
+    let entity_count_at = at;
+    let n = count(&bytes, &mut at);
+    let entities = at;
+    at += 37 * n;
+    let ancestry_count_at = at;
+    let n_ancestry = count(&bytes, &mut at);
+    let ancestry_start = at;
+    for _ in 0..n_ancestry {
+        at += 33;
+        let n = count(&bytes, &mut at);
+        at += 4 * n;
+    }
+    let incidence_count_at = at;
+    let n_incidence = count(&bytes, &mut at);
+    let incidence_start = at;
+    let mut slot_positions = (0..n).map(|i| entities + 37 * i).collect::<Vec<_>>();
+    let mut scan = ancestry_start;
+    for _ in 0..n_ancestry {
+        scan += 33;
+        let size = count(&bytes, &mut scan);
+        for _ in 0..size {
+            slot_positions.push(scan);
+            scan += 4;
+        }
+    }
+    for _ in 0..n_incidence {
+        slot_positions.push(at);
+        at += 4;
+        let size = count(&bytes, &mut at);
+        for _ in 0..size {
+            slot_positions.push(at);
+            at += 4;
+        }
+    }
+    assert_eq!(at + 32, bytes.len());
+    let mut cases = Vec::new();
+    let mut bad = bytes.clone();
+    bad[entities + 4] = 1;
+    cases.push(("wrong entity kind", bad));
+    let mut bad = bytes.clone();
+    bad[entities + 5] ^= 1;
+    cases.push(("unknown entity name", bad));
+    let mut bad = bytes.clone();
+    bad[entities..entities + 4].copy_from_slice(&99999u32.to_le_bytes());
+    cases.push(("unknown slot", bad));
+    let mut bad = bytes.clone();
+    bad.drain(entities..entities + 37);
+    bad[entity_count_at..entity_count_at + 4].copy_from_slice(&((n - 1) as u32).to_le_bytes());
+    cases.push(("missing entity", bad));
+    let mut end = ancestry_start + 33;
+    let size = count(&bytes, &mut end);
+    end += 4 * size;
+    let mut bad = bytes.clone();
+    bad.drain(ancestry_start..end);
+    bad[ancestry_count_at..ancestry_count_at + 4]
+        .copy_from_slice(&((n_ancestry - 1) as u32).to_le_bytes());
+    cases.push(("missing ancestry", bad));
+    let mut end = incidence_start + 4;
+    let size = count(&bytes, &mut end);
+    end += 4 * size;
+    let mut bad = bytes.clone();
+    bad.drain(incidence_start..end);
+    bad[incidence_count_at..incidence_count_at + 4]
+        .copy_from_slice(&((n_incidence - 1) as u32).to_le_bytes());
+    cases.push(("missing incidence", bad));
+    // Swap two face slots everywhere: the graph stays internally consistent,
+    // so only the comparison against the actual restored incidence can catch it.
+    let face_slots = (0..n)
+        .filter(|i| bytes[entities + 37 * i + 4] == 0)
+        .take(2)
+        .map(|i| bytes[entities + 37 * i..entities + 37 * i + 4].to_vec())
+        .collect::<Vec<_>>();
+    let mut bad = bytes.clone();
+    for pos in slot_positions {
+        let old = &bytes[pos..pos + 4];
+        if old == face_slots[0] {
+            bad[pos..pos + 4].copy_from_slice(&face_slots[1]);
+        } else if old == face_slots[1] {
+            bad[pos..pos + 4].copy_from_slice(&face_slots[0]);
+        }
+    }
+    cases.push(("shifted slots and incidence", bad));
+    for (label, mut damaged) in cases {
+        damaged.truncate(damaged.len() - 32);
+        let checksum = ContentHash::of_bytes(&damaged);
+        damaged.extend_from_slice(checksum.as_bytes());
+        cache
+            .put(plate.extrude, key, ARCHIVE_CACHE_KIND, &damaged)
+            .expect("outer checksum is valid");
+        let mut reader = MockKernel::new();
+        let (built, events) = rebuild_cached(
+            &document,
+            &mut reader,
+            &mut cache,
+            &OperationContext::default(),
+        )
+        .expect("fallback");
+        assert!(built.all_built(), "{label}");
+        assert_eq!(reader.extrude_count(), 1, "{label}");
+        assert_eq!(events[0].outcome, CacheOutcome::Rejected, "{label}");
+        assert_eq!(events[1].outcome, CacheOutcome::Hit, "{label}");
+        assert_eq!(
+            built.topology().features[&plate.extrude]
+                .bindings
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            expected,
+            "{label}"
+        );
+        let faces = named_faces(&built, &plate);
+        assert_eq!(
+            faces
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            6
+        );
+        built.release_all(&mut reader);
+        assert_eq!(reader.live_shape_count(), 0);
+    }
+}
+
+#[test]
+fn the_retired_role_archive_kind_is_ignored_without_migration() {
+    let (dir, document, plate) = sample(10.);
+    let mut kernel = MockKernel::new();
+    let mut cache = store(dir.path(), &kernel, document.meta().document_id);
+    let (built, _) = rebuild_cached(
+        &document,
+        &mut kernel,
+        &mut cache,
+        &OperationContext::default(),
+    )
+    .expect("prime");
+    built.release_all(&mut kernel);
+    let key = archive_key(&document, &kernel, plate.extrude);
+    let bytes = cache
+        .get(plate.extrude, key, ARCHIVE_CACHE_KIND)
+        .expect("read")
+        .expect("entry")
+        .bytes;
+    cache.clear().expect("clear");
+    cache
+        .put(plate.extrude, key, "brep.named.v1", &bytes)
+        .expect("old kind");
+    let mut reader = MockKernel::new();
+    let (built, events) = rebuild_cached(
+        &document,
+        &mut reader,
+        &mut cache,
+        &OperationContext::default(),
+    )
+    .expect("rebuild");
+    assert!(built.all_built());
+    assert_eq!(reader.extrude_count(), 2);
+    assert!(events.iter().all(|e| e.outcome == CacheOutcome::Miss));
+    assert!(
+        cache
+            .get(plate.extrude, key, "brep.named.v1")
+            .expect("read")
+            .is_some()
+    );
+    assert!(
+        cache
+            .get(plate.extrude, key, ARCHIVE_CACHE_KIND)
+            .expect("read")
+            .is_some()
+    );
+    built.release_all(&mut reader);
 }

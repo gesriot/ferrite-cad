@@ -10,9 +10,12 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use ferritecad_kernel::{
-    CancelToken, CarriedOutcome, ChamferRequest, ExtrudeExtent, ExtrudeRequest, ExtrudeResult,
-    FaceSurface, GeometryKernel, HistoryInput, OperationContext, PlanarPoint, Profile, ProfileLoop,
+    CancelToken, ChamferRequest, ExtrudeExtent, ExtrudeRequest, FaceSurface, GeometryKernel,
+    NamingInput, NamingRelation, OperationContext, PlanarPoint, Profile, ProfileLoop,
     ProfileSegment, SegmentGeometry, SketchPlane, SubShapeHandle, SubShapeKind,
 };
 use ferritecad_occt::{OcctKernel, is_available};
@@ -58,17 +61,6 @@ fn plate(corners: &[[f64; 2]; 4]) -> Result<(ExtrudeRequest, Vec<StableEntityId>
     ))
 }
 
-fn named_faces(result: &ExtrudeResult, labels: &[StableEntityId]) -> Vec<SubShapeHandle> {
-    let mut faces: Vec<SubShapeHandle> = labels
-        .iter()
-        .flat_map(|label| result.history.generated(HistoryInput::Segment(*label)))
-        .collect();
-    faces.extend(result.start_cap.iter().copied());
-    faces.extend(result.end_cap.iter().copied());
-    faces
-}
-
-/// The corner two Lines meet at: the one point both of them have.
 fn corner_of(corners: &[[f64; 2]; 4], labels: &[StableEntityId], joint: ProfileJoint) -> [f64; 2] {
     let [a, b] = joint.segments();
     let ia = labels.iter().position(|l| *l == a).expect("a");
@@ -90,20 +82,26 @@ fn one_selected_vertical_edge_is_chamfered_to_the_corner_it_names_and_every_trac
     for corners in [ccw, cw_from_third] {
         let (request, labels) = plate(&corners).expect("a plate");
         let built = kernel.extrude(&request, &context).expect("the plate");
-        let faces = named_faces(&built, &labels);
+        let faces = naming::faces(&mut kernel, &built, &labels);
         assert_eq!(faces.len(), 6);
-        assert_eq!(built.sweep_edges.len(), 4, "four vertical edges");
+        assert_eq!(
+            naming::sweep_edges(&mut kernel, built.shape).len(),
+            4,
+            "four vertical edges"
+        );
         let before = kernel.encode_shape(built.shape).expect("archive target");
 
-        for (joint, edge) in built.sweep_edges.clone() {
+        for (joint, edge) in naming::sweep_edges(&mut kernel, built.shape).clone() {
             for d in [0.75, 3.0625] {
                 let chamfer = ChamferRequest::new(built.shape, edge, d).expect("request");
                 let mut track = faces.clone();
                 track.push(edge);
                 let result = kernel
-                    .chamfer_edge(&chamfer, &track, &context)
+                    .chamfer_edge(&chamfer, &context)
                     .expect("a real chamfer");
-                result.validate(built.shape, edge).expect("valid result");
+                let trace = kernel
+                    .naming_history(result.shape)
+                    .expect("complete history");
                 assert_eq!(
                     kernel.encode_shape(built.shape).expect("target after"),
                     before,
@@ -123,8 +121,22 @@ fn one_selected_vertical_edge_is_chamfered_to_the_corner_it_names_and_every_trac
                 // outward normal is the diagonal pointing away from the plate,
                 // it passes through the points d along each adjacent edge from
                 // the corner, and its area is d·√2·H.
-                assert_eq!(result.chamfer_faces.len(), 1);
-                let face = result.chamfer_faces[0];
+                assert_eq!(
+                    naming::outputs(
+                        &trace,
+                        NamingInput::SubShape(edge),
+                        NamingRelation::Generated,
+                        SubShapeKind::Face
+                    )
+                    .len(),
+                    1
+                );
+                let face = naming::outputs(
+                    &trace,
+                    NamingInput::SubShape(edge),
+                    NamingRelation::Generated,
+                    SubShapeKind::Face,
+                )[0];
                 assert_eq!(face.shape(), result.shape);
                 assert_eq!(
                     kernel.face_surface(face).expect("surface"),
@@ -156,17 +168,14 @@ fn one_selected_vertical_edge_is_chamfered_to_the_corner_it_names_and_every_trac
 
                 // The cut edge is gone. The two sides meeting there and both
                 // caps are trimmed; the two sides away from it are what they were.
-                assert_eq!(result.carried[&edge], CarriedOutcome::Deleted);
+                assert_eq!(naming::survival(&trace, edge), NamingRelation::Deleted);
                 let [a, b] = joint.segments();
                 for (label, side) in labels.iter().zip(&faces) {
                     let touched = *label == a || *label == b;
-                    let outputs: Vec<_> = result
-                        .history
-                        .modified(HistoryInput::SubShape(*side))
-                        .collect();
-                    match result.carried[side] {
-                        CarriedOutcome::Kept => assert!(!touched, "an adjacent side was kept"),
-                        CarriedOutcome::Modified => {
+                    let outputs: Vec<_> = naming::surviving(&trace, *side).collect();
+                    match naming::survival(&trace, *side) {
+                        NamingRelation::Kept => assert!(!touched, "an adjacent side was kept"),
+                        NamingRelation::Modified => {
                             assert!(touched, "a far side was modified");
                             assert_eq!(outputs.len(), 1);
                             assert_eq!(
@@ -178,23 +187,15 @@ fn one_selected_vertical_edge_is_chamfered_to_the_corner_it_names_and_every_trac
                     }
                 }
                 for cap in faces[4..].iter() {
-                    assert_eq!(result.carried[cap], CarriedOutcome::Modified);
+                    assert_eq!(naming::survival(&trace, *cap), NamingRelation::Modified);
                     assert_eq!(
-                        result
-                            .history
-                            .modified(HistoryInput::SubShape(*cap))
-                            .count(),
+                        naming::surviving(&trace, *cap).count(),
                         1,
                         "a cap is trimmed into one face"
                     );
                 }
                 for input in &track {
-                    assert!(
-                        result
-                            .history
-                            .modified(HistoryInput::SubShape(*input))
-                            .all(|output| output != face)
-                    );
+                    assert!(naming::surviving(&trace, *input).all(|output| output != face));
                 }
                 kernel.release(result.shape);
             }
@@ -212,9 +213,15 @@ fn a_chamfer_that_cannot_be_what_it_claims_is_refused_and_keeps_nothing() {
     let (request, labels) = plate(&corners).expect("a plate");
     let built = kernel.extrude(&request, &context).expect("the plate");
     let other = kernel.extrude(&request, &context).expect("another plate");
-    let faces = named_faces(&built, &labels);
-    let edge = *built.sweep_edges.values().next().expect("an edge");
-    let foreign_edge = *other.sweep_edges.values().next().expect("an edge");
+    let faces = naming::faces(&mut kernel, &built, &labels);
+    let edge = *naming::sweep_edges(&mut kernel, built.shape)
+        .values()
+        .next()
+        .expect("an edge");
+    let foreign_edge = *naming::sweep_edges(&mut kernel, other.shape)
+        .values()
+        .next()
+        .expect("an edge");
     let live = kernel.live_shape_count();
 
     assert!(ChamferRequest::new(built.shape, faces[0], 1.0).is_err());
@@ -224,29 +231,23 @@ fn a_chamfer_that_cannot_be_what_it_claims_is_refused_and_keeps_nothing() {
     }
     let missing = SubShapeHandle::new(built.shape, SubShapeKind::Edge, u64::MAX);
     let r = ChamferRequest::new(built.shape, missing, 1.0).expect("well formed");
-    assert!(kernel.chamfer_edge(&r, &[], &context).is_err());
+    assert!(kernel.chamfer_edge(&r, &context).is_err());
     let good = ChamferRequest::new(built.shape, edge, 1.0).expect("request");
-    let foreign_face = named_faces(&other, &[])[0];
-    assert!(
-        kernel
-            .chamfer_edge(&good, &[foreign_face], &context)
-            .is_err()
-    );
     // The kernel's own limit — the whole shorter side — never clamped to
     // something it can build.
     let wide = ChamferRequest::new(built.shape, edge, D).expect("request");
-    assert!(kernel.chamfer_edge(&wide, &faces, &context).is_err());
+    assert!(kernel.chamfer_edge(&wide, &context).is_err());
     // A planar answer is asked of a plane only.
     let cancel = CancelToken::new();
     cancel.cancel();
     let cancelled = OperationContext::default().with_cancel(cancel);
-    assert!(kernel.chamfer_edge(&good, &faces, &cancelled).is_err());
+    assert!(kernel.chamfer_edge(&good, &cancelled).is_err());
     assert!(kernel.face_plane(faces[0]).is_ok());
     assert_eq!(kernel.live_shape_count(), live, "a refusal kept a shape");
 
     kernel.release(other.shape);
     let gone = ChamferRequest::new(other.shape, foreign_edge, 1.0).expect("request");
-    assert!(kernel.chamfer_edge(&gone, &[], &context).is_err());
+    assert!(kernel.chamfer_edge(&gone, &context).is_err());
     kernel.release(built.shape);
     assert_eq!(kernel.live_shape_count(), 0);
 }
@@ -272,12 +273,10 @@ fn planar_normals_follow_the_solid_when_the_face_centroid_is_in_a_hole() {
         let request =
             ExtrudeRequest::new(profile, ExtrudeExtent::blind(H).expect("height"), reversed);
         let built = kernel.extrude(&request, &context).expect("ring");
-        let caps: Vec<_> = built
-            .start_cap
-            .iter()
-            .chain(&built.end_cap)
-            .copied()
-            .collect();
+        let caps = vec![
+            naming::cap(&mut kernel, built.shape, false),
+            naming::cap(&mut kernel, built.shape, true),
+        ];
         assert_eq!(caps.len(), 2);
         let (blob, slots) = kernel
             .encode_shape_with(built.shape, &caps)

@@ -2,6 +2,7 @@
 //! Eager names derived from complete operation provenance.
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::derivation::{self, Derivation, Derivations};
 use ferritecad_document::{ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
     GeometryKernel, NamingInput, NamingOperation, NamingRelation, ShapeHandle, ShapeTopology,
@@ -18,6 +19,7 @@ pub struct Name {
 
 #[derive(Debug, Clone)]
 pub struct FeatureNaming {
+    pub derivations: Derivations,
     pub topology: ShapeTopology,
     pub entities: BTreeMap<SubShapeHandle, Name>,
     pub bindings: BTreeMap<Name, BTreeSet<SubShapeHandle>>,
@@ -72,8 +74,10 @@ impl FeatureNaming {
 
 #[derive(Debug, Clone, Default)]
 pub struct ModelNaming {
+    derivations: std::cell::RefCell<Derivations>,
     pub(crate) operations: BTreeMap<ObjectId, NamingOperation>,
     pub(crate) planes: BTreeMap<ObjectId, ObjectId>,
+    roots: BTreeMap<ObjectId, BTreeSet<NamingInput>>,
     pub(crate) previous: BTreeMap<ObjectId, ObjectId>,
     pub features: BTreeMap<ObjectId, FeatureNaming>,
 }
@@ -96,6 +100,24 @@ impl ModelNaming {
                     return Err(CadError::input("feature profile has no plane"));
                 };
                 self.planes.insert(object.id, sketch.plane);
+                let mut roots = BTreeSet::new();
+                for curve in sketch.curves.iter().filter(|curve| !curve.construction) {
+                    roots.insert(NamingInput::Curve(curve.id));
+                    if !matches!(
+                        curve.geometry,
+                        ferritecad_document::SketchGeometry::Circle { .. }
+                    ) {
+                        roots.insert(NamingInput::CurveEnd {
+                            curve: curve.id,
+                            end: false,
+                        });
+                        roots.insert(NamingInput::CurveEnd {
+                            curve: curve.id,
+                            end: true,
+                        });
+                    }
+                }
+                self.roots.insert(object.id, roots);
             }
             let operation = match &object.payload {
                 ObjectPayload::Extrude(e) if e.previous.is_some() => NamingOperation::Cut,
@@ -133,13 +155,124 @@ impl ModelNaming {
         inputs: &[&FeatureNaming],
         kernel: &mut (impl GeometryKernel + ?Sized),
     ) -> Result<FeatureNaming> {
-        derive(
+        let history = kernel.naming_history(shape)?;
+        let expected = self.operations.get(&owner).copied();
+        if history.operation != expected
+            && !(expected == Some(NamingOperation::Cut)
+                && history.operation == Some(NamingOperation::Extrude)
+                && inputs.is_empty())
+        {
+            return Err(CadError::topology(
+                "operation provenance disagrees with the feature",
+            ));
+        }
+        if inputs.is_empty() {
+            let expected = self
+                .roots
+                .get(&owner)
+                .ok_or_else(|| CadError::topology("sweep has no profile roots"))?;
+            let found: BTreeSet<_> = history
+                .relations
+                .iter()
+                .map(|(input, _, _)| *input)
+                .filter(|i| !matches!(i, NamingInput::Cap { .. }))
+                .collect();
+            if &found != expected {
+                return Err(CadError::topology(
+                    "incomplete or foreign profile provenance",
+                ));
+            }
+            if history.operation == Some(NamingOperation::Extrude)
+                && [false, true].iter().any(|end| {
+                    !history
+                        .relations
+                        .iter()
+                        .any(|(i, _, _)| *i == NamingInput::Cap { end: *end })
+                })
+            {
+                return Err(CadError::topology("extrusion provenance is missing a cap"));
+            }
+        }
+        let named = derive(
             shape,
             owner,
             self.planes.get(&owner).copied(),
             inputs,
             kernel,
-        )
+            history,
+        )?;
+        self.accept_derivations(owner, &named.derivations)?;
+        Ok(named)
+    }
+
+    pub(crate) fn accept_derivations(&self, producer: ObjectId, graph: &Derivations) -> Result<()> {
+        let mut lineage = BTreeSet::new();
+        let mut cursor = Some(producer);
+        while let Some(owner) = cursor {
+            if !self.operations.contains_key(&owner) || !lineage.insert(owner) {
+                return Err(CadError::topology("invalid naming producer lineage"));
+            }
+            cursor = self.previous.get(&owner).copied();
+        }
+        let mut known = self.derivations.borrow_mut();
+        for (digest, node) in graph {
+            if known.get(digest).is_some_and(|prior| **prior != **node) {
+                return Err(CadError::topology(format!(
+                    "unequal derivations collide at {digest}; refusing to merge names"
+                )));
+            }
+            let valid = match &**node {
+                Derivation::Curve(owner, curve, plane) => {
+                    lineage.contains(owner)
+                        && self.planes.get(owner).copied() == *plane
+                        && self
+                            .roots
+                            .get(owner)
+                            .is_some_and(|r| r.contains(&NamingInput::Curve(*curve)))
+                }
+                Derivation::Cap(owner, _, plane) => {
+                    lineage.contains(owner)
+                        && self.roots.contains_key(owner)
+                        && self.planes.get(owner).copied() == *plane
+                }
+                Derivation::Expression {
+                    feature,
+                    tag,
+                    extra,
+                    ..
+                } => {
+                    feature.is_none_or(|f| lineage.contains(&f))
+                        && (!matches!(*tag, "generated" | "modified")
+                            || feature.is_some_and(|f| {
+                                self.operations.get(&f).is_some_and(|op| {
+                                    op.tag() == *extra
+                                        || (*op == NamingOperation::Cut
+                                            && *extra == NamingOperation::Extrude.tag())
+                                })
+                            }))
+                }
+            };
+            if !valid {
+                return Err(CadError::topology(
+                    "cached derivation has a foreign model root",
+                ));
+            }
+        }
+        for (digest, node) in graph {
+            known.entry(*digest).or_insert_with(|| node.clone());
+        }
+        Ok(())
+    }
+
+    pub fn cache_key(&self, owner: ObjectId, geometry: ContentHash) -> ContentHash {
+        let mut h = CanonicalHasher::new("naming.archive");
+        h.algorithm_version(1)
+            .hash(&geometry)
+            .bytes(&owner.to_bytes());
+        if let Some(plane) = self.planes.get(&owner) {
+            h.bytes(&plane.to_bytes());
+        }
+        h.finish()
     }
 }
 
@@ -158,24 +291,20 @@ fn derive(
     plane: Option<ObjectId>,
     inputs: &[&FeatureNaming],
     kernel: &mut (impl GeometryKernel + ?Sized),
+    history: ferritecad_kernel::NamingHistory,
 ) -> Result<FeatureNaming> {
     let topology = kernel.shape_topology(shape)?;
-    let history = kernel.naming_history(shape)?;
     let operation = history
         .operation
         .ok_or_else(|| CadError::topology("operation history has no operator identity"))?;
-    let derived: BTreeMap<_, _> = inputs.iter().map(|f| (f.shape(), *f)).collect();
+    validate_history(shape, &topology, &history, inputs)?;
+    let mut derivations = Derivations::new();
     for source in inputs {
-        for sub in source.entities.keys() {
-            if !history
-                .relations
-                .iter()
-                .any(|(input, _, _)| *input == NamingInput::SubShape(*sub))
-            {
-                return Err(CadError::topology(format!("incomplete history for {sub}")));
-            }
+        for (digest, node) in &source.derivations {
+            derivation::insert(&mut derivations, *digest, node.clone())?;
         }
     }
+    let derived: BTreeMap<_, _> = inputs.iter().map(|f| (f.shape(), *f)).collect();
     // An entity modified into exactly one output keeps its name, so names born later do not
     // depend on how many unrelated features touched their neighbours.
     let mut modified = BTreeMap::<NamingInput, usize>::new();
@@ -209,37 +338,53 @@ fn derive(
                     .ok_or_else(|| CadError::topology("history names an unknown input entity"))?;
                 (root, Some((source, sub)))
             }
-            NamingInput::Curve(curve) => (curve_root(owner, *curve, plane), None),
+            NamingInput::Curve(curve) => (
+                derivation::intern(&mut derivations, Derivation::Curve(owner, *curve, plane))?,
+                None,
+            ),
             NamingInput::CurveEnd { curve, end } => {
-                let root = curve_root(owner, *curve, plane);
+                let root =
+                    derivation::intern(&mut derivations, Derivation::Curve(owner, *curve, plane))?;
                 (
-                    hash_name(
+                    derivation::expression(
+                        &mut derivations,
                         SubShapeKind::Vertex,
                         "curve-end",
                         None,
                         [root],
                         u8::from(*end),
-                    ),
+                    )?,
                     None,
                 )
             }
-            NamingInput::Cap { end } => (cap_root(owner, *end, plane), None),
+            NamingInput::Cap { end } => (
+                derivation::intern(&mut derivations, Derivation::Cap(owner, *end, plane))?,
+                None,
+            ),
         };
         let term = match relation {
-            NamingRelation::Modified if modified[input] > 1 => hash_name(
+            NamingRelation::Modified if modified[input] > 1 => derivation::expression(
+                &mut derivations,
                 output.kind(),
                 "modified",
                 Some(owner),
                 [root],
                 operation.tag(),
-            ),
+            )?,
             NamingRelation::Kept | NamingRelation::Modified => {
                 kept.entry(*output)
                     .or_insert_with(BTreeSet::new)
                     .insert(root);
                 root
             }
-            NamingRelation::Generated => generated(owner, operation, root, output.kind()),
+            NamingRelation::Generated => derivation::expression(
+                &mut derivations,
+                output.kind(),
+                "generated",
+                Some(owner),
+                [root],
+                operation.tag(),
+            )?,
             NamingRelation::Deleted => {
                 return Err(CadError::topology("deleted history has an output"));
             }
@@ -276,13 +421,14 @@ fn derive(
                             terms.get(boundary).into_iter().flatten().copied()
                         })
                         .collect();
-                    let refined = hash_name(
+                    let refined = derivation::expression(
+                        &mut derivations,
                         SubShapeKind::Face,
                         "split-boundary-history",
                         Some(owner),
                         witnesses.into_iter().chain([base]),
                         0,
-                    );
+                    )?;
                     entities.insert(face, refined);
                 }
             }
@@ -300,7 +446,14 @@ fn derive(
                 if provenance.len() == 1 {
                     *provenance.first().expect("one term")
                 } else {
-                    hash_name(kind, "merge", Some(owner), provenance, 0)
+                    derivation::expression(
+                        &mut derivations,
+                        kind,
+                        "merge",
+                        Some(owner),
+                        provenance,
+                        0,
+                    )?
                 }
             } else {
                 let adjacent = topology.adjacent_faces[&entity]
@@ -315,15 +468,23 @@ fn derive(
                 if adjacent.is_empty() {
                     return Err(CadError::topology("entity has no incident named faces"));
                 }
-                let incidence = hash_name(kind, "incident-faces", None, adjacent, 0);
+                let incidence = derivation::expression(
+                    &mut derivations,
+                    kind,
+                    "incident-faces",
+                    None,
+                    adjacent,
+                    0,
+                )?;
                 // Provenance is a witness, never a traversal ordinal or a coordinate.
-                hash_name(
+                derivation::expression(
+                    &mut derivations,
                     kind,
                     "boundary",
                     Some(owner),
                     provenance.into_iter().chain([incidence]),
                     0,
-                )
+                )?
             };
             entities.insert(entity, name);
         }
@@ -334,6 +495,7 @@ fn derive(
         ancestry.entry(*name).or_default().insert(*entity);
     }
     Ok(FeatureNaming {
+        derivations,
         topology,
         entities,
         bindings,
@@ -374,7 +536,7 @@ pub fn generated(
     hash_name(kind, "generated", Some(feature), [input], operation.tag())
 }
 
-fn hash_name(
+pub(crate) fn hash_name(
     kind: SubShapeKind,
     tag: &str,
     feature: Option<ObjectId>,
@@ -396,3 +558,81 @@ fn hash_name(
         digest: h.finish(),
     }
 }
+
+fn validate_history(
+    shape: ShapeHandle,
+    topology: &ShapeTopology,
+    history: &ferritecad_kernel::NamingHistory,
+    inputs: &[&FeatureNaming],
+) -> Result<()> {
+    let bad = || CadError::topology("incomplete or contradictory operation provenance");
+    if topology.adjacent_faces.is_empty() {
+        return Err(bad());
+    }
+    for (entity, faces) in &topology.adjacent_faces {
+        if entity.shape() != shape
+            || !matches!(
+                entity.kind(),
+                SubShapeKind::Face | SubShapeKind::Edge | SubShapeKind::Vertex
+            )
+            || (entity.kind() == SubShapeKind::Face) != faces.is_empty()
+            || faces
+                .iter()
+                .any(|f| f.kind() != SubShapeKind::Face || !topology.adjacent_faces.contains_key(f))
+        {
+            return Err(bad());
+        }
+    }
+    let source: BTreeSet<_> = inputs
+        .iter()
+        .flat_map(|f| f.entities.keys().copied())
+        .collect();
+    let mut survival = BTreeMap::<_, BTreeMap<NamingRelation, usize>>::new();
+    for (input, relation, output) in &history.relations {
+        if (*relation == NamingRelation::Deleted) != output.is_none() {
+            return Err(bad());
+        }
+        if let Some(output) = output
+            && !topology.adjacent_faces.contains_key(output)
+        {
+            return Err(bad());
+        }
+        if let NamingInput::SubShape(sub) = input {
+            if !source.contains(sub) {
+                return Err(bad());
+            }
+            if *relation != NamingRelation::Generated {
+                if output.is_some_and(|o| o.kind() != sub.kind()) {
+                    return Err(bad());
+                }
+                *survival
+                    .entry(*sub)
+                    .or_default()
+                    .entry(*relation)
+                    .or_default() += 1;
+            }
+        } else if !inputs.is_empty()
+            || !matches!(
+                relation,
+                NamingRelation::Generated | NamingRelation::Deleted
+            )
+        {
+            return Err(bad());
+        }
+    }
+    for sub in source {
+        let account = survival.get(&sub).ok_or_else(bad)?;
+        if account.len() != 1
+            || account
+                .iter()
+                .any(|(relation, n)| *relation != NamingRelation::Modified && *n != 1)
+        {
+            return Err(bad());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "provenance_tests.rs"]
+mod tests;

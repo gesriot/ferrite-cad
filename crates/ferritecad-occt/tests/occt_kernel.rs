@@ -9,10 +9,13 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use ferritecad_kernel::{
-    BrepBlob, CancelToken, ExtrudeExtent, ExtrudeRequest, GeometryKernel, HistoryInput,
-    KernelIdentity, OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
-    ProgressSink, SegmentGeometry, SketchPlane, TessellationParams,
+    BrepBlob, CancelToken, ExtrudeExtent, ExtrudeRequest, GeometryKernel, KernelIdentity,
+    NamingInput, OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment, ProgressSink,
+    SegmentGeometry, SketchPlane, TessellationParams,
 };
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_types::{CadError, ErrorKind, Result, StableEntityId, Transform, Vec3};
@@ -112,10 +115,14 @@ fn every_profile_segment_raised_exactly_one_side_face() {
         .expect("builds");
 
     for label in &plate.labels {
-        let generated: Vec<_> = result
-            .history
-            .generated(HistoryInput::Segment(*label))
-            .collect();
+        let generated: Vec<_> = naming::generated(
+            &mut kernel,
+            result.shape,
+            NamingInput::Curve(*label),
+            ferritecad_kernel::SubShapeKind::Face,
+        )
+        .into_iter()
+        .collect();
         assert_eq!(
             generated.len(),
             1,
@@ -135,20 +142,30 @@ fn the_caps_are_reported_apart_from_history_and_are_distinct() {
     let result = kernel
         .extrude(&plate.request, &OperationContext::default())
         .expect("builds");
+    let start_caps = [naming::cap(&mut kernel, result.shape, false)];
+    let end_caps = [naming::cap(&mut kernel, result.shape, true)];
 
     // FirstShape and LastShape are faces on OCCT 7.9.x and 8.0.x; the adapter
     // reports them apart because they are generated from no input.
-    assert_eq!(result.start_cap.len(), 1);
-    assert_eq!(result.end_cap.len(), 1);
-    assert_ne!(result.start_cap[0], result.end_cap[0]);
+    assert_eq!(start_caps.len(), 1);
+    assert_eq!(end_caps.len(), 1);
+    assert_ne!(start_caps[0], end_caps[0]);
 
     // Four sides plus two caps, and no side face is also a cap.
     let mut all: Vec<_> = plate
         .labels
         .iter()
-        .flat_map(|l| result.history.generated(HistoryInput::Segment(*l)))
-        .chain(result.start_cap.iter().copied())
-        .chain(result.end_cap.iter().copied())
+        .flat_map(|l| {
+            naming::generated(
+                &mut kernel,
+                result.shape,
+                NamingInput::Curve(*l),
+                ferritecad_kernel::SubShapeKind::Face,
+            )
+            .into_iter()
+        })
+        .chain(start_caps.iter().copied())
+        .chain(end_caps.iter().copied())
         .collect();
     all.sort_unstable();
     all.dedup();
@@ -200,10 +217,13 @@ fn a_profile_containing_an_arc_builds() {
     );
 
     assert_eq!(
-        result
-            .history
-            .generated(HistoryInput::Segment(arc_label))
-            .count(),
+        naming::generated(
+            &mut kernel,
+            result.shape,
+            NamingInput::Curve(arc_label),
+            ferritecad_kernel::SubShapeKind::Face
+        )
+        .len(),
         1,
         "the arc raised a cylindrical side face"
     );
@@ -450,10 +470,13 @@ fn a_decoded_shape_is_the_same_geometry_and_nothing_more() {
         .extrude(&plate.request, &OperationContext::default())
         .expect("builds");
     assert_eq!(
-        again
-            .history
-            .generated(HistoryInput::Segment(plate.labels[0]))
-            .count(),
+        naming::generated(
+            &mut kernel,
+            again.shape,
+            NamingInput::Curve(plate.labels[0]),
+            ferritecad_kernel::SubShapeKind::Face
+        )
+        .len(),
         1
     );
 
@@ -673,6 +696,9 @@ fn a_rectangular_hole_becomes_a_cavity_in_the_prism() {
     let result = kernel
         .extrude(&request, &OperationContext::default())
         .expect("a rectangle with a rectangular hole is one region");
+    let start_vertices = naming::cap_vertices(&mut kernel, result.shape, false);
+    let end_vertices = naming::cap_vertices(&mut kernel, result.shape, true);
+    let swept = naming::sweep_edges(&mut kernel, result.shape);
 
     // Four outer walls, four bore walls and two caps.
     let (faces, volume) = kernel.shape_stats(result.shape).expect("stats");
@@ -689,19 +715,22 @@ fn a_rectangular_hole_becomes_a_cavity_in_the_prism() {
     // label rather than under a position.
     for label in plate.labels.iter().chain(&hole_labels) {
         assert_eq!(
-            result
-                .history
-                .generated(HistoryInput::Segment(*label))
-                .count(),
+            naming::generated(
+                &mut kernel,
+                result.shape,
+                NamingInput::Curve(*label),
+                ferritecad_kernel::SubShapeKind::Face
+            )
+            .len(),
             1,
             "segment {label} raised no wall of its own"
         );
     }
     // The two loops' corners are different corners, and the sweep named one
     // edge at each of the eight.
-    assert_eq!(result.sweep_edges.len(), 8);
-    assert_eq!(result.start_cap_vertices.len(), 8);
-    assert_eq!(result.end_cap_vertices.len(), 8);
+    assert_eq!(swept.len(), 8);
+    assert_eq!(start_vertices.len(), 8);
+    assert_eq!(end_vertices.len(), 8);
 
     kernel.release(result.shape);
     assert_eq!(kernel.live_shape_count(), 0);

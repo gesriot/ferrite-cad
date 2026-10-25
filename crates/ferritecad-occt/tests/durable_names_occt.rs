@@ -10,6 +10,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use ferritecad_document::{
     CacheStore, CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef,
 };
@@ -19,7 +22,7 @@ use ferritecad_kernel::{
     ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_topology::{TopologyMap, archive_feature, resolve, restore_feature};
+use ferritecad_topology::{archive_feature, resolve, restore_feature};
 use ferritecad_types::{DocumentId, ObjectId, Result, StableEntityId};
 
 fn plate() -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
@@ -92,9 +95,8 @@ fn open_cascade_geometry_and_its_names_survive_a_file() {
         .expect("the sidecar opens");
 
         let result = kernel.extrude(&request, &context).expect("builds");
-        let mut map = TopologyMap::new();
-        map.record_extrude(feature, request.profile(), &result)
-            .expect("records");
+        let map = naming::bind(&mut kernel, feature, request.profile(), &result)
+            .expect("complete naming");
         let stats = kernel.shape_stats(result.shape).expect("measures");
 
         let archived = archive_feature(&mut kernel, &map, feature).expect("archives");
@@ -122,7 +124,7 @@ fn open_cascade_geometry_and_its_names_survive_a_file() {
         .expect("the entry the previous run wrote is there");
     assert_eq!(archived.blob().bytes().len(), blob_len);
 
-    let mut restored = TopologyMap::new();
+    let mut restored = naming::prepared(feature, request.profile(), false).expect("model roots");
     restore_feature(&mut kernel, &archived, &mut restored).expect("restores");
 
     let shape = restored

@@ -10,9 +10,10 @@
 #![allow(clippy::panic)]
 
 use ferritecad_kernel::{
-    CancelToken, ExtrudeExtent, ExtrudeRequest, GeometryKernel, HistoryInput, KernelIdentity,
-    OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment, ProgressSink,
-    SegmentGeometry, SketchPlane, TessellationParams, extrude_cache_key, mock::MockKernel,
+    CancelToken, ExtrudeExtent, ExtrudeRequest, GeometryKernel, KernelIdentity, NamingInput,
+    NamingRelation, OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
+    ProgressSink, SegmentGeometry, SketchPlane, SubShapeKind, TessellationParams,
+    extrude_cache_key, mock::MockKernel,
 };
 use ferritecad_types::{
     CadError, ErrorKind, Point3, Result, StableEntityId, Tolerance, Transform, Vec3,
@@ -65,22 +66,33 @@ fn an_extrusion_reports_a_side_face_for_every_profile_segment() {
         .extrude(&square.request, &OperationContext::default())
         .expect("the profile is buildable");
 
+    let history = kernel
+        .naming_history(result.shape)
+        .expect("complete history");
+    let generated = |input, kind| {
+        history
+            .relations
+            .iter()
+            .filter(|(i, r, o)| {
+                *i == input
+                    && *r == NamingRelation::Generated
+                    && o.is_some_and(|s| s.kind() == kind)
+            })
+            .map(|(_, _, o)| o.expect("output"))
+            .collect::<Vec<_>>()
+    };
     for label in &square.labels {
-        let generated: Vec<_> = result
-            .history
-            .generated(HistoryInput::Segment(*label))
-            .collect();
         assert_eq!(
-            generated.len(),
+            generated(NamingInput::Curve(*label), SubShapeKind::Face).len(),
             1,
-            "segment {label} should have raised exactly one side face"
+            "one side per segment"
         );
     }
-
-    // Caps correspond to no input, so they are reported apart from history.
-    assert_eq!(result.start_cap.len(), 1);
-    assert_eq!(result.end_cap.len(), 1);
-    assert_ne!(result.start_cap[0], result.end_cap[0]);
+    let start = generated(NamingInput::Cap { end: false }, SubShapeKind::Face);
+    let end = generated(NamingInput::Cap { end: true }, SubShapeKind::Face);
+    assert_eq!(start.len(), 1);
+    assert_eq!(end.len(), 1);
+    assert_ne!(start[0], end[0]);
 }
 
 #[test]
@@ -111,16 +123,17 @@ fn history_and_mesh_are_reproducible() {
     assert_eq!(one_mesh.normals, other_mesh.normals);
     assert_eq!(one_mesh.indices, other_mesh.indices);
 
-    // History compares by structure: same inputs, same number of outputs each.
-    let one_inputs: Vec<_> = one.history.inputs().collect();
-    let other_inputs: Vec<_> = other.history.inputs().collect();
-    assert_eq!(one_inputs, other_inputs);
-    for input in &one_inputs {
-        assert_eq!(
-            one.history.generated(*input).count(),
-            other.history.generated(*input).count()
-        );
-    }
+    let normalize = |history: ferritecad_kernel::NamingHistory| {
+        history
+            .relations
+            .iter()
+            .map(|(i, r, o)| (*i, *r, o.map(|s| (s.kind(), s.index()))))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        normalize(first.naming_history(one.shape).expect("history")),
+        normalize(second.naming_history(other.shape).expect("history"))
+    );
 }
 
 #[test]
@@ -312,7 +325,7 @@ fn a_released_shape_is_gone_and_releasing_again_is_harmless() {
 }
 
 #[test]
-fn a_transform_preserves_every_face_as_modified() {
+fn a_transform_preserves_all_topology_and_moves_the_mesh() {
     let square = square(10.0, 8.0).expect("a valid square");
     let context = OperationContext::default();
     let mut kernel = MockKernel::new();
@@ -324,13 +337,20 @@ fn a_transform_preserves_every_face_as_modified() {
         .transform(built.shape, &offset, &context)
         .expect("transforms");
 
-    // Six faces in, six correspondences out; a transform destroys nothing.
-    let inputs: Vec<_> = moved.history.inputs().collect();
-    assert_eq!(inputs.len(), 6);
-    for input in &inputs {
-        assert_eq!(moved.history.modified(*input).count(), 1);
-        assert!(!moved.history.is_deleted(*input));
-    }
+    let before_topology = kernel.shape_topology(built.shape).expect("complete input");
+    let after_topology = kernel.shape_topology(moved.shape).expect("complete output");
+    let normalize = |t: ferritecad_kernel::ShapeTopology| {
+        t.adjacent_faces
+            .into_iter()
+            .map(|(s, f)| {
+                (
+                    (s.kind(), s.index()),
+                    f.into_iter().map(|s| s.index()).collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(normalize(before_topology), normalize(after_topology));
 
     let before = kernel
         .tessellate(built.shape, &TessellationParams::default(), &context)

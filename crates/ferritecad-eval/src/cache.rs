@@ -7,10 +7,6 @@
 //! leave a store whose table describes a blob that is not there — or worse, an
 //! older one that is.
 //!
-//! Nothing here is consulted during a rebuild yet. This slice makes the
-//! artifact durable and proves it survives; using it is the next one, and
-//! [`rebuild_cold`](crate::rebuild_cold) is deliberately unchanged.
-//!
 //! # Why the key is computed here rather than taken
 //!
 //! [`extrude_cache_key`] folds in the full [`KernelIdentity`], the tolerance
@@ -33,7 +29,7 @@ use ferritecad_kernel::{
 use ferritecad_topology::{ARCHIVE_CACHE_KIND, ArchivedFeature};
 use ferritecad_types::{CanonicalHasher, ContentHash, ObjectId, Result};
 
-/// Where an extrusion's archive lives in the sidecar.
+/// Geometry portion of an extrusion archive key; the evaluator adds naming identity.
 pub fn extrude_archive_key(
     kernel: &KernelIdentity,
     request: &ExtrudeRequest,

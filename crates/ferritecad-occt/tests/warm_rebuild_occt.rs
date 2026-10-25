@@ -9,6 +9,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
 use ferritecad_document::{
     Body, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition,
     Expression, Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry,
@@ -189,10 +192,7 @@ fn open_cascade_geometry_comes_back_without_being_recomputed() {
     assert!((restored_volume - volume).abs() < 1e-9);
 
     // And it answers to the same names as a computed one.
-    let names = built
-        .topology()
-        .feature(plate.extrude)
-        .expect("the restored extrusion is named");
+    let names = naming::view(built.topology(), plate.extrude);
     for segment in &plate.segments {
         assert_eq!(
             names.side(*segment).count(),

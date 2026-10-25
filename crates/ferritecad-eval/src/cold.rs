@@ -502,6 +502,7 @@ fn run<K: GeometryKernel + ?Sized>(
                             }
                             let key = extrude_archive_key(kernel.identity(), &request, &scoped);
 
+                            let key = state.topology.cache_key(*id, key);
                             let restored = match cache.as_deref_mut() {
                                 Some(cache) => {
                                     restore(kernel, cache, &scoped, key, *id, state, events)?
@@ -577,6 +578,7 @@ fn run<K: GeometryKernel + ?Sized>(
                                 &scoped,
                             );
 
+                            let key = state.topology.cache_key(*id, key);
                             let restored = match cache.as_deref_mut() {
                                 Some(cache) => {
                                     restore(kernel, cache, &scoped, key, *id, state, events)?
@@ -640,6 +642,7 @@ fn run<K: GeometryKernel + ?Sized>(
                             })?;
                     let request = revolve_request(feature, profile)?;
                     let key = revolve_archive_key(kernel.identity(), &request, &scoped);
+                    let key = state.topology.cache_key(*id, key);
                     let restored = match cache.as_deref_mut() {
                         Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
                         None => false,
@@ -745,6 +748,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         fillet.radius_mm.value(),
                         &scoped,
                     );
+                    let key = state.topology.cache_key(*id, key);
                     let restored = match cache.as_deref_mut() {
                         Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
                         None => false,
@@ -827,6 +831,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         chamfer.distance_mm.value(),
                         &scoped,
                     );
+                    let key = state.topology.cache_key(*id, key);
                     let restored = match cache.as_deref_mut() {
                         Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
                         None => false,
@@ -972,13 +977,6 @@ impl CacheEvent {
 /// `Ok(true)` means the shape is built, named and owned by `state`. `Ok(false)`
 /// means the caller must extrude, and says why in `events`. An error is a
 /// genuine failure of the rebuild — cancellation, or a kernel that restored a
-/// shape it will not then describe — never a disappointing cache.
-/// Every name either input of a boolean has, so the kernel answers about all
-/// of them.
-///
-/// Gathered from the two feature name tables and from nothing else. A list
-/// built by walking the geometry would be asking the boolean about faces
-/// nobody named, and the answers would have nowhere to go.
 fn restore<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     cache: &CacheStore,
