@@ -35,9 +35,6 @@ use ferritecad_types::{CadError, Result, Unit};
 /// that could not run at all.
 const EXIT_INVALID: u8 = 1;
 const EXIT_FAILED: u8 = 2;
-/// A document that opened and rebuilt, and whose stored names no longer all
-/// find geometry. Distinct from both of the above: nothing went wrong with the
-/// command, and the document is not malformed — it has simply lost a name.
 /// An import that produced a complete document, with things noticed on the way.
 ///
 /// Separate from success because a script should be able to tell the two apart

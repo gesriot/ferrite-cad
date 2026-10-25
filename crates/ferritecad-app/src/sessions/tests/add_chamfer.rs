@@ -731,7 +731,7 @@ fn native_constraints_before_or_after_add_and_distance_use_the_solved_plate() {
         s.status
     );
     let added = s.export_path().expect("added");
-    super::cut::same_sql(&added, &peer, &current);
+    super::cut::same_sql(&added, &peer);
     cold(&added, [-8., 1.25, 33., 15.5], [-8., 1.25], 6.75);
     visible_outcome(&mut form, &s.status);
     assert_eq!(add_draft_state(&form), draft, "the draft is kept");

@@ -513,18 +513,10 @@ fn drawn(built: &mut Built) -> Drawn {
     }
 }
 
-fn cap_name(
-    _map: &ModelNaming,
-    feature: ObjectId,
-    end: bool,
-) -> ferritecad_topology::generative::Name {
+fn cap_name(feature: ObjectId, end: bool) -> ferritecad_topology::generative::Name {
     naming::cap_name(feature, naming::plane_id(), end)
 }
-fn side_name(
-    _map: &ModelNaming,
-    feature: ObjectId,
-    curve: StableEntityId,
-) -> ferritecad_topology::generative::Name {
+fn side_name(feature: ObjectId, curve: StableEntityId) -> ferritecad_topology::generative::Name {
     naming::side_name(feature, naming::plane_id(), curve)
 }
 
@@ -547,13 +539,9 @@ fn every_named_vertex_lies_on_the_cap_it_claims_and_ends_its_own_sweep_edge() {
         // The cap this side names, taken through the same resolver, so the two
         // durable names are compared with each other rather than with an
         // index into the result.
-        let cap = naming::resolve(
-            &built.map,
-            built.feature,
-            &cap_name(&built.map, built.feature, side),
-        )
-        .expect("a cap resolves")
-        .remove(0);
+        let cap = naming::resolve(&built.map, built.feature, &cap_name(built.feature, side))
+            .expect("a cap resolves")
+            .remove(0);
         let on_cap = picture
             .face_positions
             .get(&cap)
@@ -752,7 +740,7 @@ fn walking_the_profile_from_another_segment_leaves_each_corner_owning_its_vertic
                     for face in naming::resolve(
                         &built.map,
                         built.feature,
-                        &side_name(&built.map, built.feature, *segment),
+                        &side_name(built.feature, *segment),
                     )
                     .expect("side")
                     {
@@ -935,7 +923,7 @@ fn corner_names_survive_an_archive_and_a_session_that_never_built_them() {
     // must not have lost what it already carried.
     for side in [false, true] {
         assert_eq!(
-            naming::resolve(&restored, feature, &cap_name(&restored, feature, side))
+            naming::resolve(&restored, feature, &cap_name(feature, side))
                 .expect("a cap still resolves")
                 .len(),
             1
@@ -1083,7 +1071,7 @@ fn a_cache_hit_and_a_cold_rebuild_name_the_same_corners() {
                 for face in naming::resolve(
                     built.topology(),
                     plate.extrude,
-                    &cap_name(built.topology(), plate.extrude, side),
+                    &cap_name(plate.extrude, side),
                 )
                 .expect("cap")
                 {
@@ -1098,7 +1086,7 @@ fn a_cache_hit_and_a_cold_rebuild_name_the_same_corners() {
                 for face in naming::resolve(
                     built.topology(),
                     plate.extrude,
-                    &side_name(built.topology(), plate.extrude, *segment),
+                    &side_name(plate.extrude, *segment),
                 )
                 .expect("side")
                 {

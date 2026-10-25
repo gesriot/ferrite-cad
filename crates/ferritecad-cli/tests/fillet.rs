@@ -755,21 +755,8 @@ fn tables(path: &Path) -> BTreeMap<String, (Vec<String>, Rows)> {
 
 /// Every SQL cell of the source survives into the copy, and the new cells are
 /// exactly the ones a Fillet is allowed to add: one object, the Body's tip,
-/// the predecessor and tip edges, seven names, capabilities, and the copy's
-/// own timestamp.
+/// the predecessor and tip edges, and the copy's own timestamp.
 fn only_the_fillet_was_added(source: &Path, copy: &Path, body: ferritecad_types::ObjectId) {
-    only_a_fillet_was_added(source, copy, body, 7);
-}
-
-/// [`only_the_fillet_was_added`] with the number of new names and the
-/// capabilities a copy may add as parameters (§28G: eight, and only
-/// `feature.fillet.sequential.v1`).
-fn only_a_fillet_was_added(
-    source: &Path,
-    copy: &Path,
-    body: ferritecad_types::ObjectId,
-    _names: usize,
-) {
     let before = tables(source);
     let after = tables(copy);
     assert_eq!(
@@ -3920,8 +3907,7 @@ mod constraints {
         }
 
         /// The identifiers the two routes each minted, matched by meaning:
-        /// the Fillet, its seven names by role and selection, and the Sketch's
-        /// constraints by their stored position.
+        /// the Fillet, and the Sketch's constraints by their stored position.
         fn minted(a: &Path, b: &Path) -> Vec<(Vec<u8>, Vec<u8>)> {
             let read = |p: &Path| {
                 let d = Document::open_read_only(p).expect("open");
@@ -3945,7 +3931,6 @@ mod constraints {
             let (fb, cb) = read(b);
             assert_eq!(ca.len(), cb.len(), "the same number of constraints");
             let mut pairs = vec![(fb.to_bytes().to_vec(), fa.to_bytes().to_vec())];
-
             for (mine, theirs) in ca.iter().zip(&cb) {
                 pairs.push((theirs.id.to_bytes().to_vec(), mine.id.to_bytes().to_vec()));
             }
@@ -4586,7 +4571,7 @@ mod sequential {
         d.close().expect("close");
         assert!(refs.iter().all(|r| now.contains(r)), "a name was lost");
         crate::names::assert_added(&refs, &now, second_id, 8);
-        only_a_fillet_was_added(&g.source, &copy, body, 8);
+        only_the_fillet_was_added(&g.source, &copy, body);
 
         if part.constrained {
             let sketch = g.plate_sketch_id();

@@ -158,11 +158,7 @@ fn cap_edge_name(
     .expect("one cap boundary")
 }
 
-fn side_name(
-    _map: &ModelNaming,
-    feature: ObjectId,
-    segment: StableEntityId,
-) -> ferritecad_topology::generative::Name {
+fn side_name(feature: ObjectId, segment: StableEntityId) -> ferritecad_topology::generative::Name {
     naming::side_name(feature, naming::plane_id(), segment)
 }
 
@@ -296,7 +292,7 @@ fn each_joint_names_the_edge_where_its_own_two_swept_faces_meet() {
             let faces = naming::resolve(
                 &built.map,
                 built.feature,
-                &side_name(&built.map, built.feature, segment),
+                &side_name(built.feature, segment),
             )
             .expect("the swept faces are named");
             expected.extend(faces);
@@ -390,7 +386,7 @@ fn a_joint_between_two_lines_is_not_confused_with_one_against_the_arc() {
     let arc_faces: BTreeSet<SubShapeHandle> = naming::resolve(
         &built.map,
         built.feature,
-        &side_name(&built.map, built.feature, labels[0]),
+        &side_name(built.feature, labels[0]),
     )
     .expect("the arc raised a face")
     .into_iter()

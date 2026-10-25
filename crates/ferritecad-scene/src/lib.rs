@@ -37,7 +37,7 @@ mod drawing;
 mod export;
 mod prepare;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::path::Path;
 
@@ -77,9 +77,9 @@ pub struct LoadedScene {
     /// What the rebuilt model calls the faces of this picture, if
     /// anything does.
     pub faces: FaceNames,
-    /// What it durably calls the topological edges of this picture.
+    /// What it calls the topological edges of this picture.
     pub edges: EdgeNames,
-    /// What it durably calls the topological vertices of this picture.
+    /// What it calls the topological vertices of this picture.
     pub vertices: VertexNames,
     /// What the solve of each constrained sketch found out, in document order.
     ///
@@ -265,7 +265,7 @@ impl fmt::Debug for EdgeNames {
 }
 
 impl EdgeNames {
-    /// What the document calls this edge, or nothing.
+    /// What the rebuilt model calls this edge, or nothing.
     ///
     /// Answered through the picture that issued the edge, so an edge of a
     /// picture that has been replaced names nothing here however plausible
@@ -284,16 +284,25 @@ impl EdgeNames {
 }
 
 /// A unique output name, with its complete derivation in portable terms.
+///
+/// No handle, session, ordinal or traversal position: the digest is the
+/// identity, and the description is derived from the same naming graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityMeaning {
+    /// The feature whose result holds the entity.
     pub feature: ObjectId,
     pub kind: ferritecad_kernel::SubShapeKind,
+    /// The name's digest.
     pub digest: ContentHash,
+    /// [`ferritecad_topology::ModelNaming::describe`] of the name.
     pub description: String,
 }
 
+/// What the rebuilt model calls one face. See [`EntityMeaning`].
 pub type FaceMeaning = EntityMeaning;
+/// What the rebuilt model calls one edge. See [`EntityMeaning`].
 pub type EdgeMeaning = EntityMeaning;
+/// What the rebuilt model calls one topological vertex. See [`EntityMeaning`].
 pub type VertexMeaning = EntityMeaning;
 
 /// A portable meaning while it is still paired with the deterministic digest
@@ -344,7 +353,7 @@ impl fmt::Debug for VertexNames {
 }
 
 impl VertexNames {
-    /// What the document calls this topological vertex, or nothing.
+    /// What the rebuilt model calls this topological vertex, or nothing.
     ///
     /// Answered through the picture that issued the corner, so a corner of a
     /// picture that has been replaced names nothing here however plausible its
@@ -397,7 +406,7 @@ impl fmt::Debug for FaceNames {
 }
 
 impl FaceNames {
-    /// What the document calls this face, or nothing.
+    /// What the rebuilt model calls this face, or nothing.
     ///
     /// Answered through the picture that issued the face, so a face of a
     /// picture that has been replaced names nothing here however plausible
@@ -796,8 +805,9 @@ struct Picture {
     rebuild: ferritecad_eval::RebuildReport,
     edit_source: Option<ferritecad_document::ExtrudeEditSource>,
     builder: SnapshotBuilder,
-    /// Every primary name with exactly one binding, paired with that entity's handle.
-    named: Vec<(ferritecad_kernel::SubShapeHandle, BoundMeaning)>,
+    /// Every primary name with exactly one binding in a drawn body, by that
+    /// entity's handle.
+    named: BTreeMap<ferritecad_kernel::SubShapeHandle, Vec<BoundMeaning>>,
     /// Where each prepared definition was packed, and the reverse.
     packed: HashMap<usize, usize>,
     drawn: Vec<usize>,
@@ -825,7 +835,7 @@ impl Picture {
             rebuild: Default::default(),
             edit_source: None,
             builder: SnapshotBuilder::new(),
-            named: Vec::new(),
+            named: BTreeMap::new(),
             packed: HashMap::new(),
             drawn: Vec::new(),
             names: BTreeMap::new(),
@@ -836,13 +846,9 @@ impl Picture {
         }
     }
 
-    /// Every meaning bound to `handle`, in the order the document stores them.
+    /// Every meaning bound to `handle`, in model order.
     fn meanings_of(&self, handle: ferritecad_kernel::SubShapeHandle) -> Vec<BoundMeaning> {
-        self.named
-            .iter()
-            .filter(|(named, _)| *named == handle)
-            .map(|(_, meaning)| meaning.clone())
-            .collect()
+        self.named.get(&handle).cloned().unwrap_or_default()
     }
 
     /// Packs one mesh and records what its faces, edges and corners are called.
@@ -907,28 +913,32 @@ impl Picture {
     }
 }
 
+/// The names of the shapes the picture draws. A handle carries its shape, so a
+/// name of an intermediate feature could never be joined to a drawn entity, and
+/// describing it would be work and memory for nothing.
 fn generative_meanings(
     model: &ferritecad_topology::generative::ModelNaming,
-) -> Result<Vec<(ferritecad_kernel::SubShapeHandle, BoundMeaning)>> {
-    let mut named = Vec::new();
+    drawn: &BTreeSet<ferritecad_kernel::ShapeHandle>,
+) -> Result<BTreeMap<ferritecad_kernel::SubShapeHandle, Vec<BoundMeaning>>> {
+    let mut named = BTreeMap::<_, Vec<_>>::new();
     for (feature, names) in &model.features {
+        if !names.shape().is_some_and(|shape| drawn.contains(&shape)) {
+            continue;
+        }
         for (name, entities) in &names.bindings {
             if entities.len() != 1 {
                 continue;
             }
             let entity = *entities.first().expect("one binding");
-            named.push((
-                entity,
-                BoundMeaning {
-                    meaning: EntityMeaning {
-                        feature: *feature,
-                        kind: name.kind,
-                        digest: name.digest,
-                        description: model.describe(*feature, *name)?,
-                    },
-                    identity: name.digest,
+            named.entry(entity).or_default().push(BoundMeaning {
+                meaning: EntityMeaning {
+                    feature: *feature,
+                    kind: name.kind,
+                    digest: name.digest,
+                    description: model.describe(*feature, *name)?,
                 },
-            ));
+                identity: name.digest,
+            });
         }
     }
     Ok(named)
@@ -948,7 +958,13 @@ impl prepare::LoadSink for Picture {
         let mut source = ferritecad_document::ExtrudeEditSource::read(document)?;
         project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
         self.edit_source = Some(source);
-        self.named = generative_meanings(built.topology())?;
+        // The shapes `prepare` tessellates: each body's built tip.
+        let drawn = objects
+            .iter()
+            .filter(|object| matches!(object.payload, ObjectPayload::Body(_)))
+            .filter_map(|object| built.shape(object.id))
+            .collect();
+        self.named = generative_meanings(built.topology(), &drawn)?;
 
         // Read from the records already in hand and the rebuild that has
         // already happened. Document order is the order `objects` is in, and
@@ -1164,8 +1180,8 @@ fn vertex_names(
 /// The exact portable meaning assigned to every packed face, edge and corner.
 ///
 /// One digest for the whole interpretation rather than one per kind. What
-/// binds a picture's transient identities is what the document says about it,
-/// and that is faces, edges and corners together: moving one stored name from
+/// binds a picture's transient identities is what the model says about it,
+/// and that is faces, edges and corners together: moving one name from
 /// one face to another, from one edge to another, or from one corner to
 /// another, must make every identity issued under the old reading stale, and so
 /// must adding a corner name to a picture whose triangles did not change.
@@ -4750,12 +4766,6 @@ mod tests {
         let document = Document::open_read_only(path).expect("opens");
         let built = ferritecad_eval::rebuild_cold(&document, kernel, &OperationContext::default())
             .expect("rebuilds");
-        let named = generative_meanings(built.topology())
-            .expect("names")
-            .into_iter()
-            .filter(|(entity, _)| entity.kind() == ferritecad_kernel::SubShapeKind::Face)
-            .map(|(entity, bound)| (entity, bound.identity))
-            .collect();
         let body = document
             .objects()
             .expect("reads objects")
@@ -4763,6 +4773,12 @@ mod tests {
             .find(|object| matches!(object.payload, ObjectPayload::Body(_)))
             .expect("the plate has a body");
         let shape = built.shape(body.id).expect("the body was built");
+        let named = generative_meanings(built.topology(), &BTreeSet::from([shape]))
+            .expect("names")
+            .into_iter()
+            .filter(|(entity, _)| entity.kind() == ferritecad_kernel::SubShapeKind::Face)
+            .flat_map(|(entity, bound)| bound.into_iter().map(move |b| (entity, b.identity)))
+            .collect();
         let mesh = kernel
             .tessellate(
                 shape,
@@ -5133,7 +5149,8 @@ mod tests {
             .extend(second);
         let ambiguous = &model.features.values().next().expect("feature").bindings[&pair[0]];
         assert_eq!(ambiguous.len(), 2);
-        let bound = generative_meanings(&model).expect("descriptions");
+        let drawn = model.features.values().filter_map(|f| f.shape()).collect();
+        let bound = generative_meanings(&model, &drawn).expect("descriptions");
         assert!(bound.iter().all(|(entity, _)| !ambiguous.contains(entity)));
         assert_eq!(bound.len(), 24, "the other exact names remain available");
         built.release_all(&mut kernel);

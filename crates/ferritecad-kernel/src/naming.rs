@@ -54,6 +54,19 @@ impl NamingOperation {
             Self::Chamfer => 4,
         }
     }
+
+    /// The operation [`Self::tag`] encodes as `tag`.
+    pub fn from_tag(tag: u8) -> Option<Self> {
+        [
+            Self::Extrude,
+            Self::Revolve,
+            Self::Cut,
+            Self::Fillet,
+            Self::Chamfer,
+        ]
+        .into_iter()
+        .find(|operation| operation.tag() == tag)
+    }
 }
 
 /// Every face, edge and vertex of every input has an account. Deleted refers

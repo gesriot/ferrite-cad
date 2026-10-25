@@ -447,7 +447,7 @@ fn native_early_cut_navigation_apply_history_save_matches_existing_cli() {
     );
     let peer = root.path().join("cli.fcad");
     crate::sessions::tests::cut::peer(&path, &r, root.path(), &peer);
-    crate::sessions::tests::cut::same_sql(&accepted, &peer, &path);
+    crate::sessions::tests::cut::same_sql(&accepted, &peer);
     let exports = export_bytes(&accepted, &path, root.path(), "unsaved");
     assert_eq!(exports, peer_bytes(&peer, root.path(), "cli"));
     let volume = crate::sessions::tests::cut::cold(&accepted);
@@ -473,7 +473,7 @@ fn native_early_cut_navigation_apply_history_save_matches_existing_cli() {
     assert!(w.save(SaveTarget::InPlace).published);
     let before = root.path().join("original.fcad");
     std::fs::write(&before, &original).expect("original copy");
-    crate::sessions::tests::cut::same_sql(&path, &peer, &before);
+    crate::sessions::tests::cut::same_sql(&path, &peer);
     if let Some(dir) = std::env::var_os("FCAD_31A_ARTIFACTS") {
         let dir = PathBuf::from(dir);
         std::fs::create_dir_all(&dir).expect("artifacts");
@@ -665,7 +665,7 @@ fn compare_cut_files(before: &Path, saved: &Path, stl: &Path, fbx: &Path, undo: 
     };
     let peer = peer_root.path().join("early.fcad");
     crate::sessions::tests::cut::peer(before, &request, peer_root.path(), &peer);
-    crate::sessions::tests::cut::same_sql(saved, &peer, before);
+    crate::sessions::tests::cut::same_sql(saved, &peer);
     let actual = (
         std::fs::read(stl).expect("STL"),
         std::fs::read(fbx).expect("FBX"),

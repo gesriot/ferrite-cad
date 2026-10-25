@@ -120,46 +120,44 @@ pub enum Selected<'a> {
         /// The identifier the document stores for it.
         object: &'a str,
     },
-    /// One face of a body, named by what the document stores about it.
+    /// One face of a body, named by the rebuilt model.
     ///
-    /// Only durable terms reach here. A face the document does not name is not
+    /// Only durable terms reach here. A face without a name of its own is not
     /// selectable as a face at all, so there is no case for one.
     Face {
         /// What the body is called, if the document called it anything.
         name: Option<&'a str>,
         /// The identifier the document stores for the body.
         object: &'a str,
-        /// Every stored reference that names exactly this face, in the order
-        /// the document stores them. More than one is normal and is shown as
-        /// more than one: which of them is "the" name is not this window's
-        /// decision to make.
+        /// Every name that selects exactly this face, in the order given. Each
+        /// is shown: which of them is "the" name is not this window's decision
+        /// to make.
         names: &'a [TopologyName<'a>],
     },
-    /// One topological edge of a native body, named exactly by the document.
+    /// One topological edge of a native body, named exactly by the rebuilt
+    /// model.
     ///
-    /// Only durable terms reach here, exactly as for a face: an edge the
-    /// document does not name is not selectable as an edge at all.
+    /// Only durable terms reach here, exactly as for a face: an edge without a
+    /// name of its own is not selectable as an edge at all.
     Edge {
         /// What the body is called, if the document called it anything.
         name: Option<&'a str>,
         /// The identifier the document stores for the body.
         object: &'a str,
-        /// Every stored reference that names exactly this edge, in the order
-        /// the document stores them.
+        /// Every name that selects exactly this edge, in the order given.
         names: &'a [TopologyName<'a>],
     },
-    /// One topological vertex of a native body, named exactly by the
-    /// document.
+    /// One topological vertex of a native body, named exactly by the rebuilt
+    /// model.
     ///
     /// Only durable terms reach here, exactly as for a face and an edge: a
-    /// corner the document does not name is not selectable as a corner at all.
+    /// corner without a name of its own is not selectable as a corner at all.
     Vertex {
         /// What the body is called, if the document called it anything.
         name: Option<&'a str>,
         /// The identifier the document stores for the body.
         object: &'a str,
-        /// Every stored reference that names exactly this corner, in the order
-        /// the document stores them.
+        /// Every name that selects exactly this corner, in the order given.
         names: &'a [TopologyName<'a>],
     },
     /// A definition inside a file this document imported.
@@ -194,36 +192,39 @@ pub struct GeometryUnavailable<'a> {
 
 /// One durable name for an entity, already turned into words by the caller.
 ///
-/// Text rather than document types, for the same reason the rest of this
-/// module deals in text: a panel that could name a modelling derivation would be a
-/// panel that knows what a document is.
+/// Text rather than modelling types, for the same reason the rest of this
+/// module deals in text: a panel that could read a derivation would be a panel
+/// that knows what a model is.
 ///
-/// One type for a face, an edge and a vertex. What a document stores about any
-/// of them is the same six terms, and three structures would be three formats
-/// to keep in step; which kind is meant is already in `expected_kind` and in
-/// the role.
+/// One type for a face, an edge and a vertex. The model says the same four
+/// things about any of them, and three structures would be three formats to
+/// keep in step; which kind is meant is already in `kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TopologyName<'a> {
+    /// The feature whose result holds the entity.
     pub feature: &'a str,
+    /// Face, edge or vertex.
     pub kind: &'a str,
+    /// The name's digest, which is its identity.
     pub digest: &'a str,
+    /// How the name was derived, down to its sketch and cap roots.
     pub description: &'a str,
 }
 
-/// What a document calls one face. See [`TopologyName`].
+/// What the model calls one face. See [`TopologyName`].
 pub type FaceName<'a> = TopologyName<'a>;
 
-/// What a document calls one edge. See [`TopologyName`].
+/// What the model calls one edge. See [`TopologyName`].
 pub type EdgeName<'a> = TopologyName<'a>;
 
-/// What a document calls one topological vertex. See [`TopologyName`].
+/// What the model calls one topological vertex. See [`TopologyName`].
 pub type VertexName<'a> = TopologyName<'a>;
 
-/// Every stored name, in the order the document stores them.
+/// Every name, in the order given.
 ///
-/// One statement for a face, an edge and a vertex: what the document says
-/// about any of them is the same six terms, and three copies of this loop
-/// would be three formats to keep in step.
+/// One statement for a face, an edge and a vertex: the model says the same
+/// four things about any of them, and three copies of this loop would be three
+/// formats to keep in step.
 fn push_names(rows: &mut Vec<(&'static str, String)>, names: &[TopologyName<'_>]) {
     for name in names {
         rows.push(("Feature", name.feature.to_owned()));
@@ -2083,7 +2084,6 @@ mod tests {
             object: "018f2b7c-0000-7000-8000-000000000001",
             names: &[FaceName {
                 digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-
                 feature: "018f2b7c-0000-7000-8000-000000000002",
                 kind: "face",
                 description: "generated Extrude from end cap",
@@ -2135,14 +2135,12 @@ mod tests {
             names: &[
                 VertexName {
                     digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-
                     feature: "018f2b7c-0000-7000-8000-000000000002",
                     kind: "vertex",
                     description: "boundary from start cap and curves A and B",
                 },
                 VertexName {
                     digest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-
                     feature: "018f2b7c-0000-7000-8000-000000000002",
                     kind: "vertex",
                     description: "boundary from end cap and curves A and B",
@@ -2219,14 +2217,12 @@ mod tests {
         let names = [
             FaceName {
                 digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-
                 feature: "018f2b7c-0000-7000-8000-000000000002",
                 kind: "face",
                 description: "generated Extrude from end cap",
             },
             FaceName {
                 digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-
                 feature: "018f2b7c-0000-7000-8000-000000000002",
                 kind: "face",
                 description: "generated Extrude from end cap",

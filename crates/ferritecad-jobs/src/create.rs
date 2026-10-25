@@ -440,9 +440,7 @@ fn taken(destination: &Path, advice: &str) -> ferritecad_types::CadError {
 /// Puts the sample part into a document that has nothing in it.
 ///
 /// The smallest model that exercises the whole document layer: a datum plane,
-/// a rectangular profile on it, and an extrusion producing a body — plus the
-/// derived topology names for that extrusion's caps and the faces raised
-/// from the first segment of its profile.
+/// a rectangular profile on it, and an extrusion producing a body.
 ///
 /// Width and depth are the sketch's coordinates and the height is the
 /// extrusion's blind distance, all in millimetres. There are no `Parameter`

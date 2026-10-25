@@ -20,7 +20,7 @@ pub fn print_topology(args: DocumentArgs) -> Result<ExitCode> {
     } else {
         EXIT_FAILED.into()
     };
-    let text = report(&built);
+    let text = report(&built, true);
     built.release_all(&mut kernel);
     print!("{}", text?);
     Ok(status)
@@ -30,14 +30,18 @@ pub(crate) fn inspect_names(document: &Document) -> String {
     let result = (|| {
         let mut kernel = OcctKernel::new()?;
         let built = rebuild_cold(document, &mut kernel, &OperationContext::default())?;
-        let text = report(&built);
+        let text = report(&built, true);
         built.release_all(&mut kernel);
         text
     })();
     result.unwrap_or_else(|error| format!("topology names unavailable: {error}\n"))
 }
 
-pub(crate) fn report(built: &RebuildResult) -> Result<String> {
+/// Every feature's names in order, each with its derivation when `described`.
+///
+/// `rebuild --cold` leaves the derivations out: they list every node of each
+/// name's graph, and a model of fifty bodies would print megabytes of them.
+pub(crate) fn report(built: &RebuildResult, described: bool) -> Result<String> {
     let model = built.topology();
     let mut text = String::from("topology names\n");
     for (feature, names) in &model.features {
@@ -51,8 +55,10 @@ pub(crate) fn report(built: &RebuildResult) -> Result<String> {
                 entities.len()
             )
             .expect("writing to a String cannot fail");
-            writeln!(text, "      {}", model.describe(*feature, *name)?)
-                .expect("writing to a String cannot fail");
+            if described {
+                writeln!(text, "      {}", model.describe(*feature, *name)?)
+                    .expect("writing to a String cannot fail");
+            }
         }
     }
     let report = built.report();
@@ -97,14 +103,14 @@ mod tests {
                 .iter()
                 .all(|event| event.outcome == CacheOutcome::Miss)
         );
-        let expected = report(&cold).expect("cold report");
+        let expected = report(&cold, true).expect("cold report");
         assert_eq!(expected.matches(" entities=1").count(), 26);
         cold.release_all(kernel);
         let (warm, hits) =
             rebuild_cached(&document, kernel, &mut cache, &context).expect("cached rebuild");
         assert!(warm.all_built());
         assert!(hits.iter().all(|event| event.outcome == CacheOutcome::Hit));
-        assert_eq!(report(&warm).expect("warm report"), expected);
+        assert_eq!(report(&warm, true).expect("warm report"), expected);
         warm.release_all(kernel);
     }
 

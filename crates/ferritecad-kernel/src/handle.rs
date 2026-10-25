@@ -112,9 +112,9 @@ pub enum FaceSurface {
 ///
 /// **Never persisted**, for the same reason as [`ShapeHandle`], and with more
 /// at stake: an index into a shape's faces is exactly the reference that
-/// silently retargets when anything upstream changes. The document stores what
-/// a face *is* — the cap of this extrusion, the side raised from that profile
-/// segment — and the topology layer re-derives this handle on every rebuild.
+/// silently retargets when anything upstream changes. A face is named by what
+/// it *is* — the cap of this extrusion, the side raised from that profile
+/// curve — and the topology layer re-derives this handle on every rebuild.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SubShapeHandle {
     shape: ShapeHandle,

@@ -87,7 +87,7 @@ fn chain(
             before,
             "source touched"
         );
-        only_a_fillet_was_added(&source, &out, uuid(&json!(g.body_id())), 7 + k);
+        only_the_fillet_was_added(&source, &out, uuid(&json!(g.body_id())));
         steps.push(Step {
             corner: corners[at],
             radius: r,

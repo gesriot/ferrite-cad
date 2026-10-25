@@ -121,9 +121,9 @@ fn floor_names(path: &Path, feature: ObjectId) -> crate::names::Names {
 
 /// The SQL allowlist of one Cut edit: the tool Sketch and Cut payload/hash,
 /// the Cut's `schema_version` column when its end changes layout, the one
-/// `feature.through-all.v1` index row when first needed, the added refs and
+/// `feature.through-all.v1` index row when first needed, and
 /// `meta.modified_at`. Every other cell and every rowid is unchanged.
-fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation, _added: usize) {
+fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation) {
     use rusqlite::types::Value as Sql;
     let a = tables(source);
     let b = tables(copy);
@@ -348,7 +348,7 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                     edit(&source, &copy, saved, changed, 0);
                     assert_eq!(history::ordered(&copy)[index].extent, changed.extent);
                     assert!(!floor_names(&copy, saved.feature).is_empty());
-                    only_the_cut(&source, &copy, saved, later);
+                    only_the_cut(&source, &copy, saved);
                     assert_eq!(floor_names(&copy, saved.feature).len(), later);
                     let mut all = tools.clone();
                     all[index] = changed;
@@ -367,7 +367,7 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                         ..tool
                     };
                     edit(&source, &copy, saved, moved, 0);
-                    only_the_cut(&source, &copy, saved, 0);
+                    only_the_cut(&source, &copy, saved);
                 }
                 CutDepth::Blind { depth_mm } if depth_mm == SIZE[2] => {
                     // Blind through -> ThroughAll keeps every name; it stays
@@ -379,7 +379,7 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                     };
                     edit(&source, &copy, saved, changed, 0);
                     assert!(floor_names(&copy, saved.feature).is_empty());
-                    only_the_cut(&source, &copy, saved, 0);
+                    only_the_cut(&source, &copy, saved);
                     let mut all = tools.clone();
                     all[index] = changed;
                     let grown = root.path().join(format!("intent-{index}-grown.fcad"));
@@ -394,7 +394,7 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                     );
                     let back = root.path().join(format!("back-{index}.fcad"));
                     edit(&copy, &back, &history::ordered(&copy)[index], tool, 0);
-                    only_the_cut(&copy, &back, &history::ordered(&copy)[index], 0);
+                    only_the_cut(&copy, &back, &history::ordered(&copy)[index]);
                 }
                 CutDepth::Blind { .. } => {
                     assert!(!floor_names(&source, saved.feature).is_empty());
@@ -434,7 +434,7 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
             },
             0,
         );
-        only_the_cut(&blind, &copy, saved, 0);
+        only_the_cut(&blind, &copy, saved);
         assert_eq!(std::fs::read(&source).expect("source"), original);
     }
 }

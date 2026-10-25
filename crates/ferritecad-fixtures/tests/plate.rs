@@ -46,7 +46,7 @@ fn a_warm_rebuild_resolves_exactly_what_a_cold_one_does() {
     let mut cold_kernel = MockKernel::new();
     let cold = rebuild_cold(&document, &mut cold_kernel, &context).expect("rebuilds");
     let cold_manifest = render_manifest(&document, &cold, &mut cold_kernel).expect("renders");
-    let cold_faces = faces(&document, &cold);
+    let cold_faces = faces(&cold);
     cold.release_all(&mut cold_kernel);
 
     // A second session fills the sidecar.
@@ -71,7 +71,7 @@ fn a_warm_rebuild_resolves_exactly_what_a_cold_one_does() {
         "a warm rebuild must be indistinguishable from a cold one"
     );
 
-    let warm_faces = faces(&document, &warm);
+    let warm_faces = faces(&warm);
     assert_eq!(warm_faces.len(), 6, "four sides and two caps");
     assert_eq!(
         warm_faces
@@ -98,7 +98,7 @@ fn changing_the_height_keeps_every_name_and_no_handle() {
 
     let before = rebuild_cold(&document, &mut kernel, &context).expect("rebuilds");
     let before_manifest = render_manifest(&document, &before, &mut kernel).expect("renders");
-    let before_faces = faces(&document, &before);
+    let before_faces = faces(&before);
     before.release_all(&mut kernel);
 
     set_height(&mut document, 25.0).expect("the plate is made taller");
@@ -119,7 +119,7 @@ fn changing_the_height_keeps_every_name_and_no_handle() {
         "a taller plate has taller faces; if these match, nothing was rebuilt"
     );
 
-    let after_faces = faces(&document, &after);
+    let after_faces = faces(&after);
     assert_eq!(after_faces.len(), 6);
     assert_ne!(
         after_faces, before_faces,
@@ -202,10 +202,7 @@ fn open_cache(
 }
 
 /// Every face named by the rebuilt model, in a stable order.
-fn faces(
-    _document: &ferritecad_document::Document,
-    built: &ferritecad_eval::RebuildResult,
-) -> Vec<String> {
+fn faces(built: &ferritecad_eval::RebuildResult) -> Vec<String> {
     let mut all: Vec<String> = built
         .topology()
         .features

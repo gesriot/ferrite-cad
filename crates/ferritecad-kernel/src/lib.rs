@@ -19,9 +19,9 @@
 //! [`ShapeHandle`] and [`SubShapeHandle`] are tokens a kernel session hands out
 //! and only that session understands. They implement no serialisation, they
 //! carry the identity of the session that issued them, and a session rejects a
-//! handle it did not issue. The durable half of naming — semantic roles and
-//! selection rules — lives in the document; this crate deliberately cannot
-//! express it.
+//! handle it did not issue. The durable half of naming — names derived from
+//! feature inputs — lives in `ferritecad-topology`; this crate deliberately
+//! cannot express it.
 //!
 //! # These are not the document's types
 //!

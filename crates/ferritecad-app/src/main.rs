@@ -2132,14 +2132,14 @@ struct LiveScene<P> {
     /// What each mesh of `prepared` is: an identity a document could store,
     /// and the facts a person needs to recognise it.
     catalogue: Vec<CatalogueEntry>,
-    /// What the document durably calls each face of `prepared`, which is what
+    /// What the rebuilt model calls each face of `prepared`, which is what
     /// makes a face selectable as a face rather than as the part it is on.
     faces: FaceNames,
-    /// What the document durably calls the topological edges of `prepared`.
+    /// What the rebuilt model calls the topological edges of `prepared`.
     /// Beside `faces` and replaced with it, for the same reason: what a name
     /// means belongs to the picture it was read against.
     edges: EdgeNames,
-    /// And what it durably calls the topological vertices. Carried on the same
+    /// And what it calls the topological vertices. Carried on the same
     /// terms as the two above: a name read against one picture says nothing
     /// about the next, so it is replaced whole rather than kept.
     ///
@@ -2718,7 +2718,7 @@ fn hover_request(row: Option<usize>, interface_has_pointer: bool, question: Hove
 struct Words {
     identities: Vec<String>,
     faces: Vec<TopologyWords>,
-    /// The same six terms for a chosen edge. One type, three lists: what is
+    /// The same four terms for a chosen edge. One type, three lists: what is
     /// chosen is one thing, so only one of these is ever non-empty.
     edges: Vec<TopologyWords>,
     /// And for a chosen topological vertex, on the same terms.

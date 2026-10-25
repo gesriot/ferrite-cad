@@ -235,9 +235,9 @@ fn created(root: &Path, points: &[[f64; 2]], name: &str) -> PathBuf {
 }
 
 /// The SQL allowlist of one Cut parameter edit: the tool Sketch and Cut
-/// payload/hash (and the Cut's layout column when its end changes form), added
-/// refs and `meta.modified_at`. Every other cell, rowid and byte is kept.
-fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation, _added: usize) {
+/// payload/hash (and the Cut's layout column when its end changes form) and
+/// `meta.modified_at`. Every other cell, rowid and byte is kept.
+fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation) {
     use rusqlite::types::Value as Sql;
     let a = tables(source);
     let b = tables(copy);
@@ -321,7 +321,7 @@ fn native_l_profile_history_matrix() {
                 ..tool
             };
             edit(&source, &copy, saved, changed, 0);
-            only_the_cut(&source, &copy, saved, 0);
+            only_the_cut(&source, &copy, saved);
             let mut all = tools.clone();
             all[index] = changed;
             measured(&copy, &all, &L, H);

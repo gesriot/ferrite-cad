@@ -82,7 +82,7 @@ fn names(document: &Document) -> ModelNaming {
             .iter()
             .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Miss)
     );
-    assert_same_names(document, &names, prime.topology());
+    assert_same_names(&names, prime.topology());
     prime.release_all(&mut kernel);
     let mut reader = OcctKernel::new().expect("new session");
     let (restored, events) = ferritecad_eval::rebuild_cached(
@@ -98,7 +98,7 @@ fn names(document: &Document) -> ModelNaming {
             .iter()
             .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit)
     );
-    assert_same_names(document, &names, restored.topology());
+    assert_same_names(&names, restored.topology());
     for named in restored.topology().features.values() {
         assert!(
             reader
@@ -705,7 +705,7 @@ fn refuse_missing_wrong_kind_and_ambiguous_names_without_picking_a_neighbour() {
     );
 }
 
-fn assert_same_names(_document: &Document, a: &ModelNaming, b: &ModelNaming) {
+fn assert_same_names(a: &ModelNaming, b: &ModelNaming) {
     assert_eq!(
         a.features.keys().collect::<Vec<_>>(),
         b.features.keys().collect::<Vec<_>>()
@@ -850,7 +850,7 @@ fn cold_operations_after_restored_predecessors_match_fully_cold_chains() {
         );
         let cold = rebuild_cold(&doc, &mut kernel, &OperationContext::default()).expect("cold");
         assert!(cold.all_built());
-        assert_same_names(&doc, cold.topology(), warm.topology());
+        assert_same_names(cold.topology(), warm.topology());
         warm.release_all(&mut kernel);
         cold.release_all(&mut kernel);
         assert_eq!(kernel.live_shape_count(), 0);

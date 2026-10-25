@@ -324,7 +324,6 @@ impl Document {
         conn.execute_batch("BEGIN")
             .map_err(|e| CadError::io("starting document snapshot", e))?;
         schema::check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")?;
-
         schema::check_document_tables(&conn)?;
         let meta = read_meta(&conn)?;
         let document = Self {
@@ -336,7 +335,6 @@ impl Document {
             },
         };
         document.objects()?;
-
         Ok(document)
     }
 

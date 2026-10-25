@@ -181,6 +181,6 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
         writeln!(out, "{}", line.trim_end()).expect("writing to a String cannot fail");
     }
 
-    out.push_str(&crate::topology::report(built)?);
+    out.push_str(&crate::topology::report(built, false)?);
     Ok(out)
 }

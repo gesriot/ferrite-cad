@@ -151,7 +151,7 @@ pub(super) fn sql(path: &Path) -> std::collections::BTreeMap<String, Vec<String>
     }
     result
 }
-pub(super) fn same_sql(ours: &Path, theirs: &Path, _before: &Path) {
+pub(super) fn same_sql(ours: &Path, theirs: &Path) {
     assert_eq!(refs(ours), refs(theirs), "same derived names");
     assert_eq!(sql(ours), sql(theirs), "every SQL cell except modified_at");
 }
@@ -463,8 +463,8 @@ fn gate(count: usize, height: bool, name: &str) {
                 assert_eq!(new, old);
             }
         }
-        same_sql(&applied, &exact, &current);
-        same_sql(&applied, &independent, &current);
+        same_sql(&applied, &exact);
+        same_sql(&applied, &independent);
         accepted.push(applied);
         peer_before = independent;
     }
@@ -493,7 +493,7 @@ fn gate(count: usize, height: bool, name: &str) {
         assert_eq!(sql(&s.export_path().expect("Redo")), sql(expected));
     }
     saved(&mut s, SaveTarget::InPlace);
-    same_sql(&source, &peer_before, &before_cut);
+    same_sql(&source, &peer_before);
     cold(&source);
     let reopened = crate::sessions::test_open::open(&source).expect("reopen");
     assert!(!reopened.is_dirty());
@@ -664,7 +664,7 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     assert!(matches!(apply(&mut s, &r), Edited::Show(_)));
     form.finish_session_change();
     let accepted = s.export_path().expect("floor");
-    same_sql(&accepted, &peer_out, &before);
+    same_sql(&accepted, &peer_out);
     let added: Vec<_> = refs(&accepted)
         .into_iter()
         .filter(|r| r.1 == "face" && !refs(&before).contains(r))
@@ -949,8 +949,8 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
     make(&middle, 2, 31.5, 2., None, &last);
     let branch = tmp.path().join("branch.fcad");
     make(&middle, 2, 31.625, 2.125, None, &branch);
-    same_sql(&root.join("saved.fcad"), &last, &source);
-    same_sql(&root.join("branch.fcad"), &branch, &source);
+    same_sql(&root.join("saved.fcad"), &last);
+    same_sql(&root.join("branch.fcad"), &branch);
     assert_eq!(
         std::fs::read(root.join("after-saveas.fcad")).expect("previous source"),
         std::fs::read(root.join("saved.fcad")).expect("saved")
@@ -976,12 +976,10 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
     control("missing", &|| {
         assert!(root.join("absent-real-output.stl").is_file());
     });
-    control("original instead of save", &|| {
-        same_sql(&source, &last, &source)
-    });
-    control("wrong chosen Cut", &|| same_sql(&middle, &last, &source));
+    control("original instead of save", &|| same_sql(&source, &last));
+    control("wrong chosen Cut", &|| same_sql(&middle, &last));
     control("wrong branch", &|| {
-        same_sql(&root.join("saved.fcad"), &branch, &source)
+        same_sql(&root.join("saved.fcad"), &branch)
     });
     control("stale export", &|| {
         assert_eq!(actual, peer_bytes(&source, tmp.path(), "wrong-export"))
@@ -995,7 +993,7 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
     )
     .expect("corrupt hash");
     drop(db);
-    control("raw hash", &|| same_sql(&corrupt, &last, &source));
+    control("raw hash", &|| same_sql(&corrupt, &last));
     // New refs may map only their UUID, never owner/producer/role/link cells.
     println!("FCAD_30F_GUI_COMPARE_OK negative_controls=6 all_SQL_cells=true");
 }

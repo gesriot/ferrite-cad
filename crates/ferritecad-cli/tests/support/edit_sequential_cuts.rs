@@ -61,7 +61,7 @@ pub(super) fn edit(
     )
 }
 
-pub(super) fn only_numbers(source: &Path, copy: &Path, saved: &CutObservation, _added: usize) {
+pub(super) fn only_numbers(source: &Path, copy: &Path, saved: &CutObservation) {
     let a = tables(source);
     let b = tables(copy);
     assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
@@ -163,7 +163,7 @@ fn native_either_cut_edits_all_numbers_in_all_four_pairs() {
                 } else {
                     0
                 };
-                only_numbers(&source, &copy, &saved, adds);
+                only_numbers(&source, &copy, &saved);
                 let volume = measure(&copy, changed, None);
                 // Transfer the actual old sidecar to the identity-preserving
                 // copy, so stale entries are present and invalidation is tested.
@@ -220,7 +220,7 @@ fn native_either_cut_edits_all_numbers_in_all_four_pairs() {
                 }
                 let again = root.path().join(format!("again-{index}-{mode}.fcad"));
                 edit(&copy, &again, &selected(&copy, index), changed[index], 0);
-                only_numbers(&copy, &again, &saved, 0);
+                only_numbers(&copy, &again, &saved);
                 assert_eq!(std::fs::read(&source).expect("bytes"), original);
             }
         }

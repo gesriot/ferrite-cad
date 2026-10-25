@@ -2,6 +2,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
+use ferritecad_kernel::NamingOperation;
 use ferritecad_types::{CadError, ObjectId, Result};
 
 use crate::derivation::Derivation;
@@ -57,15 +58,9 @@ impl ModelNaming {
                 } => {
                     text.push_str(tag);
                     if matches!(*tag, "generated" | "modified") {
-                        let operation = match extra {
-                            0 => "Extrude",
-                            1 => "Revolve",
-                            2 => "Cut",
-                            3 => "Fillet",
-                            4 => "Chamfer",
-                            _ => return Err(CadError::topology("unknown derivation operation")),
-                        };
-                        write!(text, " {operation}").expect("writing to a String cannot fail");
+                        let operation = NamingOperation::from_tag(*extra)
+                            .ok_or_else(|| CadError::topology("unknown derivation operation"))?;
+                        write!(text, " {operation:?}").expect("writing to a String cannot fail");
                     } else if *tag == "curve-end" {
                         text.push_str(if *extra == 0 { " start" } else { " end" });
                     }

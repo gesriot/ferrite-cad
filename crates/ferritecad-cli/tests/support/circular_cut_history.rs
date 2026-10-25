@@ -70,12 +70,7 @@ fn native_history_origins_floors_sql_and_old_sidecars() {
             changed[index].extent = CutDepth::Blind { depth_mm: 2.75 };
             let copy = root.path().join(format!("edit-{n}-{index}.fcad"));
             edit(&source, &copy, &saved[index], changed[index], 0);
-            let adds = if tools[index].extent.blind_depth_mm().expect("blind") == 12. {
-                n - index
-            } else {
-                0
-            };
-            only_numbers(&source, &copy, &saved[index], adds);
+            only_numbers(&source, &copy, &saved[index]);
             let cold = measure_history(&copy, &changed, None);
             std::fs::copy(
                 source.with_extension("fcad-cache"),
@@ -94,7 +89,7 @@ fn native_history_origins_floors_sql_and_old_sidecars() {
             let current = ordered(&copy);
             let again = root.path().join(format!("again-{n}-{index}.fcad"));
             edit(&copy, &again, &current[index], changed[index], 0);
-            only_numbers(&copy, &again, &current[index], 0);
+            only_numbers(&copy, &again, &current[index]);
             let through = root.path().join(format!("through-{n}-{index}.fcad"));
             let floors = crate::names::floor_names(
                 &Document::open_read_only(&copy).expect("copy"),

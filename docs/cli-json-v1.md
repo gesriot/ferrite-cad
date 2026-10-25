@@ -2105,7 +2105,7 @@ fields, with refusal `UnbuiltBody`. Fallback geometry is never exported.
 
 `inspect` (text), `rebuild --cold` and `print-topology` list every feature's
 primary names in feature/kind/digest order. Each entry has `kind digest
-entities=N`, followed by the complete derivation: generated/modified/merge or
+entities=N`; `inspect` and `print-topology` follow it with the complete derivation: generated/modified/merge or
 boundary, feature and operation, and all inputs down to saved curves, curve
 ends and cap roots. An entity count above one exposes ambiguity. Cold and
 cached rebuilds produce the same text. These descriptions are not persisted

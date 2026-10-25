@@ -612,15 +612,9 @@ fn tables(path: &Path) -> BTreeMap<String, (Vec<String>, Rows)> {
 /// operation is allowed to change.
 ///
 /// The allow-list, stated once: the payload and payload hash of exactly the two
-/// selected `objects` rows, the copy's own `meta.modified_at`, and — only when
-/// the edit turns a hole back into a pocket — one newly derived floor name. No
-/// row of any table may disappear, and nothing else may be altered.
-fn only_the_numbers_moved(
-    source: &Path,
-    copy: &Path,
-    edited: &[ferritecad_types::ObjectId],
-    _added_refs: usize,
-) {
+/// selected `objects` rows and the copy's own `meta.modified_at`. No row of any
+/// table may disappear, and nothing else may be altered.
+fn only_the_numbers_moved(source: &Path, copy: &Path, edited: &[ferritecad_types::ObjectId]) {
     let before = tables(source);
     let after = tables(copy);
     assert_eq!(
@@ -657,7 +651,6 @@ fn only_the_numbers_moved(
                     }
                 }
             }
-
             "meta" => {
                 for (a, b) in rows.iter().zip(mine) {
                     for (i, cell) in a.iter().enumerate() {
@@ -787,7 +780,7 @@ fn native_the_centre_radius_and_depth_move_alone_and_together() {
             .find(|(_, previous, _)| previous.is_some())
             .expect("the cut")
             .0;
-        only_the_numbers_moved(&f.source, &copy, &[tool, cut], 0);
+        only_the_numbers_moved(&f.source, &copy, &[tool, cut]);
         let catalog = identities_survived(&f.source, &copy, 0);
         let saved = cut_facts::observed(&copy).remove(0);
         assert_eq!(saved.center_mm, center);
@@ -895,7 +888,7 @@ fn native_holes_and_pockets_can_transition_when_no_feature_consumes_the_floor() 
         .find(|(_, previous, _)| previous.is_some())
         .expect("the cut")
         .0;
-    only_the_numbers_moved(&hole.source, &pocket, &[tool, cut], 1);
+    only_the_numbers_moved(&hole.source, &pocket, &[tool, cut]);
     let a = analytic(&pocket);
     assert_eq!(a.faces, 8, "a floor appeared");
     assert!(
@@ -1196,7 +1189,7 @@ fn native_unknown_tables_survive_and_a_stored_trigger_stops_the_edit() {
         .0;
     // The whole-table comparison covers the extension table by construction;
     // asserting it is here so the reason it is covered is not an accident.
-    only_the_numbers_moved(&f.source, &copy, &[tool, cut], 0);
+    only_the_numbers_moved(&f.source, &copy, &[tool, cut]);
     assert!(
         tables(&copy).contains_key("extra_data"),
         "the table vanished"
