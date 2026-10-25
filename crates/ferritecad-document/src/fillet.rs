@@ -3,10 +3,7 @@
 use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
 
 use crate::cut_boundary::CutBoundary;
-use crate::{
-    CapSide, EntityKind, Fillet, FilletEdge, ObjectPayload, ObjectRecord, SelectionRule,
-    SemanticRole, Sketch, SketchGeometry, TopologyRef,
-};
+use crate::{Fillet, FilletEdge, ObjectPayload, ObjectRecord, Sketch, SketchGeometry};
 
 /// The smallest radius this build rounds an edge to, in millimetres.
 ///
@@ -315,97 +312,6 @@ pub fn corner_for(corners: &[FilletCorner], edge: FilletEdge) -> Result<FilletCo
             ))
         })
 }
-/// What the finished part is called after one fillet: the new face under the
-/// edge it replaced, and every face the plate had, as the fillet leaves it,
-/// qualified by the plate's own Extrude.
-pub(crate) fn fillet_references(
-    feature: ObjectId,
-    base: ObjectId,
-    joint: ProfileJoint,
-    profile_segments: &[StableEntityId],
-) -> Vec<TopologyRef> {
-    edge_operation_references(
-        feature,
-        base,
-        profile_segments,
-        SemanticRole::EdgeFilletFace {
-            edge_feature: base,
-            joint,
-        },
-    )
-}
-
-/// §29A: what a single-edge operation on a plate names: its own new face (the
-/// role says what kind), and every cap and side the plate had, as the
-/// operation leaves it, qualified by the plate's own Extrude. The Fillet and
-/// the Chamfer differ only in the first.
-pub(crate) fn edge_operation_references(
-    feature: ObjectId,
-    base: ObjectId,
-    profile_segments: &[StableEntityId],
-    new_face: SemanticRole,
-) -> Vec<TopologyRef> {
-    let mut references = vec![TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: new_face,
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }];
-    for side in [CapSide::Start, CapSide::End] {
-        references.push(TopologyRef {
-            id: StableEntityId::new(),
-            owner: feature,
-            producer_feature: feature,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::OriginCap {
-                origin_feature: base,
-                side,
-            },
-            selection: SelectionRule::Exact,
-            fallback_signature: None,
-        });
-    }
-    for segment in profile_segments {
-        references.push(TopologyRef {
-            id: StableEntityId::new(),
-            owner: feature,
-            producer_feature: feature,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::OriginSide {
-                origin_feature: base,
-                profile_segment: *segment,
-            },
-            selection: SelectionRule::AllDerivedFrom { ancestor: *segment },
-            fallback_signature: None,
-        });
-    }
-    references
-}
-
-/// §28G: the name a later Fillet gives an earlier Fillet's face.
-pub(crate) fn origin_fillet_reference(
-    feature: ObjectId,
-    origin: ObjectId,
-    edge: FilletEdge,
-) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::OriginFilletFace {
-            origin_feature: origin,
-            edge_feature: edge.feature,
-            joint: edge.joint,
-        },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
-}
-
 pub(crate) fn chain_below(
     objects: &[ObjectRecord],
     previous: ObjectId,

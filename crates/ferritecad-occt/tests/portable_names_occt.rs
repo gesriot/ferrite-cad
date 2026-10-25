@@ -13,13 +13,13 @@
 #[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
 mod naming;
 
-use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef};
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext,
     PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_topology::{archive_feature, resolve, restore_feature};
+use ferritecad_topology::generative::Name;
+use ferritecad_topology::{archive_feature, restore_feature};
 use ferritecad_types::{ContentHash, ErrorKind, ObjectId, Result, StableEntityId};
 
 fn plate(height: f64) -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
@@ -51,30 +51,12 @@ fn plate(height: f64) -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
     ))
 }
 
-fn cap_reference(feature: ObjectId, side: CapSide) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeCap { side },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
+fn cap_name(feature: ObjectId, end: bool) -> Name {
+    naming::cap_name(feature, naming::plane_id(), end)
 }
 
-fn side_reference(feature: ObjectId, segment: StableEntityId) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeSide {
-            profile_segment: segment,
-        },
-        selection: SelectionRule::AllDerivedFrom { ancestor: segment },
-        fallback_signature: None,
-    }
+fn side_name(feature: ObjectId, segment: StableEntityId) -> Name {
+    naming::side_name(feature, naming::plane_id(), segment)
 }
 
 #[test]
@@ -97,7 +79,7 @@ fn open_cascade_names_survive_the_session_that_made_them() {
         let map = naming::bind(&mut writer, feature, request.profile(), &result)
             .expect("complete naming");
 
-        let start = resolve(&map, &cap_reference(feature, CapSide::Start))
+        let start = naming::resolve(&map, feature, &cap_name(feature, false))
             .expect("the start cap resolves while the session lives");
         let stats = writer.shape_stats(result.shape).expect("measures");
 
@@ -124,9 +106,9 @@ fn open_cascade_names_survive_the_session_that_made_them() {
         after_faces.1
     );
 
-    let start = resolve(&restored, &cap_reference(feature, CapSide::Start))
+    let start = naming::resolve(&restored, feature, &cap_name(feature, false))
         .expect("the start cap resolves again");
-    let end = resolve(&restored, &cap_reference(feature, CapSide::End))
+    let end = naming::resolve(&restored, feature, &cap_name(feature, true))
         .expect("the end cap resolves again");
 
     assert_eq!(start.len(), 1);
@@ -143,7 +125,7 @@ fn open_cascade_names_survive_the_session_that_made_them() {
 
     let mut all = Vec::new();
     for segment in &segments {
-        let faces = resolve(&restored, &side_reference(feature, *segment))
+        let faces = naming::resolve(&restored, feature, &side_name(feature, *segment))
             .unwrap_or_else(|e| panic!("side {segment} should resolve after restoring: {e}"));
         assert_eq!(faces.len(), 1);
         all.extend(faces);
@@ -184,13 +166,17 @@ fn a_restored_open_cascade_shape_refuses_a_name_it_never_had() {
     let mut restored = naming::prepared(feature, request.profile(), false).expect("model roots");
     restore_feature(&mut reader, &archived, &mut restored).expect("restores");
 
-    let err = resolve(&restored, &side_reference(feature, StableEntityId::new()))
-        .expect_err("that segment was never archived");
+    let err = naming::resolve(
+        &restored,
+        feature,
+        &side_name(feature, StableEntityId::new()),
+    )
+    .expect_err("that segment was never archived");
     assert_eq!(err.kind(), ErrorKind::Topology);
 
     // And the names that were archived still work, so the refusal is specific.
     assert_eq!(
-        resolve(&restored, &side_reference(feature, segments[2]))
+        naming::resolve(&restored, feature, &side_name(feature, segments[2]))
             .expect("resolves")
             .len(),
         1

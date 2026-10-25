@@ -30,7 +30,6 @@ fn tree_occurrences_show_errors_root_dependencies_and_body_fallback() {
             rolled_back_to: Some(chain.extrude),
             cause: chain.first,
         }],
-        warnings: vec![],
     };
     ferritecad_scene::project_rebuild_status(&mut tree, &objects, &report);
     assert_eq!(tree.unbuilt_features, 2);

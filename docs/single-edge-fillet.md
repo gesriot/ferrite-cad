@@ -83,9 +83,8 @@ recorded.
   refused with its reason. So is a feature other than the base Extrude, and a
   meaning that names no single edge.
 * **What is persisted.** The Fillet payload stores the typed meaning:
-  `edge: { feature, joint }`. No input `TopologyRef` exists for the edge today,
-  and none is invented. The new Fillet persists references only to what **it**
-  produced (see below).
+  `edge: { feature, joint }`. Output names are derived during rebuild;
+  no output references are persisted.
 * **Evaluation.** The evaluator resolves exactly that meaning against the
   predecessor's output. It requires exactly one sweep edge under that joint;
   none or several is a refusal.
@@ -152,27 +151,19 @@ tests.
 
 ### Names
 
-* **Existing references keep their producer.** A reference to the base
-  Extrude's faces or edges keeps addressing the base's historical output. It
-  is never repointed to the latest solid.
-* **The Fillet's own references**, all owned and produced by the Fillet:
-  * `EdgeFilletFace { edge_feature: base, joint }` — **new role** — the one
-    cylindrical face rounded from that edge. `Face`, `Exact`.
-  * `OriginCap { base, Start|End }` — the base caps as the Fillet leaves them
-    (trimmed).
-  * `OriginSide { base, segment }` for each of the four Lines — the two sides
-    next to the corner are trimmed, the other two are kept.
-* **Honest history.** Carried faces come only from the fillet history. A name
-  the fillet removed is recorded as removed, never matched by geometry.
-  Missing or ambiguous history refuses.
-* **Edges.** The base Extrude's edge and vertex names are historical, at the
-  base producer; its rounded sweep edge exists only there. The Fillet tip
-  publishes no edge or vertex names in this slice.
+Output names are derived at rebuild time from the feature, operation, saved
+profile curves and cap roots, together with complete kernel history and
+incidence. Each feature exposes face, edge and vertex names. A name binds a
+selection only when it identifies exactly one entity in that feature; an
+ambiguous name never selects a neighbour. Names of historical results stay at
+their producing feature. No output-name rows are stored in the document.
 
-The new role requires `feature.fillet.v1`; the origin roles keep
-`topology.origin-face.v1`. The existing `FilletFace { source_edge }` role
-keeps its meaning and is not used: one `StableEntityId` cannot name a producer
-and a joint.
+The CLI reports the kind, digest, entity count and complete derivation for
+each name. The window displays the same derivation and digest. See
+[ADR 0007](decisions/0007-generative-topological-naming.md) and the
+[current file format](file-format.md). Fillet and Chamfer still consume
+`SweptEdge { feature, joint }`; their corner policies and refusal messages
+are unchanged.
 
 ### Cache
 
@@ -243,8 +234,7 @@ One shared jobs route (`fillet_edge_copy`), through the existing
 * a no-clobber output, and a refusal of aliasing;
 * a baseline cold rebuild;
 * the write;
-* a strict rebuild in which every baseline reference and every minted
-  reference must resolve;
+* a rebuild that leaves no newly failing feature;
 * the version checked again;
 * SQLite closed;
 * atomic publication;
@@ -258,7 +248,6 @@ The SQL allowlist:
   (the tip). Nothing else.
 * **deps:** + `Fillet → base` (Predecessor), + `Body → Fillet` (BodyTip),
   − `Body → base` (BodyTip).
-* **topology_refs:** the Fillet's seven new rows.
 * **capabilities:** `feature.fillet.v1` and `topology.origin-face.v1` (and
   `feature.predecessor.v1`), added only if missing.
 * **meta.modified_at.**
@@ -337,6 +326,21 @@ cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28a-"))
 OP = "edit"
 
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
+
 def new_id():
     raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
     raw[6] = (raw[6] & 15) | 112
@@ -414,7 +418,7 @@ def allowlist(source, copy, body):
             old_tip = t == "deps" and bid in row.values()
             assert key(row) in mine or old_tip, f"{t}: a source cell moved"
         added = len(b[t]) - len(a[t])
-        expected = {"objects": 1, "deps": 1, "topology_refs": 7}.get(t)
+        expected = {"objects": 1, "deps": 1}.get(t)
         if expected is not None:
             assert added == expected, (t, added)
         else:
@@ -460,7 +464,7 @@ assert source.read_bytes() == source_bytes
 allowlist(source, copy, body["body_id"])
 assert run(["validate", copy, "--json"])["result"]["valid"] is True
 text = run(["rebuild", copy, "--cold"])
-assert "tip Fillet" in text and "10 of 10 stored references resolved" in text, text
+assert "tip Fillet" in text and sum(line.lstrip().startswith("face ") for line in text.splitlines()) == 13, text
 # 3. Independent measurements: volume, and the rounded corner alone.
 out = copy.with_suffix(".stl")
 run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])

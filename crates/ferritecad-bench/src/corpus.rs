@@ -50,7 +50,6 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
             }
             let objects = document.objects()?;
             let dependencies = document.dependencies()?;
-            let references = document.topology_refs()?;
             output.write(|writer| {
                 for mut object in objects {
                     if let ObjectPayload::Sketch(sketch) = &mut object.payload {
@@ -82,9 +81,7 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
                 for dependency in dependencies {
                     writer.add_dependency(dependency)?;
                 }
-                for reference in references {
-                    writer.put_topology_ref(&reference)?;
-                }
+
                 Ok(())
             })?;
             document.close()?;
@@ -156,21 +153,6 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
                     object.name.as_deref(),
                     &payload,
                 )?;
-            }
-            Ok(())
-        })?;
-        // Extrusion names are irrelevant to the turned fixture; write names for its faces.
-        let refs = document.topology_refs()?;
-        document.write(|writer| {
-            for mut reference in refs {
-                reference.output_role = match reference.output_role {
-                    SemanticRole::ExtrudeCap { side } => SemanticRole::RevolveCap { side },
-                    SemanticRole::ExtrudeSide { profile_segment } => {
-                        SemanticRole::RevolveFace { profile_segment }
-                    }
-                    _ => unreachable!("plate references"),
-                };
-                writer.put_topology_ref(&reference)?;
             }
             Ok(())
         })?;

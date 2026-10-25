@@ -11,11 +11,10 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
-use ferritecad_document::{CacheStore, SemanticRole};
+use ferritecad_document::CacheStore;
 use ferritecad_eval::{CacheOutcome, rebuild_cached, rebuild_cold};
 use ferritecad_fixtures::{drop_segment, open_plate, plate_manifest, render_manifest, set_height};
 use ferritecad_kernel::{GeometryKernel, OperationContext, mock::MockKernel};
-use ferritecad_types::ErrorKind;
 
 #[test]
 fn the_committed_plate_still_means_what_it_meant() {
@@ -144,38 +143,35 @@ fn dropping_a_segment_loses_that_name_and_no_other() {
     let mut document = open_plate(dir.path()).expect("the fixture opens");
     let mut kernel = MockKernel::new();
 
-    let gone = drop_segment(&mut document).expect("a segment is removed");
+    let before = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("original rebuild");
+    let old_faces = before
+        .topology()
+        .features
+        .values()
+        .flat_map(|f| f.bindings.keys().copied())
+        .filter(|n| n.kind == ferritecad_kernel::SubShapeKind::Face)
+        .collect::<std::collections::BTreeSet<_>>();
+    before.release_all(&mut kernel);
+    drop_segment(&mut document).expect("a segment is removed");
     let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
         .expect("a three-sided profile still rebuilds");
 
+    let named = built
+        .topology()
+        .features
+        .values()
+        .next()
+        .expect("feature names");
     let mut resolved = Vec::new();
-    for reference in document.topology_refs().expect("reads references") {
-        let names_the_gone_segment = matches!(
-            reference.output_role,
-            SemanticRole::ExtrudeSide { profile_segment } if profile_segment == gone
-        );
-
-        match built.resolve(&reference) {
-            Ok(found) => {
-                assert!(
-                    !names_the_gone_segment,
-                    "the removed segment's reference must not resolve to anything, \
-                     and it chose {} face(s)",
-                    found.len()
-                );
-                assert_eq!(found.len(), 1);
-                resolved.extend(found);
-            }
-            Err(error) => {
-                assert!(
-                    names_the_gone_segment,
-                    "only the removed segment should have lost its face, but {:?} failed: {error}",
-                    reference.output_role
-                );
-                assert_eq!(error.kind(), ErrorKind::Topology);
-            }
+    let mut lost = 0;
+    for name in old_faces {
+        match named.resolve(name) {
+            Ok(entity) => resolved.push(entity),
+            Err(_) => lost += 1,
         }
     }
+    assert_eq!(lost, 1, "only the removed side loses its name");
 
     // Three sides and two caps, all different. A silently retargeted name would
     // show up here as a repeat.
@@ -205,17 +201,19 @@ fn open_cache(
     .expect("the sidecar opens")
 }
 
-/// Every face the document's stored references resolve to, in a stable order.
+/// Every face named by the rebuilt model, in a stable order.
 fn faces(
-    document: &ferritecad_document::Document,
+    _document: &ferritecad_document::Document,
     built: &ferritecad_eval::RebuildResult,
 ) -> Vec<String> {
-    let mut all: Vec<String> = document
-        .topology_refs()
-        .expect("reads references")
-        .iter()
-        .flat_map(|reference| built.resolve(reference).unwrap_or_default())
-        .map(|face| face.to_string())
+    let mut all: Vec<String> = built
+        .topology()
+        .features
+        .values()
+        .flat_map(|f| f.bindings.iter())
+        .filter(|(name, _)| name.kind == ferritecad_kernel::SubShapeKind::Face)
+        .flat_map(|(_, entities)| entities.iter())
+        .map(ToString::to_string)
         .collect();
     all.sort();
     all

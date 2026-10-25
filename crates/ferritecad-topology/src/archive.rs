@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ferritecad_kernel::{ArchiveSlot, BrepBlob, GeometryKernel, ShapeTopology, SubShapeHandle};
 use ferritecad_types::{CadError, ObjectId, Result};
 
-use crate::TopologyMap;
+use crate::ModelNaming;
 use crate::generative::{FeatureNaming, Name};
 
 /// One validated atomic B-Rep and typed naming graph. Both constructors validate
@@ -101,7 +101,7 @@ impl ArchivedFeature {
 
 pub fn archive_feature<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
-    map: &TopologyMap,
+    map: &ModelNaming,
     producer: ObjectId,
 ) -> Result<ArchivedFeature> {
     let named = map
@@ -152,7 +152,7 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
 pub fn restore_feature<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     archived: &ArchivedFeature,
-    into: &mut TopologyMap,
+    into: &mut ModelNaming,
 ) -> Result<()> {
     let slots: Vec<_> = archived.entities.keys().copied().collect();
     let (shape, restored) = kernel.decode_shape_with(&archived.blob, &slots)?;

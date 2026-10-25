@@ -13,17 +13,8 @@ import struct
 import subprocess
 import sys
 import tempfile
-import time
 
 CORNER = [-4.5, 3.25]
-
-
-def uuid7():
-    """A fresh RFC 9562 UUIDv7, the only kind a document stores."""
-    raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
-    raw[6] = (raw[6] & 0x0F) | 0x70
-    raw[8] = (raw[8] & 0x3F) | 0x80
-    return bytes(raw)
 
 
 def main():
@@ -40,12 +31,21 @@ def main():
     def inspect(path):
         return run("inspect", path, "--json")
 
-    def resolved(path):
+    def output_names(path):
         assert run("validate", path, "--json")["valid"]
-        p = subprocess.run([cli, "rebuild", str(path), "--cold"], capture_output=True, text=True)
-        with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True) as db:
-            (n,) = db.execute("SELECT count(*) FROM topology_refs").fetchone()
-        assert p.returncode == 0 and f"{n} of {n} stored references resolved" in p.stdout, (p.stdout, p.stderr)
+        p = subprocess.run([cli, "print-topology", str(path)], capture_output=True, text=True)
+        assert p.returncode == 0, (p.stdout, p.stderr)
+        names = []
+        feature = None
+        for line in p.stdout.splitlines():
+            fields = line.split()
+            if len(fields) == 2 and fields[0] == "feature":
+                feature = fields[1]
+            elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+                assert feature is not None and fields[2] == "entities=1", line
+                names.append((feature, fields[0], fields[1]))
+        assert names, "the built Chamfer has named output"
+        return sorted(names)
 
     if len(sys.argv) == 2:
         existing = root
@@ -71,17 +71,13 @@ def main():
         current = root / "source/chamfer.fcad"
         run("edit", plate, "--expect-version",
             catalog["content_version"], "--request", request, "-o", current, "--json")
-        base = bytes.fromhex(edge_at(catalog, CORNER)["feature"].replace("-", ""))
+        names_before = output_names(current)
         with sqlite3.connect(current) as db:
-            # One more name owned by the base Extrude that resolves, then names,
-            # rowids and ordinals that disagree with the feature history.
-            db.execute("INSERT INTO topology_refs SELECT ?,owner_id,producer_feature,"
-                       "expected_kind,payload,payload_hash FROM topology_refs WHERE owner_id=? LIMIT 1",
-                       (uuid7(), base))
+            # Object labels and ordinals must not affect derived identity.
             db.executescript("UPDATE objects SET rowid=-rowid,ordinal=100-ordinal,name='same';"
                              "CREATE TABLE extra_data(id INTEGER PRIMARY KEY,bytes BLOB);"
                              "INSERT INTO extra_data VALUES(91,x'010203');")
-        resolved(current)
+        assert output_names(current) == names_before
         saved = inspect(current)["chamfers"][0]
         assert saved["edge"]["joint"] == edge_at(catalog, CORNER)["joint"] and saved["expression"]["value"] == 2.375
         shutil.copyfile(current, root / "work/chamfer.fcad")
@@ -170,7 +166,7 @@ def main():
             run(f"export-{kind}", model, "-o", output, "--json")
             assert (root / gui_name).read_bytes() == output.read_bytes(), f"GUI/CLI bytes: {gui_name}"
         for name in ("saved.fcad", "branch.fcad"):
-            resolved(root / name)
+            output_names(root / name)
 
         def measured(path, distance):
             """Volume, and the one plane of the chosen corner: its triangles face

@@ -1,24 +1,9 @@
 // SPDX-License-Identifier: MIT
-//! Reporting what a document's stored names still find.
-//!
-//! The report exists for the moment a reference stops resolving, so most of
-//! what is checked here is that moment: every broken name is listed, not the
-//! first, and the command says so in its exit status without refusing to
-//! finish the report.
-
-// A test asserting the shape of a value has nowhere to return an error to.
+//! Reporting complete current model names.
 #![allow(clippy::panic)]
-
+use ferritecad_fixtures::plate_source;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-
-use ferritecad_fixtures::plate_source;
-
-/// The exit status for a document whose names no longer all resolve.
-const UNRESOLVED: i32 = 3;
-const INVALID: i32 = 1;
-const FAILED: i32 = 2;
-
 fn ferritecad() -> PathBuf {
     // `current_exe` is target/<profile>/deps/<test>; the binary is two up.
     let mut path = std::env::current_exe().expect("the test knows where it is");
@@ -58,10 +43,6 @@ fn has_kernel(document: &Path) -> bool {
     panic!("print-topology failed for another reason: {complaint}");
 }
 
-/// Removes the last sketch segment, closing the loop over the gap.
-///
-/// The reference to the segment that went is the one that must be reported
-/// lost; the rest must not be.
 fn drop_a_segment(document: &Path) -> ferritecad_types::StableEntityId {
     use ferritecad_document::{Document, ObjectPayload, Sketch, SketchGeometry};
 
@@ -107,29 +88,8 @@ fn drop_a_segment(document: &Path) -> ferritecad_types::StableEntityId {
     removed.id
 }
 
-fn rewrite_first_reference(
-    document: &Path,
-    change: impl FnOnce(&mut ferritecad_document::TopologyRef),
-) -> ferritecad_types::StableEntityId {
-    use ferritecad_document::Document;
-
-    let mut opened = Document::open(document).expect("opens");
-    let mut reference = opened
-        .topology_refs()
-        .expect("reads references")
-        .into_iter()
-        .next()
-        .expect("the plate stores references");
-    change(&mut reference);
-    opened
-        .write(|writer| writer.put_topology_ref(&reference))
-        .expect("rewrites the reference");
-    opened.close().expect("closes");
-    reference.id
-}
-
 #[test]
-fn a_whole_document_reports_every_reference_in_portable_terms() {
+fn a_whole_document_reports_every_primary_name_in_portable_terms() {
     let dir = tempfile::tempdir().expect("temp dir");
     let document = plate(dir.path());
     if !has_kernel(&document) {
@@ -139,12 +99,29 @@ fn a_whole_document_reports_every_reference_in_portable_terms() {
     let output = print_topology(&document);
     let report = String::from_utf8_lossy(&output.stdout);
 
-    assert!(report.contains("6 references"), "{report}");
-    assert!(report.contains("extrude cap start"), "{report}");
-    assert!(report.contains("extrude cap end"), "{report}");
-    assert!(report.contains("all derived from"), "{report}");
-    assert!(report.contains("expects    face"), "{report}");
-    assert!(report.contains("6 of 6 references resolved"), "{report}");
+    assert!(report.starts_with("topology names\n"));
+    for (kind, count) in [("face", 6), ("edge", 12), ("vertex", 8)] {
+        let lines: Vec<_> = report
+            .lines()
+            .filter(|line| line.starts_with(&format!("    {kind} ")))
+            .collect();
+        assert_eq!(lines.len(), count);
+        for line in lines {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            assert_eq!(fields[1].len(), 64);
+            assert!(fields[1].bytes().all(|byte| byte.is_ascii_hexdigit()));
+            assert_eq!(fields[2], "entities=1");
+        }
+    }
+    for root in [
+        "start cap",
+        "end cap",
+        "curve ",
+        "generated Extrude",
+        "inputs [",
+    ] {
+        assert!(report.contains(root), "{report}");
+    }
 
     // Nothing session-local may appear. A handle prints as `shape 3 face 5`
     // and a slot as a bare number under a name; neither belongs in a document
@@ -172,113 +149,25 @@ fn two_runs_report_the_same_thing() {
 }
 
 #[test]
-fn a_lost_reference_is_reported_and_changes_the_exit_status() {
+fn removing_an_unconsumed_segment_reports_only_current_names() {
     let dir = tempfile::tempdir().expect("temp dir");
     let document = plate(dir.path());
     if !has_kernel(&document) {
         return;
     }
-
     let gone = drop_a_segment(&document);
     let output = print_topology(&document);
-    let report = String::from_utf8_lossy(&output.stdout);
-
+    assert!(output.status.success(), "{output:?}");
+    let report = String::from_utf8(output.stdout).expect("UTF-8");
+    assert!(!report.contains(&gone.to_string()), "{report}");
     assert_eq!(
-        output.status.code(),
-        Some(UNRESOLVED),
-        "a lost name is neither success nor a command that could not run"
+        report
+            .lines()
+            .filter(|line| line.starts_with("    face "))
+            .count(),
+        5
     );
-    assert!(report.contains("5 of 6 references resolved"), "{report}");
-    assert!(
-        report.contains(&format!("extrude side from segment {gone}")),
-        "the lost reference must be named: {report}"
-    );
-
-    // The report is finished, not abandoned at the first failure. Counted
-    // over the per-reference status lines, which end in two spaces and a
-    // word; the closing summary ends in one space and "resolved".
-    assert_eq!(status_lines(&report, "resolved"), 5, "{report}");
-    assert_eq!(status_lines(&report, "lost"), 1, "{report}");
-}
-
-#[test]
-fn every_lost_reference_is_listed_not_only_the_first() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let document = plate(dir.path());
-    if !has_kernel(&document) {
-        return;
-    }
-
-    // Two segments gone, so two references have nothing left to name.
-    let first = drop_a_segment(&document);
-    let second = drop_a_segment(&document);
-
-    let output = print_topology(&document);
-    let report = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output.status.code(), Some(UNRESOLVED));
-    assert!(report.contains("4 of 6 references resolved"), "{report}");
-
-    for segment in [first, second] {
-        assert!(
-            report.contains(&format!("extrude side from segment {segment}")),
-            "stopping at the first lost name hides how much broke: {report}"
-        );
-    }
-}
-
-#[test]
-fn a_contradictory_reference_is_invalid_not_lost() {
-    use ferritecad_document::EntityKind;
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let document = plate(dir.path());
-    if !has_kernel(&document) {
-        return;
-    }
-
-    let invalid = rewrite_first_reference(&document, |reference| {
-        // An extrusion cap can only be a face. This statement is malformed;
-        // no change to geometry could make it resolve to an edge.
-        reference.expected_kind = EntityKind::Edge;
-    });
-    let output = print_topology(&document);
-    let report = String::from_utf8_lossy(&output.stdout);
-
-    assert_eq!(output.status.code(), Some(INVALID), "{report}");
-    assert!(report.contains(&format!("{invalid}  invalid")), "{report}");
-    assert!(!report.contains(&format!("{invalid}  lost")), "{report}");
-}
-
-#[test]
-fn a_role_this_build_cannot_resolve_is_unsupported_not_lost() {
-    use ferritecad_document::{EntityKind, SelectionRule, SemanticRole};
-    use ferritecad_types::StableEntityId;
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let document = plate(dir.path());
-    if !has_kernel(&document) {
-        return;
-    }
-
-    let unsupported = rewrite_first_reference(&document, |reference| {
-        reference.expected_kind = EntityKind::Edge;
-        reference.output_role = SemanticRole::SketchSegment {
-            segment: StableEntityId::new(),
-        };
-        reference.selection = SelectionRule::Exact;
-    });
-    let output = print_topology(&document);
-    let report = String::from_utf8_lossy(&output.stdout);
-
-    assert_eq!(output.status.code(), Some(FAILED), "{report}");
-    assert!(
-        report.contains(&format!("{unsupported}  unsupported")),
-        "{report}"
-    );
-    assert!(
-        !report.contains(&format!("{unsupported}  lost")),
-        "{report}"
-    );
+    assert!(report.contains("start cap") && report.contains("end cap"));
 }
 
 #[test]
@@ -317,19 +206,5 @@ fn a_missing_document_is_an_error_not_an_empty_report() {
         &dir.path().join("nothing.fcad").to_string_lossy(),
     ]);
     assert!(!output.status.success());
-    assert_ne!(
-        output.status.code(),
-        Some(UNRESOLVED),
-        "a file that is not there is not a document with a lost name"
-    );
     assert!(String::from_utf8_lossy(&output.stdout).is_empty());
-}
-
-/// How many references were reported with this status.
-fn status_lines(report: &str, status: &str) -> usize {
-    let suffix = format!("  {status}");
-    report
-        .lines()
-        .filter(|line| line.ends_with(&suffix))
-        .count()
 }

@@ -53,43 +53,28 @@ Fillet rounded (`input`), a document that already holds two Fillets
 
 ### Names
 
-Fillet 2 persists eight references (all `Exact` except the four sides, which
-keep §28A's `AllDerivedFrom`):
+Output names are derived at rebuild time from the feature, operation, saved
+profile curves and cap roots, together with complete kernel history and
+incidence. Each feature exposes face, edge and vertex names. A name binds a
+selection only when it identifies exactly one entity in that feature; an
+ambiguous name never selects a neighbour. Names of historical results stay at
+their producing feature. No output-name rows are stored in the document.
 
-* `EdgeFilletFace { edge_feature: base, joint: j2 }` — its own cylinder;
-* `OriginCap { base, Start|End }`, `OriginSide { base, segment }` × 4 — the
-  plate's faces as the final Body has them;
-* **new** `OriginFilletFace { origin_feature: Fillet 1, edge_feature: base,
-  joint: j1 }` — Fillet 1's cylinder as the final Body has it. Its own role:
-  Fillet 1's own `EdgeFilletFace` reference keeps naming Fillet 1's result,
-  and this one names the same face in the Body. It requires
-  `feature.fillet.sequential.v1`.
-
-Fillet 1's seven names are untouched and keep resolving on Fillet 1's result.
+The CLI reports the kind, digest, entity count and complete derivation for
+each name. The window displays the same derivation and digest. See
+[ADR 0007](decisions/0007-generative-topological-naming.md) and the
+[current file format](file-format.md). Fillet and Chamfer still consume
+`SweptEdge { feature, joint }`; their corner policies and refusal messages
+are unchanged.
 
 ### Topology
 
-`TopologyMap::record_fillet` carries, from the predecessor's names, through
-the fillet's own history:
-
-* every face it carried before (caps, sides and their origins), as now;
-* **every vertical sweep edge** of the base, as an origin name
-  `(base, SweepEdge(joint))`; the rounded one is recorded as removed;
-* **the predecessor's own fillet face**, as `(Fillet 1, FilletFace(base, j1))`.
-
-Fillet 2's kernel edge is the edge `(base, SweepEdge(j2))` names on Fillet
-1's result — exactly one, found by history. Missing, removed (already rounded),
-ambiguous or belonging to another shape is a typed `topology` refusal before
-anything is published. No OCCT index, nearest edge or coordinate match is
-used, and a handle of the source shape is never taken for one of the result.
-
-Measured on Open CASCADE 8.0.1: `BRepFilletAPI_MakeFillet::IsDeleted` answers
-`true` for edges and vertices the result still contains unchanged (7 of 8
-edges and 6 of 8 vertices of a box after rounding one vertical edge), and
-`false` for kept faces. The bridge's history therefore classifies by
-`Modified` first, then membership of the result, and only then as deleted;
-the answer for every face is unchanged. It also refuses a reported output
-whose shape type differs from the input's.
+`ModelNaming` follows the predecessor through complete OCCT history, preserving
+unchanged ancestry, recording generated/modified/merged outputs and deriving
+boundaries from incidence. Deleted ancestry has no entity. Missing or
+ambiguous consumed edges refuse; unconsumed outputs do not impose a
+publication condition. The shared edit transaction requires no new failed
+features after rebuilding.
 
 ### Cache
 
@@ -139,8 +124,6 @@ inside its transaction. The SQL allowlist:
   Fillet 1 rows are byte-identical.
 * **deps:** + `Fillet 2 → Fillet 1` (Predecessor), + `Body → Fillet 2`
   (BodyTip), − `Body → Fillet 1` (BodyTip).
-* **topology_refs:** Fillet 2's eight new rows; every existing row
-  byte-identical.
 * **capabilities:** + `feature.fillet.sequential.v1`; the others as they were.
 * **meta.modified_at.**
 
@@ -205,6 +188,21 @@ measured mesh and exact volumes.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid, time
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28g-"))
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def new_id():
     raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
@@ -280,7 +278,7 @@ def second_allowlist(source, copy, body):
                 for c, u, v in zip(ac, row, mine[row[k]]):
                     assert u == v or (row[k] == bid and c in ("payload", "payload_hash")), \
                         f"objects.{c} moved"
-        elif t in ("deps", "topology_refs"):
+        elif t == "deps":
             kept = [r for r in arows if r in brows]
             lost = [r for r in arows if r not in brows]
             assert all(t == "deps" and bid in r for r in lost), (t, lost)
@@ -312,9 +310,9 @@ def measured(copy, rounded):
     radius) pairs rounded. The exact volume is the B-Rep's analytic one; the
     mesh is bounded by the chord deflection."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Fillet" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
     volume, points = stl(out)

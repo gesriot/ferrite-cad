@@ -5,7 +5,7 @@ use ferritecad_types::{ContentHash, StableEntityId};
 #[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
 mod support;
 
-pub(crate) fn plate() -> (mock::MockKernel, TopologyMap, ObjectId, ExtrudeRequest) {
+pub(crate) fn plate() -> (mock::MockKernel, ModelNaming, ObjectId, ExtrudeRequest) {
     let corners = [(0., 0.), (20., 0.), (20., 10.), (0., 10.)]
         .map(|(x, y)| PlanarPoint::new(x, y).expect("point"));
     let segments = (0..4)
@@ -320,7 +320,7 @@ fn codec_rejects_damage_truncation_trailing_data_and_other_owners_or_kernel_buil
     );
     let mut reader = mock::MockKernel::new();
     assert!(reader.decode_shape(archive.blob()).is_err());
-    assert!(archive_feature(&mut reader, &TopologyMap::new(), feature).is_err());
+    assert!(archive_feature(&mut reader, &ModelNaming::new(), feature).is_err());
 }
 
 #[test]

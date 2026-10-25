@@ -80,6 +80,7 @@ planegcs = ["ferritecad-jobs/planegcs", "ferritecad-sketch-solver/planegcs"]
 # where that is decided. Pairing the sketch curves in the test instead would be
 # a second piece of adjacency arithmetic, free to disagree with the first.
 [dev-dependencies]
+ferritecad-topology.workspace = true
 ferritecad-eval.workspace = true
 ferritecad-fixtures.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }

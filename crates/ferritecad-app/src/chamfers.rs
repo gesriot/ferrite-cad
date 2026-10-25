@@ -749,7 +749,6 @@ pub(crate) mod tests {
     pub(crate) mod session_apply;
     use super::*;
     use ferritecad_document::Document;
-    use ferritecad_types::StableEntityId;
 
     fn run(
         ctx: &egui::Context,

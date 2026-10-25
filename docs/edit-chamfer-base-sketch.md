@@ -149,6 +149,21 @@ from edit_requests import line_request
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29c-"))
 
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
+
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
@@ -269,9 +284,9 @@ def measured(copy, rect, distance, height):
     x0, y0, w, d = rect
     corner = corner_of(rect)
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Chamfer" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Chamfer" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--json"])
     volume, tri = stl(out)
@@ -341,7 +356,7 @@ def resketch(source, rect, out, code=0):
 # 3. Larger and moved, smaller and moved, only moved: one row, one cell pair,
 #    the Chamfer, the height and every name as they were, the chosen corner
 #    following its vertex to the new plate, the exact volume and the flat.
-refs_before = [r[0] for r in tables(one)["topology_refs"][1]]
+refs_before = output_names(one)
 rects = {"big": [-10.125, 7.5, 52.25, 20.5], "small": [30.0, -2.75, 9.5, 6.25],
          "moved": [X0 + 10.5, Y0 - 5.25, W, D]}
 copies = {}
@@ -350,7 +365,7 @@ for name, rect in rects.items():
     geometry(["edit", one, "--expect-version", saved["content_version"], "--request", ask(saved, rect),
               "-o", out, "--json"], out)
     assert only_row(one, out, sketch["sketch_id"]) >= 2
-    assert [r[0] for r in tables(out)["topology_refs"][1]] == refs_before, "every name keeps its UUID"
+    assert output_names(out) == refs_before, "every name keeps its digest"
     after = inspect(out)
     assert next(s for s in after["expression_slots"] if s["slot"]["kind"] == "extrude_distance")["expression"]["value"] == H, "the height is kept"
     assert after["chamfers"][0]["feature_id"] == chamfer["feature_id"]

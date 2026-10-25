@@ -543,9 +543,7 @@ pub(super) fn ids_and_refs(path: &Path) -> (Vec<ObjectId>, Vec<String>) {
         .map(|o| o.id)
         .collect();
     ids.sort();
-    let mut refs: Vec<String> = document
-        .topology_refs()
-        .expect("refs")
+    let mut refs: Vec<String> = crate::test_names::names(&document)
         .iter()
         .map(|r| format!("{r:?}"))
         .collect();

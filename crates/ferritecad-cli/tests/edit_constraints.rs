@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/names.rs"]
+mod names;
 use ferritecad_document::*;
 use ferritecad_kernel::OperationContext;
 use ferritecad_types::{ObjectId, StableEntityId};
@@ -64,10 +66,7 @@ fn stored_same(a: &Path, b: &Path) {
         a.dependencies().expect("deps"),
         b.dependencies().expect("deps")
     );
-    assert_eq!(
-        a.topology_refs().expect("refs"),
-        b.topology_refs().expect("refs")
-    );
+    assert_eq!(crate::names::snapshot(&a), crate::names::snapshot(&b));
     for o in a.objects().expect("objects") {
         let n = b.object(o.id).expect("read").expect("same ID");
         if let (ObjectPayload::Sketch(s), ObjectPayload::Sketch(t)) = (&o.payload, &n.payload) {
@@ -153,9 +152,7 @@ fn geometry_checked(
             .fold(f64::NEG_INFINITY, f64::max),
         10.,
     ];
-    for r in d.topology_refs().expect("refs") {
-        assert_eq!(b.resolve(&r).expect("same topology ref").len(), 1);
-    }
+    crate::names::assert_primary(&b);
     b.release_all(&mut k);
     d.close().expect("close");
     let stl = path.with_extension("stl");

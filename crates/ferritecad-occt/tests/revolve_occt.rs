@@ -615,19 +615,15 @@ fn native_partial_revolutions_name_two_caps_from_the_sweep_history() {
                 let producer = ferritecad_types::ObjectId::new();
                 let map = naming::bind(&mut kernel, producer, request.profile(), &result)
                     .expect("sector provenance");
-                let reference = ferritecad_document::TopologyRef {
-                    id: StableEntityId::new(),
-                    owner: producer,
-                    producer_feature: producer,
-                    expected_kind: ferritecad_document::EntityKind::Face,
-                    output_role: ferritecad_document::SemanticRole::RevolveCap {
-                        side: ferritecad_document::CapSide::Start,
-                    },
-                    selection: ferritecad_document::SelectionRule::Exact,
-                    fallback_signature: None,
-                };
+                use ferritecad_topology::generative::{cap_root, generated};
+                let name = generated(
+                    producer,
+                    ferritecad_kernel::NamingOperation::Revolve,
+                    cap_root(producer, false, Some(naming::plane_id())),
+                    ferritecad_kernel::SubShapeKind::Face,
+                );
                 assert_eq!(
-                    ferritecad_topology::resolve(&map, &reference).expect("start"),
+                    naming::resolve(&map, producer, &name).expect("start"),
                     vec![*start]
                 );
                 // Both caps survive the named archive as the faces they were.

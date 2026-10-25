@@ -17,7 +17,7 @@ no new constraint kind, no new geometry, no change to the solver policy, to
    length** (an exact remove of the stored length and an add, one atomic edit) or
    remove constraints in the draft as before, then press **Apply constraints**. No
    file dialog. The reused `edit-sketch-constraints-copy` operation runs on the accepted
-   snapshot (solver, cold rebuild, strict reference check), the picture is built, and
+   snapshot (solver, cold rebuild, feature-failure check), the picture is built, and
    the version becomes current in the statement that shows it. The form closes, it
    described the picture that was replaced.
 4. **Undo / Redo** (toolbar, `Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`) pass through height,

@@ -622,7 +622,31 @@ fn what_a_solve_found_out_is_no_part_of_the_picture() {
         &plain_path,
         vec![(Some("Profile"), curves.clone(), named(once))],
     );
-    write(&repeats_path, vec![(Some("Profile"), curves, named(twice))]);
+    // Keep the same naming roots; only the constraint facts differ.
+    std::fs::copy(&plain_path, &repeats_path).expect("copy document");
+    let mut document = Document::open(&repeats_path).expect("open copy");
+    let object = document
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find(|object| matches!(object.payload, ObjectPayload::Sketch(_)))
+        .expect("sketch");
+    let ObjectPayload::Sketch(mut sketch) = object.payload else {
+        panic!("sketch")
+    };
+    sketch.constraints = named(twice);
+    document
+        .write(|writer| {
+            writer.put_object(
+                object.id,
+                object.parent,
+                object.ordinal,
+                object.name.as_deref(),
+                &ObjectPayload::Sketch(sketch),
+            )
+        })
+        .expect("replace constraints only");
+    document.close().expect("close copy");
 
     let one = load(&plain_path);
     let two = load(&repeats_path);

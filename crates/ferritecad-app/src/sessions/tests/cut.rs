@@ -4,7 +4,7 @@ use super::*;
 use crate::cuts::tests::session_apply::{draft_state, fixture, selected, typed_cut};
 use crate::feature_facts::CutExtent;
 use crate::feature_tests::RequestFacts;
-use ferritecad_document::{ObjectPayload, TopologyRef};
+use ferritecad_document::ObjectPayload;
 use ferritecad_jobs::EditRequest;
 
 fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
@@ -80,21 +80,12 @@ pub(super) fn peer(source: &Path, r: &EditRequest, root: &Path, out: &Path) {
         "--json".as_ref(),
     ]);
 }
-pub(super) fn refs(path: &Path) -> Vec<TopologyRef> {
-    Document::open_read_only(path)
-        .expect("document")
-        .topology_refs()
-        .expect("refs")
+pub(super) fn refs(path: &Path) -> crate::test_names::FlatNames {
+    crate::test_names::flat_names(path)
 }
 /// Every SQL cell, including rowid where SQLite exposes it. No payload, hash,
-/// row or table is excluded. Only actually new topology_refs.id cells may map.
-pub(super) fn sql(
-    path: &Path,
-    pairs: &[(
-        ferritecad_types::StableEntityId,
-        ferritecad_types::StableEntityId,
-    )],
-) -> std::collections::BTreeMap<String, Vec<String>> {
+/// row or table is excluded. No output catalogue identifiers exist to normalize.
+pub(super) fn sql(path: &Path) -> std::collections::BTreeMap<String, Vec<String>> {
     let db =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("db");
@@ -146,17 +137,7 @@ pub(super) fn sql(
                         continue;
                     }
                     let value = r.get_ref(i)?;
-                    if table == "topology_refs" && column == "id" {
-                        let raw = value.as_blob()?;
-                        if let Some((_, mapped)) = pairs.iter().find(|(id, _)| id.to_bytes() == raw)
-                        {
-                            row.push_str(&format!(
-                                "{column}={:?};",
-                                rusqlite::types::ValueRef::Blob(&mapped.to_bytes())
-                            ));
-                            continue;
-                        }
-                    }
+
                     row.push_str(&format!("{column}={value:?};"));
                 }
                 Ok(row)
@@ -170,37 +151,9 @@ pub(super) fn sql(
     }
     result
 }
-pub(super) fn same_sql(ours: &Path, theirs: &Path, before: &Path) {
-    let old = refs(before);
-    let (a, b) = (refs(ours), refs(theirs));
-    assert_eq!(a.len(), b.len());
-    for r in &old {
-        assert!(a.contains(r) && b.contains(r), "saved ref {} changed", r.id);
-    }
-    let mut pairs = Vec::new();
-    for r in a.iter().filter(|r| !old.iter().any(|o| o.id == r.id)) {
-        let matches: Vec<_> = b
-            .iter()
-            .filter(|q| {
-                let mut q = (*q).clone();
-                q.id = r.id;
-                q == *r
-            })
-            .collect();
-        assert_eq!(
-            matches.len(),
-            1,
-            "new ref role/owner/producer/links must be unique"
-        );
-        let peer = matches[0];
-        assert!(!old.iter().any(|o| o.id == peer.id));
-        pairs.push((r.id, peer.id));
-    }
-    assert_eq!(
-        sql(ours, &pairs),
-        sql(theirs, &[]),
-        "every SQL cell except modified_at and explicit new ref IDs"
-    );
+pub(super) fn same_sql(ours: &Path, theirs: &Path, _before: &Path) {
+    assert_eq!(refs(ours), refs(theirs), "same derived names");
+    assert_eq!(sql(ours), sql(theirs), "every SQL cell except modified_at");
 }
 pub(super) fn saved(s: &mut Sessions, target: SaveTarget) {
     let (tx, rx) = mpsc::channel();
@@ -244,13 +197,7 @@ pub(super) fn cold(path: &Path) -> f64 {
     let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
     let built =
         ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default()).expect("cold");
-    for r in d.topology_refs().expect("refs") {
-        assert!(
-            built.resolve(&r).is_ok_and(|v| !v.is_empty()),
-            "ref {}",
-            r.id
-        );
-    }
+    crate::test_names::assert_names(&built, &crate::test_names::names(&d));
     let reading = crate::sketch_facts::Source::read(&d).expect("reading");
     let selected = selected(&reading, 0);
     let exact = crate::feature_tests::area(&selected.boundary) * selected.height_mm
@@ -427,7 +374,7 @@ fn gate(count: usize, height: bool, name: &str) {
                 out.as_os_str(),
             ])
         };
-        assert_eq!(sql(&s.export_path().expect("height"), &[]), sql(&out, &[]));
+        assert_eq!(sql(&s.export_path().expect("height")), sql(&out));
         let now = crate::sketch_facts::read(&s.export_path().expect("height")).expect("reading");
         for (a, b) in selected(&opened, 0)
             .tools
@@ -474,10 +421,7 @@ fn gate(count: usize, height: bool, name: &str) {
     base_steps += 1;
     let out = root.path().join("peer-vertices.fcad");
     sketch_peer(&peer_before, &v, root.path(), &out);
-    assert_eq!(
-        sql(&s.export_path().expect("vertices"), &[]),
-        sql(&out, &[])
-    );
+    assert_eq!(sql(&s.export_path().expect("vertices")), sql(&out));
     peer_before = out;
     let before_cut = s.export_path().expect("before Cut");
     let mut accepted = vec![before_cut.clone()];
@@ -535,10 +479,7 @@ fn gate(count: usize, height: bool, name: &str) {
     assert_eq!(std::fs::read(&source).expect("source"), original);
     for expected in accepted.iter().rev().skip(1) {
         move_native(&mut s, true);
-        assert_eq!(
-            sql(&s.export_path().expect("Undo"), &[]),
-            sql(expected, &[])
-        );
+        assert_eq!(sql(&s.export_path().expect("Undo")), sql(expected));
     }
     for _ in 0..base_steps {
         move_native(&mut s, true);
@@ -549,17 +490,14 @@ fn gate(count: usize, height: bool, name: &str) {
     }
     for expected in accepted.iter().skip(1) {
         move_native(&mut s, false);
-        assert_eq!(
-            sql(&s.export_path().expect("Redo"), &[]),
-            sql(expected, &[])
-        );
+        assert_eq!(sql(&s.export_path().expect("Redo")), sql(expected));
     }
     saved(&mut s, SaveTarget::InPlace);
     same_sql(&source, &peer_before, &before_cut);
     cold(&source);
     let reopened = crate::sessions::test_open::open(&source).expect("reopen");
     assert!(!reopened.is_dirty());
-    assert_eq!(sql(reopened.current().path(), &[]), sql(&source, &[]));
+    assert_eq!(sql(reopened.current().path()), sql(&source));
     drop(reopened);
     if let Some(dir) = std::env::var_os("FCAD_CUT_SESSION_ARTIFACTS") {
         let dir = PathBuf::from(dir);
@@ -729,13 +667,9 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     same_sql(&accepted, &peer_out, &before);
     let added: Vec<_> = refs(&accepted)
         .into_iter()
-        .filter(|r| !refs(&before).contains(r))
+        .filter(|r| r.1 == "face" && !refs(&before).contains(r))
         .collect();
-    assert_eq!(
-        added.len(),
-        3,
-        "own floor plus both downstream Origin names"
-    );
+    assert_eq!(added.len(), 3, "own floor plus both downstream names");
     cold(&accepted);
     move_native(&mut s, true);
     assert_eq!(refs(&s.export_path().expect("Undo")), refs(&before));
@@ -743,7 +677,7 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     assert_eq!(
         refs(&s.export_path().expect("Redo")),
         refs(&accepted),
-        "Redo must restore exact new floor UUIDs"
+        "Redo must restore exact floor digests"
     );
     let mut r = request(&s, 0);
     if let ferritecad_document::EditChange::SetEndCondition { end_condition, .. } =
@@ -753,13 +687,17 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     } else {
         panic!("end change")
     }
-    let refusal = refuse(&mut s, &r);
-    for id in added.iter().map(|r| r.id) {
-        assert!(
-            refusal.contains(&id.to_string()),
-            "protected floor UUID {id}"
-        );
-    }
+    assert!(
+        matches!(apply(&mut s, &r), Edited::Show(_)),
+        "unconsumed floors may disappear"
+    );
+    let through_names = refs(&s.export_path().expect("through"));
+    assert!(added.iter().all(|name| !through_names.contains(name)));
+    move_native(&mut s, true);
+    assert_eq!(
+        refs(&s.export_path().expect("restored floor")),
+        refs(&accepted)
+    );
     r = request(&s, 0);
     if let ferritecad_document::EditChange::SetCurveGeometry {
         geometry: ferritecad_document::SketchGeometry::Circle { center, .. },
@@ -787,10 +725,36 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     } else {
         panic!("circle change")
     }
-    let error = refuse(&mut s, &r);
+    assert!(matches!(apply(&mut s, &r), Edited::Show(_)));
+    let overlap = s.export_path().expect("overlap");
     assert!(
-        error.contains(&selected(&opened, 2).feature.to_string()),
-        "far Cut overlap"
+        refs(&accepted)
+            .iter()
+            .any(|name| !refs(&overlap).contains(name))
+    );
+    let document = Document::open_read_only(&overlap).expect("overlap document");
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let built = ferritecad_eval::rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("overlap rebuild");
+    assert!(built.all_built());
+    let body = document
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+        .expect("body")
+        .id;
+    let (_, volume) = kernel
+        .shape_stats(built.shape(body).expect("shape"))
+        .expect("stats");
+    let expected = cold(&accepted) + std::f64::consts::PI * 1.625_f64.powi(2) * 6.125;
+    assert!((volume - expected).abs() < expected * 1e-7);
+    built.release_all(&mut kernel);
+    document.close().expect("close");
+    move_native(&mut s, true);
+    assert_eq!(
+        refs(&s.export_path().expect("restored floor")),
+        refs(&accepted)
     );
     r = request(&s, 0);
     if let ferritecad_document::EditChange::SetCurveGeometry { curve, .. } = &mut r.changes[0] {
@@ -811,7 +775,27 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     } else {
         panic!("end change")
     }
-    refuse(&mut s, &r);
+    assert!(matches!(apply(&mut s, &r), Edited::Show(_)));
+    let extended = s.export_path().expect("extended Blind cut");
+    let extended_names = refs(&extended);
+    assert!(added.iter().all(|name| !extended_names.contains(name)));
+    assert_eq!(
+        extended_names
+            .iter()
+            .filter(|name| name.1 == "face")
+            .collect::<Vec<_>>(),
+        through_names
+            .iter()
+            .filter(|name| name.1 == "face")
+            .collect::<Vec<_>>(),
+        "the unconsumed floors disappear in both through cuts"
+    );
+    cold(&extended);
+    move_native(&mut s, true);
+    assert_eq!(
+        refs(&s.export_path().expect("restored floor")),
+        refs(&accepted)
+    );
     assert_eq!(std::fs::read(&source).expect("source"), original);
     let (stl, fbx) = export_bytes(&accepted, &source, root.path(), "floor");
     assert_eq!(
@@ -1013,27 +997,7 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
     drop(db);
     control("raw hash", &|| same_sql(&corrupt, &last, &source));
     // New refs may map only their UUID, never owner/producer/role/link cells.
-    let corrupt_ref = tmp.path().join("corrupt-ref.fcad");
-    std::fs::copy(root.join("saved.fcad"), &corrupt_ref).expect("control");
-    let added = refs(&corrupt_ref)
-        .into_iter()
-        .find(|r| {
-            !refs(&source).iter().any(|old| old.id == r.id)
-                && r.owner != selected(&reading, 2).feature
-        })
-        .expect("new floor");
-    let db = rusqlite::Connection::open(&corrupt_ref).expect("db");
-    db.execute(
-        "UPDATE topology_refs SET owner_id=?1 WHERE id=?2",
-        rusqlite::params![
-            selected(&reading, 2).feature.to_bytes().as_slice(),
-            added.id.to_bytes().as_slice()
-        ],
-    )
-    .expect("wrong owner");
-    drop(db);
-    control("new ref owner", &|| same_sql(&corrupt_ref, &last, &source));
-    println!("FCAD_30F_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
+    println!("FCAD_30F_GUI_COMPARE_OK negative_controls=6 all_SQL_cells=true");
 }
 
 #[test]
@@ -1080,9 +1044,7 @@ fn native_open_slot_radius_form_applies_and_survives_history_and_save() {
     let built =
         ferritecad_eval::rebuild_cold(&d, &mut kernel, &OperationContext::default()).expect("cold");
     assert!(built.all_built(), "{:?}", built.report());
-    for r in names {
-        assert!(!built.resolve(&r).expect("resolved").is_empty());
-    }
+    crate::test_names::assert_flat_names(&built, &names);
     let body = ferritecad_fixtures::feature_changes::body(&d).expect("body");
     let volume = kernel
         .shape_stats(built.shape(body).expect("body"))

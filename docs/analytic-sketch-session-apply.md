@@ -18,7 +18,7 @@ evaluator, no second history. [Verification and the macOS window scenario](analy
 3. *Edit circle…* / *Edit annulus…* is still offered with unsaved changes. Change the
    centre and the radius (radii), then press **Apply circle** / **Apply annulus**. No
    file dialog. The reused `edit-circle` / `edit-annular` operation runs on the accepted
-   snapshot (cold rebuild, strict reference check), the picture is built, and the
+   snapshot (cold rebuild, feature-failure check), the picture is built, and the
    version becomes current in the statement that shows it. The form closes: it described
    the picture that was replaced. The height is not part of the request.
 4. **Undo / Redo** (toolbar, `Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`) pass through height,

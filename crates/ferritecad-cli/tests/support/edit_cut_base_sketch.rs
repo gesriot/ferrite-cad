@@ -33,31 +33,6 @@ pub(super) fn measured_fixture(root: &Path, tools: &[CutSpec]) -> PathBuf {
             std::mem::swap(start, end);
         }
     }
-    let refs = d.topology_refs().expect("refs");
-    let missing: Vec<_> = sketch
-        .curves
-        .iter()
-        .filter(|c| {
-            !refs.iter().any(|r| {
-                r.producer_feature == context.base_feature
-                    && r.output_role
-                        == SemanticRole::ExtrudeSide {
-                            profile_segment: c.id,
-                        }
-            })
-        })
-        .map(|c| ferritecad_document::TopologyRef {
-            id: StableEntityId::new(),
-            owner: context.base_feature,
-            producer_feature: context.base_feature,
-            expected_kind: ferritecad_document::EntityKind::Face,
-            output_role: SemanticRole::ExtrudeSide {
-                profile_segment: c.id,
-            },
-            selection: ferritecad_document::SelectionRule::AllDerivedFrom { ancestor: c.id },
-            fallback_signature: None,
-        })
-        .collect();
     d.write(|w| {
         if tools.len() == 2 {
             w.put_object(
@@ -68,17 +43,15 @@ pub(super) fn measured_fixture(root: &Path, tools: &[CutSpec]) -> PathBuf {
                 &record.payload,
             )?;
         }
-        for r in &missing {
-            w.put_topology_ref(r)?;
-        }
+
         Ok(())
     })
     .expect("fixture names");
     assert_eq!(
-        d.topology_refs()
-            .expect("refs")
+        crate::names::snapshot(&d)
             .iter()
-            .filter(|r| r.producer_feature == context.base_feature)
+            .filter(|(at, name)| *at == context.base_feature
+                && name.kind == ferritecad_kernel::SubShapeKind::Face)
             .count(),
         6
     );

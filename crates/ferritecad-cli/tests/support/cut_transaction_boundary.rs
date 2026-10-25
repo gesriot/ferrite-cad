@@ -167,12 +167,7 @@ fn cold(path: &Path, kernel: &mut ferritecad_occt::OcctKernel) -> f64 {
     let built = ferritecad_eval::rebuild_cold(&d, kernel, &OperationContext::default())
         .expect("cold rebuild");
     assert!(built.all_built(), "{:?}", built.report());
-    for r in d.topology_refs().expect("names") {
-        assert!(
-            !built.resolve(&r).expect("name resolves").is_empty(),
-            "{r:?}"
-        );
-    }
+    crate::names::assert_primary(&built);
     let (body, _) = tip(&d);
     let volume = kernel
         .shape_stats(built.shape(body).expect("body"))
@@ -251,15 +246,9 @@ pub(super) fn run() {
     for path in [&p.path, p.session.current().path()] {
         let d = Document::open_read_only(path).expect("reopen");
         assert!(
-            d.topology_refs()
-                .expect("names")
+            crate::names::floor_names(&d, saved.feature)
                 .iter()
-                .any(|r| r.owner == saved.feature
-                    && r.producer_feature == saved.feature
-                    && r.output_role
-                        == SemanticRole::ExtrudeCap {
-                            side: ferritecad_document::CapSide::End
-                        })
+                .any(|(at, _)| *at == saved.feature)
         );
     }
     p.continue_cut(&saved);

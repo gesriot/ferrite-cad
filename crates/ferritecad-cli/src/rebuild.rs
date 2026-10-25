@@ -181,31 +181,6 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
         writeln!(out, "{}", line.trim_end()).expect("writing to a String cannot fail");
     }
 
-    // What the document says about its own geometry, checked against what was
-    // just built. A reference that no longer resolves is the failure this
-    // whole project is arranged to make visible, so it is named, not counted.
-    let references = document.topology_refs()?;
-    let mut lost = Vec::new();
-    for reference in &references {
-        if let Err(error) = built.resolve(reference) {
-            lost.push(format!(
-                "    {} on {}: {error}",
-                reference.id,
-                named(reference.producer_feature)
-            ));
-        }
-    }
-
-    out.push('\n');
-    writeln!(
-        out,
-        "  {} of {} stored references resolved",
-        references.len() - lost.len(),
-        references.len()
-    )
-    .expect("writing to a String cannot fail");
-    for line in &lost {
-        writeln!(out, "{line}").expect("writing to a String cannot fail");
-    }
+    out.push_str(&crate::topology::report(built)?);
     Ok(out)
 }

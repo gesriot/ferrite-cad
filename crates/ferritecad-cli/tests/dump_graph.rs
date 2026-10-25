@@ -364,7 +364,7 @@ fn replace_with_planes(
         )
         .expect("datum plane template");
     connection
-        .execute_batch("DELETE FROM topology_refs; DELETE FROM deps; DELETE FROM objects;")
+        .execute_batch("DELETE FROM deps; DELETE FROM objects;")
         .expect("clear sample graph");
     for (id, name, ordinal) in rows {
         connection.execute(

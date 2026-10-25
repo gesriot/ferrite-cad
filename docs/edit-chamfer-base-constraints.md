@@ -82,7 +82,7 @@ publishes anything: the source, the destination and the draft are left as they w
 | `objects` | the base Sketch row's `schema_version`, `payload`, `payload_hash` |
 | `capabilities` | the `sketch.constraints.v1` row, upserted with `required = 1` by the existing policy when the saved Sketch has constraints (already present when the source had them) |
 | `meta` | `modified_at` |
-| every other table and column, including `deps` and `topology_refs` | nothing |
+| every other table and column, including `deps` | nothing |
 
 Preserved: every object, curve, the Chamfer (UUID, `previous`, edge, joint,
 distance), the Extrude (height), the Body tip, every dependency and topology
@@ -102,7 +102,7 @@ the first addition.
   the Chamfer and pointing at the constraint editor. Removing every user
   constraint leaves the closure Coincidents, and the closure-only coordinate edit
   works again. Nothing is silently dropped and no solved coordinate is baked in.
-* The strict reference rule of the shared job covers all of it.
+* The shared job requires no newly failing feature.
 
 ### Writer, version, references
 
@@ -112,7 +112,7 @@ read again from the current document; the prepared constraint list must equal th
 stored list without the removed UUIDs followed by the added ones; curves and plane
 are unchanged. A forged or stale prepared value is refused and nothing is written.
 The existing job keeps the content-version guard, `copy_access`, alias/no-clobber,
-cancellation, strict resolved references after the cold rebuild, atomic
+cancellation, no new failed features after the cold rebuild, atomic
 publication and exit 7. No new payload, capability or SQLite version is needed.
 
 ### Discovery (`inspect --json`), additive
@@ -200,6 +200,21 @@ sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
 from edit_requests import constraint_request, line_request, line_rule, distance, fixed as pin_rule
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29d-"))
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
@@ -308,9 +323,9 @@ def measured(copy, rect, corner, distance, height):
     distance*sqrt(2)*h and faces out of the plate."""
     x0, y0, w, d = rect
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Chamfer" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Chamfer" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--json"])
     volume, tri = stl(out)
@@ -367,7 +382,7 @@ editor = sketch
 lines = [c["curve_id"] for c in editor["curves"]]
 starts = [c["geometry"]["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
-refs = tables(chamfered)["topology_refs"]
+refs = output_names(chamfered)
 
 def ask(source, remove, add):
     path = root / "constraints.json"
@@ -403,7 +418,7 @@ result = constrain(chamfered, catalog["content_version"], [], dimensioned(AT, WI
 
 assert chamfered.read_bytes() == before
 allowlist(chamfered, first, sketch["sketch_id"])
-assert tables(first)["topology_refs"] == refs, "a name moved"
+assert output_names(first) == refs, "a name moved"
 after = inspect(first)
 assert [c["geometry"]["start_mm"] for c in after["sketches"][0]["curves"]] == starts
 (again,) = after["chamfers"]

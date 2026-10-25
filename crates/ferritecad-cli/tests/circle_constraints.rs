@@ -8,9 +8,11 @@
 //! this slice exists to keep: the stored sketch is still the starting guess it
 //! always was, and the solved answer never quietly replaces it.
 #![allow(clippy::panic)]
+#[path = "support/names.rs"]
+mod names;
 #[path = "support/transaction.rs"]
 mod transaction;
-use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
+use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
 use std::{
@@ -163,7 +165,7 @@ struct Stored {
     radius: f64,
     height_mm: f64,
     constraints: Vec<(ferritecad_types::StableEntityId, String)>,
-    refs: Vec<ferritecad_document::TopologyRef>,
+    refs: crate::names::Names,
     objects: usize,
 }
 fn stored(path: &Path) -> Stored {
@@ -207,7 +209,7 @@ fn stored(path: &Path) -> Stored {
             )
         })
         .collect();
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::snapshot(&d);
     let count = objects.len();
     d.close().expect("close");
     Stored {
@@ -270,25 +272,18 @@ fn analytic_with_cache(
     let mut caps = Vec::new();
     let mut side_of = None;
     let mut stats = None;
-    for reference in &doc.topology_refs().expect("refs") {
-        let resolved = built.resolve(reference).expect("resolve");
-        assert!(
-            !resolved.is_empty(),
-            "reference {:?} resolved to nothing",
-            reference.output_role
-        );
-        for handle in &resolved {
-            let surface = kernel.face_surface(*handle).expect("surface");
-            match reference.output_role {
-                SemanticRole::ExtrudeSide { profile_segment } => {
-                    side_of = Some(profile_segment);
-                    side.push(surface);
-                }
-                SemanticRole::ExtrudeCap { .. } => caps.push(surface),
-                _ => panic!("unexpected role"),
+    crate::names::assert_primary(&built);
+    for (_, input, handle) in crate::names::root_faces(&doc, &built) {
+        let surface = kernel.face_surface(handle).expect("surface");
+        match input {
+            ferritecad_kernel::NamingInput::Curve(curve) => {
+                side_of = Some(curve);
+                side.push(surface);
             }
-            stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
+            ferritecad_kernel::NamingInput::Cap { .. } => caps.push(surface),
+            _ => panic!("unexpected root"),
         }
+        stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
     }
     let (faces, volume) = stats.expect("a resolved reference names the solid");
     built.release_all(&mut kernel);
@@ -611,7 +606,7 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
         "the solved radius did not overwrite the stored guess"
     );
     assert_eq!(after.height_mm, 15.);
-    assert_eq!(after.refs, before.refs, "same reference UUIDs and roles");
+    assert_eq!(after.refs, before.refs, "same primary name digests");
     assert_eq!(after.objects, before.objects);
 
     let mut kinds: Vec<_> = after.constraints.iter().map(|(_, k)| k.clone()).collect();
@@ -1017,8 +1012,8 @@ fn same_sql_but_the_sketch_payload(a: &Path, b: &Path, sketch: ferritecad_types:
         }
     }
     assert!(
-        compared > 50,
-        "a comparison of {compared} cells is not a comparison"
+        compared == 49,
+        "expected all 49 cells of the catalogue-free fixture, compared {compared}"
     );
 }
 
@@ -1073,7 +1068,7 @@ fn native_circle_diameter_is_the_stored_radius_in_the_same_slot() {
     for s in [&sd, &sr] {
         assert_eq!(s.curve, before.curve);
         assert_eq!((s.center, s.radius), (before.center, before.radius));
-        assert_eq!(s.refs, before.refs, "same reference UUIDs and roles");
+        assert_eq!(s.refs, before.refs, "same primary name digests");
     }
     let minted: std::collections::BTreeSet<_> = sd
         .constraints

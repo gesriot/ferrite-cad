@@ -77,7 +77,7 @@ Between the source and the copy:
 | --- | --- |
 | `objects` | the selected Fillet row's `payload` and `payload_hash`; nothing else in that row or any other row |
 | `meta` | `modified_at` |
-| every other table, including `deps`, `topology_refs`, `capabilities` | nothing |
+| every other table, including `deps`, `capabilities` | nothing |
 
 Row counts are equal in every table.
 
@@ -116,20 +116,14 @@ and CLI alike. That gives:
 * no-clobber publication, and refusal of source and alias destinations;
 * a baseline cold rebuild;
 * the write;
-* a strict cold rebuild in which every saved reference resolves under its
-  original meaning;
+* a cold rebuild that leaves no newly failing feature;
 * the version checked again, SQLite closed, and atomic publication;
 * cancellation boundaries throughout.
 
-The reference check covers:
-
-* every historical name at the base Extrude;
-* every `OriginCap`/`OriginSide` at the Fillet;
-* the `EdgeFilletFace`.
-
-No name is minted, so none is added to the check. A published copy whose
-report is lost stays published, and the CLI exits 7. It is never retried or
-rolled back.
+The operation derives all output names from the rebuilt model. Missing or
+ambiguous consumed edges still fail their consuming feature. Unconsumed output
+names impose no extra publication rule. A published copy whose report is
+lost stays published, and the CLI exits 7. It is never retried or rolled back.
 
 ### Cache
 
@@ -221,6 +215,21 @@ import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28b-"))
 OP = "edit"
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def new_id():
     raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
@@ -324,7 +333,7 @@ def measured(copy, r):
     chosen corner rounded by r."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and "10 of 10 stored references resolved" in text, text
+    assert "tip Fillet" in text and sum(line.lstrip().startswith("face ") for line in text.splitlines()) == 13, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
     volume, points = stl(out)
@@ -357,7 +366,7 @@ catalog = inspect(rounded)
 assert row["edge"] == chosen["edge"]
 assert row["expression"]["value"] == 2.375
 feature = row["feature_id"]
-refs = tables(rounded)["topology_refs"]
+refs = output_names(rounded)
 
 def edited(source, version, r, name, previous):
     request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": feature, "slot": {"kind": "fillet_radius"}, "value": r, "unit": "mm"}]}))
@@ -366,7 +375,7 @@ def edited(source, version, r, name, previous):
     result = run(["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"])["result"]
     assert source.read_bytes() == before
     moved = allowlist(source, out, feature)
-    assert tables(out)["topology_refs"] == refs, "a name moved"
+    assert output_names(out) == refs, "a name moved"
     (again,) = inspect(out)["fillets"]
     assert again["feature_id"] == feature and again["expression"]["value"] == r, again
     return out, moved

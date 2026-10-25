@@ -9,8 +9,8 @@
 //!
 //! # The manifest names nothing that changes
 //!
-//! [`render_manifest`] writes whether each stored reference resolved and with
-//! what cardinality — the role, the selection rule, how many faces — and never
+//! [`render_manifest`] writes each derived face name, its full derivation and
+//! its cardinality, and never
 //! a handle, a face index or a session id. Those differ on every run by design,
 //! so recording them would turn the gate into noise and, worse, would make the
 //! file look like an authority on which face is which.
@@ -40,8 +40,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use ferritecad_document::{
-    CapSide, Document, EndCondition, Expression, ObjectPayload, Point2, SelectionRule,
-    SemanticRole, Sketch, SketchCurve, SketchGeometry,
+    Document, EndCondition, Expression, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry,
 };
 use ferritecad_eval::RebuildResult;
 use ferritecad_kernel::{
@@ -116,47 +115,31 @@ pub fn render_manifest(
     );
 
     let objects = document.objects()?;
-    let references = document.topology_refs()?;
     writeln!(out, "objects {}", objects.len()).expect("writing to a String cannot fail");
-    writeln!(out, "references {}\n", references.len()).expect("writing to a String cannot fail");
-
     let mut faces = BTreeSet::new();
     let mut blocks = Vec::new();
-    for reference in &references {
-        let mut block = format!("{}\n", describe_role(&reference.output_role));
-        writeln!(block, "    {}", describe_selection(&reference.selection))
-            .expect("writing to a String cannot fail");
-
-        match built.resolve(reference) {
-            Ok(found) => {
-                faces.extend(found.iter().copied());
-                writeln!(
-                    block,
-                    "    {} face{}",
-                    found.len(),
-                    if found.len() == 1 { "" } else { "s" }
-                )
-                .expect("writing to a String cannot fail");
-                for face in found {
-                    match measure(mesh, face) {
-                        Some((area, centroid)) => writeln!(
-                            block,
-                            "    area {:.3} mm^2   middle ({:.3}, {:.3}, {:.3})",
-                            area, centroid[0], centroid[1], centroid[2]
-                        ),
-                        None => writeln!(block, "    not drawn"),
-                    }
-                    .expect("writing to a String cannot fail");
-                }
+    for (feature, names) in &built.topology().features {
+        for (name, found) in &names.bindings {
+            if name.kind != ferritecad_kernel::SubShapeKind::Face {
+                continue;
             }
-            Err(error) => writeln!(
-                block,
-                "    unresolved: {}",
-                first_sentence(&error.to_string())
-            )
-            .expect("writing to a String cannot fail"),
+            let mut block = format!("{}\n", built.topology().describe(*feature, *name)?);
+            writeln!(block, "    {} face(s)", found.len())
+                .expect("writing to a String cannot fail");
+            for face in found {
+                faces.insert(*face);
+                match measure(mesh, *face) {
+                    Some((area, centroid)) => writeln!(
+                        block,
+                        "    area {:.3} mm^2   middle ({:.3}, {:.3}, {:.3})",
+                        area, centroid[0], centroid[1], centroid[2]
+                    ),
+                    None => writeln!(block, "    not drawn"),
+                }
+                .expect("writing to a String cannot fail");
+            }
+            blocks.push(block);
         }
-        blocks.push(block);
     }
     blocks.sort();
     for block in blocks {
@@ -255,8 +238,7 @@ pub fn drop_segment(document: &mut Document) -> Result<StableEntityId> {
 /// Builds the plate from nothing. Used only to regenerate the committed file.
 pub fn write_plate(path: &Path) -> Result<()> {
     use ferritecad_document::{
-        Body, DatumPlane, Dependency, DependencyRole, EntityKind, Extrude, SolidOperation,
-        TopologyRef,
+        Body, DatumPlane, Dependency, DependencyRole, Extrude, SolidOperation,
     };
     use ferritecad_types::{ObjectId, Transform};
 
@@ -343,30 +325,6 @@ pub fn write_plate(path: &Path) -> Result<()> {
             role: DependencyRole::BodyTip,
         })?;
 
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        for segment in &segments {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeSide {
-                    profile_segment: *segment,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: *segment },
-                fallback_signature: None,
-            })?;
-        }
         Ok(())
     })?;
     document.close()
@@ -461,45 +419,6 @@ fn measure(mesh: &Mesh, face: SubShapeHandle) -> Option<(f64, [f64; 3])> {
     Some((area, middle))
 }
 
-fn describe_role(role: &SemanticRole) -> String {
-    match role {
-        SemanticRole::ExtrudeCap { side } => format!("cap {}", describe_cap(*side)),
-        SemanticRole::ExtrudeSide { profile_segment } => format!("side {profile_segment}"),
-        SemanticRole::SketchSegment { segment } => format!("sketch segment {segment}"),
-        SemanticRole::FilletFace { source_edge } => format!("fillet face from {source_edge}"),
-        other => format!("{other:?}"),
-    }
-}
-
-fn describe_cap(side: CapSide) -> &'static str {
-    match side {
-        CapSide::Start => "start",
-        CapSide::End => "end",
-        // A side this build does not know is written as such rather than
-        // folded into one of the two it does.
-        _ => "unknown",
-    }
-}
-
-fn describe_selection(selection: &SelectionRule) -> String {
-    match selection {
-        SelectionRule::Exact => "exact".to_owned(),
-        SelectionRule::AllDerivedFrom { ancestor } => format!("all derived from {ancestor}"),
-        other => format!("{other:?}"),
-    }
-}
-
-/// Keeps a failure's first clause, so the manifest records why without
-/// recording a message that may be reworded.
-fn first_sentence(message: &str) -> String {
-    message
-        .split([';', ':'])
-        .next()
-        .unwrap_or(message)
-        .trim()
-        .to_owned()
-}
-
 /// Check each native dependency separately before a test may skip it.
 #[track_caller]
 pub fn native_dependencies(dependencies: &[(bool, &str)]) -> bool {
@@ -529,10 +448,7 @@ pub struct FilletChain {
     pub body: ferritecad_types::ObjectId,
 }
 pub fn write_fillet_chain(path: &Path, radius: f64) -> Result<FilletChain> {
-    use ferritecad_document::{
-        Body, CapSide, Dependency, DependencyRole, EntityKind, Fillet, SelectionRule, SemanticRole,
-        SweptEdge, TopologyRef,
-    };
+    use ferritecad_document::{Body, Dependency, DependencyRole, Fillet, SweptEdge};
     use ferritecad_types::{ObjectId, ProfileJoint};
     write_plate(path)?;
     let mut document = Document::open(path)?;
@@ -593,52 +509,6 @@ pub fn write_fillet_chain(path: &Path, radius: f64) -> Result<FilletChain> {
                 dependency: previous,
                 role: DependencyRole::Predecessor,
             })?;
-            let mut roles = vec![(
-                SemanticRole::EdgeFilletFace {
-                    edge_feature: extrude,
-                    joint,
-                },
-                SelectionRule::Exact,
-            )];
-            for side in [CapSide::Start, CapSide::End] {
-                roles.push((
-                    SemanticRole::OriginCap {
-                        origin_feature: extrude,
-                        side,
-                    },
-                    SelectionRule::Exact,
-                ));
-            }
-            for segment in &segments {
-                roles.push((
-                    SemanticRole::OriginSide {
-                        origin_feature: extrude,
-                        profile_segment: *segment,
-                    },
-                    SelectionRule::AllDerivedFrom { ancestor: *segment },
-                ));
-            }
-            if id == second {
-                roles.push((
-                    SemanticRole::OriginFilletFace {
-                        origin_feature: first,
-                        edge_feature: extrude,
-                        joint: ProfileJoint::new(segments[3], segments[0])?,
-                    },
-                    SelectionRule::Exact,
-                ));
-            }
-            for (output_role, selection) in roles {
-                w.put_topology_ref(&TopologyRef {
-                    id: StableEntityId::new(),
-                    owner: id,
-                    producer_feature: id,
-                    expected_kind: EntityKind::Face,
-                    output_role,
-                    selection,
-                    fallback_signature: None,
-                })?;
-            }
         }
         w.put_object(
             body,

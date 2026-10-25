@@ -65,28 +65,19 @@ See the [current document format](file-format.md).
 
 ### Topology outputs
 
-* **Faces only.** Each profile Line raises exactly one face of revolution,
-  read from the sweep run by `BRepPrimAPI_MakeRevol`
-  (`revol.Revol().Shape(edge)`; see the measured reason below):
-  - a Line parallel to the axis gives a cylinder;
-  - a Line perpendicular to it gives an annular plane;
-  - any other Line gives a cone.
-* **Role.** Stored as `SemanticRole::RevolveFace { profile_segment }`, where
-  `profile_segment` is the Line's saved UUID. The selection is
-  `AllDerivedFrom { ancestor: segment }` or `Exact`.
-* **What is not stored.**
-  - There are no start/end caps: a full turn has none, and the annular end
-    faces are the rotations of the radial Lines.
-  - No face index, traversal order, seam vertex or edge, and no
-    `ProfileJoint` name.
-* **History check.** Every Line must raise exactly one face of the finished
-  solid, and no face may be claimed by two Lines. Anything else refuses the
-  build.
-* **Reference check.** A `RevolveFace` reference resolves only against a
-  Revolve's names, and an `ExtrudeSide` reference never against them. There
-  is no fallback to a similar face. Creation writes one `RevolveFace`
-  reference per Line, and publication requires every one to resolve after the
-  cold build.
+Output names are derived at rebuild time from the feature, operation, saved
+profile curves and cap roots, together with complete kernel history and
+incidence. Each feature exposes face, edge and vertex names. A name binds a
+selection only when it identifies exactly one entity in that feature; an
+ambiguous name never selects a neighbour. Names of historical results stay at
+their producing feature. No output-name rows are stored in the document.
+
+The CLI reports the kind, digest, entity count and complete derivation for
+each name. The window displays the same derivation and digest. See
+[ADR 0007](decisions/0007-generative-topological-naming.md) and the
+[current file format](file-format.md). Fillet and Chamfer still consume
+`SweptEdge { feature, joint }`; their corner policies and refusal messages
+are unchanged.
 
 ### Kernel, evaluator and cache
 

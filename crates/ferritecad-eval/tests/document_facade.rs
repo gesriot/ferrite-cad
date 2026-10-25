@@ -12,9 +12,8 @@
 use std::collections::BTreeSet;
 
 use ferritecad_document::{
-    Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
-    Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
-    SketchGeometry, SolidOperation, TopologyRef,
+    Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
+    ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_eval::DocumentGraph;
 use ferritecad_types::{ObjectId, Result, StableEntityId, Transform};
@@ -60,7 +59,6 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             },
         });
     }
-    let first_segment = curves[0].id;
 
     document.write(|writer| {
         writer.put_object(
@@ -124,32 +122,6 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             dependent: plate.body,
             dependency: plate.extrude,
             role: DependencyRole::BodyTip,
-        })?;
-
-        for side in [CapSide::Start, CapSide::End] {
-            writer.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: plate.extrude,
-                producer_feature: plate.extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-
-        writer.put_topology_ref(&TopologyRef {
-            id: StableEntityId::new(),
-            owner: plate.extrude,
-            producer_feature: plate.extrude,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::ExtrudeSide {
-                profile_segment: first_segment,
-            },
-            selection: SelectionRule::AllDerivedFrom {
-                ancestor: first_segment,
-            },
-            fallback_signature: None,
         })?;
 
         Ok(())
@@ -304,7 +276,7 @@ fn a_cycle_introduced_in_a_document_is_refused_rather_than_partially_planned() {
             writer.add_dependency(Dependency {
                 dependent: plate.plane,
                 dependency: plate.body,
-                role: DependencyRole::TopologyReference,
+                role: DependencyRole::Profile,
             })
         })
         .expect("the edge is storable");

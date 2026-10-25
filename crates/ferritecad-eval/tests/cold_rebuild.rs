@@ -12,8 +12,8 @@
 mod naming;
 
 use ferritecad_document::{
-    Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression,
-    Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+    Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
+    ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_eval::rebuild_cold;
 use ferritecad_kernel::{
@@ -160,20 +160,25 @@ fn a_plate_rebuilds_into_a_solid_with_named_faces() {
 
     // Asked by name, which is the only account a rebuild keeps. Every profile
     // segment raised exactly one side face, and the two caps are two faces.
-    let names = naming::view(built.topology(), plate.extrude);
+    let names = &built.topology().features[&plate.extrude];
     for segment in &plate.segments {
         assert_eq!(
-            names.side(*segment).count(),
+            names
+                .resolve(naming::side_name(plate.extrude, plate.plane, *segment))
+                .map(|_| 1)
+                .expect("generated face"),
             1,
             "segment {segment} should have raised one face"
         );
     }
 
-    let start: Vec<_> = names.cap(CapSide::Start).expect("a start cap").collect();
-    let end: Vec<_> = names.cap(CapSide::End).expect("an end cap").collect();
-    assert_eq!(start.len(), 1);
-    assert_eq!(end.len(), 1);
-    assert_ne!(start[0], end[0]);
+    let start = names
+        .resolve(naming::cap_name(plate.extrude, plate.plane, false))
+        .expect("start cap");
+    let end = names
+        .resolve(naming::cap_name(plate.extrude, plate.plane, true))
+        .expect("end cap");
+    assert_ne!(start, end);
 
     built.release_all(&mut kernel);
 }

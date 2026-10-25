@@ -61,20 +61,14 @@ pub(super) fn edit(
     )
 }
 
-pub(super) fn only_numbers(source: &Path, copy: &Path, saved: &CutObservation, added: usize) {
+pub(super) fn only_numbers(source: &Path, copy: &Path, saved: &CutObservation, _added: usize) {
     let a = tables(source);
     let b = tables(copy);
     assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
     for (name, (columns, rows)) in &a {
         let (cols, now) = &b[name];
         assert_eq!(columns, cols);
-        if name == "topology_refs" {
-            assert_eq!(now.len(), rows.len() + added);
-            for row in rows {
-                assert!(now.contains(row), "saved ref or rowid changed");
-            }
-            continue;
-        }
+
         assert_eq!(rows.len(), now.len(), "{name} rows");
         for (old, new) in rows.iter().zip(now) {
             for (i, (x, y)) in old.iter().zip(new).enumerate() {
@@ -263,24 +257,78 @@ pub(super) fn history_refusals(count: usize) {
         let saved = super::history::ordered(&source)[index].clone();
         let never = root.path().join("never.fcad");
         let original = std::fs::read(&source).expect("source");
-        for cut in [
-            CutSpec {
-                extent: CutDepth::Blind { depth_mm: 12. },
-                ..tools[index]
-            },
-            CutSpec {
-                center_mm: tools[(index + count - 1) % count].center_mm,
-                ..tools[index]
-            },
-        ] {
-            let error = edit(&source, &never, &saved, cut, 2);
-            if cut.extent.blind_depth_mm().expect("blind") == 12. {
-                for id in &saved.protected_floor_references {
-                    assert!(error.to_string().contains(&id.to_string()));
-                }
-            }
-            assert!(!never.exists());
-        }
+        let through = root.path().join("through.fcad");
+        let mut without_floor = tools.clone();
+        without_floor[index].extent = CutDepth::Blind { depth_mm: 12. };
+        edit(&source, &through, &saved, without_floor[index], 0);
+        assert!(
+            crate::names::floor_names(
+                &Document::open_read_only(&through).expect("through"),
+                saved.feature
+            )
+            .is_empty()
+        );
+        measure_history(&through, &without_floor, None);
+        // Concentric tools may remove old, unconsumed output names while all
+        // features still build. Their intersection is an independent cylinder.
+        let neighbor = (index + count - 1) % count;
+        let moved = CutSpec {
+            center_mm: tools[neighbor].center_mm,
+            ..tools[index]
+        };
+        let overlapping = root.path().join("overlapping.fcad");
+        edit(&source, &overlapping, &saved, moved, 0);
+        let document = Document::open_read_only(&overlapping).expect("overlap");
+        let old_document = Document::open_read_only(&source).expect("source");
+        let old_names = crate::names::snapshot(&old_document);
+        let new_names = crate::names::snapshot(&document);
+        assert!(
+            old_names
+                .iter()
+                .any(|name| name.1.kind == ferritecad_kernel::SubShapeKind::Face
+                    && !new_names.contains(name))
+        );
+        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+        let built =
+            ferritecad_eval::rebuild_cold(&document, &mut kernel, &OperationContext::default())
+                .expect("overlap rebuild");
+        assert!(built.all_built());
+        let volume = kernel
+            .shape_stats(built.shape(saved.body).expect("body"))
+            .expect("volume")
+            .1;
+        let removed: f64 = tools
+            .iter()
+            .map(|tool| {
+                std::f64::consts::PI * tool.radius_mm.powi(2) * tool.extent.reach_mm(SIZE[2])
+            })
+            .sum();
+        let intersection = std::f64::consts::PI
+            * moved.radius_mm.min(tools[neighbor].radius_mm).powi(2)
+            * moved
+                .extent
+                .reach_mm(SIZE[2])
+                .min(tools[neighbor].extent.reach_mm(SIZE[2]));
+        assert!((volume - (SIZE.iter().product::<f64>() - removed + intersection)).abs() < 1e-6);
+        built.release_all(&mut kernel);
+
+        old_document
+            .close()
+            .expect("close source snapshot before race probes");
+        document.close().expect("close overlap snapshot");
+
+        // Equal tools leave a consuming Cut with no removal, so it still fails.
+        let failure = edit(&source, &never, &saved, tools[neighbor], 2);
+        let failed = if index > neighbor {
+            saved.feature
+        } else {
+            super::history::ordered(&source)[neighbor].feature
+        };
+        assert!(
+            failure.to_string().contains(&failed.to_string()),
+            "{failure}"
+        );
+        assert!(!never.exists());
         // Exact contact remains a named evaluator refusal; overlap is accepted
         // and checked separately by the transaction-boundary tests.
         let other = tools[(index + count - 1) % count];

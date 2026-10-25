@@ -13,16 +13,14 @@
 #[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
 mod naming;
 
-use ferritecad_document::{
-    CacheStore, CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef,
-};
+use ferritecad_document::CacheStore;
 use ferritecad_eval::{load_extrude_archive, store_extrude_archive};
 use ferritecad_kernel::{
     ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext, PlanarPoint, Profile,
     ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_topology::{archive_feature, resolve, restore_feature};
+use ferritecad_topology::{archive_feature, restore_feature};
 use ferritecad_types::{DocumentId, ObjectId, Result, StableEntityId};
 
 fn plate() -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
@@ -57,18 +55,6 @@ fn plate() -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
     ))
 }
 
-fn face_reference(feature: ObjectId, role: SemanticRole, selection: SelectionRule) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: role,
-        selection,
-        fallback_signature: None,
-    }
-}
-
 #[test]
 fn open_cascade_geometry_and_its_names_survive_a_file() {
     if !is_available() {
@@ -84,7 +70,7 @@ fn open_cascade_geometry_and_its_names_survive_a_file() {
     let context = OperationContext::default();
 
     // The writing run. Everything it holds is gone by the closing brace.
-    let (before_stats, blob_len) = {
+    let (before_stats, blob_len, edge_names) = {
         let mut kernel = OcctKernel::new().expect("opens");
         let mut cache = CacheStore::open(
             &path,
@@ -104,8 +90,18 @@ fn open_cascade_geometry_and_its_names_survive_a_file() {
         store_extrude_archive(&mut cache, kernel.identity(), &request, &context, &archived)
             .expect("stores");
 
+        let edge_names: Vec<_> = [false, true]
+            .into_iter()
+            .flat_map(|end| {
+                naming::cap_edges(&mut kernel, result.shape, end)
+                    .into_values()
+                    .map(|edge| map.feature(feature).expect("named").entities[&edge])
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(edge_names.len(), 8);
         kernel.release(result.shape);
-        (stats, blob_len)
+        (stats, blob_len, edge_names)
     };
     assert!(blob_len > 0, "Open CASCADE wrote an empty archive");
 
@@ -148,29 +144,12 @@ fn open_cascade_geometry_and_its_names_survive_a_file() {
     // is the whole point of writing them down: the handles that named them died
     // with the session that issued them.
     let mut restored_edges = std::collections::BTreeSet::new();
-    for side in [CapSide::Start, CapSide::End] {
-        for segment in &segments {
-            let found = resolve(
-                &restored,
-                &ferritecad_document::TopologyRef {
-                    id: StableEntityId::new(),
-                    owner: feature,
-                    producer_feature: feature,
-                    expected_kind: ferritecad_document::EntityKind::Edge,
-                    output_role: SemanticRole::ExtrudeCapEdge {
-                        side,
-                        profile_segment: *segment,
-                    },
-                    selection: ferritecad_document::SelectionRule::Exact,
-                    fallback_signature: None,
-                },
-            )
-            .unwrap_or_else(|e| panic!("the {side:?} cap edge of {segment} was lost: {e}"));
-            assert_eq!(found.len(), 1);
-            assert_eq!(found[0].kind(), ferritecad_kernel::SubShapeKind::Edge);
-            assert_eq!(found[0].shape(), shape, "restored onto the restored shape");
-            assert!(restored_edges.insert(found[0]), "one edge answered twice");
-        }
+    for name in edge_names {
+        let found = naming::resolve(&restored, feature, &name).expect("cap edge survives");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind(), ferritecad_kernel::SubShapeKind::Edge);
+        assert_eq!(found[0].shape(), shape, "restored onto the restored shape");
+        assert!(restored_edges.insert(found[0]), "one edge answered twice");
     }
     assert_eq!(restored_edges.len(), 8, "four segments, two caps");
 
@@ -185,31 +164,15 @@ fn open_cascade_geometry_and_its_names_survive_a_file() {
     }
 
     let mut all = Vec::new();
-    for side in [CapSide::Start, CapSide::End] {
-        let faces = resolve(
-            &restored,
-            &face_reference(
-                feature,
-                SemanticRole::ExtrudeCap { side },
-                SelectionRule::Exact,
-            ),
-        )
-        .unwrap_or_else(|e| panic!("the {side:?} cap should resolve after a reopen: {e}"));
+    for end in [false, true] {
+        let name = naming::cap_name(feature, naming::plane_id(), end);
+        let faces = naming::resolve(&restored, feature, &name).expect("cap after reopen");
         assert_eq!(faces.len(), 1);
         all.extend(faces);
     }
     for segment in &segments {
-        let faces = resolve(
-            &restored,
-            &face_reference(
-                feature,
-                SemanticRole::ExtrudeSide {
-                    profile_segment: *segment,
-                },
-                SelectionRule::AllDerivedFrom { ancestor: *segment },
-            ),
-        )
-        .unwrap_or_else(|e| panic!("side {segment} should resolve after a reopen: {e}"));
+        let name = naming::side_name(feature, naming::plane_id(), *segment);
+        let faces = naming::resolve(&restored, feature, &name).expect("side after reopen");
         assert_eq!(faces.len(), 1);
         all.extend(faces);
     }

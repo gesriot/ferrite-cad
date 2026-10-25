@@ -1,6 +1,10 @@
 # Карта предметных возможностей: UI ↔ CLI ↔ общий API
 
-Срез §24A, обновлён срезами §24B–§24J-1 и §25A–§25H. Это описание **текущих** команд и владельцев, а не проект нового протокола.
+Карта возможностей с историей изменений от §24A. Записи отдельных срезов ниже
+сохраняют контекст своих проверок; актуальные изменения 06–08 имеют приоритет.
+После 08b выходные имена выводятся из перестроения. Непотребляемое дно Cut может
+исчезнуть при правке глубины или переходе к ThroughAll; отказ возникает, когда
+падает потребляющая фича. Каталога выходных ссылок и его предупреждений больше нет.
 
 Документ нужен агенту и человеку, которым дали задачу и публичный CLI: что уже можно получить тем же предметным результатом, что в UI, что умеет только один клиент, и где библиотечный метод ещё не является пользовательской операцией. Архитектурное правило — [§4.5 плана](implementation-plan.md): UI и CLI — два клиента общих операций; равенство считается по сохранённой модели и экспортируемым артефактам, а не по hover, жестам мыши или промежуточным кадрам.
 
@@ -590,7 +594,7 @@ JSON v1 доступен только явно перечисленным ком
 | Проверить документ без ядра | Нет отдельной команды. Неоткрываемый файл даёт `Open failed`; это отказ загрузки, не отчёт `validate`. | `ferritecad validate <path> [--json]` | Общий [`validate_document`](../crates/ferritecad-jobs/src/validate.rs): один `Document::open_read_only`, UUID и `Document::validate` из закреплённого снимка, закрытие SQLite до owned результата. Правила и stable codes принадлежат document. | Без writes/миграции/kernel. JSON ok:true и valid:true/false дают 0/1; operational error — 2, delivery failure — 7. Warnings сохраняются. Старые schema/WAL/minimum reader теперь честно отказывают также в text validate. Это не гарантия геометрии/STEP/FBX complete; UI validate/repair отсутствуют. [Протокол](read-only-validation.md). |
 | Cold rebuild нативного графа | Не команда. Open/Export сами делают холодное перестроение как часть чтения. | `ferritecad rebuild --cold <path>` | [`rebuild_cold`](../crates/ferritecad-eval/src/cold.rs) в `ferritecad-eval` против [`OcctKernel`](../crates/ferritecad-occt/src/kernel.rs) / [`GeometryKernel`](../crates/ferritecad-kernel/src/kernel.rs). Документ — `open_read_only`. | Без `--cold` команда отказывает (exit 2, **измерено**). [`rebuild_cached`](../crates/ferritecad-eval/src/cold.rs) есть в библиотеке и тестах и **не** предлагается CLI/UI. Публичного cached-rebuild нет. |
 | Граф зависимостей | Нет. Список определений во вьюере — не dump графа. | `ferritecad dump-graph <path> [--format <text\|dot>]` | [`Document::open_read_only`](../crates/ferritecad-document/src/document.rs), затем прежние [`evaluation_order`](../crates/ferritecad-document/src/graph.rs) и [`render::graph_text` / `graph_dot`](../crates/ferritecad-cli/src/render.rs). | Без миграции и записи (§24J-1, **измерено**). Старая схема, WAL и minimum reader — отказ общего reader, exit 2, пустой stdout. `dot` — Graphviz, не JSON. `--format json` нет (**измерено**, clap exit 2). |
-| Topology references: что документ назвал и держится ли это | Клик по именованной грани/ребру/углу нативного тела показывает переносимое имя в инспекторе. Это просмотр, не отчёт по всем ссылкам. | `ferritecad print-topology <path>` | Хранение — [`Document::topology_refs`](../crates/ferritecad-document/src/document.rs). Разрешение — `RebuildResult::resolve` после `rebuild_cold`. Отчёт и коды — [`topology::print_topology`](../crates/ferritecad-cli/src/topology.rs). *Из кода:* lost → exit 3, invalid → 1, unsupported/прочее → 2. | Нет команды «добавить/изменить ссылку». Роль сегмента эскиза как самостоятельной ссылки в плане помечена как граница, не упущение CLI. Импортированная топология не именуется durably. |
+| Derived topology names | A unique selected face, edge or vertex shows its feature, kind, digest and full derivation. Ambiguous names have no selection binding. | `ferritecad print-topology <path>`; also `inspect` and `rebuild --cold`. | `ModelNaming` supplies the primary bindings and complete derivations. The CLI prints feature, kind, digest, description and entity count in deterministic order. Exit 0 when all features build; exit 2 for failed features or an operational error. | No output-name catalogue is stored. Fillet and Chamfer still consume `SweptEdge`; imported topology remains unnamed. |
 | STEP → новый `.fcad` (байты источника внутри) | Нет. Open принимает `.fcad`, не STEP. Отдельное продолжение после §23 это признаёт. | `ferritecad import-step <file.step> -o <out.fcad> [--name <name>] [--force] [--json]` | Общий [`import_step_document`](../crates/ferritecad-jobs/src/import.rs): одно чтение STEP, kernel factory/import callback, владение handles, `Document::store_step_import`, закрытие SQLite и атомарный publish через `Temporary`. Text/JSON CLI готовят один request и отображают owned outcome; JSON 0/4 — publication, 5 — typed reader rejection, 2 — operational error, 7 — delivery failure. [Протокол request/outcome/отмены](shared-step-import.md). | UI не импортирует STEP; CLI cancellation flags отсутствуют. Импорт не делает сборку редактируемой. Нет STEP-экспорта (команды `export-step` нет). |
 | Binary STL одного тела | `Export STL…` → явный UUID при нескольких Body → параметры → `Save STL…`; Cancel и подтверждение Replace. | `ferritecad export-stl <path> -o <file.stl> [--solid <name-or-id>] [--linear-deflection <mm>] [--angular-deflection <rad>] [--force] [--json]` | Общий [`export_document_as_stl`](../crates/ferritecad-jobs/src/stl.rs): выбор Body, одно read-only чтение, cold rebuild, `GeometryKernel::tessellate`, `binary_stl`, `Temporary`. CLI — адаптер, UI — owned worker. | Только один native Body; imported-only, сборки и несколько тел одним STL не поддерживаются. JSON сообщает опубликованные destination/Body/triangles/bytes (§24F). [§24E: протокол и границы наблюдения](stl-export-verification.md). |
 | FBX 7.4 ASCII всей модели | `Export FBX…` при принятой сцене. Замена существующего файла — вопрос окна, не `--force`. Отмена есть. | `ferritecad export-fbx <path> -o <file.fbx> [--force] [--json]` | Один маршрут: [`ferritecad_jobs::export_document_as_fbx`](../crates/ferritecad-jobs/src/fbx.rs) ← [`export_scene`](../crates/ferritecad-scene/src/export.rs) ← `prepare::load`. CLI: [`export_fbx::export_fbx`](../crates/ferritecad-cli/src/export_fbx.rs). UI: [`exports::export_into`](../crates/ferritecad-app/src/exports.rs). | Это два клиента одной операции. JSON v1 сообщает опубликованный полный/частичный результат, счётчики и typed omissions; partial — ok:true и exit 6 (§24G). CLI не выставляет отмену; UI — выставляет. |
@@ -666,10 +670,9 @@ JSON v1 доступен только явно перечисленным ком
 
 | Код | Когда | Источник |
 | --- | --- | --- |
-| 0 | Команда выполнена; validate не нашёл errors, warnings допустимы | **измерено** на create/inspect/validate/dump-graph/rebuild --cold/print-topology (решённые ссылки)/import без диагностики/clear-cache/полном STL и FBX |
-| 1 | `validate`: проверка состоялась, есть errors (JSON ok:true, valid:false); `print-topology`: contradictory stored ref | validate **измерено** в §24J; topology — *из кода* |
+| 0 | Команда выполнена; validate не нашёл errors, warnings допустимы | **измерено** на create/inspect/validate/dump-graph/rebuild --cold/print-topology (порождающие имена)/import без диагностики/clear-cache/полном STL и FBX |
+| 1 | `validate`: проверка состоялась, есть errors (JSON ok:true, valid:false) | validate **измерено** в §24J |
 | 2 | Не запустилась или отказала: clap usage, `CadError` по умолчанию, нет `--cold`, нет тел для STL, файл уже есть | **измерено** |
-| 3 | `print-topology`: документ перестроился, имя потеряно | *из кода* |
 | 4 | `import-step`: документ записан целиком, чтение что-то сообщило | **измерено**, §24H native job/CLI parity |
 | 5 | `import-step`: ничего не записано (отказ читать); отчёт находится на stdout, в JSON — error.code=reader_rejected и step_read | **измерено при ревью** на файле, не являющемся STEP |
 | 6 | `export-fbx`: файл опубликован и неполон | *из кода / README* |
@@ -738,11 +741,11 @@ Keep сохраняет появившееся назначение, Replace п�
 
 - `created plate.fcad (…)`
 - `plate.fcad is valid (0 warnings)`
-- rebuild: ядро `occt 8.0.1 …`, `4 objects evaluated, 1 shape built`, `3 of 3 stored references resolved`; у `Extrude1` в отчёте `solid, 6 named faces` (имена rebuild, не число **хранимых** ссылок — их три)
+- rebuild: ядро `occt 8.0.1 …`, `4 objects evaluated, 1 shape built`; шесть граней, двенадцать рёбер и восемь вершин описаны порождающими именами с `entities=1`.
 - STL: `12 triangles, 684 bytes` с плиты `Plate`, deflection `0.01 mm` / `0.5 rad`
 - FBX: `complete: nothing this document holds was left out of the file`
 
-Полезные, но необязательные проверки: `inspect`, `print-topology` (три `resolved`), `dump-graph`. `clear-cache` после этого cold-пути сообщает, что sidecar нет — это нормально.
+Полезные, но необязательные проверки: `inspect`, `print-topology` (вид, дайджест, описание и число сущностей для каждого имени), `dump-graph`. `clear-cache` после этого cold-пути сообщает, что sidecar нет — это нормально.
 
 ### 2. Небольшой STEP → `.fcad` → экспорт после удаления своей копии STEP
 
@@ -868,7 +871,7 @@ export source. Пустой сохранённый документ отлича
 
 Проверки запускают оба клиента: настоящий процесс `ferritecad create` и командный
 маршрут UI (`ask_new` / `start_new` / `finish_create`) без диалоговых кликов.
-Сравниваются полные payloads, parent/dependency links, роли и связь topology refs
+Сравниваются полные payloads, parent/dependency links и порождающие имена
 с сегментами по согласованному сопоставлению UUID; самостоятельные создания
 получают разные identity. Native gate делает cold rebuild с 3/3 refs, сравнивает
 STL и FBX после сопоставления identity, а CLI/UI FBX одного документа — побайтово.

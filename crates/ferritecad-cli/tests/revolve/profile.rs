@@ -173,9 +173,15 @@ fn native_partial_profile_edits_measure_caps_names_cache_sql_and_exports() {
                 .output()
                 .expect("print-topology");
             let listed = String::from_utf8(listed.stdout).expect("UTF-8");
-            let named = saved_refs.len();
-            assert!(listed.contains(&format!("{named} of {named} references resolved")));
-            assert!(listed.contains("revolve start cap") && listed.contains("revolve end cap"));
+            let named = crate::names::face_count(&saved_refs);
+            assert!(
+                listed
+                    .lines()
+                    .filter(|line| line.starts_with("    face "))
+                    .count()
+                    == named
+            );
+            assert!(listed.contains("start cap") && listed.contains("end cap"));
             let m = mesh(&edited, &edited.with_extension("stl"));
             check_partial_mesh(&m, &b, degrees, full_b);
             if degrees == 220. {

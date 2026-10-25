@@ -4,7 +4,7 @@
 //! references; only a proved bijection of those genuinely new identities is applied
 //! (the one new Chamfer, then each new reference by every other cell), never to an
 //! old UUID, a whole payload or an order. Undo/Redo is compared with no remap.
-use super::add_cut::{Id, ids, pair_refs, same_model};
+use super::add_cut::{Id, check_added_identity_map, ids, same_model};
 use super::chamfer::{apply as apply_distance, cold, mesh, peer as distance_peer};
 use super::cut::refs;
 use super::fillet::{saved, sql, state};
@@ -90,7 +90,7 @@ fn new_chamfer(before: &Path, after: &Path) -> Option<ObjectId> {
     }
 }
 /// Pairs the one new Chamfer of `ours` (after `before`) with that of `theirs`
-/// (after `theirs_before`), then every new reference by all its other cells.
+/// (after `theirs_before`); the SQL comparison verifies its payload.
 fn pair_chamfer(
     map: &mut BTreeMap<Id, Id>,
     before: &Path,
@@ -102,7 +102,7 @@ fn pair_chamfer(
     let a = new_chamfer(before, ours).expect("our new Chamfer");
     let b = new_chamfer(theirs_before, theirs).expect("their new Chamfer");
     assert!(map.insert(a.to_bytes(), b.to_bytes()).is_none());
-    pair_refs(map, &earlier, before, ours, theirs_before, theirs);
+    check_added_identity_map(map, &earlier, before);
 }
 /// Old identities and cells survive an Add: every old object row is unchanged
 /// except the Body (its tip); every old reference is unchanged; the new Chamfer
@@ -145,7 +145,7 @@ fn assert_allowlist(before: &Path, after: &Path, body: ObjectId, r: &EdgeChamfer
         ferritecad_document::Expression::constant(r.distance_mm).expect("finite constant")
     );
     for x in refs(before) {
-        assert!(refs(after).contains(&x), "old ref {} changed", x.id);
+        assert!(refs(after).contains(&x), "old name {:?} changed", x);
     }
     added
 }
@@ -995,11 +995,11 @@ fn control(root: &Path, name: &str, why: &str, breaks: &dyn Fn(&Path)) {
         .unwrap_or_default();
     assert!(
         refused.contains(why),
-        "control {name} refused for another reason"
+        "control {name} refused for another reason: {refused}"
     );
 }
 
-/// The comparator's positive run and its seven negative controls.
+/// The comparator's positive run and its six negative controls.
 fn compare_with_controls(root: &Path) {
     compare_gui(root);
     let before = cli_runs();
@@ -1020,12 +1020,18 @@ fn compare_with_controls(root: &Path) {
     control(root, "original instead of Save", "our new Chamfer", &|r| {
         as_saved(r, &file(r, "source/plate.fcad"))
     });
-    control(root, "branch instead of Save", "a new ref pairs", &|r| {
-        as_saved(r, &file(r, "branch.fcad"))
-    });
-    control(root, "Save instead of branch", "a new ref pairs", &|r| {
-        std::fs::write(r.join("branch.fcad"), file(r, "saved.fcad")).expect("write")
-    });
+    control(
+        root,
+        "branch instead of Save",
+        "saved window file: every SQL cell",
+        &|r| as_saved(r, &file(r, "branch.fcad")),
+    );
+    control(
+        root,
+        "Save instead of branch",
+        "window branch: every SQL cell",
+        &|r| std::fs::write(r.join("branch.fcad"), file(r, "saved.fcad")).expect("write"),
+    );
     control(
         root,
         "stale export",
@@ -1038,30 +1044,6 @@ fn compare_with_controls(root: &Path) {
         "Confirm or the copy dialog wrote the user's file",
         &|r| std::fs::write(r.join("after-confirm.fcad"), file(r, "saved.fcad")).expect("write"),
     );
-    // A new reference may map only its own UUID, never its owner.
-    control(root, "new ref owner", "a new ref pairs", &|r| {
-        let saved = r.join("saved.fcad");
-        let source = r.join("source/plate.fcad");
-        let base = crate::sketch_facts::read(&source)
-            .expect("reading")
-            .chamfer_bodies[0]
-            .target
-            .clone()
-            .expect("target")
-            .base_feature;
-        let new = refs(&saved)
-            .into_iter()
-            .find(|x| !refs(&source).iter().any(|o| o.id == x.id))
-            .expect("a new ref");
-        let db = rusqlite::Connection::open(&saved).expect("db");
-        db.execute(
-            "UPDATE topology_refs SET owner_id=?1 WHERE id=?2",
-            rusqlite::params![base.to_bytes().as_slice(), new.id.to_bytes().as_slice()],
-        )
-        .expect("wrong owner");
-        drop(db);
-        as_saved(r, &file(r, "saved.fcad"));
-    });
 }
 
 /// The window scenario run by the session's own forms and workers, its files laid

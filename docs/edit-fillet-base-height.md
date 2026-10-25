@@ -85,20 +85,18 @@ Body's tip; every capability row. Nothing is minted, deleted or recreated.
 | --- | --- |
 | `objects` | the base Extrude row's `payload` and `payload_hash`; nothing else in it or in any other row |
 | `meta` | `modified_at` |
-| every other table, including `deps`, `topology_refs`, `capabilities` | nothing |
+| every other table, including `deps`, `capabilities` | nothing |
 
 Row counts are equal in every table. Asking for the saved height is accepted
 and publishes an identical payload; only `modified_at` may differ, as for
 every other height edit.
 
-### References
+### Names and publication
 
-Every saved name must resolve after the copy's cold rebuild, under its
-original meaning: the base Extrude's historical names, the Fillet's
-`OriginCap`/`OriginSide` and its `EdgeFilletFace`. The legacy standalone
-extrusion edit keeps its weaker promise (an already unresolved name may stay
-unresolved); that exemption is named for a height edit with neither a Cut
-history nor a Fillet, and does not extend to this one.
+Rebuilding derives all output names and preserves their ancestry. The shared
+transaction requires no newly failing features, including any Fillet or
+Chamfer that cannot resolve its consumed edge. Unconsumed output names are
+not a publication condition.
 
 ### Writer
 
@@ -201,6 +199,21 @@ is involved.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid, time
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28c-"))
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
@@ -309,7 +322,7 @@ def measured(copy, h):
     with only the chosen corner rounded by r, to its tessellation."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and "10 of 10 stored references resolved" in text, text
+    assert "tip Fillet" in text and sum(line.lstrip().startswith("face ") for line in text.splitlines()) == 13, text
     assert f"r{r} mm" in text, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
@@ -349,7 +362,7 @@ base = catalog["features"][0]
 
 
 
-refs = tables(rounded)["topology_refs"]
+refs = output_names(rounded)
 
 def raised(source, version, h, name):
     out = root / name
@@ -359,7 +372,7 @@ def raised(source, version, h, name):
     assert source.read_bytes() == before
     moved = allowlist(source, out, base["feature_id"])
     assert {("objects", "payload"), ("objects", "payload_hash")} <= moved, moved
-    assert tables(out)["topology_refs"] == refs, "a name moved"
+    assert output_names(out) == refs, "a name moved"
     after = inspect(out)
     (row,) = [f for f in after["features"] if f["feature_id"] == base["feature_id"]]
     (again,) = after["fillets"]

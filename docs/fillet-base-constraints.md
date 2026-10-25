@@ -75,7 +75,7 @@ profile are still refused.
 | `objects` | the base Sketch row's `schema_version`, `payload`, `payload_hash` |
 | `capabilities` | the `sketch.constraints.v1` row, upserted with `required = 1` by the existing policy when the saved Sketch has constraints (already present when the source had them) |
 | `meta` | `modified_at` only if the existing writer stamps it (measured and reported) |
-| every other table and column, including `deps` and `topology_refs` | nothing |
+| every other table and column, including `deps` | nothing |
 
 Row counts are equal except for the one possible new `capabilities` row.
 Preserved: every object, curve, Fillet, joint and topology-reference UUID; the
@@ -110,7 +110,7 @@ frame too); the prepared constraint list must equal the stored list without
 the removed UUIDs followed by the added constraints; curves and plane are
 unchanged; the result is inside the managed family. The existing job keeps the
 content-version guard (it covers the Fillet row and every name), `copy_access`,
-alias/no-clobber, cancellation, strict resolved references after the cold
+alias/no-clobber, cancellation, no new failed features after the cold
 rebuild, SQLite close, atomic publication and exit 7. A solver conflict stays
 the typed `constraint` refusal naming UUIDs; a solved plate outside the Fillet
 policy is a typed domain refusal; the source, destination and draft are left
@@ -198,6 +198,21 @@ sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
 from edit_requests import constraint_request, line_rule, distance, fixed
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28e-"))
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
@@ -309,7 +324,7 @@ def measured(copy, rect, at, radius, height):
     x0, y0, w, d = rect
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and "10 of 10 stored references resolved" in text, text
+    assert "tip Fillet" in text and sum(line.lstrip().startswith("face ") for line in text.splitlines()) == 13, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
     volume, points = stl(out)
@@ -355,7 +370,7 @@ editor = sketch
 lines = [c["curve_id"] for c in editor["curves"]]
 starts = [c["geometry"]["start_mm"] for c in editor["curves"]]
 across = [starts[i][1] == starts[(i + 1) % 4][1] for i in range(4)]
-refs = tables(rounded)["topology_refs"]
+refs = output_names(rounded)
 
 def ask(source, remove, add):
     path = root / "constraints.json"
@@ -387,7 +402,7 @@ result = constrain(rounded, catalog["content_version"], [], dimensioned(AT, WIDT
 
 assert rounded.read_bytes() == before
 allowlist(rounded, first, sketch["sketch_id"])
-assert tables(first)["topology_refs"] == refs, "a name moved"
+assert output_names(first) == refs, "a name moved"
 after = inspect(first)
 assert [c["geometry"]["start_mm"] for c in after["sketches"][0]["curves"]] == starts
 (again,) = after["fillets"]

@@ -11,48 +11,25 @@
 #![allow(clippy::panic)]
 
 use ferritecad_document::{
-    Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
-    Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
-    SketchGeometry, SolidOperation, TopologyRef,
+    Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
+    ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_eval::rebuild_cold;
+use ferritecad_topology::generative::Name;
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
 use ferritecad_kernel::{CancelToken, OperationContext, mock::MockKernel};
 use ferritecad_types::{ErrorKind, ObjectId, Result, StableEntityId, Transform};
 
 /// The plate, plus the references a document would store about it.
 struct Plate {
     extrude: ObjectId,
+    plane: ObjectId,
     segments: Vec<StableEntityId>,
-    start_cap: TopologyRef,
-    end_cap: TopologyRef,
-    /// One per segment, selected as a family.
-    sides: Vec<TopologyRef>,
-}
-
-fn cap_reference(feature: ObjectId, side: CapSide) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeCap { side },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
-}
-
-fn side_reference(feature: ObjectId, segment: StableEntityId) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeSide {
-            profile_segment: segment,
-        },
-        selection: SelectionRule::AllDerivedFrom { ancestor: segment },
-        fallback_signature: None,
-    }
+    start_cap: Name,
+    end_cap: Name,
+    /// One per segment.
+    sides: Vec<Name>,
 }
 
 /// Writes the plate. `order` permutes how the curves are stored, which must
@@ -140,26 +117,17 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
             role: DependencyRole::BodyTip,
         })?;
 
-        // The document stores these; the rebuild resolves them.
-        for reference in [
-            cap_reference(extrude, CapSide::Start),
-            cap_reference(extrude, CapSide::End),
-        ] {
-            w.put_topology_ref(&reference)?;
-        }
-        for segment in &segments {
-            w.put_topology_ref(&side_reference(extrude, *segment))?;
-        }
         Ok(())
     })?;
 
     Ok(Plate {
         extrude,
-        start_cap: cap_reference(extrude, CapSide::Start),
-        end_cap: cap_reference(extrude, CapSide::End),
+        plane,
+        start_cap: naming::cap_name(extrude, plane, false),
+        end_cap: naming::cap_name(extrude, plane, true),
         sides: segments
             .iter()
-            .map(|s| side_reference(extrude, *s))
+            .map(|s| naming::side_name(extrude, plane, *s))
             .collect(),
         segments,
     })
@@ -173,23 +141,22 @@ fn sample(height: f64) -> (tempfile::TempDir, Document, Plate) {
 }
 
 #[test]
-fn every_stored_reference_of_the_plate_resolves() {
+fn every_root_derived_face_name_of_the_plate_resolves() {
     let (_dir, document, plate) = sample(10.0);
     let mut kernel = MockKernel::new();
     let built =
         rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("rebuilds");
 
-    let start = built
-        .resolve(&plate.start_cap)
+    let start = naming::resolve(built.topology(), plate.extrude, &plate.start_cap)
         .expect("the start cap resolves");
-    let end = built.resolve(&plate.end_cap).expect("the end cap resolves");
+    let end = naming::resolve(built.topology(), plate.extrude, &plate.end_cap)
+        .expect("the end cap resolves");
     assert_eq!(start.len(), 1);
     assert_eq!(end.len(), 1);
     assert_ne!(start[0], end[0]);
 
     for (index, reference) in plate.sides.iter().enumerate() {
-        let faces = built
-            .resolve(reference)
+        let faces = naming::resolve(built.topology(), plate.extrude, reference)
             .unwrap_or_else(|e| panic!("side {index} should resolve: {e}"));
         assert_eq!(faces.len(), 1);
     }
@@ -198,7 +165,7 @@ fn every_stored_reference_of_the_plate_resolves() {
     let mut all: Vec<_> = plate
         .sides
         .iter()
-        .flat_map(|r| built.resolve(r).expect("resolves"))
+        .flat_map(|r| naming::resolve(built.topology(), plate.extrude, r).expect("resolves"))
         .chain(start)
         .chain(end)
         .collect();
@@ -220,8 +187,10 @@ fn changing_the_extrusion_height_keeps_the_names_though_the_handles_change() {
     let mut kernel = MockKernel::new();
     let before =
         rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("rebuilds");
-    let before_cap = before.resolve(&plate.end_cap).expect("resolves");
-    let before_side = before.resolve(&plate.sides[2]).expect("resolves");
+    let before_cap =
+        naming::resolve(before.topology(), plate.extrude, &plate.end_cap).expect("resolves");
+    let before_side =
+        naming::resolve(before.topology(), plate.extrude, &plate.sides[2]).expect("resolves");
     before.release_all(&mut kernel);
 
     let profile = document
@@ -256,8 +225,10 @@ fn changing_the_extrusion_height_keeps_the_names_though_the_handles_change() {
 
     let after =
         rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("rebuilds");
-    let after_cap = after.resolve(&plate.end_cap).expect("still resolves");
-    let after_side = after.resolve(&plate.sides[2]).expect("still resolves");
+    let after_cap =
+        naming::resolve(after.topology(), plate.extrude, &plate.end_cap).expect("still resolves");
+    let after_side =
+        naming::resolve(after.topology(), plate.extrude, &plate.sides[2]).expect("still resolves");
 
     assert_eq!(after_cap.len(), 1);
     assert_eq!(after_side.len(), 1);
@@ -291,14 +262,22 @@ fn the_order_curves_are_stored_in_does_not_change_what_resolves() {
     // many faces answer — never on the raw values.
     for index in 0..4 {
         assert_eq!(
-            one.resolve(&a.sides[index]).expect("resolves").len(),
-            other.resolve(&b.sides[index]).expect("resolves").len(),
+            naming::resolve(one.topology(), a.extrude, &a.sides[index])
+                .expect("resolves")
+                .len(),
+            naming::resolve(other.topology(), b.extrude, &b.sides[index])
+                .expect("resolves")
+                .len(),
             "segment {index} names the same number of faces either way"
         );
     }
     assert_eq!(
-        one.resolve(&a.start_cap).expect("resolves").len(),
-        other.resolve(&b.start_cap).expect("resolves").len()
+        naming::resolve(one.topology(), a.extrude, &a.start_cap)
+            .expect("resolves")
+            .len(),
+        naming::resolve(other.topology(), b.extrude, &b.start_cap)
+            .expect("resolves")
+            .len()
     );
 
     one.release_all(&mut first);
@@ -306,39 +285,32 @@ fn the_order_curves_are_stored_in_does_not_change_what_resolves() {
 }
 
 #[test]
-fn references_resolve_the_same_after_a_save_and_reopen() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn names_resolve_the_same_after_a_save_and_reopen() {
+    let dir = tempfile::tempdir().expect("directory");
     let path = dir.path().join("plate.fcad");
-
-    let mut document = Document::create(&path).expect("creates");
-    let plate = populate(&mut document, 12.0, &[0, 1, 2, 3]).expect("populates");
-    let stored: Vec<TopologyRef> = document.topology_refs().expect("reads");
-    document.close().expect("closes");
-
-    let reopened = Document::open(&path).expect("reopens");
-    assert_eq!(
-        reopened.topology_refs().expect("reads"),
-        stored,
-        "the references survive the round trip unchanged"
-    );
-
+    let mut document = Document::create(&path).expect("document");
+    let plate = populate(&mut document, 12., &[0, 1, 2, 3]).expect("plate");
     let mut kernel = MockKernel::new();
-    let built =
-        rebuild_cold(&reopened, &mut kernel, &OperationContext::default()).expect("rebuilds");
-
-    // Resolve the references as the document stores them, not as the test
-    // remembers them.
-    let mut resolved = 0;
-    for reference in reopened.topology_refs().expect("reads") {
-        let faces = built
-            .resolve(&reference)
-            .unwrap_or_else(|e| panic!("stored reference {} should resolve: {e}", reference.id));
-        assert!(!faces.is_empty());
-        resolved += 1;
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("before");
+    let names = built.topology().features[&plate.extrude]
+        .bindings
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    assert_eq!(names.len(), 26);
+    built.release_all(&mut kernel);
+    document.close().expect("close");
+    let reopened = Document::open(&path).expect("open");
+    let built = rebuild_cold(&reopened, &mut kernel, &OperationContext::default()).expect("after");
+    for name in names {
+        assert_eq!(
+            built.topology().features[&plate.extrude]
+                .resolve(name)
+                .expect("same name")
+                .kind(),
+            name.kind
+        );
     }
-    assert_eq!(resolved, 6, "two caps and four sides");
-    assert_eq!(built.resolve(&plate.end_cap).expect("resolves").len(), 1);
-
     built.release_all(&mut kernel);
 }
 
@@ -399,21 +371,16 @@ fn a_reference_to_a_deleted_segment_is_lost_rather_than_retargeted() {
     let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
         .expect("the triangle still builds");
 
-    let err = built
-        .resolve(&side_reference(plate.extrude, removed))
-        .expect_err("the segment it names is gone");
+    let err = naming::resolve(
+        built.topology(),
+        plate.extrude,
+        &naming::side_name(plate.extrude, plate.plane, removed),
+    )
+    .expect_err("the segment it names is gone");
 
     // A lost reference, reported. Emphatically not one of the three faces that
     // are there.
     assert_eq!(err.kind(), ErrorKind::Topology);
-    assert!(
-        built
-            .report()
-            .warnings
-            .iter()
-            .any(|warning| warning.owner == plate.extrude
-                && warning.message.contains(&removed.to_string()))
-    );
     assert!(
         built.all_built(),
         "a saved reference warning does not fail its owner"
@@ -423,47 +390,16 @@ fn a_reference_to_a_deleted_segment_is_lost_rather_than_retargeted() {
     // removed one and not about the rebuild.
     for segment in &kept {
         assert_eq!(
-            built
-                .resolve(&side_reference(plate.extrude, *segment))
-                .expect("a surviving segment resolves")
-                .len(),
+            naming::resolve(
+                built.topology(),
+                plate.extrude,
+                &naming::side_name(plate.extrude, plate.plane, *segment)
+            )
+            .expect("a surviving segment resolves")
+            .len(),
             1
         );
     }
-
-    built.release_all(&mut kernel);
-}
-
-#[test]
-fn a_contradictory_reference_is_an_input_error_not_a_lost_one() {
-    let (_dir, document, plate) = sample(10.0);
-    let mut kernel = MockKernel::new();
-    let built =
-        rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("rebuilds");
-
-    // Expecting an edge from a role that always names a face.
-    let mut wrong_kind = plate.start_cap.clone();
-    wrong_kind.expected_kind = EntityKind::Edge;
-    assert_eq!(
-        built
-            .resolve(&wrong_kind)
-            .expect_err("caps are faces")
-            .kind(),
-        ErrorKind::Input
-    );
-
-    // A family selection whose ancestor is not the segment named by the role.
-    let mut wrong_ancestor = plate.sides[0].clone();
-    wrong_ancestor.selection = SelectionRule::AllDerivedFrom {
-        ancestor: plate.segments[3],
-    };
-    assert_eq!(
-        built
-            .resolve(&wrong_ancestor)
-            .expect_err("the role and the rule disagree")
-            .kind(),
-        ErrorKind::Input
-    );
 
     built.release_all(&mut kernel);
 }
@@ -482,8 +418,8 @@ fn two_sessions_agree_on_semantics_and_cardinality_not_on_handles() {
         .chain(std::iter::once(&plate.end_cap))
         .chain(plate.sides.iter())
     {
-        let a = one.resolve(reference).expect("resolves");
-        let b = other.resolve(reference).expect("resolves");
+        let a = naming::resolve(one.topology(), plate.extrude, reference).expect("resolves");
+        let b = naming::resolve(other.topology(), plate.extrude, reference).expect("resolves");
         assert_eq!(a.len(), b.len(), "the same name selects the same count");
         assert_ne!(a, b, "and two sessions never share a handle");
     }
@@ -521,10 +457,5 @@ fn an_empty_rebuild_resolves_nothing_rather_than_something() {
         .expect("an empty document is valid");
 
     assert!(built.topology().is_empty());
-    let err = built
-        .resolve(&cap_reference(ObjectId::new(), CapSide::Start))
-        .expect_err("nothing was built");
-    assert_eq!(err.kind(), ErrorKind::Topology);
-
     built.release_all(&mut kernel);
 }

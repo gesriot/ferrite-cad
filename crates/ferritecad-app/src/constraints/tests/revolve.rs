@@ -953,10 +953,7 @@ fn publish_both(
         Document::open_read_only(&cli).expect("CLI"),
     );
     crate::transaction_tests::assert_meta(x.meta(), y.meta());
-    assert_eq!(
-        x.topology_refs().expect("refs"),
-        y.topology_refs().expect("refs")
-    );
+    assert_eq!(crate::test_names::names(&x), crate::test_names::names(&y));
     for old in x.objects().expect("objects") {
         let new = y.object(old.id).expect("read").expect("same id");
         match (&old.payload, &new.payload) {
@@ -1026,9 +1023,7 @@ fn solved(path: &Path) -> (usize, Vec<[f64; 2]>) {
             _ => panic!("a Line"),
         })
         .collect();
-    for r in d.topology_refs().expect("refs") {
-        assert_eq!(b.resolve(&r).expect("resolves").len(), 1);
-    }
+    crate::test_names::assert_names(&b, &crate::test_names::names(&d));
     b.release_all(&mut k);
     d.close().expect("close");
     (dof, starts)

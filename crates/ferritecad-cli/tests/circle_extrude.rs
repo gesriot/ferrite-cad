@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/names.rs"]
+mod names;
 #[path = "support/transaction.rs"]
 mod transaction;
-use ferritecad_document::{
-    CapSide, Document, ObjectPayload, SemanticRole, SketchGeometry, TopologyRef,
-};
+use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
 use std::{
@@ -77,7 +77,7 @@ struct Stored {
     curve: ferritecad_types::StableEntityId,
     center: [f64; 2],
     radius: f64,
-    refs: Vec<TopologyRef>,
+    refs: crate::names::Names,
     objects: usize,
 }
 fn stored(path: &Path) -> Stored {
@@ -97,7 +97,7 @@ fn stored(path: &Path) -> Stored {
     let SketchGeometry::Circle { center, radius } = curve.geometry else {
         panic!("the document stores a Circle, not an approximation of one")
     };
-    let refs = doc.topology_refs().expect("refs");
+    let refs = crate::names::snapshot(&doc);
     let count = objects.len();
     doc.close().expect("close");
     Stored {
@@ -155,26 +155,18 @@ fn analytic_with_cache(
             .expect("cold rebuild after reopen")
     };
     assert_eq!(built.shape_count(), 1);
-    let refs = doc.topology_refs().expect("refs");
     let mut side = Vec::new();
     let mut caps = Vec::new();
     let mut stats = None;
-    for reference in &refs {
-        let resolved = built.resolve(reference).expect("resolve");
-        assert!(
-            !resolved.is_empty(),
-            "reference {:?} resolved to nothing after a cold reopen",
-            reference.output_role
-        );
-        for handle in &resolved {
-            let surface = kernel.face_surface(*handle).expect("surface");
-            match reference.output_role {
-                SemanticRole::ExtrudeSide { .. } => side.push(surface),
-                SemanticRole::ExtrudeCap { .. } => caps.push(surface),
-                _ => panic!("unexpected role"),
-            }
-            stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
+    crate::names::assert_primary(&built);
+    for (_, input, handle) in crate::names::root_faces(&doc, &built) {
+        let surface = kernel.face_surface(handle).expect("surface");
+        match input {
+            ferritecad_kernel::NamingInput::Curve(_) => side.push(surface),
+            ferritecad_kernel::NamingInput::Cap { .. } => caps.push(surface),
+            _ => panic!("unexpected root"),
         }
+        stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
     }
     let (faces, volume) = stats.expect("a resolved reference names the solid");
     built.release_all(&mut kernel);
@@ -467,7 +459,7 @@ fn native_circle_extrude_process_analytic_geometry_and_delivery() {
     assert_eq!(v["result"]["destination"], out.to_str().expect("UTF-8"));
     assert_eq!(
         v["result"]["rebuild"],
-        json!({"failed":[], "skipped":[], "degraded_bodies":[], "warnings":[]})
+        json!({"failed":[], "skipped":[], "degraded_bodies":[]})
     );
     let saved = std::fs::read(&out).expect("source");
     let doc = Document::open_read_only(&out).expect("reopen");
@@ -482,28 +474,16 @@ fn native_circle_extrude_process_analytic_geometry_and_delivery() {
     assert_eq!(first.objects, 4, "plane, sketch, extrude, body");
     assert_eq!(first.center, [12., -7.]);
     assert_eq!(first.radius, 10.);
-    assert_eq!(first.refs.len(), 3);
-    let side = first
-        .refs
-        .iter()
-        .find(|r| matches!(r.output_role, SemanticRole::ExtrudeSide { .. }))
-        .expect("a side reference");
     assert_eq!(
-        side.output_role,
-        SemanticRole::ExtrudeSide {
-            profile_segment: first.curve
-        },
-        "the side is named by the circle that drew it, not by a face index"
+        first
+            .refs
+            .iter()
+            .filter(|(_, n)| n.kind == ferritecad_kernel::SubShapeKind::Face)
+            .count(),
+        3
     );
-    for want in [CapSide::Start, CapSide::End] {
-        assert!(
-            first
-                .refs
-                .iter()
-                .any(|r| r.output_role == SemanticRole::ExtrudeCap { side: want }),
-            "{want:?} cap is named"
-        );
-    }
+    let document = Document::open_read_only(&out).expect("published");
+    crate::names::assert_root_faces(&document, &first.refs);
     std::fs::remove_file(&input).expect("private request no longer needed");
 
     // Reopening and rebuilding cold twice changes no identity.
@@ -710,7 +690,7 @@ fn native_circle_height_copy_keeps_the_circle_and_every_identity() {
     assert_eq!(after.curve, before.curve, "the circle keeps its UUID");
     assert_eq!(after.center, before.center);
     assert_eq!(after.radius, before.radius);
-    assert_eq!(after.refs, before.refs, "same reference UUIDs and roles");
+    assert_eq!(after.refs, before.refs, "same primary name digests");
     assert_eq!(after.objects, before.objects);
     assert_eq!(
         std::fs::read(&source).expect("source"),

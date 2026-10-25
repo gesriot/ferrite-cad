@@ -358,7 +358,7 @@ impl Document {
     }
 
     /// Apply in request order and write each changed object once in one SQLite transaction.
-    pub fn write_changes(&mut self, changes: &[EditChange]) -> Result<Vec<StableEntityId>> {
+    pub fn write_changes(&mut self, changes: &[EditChange]) -> Result<()> {
         self.write_reading(|document, writer| {
             let parameters = parameter_dependents(document)?;
             let mut changed = BTreeMap::<ObjectId, CandidateObject>::new();
@@ -452,12 +452,7 @@ impl Document {
                     writer.add_dependency(*dependency)?;
                 }
             }
-            let mut minted = Vec::new();
-            for reference in crate::output_names::candidate_output_references(document)? {
-                writer.put_topology_ref(&reference)?;
-                minted.push(reference.id);
-            }
-            Ok(minted)
+            Ok(())
         })
     }
 }

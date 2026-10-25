@@ -3978,10 +3978,7 @@ pub(crate) mod tests {
         let a = Document::open_read_only(&ui).expect("worker copy");
         let b = Document::open_read_only(&peer).expect("CLI copy");
         assert_eq!(a.meta().document_id, b.meta().document_id);
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         assert_eq!(
             a.dependencies().expect("dependencies"),
             b.dependencies().expect("dependencies")
@@ -4039,10 +4036,7 @@ pub(crate) mod tests {
         let a = Document::open_read_only(ui).expect("worker copy");
         let b = Document::open_read_only(peer).expect("CLI copy");
         assert_eq!(a.meta().document_id, b.meta().document_id);
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         assert_eq!(
             a.dependencies().expect("dependencies"),
             b.dependencies().expect("dependencies")
@@ -4905,10 +4899,7 @@ pub(crate) mod tests {
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
         crate::transaction_tests::assert_meta(a.meta(), b.meta());
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         let mut pin_id = None;
         for old in a.objects().expect("objects") {
             let new = b.object(old.id).expect("read").expect("same id");
@@ -5230,10 +5221,7 @@ pub(crate) mod tests {
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
         crate::transaction_tests::assert_meta(a.meta(), b.meta());
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         for old in a.objects().expect("objects") {
             let new = b.object(old.id).expect("read").expect("same id");
             if let (
@@ -5544,10 +5532,7 @@ pub(crate) mod tests {
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
         crate::transaction_tests::assert_meta(a.meta(), b.meta());
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         let whole = |curve: &ferritecad_document::SketchCurve| {
             ferritecad_document::SketchSegmentRef::new(
                 ferritecad_document::SketchPointRef::new(
@@ -5867,10 +5852,7 @@ pub(crate) mod tests {
             a.dependencies().expect("deps"),
             b.dependencies().expect("deps")
         );
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         for old in a.objects().expect("objects") {
             let new = b.object(old.id).expect("read").expect("same id");
             if let (
@@ -6103,10 +6085,7 @@ pub(crate) mod tests {
             a.dependencies().expect("deps"),
             b.dependencies().expect("deps")
         );
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         let mut new_ui = None;
         let mut new_cli = None;
         for old in a.objects().expect("objects") {

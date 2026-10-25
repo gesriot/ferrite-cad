@@ -6,15 +6,13 @@ use ferritecad_exchange::{Diagnostic as ImportDiagnostic, Import, Scene};
 use ferritecad_kernel::{KernelIdentity, ShapeHandle};
 use ferritecad_types::{
     CadError, CanonicalHasher, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId,
-    OccurrenceId, Result, StableEntityId, Unit,
+    OccurrenceId, Result, Unit,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
-use crate::envelope::Envelope;
 use crate::graph::{Dependency, DependencyRole, evaluation_order};
 use crate::model::{
-    EntityKind, ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectPayload,
-    STEP_SOURCE_FORMAT, TopologyRef, TopologyRefPayload,
+    ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectPayload, STEP_SOURCE_FORMAT,
 };
 use crate::schema::{self, CACHE_EXTENSION, DOCUMENT_APPLICATION_ID};
 use crate::validate::ValidationReport;
@@ -79,9 +77,6 @@ impl ObjectRecord {
         &self.storage_bytes
     }
 }
-
-/// A topology reference as stored, including its owner and producer.
-pub type StoredTopologyRef = TopologyRef;
 
 /// An imported STEP object together with the exact bytes it was built from.
 ///
@@ -330,6 +325,7 @@ impl Document {
             .map_err(|e| CadError::io("starting document snapshot", e))?;
         schema::check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")?;
 
+        schema::check_document_tables(&conn)?;
         let meta = read_meta(&conn)?;
         let document = Self {
             conn,
@@ -340,7 +336,7 @@ impl Document {
             },
         };
         document.objects()?;
-        document.topology_refs()?;
+
         Ok(document)
     }
 
@@ -378,7 +374,7 @@ impl Document {
             });
         }
         // Foreign-key actions are implicit write programs too. Permit the
-        // four cascades in the current document schema; extensions with
+        // three cascades in the current document schema; extensions with
         // further mutating actions need an edit contract of their own.
         let mut statement = self
             .conn
@@ -415,7 +411,6 @@ impl Document {
                     (table.as_str(), column.as_str()),
                     ("objects", "parent_id")
                         | ("deps", "dependent_id")
-                        | ("topology_refs", "owner_id")
                         | ("imported_source_refs", "object_id")
                 );
             if !native_cascade {
@@ -772,62 +767,6 @@ impl Document {
             });
         }
         Ok(deps)
-    }
-
-    pub fn topology_refs(&self) -> Result<Vec<StoredTopologyRef>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, owner_id, producer_feature, expected_kind, payload, payload_hash
-                 FROM topology_refs ORDER BY owner_id, id",
-            )
-            .map_err(|e| CadError::io("preparing topology reference query", e))?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
-                ))
-            })
-            .map_err(|e| CadError::io("reading topology references", e))?;
-
-        let mut refs = Vec::new();
-        for row in rows {
-            let (id, owner, producer, kind, payload, payload_hash) =
-                row.map_err(|e| CadError::io("reading topology reference row", e))?;
-            let id = StableEntityId::from_slice(&id)?;
-            let payload_hash = ContentHash::from_slice(&payload_hash)?;
-            if ContentHash::of_bytes(&payload) != payload_hash {
-                return Err(CadError::input(format!(
-                    "topology reference {id} does not match its stored hash"
-                )));
-            }
-            let envelope = Envelope::from_bytes(&payload)?;
-            if envelope.type_name != "topology_ref" {
-                return Err(CadError::input(format!(
-                    "topology reference {id} has type {}",
-                    envelope.type_name
-                )));
-            }
-            let decoded: TopologyRefPayload = envelope.decode()?;
-            let reference = TopologyRef {
-                id,
-                owner: ObjectId::from_slice(&owner)?,
-                producer_feature: ObjectId::from_slice(&producer)?,
-                expected_kind: EntityKind::parse(&kind)?,
-                output_role: decoded.output_role,
-                selection: decoded.selection,
-                fallback_signature: decoded.fallback_signature,
-            };
-            reference.validate()?;
-            refs.push(reference);
-        }
-        Ok(refs)
     }
 
     /// Stores a successful import as one object and one copy of its bytes.
@@ -1400,43 +1339,6 @@ impl DocumentWriter<'_> {
                 ],
             )
             .map_err(|e| CadError::io("removing dependency", e))?;
-        Ok(())
-    }
-
-    pub fn put_topology_ref(&mut self, reference: &TopologyRef) -> Result<()> {
-        reference.validate()?;
-        let payload = Envelope::encode(
-            "topology_ref",
-            &TopologyRefPayload {
-                output_role: reference.output_role.clone(),
-                selection: reference.selection.clone(),
-                fallback_signature: reference.fallback_signature.clone(),
-            },
-        )?
-        .to_bytes()?;
-        let payload_hash = ContentHash::of_bytes(&payload);
-
-        self.tx
-            .execute(
-                "INSERT INTO topology_refs (
-                     id, owner_id, producer_feature, expected_kind, payload, payload_hash
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(id) DO UPDATE SET
-                     owner_id = excluded.owner_id,
-                     producer_feature = excluded.producer_feature,
-                     expected_kind = excluded.expected_kind,
-                     payload = excluded.payload,
-                     payload_hash = excluded.payload_hash",
-                params![
-                    reference.id.to_bytes().as_slice(),
-                    reference.owner.to_bytes().as_slice(),
-                    reference.producer_feature.to_bytes().as_slice(),
-                    reference.expected_kind.as_str(),
-                    payload,
-                    payload_hash.as_bytes().as_slice(),
-                ],
-            )
-            .map_err(|e| CadError::io(format!("writing topology reference {}", reference.id), e))?;
         Ok(())
     }
 }

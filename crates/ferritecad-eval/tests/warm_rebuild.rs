@@ -11,9 +11,8 @@
 #![allow(clippy::panic)]
 
 use ferritecad_document::{
-    Body, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition,
-    EntityKind, Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch,
-    SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    Body, CacheStore, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression,
+    Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_eval::{
     CacheOutcome, RebuildResult, extrude_archive_key, extrude_request, profile_from_sketch,
@@ -23,6 +22,9 @@ use ferritecad_kernel::{
     CancelToken, GeometryKernel, OperationContext, ProgressSink, SketchPlane, mock::MockKernel,
 };
 use ferritecad_topology::ARCHIVE_CACHE_KIND;
+use ferritecad_topology::generative::Name;
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
 use ferritecad_types::{ContentHash, DocumentId, ObjectId, Result, StableEntityId, Transform};
 
 /// The plate, plus the references a document would store about it.
@@ -31,36 +33,10 @@ struct Plate {
     body: ObjectId,
     /// A second extrusion of the same profile, evaluated after the first.
     second: ObjectId,
-    start_cap: TopologyRef,
-    end_cap: TopologyRef,
+    start_cap: Name,
+    end_cap: Name,
     /// One per segment, selected as a family.
-    sides: Vec<TopologyRef>,
-}
-
-fn cap_reference(feature: ObjectId, side: CapSide) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeCap { side },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
-}
-
-fn side_reference(feature: ObjectId, segment: StableEntityId) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeSide {
-            profile_segment: segment,
-        },
-        selection: SelectionRule::AllDerivedFrom { ancestor: segment },
-        fallback_signature: None,
-    }
+    sides: Vec<Name>,
 }
 
 /// Writes the plate. `order` permutes how the curves are stored, which must
@@ -187,16 +163,6 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
             role: DependencyRole::BodyTip,
         })?;
 
-        // The document stores these; the rebuild resolves them.
-        for reference in [
-            cap_reference(extrude, CapSide::Start),
-            cap_reference(extrude, CapSide::End),
-        ] {
-            w.put_topology_ref(&reference)?;
-        }
-        for segment in &segments {
-            w.put_topology_ref(&side_reference(extrude, *segment))?;
-        }
         Ok(())
     })?;
 
@@ -204,11 +170,11 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
         extrude,
         body,
         second,
-        start_cap: cap_reference(extrude, CapSide::Start),
-        end_cap: cap_reference(extrude, CapSide::End),
+        start_cap: naming::cap_name(extrude, plane, false),
+        end_cap: naming::cap_name(extrude, plane, true),
         sides: segments
             .iter()
-            .map(|s| side_reference(extrude, *s))
+            .map(|s| naming::side_name(extrude, plane, *s))
             .collect(),
     })
 }
@@ -239,8 +205,7 @@ fn named_faces(built: &RebuildResult, plate: &Plate) -> Vec<String> {
         .iter()
         .chain([&plate.start_cap, &plate.end_cap])
         .flat_map(|reference| {
-            built
-                .resolve(reference)
+            naming::resolve(built.topology(), plate.extrude, reference)
                 .unwrap_or_else(|e| panic!("every stored reference must resolve: {e}"))
         })
         .map(|face| face.to_string())
@@ -276,7 +241,7 @@ fn archive_key(document: &Document, kernel: &MockKernel, feature: ObjectId) -> C
     .expect("converts")
     .profile;
     let request = extrude_request(&feature, profile).expect("converts");
-    let mut names = ferritecad_topology::TopologyMap::new();
+    let mut names = ferritecad_topology::ModelNaming::new();
     names
         .prepare(&objects.into_iter().map(|o| (o.id, o)).collect())
         .expect("roots");

@@ -14,31 +14,23 @@
 # these numbers.
 
 objects 4
-references 6
-
-cap end
-    exact
-    1 face
-    area 2400.000 mm^2   middle (30.000, 20.000, 10.000)
-cap start
-    exact
-    1 face
-    area 2400.000 mm^2   middle (30.000, 20.000, 0.000)
-side 01a16354-bf2b-7d23-ad3d-00e2df907161
-    all derived from 01a16354-bf2b-7d23-ad3d-00e2df907161
-    1 face
-    area 600.000 mm^2   middle (30.000, 0.000, 5.000)
-side 01a16354-bf2b-7d23-ad3d-00f9a70485c3
-    all derived from 01a16354-bf2b-7d23-ad3d-00f9a70485c3
-    1 face
-    area 400.000 mm^2   middle (60.000, 20.000, 5.000)
-side 01a16354-bf2b-7d23-ad3d-010dd15092a4
-    all derived from 01a16354-bf2b-7d23-ad3d-010dd15092a4
-    1 face
-    area 600.000 mm^2   middle (30.000, 40.000, 5.000)
-side 01a16354-bf2b-7d23-ad3d-01132e724ee0
-    all derived from 01a16354-bf2b-7d23-ad3d-01132e724ee0
-    1 face
+feature 01a17379-ba1e-7971-83da-4e56529d93ea, operation Extrude; 00e6d2df70cf4c8948f40352ed1d742499337efb2dd032d610cef10e603eaba1 = generated Extrude, producer 01a17379-ba1e-7971-83da-4e56529d93ea, inputs [edge 176a1bd4fddfd3f760f109ed70e8d87186a9a3704cd5fb8a1d9f6ec62bf2358e]; 176a1bd4fddfd3f760f109ed70e8d87186a9a3704cd5fb8a1d9f6ec62bf2358e = curve 01a17379-ba1e-7971-83da-4eafca2b5008, producer 01a17379-ba1e-7971-83da-4e56529d93ea, plane 01a17379-ba1e-7971-83da-4e32bc3b2268
+    1 face(s)
     area 400.000 mm^2   middle (0.000, 20.000, 5.000)
+feature 01a17379-ba1e-7971-83da-4e56529d93ea, operation Extrude; 52d59e8bf4460724bf1e425249c098eab15234251ad004e939219f5523757562 = generated Extrude, producer 01a17379-ba1e-7971-83da-4e56529d93ea, inputs [edge af4c125884266fd269c6fd1d86c2f3855f4ec1958cb4dcd1e50545ad038d81c7]; af4c125884266fd269c6fd1d86c2f3855f4ec1958cb4dcd1e50545ad038d81c7 = curve 01a17379-ba1e-7971-83da-4e8286535ea5, producer 01a17379-ba1e-7971-83da-4e56529d93ea, plane 01a17379-ba1e-7971-83da-4e32bc3b2268
+    1 face(s)
+    area 400.000 mm^2   middle (60.000, 20.000, 5.000)
+feature 01a17379-ba1e-7971-83da-4e56529d93ea, operation Extrude; 6c97ea352f01470c40f7513ab0c0b74508367decf86f31a3cbd03c879b05e899 = generated Extrude, producer 01a17379-ba1e-7971-83da-4e56529d93ea, inputs [edge 2cbdb786932d2aa4b084c37577df034eeca70b50e9a3fe9f5e8a46c6084b602a]; 2cbdb786932d2aa4b084c37577df034eeca70b50e9a3fe9f5e8a46c6084b602a = curve 01a17379-ba1e-7971-83da-4e926a393a8b, producer 01a17379-ba1e-7971-83da-4e56529d93ea, plane 01a17379-ba1e-7971-83da-4e32bc3b2268
+    1 face(s)
+    area 600.000 mm^2   middle (30.000, 40.000, 5.000)
+feature 01a17379-ba1e-7971-83da-4e56529d93ea, operation Extrude; c8ed0ae557a99e7fb35f5f30700c6ba4f2f75854c0933af024c63f932fcb0b8b = generated Extrude, producer 01a17379-ba1e-7971-83da-4e56529d93ea, inputs [face cfc459558883a6ee5d12e5d25cc365bd955b384b361a294d96de39af51963a63]; cfc459558883a6ee5d12e5d25cc365bd955b384b361a294d96de39af51963a63 = end cap, producer 01a17379-ba1e-7971-83da-4e56529d93ea, plane 01a17379-ba1e-7971-83da-4e32bc3b2268
+    1 face(s)
+    area 2400.000 mm^2   middle (30.000, 20.000, 10.000)
+feature 01a17379-ba1e-7971-83da-4e56529d93ea, operation Extrude; ca43e12968690d650b45f323143afe2b0cd83b6cbb3b644e549736083b58ad81 = generated Extrude, producer 01a17379-ba1e-7971-83da-4e56529d93ea, inputs [face 39cceb5631d35a9d97df6369a07828edaead81fbd538e84055ca1c263a99556c]; 39cceb5631d35a9d97df6369a07828edaead81fbd538e84055ca1c263a99556c = start cap, producer 01a17379-ba1e-7971-83da-4e56529d93ea, plane 01a17379-ba1e-7971-83da-4e32bc3b2268
+    1 face(s)
+    area 2400.000 mm^2   middle (30.000, 20.000, 0.000)
+feature 01a17379-ba1e-7971-83da-4e56529d93ea, operation Extrude; f1d0a3aecab5549361ccb4962588ccb0c4f6d85ae41aa2475b9e056f2cb7d292 = generated Extrude, producer 01a17379-ba1e-7971-83da-4e56529d93ea, inputs [edge b2994c9b473252433e176e070a8b1331871168014246f9f7e218b6180489d6ac]; b2994c9b473252433e176e070a8b1331871168014246f9f7e218b6180489d6ac = curve 01a17379-ba1e-7971-83da-4e7de420c6f2, producer 01a17379-ba1e-7971-83da-4e56529d93ea, plane 01a17379-ba1e-7971-83da-4e32bc3b2268
+    1 face(s)
+    area 600.000 mm^2   middle (30.000, 0.000, 5.000)
 
 distinct faces 6

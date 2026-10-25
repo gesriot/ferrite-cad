@@ -217,7 +217,9 @@ impl<'a> Spec<'a> {
 /// identifier order.
 fn write(path: &Path, placement: Transform, sketches: &[Spec<'_>]) {
     let mut document = Document::create(path).expect("creates");
-    let plane = ObjectId::new();
+    let plane: ObjectId = "00000000-0000-7000-8000-000000000001"
+        .parse()
+        .expect("plane id");
 
     document
         .write(|w| {

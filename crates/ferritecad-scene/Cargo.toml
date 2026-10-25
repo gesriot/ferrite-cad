@@ -23,6 +23,7 @@ ferritecad-exchange.workspace = true
 ferritecad-export.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
+ferritecad-topology.workspace = true
 ferritecad-viewport.workspace = true
 
 # The catalogue is the durable half of a picture, so it is a thing a caller can

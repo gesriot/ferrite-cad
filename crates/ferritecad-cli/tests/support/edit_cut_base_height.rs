@@ -28,7 +28,7 @@ fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
         let d = Document::open_read_only(&source).expect("document");
         let base = d.objects().expect("objects").into_iter().find(|o|matches!(&o.payload,
             ferritecad_document::ObjectPayload::Extrude(e) if e.operation == ferritecad_document::SolidOperation::NewBody && e.previous.is_none())).expect("base").id;
-        let refs = d.topology_refs().expect("refs");
+        let refs = crate::names::snapshot(&d);
         let request = root.path().join("transaction.json");
         std::fs::write(&request,serde_json::to_vec(&json!({"request_version":1,"changes":[{"kind":"set_expression","object":base,"slot":ExpressionSlot::ExtrudeDistance,"value":height,"unit":"mm"}]})).expect("JSON")).expect("request");
         let output = root.path().join("height.fcad");
@@ -49,9 +49,11 @@ fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
             0,
         );
         let edited = Document::open_read_only(&output).expect("copy");
-        let after_refs = edited.topology_refs().expect("refs");
+        let after_refs = crate::names::snapshot(&edited);
         assert!(
-            refs.iter().all(|r| after_refs.contains(r)),
+            refs.iter()
+                .filter(|(_, name)| name.kind == ferritecad_kernel::SubShapeKind::Face)
+                .all(|r| after_refs.contains(r)),
             "existing references survive"
         );
         assert_eq!(
@@ -107,11 +109,11 @@ fn native_height_transaction_preserves_tools_references_and_cold_geometry() {
 }
 
 #[test]
-fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name() {
+fn native_depth_and_combined_transactions_name_floors_and_allow_unconsumed_loss() {
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
     }
-    use ferritecad_document::{CapSide, EditChange, SemanticRole};
+    use ferritecad_document::EditChange;
     for (height, depth, change_height, change_depth) in [
         (14.0, 12.0, true, false),
         (12.0, 10.0, false, true),
@@ -156,21 +158,7 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
             0,
         );
         let edited = Document::open_read_only(&output).expect("reopen");
-        let all_refs = edited.topology_refs().expect("names");
-        let floor_names: Vec<_> = all_refs
-            .iter()
-            .filter(|r| match r.output_role {
-                SemanticRole::ExtrudeCap { side: CapSide::End } => {
-                    r.producer_feature == first.feature
-                }
-                SemanticRole::OriginCap {
-                    origin_feature,
-                    side: CapSide::End,
-                } => origin_feature == first.feature,
-                _ => false,
-            })
-            .map(|r| r.id)
-            .collect();
+        let floor_names = crate::names::floor_names(&edited, first.feature);
         assert_eq!(
             floor_names.len(),
             saved.len(),
@@ -189,10 +177,11 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
         let mut tool = tools[0];
         tool.radius_mm += 0.1;
         super::edits::edit(&output, &following, &current[0], tool, 0);
-        tools[0] = tool;
+        let mut following_tools = tools.clone();
+        following_tools[0] = tool;
         super::measure_history_at(
             &following,
-            &tools,
+            &following_tools,
             [[0., 0.], [SIZE[0], SIZE[1]]],
             height,
             None,
@@ -230,25 +219,11 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
             .1;
         assert!((volume - cold_volume).abs() < 1e-7);
         built.release_all(&mut kernel);
-        let snapshot = std::fs::read(session.current().path()).expect("snapshot");
-        let session_refs = reopened.topology_refs().expect("refs");
-        let session_floor_names: Vec<_> = session_refs
-            .iter()
-            .filter(|r| match r.output_role {
-                SemanticRole::ExtrudeCap { side: CapSide::End } => {
-                    r.producer_feature == first.feature
-                }
-                SemanticRole::OriginCap {
-                    origin_feature,
-                    side: CapSide::End,
-                } => origin_feature == first.feature,
-                _ => false,
-            })
-            .map(|r| r.id)
-            .collect();
+        let session_floor_names = crate::names::floor_names(&reopened, first.feature);
+        assert_eq!(session_floor_names, floor_names);
         let losing = EditChange::constant(first.feature, ExpressionSlot::ExtrudeDistance, height)
             .expect("through");
-        let error = session
+        let step = session
             .begin_step()
             .edit(
                 vec![losing],
@@ -257,38 +232,50 @@ fn native_depth_and_combined_transactions_mint_floors_and_refuse_every_lost_name
                 |k, b| k.import_step(b),
                 &context,
             )
-            .expect_err("cannot lose names");
-        let refusal = ferritecad_eval::RebuildRefusal::from_error(&error).expect("generic gate");
-        for id in session_floor_names {
-            assert!(refusal.lost_references.contains_key(&id), "{error}");
-        }
-        assert_eq!(
-            std::fs::read(session.current().path()).expect("unchanged"),
-            snapshot
+            .expect("unconsumed floor loss is accepted");
+        session.commit_step(step).expect("commit through cut");
+        assert!(
+            crate::names::floor_names(
+                &Document::open_read_only(session.current().path()).expect("session"),
+                first.feature
+            )
+            .is_empty()
         );
 
         write(
             &request,
             &json!({"request_version":1,"changes":[{"kind":"set_expression","object":first.feature,"slot":ExpressionSlot::ExtrudeDistance,"value":height,"unit":"mm"}]}),
         );
-        let rejected = root.path().join("rejected.fcad");
+        let accepted = root.path().join("through.fcad");
         let bytes = std::fs::read(&output).expect("copy bytes");
-        let failed = reply(
+        reply(
             crate::transaction::command(
                 &output,
                 &edited.content_version().expect("version").to_string(),
                 &request,
-                &rejected,
+                &accepted,
             )
             .output()
-            .expect("CLI refusal"),
+            .expect("CLI through edit"),
             "edit",
-            2,
+            0,
         );
-        for id in floor_names {
-            assert!(failed.to_string().contains(&id.to_string()), "{failed}");
-        }
-        assert!(!rejected.exists());
+        assert!(accepted.exists());
+        assert!(
+            crate::names::floor_names(
+                &Document::open_read_only(&accepted).expect("copy"),
+                first.feature
+            )
+            .is_empty()
+        );
+        tools[0].extent = CutDepth::Blind { depth_mm: height };
+        super::measure_history_at(
+            &accepted,
+            &tools,
+            [[0., 0.], [SIZE[0], SIZE[1]]],
+            height,
+            None,
+        );
         assert_eq!(std::fs::read(&output).expect("unchanged"), bytes);
         assert_eq!(std::fs::read(&source).expect("unchanged source"), before);
     }

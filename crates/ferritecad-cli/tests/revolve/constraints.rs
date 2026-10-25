@@ -390,28 +390,18 @@ pub(super) fn measure_solved(
             .collect()
     };
     let by_id: BTreeMap<_, _> = lines.iter().map(|(id, a, b)| (*id, (*a, *b))).collect();
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::root_faces(&d, &built);
     assert_eq!(refs.len(), n + caps, "one saved name per face");
     let mut named = BTreeSet::new();
     let mut sides = BTreeSet::new();
     let radius = |p: &[f64; 3]| p[0].hypot(p[2]);
-    for reference in &refs {
-        let resolved = built.resolve(reference).expect("resolves");
-        let [face] = resolved.as_slice() else {
-            panic!("one face for {:?}: {resolved:?}", reference.output_role)
-        };
-        assert!(named.insert(*face), "two names on one face");
-        let t = triangles(*face);
+    for (_, input, face) in refs {
+        assert!(named.insert(face), "two names on one face");
+        let t = triangles(face);
         let vertices: Vec<[f64; 3]> = t.iter().flatten().copied().collect();
-        let surface = kernel.face_surface(*face).expect("surface");
-        match reference.output_role {
-            SemanticRole::RevolveFace { profile_segment } => {
-                assert_eq!(
-                    reference.selection,
-                    SelectionRule::AllDerivedFrom {
-                        ancestor: profile_segment
-                    }
-                );
+        let surface = kernel.face_surface(face).expect("surface");
+        match input {
+            ferritecad_kernel::NamingInput::Curve(profile_segment) => {
                 assert_ne!(
                     Some(profile_segment),
                     axis_segment,
@@ -435,7 +425,7 @@ pub(super) fn measure_solved(
                     }
                 }
                 if surface != FaceSurface::Plane {
-                    let (origin, direction) = kernel.surface_axis(*face).expect("axis");
+                    let (origin, direction) = kernel.surface_axis(face).expect("axis");
                     assert!(origin[0].abs() < 1e-9 && origin[2].abs() < 1e-9);
                     assert!((direction[1].abs() - 1.).abs() < 1e-12);
                 }
@@ -464,10 +454,8 @@ pub(super) fn measure_solved(
                     }
                 }
             }
-            SemanticRole::RevolveCap { side } => {
+            ferritecad_kernel::NamingInput::Cap { end: side } => {
                 let degrees = degrees.expect("a full turn has no end faces");
-                assert_eq!(reference.selection, SelectionRule::Exact);
-                assert_eq!(reference.producer_feature, revolve);
                 assert_eq!(surface, FaceSurface::Plane);
                 let (outward, radial) = cap_frame(side, degrees);
                 for p in &vertices {
@@ -952,7 +940,7 @@ fn native_sector_constraints_measure_caps_names_angle_edit_and_exports() {
     let feature = &catalog["revolves"][0];
     assert_eq!(feature["angle_deg"], SECTOR_DEG);
     let source_refs = refs(&source);
-    assert_eq!(source_refs.len(), 5 + 2);
+    assert_eq!(crate::names::face_count(&source_refs), 5 + 2);
 
     let rigid = root.join("rigid.fcad");
     let published = publish(

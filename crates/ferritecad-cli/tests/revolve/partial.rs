@@ -11,7 +11,7 @@
 //! and reaches every angle.
 use super::edit::{edit, edit_reply, write_edit};
 use super::*;
-use ferritecad_document::{CapSide, RevolveAngle};
+use ferritecad_document::RevolveAngle;
 use std::collections::BTreeSet;
 
 const CYLINDER: [[f64; 2]; 4] = [[0., 0.], [10., 0.], [10., 15.], [0., 15.]];
@@ -100,10 +100,10 @@ pub(super) fn signed_phi(p: &[f64; 3]) -> f64 {
 }
 
 /// The outward normal and in-plane radial direction of one end face.
-pub(super) fn cap_frame(side: CapSide, degrees: f64) -> ([f64; 3], [f64; 3]) {
+pub(super) fn cap_frame(side: bool, degrees: f64) -> ([f64; 3], [f64; 3]) {
     let (s, c) = degrees.to_radians().sin_cos();
     match side {
-        CapSide::Start => ([0., 0., 1.], [1., 0., 0.]),
+        false => ([0., 0., 1.], [1., 0., 0.]),
         _ => ([-s, 0., -c], [c, 0., -s]),
     }
 }
@@ -239,31 +239,21 @@ pub(super) fn measure_partial(
             .collect()
     };
     let area = profile_area(points);
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::root_faces(&d, &built);
     assert_eq!(refs.len(), raising + 2, "one name per face");
     let mut named = BTreeSet::new();
     let mut caps = BTreeMap::new();
-    for reference in &refs {
-        let resolved = built.resolve(reference).expect("resolves");
-        let [face] = resolved.as_slice() else {
-            panic!("one face for {:?}: {resolved:?}", reference.output_role)
-        };
-        assert!(named.insert(*face), "two names on one face");
-        let t = triangles(*face);
+    for (_, input, face) in refs {
+        assert!(named.insert(face), "two names on one face");
+        let t = triangles(face);
         let vertices: Vec<[f64; 3]> = t.iter().flatten().copied().collect();
-        let surface = kernel.face_surface(*face).expect("surface");
-        match reference.output_role {
-            SemanticRole::RevolveFace { profile_segment } => {
+        let surface = kernel.face_surface(face).expect("surface");
+        match input {
+            ferritecad_kernel::NamingInput::Curve(profile_segment) => {
                 assert_ne!(
                     Some(profile_segment),
                     axis_label,
                     "the axis Line has no face"
-                );
-                assert_eq!(
-                    reference.selection,
-                    SelectionRule::AllDerivedFrom {
-                        ancestor: profile_segment
-                    }
                 );
                 let (a, b) = lines[&profile_segment];
                 let radius = |p: &[f64; 3]| p[0].hypot(p[2]);
@@ -289,10 +279,7 @@ pub(super) fn measure_partial(
                 assert!(lo.abs() < 1e-3, "starts at {lo}°, not 0");
                 assert!((hi - degrees).abs() < 1e-3, "ends at {hi}°, not {degrees}");
             }
-            SemanticRole::RevolveCap { side } => {
-                assert_eq!(reference.selection, SelectionRule::Exact);
-                assert_eq!(reference.producer_feature, revolve);
-                assert_eq!(reference.owner, revolve);
+            ferritecad_kernel::NamingInput::Cap { end: side } => {
                 assert_eq!(surface, FaceSurface::Plane);
                 let (outward, radial) = cap_frame(side, degrees);
                 for p in &vertices {
@@ -319,52 +306,29 @@ pub(super) fn measure_partial(
                     (covered - area).abs() < 1e-5 * area,
                     "the {side:?} face covers {covered} of {area}"
                 );
-                assert!(caps.insert(side, *face).is_none());
+                assert!(caps.insert(side, face).is_none());
             }
             ref other => panic!("unexpected role {other:?}"),
         }
     }
     assert_eq!(named.len(), faces as usize, "every face has one name");
     assert_eq!(caps.len(), 2);
-    // Neither an extrusion's cap nor a Revolve cap selected by ancestry, nor
-    // a face of the axis Line, resolves on a sector.
-    let (label, _) = lines.iter().next().expect("a Line");
-    for (role, selection) in [
-        (
-            SemanticRole::ExtrudeCap {
-                side: CapSide::Start,
-            },
-            SelectionRule::Exact,
-        ),
-        (
-            SemanticRole::RevolveCap { side: CapSide::End },
-            SelectionRule::AllDerivedFrom { ancestor: *label },
-        ),
-    ] {
-        let wrong = TopologyRef {
-            id: StableEntityId::new(),
-            owner: revolve,
-            producer_feature: revolve,
-            expected_kind: EntityKind::Face,
-            output_role: role,
-            selection,
-            fallback_signature: None,
-        };
-        assert!(built.resolve(&wrong).is_err(), "{wrong:?}");
-    }
+    // An extrusion cap is a different expression; the axis produces no face.
+    let wrong = crate::names::root_name(
+        &d,
+        revolve,
+        ferritecad_kernel::NamingInput::Cap { end: false },
+        ferritecad_kernel::NamingOperation::Extrude,
+    );
+    assert!(built.topology().features[&revolve].resolve(wrong).is_err());
     if let Some(axis) = axis_label {
-        let fake = TopologyRef {
-            id: StableEntityId::new(),
-            owner: revolve,
-            producer_feature: revolve,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::RevolveFace {
-                profile_segment: axis,
-            },
-            selection: SelectionRule::AllDerivedFrom { ancestor: axis },
-            fallback_signature: None,
-        };
-        assert!(built.resolve(&fake).is_err(), "the axis Line has no face");
+        let absent = crate::names::root_name(
+            &d,
+            revolve,
+            ferritecad_kernel::NamingInput::Curve(axis),
+            ferritecad_kernel::NamingOperation::Revolve,
+        );
+        assert!(built.topology().features[&revolve].resolve(absent).is_err());
     }
     built.release_all(&mut kernel);
     d.close().expect("close");
@@ -414,7 +378,7 @@ pub(super) fn check_partial_mesh(m: &Mesh, points: &[[f64; 2]], degrees: f64, fu
         m.volume
     );
     let area = profile_area(points);
-    for side in [CapSide::Start, CapSide::End] {
+    for side in [false, true] {
         let (outward, radial) = cap_frame(side, degrees);
         let covered: f64 = m
             .faces
@@ -583,15 +547,23 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                 let listed = String::from_utf8(listed.stdout).expect("UTF-8");
                 for id in &ids {
                     assert_eq!(
-                        listed.contains(&format!("revolve face from segment {id}")),
+                        crate::names::printed_face_descriptions(&listed)
+                            .iter()
+                            .any(|description| description.contains(&format!("curve {id}"))),
                         Some(id) != axis_id.as_ref(),
                         "{id}"
                     );
                 }
-                assert!(listed.contains("revolve start cap"));
-                assert!(listed.contains("revolve end cap"));
+                assert!(listed.contains("start cap"));
+                assert!(listed.contains("end cap"));
                 let named = ids.len() - usize::from(solid) + 2;
-                assert!(listed.contains(&format!("{named} of {named} references resolved")));
+                assert!(
+                    listed
+                        .lines()
+                        .filter(|line| line.starts_with("    face "))
+                        .count()
+                        == named
+                );
                 let m = mesh(&out, &out.with_extension("stl"));
                 check_partial_mesh(&m, &p, degrees, full);
                 if tag == "as-drawn"

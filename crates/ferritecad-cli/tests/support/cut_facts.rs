@@ -81,7 +81,6 @@ pub struct CutObservation {
     pub center_mm: [f64; 2],
     pub radius_mm: f64,
     pub extent: CutDepth,
-    pub protected_floor_references: Vec<StableEntityId>,
 }
 pub fn observed(path: &Path) -> Vec<CutObservation> {
     let d = Document::open_read_only(path).expect("fixture");
@@ -106,30 +105,7 @@ pub fn observed(path: &Path) -> Vec<CutObservation> {
         let SketchGeometry::Circle { center, radius } = tool.curves[0].geometry else {
             panic!("Circle")
         };
-        let protected_floor_references = d
-            .topology_refs()
-            .expect("names")
-            .into_iter()
-            .filter(|r| match r.output_role {
-                ferritecad_document::SemanticRole::ExtrudeCap {
-                    side: ferritecad_document::CapSide::End,
-                } => r.producer_feature == id,
-                ferritecad_document::SemanticRole::OriginCap {
-                    origin_feature,
-                    side: ferritecad_document::CapSide::End,
-                } => origin_feature == id,
-                ferritecad_document::SemanticRole::CarriedCap {
-                    side: ferritecad_document::CapSide::End,
-                } => objects.iter().any(|o| {
-                    o.id == r.producer_feature
-                        && matches!(&o.payload,ObjectPayload::Extrude(e) if e.previous==Some(id))
-                }),
-                _ => false,
-            })
-            .map(|r| r.id)
-            .collect();
         result.push(CutObservation {
-            protected_floor_references,
             feature: id,
             body,
             base_feature: base,

@@ -10,9 +10,8 @@
 
 use super::*;
 use ferritecad_document::{
-    Body, CapSide, DatumPlane, Dependency, DependencyRole, EndCondition, EntityKind, Expression,
-    Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, SketchCurve, SolidOperation,
-    TopologyRef,
+    Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude, ObjectPayload,
+    Point2, SketchCurve, SolidOperation,
 };
 use ferritecad_types::Transform;
 
@@ -89,30 +88,6 @@ pub(crate) fn write_round_profile(path: &Path, radii: &[f64]) -> Vec<StableEntit
                 dependent,
                 dependency,
                 role,
-            })?;
-        }
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        for drawn in &ids {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeSide {
-                    profile_segment: *drawn,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: *drawn },
-                fallback_signature: None,
             })?;
         }
         Ok(())
@@ -709,7 +684,7 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
             d.meta().document_id,
             others,
             d.dependencies().expect("dependencies"),
-            d.topology_refs().expect("refs"),
+            crate::test_names::names(&d),
         );
         d.close().expect("close");
         (s, facts)
@@ -836,16 +811,11 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
         assert_eq!(built.shape_count(), 1);
         let mut walls = std::collections::BTreeMap::new();
         let mut volume = None;
-        for reference in &doc.topology_refs().expect("refs") {
-            let handles = built.resolve(reference).expect("resolve");
-            assert_eq!(handles.len(), 1, "{:?}", reference.output_role);
-            if let SemanticRole::ExtrudeSide { profile_segment } = reference.output_role {
-                walls.insert(
-                    profile_segment,
-                    kernel.face_surface(handles[0]).expect("surface"),
-                );
+        for (input, face) in crate::test_names::root_faces(&doc, &built) {
+            if let ferritecad_kernel::NamingInput::Curve(curve) = input {
+                walls.insert(curve, kernel.face_surface(face).expect("surface"));
             }
-            let stats = kernel.shape_stats(handles[0].shape()).expect("stats");
+            let stats = kernel.shape_stats(face.shape()).expect("stats");
             assert_eq!(stats.0, 4, "two walls and two caps");
             volume = Some(stats.1);
         }
@@ -869,7 +839,13 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
         assert!((volume - exact).abs() < 1e-6 * exact, "{volume} vs {exact}");
         let rebuilt = run(&["rebuild".as_ref(), path.as_os_str(), "--cold".as_ref()]);
         let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-        assert!(text.contains("4 of 4 stored references resolved"), "{text}");
+        assert!(
+            text.lines()
+                .filter(|line| line.trim_start().starts_with("face "))
+                .count()
+                == 4,
+            "{text}"
+        );
     }
 
     // The exported mesh, read here: a closed oriented surface whose rims sit at the

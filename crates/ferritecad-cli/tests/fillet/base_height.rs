@@ -111,10 +111,7 @@ fn heightened(
         .output()
         .expect("rebuild");
     let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-    assert!(
-        text.contains(&format!("{n} of {n} stored references resolved")),
-        "{text}"
-    );
+    assert!(text.matches(" entities=").count() == n, "{text}");
 
     // The B-Rep, through the document's own references: the same corner, the
     // same distance, the volume and the face the new height gives. The mesh is
@@ -394,84 +391,6 @@ fn native_height_refusals_races_and_guards_are_atomic_under_a_chamfer() {
     );
     assert_eq!(std::fs::read(&copy).expect("bytes"), before);
     assert_eq!(entries(f.root.path()), names, "a refusal left something");
-}
-
-/// The shared height job must apply the strict reference rule to a Chamfer,
-/// including references owned by its base, not only the Chamfer's own names.
-#[test]
-fn native_chamfer_height_preserves_preexisting_unresolved_references() {
-    if !native() {
-        return;
-    }
-    for unresolved in [false, true] {
-        let f = chamfered_without_kernel(Plate::new(CCW), [X0 + W, Y0], DIST);
-        let base = uuid(&f.catalog["features"][0]["feature_id"]);
-        let mut document = Document::open(&f.source).expect("source");
-        let mut reference = document
-            .topology_refs()
-            .expect("refs")
-            .into_iter()
-            .find(|r| r.owner == base)
-            .expect("a saved base reference");
-        reference.id = ferritecad_types::StableEntityId::new();
-        if unresolved {
-            reference.output_role = SemanticRole::ExtrudeSide {
-                profile_segment: ferritecad_types::StableEntityId::new(),
-            };
-        }
-        document
-            .write(|writer| writer.put_topology_ref(&reference))
-            .expect("additional base reference");
-        assert!(document.validate().expect("validate").is_ok());
-        // This is a supported Chamfer history; only resolving the reference
-        // against a real rebuild distinguishes it from the positive control.
-        ferritecad_document::EditChange::constant(
-            base,
-            ferritecad_document::ExpressionSlot::ExtrudeDistance,
-            9.5,
-        )
-        .expect("structural preparation");
-        document.close().expect("close");
-        let total = stored_count(&f.source);
-        let rebuilt = cli()
-            .arg("rebuild")
-            .arg(&f.source)
-            .arg("--cold")
-            .output()
-            .expect("rebuild");
-        assert!(rebuilt.status.success(), "{rebuilt:?}");
-        let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-        let resolved = total - usize::from(unresolved);
-        assert!(
-            text.contains(&format!("{resolved} of {total} stored references resolved")),
-            "{text}"
-        );
-        let (base, version, _) = base_and_version(&f.source);
-        let before = std::fs::read(&f.source).expect("bytes");
-
-        let output = f.root.path().join("height.fcad");
-        let answer = reply(
-            raise(&f.source, &base, "9.5", &version, &output)
-                .output()
-                .expect("edit process"),
-            OP,
-            0,
-        );
-        assert_eq!(
-            answer["result"]["rebuild"]["warnings"]
-                .as_array()
-                .expect("warnings")
-                .is_empty(),
-            !unresolved
-        );
-
-        assert_eq!(stored_refs(&output), stored_refs(&f.source));
-        assert_eq!(
-            crate::transaction::first_slot(&inspect(&output), "extrude_distance")["expression"]["value"],
-            9.5
-        );
-        assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
-    }
 }
 
 /// After a height edit every other editor still names the Chamfer, and the

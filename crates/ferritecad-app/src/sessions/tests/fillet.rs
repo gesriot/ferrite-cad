@@ -207,9 +207,7 @@ pub(super) fn cold(path: &Path, width: f64, depth: f64, height: f64) -> f64 {
             ferritecad_eval::rebuild_cold(&d, &mut k, &ctx)
         }
         .expect("rebuild");
-        for r in d.topology_refs().expect("refs") {
-            assert!(built.resolve(&r).is_ok_and(|v| !v.is_empty()), "{}", r.id);
-        }
+        crate::test_names::assert_names(&built, &crate::test_names::names(&d));
         let body = history(path)[0].body;
         let (_, volume) = k
             .shape_stats(built.shape(body).expect("body"))

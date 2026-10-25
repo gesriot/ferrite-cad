@@ -136,7 +136,6 @@ pub fn emit_import(result: Result<StepImportOutcome>) -> ExitCode {
             Outcome::Failure {
                 ok: false,
                 error: Box::new(Failure {
-                    lost_references: Vec::new(),
                     rebuild: None,
                     constraint_conflict: None,
                     recovery_refusal: None,

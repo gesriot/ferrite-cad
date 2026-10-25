@@ -16,7 +16,7 @@ scenario](sketch-session-apply-verification.md).
    the form (exact coordinates, drag, *Undo draft* / *Redo draft*, *Restore saved
    vertices*) and press **Apply vertices**. No file dialog. The same two-phase step
    as Apply height runs: the existing `edit-sketch-copy` operation on the accepted
-   snapshot, a cold rebuild with strict reference checking, then the picture; the
+   snapshot, a cold rebuild with feature-failure checking, then the picture; the
    version becomes current in the same statement that shows it. The form closes —
    it described the picture that was replaced.
 4. **Undo / Redo** (toolbar, `Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`) move over height

@@ -30,19 +30,20 @@ fn request(source: &Path, destination: &Path, changes: Vec<EditChange>) -> EditR
 fn native() -> bool {
     ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
 }
-fn verify(path: &Path) -> Vec<TopologyRef> {
+fn verify(
+    path: &Path,
+) -> std::collections::BTreeMap<
+    ObjectId,
+    std::collections::BTreeSet<(String, ferritecad_types::ContentHash)>,
+> {
     let d = Document::open_read_only(path).expect("document");
     assert!(d.validate().expect("validation").is_ok());
-    let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
-    let built = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default())
-        .expect("cold rebuild");
-    assert!(built.report().unbuilt().is_empty());
-    let refs = d.topology_refs().expect("names");
-    for r in &refs {
-        assert!(!built.resolve(r).expect("name resolves").is_empty());
-    }
-    built.release_all(&mut k);
-    refs
+    model_names::names_with(&d, &mut ferritecad_occt::OcctKernel::new().expect("kernel"))
+}
+fn face_count(
+    names: &std::collections::BTreeSet<(String, ferritecad_types::ContentHash)>,
+) -> usize {
+    names.iter().filter(|(kind, _)| kind == "face").count()
 }
 fn publish(req: &EditRequest) {
     let before = std::fs::read(&req.source).expect("source bytes");
@@ -91,10 +92,13 @@ fn ordered_additions_dependencies_names_and_end_transitions() {
             tip_feature: Some(second.feature)
         })
     );
-    let refs = added.topology_refs().expect("refs");
-    assert_eq!(refs.iter().filter(|r| r.owner == first.feature).count(), 7);
-    assert_eq!(refs.iter().filter(|r| r.owner == second.feature).count(), 9);
-    assert!(refs.iter().any(|r|r.owner==second.feature && matches!(r.output_role,SemanticRole::OriginSide {origin_feature,..} if origin_feature==first.feature)));
+    let refs = verify(&dest);
+    assert_eq!(face_count(&refs[&first.feature]), 7);
+    assert_eq!(face_count(&refs[&second.feature]), 9);
+    assert!(
+        !refs[&first.feature].is_disjoint(&refs[&second.feature]),
+        "the second feature retains names from its predecessor"
+    );
     assert!(added.dependencies().expect("deps").contains(&Dependency {
         dependent: second.feature,
         dependency: first.feature,
@@ -109,21 +113,26 @@ fn ordered_additions_dependencies_names_and_end_transitions() {
             end_condition: blind(3.),
         }],
     ));
+    let pocket_names = verify(&pocket);
+    for feature in [first.feature, second.feature] {
+        assert_eq!(
+            face_count(&pocket_names[&feature]),
+            face_count(&refs[&feature]) + 1
+        );
+    }
+    let through = root.path().join("through-again.fcad");
+    publish(&request(
+        &pocket,
+        &through,
+        vec![EditChange::SetEndCondition {
+            object: first.feature,
+            end_condition: EndCondition::ThroughAll,
+        }],
+    ));
     assert_eq!(
-        verify(&pocket).len(),
-        refs.len() + 2,
-        "historical and carried floor"
-    );
-    refuse(
-        &request(
-            &pocket,
-            &root.path().join("lost.fcad"),
-            vec![EditChange::SetEndCondition {
-                object: first.feature,
-                end_condition: EndCondition::ThroughAll,
-            }],
-        ),
-        first.feature,
+        verify(&through),
+        refs,
+        "an unconsumed pocket floor may disappear"
     );
     let contact = circular_tool(&d, b, [2., 15.], 2., EndCondition::ThroughAll).expect("contact");
     refuse(
@@ -142,7 +151,7 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
     let initial = (
         d.objects().expect("objects"),
         d.dependencies().expect("deps"),
-        d.topology_refs().expect("names"),
+        model_names::names(&d),
         version(&d),
     );
     let tool = circular_tool(&d, b, [15., 15.], 2., blind(3.)).expect("tool");
@@ -184,7 +193,7 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
             (
                 d.objects().expect("objects"),
                 d.dependencies().expect("deps"),
-                d.topology_refs().expect("names"),
+                model_names::names(&d),
                 version(&d)
             ),
             initial
@@ -207,7 +216,7 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
         let before = (
             d.objects().expect("objects"),
             d.dependencies().expect("deps"),
-            d.topology_refs().expect("names"),
+            model_names::names(&d),
             version(&d),
         );
         let result = d.write_changes(&tool.changes);
@@ -227,7 +236,7 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
                 (
                     d.objects().expect("objects"),
                     d.dependencies().expect("deps"),
-                    d.topology_refs().expect("names"),
+                    model_names::names(&d),
                     version(&d)
                 ),
                 before
@@ -283,10 +292,7 @@ fn edge_additions_reconcile_names_after_mixed_geometry_changes() {
         changes.push(addition(2.));
         let dest = root.path().join(format!("edge-{chamfer}.fcad"));
         publish(&request(&src, &dest, changes));
-        assert_eq!(
-            verify(&dest).iter().filter(|r| r.owner == feature).count(),
-            7
-        );
+        assert_eq!(face_count(&verify(&dest)[&feature]), 7);
         refuse(
             &request(
                 &src,
@@ -312,10 +318,7 @@ fn edge_additions_reconcile_names_after_mixed_geometry_changes() {
                     },
                 }],
             ));
-            assert_eq!(
-                verify(&next).iter().filter(|r| r.owner == second).count(),
-                8
-            );
+            assert_eq!(face_count(&verify(&next)[&second]), 8);
         }
     }
 }
@@ -439,9 +442,7 @@ fn additions_to_the_second_body_survive_session_undo_redo_and_save() {
             for dep in extra.dependencies()? {
                 w.add_dependency(dep)?;
             }
-            for r in extra.topology_refs()? {
-                w.put_topology_ref(&r)?;
-            }
+
             Ok(())
         })
         .expect("two bodies");
@@ -562,3 +563,6 @@ fn stored_history_integrity_rejects_forks_and_shared_bodies() {
         );
     }
 }
+
+#[path = "../../ferritecad-fixtures/tests/support/model_names.rs"]
+mod model_names;

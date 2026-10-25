@@ -135,17 +135,6 @@ impl Cham {
     }
 }
 
-fn role_of(role: &SemanticRole) -> String {
-    match role {
-        SemanticRole::ExtrudeCap { side } => format!("cap {side:?}"),
-        SemanticRole::ExtrudeSide { .. } => "side".to_owned(),
-        SemanticRole::OriginCap { side, .. } => format!("origin cap {side:?}"),
-        SemanticRole::OriginSide { .. } => "origin side".to_owned(),
-        SemanticRole::EdgeChamferFace { .. } => "edge chamfer face".to_owned(),
-        other => panic!("unexpected role {other:?}"),
-    }
-}
-
 fn measure_c(path: &Path, cache: Option<&Path>) -> (Cham, Vec<ferritecad_eval::CacheEvent>) {
     let doc = Document::open_read_only(path).expect("reopen");
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
@@ -178,33 +167,43 @@ fn measure_c(path: &Path, cache: Option<&Path>) -> (Cham, Vec<ferritecad_eval::C
         .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
         .expect("a body");
     let tip = built.shape(body.id).expect("the body was built");
-    let refs = doc.topology_refs().expect("refs");
+    let refs = crate::names::snapshot(&doc);
     let mut roles: BTreeMap<String, Vec<FaceSurface>> = BTreeMap::new();
     let mut chamfer = None;
-    for reference in &refs {
-        let resolved = built.resolve(reference).expect("resolve");
-        assert!(!resolved.is_empty(), "{} resolved to nothing", reference.id);
+    for reference in crate::names::generated_faces(&doc, &built) {
+        let resolved = &reference.entities;
+        assert!(
+            !resolved.is_empty(),
+            "{} resolved to nothing",
+            reference.seed.digest
+        );
         // A reference keeps addressing its own producer's output.
-        let producer = built
-            .shape(reference.producer_feature)
-            .expect("the producer was built");
-        for handle in &resolved {
-            assert_eq!(handle.shape(), producer, "{} was repointed", reference.id);
+        let producer = built.shape(reference.at).expect("the producer was built");
+        for handle in resolved {
+            assert_eq!(
+                handle.shape(),
+                producer,
+                "{} was repointed",
+                reference.seed.digest
+            );
         }
         let kind = objects
             .iter()
-            .find(|o| o.id == reference.producer_feature)
+            .find(|o| o.id == reference.at)
             .expect("producer")
             .payload
             .type_name();
-        let key = format!("{} of {kind}", role_of(&reference.output_role));
-        for handle in &resolved {
+        let key = format!("{} of {kind}", reference.label());
+        for handle in resolved {
             roles
                 .entry(key.clone())
                 .or_default()
                 .push(kernel.face_surface(*handle).expect("surface"));
         }
-        if matches!(reference.output_role, SemanticRole::EdgeChamferFace { .. }) {
+        if reference.at == reference.origin
+            && reference.input
+                == crate::names::FaceInput::Edge(ferritecad_kernel::NamingOperation::Chamfer)
+        {
             assert_eq!(resolved.len(), 1, "the chamfer face is exactly one face");
             assert_eq!(producer, tip, "the Chamfer's face is on the Body's tip");
             chamfer = Some(resolved[0]);
@@ -410,18 +409,14 @@ fn only_a_chamfer_was_added(source: &Path, copy: &Path, body: ObjectId) {
                 }
                 assert_eq!(mine.len(), rows.len() + 1, "one new object");
             }
-            "deps" | "topology_refs" => {
+            "deps" => {
                 for row in rows {
                     let kept = mine.iter().any(|m| m[1..] == row[1..]);
                     let is_old_tip = table == "deps" && row.contains(&selected);
                     assert!(kept || is_old_tip, "{table} row {row:?} disappeared");
                 }
                 let added = mine.len() - rows.len();
-                match table.as_str() {
-                    "deps" => assert_eq!(added, 1, "two edges in, one out"),
-                    "topology_refs" => assert_eq!(added, 7, "the new names"),
-                    _ => {}
-                }
+                assert_eq!(added, 1, "two edges in, one out");
             }
             "meta" => {
                 for (a, b) in rows.iter().zip(mine) {
@@ -542,17 +537,14 @@ fn chamfer_at(
         .output()
         .expect("rebuild");
     let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-    assert!(
-        text.contains(&format!("{n} of {n} stored references resolved")),
-        "{text}"
-    );
+    assert!(text.matches(" entities=").count() == n, "{text}");
     let (cold, _) = measure_c(&copy, None);
     check_brep(&cold, RECT, corner, d, H);
     (copy, id, cold)
 }
 fn stored_count(path: &Path) -> usize {
     let d = Document::open_read_only(path).expect("document");
-    let n = d.topology_refs().expect("refs").len();
+    let n = crate::names::snapshot(&d).len();
     d.close().expect("close");
     n
 }
@@ -727,7 +719,7 @@ fn native_the_distance_edit_changes_one_number_and_keeps_every_identity() {
         let request = f.root.path().join("distance.json");
         let refs_before = {
             let d = Document::open_read_only(&one).expect("source");
-            let refs = d.topology_refs().expect("refs");
+            let refs = crate::names::snapshot(&d);
             d.close().expect("close");
             refs
         };
@@ -756,7 +748,7 @@ fn native_the_distance_edit_changes_one_number_and_keeps_every_identity() {
             only_the_distance_changed(source, &out, id);
             let refs_after = {
                 let doc = Document::open_read_only(&out).expect("copy");
-                let refs = doc.topology_refs().expect("refs");
+                let refs = crate::names::snapshot(&doc);
                 doc.close().expect("close");
                 refs
             };
@@ -771,7 +763,9 @@ fn native_the_distance_edit_changes_one_number_and_keeps_every_identity() {
             assert!(
                 String::from_utf8(rebuilt.stdout)
                     .expect("UTF-8")
-                    .contains(&format!("{n} of {n} stored references resolved"))
+                    .matches(" entities=")
+                    .count()
+                    == n
             );
             let (cold, _) = measure_c(&out, None);
             check_brep(&cold, RECT, corner, d, H);
@@ -1369,19 +1363,7 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
             assert_eq!(std::fs::read(path).expect("source bytes"), before);
             continue;
         }
-        if !repairable {
-            let result = reply(v, "edit", 2);
-            assert_eq!(refused(&result), "topology");
-            assert!(
-                !result["error"]["lost_references"]
-                    .as_array()
-                    .expect("lost names")
-                    .is_empty()
-            );
-            assert!(!out.exists());
-            assert_eq!(std::fs::read(path).expect("source bytes"), before);
-            continue;
-        }
+
         let result = reply(v, "edit", 0);
         if repairable {
             assert_eq!(result["result"]["rebuild"]["failed"], json!([]));

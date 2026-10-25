@@ -193,7 +193,10 @@ fn a_cut_base_moves_and_remains_editable_through_the_transaction() {
     )
     .expect("tool");
     document.write_changes(&cut.changes).expect("write cut");
-    let refs = document.topology_refs().expect("references");
+    let refs = model_names::names_with(
+        &document,
+        &mut ferritecad_occt::OcctKernel::new().expect("baseline kernel"),
+    );
     let moves = sketch
         .curves
         .iter()
@@ -221,8 +224,13 @@ fn a_cut_base_moves_and_remains_editable_through_the_transaction() {
     let reopened = Document::open_read_only(&request.destination).expect("reopen");
     let built = ferritecad_eval::rebuild_cold(&reopened, &mut kernel, &context).expect("rebuild");
     assert!(built.all_built());
-    for r in refs {
-        assert!(!built.resolve(&r).expect("same reference").is_empty());
+    for (feature, names) in refs {
+        let found: std::collections::BTreeSet<_> = built.topology().features[&feature]
+            .bindings
+            .keys()
+            .map(|n| (n.kind.to_string(), n.digest))
+            .collect();
+        assert_eq!(found, names, "same derivations after moving the base");
     }
     built.release_all(&mut kernel);
     let source = ExtrudeEditSource::read(&reopened).expect("reading");
@@ -555,3 +563,6 @@ fn moving_a_revolve_profile_across_its_axis_is_refused_by_rebuild() {
     assert!(!output.exists());
     assert_eq!(std::fs::read(&source).expect("bytes"), before);
 }
+
+#[path = "../../ferritecad-fixtures/tests/support/model_names.rs"]
+mod model_names;

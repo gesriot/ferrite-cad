@@ -83,16 +83,19 @@ leaves the closure and returns the coordinate editor.
 
 ### Names
 
-Fillet `k` persists the seven names of §28A (its `EdgeFilletFace`, two
-`OriginCap`, four `OriginSide`) and one `OriginFilletFace { origin_feature: F_j,
-edge_feature: base, joint: j_j }` for **each** earlier Fillet. The edge a Fillet
-rounds is found on its predecessor's result by `(base, SweepEdge(joint))`,
-exactly one, else a typed refusal; no OCCT index, no nearest edge, no
-coordinates. `record_fillet` carries every name of its predecessor — caps,
-sides, sweep edges and the earlier Fillets' faces under their own origin — so
-the cylinders of F1 and F2 keep their names through F3 and F4, and a restored
-cache carries them equally. Archive v4 and `feature.fillet.sequential.v1`
-already express all of it.
+Output names are derived at rebuild time from the feature, operation, saved
+profile curves and cap roots, together with complete kernel history and
+incidence. Each feature exposes face, edge and vertex names. A name binds a
+selection only when it identifies exactly one entity in that feature; an
+ambiguous name never selects a neighbour. Names of historical results stay at
+their producing feature. No output-name rows are stored in the document.
+
+The CLI reports the kind, digest, entity count and complete derivation for
+each name. The window displays the same derivation and digest. See
+[ADR 0007](decisions/0007-generative-topological-naming.md) and the
+[current file format](file-format.md). Fillet and Chamfer still consume
+`SweptEdge { feature, joint }`; their corner policies and refusal messages
+are unchanged.
 
 ### Storage and the old reader
 
@@ -110,7 +113,7 @@ document.
 * **fillet-edge-copy, Fillet 3 or 4:** `objects`: one new Fillet row (v2) and the
   Body row's `payload`/`payload_hash` (the tip). `deps`: `+ F_k → F_{k−1}`
   (Predecessor), `+ Body → F_k` (BodyTip), `− Body → F_{k−1}` (BodyTip).
-  `topology_refs`: `7 + (k−1)` new rows (9, 10). `capabilities`: none new
+  Output names are not SQL rows. `capabilities`: none new
   (`feature.fillet.sequential.v1` is already declared). `meta.modified_at`.
 * **edit-fillet-radius:** the selected Fillet row's `payload` and `payload_hash`;
   `meta.modified_at`.
@@ -124,7 +127,7 @@ document.
 
 Every writer re-derives its preparation from the document **inside its
 transaction** and compares the whole list of Fillets; the version guard,
-baseline rebuild, strict references, aliases, no-clobber, cancellation, cleanup
+baseline rebuild, no new failed features, aliases, no-clobber, cancellation, cleanup
 and exit 7 are the shared copy job's, unchanged.
 
 ### Wire (JSON v1, additive; no scalar changes meaning)
@@ -192,6 +195,21 @@ sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
 from edit_requests import constraint_request, line_request, line_rule, distance, fixed as pin_rule
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28l-"))
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
@@ -278,7 +296,7 @@ def added_fillet(source, copy, body, names):
                 for c, u, v in zip(ac, row, mine[row[k]]):
                     assert u == v or (row[k] == bid and c in ("payload", "payload_hash")), \
                         f"objects.{c} moved"
-        elif t in ("deps", "topology_refs"):
+        elif t == "deps":
             kept = [r for r in arows if r in brows]
             lost = [r for r in arows if r not in brows]
             assert all(t == "deps" and bid in r for r in lost), (t, lost)
@@ -337,9 +355,9 @@ def measured(copy, rect, rounded, height=H):
     `rounded` corners (template corner, radius) rounded, each by its own
     radius; the exact volume is the B-Rep's analytic one."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Fillet" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
     volume, points = stl(out)
@@ -417,7 +435,7 @@ assert len(catalog["bodies"][0]["history"]) == 5
 
 # 3. The largest radius of the fourth Fillet is bound by the first, across the
 #    Line the perimeter closes on: accepted to the float, refused one float above.
-refs = tables(four)["topology_refs"]
+refs = output_names(four)
 bound = D - RADII[0] - MIN_RADIUS
 row = rounded_row(four, 3)
 def edit_radius(source, feature, radius, out, code=0):
@@ -431,20 +449,20 @@ assert not (root / "no.fcad").exists()
 exact = root / "exact.fcad"
 edit_radius(four, ids[3], bound, exact)
 only_row(four, exact, ids[3])
-assert tables(exact)["topology_refs"] == refs, "a name moved"
+assert output_names(exact) == refs, "a name moved"
 measured(exact, RECT, ROUNDED[:3] + [(ROUNDED[3][0], bound)])
 
 # 4. The early radius, and the height: every other row and name kept.
 early = root / "early.fcad"
 edit_radius(four, ids[0], 2.375, early)
 only_row(four, early, ids[0])
-assert tables(early)["topology_refs"] == refs
+assert output_names(early) == refs
 results["early"] = measured(early, RECT, [(ROUNDED[0][0], 2.375)] + ROUNDED[1:])
 base_id = inspect(four)["features"][0]["feature_id"]
 taller = root / "taller.fcad"
 geometry(edit_args(four, base_id, "9.5", inspect(four)["content_version"], taller), taller)
 only_row(four, taller, base_id)
-assert tables(taller)["topology_refs"] == refs
+assert output_names(taller) == refs
 measured(taller, RECT, ROUNDED, 9.5)
 
 # 5. The base rectangle, moved and resized: every corner follows its two Lines.
@@ -481,7 +499,7 @@ dims = [line_rule(LINES[i], "horizontal" if i % 2 == 0 else "vertical") for i in
 dimensioned, result = constrain(four, [], dims, "dimensioned.fcad")
 
 only_row(four, dimensioned, sketch["sketch_id"])
-assert tables(dimensioned)["topology_refs"] == refs
+assert output_names(dimensioned) == refs
 after = inspect(dimensioned)
 
 results["dimensioned"] = measured(dimensioned, rect_c, ROUNDED)

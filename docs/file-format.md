@@ -2,8 +2,11 @@
 
 A `.fcad` document is a SQLite database tagged with application id `FCAD`.
 It uses rollback journalling and full durability. The schema is created directly:
-metadata, objects, dependencies, topology references, imported source bytes and
-checkpoints. Object and topology payloads carry BLAKE3 integrity hashes.
+metadata, objects, dependencies, imported source bytes and checkpoints. Object
+payloads carry BLAKE3 integrity hashes. Output topology names are derived during
+rebuild and are not stored in the document. A file containing the removed
+`topology_refs` table is refused before model payloads are read; it is neither
+partially opened nor silently rewritten.
 
 Each object has one CBOR envelope containing `type` and a nested CBOR byte string
 `payload`. Each supported type has one payload structure. Imported scenes store
@@ -32,3 +35,10 @@ Sketch curve coordinates, circle radii and arc angles remain `f64`: they describ
 solver state and the initial approximation, rather than editable dimensions.
 Extrude names its consumed feature through `previous`; it has no `target_body`
 field or dependency role.
+
+The `brep.generative.v1` cache stores derived names with the B-Rep; its codec is
+unchanged. Scene entities carry the feature, kind, name digest and complete
+reachable derivation. A name with several entities has no scene selection binding.
+Fillet and Chamfer continue to store `SweptEdge { feature, joint }`; the retained
+corner-to-edge query resolves their consumed input. An edit may remove an
+unconsumed output name. The existing no-new-failed-features rule protects consumers.

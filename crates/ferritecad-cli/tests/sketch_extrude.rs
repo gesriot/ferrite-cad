@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/names.rs"]
+mod names;
 use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
 use serde_json::{Value, json};
 use std::{
@@ -151,8 +153,13 @@ fn native_sketch_extrude_process_cold_geometry_and_delivery() {
         assert_eq!([start.x, start.y], p);
     }
     let ids: Vec<_> = sketch.curves.iter().map(|c| c.id).collect();
-    let refs = doc.topology_refs().expect("refs");
-    assert_eq!(refs.len(), 3);
+    let refs = crate::names::snapshot(&doc);
+    assert_eq!(
+        refs.iter()
+            .filter(|(_, n)| n.kind == ferritecad_kernel::SubShapeKind::Face)
+            .count(),
+        ids.len() + 2
+    );
     doc.close().expect("close");
     std::fs::remove_file(input).expect("private request no longer needed");
     for _ in 0..2 {
@@ -176,7 +183,7 @@ fn native_sketch_extrude_process_cold_geometry_and_delivery() {
             })
             .expect("sketch");
         assert_eq!(s.curves.iter().map(|c| c.id).collect::<Vec<_>>(), ids);
-        assert_eq!(doc.topology_refs().expect("refs"), refs);
+        assert_eq!(crate::names::snapshot(&doc), refs);
         doc.close().expect("close");
     }
     let stl = d.path().join("result.stl");

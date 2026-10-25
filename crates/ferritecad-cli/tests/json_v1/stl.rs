@@ -422,7 +422,7 @@ fn published(
             "destination": destination, "body_id": body, "body_name": name,
             "triangles": 12, "bytes": 684, "length_unit": "mm",
             "complete": true, "omissions": [],
-            "rebuild": { "failed": [], "skipped": [], "degraded_bodies": [], "warnings": [] }
+            "rebuild": { "failed": [], "skipped": [], "degraded_bodies": [] }
         })
     );
     let bytes = std::fs::read(destination).expect("success requires published STL");
