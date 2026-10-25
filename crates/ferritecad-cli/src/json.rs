@@ -67,8 +67,6 @@ enum Outcome<T> {
 
 #[derive(Serialize)]
 struct Failure {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    lost_references: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rebuild: Option<ferritecad_eval::RebuildReport>,
     kind: &'static str,
@@ -92,8 +90,6 @@ impl From<&CadError> for Failure {
             source = cause.source();
         }
         Self {
-            lost_references: ferritecad_eval::RebuildRefusal::from_error(error).map(|r| r.lost_references.iter()
-                .map(|(id, error)| serde_json::json!({"reference":id,"message":error.to_string()})).collect()).unwrap_or_default(),
             rebuild: ferritecad_eval::RebuildRefusal::from_error(error).map(|r| r.report.clone()),
             kind: error.kind().as_str(),
             message: error.to_string(),

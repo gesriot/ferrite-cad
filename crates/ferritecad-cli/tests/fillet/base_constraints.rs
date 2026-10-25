@@ -112,10 +112,7 @@ fn published(
         .output()
         .expect("rebuild");
     let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-    assert!(
-        text.contains(&format!("{n} of {n} stored references resolved")),
-        "{text}"
-    );
+    assert!(text.matches(" entities=").count() == n, "{text}");
     let (cold, _) = measure_c(&copy, None);
     check_brep(&cold, rect, moved, d, H);
     let m = mesh(&copy, &f.root.path().join(format!("{name}.stl")));
@@ -732,58 +729,6 @@ fn native_constraint_refusals_under_a_chamfer_are_atomic() {
         "the solver names the equality two lengths already said: {done}"
     );
     assert_eq!(inspect(&out)["chamfers"][0]["feature_id"], json!(chamfer));
-}
-
-/// The strict reference rule of the shared job covers the constraint copy: an
-/// extra saved base reference that resolves is kept; one that does not is never
-/// published. Document-layer extras, real solver and kernel.
-#[test]
-fn native_constraint_copy_preserves_preexisting_unresolved_references() {
-    if !solving() {
-        return;
-    }
-    for unresolved in [false, true] {
-        let f = chamfered_without_kernel(Plate::new(CCW), [X0 + W, Y0], DIST);
-        let base = uuid(&f.catalog["features"][0]["feature_id"]);
-        let mut document = Document::open(&f.source).expect("source");
-        let mut reference = document
-            .topology_refs()
-            .expect("refs")
-            .into_iter()
-            .find(|r| r.owner == base)
-            .expect("a saved base reference");
-        reference.id = ferritecad_types::StableEntityId::new();
-        if unresolved {
-            reference.output_role = SemanticRole::ExtrudeSide {
-                profile_segment: ferritecad_types::StableEntityId::new(),
-            };
-        }
-        document
-            .write(|writer| writer.put_topology_ref(&reference))
-            .expect("additional base reference");
-        document.close().expect("close");
-        let f = Fixture {
-            catalog: inspect(&f.source),
-            ..f
-        };
-        let before = std::fs::read(&f.source).expect("bytes");
-        f.ask_constraints(&[], &dimensioned(&f, [1.0, 2.0], 31.0, 10.5));
-
-        let out = f.root.path().join("constrained.fcad");
-        let answer = reply(f.constrain(&out).output().expect("process"), CONSTRAIN, 0);
-        assert_eq!(
-            answer["result"]["rebuild"]["warnings"]
-                .as_array()
-                .expect("warnings")
-                .is_empty(),
-            !unresolved
-        );
-
-        let was = stored_refs(&f.source);
-        assert_eq!(stored_refs(&out), was, "the extra reference is kept");
-        only_this_sketch_changed(&f.source, &out, f.plate_sketch_id());
-        assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
-    }
 }
 
 /// OCCT without PlaneGCS: the unconstrained chamfered plate still builds, free

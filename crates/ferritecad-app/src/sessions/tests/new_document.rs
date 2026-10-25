@@ -833,22 +833,6 @@ fn compare_with_controls(root: &Path) {
         &|r| std::fs::write(r.join("annulus.fbx"), file(r, "unsaved.fbx")).expect("w"),
     );
     // A reference that names the wrong owner is a wrong reference, whatever its UUID.
-    control(root, "wrong ref owner", "would pair with", &|r| {
-        let first = r.join("first-save.fcad");
-        let db = rusqlite::Connection::open(&first).expect("db");
-        let objects: Vec<Vec<u8>> = db
-            .prepare("SELECT id FROM objects ORDER BY rowid")
-            .expect("ids")
-            .query_map([], |row| row.get(0))
-            .expect("rows")
-            .collect::<std::result::Result<_, _>>()
-            .expect("ids");
-        db.execute(
-            "UPDATE topology_refs SET owner_id=?1 WHERE rowid=(SELECT min(rowid) FROM topology_refs)",
-            rusqlite::params![objects[0]],
-        )
-        .expect("wrong owner");
-    });
 }
 
 /// The window recipe run through the window's own create worker, session owner

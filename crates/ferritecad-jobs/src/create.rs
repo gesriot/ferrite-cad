@@ -12,8 +12,8 @@
 //! Creating a document is two writes, not one, and each has its own way of
 //! being all-or-nothing.
 //!
-//! The first is inside the file: every object, dependency and topology
-//! reference goes in through one [`Document::write`], which is a SQLite
+//! The first is inside the file: every object and dependency goes in
+//! through one [`Document::write`], which is a SQLite
 //! transaction. A refusal part way through the model — a size that is not a
 //! finite number, an expression that will not build — rolls the whole thing
 //! back, so no half-built plate is ever stored.
@@ -45,9 +45,9 @@ use std::path::{Path, PathBuf};
 
 use crate::{AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion};
 use ferritecad_document::{
-    Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
-    Expression, Extrude, ObjectPayload, Point2, Revolve, RevolveAngle, RevolveAxis, RevolveExtent,
-    SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
+    ObjectPayload, Point2, Revolve, RevolveAngle, RevolveAxis, RevolveExtent, Sketch, SketchCurve,
+    SketchGeometry, SolidOperation,
 };
 use ferritecad_kernel::{GeometryKernel, OperationContext, ProgressSink};
 use ferritecad_types::{DocumentId, ObjectId, Result, StableEntityId, Transform, Unit};
@@ -327,13 +327,7 @@ fn check_profile(
                 "the drawn profile did not build one shape",
             ));
         }
-        for reference in document.topology_refs()? {
-            if built.resolve(&reference)?.is_empty() {
-                return Err(ferritecad_types::CadError::topology(
-                    "the drawn profile lost a stored reference",
-                ));
-            }
-        }
+
         context.check_cancelled()
     })();
     let report = built.report();
@@ -446,9 +440,7 @@ fn taken(destination: &Path, advice: &str) -> ferritecad_types::CadError {
 /// Puts the sample part into a document that has nothing in it.
 ///
 /// The smallest model that exercises the whole document layer: a datum plane,
-/// a rectangular profile on it, and an extrusion producing a body — plus the
-/// topology references naming that extrusion's two caps and the faces raised
-/// from the first segment of its profile.
+/// a rectangular profile on it, and an extrusion producing a body.
 ///
 /// Width and depth are the sketch's coordinates and the height is the
 /// extrusion's blind distance, all in millimetres. There are no `Parameter`
@@ -491,7 +483,6 @@ fn populate_profile(
             },
         });
     }
-    let first_segment = curves[0].id;
 
     document.write(|writer| {
         writer.put_object(
@@ -554,37 +545,6 @@ fn populate_profile(
             dependent: body,
             dependency: extrude,
             role: DependencyRole::BodyTip,
-        })?;
-
-        // Both caps are named up front. Nothing resolves them yet — that is
-        // the kernel's job when the document is opened — but the contract they
-        // express is part of the model, not of the rebuild.
-        for side in [CapSide::Start, CapSide::End] {
-            writer.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-
-        // "Every face raised from this profile segment" stays correct when the
-        // segment is split or the count changes; a face index would not.
-        writer.put_topology_ref(&TopologyRef {
-            id: StableEntityId::new(),
-            owner: extrude,
-            producer_feature: extrude,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::ExtrudeSide {
-                profile_segment: first_segment,
-            },
-            selection: SelectionRule::AllDerivedFrom {
-                ancestor: first_segment,
-            },
-            fallback_signature: None,
         })?;
 
         Ok(())
@@ -687,32 +647,6 @@ fn populate_revolve(
             dependency: revolve,
             role: DependencyRole::BodyTip,
         })?;
-        for curve in curves.iter().filter(|c| Some(c.id) != axis_segment) {
-            writer.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: revolve,
-                producer_feature: revolve,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::RevolveFace {
-                    profile_segment: curve.id,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: curve.id },
-                fallback_signature: None,
-            })?;
-        }
-        if matches!(extent, RevolveExtent::Partial { .. }) {
-            for side in [CapSide::Start, CapSide::End] {
-                writer.put_topology_ref(&TopologyRef {
-                    id: StableEntityId::new(),
-                    owner: revolve,
-                    producer_feature: revolve,
-                    expected_kind: EntityKind::Face,
-                    output_role: SemanticRole::RevolveCap { side },
-                    selection: SelectionRule::Exact,
-                    fallback_signature: None,
-                })?;
-            }
-        }
         Ok(())
     })
 }
@@ -744,7 +678,6 @@ fn populate_circle(
         },
     };
     let height = circle.height_mm();
-    let drawn = curve.id;
 
     document.write(|writer| {
         writer.put_object(
@@ -807,32 +740,6 @@ fn populate_circle(
             dependent: body,
             dependency: extrude,
             role: DependencyRole::BodyTip,
-        })?;
-
-        for side in [CapSide::Start, CapSide::End] {
-            writer.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-
-        // "Every face raised from this circle." One cylindrical face today;
-        // the rule stays right if a later slice ever splits it.
-        writer.put_topology_ref(&TopologyRef {
-            id: StableEntityId::new(),
-            owner: extrude,
-            producer_feature: extrude,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::ExtrudeSide {
-                profile_segment: drawn,
-            },
-            selection: SelectionRule::AllDerivedFrom { ancestor: drawn },
-            fallback_signature: None,
         })?;
 
         Ok(())
@@ -948,35 +855,6 @@ fn populate_annulus(
             role: DependencyRole::BodyTip,
         })?;
 
-        for side in [CapSide::Start, CapSide::End] {
-            writer.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-
-        // "Every face raised from this circle", once per circle. One
-        // cylindrical face each today; the rule stays right if a later slice
-        // ever splits one.
-        for drawn in [outer.id, inner.id] {
-            writer.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeSide {
-                    profile_segment: drawn,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: drawn },
-                fallback_signature: None,
-            })?;
-        }
-
         Ok(())
     })?;
     Ok(identities)
@@ -987,7 +865,7 @@ fn populate_annulus(
 mod tests {
     use super::*;
 
-    use ferritecad_document::{ObjectKind, SelectionRule, SemanticRole};
+    use ferritecad_document::ObjectKind;
     use ferritecad_kernel::CancelToken;
     use ferritecad_types::ErrorKind;
 
@@ -1047,12 +925,6 @@ mod tests {
             document
                 .dependencies()
                 .expect("reads dependencies")
-                .is_empty()
-        );
-        assert!(
-            document
-                .topology_refs()
-                .expect("reads references")
                 .is_empty()
         );
         document.close().expect("closes");
@@ -1132,30 +1004,25 @@ mod tests {
             ]
         );
 
-        let references = document.topology_refs().expect("reads references");
-        assert_eq!(references.len(), 3);
-        assert!(
-            references
-                .iter()
-                .all(|reference| reference.expected_kind == EntityKind::Face)
-        );
-        // The side reference names a segment of the profile that is actually
-        // in the profile. A rule naming an entity nothing draws would resolve
-        // to nothing for ever, and would still be three references.
-        let side = references
-            .iter()
-            .find(|reference| matches!(reference.output_role, SemanticRole::ExtrudeSide { .. }))
-            .expect("the side reference is stored");
-        let SemanticRole::ExtrudeSide { profile_segment } = side.output_role else {
-            unreachable!("just matched");
-        };
+        let mut kernel = ferritecad_kernel::mock::MockKernel::new();
+        let built =
+            ferritecad_eval::rebuild_cold(&document, &mut kernel, &OperationContext::default())
+                .expect("derived names");
+        let names = &built.topology().features[&extrude.id];
+        assert_eq!(names.bindings.len(), 26);
         assert_eq!(
-            side.selection,
-            SelectionRule::AllDerivedFrom {
-                ancestor: profile_segment
-            }
+            names
+                .bindings
+                .keys()
+                .filter(|n| n.kind == ferritecad_kernel::SubShapeKind::Face)
+                .count(),
+            6
         );
-        assert_eq!(profile_segment, stored_first_segment(&document));
+        for (name, entities) in &names.bindings {
+            assert_eq!(entities.len(), 1);
+            assert_eq!(names.resolve(*name).expect("exact").kind(), name.kind);
+        }
+        built.release_all(&mut kernel);
 
         assert_eq!(
             objects
@@ -1165,20 +1032,6 @@ mod tests {
             1
         );
         document.close().expect("closes");
-    }
-
-    /// The identifier of the profile's first segment, as the document stores
-    /// it.
-    fn stored_first_segment(document: &Document) -> StableEntityId {
-        let objects = document.objects().expect("reads objects");
-        let sketch = objects
-            .iter()
-            .find(|object| object.name.as_deref() == Some("Profile"))
-            .expect("the profile is stored");
-        let ObjectPayload::Sketch(stored) = &sketch.payload else {
-            panic!("the profile is not a sketch");
-        };
-        stored.curves.first().expect("the profile has curves").id
     }
 
     /// The failing-first case, at the level the guarantee lives at.
@@ -1279,13 +1132,6 @@ mod tests {
         assert!(
             document.objects().expect("reads objects").is_empty(),
             "the refused transaction stored objects"
-        );
-        assert!(
-            document
-                .topology_refs()
-                .expect("reads references")
-                .is_empty(),
-            "the refused transaction stored references"
         );
         document.close().expect("closes");
     }

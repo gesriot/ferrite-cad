@@ -138,6 +138,21 @@ cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28h-"))
 OP = "edit"
 
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
+
 def new_id():
     raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
     raw[6] = (raw[6] & 15) | 112
@@ -239,9 +254,9 @@ def measured(copy, rounded):
     independently read mesh is the plate with exactly `rounded` (corner,
     radius) pairs rounded; the exact volume is the B-Rep's analytic one."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Fillet" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
     volume, points = stl(out)
@@ -296,7 +311,7 @@ def rows(path):
 catalog, by = rows(twice)
 F1, F2 = by[1]["feature_id"], by[2]["feature_id"]
 assert (F1, F2) == (done1["feature_id"], done2["feature_id"])
-refs = tables(twice)["topology_refs"]
+refs = output_names(twice)
 request = root / "radius.json"
 
 def edited(source, feature, r, name, previous, index):
@@ -307,7 +322,7 @@ def edited(source, feature, r, name, previous, index):
     result = run(["edit", source, "--expect-version", version, "--request", request, "-o", out, "--json"])["result"]
     assert source.read_bytes() == before, "the source is untouched"
     moved = allowlist(source, out, feature)
-    assert tables(out)["topology_refs"] == refs, "a name moved"
+    assert output_names(out) == refs, "a name moved"
     return out, moved
 
 def refused(source, feature, r, words, version=None):

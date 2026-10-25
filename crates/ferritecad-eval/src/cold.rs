@@ -26,18 +26,16 @@
 
 use std::collections::BTreeMap;
 
-use ferritecad_document::TopologyRef;
 use ferritecad_document::{CacheStore, Document, EndCondition, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
     ChamferRequest, CutRequest, FilletRequest, GeometryKernel, OperationContext, Profile,
-    ProgressSink, ShapeHandle, SketchPlane, SubShapeHandle,
+    ProgressSink, ShapeHandle, SketchPlane,
 };
-use ferritecad_topology::{TopologyMap, archive_feature, restore_feature};
+use ferritecad_topology::{ModelNaming, archive_feature, restore_feature};
 use ferritecad_types::{CadError, ObjectId, Result};
 
 use crate::{
-    DegradedBody, FailedFeature, RebuildRefusal, RebuildReport, RebuildStatus, ReferenceWarning,
-    SkippedFeature,
+    DegradedBody, FailedFeature, RebuildRefusal, RebuildReport, RebuildStatus, SkippedFeature,
 };
 
 use crate::cache::{
@@ -94,12 +92,11 @@ use crate::solve::SketchSolveReport;
 pub struct RebuildResult {
     statuses: BTreeMap<ObjectId, RebuildStatus>,
     degraded_bodies: Vec<DegradedBody>,
-    warnings: Vec<ReferenceWarning>,
     shapes: BTreeMap<ObjectId, ShapeHandle>,
     profiles: BTreeMap<ObjectId, Profile>,
     solve_reports: BTreeMap<ObjectId, SketchSolveReport>,
     presentations: BTreeMap<ObjectId, SketchPresentation>,
-    topology: TopologyMap,
+    topology: ModelNaming,
     /// What each feature's result is addressed by in a cache.
     ///
     /// Kept because a boolean is keyed by its inputs' keys rather than by a
@@ -124,7 +121,6 @@ impl RebuildResult {
     pub fn report(&self) -> RebuildReport {
         let mut report = RebuildReport {
             degraded_bodies: self.degraded_bodies.clone(),
-            warnings: self.warnings.clone(),
             ..RebuildReport::default()
         };
         for id in &self.order {
@@ -145,18 +141,8 @@ impl RebuildResult {
     }
     /// Reject a candidate only when it introduces an unbuilt object.
     pub fn require_no_new_failures(
-        self,
-        baseline: &std::collections::BTreeSet<ObjectId>,
-        kernel: &mut (impl GeometryKernel + ?Sized),
-    ) -> Result<Self> {
-        self.require_preserved(baseline, BTreeMap::new(), kernel)
-    }
-
-    /// Decide only after collecting both feature failures and reference losses.
-    pub fn require_preserved(
         mut self,
         baseline: &std::collections::BTreeSet<ObjectId>,
-        lost_references: BTreeMap<ferritecad_types::StableEntityId, CadError>,
         kernel: &mut (impl GeometryKernel + ?Sized),
     ) -> Result<Self> {
         let mut report = self.report();
@@ -166,7 +152,7 @@ impl RebuildResult {
         report
             .skipped
             .retain(|skipped| !baseline.contains(&skipped.id));
-        if report.all_built() && lost_references.is_empty() {
+        if report.all_built() {
             return Ok(self);
         }
         let errors = std::mem::take(&mut self.statuses)
@@ -177,13 +163,8 @@ impl RebuildResult {
             })
             .collect();
         self.release_all(kernel);
-        let refusal = RebuildRefusal {
-            report,
-            errors,
-            lost_references,
-        };
-        let message =
-            format!("edit would leave features unbuilt or lose topology references:\n{refusal}");
+        let refusal = RebuildRefusal { report, errors };
+        let message = format!("edit would leave features unbuilt:\n{refusal}");
         let kind = refusal
             .errors
             .values()
@@ -243,16 +224,8 @@ impl RebuildResult {
     /// Read-only: the mapping is built while the geometry is, and nothing
     /// outside may add to it. It holds kernel handles, which implement no
     /// serialisation, so it cannot reach a document even by accident.
-    pub fn topology(&self) -> &TopologyMap {
+    pub fn topology(&self) -> &ModelNaming {
         &self.topology
-    }
-
-    /// Resolves a reference the document stores against this rebuild.
-    ///
-    /// Fails rather than approximating; see
-    /// [`ferritecad_topology::resolve`] for what each failure means.
-    pub fn resolve(&self, reference: &TopologyRef) -> Result<Vec<SubShapeHandle>> {
-        ferritecad_topology::resolve(&self.topology, reference)
     }
 
     /// The objects that were evaluated, in the order they were evaluated.
@@ -944,29 +917,6 @@ fn run<K: GeometryKernel + ?Sized>(
             }
         }
     }
-    for reference in document.topology_refs()? {
-        match state.resolve(&reference) {
-            Ok(found)
-                if !found.is_empty()
-                    && (!matches!(
-                        reference.selection,
-                        ferritecad_document::SelectionRule::Exact
-                    ) || found.len() == 1) => {}
-            resolved => state.warnings.push(ReferenceWarning {
-                owner: reference.owner,
-                reference: reference.id,
-                message: match resolved {
-                    Err(error) => error.to_string(),
-                    Ok(found) => format!(
-                        "reference {} matches {} entities",
-                        reference.id,
-                        found.len()
-                    ),
-                },
-            }),
-        }
-    }
-
     // Covers a cancellation concurrent with the final non-kernel feature.
     context.check_cancelled()?;
     Ok(())

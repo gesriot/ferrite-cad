@@ -40,7 +40,6 @@ fn a_dimension_and_its_fillet_can_be_repaired_together() {
         refusal.report.failed.iter().any(|f| f.id == chain.first),
         "{error}"
     );
-    assert!(!refusal.lost_references.is_empty());
     assert!(!request.destination.exists());
     assert_eq!(std::fs::read(&source).expect("unchanged"), before);
     request.changes.push(

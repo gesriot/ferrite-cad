@@ -120,46 +120,44 @@ pub enum Selected<'a> {
         /// The identifier the document stores for it.
         object: &'a str,
     },
-    /// One face of a body, named by what the document stores about it.
+    /// One face of a body, named by the rebuilt model.
     ///
-    /// Only durable terms reach here. A face the document does not name is not
+    /// Only durable terms reach here. A face without a name of its own is not
     /// selectable as a face at all, so there is no case for one.
     Face {
         /// What the body is called, if the document called it anything.
         name: Option<&'a str>,
         /// The identifier the document stores for the body.
         object: &'a str,
-        /// Every stored reference that names exactly this face, in the order
-        /// the document stores them. More than one is normal and is shown as
-        /// more than one: which of them is "the" name is not this window's
-        /// decision to make.
+        /// Every name that selects exactly this face, in the order given. Each
+        /// is shown: which of them is "the" name is not this window's decision
+        /// to make.
         names: &'a [TopologyName<'a>],
     },
-    /// One topological edge of a native body, named exactly by the document.
+    /// One topological edge of a native body, named exactly by the rebuilt
+    /// model.
     ///
-    /// Only durable terms reach here, exactly as for a face: an edge the
-    /// document does not name is not selectable as an edge at all.
+    /// Only durable terms reach here, exactly as for a face: an edge without a
+    /// name of its own is not selectable as an edge at all.
     Edge {
         /// What the body is called, if the document called it anything.
         name: Option<&'a str>,
         /// The identifier the document stores for the body.
         object: &'a str,
-        /// Every stored reference that names exactly this edge, in the order
-        /// the document stores them.
+        /// Every name that selects exactly this edge, in the order given.
         names: &'a [TopologyName<'a>],
     },
-    /// One topological vertex of a native body, named exactly by the
-    /// document.
+    /// One topological vertex of a native body, named exactly by the rebuilt
+    /// model.
     ///
     /// Only durable terms reach here, exactly as for a face and an edge: a
-    /// corner the document does not name is not selectable as a corner at all.
+    /// corner without a name of its own is not selectable as a corner at all.
     Vertex {
         /// What the body is called, if the document called it anything.
         name: Option<&'a str>,
         /// The identifier the document stores for the body.
         object: &'a str,
-        /// Every stored reference that names exactly this corner, in the order
-        /// the document stores them.
+        /// Every name that selects exactly this corner, in the order given.
         names: &'a [TopologyName<'a>],
     },
     /// A definition inside a file this document imported.
@@ -194,52 +192,45 @@ pub struct GeometryUnavailable<'a> {
 
 /// One durable name for an entity, already turned into words by the caller.
 ///
-/// Text rather than document types, for the same reason the rest of this
-/// module deals in text: a panel that could name a `SemanticRole` would be a
-/// panel that knows what a document is.
+/// Text rather than modelling types, for the same reason the rest of this
+/// module deals in text: a panel that could read a derivation would be a panel
+/// that knows what a model is.
 ///
-/// One type for a face, an edge and a vertex. What a document stores about any
-/// of them is the same six terms, and three structures would be three formats
-/// to keep in step; which kind is meant is already in `expected_kind` and in
-/// the role.
+/// One type for a face, an edge and a vertex. The model says the same four
+/// things about any of them, and three structures would be three formats to
+/// keep in step; which kind is meant is already in `kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TopologyName<'a> {
-    /// The identifier the document stores for the reference itself.
-    pub reference: &'a str,
-    /// The object holding the reference.
-    pub owner: &'a str,
-    /// The feature whose output it names.
-    pub producer_feature: &'a str,
-    /// The kind of entity it expects.
-    pub expected_kind: &'a str,
-    /// What the named entity is, semantically.
-    pub role: &'a str,
-    /// How many entities it selects, and which.
-    pub rule: &'a str,
+    /// The feature whose result holds the entity.
+    pub feature: &'a str,
+    /// Face, edge or vertex.
+    pub kind: &'a str,
+    /// The name's digest, which is its identity.
+    pub digest: &'a str,
+    /// How the name was derived, down to its sketch and cap roots.
+    pub description: &'a str,
 }
 
-/// What a document calls one face. See [`TopologyName`].
+/// What the model calls one face. See [`TopologyName`].
 pub type FaceName<'a> = TopologyName<'a>;
 
-/// What a document calls one edge. See [`TopologyName`].
+/// What the model calls one edge. See [`TopologyName`].
 pub type EdgeName<'a> = TopologyName<'a>;
 
-/// What a document calls one topological vertex. See [`TopologyName`].
+/// What the model calls one topological vertex. See [`TopologyName`].
 pub type VertexName<'a> = TopologyName<'a>;
 
-/// Every stored name, in the order the document stores them.
+/// Every name, in the order given.
 ///
-/// One statement for a face, an edge and a vertex: what the document says
-/// about any of them is the same six terms, and three copies of this loop
-/// would be three formats to keep in step.
+/// One statement for a face, an edge and a vertex: the model says the same
+/// four things about any of them, and three copies of this loop would be three
+/// formats to keep in step.
 fn push_names(rows: &mut Vec<(&'static str, String)>, names: &[TopologyName<'_>]) {
     for name in names {
-        rows.push(("Reference", name.reference.to_owned()));
-        rows.push(("Owner", name.owner.to_owned()));
-        rows.push(("Feature", name.producer_feature.to_owned()));
-        rows.push(("Entity", name.expected_kind.to_owned()));
-        rows.push(("Role", name.role.to_owned()));
-        rows.push(("Rule", name.rule.to_owned()));
+        rows.push(("Feature", name.feature.to_owned()));
+        rows.push(("Entity", name.kind.to_owned()));
+        rows.push(("Digest", name.digest.to_owned()));
+        rows.push(("Derivation", name.description.to_owned()));
     }
 }
 
@@ -2092,12 +2083,10 @@ mod tests {
             name: Some("Plate"),
             object: "018f2b7c-0000-7000-8000-000000000001",
             names: &[FaceName {
-                reference: "018f2b7c-0000-7000-8000-0000000000a1",
-                owner: "018f2b7c-0000-7000-8000-000000000001",
-                producer_feature: "018f2b7c-0000-7000-8000-000000000002",
-                expected_kind: "face",
-                role: "Extrusion cap, end",
-                rule: "Exactly this one",
+                digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                feature: "018f2b7c-0000-7000-8000-000000000002",
+                kind: "face",
+                description: "generated Extrude from end cap",
             }],
         }
     }
@@ -2113,11 +2102,10 @@ mod tests {
 
         assert_eq!(value("Kind"), Some("Face"));
         assert_eq!(value("Body"), Some("Plate"));
-        assert_eq!(value("Role"), Some("Extrusion cap, end"));
-        assert_eq!(value("Rule"), Some("Exactly this one"));
+        assert_eq!(value("Derivation"), Some("generated Extrude from end cap"));
         assert_eq!(
-            value("Reference"),
-            Some("018f2b7c-0000-7000-8000-0000000000a1")
+            value("Digest"),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         // Everything shown is something the document stores. Nothing here
         // could be written down and found to mean nothing an hour later.
@@ -2146,20 +2134,16 @@ mod tests {
             object: "018f2b7c-0000-7000-8000-000000000001",
             names: &[
                 VertexName {
-                    reference: "018f2b7c-0000-7000-8000-0000000000c1",
-                    owner: "018f2b7c-0000-7000-8000-000000000001",
-                    producer_feature: "018f2b7c-0000-7000-8000-000000000002",
-                    expected_kind: "vertex",
-                    role: "Start cap vertex at the joint of profile segments A and B",
-                    rule: "Exactly this one",
+                    digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    feature: "018f2b7c-0000-7000-8000-000000000002",
+                    kind: "vertex",
+                    description: "boundary from start cap and curves A and B",
                 },
                 VertexName {
-                    reference: "018f2b7c-0000-7000-8000-0000000000c2",
-                    owner: "018f2b7c-0000-7000-8000-000000000001",
-                    producer_feature: "018f2b7c-0000-7000-8000-000000000002",
-                    expected_kind: "vertex",
-                    role: "End cap vertex at the joint of profile segments A and B",
-                    rule: "Exactly this one",
+                    digest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    feature: "018f2b7c-0000-7000-8000-000000000002",
+                    kind: "vertex",
+                    description: "boundary from end cap and curves A and B",
                 },
             ],
         }
@@ -2177,33 +2161,33 @@ mod tests {
         assert_eq!(value("Kind"), Some("Vertex"));
         assert_eq!(value("Body"), Some("Plate"));
         assert_eq!(
-            value("Reference"),
-            Some("018f2b7c-0000-7000-8000-0000000000c1")
+            value("Digest"),
+            Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
         );
 
         // Both stored names, in the order they were given, one sentence each.
         let roles: Vec<&str> = rows
             .iter()
-            .filter(|(label, _)| *label == "Role")
+            .filter(|(label, _)| *label == "Derivation")
             .map(|(_, value)| value.as_str())
             .collect();
         assert_eq!(
             roles,
             [
-                "Start cap vertex at the joint of profile segments A and B",
-                "End cap vertex at the joint of profile segments A and B",
+                "boundary from start cap and curves A and B",
+                "boundary from end cap and curves A and B",
             ]
         );
         let references: Vec<&str> = rows
             .iter()
-            .filter(|(label, _)| *label == "Reference")
+            .filter(|(label, _)| *label == "Digest")
             .map(|(_, value)| value.as_str())
             .collect();
         assert_eq!(
             references,
             [
-                "018f2b7c-0000-7000-8000-0000000000c1",
-                "018f2b7c-0000-7000-8000-0000000000c2",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             ],
             "the inspector reordered or dropped a stored name"
         );
@@ -2232,20 +2216,16 @@ mod tests {
     fn a_face_with_several_names_shows_all_of_them() {
         let names = [
             FaceName {
-                reference: "018f2b7c-0000-7000-8000-0000000000a1",
-                owner: "018f2b7c-0000-7000-8000-000000000001",
-                producer_feature: "018f2b7c-0000-7000-8000-000000000002",
-                expected_kind: "face",
-                role: "Extrusion cap, end",
-                rule: "Exactly this one",
+                digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                feature: "018f2b7c-0000-7000-8000-000000000002",
+                kind: "face",
+                description: "generated Extrude from end cap",
             },
             FaceName {
-                reference: "018f2b7c-0000-7000-8000-0000000000a2",
-                owner: "018f2b7c-0000-7000-8000-000000000001",
-                producer_feature: "018f2b7c-0000-7000-8000-000000000002",
-                expected_kind: "face",
-                role: "Extrusion cap, end",
-                rule: "Everything derived from 018f2b7c-0000-7000-8000-000000000003",
+                digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                feature: "018f2b7c-0000-7000-8000-000000000002",
+                kind: "face",
+                description: "generated Extrude from end cap",
             },
         ];
         let rows = Selected::Face {
@@ -2259,10 +2239,10 @@ mod tests {
         // be presenting storage order as a decision about which is right.
         let references: Vec<&str> = rows
             .iter()
-            .filter(|(label, _)| *label == "Reference")
+            .filter(|(label, _)| *label == "Digest")
             .map(|(_, value)| value.as_str())
             .collect();
-        assert_eq!(references, vec![names[0].reference, names[1].reference]);
+        assert_eq!(references, vec![names[0].digest, names[1].digest]);
     }
 
     fn imported() -> Selected<'static> {

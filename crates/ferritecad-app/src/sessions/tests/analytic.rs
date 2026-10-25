@@ -452,17 +452,9 @@ fn analytic_gate(
         &OperationContext::default(),
     )
     .expect("cold rebuild");
-    let references = saved.topology_refs().expect("refs");
+    let references = crate::test_names::names(&saved);
     assert!(!references.is_empty(), "the part carries saved names");
-    for reference in references {
-        assert!(
-            built
-                .resolve(&reference)
-                .is_ok_and(|found| !found.is_empty()),
-            "{} did not resolve after Save",
-            reference.id
-        );
-    }
+    crate::test_names::assert_names(&built, &references);
     drop(saved);
     let (stl, fbx) = peer_bytes(source, root, "a-saved");
     assert_eq!((stl.clone(), fbx.clone()), (g_stl, g_fbx));
@@ -676,18 +668,11 @@ fn walls_by_reference(
     let built = ferritecad_eval::rebuild_cold(&document, &mut kernel, &OperationContext::default())
         .expect("cold rebuild");
     let mut walls = std::collections::BTreeMap::new();
-    let references = document.topology_refs().expect("refs");
-    assert!(!references.is_empty(), "the part carries saved names");
-    for reference in &references {
-        let handles = built.resolve(reference).expect("resolve");
-        assert_eq!(handles.len(), 1, "{:?}", reference.output_role);
-        if let ferritecad_document::SemanticRole::ExtrudeSide { profile_segment } =
-            reference.output_role
-        {
-            walls.insert(
-                profile_segment,
-                kernel.face_surface(handles[0]).expect("surface"),
-            );
+    let faces = crate::test_names::root_faces(&document, &built);
+    assert!(!faces.is_empty());
+    for (input, face) in faces {
+        if let ferritecad_kernel::NamingInput::Curve(curve) = input {
+            walls.insert(curve, kernel.face_surface(face).expect("surface"));
         }
     }
     built.release_all(&mut kernel);

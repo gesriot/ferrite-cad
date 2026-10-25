@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/names.rs"]
+mod names;
 #[path = "support/transaction.rs"]
 mod transaction;
 use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
@@ -135,9 +137,8 @@ fn write_annular_document(
     swapped: bool,
 ) {
     use ferritecad_document::{
-        Body, CapSide, DatumPlane, Dependency, DependencyRole, EndCondition, EntityKind,
-        Expression, Extrude, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
-        SolidOperation, TopologyRef,
+        Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude, Point2,
+        Sketch, SketchCurve, SolidOperation,
     };
     use ferritecad_types::{ObjectId, StableEntityId, Transform};
     let mut d = Document::create(path).expect("document");
@@ -214,30 +215,7 @@ fn write_annular_document(
                 role,
             })?;
         }
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        for drawn in [outer, inner] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeSide {
-                    profile_segment: drawn,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: drawn },
-                fallback_signature: None,
-            })?;
-        }
+
         Ok(())
     })
     .expect("annular document");
@@ -256,7 +234,7 @@ struct Stored {
     height_mm: f64,
     /// Both curves in the order the Sketch actually stores them.
     stored_order: Vec<ferritecad_types::StableEntityId>,
-    refs: Vec<ferritecad_document::TopologyRef>,
+    refs: crate::names::Names,
     objects: usize,
 }
 fn stored(path: &Path) -> Stored {
@@ -289,7 +267,7 @@ fn stored(path: &Path) -> Stored {
         Some(ferritecad_document::EndCondition::Blind { distance }) => distance.value(),
         other => panic!("one Blind extrusion, got {other:?}"),
     };
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::snapshot(&d);
     let count = objects.len();
     d.close().expect("close");
     Stored {
@@ -322,7 +300,6 @@ fn analytic_with_cache(
     path: &Path,
     cache: Option<(&Path, ferritecad_eval::CacheOutcome)>,
 ) -> Analytic {
-    use ferritecad_document::SemanticRole;
     let doc = Document::open_read_only(path).expect("reopen");
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
     let built = if let Some((path, expected)) = cache {
@@ -354,24 +331,17 @@ fn analytic_with_cache(
     let mut walls: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut caps = Vec::new();
     let mut stats = None;
-    for reference in &doc.topology_refs().expect("refs") {
-        let resolved = built.resolve(reference).expect("resolve");
-        assert!(
-            !resolved.is_empty(),
-            "reference {:?} resolved to nothing after a cold reopen",
-            reference.output_role
-        );
-        for handle in &resolved {
-            let surface = kernel.face_surface(*handle).expect("surface");
-            match reference.output_role {
-                SemanticRole::ExtrudeSide { profile_segment } => {
-                    walls.entry(profile_segment).or_default().push(surface)
-                }
-                SemanticRole::ExtrudeCap { .. } => caps.push(surface),
-                _ => panic!("unexpected role"),
+    crate::names::assert_primary(&built);
+    for (_, input, handle) in crate::names::root_faces(&doc, &built) {
+        let surface = kernel.face_surface(handle).expect("surface");
+        match input {
+            ferritecad_kernel::NamingInput::Curve(curve) => {
+                walls.entry(curve).or_default().push(surface)
             }
-            stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
+            ferritecad_kernel::NamingInput::Cap { .. } => caps.push(surface),
+            _ => panic!("unexpected root"),
         }
+        stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
     }
     let (faces, volume) = stats.expect("a resolved reference names the solid");
     built.release_all(&mut kernel);
@@ -808,7 +778,7 @@ fn native_annulus_edit_moves_and_resizes_only_the_named_pair() {
         assert_eq!(after.outer, before.outer, "the boundary keeps its UUID");
         assert_eq!(after.inner, before.inner, "and so does the bore");
         assert_eq!(after.stored_order, before.stored_order, "{name}");
-        assert_eq!(after.refs, before.refs, "same reference UUIDs and roles");
+        assert_eq!(after.refs, before.refs, "same primary name digests");
         assert_eq!(after.objects, before.objects);
         assert_eq!(after.height_mm, 15., "the height is not in this request");
         assert_eq!(after.center, center);

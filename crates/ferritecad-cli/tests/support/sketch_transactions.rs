@@ -289,9 +289,7 @@ fn native_single_vertex_of_the_second_body_moves_in_a_mixed_transaction() {
     )
     .expect("cold");
     assert!(built.report().all_built());
-    for reference in saved.topology_refs().expect("references") {
-        assert_eq!(built.resolve(&reference).expect("resolve").len(), 1);
-    }
+    crate::names::assert_primary(&built);
     built.release_all(&mut kernel);
     saved.close().expect("close");
     assert_eq!(std::fs::read(&source).expect("bytes"), original);

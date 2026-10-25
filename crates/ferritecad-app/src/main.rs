@@ -34,6 +34,8 @@ mod creates;
 mod cuts;
 mod dialogs;
 mod edits;
+mod entity_names;
+use entity_names::{TopologyWords, topology_name, topology_words};
 mod exports;
 mod feature_facts;
 mod fillets;
@@ -58,15 +60,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::{sync::Arc, time::Instant};
 
-use ferritecad_document::{
-    CapSide, DOCUMENT_EXTENSION, SelectionRule, SemanticRole, SketchConstraintRule,
-    SketchSegmentRef,
-};
+use ferritecad_document::{DOCUMENT_EXTENSION, SketchConstraintRule, SketchSegmentRef};
 use ferritecad_jobs::NewDocument;
 use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink};
 use ferritecad_scene::{
-    CatalogueEntry, EdgeNames, FaceMeaning, FaceNames, LoadedScene, SceneItem, Selection,
-    SketchSolveFacts, VertexNames,
+    CatalogueEntry, EdgeNames, FaceNames, LoadedScene, SceneItem, Selection, SketchSolveFacts,
+    VertexNames,
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
@@ -2133,14 +2132,14 @@ struct LiveScene<P> {
     /// What each mesh of `prepared` is: an identity a document could store,
     /// and the facts a person needs to recognise it.
     catalogue: Vec<CatalogueEntry>,
-    /// What the document durably calls each face of `prepared`, which is what
+    /// What the rebuilt model calls each face of `prepared`, which is what
     /// makes a face selectable as a face rather than as the part it is on.
     faces: FaceNames,
-    /// What the document durably calls the topological edges of `prepared`.
+    /// What the rebuilt model calls the topological edges of `prepared`.
     /// Beside `faces` and replaced with it, for the same reason: what a name
     /// means belongs to the picture it was read against.
     edges: EdgeNames,
-    /// And what it durably calls the topological vertices. Carried on the same
+    /// And what it calls the topological vertices. Carried on the same
     /// terms as the two above: a name read against one picture says nothing
     /// about the next, so it is replaced whole rather than kept.
     ///
@@ -2719,27 +2718,11 @@ fn hover_request(row: Option<usize>, interface_has_pointer: bool, question: Hove
 struct Words {
     identities: Vec<String>,
     faces: Vec<TopologyWords>,
-    /// The same six terms for a chosen edge. One type, three lists: what is
+    /// The same four terms for a chosen edge. One type, three lists: what is
     /// chosen is one thing, so only one of these is ever non-empty.
     edges: Vec<TopologyWords>,
     /// And for a chosen topological vertex, on the same terms.
     vertices: Vec<TopologyWords>,
-}
-
-/// One durable name, in the words a person reads.
-///
-/// Portable terms only. There is no field here for an ordinal, a mesh index, a
-/// handle, a session or a transient identity, because there is nothing true to
-/// put in one: what names a face, an edge or a corner is the reference the
-/// document stores. One type for all three, because the document stores the
-/// same six terms about any of them.
-struct TopologyWords {
-    reference: String,
-    owner: String,
-    producer_feature: String,
-    expected_kind: String,
-    role: String,
-    rule: String,
 }
 
 /// The identifier each row is described by.
@@ -2773,29 +2756,6 @@ fn words_of(
         faces,
         edges,
         vertices,
-    }
-}
-
-/// One stored reference, said in the document's own terms.
-fn topology_words(meaning: &FaceMeaning) -> TopologyWords {
-    TopologyWords {
-        reference: meaning.reference.to_string(),
-        owner: meaning.owner.to_string(),
-        producer_feature: meaning.producer_feature.to_string(),
-        expected_kind: meaning.expected_kind.as_str().to_owned(),
-        role: describe_role(&meaning.output_role),
-        rule: describe_rule(&meaning.selection),
-    }
-}
-
-fn topology_name(words: &TopologyWords) -> ferritecad_ui::TopologyName<'_> {
-    ferritecad_ui::TopologyName {
-        reference: &words.reference,
-        owner: &words.owner,
-        producer_feature: &words.producer_feature,
-        expected_kind: &words.expected_kind,
-        role: &words.role,
-        rule: &words.rule,
     }
 }
 
@@ -3002,100 +2962,6 @@ fn segment(segment: SketchSegmentRef) -> String {
 /// person typed is a size they should be able to recognise.
 fn mm(value: f64) -> String {
     value.to_string()
-}
-
-/// What a stored role says, as a sentence.
-///
-/// The document's own vocabulary, spelled out. A role names what a subshape
-/// *is* – the end cap of this extrusion, the side raised from that sketch
-/// segment, or the edge where two such things meet – and every part of that
-/// sentence is durable.
-fn describe_role(role: &SemanticRole) -> String {
-    match role {
-        SemanticRole::ExtrudeCap { side } => match side {
-            CapSide::Start => "Extrusion cap, start".to_owned(),
-            CapSide::End => "Extrusion cap, end".to_owned(),
-            other => format!("Extrusion cap, {other:?}"),
-        },
-        SemanticRole::ExtrudeSide { profile_segment } => {
-            format!("Side raised from profile segment {profile_segment}")
-        }
-        SemanticRole::ExtrudeCapEdge {
-            side,
-            profile_segment,
-        } => match side {
-            // Which end and which segment, because either alone names four
-            // edges of a plate rather than one. `CapSide` is non-exhaustive,
-            // and a side this build has no words for is said the way the cap
-            // faces beside it say one.
-            CapSide::Start => format!("Start cap edge of profile segment {profile_segment}"),
-            CapSide::End => format!("End cap edge of profile segment {profile_segment}"),
-            other => format!("{other:?} cap edge of profile segment {profile_segment}"),
-        },
-        SemanticRole::ExtrudeCapVertex { side, joint } => {
-            // Both segments and which end, because neither alone names one
-            // point: the pair says which corner of the profile, and the side
-            // says which of that corner's two ends. In the joint's own
-            // canonical order, which is what makes the same corner read the
-            // same way however the profile was walked.
-            let [one, another] = joint.segments();
-            match side {
-                // `CapSide` is non-exhaustive, and a side this build has no
-                // words for is said the way the cap faces and cap edges beside
-                // it say one: the side alone, never the whole role.
-                CapSide::Start => {
-                    format!("Start cap vertex at the joint of profile segments {one} and {another}")
-                }
-                CapSide::End => {
-                    format!("End cap vertex at the joint of profile segments {one} and {another}")
-                }
-                unknown => format!(
-                    "{unknown:?} cap vertex at the joint of profile segments {one} and {another}"
-                ),
-            }
-        }
-        SemanticRole::ExtrudeSweepEdge { joint } => {
-            // Both segments, in the order the joint keeps them, which is the
-            // canonical one. Naming one of the two would describe a corner by
-            // half of what it is, and the other half is what tells it from the
-            // corner next to it.
-            let [one, other] = joint.segments();
-            format!("Sweep edge at the joint of profile segments {one} and {other}")
-        }
-        SemanticRole::OriginCap {
-            origin_feature,
-            side,
-        } => {
-            format!("cap {side:?} originating in feature {origin_feature}")
-        }
-        SemanticRole::OriginSide {
-            origin_feature,
-            profile_segment,
-        } => {
-            format!("side from segment {profile_segment} originating in feature {origin_feature}")
-        }
-        SemanticRole::SketchSegment { segment } => format!("Sketch segment {segment}"),
-        SemanticRole::FilletFace { source_edge } => format!("Fillet of edge {source_edge}"),
-        SemanticRole::OriginFilletFace {
-            origin_feature,
-            edge_feature,
-            joint,
-        } => format!(
-            "Fillet {origin_feature}'s face, rounded from the edge {edge_feature} swept at {joint}"
-        ),
-        other => format!("{other:?}"),
-    }
-}
-
-/// What a stored selection rule says.
-fn describe_rule(rule: &SelectionRule) -> String {
-    match rule {
-        SelectionRule::Exact => "Exactly this one".to_owned(),
-        SelectionRule::AllDerivedFrom { ancestor } => {
-            format!("Everything derived from {ancestor}")
-        }
-        other => format!("{other:?}"),
-    }
 }
 
 /// What the read-only inspector shows about what is chosen.
@@ -8942,8 +8808,6 @@ mod tests {
     /// The committed plate through the real kernel, with an exact durable name
     /// written for every cap-boundary edge.
     fn native_plate_with_named_edges() -> Option<(tempfile::TempDir, LoadedScene)> {
-        use ferritecad_document::{CapSide, Document, EntityKind, SelectionRule};
-
         if !ferritecad_occt::is_available() {
             ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return None;
@@ -8951,42 +8815,6 @@ mod tests {
         let directory = tempfile::tempdir().expect("a temporary directory is available");
         let path = directory.path().join("plate.fcad");
         std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
-
-        let mut document = Document::open(&path).expect("opens the plate");
-        let stored = document.topology_refs().expect("reads");
-        let sides: Vec<(ferritecad_types::ObjectId, ferritecad_types::StableEntityId)> = stored
-            .iter()
-            .filter_map(|reference| match &reference.output_role {
-                SemanticRole::ExtrudeSide { profile_segment } => {
-                    Some((reference.producer_feature, *profile_segment))
-                }
-                _ => None,
-            })
-            .collect();
-        assert!(!sides.is_empty(), "the fixture names its swept faces");
-        let owner = stored[0].owner;
-        document
-            .write(|w| {
-                for (producer, segment) in &sides {
-                    for side in [CapSide::Start, CapSide::End] {
-                        w.put_topology_ref(&ferritecad_document::TopologyRef {
-                            id: ferritecad_types::StableEntityId::new(),
-                            owner,
-                            producer_feature: *producer,
-                            expected_kind: EntityKind::Edge,
-                            output_role: SemanticRole::ExtrudeCapEdge {
-                                side,
-                                profile_segment: *segment,
-                            },
-                            selection: SelectionRule::Exact,
-                            fallback_signature: None,
-                        })?;
-                    }
-                }
-                Ok(())
-            })
-            .expect("stores the cap edge references");
-        drop(document);
 
         let mut kernel = OcctKernel::new().expect("opens a session");
         let scene = snapshot_of(
@@ -9014,8 +8842,6 @@ mod tests {
     fn native_plate_with_named_cap_vertices_beside(
         neighbours: usize,
     ) -> Option<(tempfile::TempDir, LoadedScene)> {
-        use ferritecad_document::{CapSide, Document, EntityKind, ObjectPayload, SelectionRule};
-
         if !ferritecad_occt::is_available() {
             ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return None;
@@ -9026,57 +8852,6 @@ mod tests {
         if neighbours > 0 {
             add_extra_bodies(&path, neighbours);
         }
-
-        let mut document = Document::open(&path).expect("opens the plate");
-        let objects = document.objects().expect("reads objects");
-        let sketch = objects
-            .iter()
-            .find_map(|object| match &object.payload {
-                ObjectPayload::Sketch(sketch) => Some(sketch.clone()),
-                _ => None,
-            })
-            .expect("the fixture has a sketch");
-        let datum = objects
-            .iter()
-            .find_map(|object| match &object.payload {
-                ObjectPayload::DatumPlane(datum) => Some(datum.clone()),
-                _ => None,
-            })
-            .expect("the fixture has a datum plane");
-        let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-        let profile =
-            ferritecad_eval::profile_from_sketch(&sketch, ferritecad_types::ObjectId::new(), plane)
-                .expect("builds a profile")
-                .profile;
-
-        let stored = document.topology_refs().expect("reads");
-        let producer = stored
-            .iter()
-            .find_map(|reference| match &reference.output_role {
-                SemanticRole::ExtrudeSide { .. } => Some(reference.producer_feature),
-                _ => None,
-            })
-            .expect("the fixture names its swept faces");
-        let owner = stored[0].owner;
-        document
-            .write(|w| {
-                for joint in profile.outer().joints() {
-                    for side in [CapSide::Start, CapSide::End] {
-                        w.put_topology_ref(&ferritecad_document::TopologyRef {
-                            id: ferritecad_types::StableEntityId::new(),
-                            owner,
-                            producer_feature: producer,
-                            expected_kind: EntityKind::Vertex,
-                            output_role: SemanticRole::ExtrudeCapVertex { side, joint },
-                            selection: SelectionRule::Exact,
-                            fallback_signature: None,
-                        })?;
-                    }
-                }
-                Ok(())
-            })
-            .expect("stores the cap vertex references");
-        drop(document);
 
         let mut kernel = OcctKernel::new().expect("opens a session");
         let scene = snapshot_of(
@@ -9132,8 +8907,6 @@ mod tests {
     /// adjacency arithmetic in the workspace. Pairing the sketch curves here
     /// would be a second one, free to disagree with the first.
     fn native_plate_with_named_sweep_edges() -> Option<(tempfile::TempDir, LoadedScene)> {
-        use ferritecad_document::{Document, EntityKind, ObjectPayload, SelectionRule};
-
         if !ferritecad_occt::is_available() {
             ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
             return None;
@@ -9141,58 +8914,6 @@ mod tests {
         let directory = tempfile::tempdir().expect("a temporary directory is available");
         let path = directory.path().join("plate.fcad");
         std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
-
-        let mut document = Document::open(&path).expect("opens the plate");
-        let objects = document.objects().expect("reads objects");
-        let sketch = objects
-            .iter()
-            .find_map(|object| match &object.payload {
-                ObjectPayload::Sketch(sketch) => Some(sketch.clone()),
-                _ => None,
-            })
-            .expect("the fixture has a sketch");
-        let datum = objects
-            .iter()
-            .find_map(|object| match &object.payload {
-                ObjectPayload::DatumPlane(datum) => Some(datum.clone()),
-                _ => None,
-            })
-            .expect("the fixture has a datum plane");
-        let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-        let profile =
-            ferritecad_eval::profile_from_sketch(&sketch, ferritecad_types::ObjectId::new(), plane)
-                .expect("builds")
-                .profile;
-
-        let stored = document.topology_refs().expect("reads");
-        let producer = stored
-            .iter()
-            .find_map(|reference| match &reference.output_role {
-                SemanticRole::ExtrudeSide { .. } => Some(reference.producer_feature),
-                _ => None,
-            })
-            .expect("the fixture names its swept faces");
-        let owner = stored[0].owner;
-
-        let joints: Vec<ferritecad_types::ProfileJoint> = profile.outer().joints().collect();
-        assert_eq!(joints.len(), 4, "the plate has four corners");
-        document
-            .write(|w| {
-                for joint in &joints {
-                    w.put_topology_ref(&ferritecad_document::TopologyRef {
-                        id: ferritecad_types::StableEntityId::new(),
-                        owner,
-                        producer_feature: producer,
-                        expected_kind: EntityKind::Edge,
-                        output_role: SemanticRole::ExtrudeSweepEdge { joint: *joint },
-                        selection: SelectionRule::Exact,
-                        fallback_signature: None,
-                    })?;
-                }
-                Ok(())
-            })
-            .expect("stores the sweep edge references");
-        drop(document);
 
         let mut kernel = OcctKernel::new().expect("opens a session");
         let scene = snapshot_of(
@@ -9211,8 +8932,8 @@ mod tests {
         selected
             .meanings()
             .iter()
-            .filter(|meaning| matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. }))
-            .map(|meaning| describe_role(&meaning.output_role))
+            .filter(|meaning| !meaning.description.contains("cap, producer"))
+            .map(|meaning| meaning.description.clone())
             .collect()
     }
 
@@ -9247,9 +8968,11 @@ mod tests {
                 (0..picture.edge_count())
                     .filter_map(|ordinal| picture.edge_of(definition, ordinal))
                     .find(|edge| {
-                        scene.edges.of(*edge, picture).iter().any(|meaning| {
-                            matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. })
-                        })
+                        scene
+                            .edges
+                            .of(*edge, picture)
+                            .iter()
+                            .any(|meaning| !meaning.description.contains("cap, producer"))
                     })
             })
             .expect("the document names an edge along the sweep");
@@ -9266,9 +8989,11 @@ mod tests {
                 (0..picture.edge_count())
                     .filter_map(|ordinal| picture.edge_of(definition, ordinal))
                     .find(|edge| {
-                        scene.edges.of(*edge, picture).iter().any(|meaning| {
-                            matches!(meaning.output_role, SemanticRole::ExtrudeCapEdge { .. })
-                        })
+                        scene
+                            .edges
+                            .of(*edge, picture)
+                            .iter()
+                            .any(|meaning| meaning.description.contains("cap, producer"))
                     })
             })
             .expect("the document names an edge at a cap");
@@ -9319,16 +9044,16 @@ mod tests {
             .find_map(|(x, y)| {
                 let hit = plain.hit_at(x, y);
                 let edge = hit.edge();
-                if edge == EdgePickId::NOTHING {
+                if edge == EdgePickId::NOTHING
+                    || hit.vertex() != ferritecad_viewport::VertexPickId::NOTHING
+                {
                     return None;
                 }
                 scene
                     .edges
                     .of(edge, &picture)
                     .iter()
-                    .any(|meaning| {
-                        matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. })
-                    })
+                    .any(|meaning| !meaning.description.contains("cap, producer"))
                     .then_some((x, y, edge))
             })
             .expect("the plate draws an edge the document names along the sweep");
@@ -9425,7 +9150,7 @@ mod tests {
         );
         for sentence in &said {
             assert!(
-                sentence.starts_with("Sweep edge at the joint of profile segments "),
+                sentence.contains("boundary") && sentence.contains("curve "),
                 "the inspector does not describe a sweep edge: {sentence}"
             );
             for forbidden in [
@@ -9709,9 +9434,10 @@ mod tests {
             "the inspector calls a chosen corner something else: {rows:?}"
         );
         assert!(
-            rows.iter().any(|(label, value)| *label == "Role"
-                && (value.starts_with("Start cap vertex at the joint of profile segments ")
-                    || value.starts_with("End cap vertex at the joint of profile segments "))),
+            rows.iter().any(|(label, value)| *label == "Derivation"
+                && value.contains("cap, producer")
+                && value.contains("curve-end")
+                && selected.meanings().iter().any(|m| m.description == *value)),
             "the inspector does not say what the corner is: {rows:?}"
         );
     }
@@ -9810,8 +9536,8 @@ mod tests {
         selected
             .meanings()
             .iter()
-            .filter(|meaning| matches!(meaning.output_role, SemanticRole::ExtrudeCapEdge { .. }))
-            .map(|meaning| describe_role(&meaning.output_role))
+            .filter(|meaning| meaning.description.contains("cap, producer"))
+            .map(|meaning| meaning.description.clone())
             .collect()
     }
 
@@ -9858,16 +9584,16 @@ mod tests {
             .find_map(|(x, y)| {
                 let hit = plain.hit_at(x, y);
                 let edge = hit.edge();
-                if edge == EdgePickId::NOTHING {
+                if edge == EdgePickId::NOTHING
+                    || hit.vertex() != ferritecad_viewport::VertexPickId::NOTHING
+                {
                     return None;
                 }
                 scene
                     .edges
                     .of(edge, &picture)
                     .iter()
-                    .any(|meaning| {
-                        matches!(meaning.output_role, SemanticRole::ExtrudeCapEdge { .. })
-                    })
+                    .any(|meaning| meaning.description.contains("cap, producer"))
                     .then_some((x, y, edge))
             })
             .expect("the plate draws an edge the document names at a cap");
@@ -9950,7 +9676,7 @@ mod tests {
 
         // The inspector says which cap and which segment, in the document's
         // own words. Go through the whole handoff that supplies the panel: a
-        // direct call to `describe_role` would not catch a dropped name, a
+        // direct call to the description helper would not catch a dropped name, a
         // reordered name, or an edge presented as some other kind.
         let words = words_of(&chosen, &scene.catalogue, &picture);
         assert!(words.faces.is_empty(), "an edge was described as a face");
@@ -9973,7 +9699,7 @@ mod tests {
         );
         let said: Vec<&str> = rows
             .iter()
-            .filter(|(label, _)| *label == "Role")
+            .filter(|(label, _)| *label == "Derivation")
             .map(|(_, value)| value.as_str())
             .collect();
         let expected = cap_meanings(selected);
@@ -9988,8 +9714,7 @@ mod tests {
         );
         for sentence in &said {
             assert!(
-                sentence.starts_with("Start cap edge of profile segment ")
-                    || sentence.starts_with("End cap edge of profile segment "),
+                sentence.contains("cap, producer") && sentence.contains("curve "),
                 "the inspector does not describe a cap edge: {sentence}"
             );
             for forbidden in [
@@ -10030,256 +9755,31 @@ mod tests {
     }
 
     #[test]
-    fn the_two_caps_of_one_segment_are_said_differently_and_exactly() {
+    fn cap_edge_descriptions_distinguish_both_caps_and_preserve_the_curve_roots() {
         let Some((_directory, scene)) = native_plate_with_named_edges() else {
             return;
         };
-        let picture = scene.snapshot;
-
-        // Every stored cap-edge name of the plate, by side and segment.
-        let mut by_side: std::collections::BTreeMap<
-            (bool, ferritecad_types::StableEntityId),
-            String,
-        > = std::collections::BTreeMap::new();
-        for ordinal in 0..picture.edge_count() {
-            let edge = picture.edge_of(0, ordinal).expect("numbered");
-            for meaning in scene.edges.of(edge, &picture) {
-                if let SemanticRole::ExtrudeCapEdge {
-                    side,
-                    profile_segment,
-                } = &meaning.output_role
-                {
-                    let starts = matches!(side, CapSide::Start);
-                    by_side.insert(
-                        (starts, *profile_segment),
-                        describe_role(&meaning.output_role),
-                    );
+        let mut seen = std::collections::BTreeSet::new();
+        let mut starts = 0;
+        let mut ends = 0;
+        for ordinal in 0..scene.snapshot.edge_count() {
+            let edge = scene.snapshot.edge_of(0, ordinal).expect("edge");
+            for meaning in scene.edges.of(edge, &scene.snapshot) {
+                if !meaning.description.contains("cap, producer") {
+                    continue;
                 }
+                assert!(
+                    seen.insert(meaning.digest),
+                    "no neighbouring edge shares a name"
+                );
+                assert!(meaning.description.contains("boundary"));
+                assert!(meaning.description.contains("curve "));
+                assert!(meaning.description.contains("operation Extrude"));
+                starts += usize::from(meaning.description.contains("start cap, producer"));
+                ends += usize::from(meaning.description.contains("end cap, producer"));
             }
         }
-        assert_eq!(by_side.len(), 8, "four segments, two caps");
-
-        let segments: std::collections::BTreeSet<ferritecad_types::StableEntityId> =
-            by_side.keys().map(|(_, segment)| *segment).collect();
-        assert_eq!(segments.len(), 4);
-
-        for segment in &segments {
-            let start = by_side
-                .get(&(true, *segment))
-                .expect("the start cap of this segment is named");
-            let end = by_side
-                .get(&(false, *segment))
-                .expect("the end cap of this segment is named");
-
-            // Exactly these sentences, and the two ends are not the same one.
-            assert_eq!(
-                start,
-                &format!("Start cap edge of profile segment {segment}")
-            );
-            assert_eq!(end, &format!("End cap edge of profile segment {segment}"));
-            assert_ne!(start, end, "both ends of one segment read alike");
-
-            // The identifier is present whole, and only in its own sentence.
-            let text = segment.to_string();
-            assert!(start.contains(&text) && end.contains(&text));
-            for (other, sentence) in &by_side {
-                if other.1 != *segment {
-                    assert!(
-                        !sentence.contains(&text),
-                        "segment {segment} appears in another segment's sentence: {sentence}"
-                    );
-                }
-            }
-        }
-
-        // And the wording settled in the previous slice is untouched.
-        let joint = ferritecad_types::ProfileJoint::new(
-            *segments.iter().next().expect("four segments"),
-            *segments.iter().nth(1).expect("four segments"),
-        )
-        .expect("two different segments");
-        let [one, other] = joint.segments();
-        assert_eq!(
-            describe_role(&SemanticRole::ExtrudeSweepEdge { joint }),
-            format!("Sweep edge at the joint of profile segments {one} and {other}")
-        );
-    }
-
-    #[test]
-    fn several_stored_cap_edge_names_of_one_edge_are_said_one_each_in_order() {
-        use ferritecad_document::{Document, EntityKind, SelectionRule};
-
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let directory = tempfile::tempdir().expect("a temporary directory is available");
-        let path = directory.path().join("plate.fcad");
-        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
-
-        // One cap edge named three times over, which a document may hold: two
-        // objects can both name the same edge.
-        let mut document = Document::open(&path).expect("opens the plate");
-        let stored = document.topology_refs().expect("reads");
-        let (producer, segment) = stored
-            .iter()
-            .find_map(|reference| match &reference.output_role {
-                SemanticRole::ExtrudeSide { profile_segment } => {
-                    Some((reference.producer_feature, *profile_segment))
-                }
-                _ => None,
-            })
-            .expect("the fixture names its swept faces");
-        let owner = stored[0].owner;
-        let mut written = Vec::new();
-        for _ in 0..3 {
-            written.push(ferritecad_document::TopologyRef {
-                id: ferritecad_types::StableEntityId::new(),
-                owner,
-                producer_feature: producer,
-                expected_kind: EntityKind::Edge,
-                output_role: SemanticRole::ExtrudeCapEdge {
-                    side: CapSide::Start,
-                    profile_segment: segment,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            });
-        }
-        document
-            .write(|w| {
-                for reference in &written {
-                    w.put_topology_ref(reference)?;
-                }
-                Ok(())
-            })
-            .expect("stores the cap edge references");
-        drop(document);
-
-        let mut kernel = OcctKernel::new().expect("opens a session");
-        let scene = snapshot_of(
-            &path,
-            &mut kernel,
-            |kernel: &mut OcctKernel, bytes: &[u8]| kernel.import_step(bytes),
-            &ferritecad_kernel::TessellationParams::default(),
-            &ferritecad_kernel::OperationContext::default(),
-        )
-        .expect("the plate loads through Open CASCADE");
-        let picture = scene.snapshot;
-
-        let edge = (0..picture.edge_count())
-            .filter_map(|ordinal| picture.edge_of(0, ordinal))
-            .find(|edge| scene.edges.of(*edge, &picture).len() == 3)
-            .expect("one edge carries the three stored names");
-
-        // Select through a face the edge actually bounds, and hand the result
-        // through the same conversion the live inspector uses.
-        let (definition, face, edge) = edge_with_bounding_face(&picture, edge);
-        let chosen = Selection::at(
-            definition,
-            face,
-            edge,
-            ferritecad_viewport::VertexPickId::NOTHING,
-            &picture,
-            &scene.faces,
-            &scene.edges,
-            &ferritecad_scene::VertexNames::default(),
-        );
-        let Selection::Edge(selected) = &chosen else {
-            panic!("the triply named cap edge was not selected as an edge: {chosen:?}");
-        };
-        let words = words_of(&chosen, &scene.catalogue, &picture);
-        let names: Vec<ferritecad_ui::TopologyName<'_>> =
-            words.edges.iter().map(topology_name).collect();
-        let described = inspected(
-            &chosen,
-            &scene.catalogue,
-            &words.identities,
-            &[],
-            &names,
-            &[],
-            &picture,
-        )
-        .expect("the triply named edge reaches the inspector");
-        let rows = described.rows();
-        assert_eq!(
-            rows.first().map(|(label, value)| (*label, value.as_str())),
-            Some(("Kind", "Edge"))
-        );
-
-        // One sentence per stored name, all alike because all three say the
-        // same thing, and in the order the document keeps them.
-        let said: Vec<&str> = rows
-            .iter()
-            .filter(|(label, _)| *label == "Role")
-            .map(|(_, value)| value.as_str())
-            .collect();
-        assert_eq!(said.len(), 3, "three names, three sentences");
-        assert_eq!(
-            said,
-            cap_meanings(selected)
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            "the inspector dropped or reordered the cap-edge sentences"
-        );
-        for sentence in &said {
-            assert_eq!(
-                *sentence,
-                format!("Start cap edge of profile segment {segment}")
-            );
-        }
-
-        let order: Vec<ferritecad_types::StableEntityId> = Document::open(&path)
-            .expect("reopens")
-            .topology_refs()
-            .expect("reads")
-            .iter()
-            .filter(|entry| written.iter().any(|w| w.id == entry.id))
-            .map(|entry| entry.id)
-            .collect();
-        let arrived: Vec<String> = rows
-            .iter()
-            .filter(|(label, _)| *label == "Reference")
-            .map(|(_, value)| value.clone())
-            .collect();
-        assert_eq!(
-            arrived,
-            order.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            "the inspector names are not in the document's order"
-        );
-
-        // The named edge is a cap edge in the geometry too, asked through the
-        // faces it bounds rather than through any coincidence of numbering.
-        let definition_index = picture
-            .definition_of_edge(edge)
-            .expect("the picture issued the edge");
-        let side_face = (0..picture.face_count())
-            .filter_map(|ordinal| picture.face_of(definition_index, ordinal))
-            .find(|face| {
-                scene.faces.of(*face, &picture).iter().any(|meaning| {
-                    matches!(
-                        meaning.output_role,
-                        SemanticRole::ExtrudeSide { profile_segment } if profile_segment == segment
-                    )
-                })
-            })
-            .expect("the picture has the face raised from that segment");
-        assert!(
-            picture.edge_bounds_face(edge, side_face),
-            "a cap edge of this segment must bound the face raised from it"
-        );
-        assert!(
-            (0..picture.face_count())
-                .filter_map(|ordinal| picture.face_of(definition_index, ordinal))
-                .filter(|face| {
-                    scene.faces.of(*face, &picture).iter().any(|meaning| {
-                        matches!(meaning.output_role, SemanticRole::ExtrudeCap { .. })
-                    })
-                })
-                .any(|face| picture.edge_bounds_face(edge, face)),
-            "a cap edge must bound a cap face"
-        );
+        assert_eq!((seen.len(), starts, ends), (8, 4, 4));
     }
 
     #[test]
@@ -10352,13 +9852,17 @@ mod tests {
             .edges
             .of(edge, &picture)
             .iter()
-            .map(|meaning| describe_role(&meaning.output_role))
+            .map(|meaning| meaning.description.clone())
             .collect();
-        let said: Vec<String> = words.edges.iter().map(|words| words.role.clone()).collect();
+        let said: Vec<String> = words
+            .edges
+            .iter()
+            .map(|words| words.description.clone())
+            .collect();
         assert_eq!(said, expected, "the inspector reordered the stored names");
         assert_eq!(said, sweep_meanings(selected));
         for sentence in &said {
-            assert!(sentence.starts_with("Sweep edge at the joint of profile segments "));
+            assert!(sentence.contains("boundary") && sentence.contains("curve "));
         }
     }
 
@@ -10494,12 +9998,12 @@ mod tests {
         );
         let expected: Vec<String> = stored
             .iter()
-            .map(|meaning| describe_role(&meaning.output_role))
+            .map(|meaning| meaning.description.clone())
             .collect();
         let said: Vec<String> = words
             .vertices
             .iter()
-            .map(|words| words.role.clone())
+            .map(|words| words.description.clone())
             .collect();
         assert_eq!(said, expected, "the inspector reordered the stored names");
 
@@ -10525,37 +10029,23 @@ mod tests {
         // the order the joint keeps them, which is the canonical one.
         let roles: Vec<&str> = rows
             .iter()
-            .filter(|(key, _)| *key == "Role")
+            .filter(|(key, _)| *key == "Derivation")
             .map(|(_, value)| value.as_str())
             .collect();
         assert_eq!(roles.len(), stored.len(), "one sentence per stored name");
         for (sentence, meaning) in roles.iter().zip(stored) {
-            let ferritecad_document::SemanticRole::ExtrudeCapVertex { side, joint } =
-                &meaning.output_role
-            else {
-                panic!("a corner of the plate is named by something else: {meaning:?}");
-            };
-            let [one, another] = joint.segments();
-            let wanted = match side {
-                CapSide::Start => {
-                    format!("Start cap vertex at the joint of profile segments {one} and {another}")
-                }
-                CapSide::End => {
-                    format!("End cap vertex at the joint of profile segments {one} and {another}")
-                }
-                other => panic!("this fixture stores no {other:?} cap"),
-            };
-            assert_eq!(*sentence, wanted);
+            assert_eq!(*sentence, meaning.description);
+            assert!(sentence.contains("boundary"));
+            assert!(sentence.contains("cap, producer"));
+            assert!(sentence.contains("curve "));
         }
 
         // The document's own identifiers reach the rows that carry them.
         for meaning in stored {
             for (key, value) in [
-                ("Reference", meaning.reference.to_string()),
-                ("Owner", meaning.owner.to_string()),
-                ("Feature", meaning.producer_feature.to_string()),
-                ("Entity", meaning.expected_kind.as_str().to_owned()),
-                ("Rule", "Exactly this one".to_owned()),
+                ("Digest", meaning.digest.to_string()),
+                ("Feature", meaning.feature.to_string()),
+                ("Entity", meaning.kind.to_string()),
             ] {
                 assert!(
                     rows.iter().any(|(k, v)| *k == key && *v == value),
@@ -10589,189 +10079,6 @@ mod tests {
                     "the inspector printed {forbidden}: {value}"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn several_stored_corner_names_of_one_corner_are_said_one_each_in_order() {
-        use ferritecad_document::{Document, EntityKind, ObjectPayload, SelectionRule};
-
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let directory = tempfile::tempdir().expect("a temporary directory is available");
-        let path = directory.path().join("plate.fcad");
-        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
-
-        // One cap corner named three times over, which a document may hold:
-        // two objects can both name the same corner.
-        let mut document = Document::open(&path).expect("opens the plate");
-        let objects = document.objects().expect("reads objects");
-        let sketch = objects
-            .iter()
-            .find_map(|object| match &object.payload {
-                ObjectPayload::Sketch(sketch) => Some(sketch.clone()),
-                _ => None,
-            })
-            .expect("the fixture has a sketch");
-        let datum = objects
-            .iter()
-            .find_map(|object| match &object.payload {
-                ObjectPayload::DatumPlane(datum) => Some(datum.clone()),
-                _ => None,
-            })
-            .expect("the fixture has a datum plane");
-        let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-        let profile =
-            ferritecad_eval::profile_from_sketch(&sketch, ferritecad_types::ObjectId::new(), plane)
-                .expect("builds a profile")
-                .profile;
-        let joint = profile
-            .outer()
-            .joints()
-            .next()
-            .expect("the plate has corners");
-
-        let stored = document.topology_refs().expect("reads");
-        let producer = stored
-            .iter()
-            .find_map(|reference| match &reference.output_role {
-                SemanticRole::ExtrudeSide { .. } => Some(reference.producer_feature),
-                _ => None,
-            })
-            .expect("the fixture names its swept faces");
-        let owner = stored[0].owner;
-        let mut written = Vec::new();
-        for _ in 0..3 {
-            written.push(ferritecad_document::TopologyRef {
-                id: ferritecad_types::StableEntityId::new(),
-                owner,
-                producer_feature: producer,
-                expected_kind: EntityKind::Vertex,
-                output_role: SemanticRole::ExtrudeCapVertex {
-                    side: CapSide::Start,
-                    joint,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            });
-        }
-        document
-            .write(|w| {
-                for reference in &written {
-                    w.put_topology_ref(reference)?;
-                }
-                Ok(())
-            })
-            .expect("stores the cap vertex references");
-        drop(document);
-
-        let mut kernel = OcctKernel::new().expect("opens a session");
-        let scene = snapshot_of(
-            &path,
-            &mut kernel,
-            |kernel: &mut OcctKernel, bytes: &[u8]| kernel.import_step(bytes),
-            &ferritecad_kernel::TessellationParams::default(),
-            &ferritecad_kernel::OperationContext::default(),
-        )
-        .expect("the plate loads through Open CASCADE");
-        let picture = scene.snapshot.clone();
-
-        let vertex = (0..picture.vertex_count())
-            .filter_map(|ordinal| picture.vertex_of(0, ordinal))
-            .find(|vertex| scene.vertices.of(*vertex, &picture).len() == 3)
-            .expect("one corner carries the three stored names");
-        let definition = picture.pick_of(0).expect("drawn");
-        let face = (0..picture.face_count())
-            .filter_map(|ordinal| picture.face_of(0, ordinal))
-            .find(|face| picture.vertex_touches_face(vertex, *face))
-            .expect("the corner touches a face of the picture");
-        let chosen = Selection::at(
-            definition,
-            face,
-            EdgePickId::NOTHING,
-            vertex,
-            &picture,
-            &scene.faces,
-            &scene.edges,
-            &scene.vertices,
-        );
-        let Selection::Vertex(selected) = &chosen else {
-            panic!("the triply named corner was not selected as a corner: {chosen:?}");
-        };
-        assert_eq!(selected.meanings().len(), 3);
-
-        // The order the document stores its references in, read from the
-        // document rather than assumed.
-        let reopened = Document::open_read_only(&path).expect("reopens");
-        let order: Vec<ferritecad_types::StableEntityId> = reopened
-            .topology_refs()
-            .expect("reads")
-            .into_iter()
-            .map(|reference| reference.id)
-            .collect();
-
-        let words = words_of(&chosen, &scene.catalogue, &picture);
-        let names: Vec<ferritecad_ui::TopologyName<'_>> =
-            words.vertices.iter().map(topology_name).collect();
-        let described = inspected(
-            &chosen,
-            &scene.catalogue,
-            &words.identities,
-            &[],
-            &[],
-            &names,
-            &picture,
-        )
-        .expect("the triply named corner reaches the inspector");
-        let rows = described.rows();
-
-        // Three sentences, one per stored name, in the order the document
-        // stores them.
-        let references: Vec<&str> = rows
-            .iter()
-            .filter(|(key, _)| *key == "Reference")
-            .map(|(_, value)| value.as_str())
-            .collect();
-        assert_eq!(references.len(), 3, "the inspector dropped a stored name");
-        let positions: Vec<usize> = references
-            .iter()
-            .map(|shown| {
-                order
-                    .iter()
-                    .position(|id| id.to_string() == *shown)
-                    .expect("every name shown is stored")
-            })
-            .collect();
-        let mut sorted = positions.clone();
-        sorted.sort_unstable();
-        assert_eq!(
-            positions, sorted,
-            "the inspector reordered the stored names: {positions:?}"
-        );
-        let expected: Vec<String> = selected
-            .meanings()
-            .iter()
-            .map(|meaning| meaning.reference.to_string())
-            .collect();
-        assert_eq!(
-            references, expected,
-            "the inspector reordered what it was given"
-        );
-
-        let roles: Vec<&str> = rows
-            .iter()
-            .filter(|(key, _)| *key == "Role")
-            .map(|(_, value)| value.as_str())
-            .collect();
-        assert_eq!(roles.len(), 3, "one sentence per stored name");
-        let [one, another] = joint.segments();
-        for sentence in &roles {
-            assert_eq!(
-                *sentence,
-                format!("Start cap vertex at the joint of profile segments {one} and {another}")
-            );
         }
     }
 
@@ -11054,8 +10361,8 @@ mod tests {
                 );
             }
         }
-        // Every stored term reaches the panel.
-        for label in ["Reference", "Owner", "Feature", "Entity", "Role", "Rule"] {
+        // Every derived term reaches the panel.
+        for label in ["Feature", "Entity", "Digest", "Derivation"] {
             assert!(
                 rows.iter().any(|(key, _)| *key == label),
                 "the inspector never said {label}"
@@ -11081,17 +10388,8 @@ mod tests {
             &ferritecad_scene::VertexNames::default(),
         );
 
-        // The two segments the stored name is actually made of.
-        let joints: Vec<[ferritecad_types::StableEntityId; 2]> = scene
-            .edges
-            .of(edge, &picture)
-            .iter()
-            .filter_map(|meaning| match &meaning.output_role {
-                SemanticRole::ExtrudeSweepEdge { joint } => Some(joint.segments()),
-                _ => None,
-            })
-            .collect();
-        assert!(!joints.is_empty(), "the chosen edge has a sweep name");
+        let meanings = scene.edges.of(edge, &picture);
+        assert_eq!(meanings.len(), 1);
 
         let words = words_of(&chosen, &scene.catalogue, &picture);
         let names: Vec<ferritecad_ui::TopologyName<'_>> =
@@ -11117,15 +10415,20 @@ mod tests {
         // one rather than whatever Debug would print today.
         let roles: Vec<&str> = rows
             .iter()
-            .filter(|(key, _)| *key == "Role")
+            .filter(|(key, _)| *key == "Derivation")
             .map(|(_, value)| value.as_str())
             .collect();
-        assert_eq!(roles.len(), joints.len(), "one sentence per stored name");
-        for (sentence, [one, other]) in roles.iter().zip(&joints) {
-            assert_eq!(
-                *sentence,
-                format!("Sweep edge at the joint of profile segments {one} and {other}")
-            );
+        assert_eq!(roles.len(), meanings.len());
+        for (sentence, meaning) in roles.iter().zip(meanings) {
+            assert_eq!(*sentence, meaning.description);
+            let curves: std::collections::BTreeSet<_> = sentence
+                .split(" = curve ")
+                .skip(1)
+                .map(|part| part.split(',').next().expect("curve identity"))
+                .collect();
+            assert_eq!(curves.len(), 2, "both profile roots, no neighbour");
+            assert!(sentence.contains("boundary"));
+            assert!(!sentence.contains("cap, producer"));
         }
 
         // And nothing transient or kernel-side reaches any row.
@@ -14814,8 +14117,8 @@ mod tests {
         .expect("a chosen face is described");
         let rows = inspected.rows();
         let shown = format!("{rows:?}");
-        assert!(rows.iter().any(|(label, _)| *label == "Role"));
-        assert!(rows.iter().any(|(label, _)| *label == "Reference"));
+        assert!(rows.iter().any(|(label, _)| *label == "Derivation"));
+        assert!(rows.iter().any(|(label, _)| *label == "Digest"));
         for forbidden in ["pick", "session", "handle", "mesh", "ordinal", "index"] {
             assert!(
                 !shown.to_lowercase().contains(forbidden),
@@ -19011,10 +18314,31 @@ mod tests {
             &once_path,
             vec![(Some("Profile"), curves.clone(), solve_named(sized))],
         );
-        write_sketches(
-            &twice_path,
-            vec![(Some("Profile"), curves, solve_named(repeated))],
-        );
+        // Keep naming roots identical; only the constraint account changes.
+        std::fs::copy(&once_path, &twice_path).expect("copy document");
+        let mut document = ferritecad_document::Document::open(&twice_path).expect("copy");
+        let object = document
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Sketch(_)))
+            .expect("sketch");
+        let ferritecad_document::ObjectPayload::Sketch(mut sketch) = object.payload else {
+            panic!("sketch")
+        };
+        sketch.constraints = solve_named(repeated);
+        document
+            .write(|writer| {
+                writer.put_object(
+                    object.id,
+                    object.parent,
+                    object.ordinal,
+                    object.name.as_deref(),
+                    &ferritecad_document::ObjectPayload::Sketch(sketch),
+                )
+            })
+            .expect("replace constraints only");
+        document.close().expect("close copy");
 
         let first = load_document(&once_path);
         let second = load_document(&twice_path);
@@ -20355,3 +19679,7 @@ mod tests {
 
 #[cfg(test)]
 mod accepted_scene_tests;
+
+#[cfg(test)]
+#[path = "tests/names.rs"]
+mod test_names;

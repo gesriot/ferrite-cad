@@ -16,9 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
 use ferritecad_document::{
-    Body, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition,
-    EntityKind, Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch,
-    SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    Body, CacheStore, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression,
+    Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_eval::{CacheOutcome, rebuild_cached, rebuild_cold};
 use ferritecad_kernel::{
@@ -27,7 +26,7 @@ use ferritecad_kernel::{
     SubShapeKind, TessellationParams,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_topology::{TopologyMap, archive_feature, resolve, restore_feature};
+use ferritecad_topology::{ModelNaming, archive_feature, restore_feature};
 use ferritecad_types::{ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId, Transform};
 
 macro_rules! kernel_or_skip {
@@ -130,7 +129,7 @@ fn store_plate(
     corners: &[(f64, f64)],
     height: f64,
 ) -> Result<StoredPlate> {
-    let plane = ObjectId::new();
+    let plane = naming::plane_id();
     let sketch = ObjectId::new();
     let plate = StoredPlate {
         extrude: ObjectId::new(),
@@ -217,67 +216,51 @@ fn store_plate(
     Ok(plate)
 }
 
-fn cap_vertex_reference(feature: ObjectId, side: CapSide, joint: ProfileJoint) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Vertex,
-        output_role: SemanticRole::ExtrudeCapVertex { side, joint },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
+fn vertex_name(
+    map: &ModelNaming,
+    feature: ObjectId,
+    end: bool,
+    joint: ProfileJoint,
+) -> Result<ferritecad_topology::generative::Name> {
+    let plane = naming::plane_id();
+    let mut faces = joint
+        .segments()
+        .map(|curve| naming::side_name(feature, plane, curve))
+        .to_vec();
+    faces.push(naming::cap_name(feature, plane, end));
+    naming::name_at_incidence(map, feature, SubShapeKind::Vertex, faces)
 }
 
 #[test]
-fn a_stored_corner_and_cap_resolve_to_one_vertex_of_a_cold_rebuild() {
+fn a_corner_name_survives_closing_the_document_and_a_cold_rebuild() {
     kernel_or_skip!();
-
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("plate.fcad");
     let mut document = Document::create(&path).expect("creates");
     let plate = store_plate(
         &mut document,
-        &[(0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0)],
-        10.0,
+        &[(0., 0.), (60., 0.), (60., 40.), (0., 40.)],
+        10.,
     )
-    .expect("populates");
-
-    // The corner where the first two segments of the profile meet, on the
-    // start cap. Written into the document, so what is resolved below is a
-    // stored reference and not one held in memory since it was made.
-    let joint = ProfileJoint::new(plate.segments[0], plate.segments[1]).expect("two segments");
-    let stored = cap_vertex_reference(plate.extrude, CapSide::Start, joint);
-    document
-        .write(|w| w.put_topology_ref(&stored))
-        .expect("the document stores a cap-vertex reference");
+    .expect("plate");
+    let joint = ProfileJoint::new(plate.segments[0], plate.segments[1]).expect("joint");
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let before =
+        rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("first rebuild");
+    let name = vertex_name(before.topology(), plate.extrude, false, joint).expect("corner");
+    before.release_all(&mut kernel);
     document.close().expect("closes");
-
     let reopened = Document::open(&path).expect("reopens");
-    let reference = reopened
-        .topology_refs()
-        .expect("reads the stored references")
-        .into_iter()
-        .find(|r| r.id == stored.id)
-        .expect("the reference is still there");
-
-    let mut kernel = OcctKernel::new().expect("opens a session");
-    let built = rebuild_cold(&reopened, &mut kernel, &OperationContext::default())
-        .expect("the plate rebuilds through Open CASCADE");
-
-    let found = resolve(built.topology(), &reference).expect("a stored corner names one vertex");
-    assert_eq!(
-        found.len(),
-        1,
-        "an exact reference names exactly one vertex"
-    );
+    let built =
+        rebuild_cold(&reopened, &mut kernel, &OperationContext::default()).expect("cold rebuild");
+    let found = naming::resolve(built.topology(), plate.extrude, &name).expect("same name");
+    assert_eq!(found.len(), 1);
     assert_eq!(found[0].kind(), SubShapeKind::Vertex);
+    assert_eq!(Some(found[0].shape()), built.shape(plate.extrude));
     assert_eq!(
-        Some(found[0].shape()),
-        built.shape(plate.extrude),
-        "and it belongs to the solid the feature built"
+        vertex_name(built.topology(), plate.extrude, false, joint).expect("corner"),
+        name
     );
-
     built.release_all(&mut kernel);
     assert_eq!(kernel.live_shape_count(), 0);
 }
@@ -376,7 +359,7 @@ fn lens() -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
 
 struct Built {
     kernel: OcctKernel,
-    map: TopologyMap,
+    map: ModelNaming,
     feature: ObjectId,
     shape: ShapeHandle,
 }
@@ -408,39 +391,23 @@ fn joint_at(labels: &[StableEntityId], index: usize) -> ProfileJoint {
 }
 
 /// The one vertex a corner and a cap resolve to.
-fn cap_vertex_of(built: &Built, side: CapSide, joint: ProfileJoint) -> Result<SubShapeHandle> {
-    let resolved = resolve(
-        &built.map,
-        &cap_vertex_reference(built.feature, side, joint),
-    )?;
-    assert_eq!(resolved.len(), 1, "one vertex, not {}", resolved.len());
-    Ok(resolved[0])
+fn cap_vertex_of(built: &Built, side: bool, joint: ProfileJoint) -> Result<SubShapeHandle> {
+    let name = vertex_name(&built.map, built.feature, side, joint)?;
+    built
+        .map
+        .feature(built.feature)
+        .expect("feature")
+        .resolve(name)
 }
 
 /// How many corners of a profile name a vertex on each cap.
 fn named_counts(built: &Built, labels: &[StableEntityId]) -> (usize, usize) {
-    let names = naming::view(&built.map, built.feature);
-    let mut counts = (0, 0);
-    for index in 0..labels.len() {
-        let joint = joint_at(labels, index);
-        if names
-            .cap_vertex(CapSide::Start, joint)
-            .expect("the start side is known")
+    let count = |end| {
+        (0..labels.len())
+            .filter(|i| cap_vertex_of(built, end, joint_at(labels, *i)).is_ok())
             .count()
-            == 1
-        {
-            counts.0 += 1;
-        }
-        if names
-            .cap_vertex(CapSide::End, joint)
-            .expect("the end side is known")
-            .count()
-            == 1
-        {
-            counts.1 += 1;
-        }
-    }
-    counts
+    };
+    (count(false), count(true))
 }
 
 #[test]
@@ -461,7 +428,7 @@ fn a_plate_names_four_corners_on_each_cap_and_each_names_one_vertex() {
     let mut seen = BTreeSet::new();
     for index in 0..labels.len() {
         let joint = joint_at(&labels, index);
-        for side in [CapSide::Start, CapSide::End] {
+        for side in [false, true] {
             let vertex = cap_vertex_of(&built, side, joint).expect("a corner names one vertex");
             assert_eq!(vertex.kind(), SubShapeKind::Vertex, "{side:?} {joint}");
             assert_eq!(vertex.shape(), built.shape, "{side:?} {joint}");
@@ -475,8 +442,8 @@ fn a_plate_names_four_corners_on_each_cap_and_each_names_one_vertex() {
     for index in 0..labels.len() {
         let joint = joint_at(&labels, index);
         assert_ne!(
-            cap_vertex_of(&built, CapSide::Start, joint).expect("resolves"),
-            cap_vertex_of(&built, CapSide::End, joint).expect("resolves"),
+            cap_vertex_of(&built, false, joint).expect("resolves"),
+            cap_vertex_of(&built, true, joint).expect("resolves"),
             "{joint} named one vertex on both caps"
         );
     }
@@ -546,28 +513,18 @@ fn drawn(built: &mut Built) -> Drawn {
     }
 }
 
-fn cap_reference(feature: ObjectId, side: CapSide) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeCap { side },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
+fn cap_name(feature: ObjectId, end: bool) -> ferritecad_topology::generative::Name {
+    naming::cap_name(feature, naming::plane_id(), end)
+}
+fn side_name(feature: ObjectId, curve: StableEntityId) -> ferritecad_topology::generative::Name {
+    naming::side_name(feature, naming::plane_id(), curve)
 }
 
-fn sweep_reference(feature: ObjectId, joint: ProfileJoint) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Edge,
-        output_role: SemanticRole::ExtrudeSweepEdge { joint },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
+fn sweep(map: &ModelNaming, feature: ObjectId, joint: ProfileJoint) -> Result<Vec<SubShapeHandle>> {
+    Ok(vec![map.swept_edge(
+        feature,
+        ferritecad_document::SweptEdge { feature, joint },
+    )?])
 }
 
 #[test]
@@ -578,11 +535,11 @@ fn every_named_vertex_lies_on_the_cap_it_claims_and_ends_its_own_sweep_edge() {
     let mut built = build(&request);
     let picture = drawn(&mut built);
 
-    for side in [CapSide::Start, CapSide::End] {
+    for side in [false, true] {
         // The cap this side names, taken through the same resolver, so the two
         // durable names are compared with each other rather than with an
         // index into the result.
-        let cap = resolve(&built.map, &cap_reference(built.feature, side))
+        let cap = naming::resolve(&built.map, built.feature, &cap_name(built.feature, side))
             .expect("a cap resolves")
             .remove(0);
         let on_cap = picture
@@ -607,7 +564,7 @@ fn every_named_vertex_lies_on_the_cap_it_claims_and_ends_its_own_sweep_edge() {
 
             // And it is an end of the edge swept from its own corner, not of a
             // neighbour's: the sweep edge is resolved from the same joint.
-            let swept = resolve(&built.map, &sweep_reference(built.feature, joint))
+            let swept = sweep(&built.map, built.feature, joint)
                 .expect("the corner also names an edge")
                 .remove(0);
             let along = picture
@@ -627,7 +584,7 @@ fn every_named_vertex_lies_on_the_cap_it_claims_and_ends_its_own_sweep_edge() {
                     continue;
                 }
                 let neighbour = joint_at(&labels, other);
-                let elsewhere = resolve(&built.map, &sweep_reference(built.feature, neighbour))
+                let elsewhere = sweep(&built.map, built.feature, neighbour)
                     .expect("resolves")
                     .remove(0);
                 let along = picture
@@ -706,7 +663,7 @@ fn a_corner_keeps_its_meaning_when_the_sweep_is_blind_reversed_or_symmetric() {
         let mut seen = BTreeSet::new();
         for index in 0..labels.len() {
             let joint = joint_at(&labels, index);
-            for side in [CapSide::Start, CapSide::End] {
+            for side in [false, true] {
                 let vertex = cap_vertex_of(&built, side, joint)
                     .unwrap_or_else(|e| panic!("{what}: {side:?} {joint} should resolve: {e}"));
                 assert!(
@@ -766,7 +723,7 @@ fn walking_the_profile_from_another_segment_leaves_each_corner_owning_its_vertic
         let mut out = BTreeMap::new();
         for index in 0..labels.len() {
             let joint = joint_at(&labels, index);
-            for (name, side) in [("start", CapSide::Start), ("end", CapSide::End)] {
+            for (name, side) in [("start", false), ("end", true)] {
                 let vertex = cap_vertex_of(&built, side, joint).expect("resolves");
                 let mine: BTreeSet<u32> = picture
                     .corner_positions
@@ -780,8 +737,13 @@ fn walking_the_profile_from_another_segment_leaves_each_corner_owning_its_vertic
                 // durable terms and not a handle.
                 let mut touching = BTreeSet::new();
                 for (position, segment) in labels.iter().enumerate() {
-                    let names = naming::view(&built.map, built.feature);
-                    for face in names.side(*segment) {
+                    for face in naming::resolve(
+                        &built.map,
+                        built.feature,
+                        &side_name(built.feature, *segment),
+                    )
+                    .expect("side")
+                    {
                         if let Some(positions) = picture.face_positions.get(&face)
                             && mine.iter().any(|at| positions.contains(at))
                         {
@@ -829,7 +791,7 @@ fn a_triangle_names_three_corners_a_side_and_an_arc_profile_names_its_own_three(
     let mut seen = BTreeSet::new();
     for index in 0..triangle_labels.len() {
         let joint = joint_at(&triangle_labels, index);
-        for side in [CapSide::Start, CapSide::End] {
+        for side in [false, true] {
             assert!(
                 seen.insert(
                     cap_vertex_of(&built, side, joint).expect("a triangle corner resolves")
@@ -850,7 +812,7 @@ fn a_triangle_names_three_corners_a_side_and_an_arc_profile_names_its_own_three(
     let mut seen = BTreeSet::new();
     for index in 0..arc_labels.len() {
         let joint = joint_at(&arc_labels, index);
-        for side in [CapSide::Start, CapSide::End] {
+        for side in [false, true] {
             assert!(
                 seen.insert(cap_vertex_of(&built, side, joint).expect("an arc corner resolves")),
                 "{side:?} {joint} is not its own vertex"
@@ -862,37 +824,23 @@ fn a_triangle_names_three_corners_a_side_and_an_arc_profile_names_its_own_three(
 }
 
 #[test]
-fn a_pair_that_meets_at_two_corners_names_neither_vertex() {
+fn two_vertices_with_the_same_face_incidence_are_not_chosen_by_position() {
     kernel_or_skip!();
-
-    let (request, labels) = lens().expect("a valid lens");
+    let (request, labels) = lens().expect("lens");
     let mut built = build(&request);
-
-    // Four corner vertices in the solid, and one unordered pair to name them
-    // with. The name cannot choose, so nothing is named.
-    let joint = ProfileJoint::new(labels[0], labels[1]).expect("two different segments");
-    let names = naming::view(&built.map, built.feature);
-    for side in [CapSide::Start, CapSide::End] {
-        assert_eq!(
-            names
-                .cap_vertex(side, joint)
-                .expect("the side is known")
-                .count(),
-            0,
-            "a pair meeting at two corners named a {side:?} vertex"
-        );
+    let joint = ProfileJoint::new(labels[0], labels[1]).expect("joint");
+    for end in [false, true] {
+        let error = vertex_name(&built.map, built.feature, end, joint)
+            .expect_err("two corners share the same faces");
+        assert_eq!(error.kind(), ErrorKind::Topology);
     }
-
-    for side in [CapSide::Start, CapSide::End] {
-        let refusal = resolve(
-            &built.map,
-            &cap_vertex_reference(built.feature, side, joint),
-        )
-        .expect_err("an ambiguous corner is refused rather than chosen between");
-        assert_eq!(refusal.kind(), ErrorKind::Topology);
-        assert!(refusal.to_string().contains("produced none"), "{refusal}");
+    let named = built.map.feature(built.feature).expect("feature");
+    let vertices: Vec<_> = named.topology.entities(SubShapeKind::Vertex).collect();
+    assert_eq!(vertices.len(), 4);
+    for vertex in vertices {
+        let name = named.entities[&vertex];
+        assert_eq!(named.resolve(name).expect("curve-end witness"), vertex);
     }
-
     built.kernel.release(built.shape);
 }
 
@@ -906,17 +854,25 @@ fn corner_names_survive_an_archive_and_a_session_that_never_built_them() {
     // Everything the writing session knows, taken before it ends. The faces
     // and edges go into the same table as the vertices, so what travels below
     // is a mixed archive rather than one of vertices alone.
-    let archived = {
+    let (archived, vertex_names) = {
         let mut writer = OcctKernel::new().expect("opens");
         let result = writer
             .extrude(&request, &OperationContext::default())
             .expect("builds");
         let map = naming::bind(&mut writer, feature, request.profile(), &result)
             .expect("complete naming");
+        let vertex_names: Vec<_> = map
+            .feature(feature)
+            .expect("named")
+            .bindings
+            .keys()
+            .filter(|name| name.kind == SubShapeKind::Vertex)
+            .copied()
+            .collect();
         let archived = archive_feature(&mut writer, &map, feature).expect("archives");
         writer.release(result.shape);
         assert_eq!(writer.live_shape_count(), 0);
-        archived
+        (archived, vertex_names)
     };
 
     // Faces, edges and vertices are all in the table, each under its own kind.
@@ -951,24 +907,23 @@ fn corner_names_survive_an_archive_and_a_session_that_never_built_them() {
         .expect("the restore produced a shape");
 
     let mut seen = BTreeSet::new();
-    for index in 0..labels.len() {
-        let joint = joint_at(&labels, index);
-        for side in [CapSide::Start, CapSide::End] {
-            let found = resolve(&restored, &cap_vertex_reference(feature, side, joint))
-                .unwrap_or_else(|e| panic!("{side:?} {joint} should resolve after restoring: {e}"));
-            assert_eq!(found.len(), 1);
-            assert_eq!(found[0].kind(), SubShapeKind::Vertex);
-            assert_eq!(found[0].shape(), shape, "a name of the restored shape");
-            assert!(seen.insert(found[0]), "{side:?} {joint} is not its own");
-        }
+    for name in vertex_names {
+        let found = naming::resolve(&restored, feature, &name).expect("vertex name after restore");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind(), SubShapeKind::Vertex);
+        assert_eq!(found[0].shape(), shape);
+        assert!(
+            seen.insert(found[0]),
+            "two names resolved to the same vertex"
+        );
     }
     assert_eq!(seen.len(), 8);
 
     // The faces and edges are still there too: a table that gained vertices
     // must not have lost what it already carried.
-    for side in [CapSide::Start, CapSide::End] {
+    for side in [false, true] {
         assert_eq!(
-            resolve(&restored, &cap_reference(feature, side))
+            naming::resolve(&restored, feature, &cap_name(feature, side))
                 .expect("a cap still resolves")
                 .len(),
             1
@@ -976,12 +931,9 @@ fn corner_names_survive_an_archive_and_a_session_that_never_built_them() {
     }
     for index in 0..labels.len() {
         assert_eq!(
-            resolve(
-                &restored,
-                &sweep_reference(feature, joint_at(&labels, index))
-            )
-            .expect("a sweep edge still resolves")
-            .len(),
+            sweep(&restored, feature, joint_at(&labels, index))
+                .expect("a sweep edge still resolves")
+                .len(),
             1
         );
     }
@@ -1054,23 +1006,20 @@ fn a_cache_hit_and_a_cold_rebuild_name_the_same_corners() {
     )
     .expect("populates");
 
-    // One stored reference per corner and cap, written into the document so
-    // both rebuilds below answer the same eight questions.
-    let mut stored = Vec::new();
-    for index in 0..plate.segments.len() {
-        let joint = joint_at(&plate.segments, index);
-        for side in [CapSide::Start, CapSide::End] {
-            stored.push(cap_vertex_reference(plate.extrude, side, joint));
-        }
-    }
-    document
-        .write(|w| {
-            for reference in &stored {
-                w.put_topology_ref(reference)?;
-            }
-            Ok(())
-        })
-        .expect("the document stores eight cap-vertex references");
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let baseline =
+        rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("baseline");
+    let stored: Vec<_> = baseline
+        .topology()
+        .feature(plate.extrude)
+        .expect("named")
+        .bindings
+        .keys()
+        .filter(|n| n.kind == SubShapeKind::Vertex)
+        .copied()
+        .collect();
+    assert_eq!(stored.len(), 8);
+    baseline.release_all(&mut kernel);
 
     let document_id = document.meta().document_id;
     let cache_path = dir.path().join("plate.fcad-cache");
@@ -1102,7 +1051,8 @@ fn a_cache_hit_and_a_cold_rebuild_name_the_same_corners() {
 
         let mut out = BTreeMap::new();
         for (position, reference) in stored.iter().enumerate() {
-            let found = resolve(built.topology(), reference).expect("a stored corner resolves");
+            let found = naming::resolve(built.topology(), plate.extrude, reference)
+                .expect("a stored corner resolves");
             assert_eq!(found.len(), 1);
             assert_eq!(found[0].kind(), SubShapeKind::Vertex);
             let range = corners
@@ -1115,10 +1065,16 @@ fn a_cache_hit_and_a_cold_rebuild_name_the_same_corners() {
             let mine: BTreeSet<u32> = corners.occurrences[first..last].iter().copied().collect();
 
             // Named in durable terms: the caps by side, the sides by segment.
-            let names = naming::view(built.topology(), plate.extrude);
+
             let mut on = BTreeSet::new();
-            for (label, side) in [("start cap", CapSide::Start), ("end cap", CapSide::End)] {
-                for face in names.cap(side).expect("the side is known") {
+            for (label, side) in [("start cap", false), ("end cap", true)] {
+                for face in naming::resolve(
+                    built.topology(),
+                    plate.extrude,
+                    &cap_name(plate.extrude, side),
+                )
+                .expect("cap")
+                {
                     if let Some(positions) = face_positions.get(&face)
                         && mine.iter().any(|at| positions.contains(at))
                     {
@@ -1127,7 +1083,13 @@ fn a_cache_hit_and_a_cold_rebuild_name_the_same_corners() {
                 }
             }
             for (index, segment) in plate.segments.iter().enumerate() {
-                for face in names.side(*segment) {
+                for face in naming::resolve(
+                    built.topology(),
+                    plate.extrude,
+                    &side_name(plate.extrude, *segment),
+                )
+                .expect("side")
+                {
                     if let Some(positions) = face_positions.get(&face)
                         && mine.iter().any(|at| positions.contains(at))
                     {

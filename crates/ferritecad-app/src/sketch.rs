@@ -5619,14 +5619,11 @@ pub(crate) mod tests {
         let b = Document::open_read_only(&cli).expect("CLI");
         crate::transaction_tests::assert_meta(a.meta(), b.meta());
         assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         let original = Document::open_read_only(&source).expect("source");
         assert_eq!(
-            a.topology_refs().expect("refs"),
-            original.topology_refs().expect("refs"),
+            crate::test_names::names(&a),
+            crate::test_names::names(&original),
             "no new names"
         );
         original.close().expect("close");
@@ -5955,14 +5952,11 @@ pub(crate) mod tests {
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
         assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         let original = Document::open_read_only(&source).expect("source");
         assert_eq!(
-            a.topology_refs().expect("refs"),
-            original.topology_refs().expect("refs"),
+            crate::test_names::names(&a),
+            crate::test_names::names(&original),
             "no new names"
         );
         original.close().expect("close");
@@ -6138,10 +6132,7 @@ pub(crate) mod tests {
             a.dependencies().expect("deps"),
             b.dependencies().expect("deps")
         );
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         a.close().expect("close");
         b.close().expect("close");
 
@@ -6566,10 +6557,7 @@ pub(crate) mod tests {
             a.dependencies().expect("deps"),
             b.dependencies().expect("deps")
         );
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         a.close().expect("close");
         b.close().expect("close");
 
@@ -7126,10 +7114,7 @@ pub(crate) mod tests {
             a.dependencies().expect("deps"),
             b.dependencies().expect("deps")
         );
-        assert_eq!(
-            a.topology_refs().expect("refs"),
-            b.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
         if drag {
             super::drag_tests::verify_publications(&source, &ui, &cli);
         }

@@ -147,6 +147,21 @@ import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29b-"))
 
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
+
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
@@ -250,9 +265,9 @@ def measured(copy, distance, height):
     vertex columns are d along each adjacent side from z=0 to z=h, and the flat
     adds up to d*sqrt(2)*h and faces out of the plate."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Chamfer" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Chamfer" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--json"])
     volume, tri = stl(out)
@@ -305,13 +320,13 @@ assert next(s for s in saved["expression_slots"] if s["object"] == base["feature
 
 # 3. Taller and shorter (below the distance too): one row, one cell pair,
 #    the Chamfer and every name as they were, the plane at the chosen corner.
-refs_before = [r[0] for r in tables(one)["topology_refs"][1]]
+refs_before = output_names(one)
 copies = {}
 for h in (9.5, 0.4, 3.0):
     out = root / f"h{h}.fcad"
     done = geometry(edit_args(one, base["feature_id"], str(h), saved["content_version"], out), out)["result"]
     assert only_row(one, out, base["feature_id"]) >= 2
-    assert [r[0] for r in tables(out)["topology_refs"][1]] == refs_before, "every name keeps its UUID"
+    assert output_names(out) == refs_before, "every name keeps its digest"
     after = inspect(out)
     assert next(s for s in after["expression_slots"] if s["slot"]["kind"] == "extrude_distance")["expression"]["value"] == h
 

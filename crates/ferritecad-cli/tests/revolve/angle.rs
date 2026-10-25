@@ -11,7 +11,7 @@ use super::partial::{
     angle, axis_line, check_partial_mesh, doc_sketch, measure_partial, pappus, request_v2,
 };
 use super::*;
-use ferritecad_document::{CapSide, RevolveAngle};
+use ferritecad_document::RevolveAngle;
 use ferritecad_kernel::{CancelToken, ProgressSink};
 use std::sync::{
     Arc,
@@ -146,11 +146,11 @@ pub(super) fn revolve_payload(path: &Path) -> Vec<u8> {
     .expect("payload")
 }
 
-pub(super) fn refs(path: &Path) -> Vec<TopologyRef> {
+pub(super) fn refs(path: &Path) -> crate::names::Names {
     let d = Document::open_read_only(path).expect("open");
-    let mut refs = d.topology_refs().expect("refs");
+    let mut refs = crate::names::snapshot(&d);
     d.close().expect("close");
-    refs.sort_by_key(|r| r.id);
+    refs.sort();
     refs
 }
 
@@ -267,9 +267,13 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
                 .output()
                 .expect("print-topology");
             let listed = String::from_utf8(listed.stdout).expect("UTF-8");
-            let named = saved_refs.len();
+            let named = crate::names::face_count(&saved_refs);
             assert!(
-                listed.contains(&format!("{named} of {named} references resolved")),
+                listed
+                    .lines()
+                    .filter(|line| line.starts_with("    face "))
+                    .count()
+                    == named,
                 "{listed}"
             );
             let m = mesh(&out, &out.with_extension("stl"));
@@ -388,17 +392,7 @@ pub(super) fn stub_sector(path: &Path, degrees: f64) -> ObjectId {
                 axis_segment: None,
             }),
         )?;
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: revolve,
-                producer_feature: revolve,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::RevolveCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
+
         Ok(())
     })
     .expect("sector");
@@ -567,27 +561,7 @@ fn native_revolve_angle_edit_refusals_preserve_every_file() {
         })
         .expect("rewrite");
     });
-    // A saved name nothing resolves: the baseline rebuild refuses the copy.
-    let lost_name = variant("lost-name", &|doc| {
-        let revolve = feature.parse::<ObjectId>().expect("UUID");
-        doc.write(|w| {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: revolve,
-                producer_feature: revolve,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::RevolveFace {
-                    profile_segment: StableEntityId::new(),
-                },
-                selection: SelectionRule::AllDerivedFrom {
-                    ancestor: StableEntityId::new(),
-                },
-                fallback_signature: None,
-            })
-        })
-        .expect("dangling name");
-    });
-    for path in [moved, axis_contact, lost_name] {
+    for path in [moved, axis_contact] {
         let (_, version, _) = target(&path);
         let before = std::fs::read(&path).expect("bytes");
         let published = path.with_extension("edited.fcad");
@@ -597,7 +571,20 @@ fn native_revolve_angle_edit_refusals_preserve_every_file() {
                 .expect("edit"),
             0,
         );
-        assert_eq!(refs(&published), refs(&path));
+        let available = |path: &Path| {
+            let document = Document::open_read_only(path).expect("document");
+            let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+            let built = ferritecad_eval::rebuild_cold(
+                &document,
+                &mut kernel,
+                &ferritecad_kernel::OperationContext::default(),
+            )
+            .expect("rebuild with existing failures");
+            let result = (crate::names::primary(&built), built.report());
+            built.release_all(&mut kernel);
+            result
+        };
+        assert_eq!(available(&published), available(&path));
         assert_eq!(std::fs::read(&path).expect("bytes"), before);
         assert_eq!(inspect(&published)["revolves"][0]["angle_deg"], 220.0);
     }

@@ -153,7 +153,7 @@ def main():
         for name in ("saved.fcad", "branch.fcad"):
             assert run("validate", root / name, "--json")["valid"]
             p = subprocess.run([cli, "rebuild", str(root / name), "--cold"], capture_output=True, text=True)
-            assert p.returncode == 0 and "stored references resolved" in p.stdout, (p.stdout, p.stderr)
+            assert p.returncode == 0 and " entities=1" in p.stdout, (p.stdout, p.stderr)
         data = (root / "unsaved.stl").read_bytes()
         count = struct.unpack_from("<I", data, 80)[0]
         assert len(data) == 84 + count * 50

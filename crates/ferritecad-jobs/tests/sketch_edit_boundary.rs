@@ -19,6 +19,7 @@ fn a_side_and_radius_are_one_transaction_while_one_vertex_is_refused() {
     let context = OperationContext::default();
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
     let original = Document::open_read_only(&source).expect("source");
+    let original_names = model_names::names_with(&original, &mut kernel);
     let reading = ferritecad_jobs::read_extrude_source(&source).expect("reading");
     let profile = original
         .object(chain.sketch)
@@ -128,13 +129,14 @@ fn a_side_and_radius_are_one_transaction_while_one_vertex_is_refused() {
                 let reopened = Document::open_read_only(path).expect("reopen");
                 let built = rebuild_cold(&reopened, &mut kernel, &context).expect("cold rebuild");
                 assert!(built.all_built(), "{:?}", built.report());
-                for reference in original.topology_refs().expect("saved names") {
-                    assert!(
-                        !built
-                            .resolve(&reference)
-                            .expect("same name resolves")
-                            .is_empty()
-                    );
+                for (feature, names) in &original_names {
+                    let actual = &built.topology().features[feature];
+                    let found: std::collections::BTreeSet<_> = actual
+                        .bindings
+                        .keys()
+                        .map(|name| (name.kind.to_string(), name.digest))
+                        .collect();
+                    assert_eq!(&found, names, "the same feature names survive the edit");
                 }
                 volumes.push(
                     kernel
@@ -156,3 +158,6 @@ fn a_side_and_radius_are_one_transaction_while_one_vertex_is_refused() {
         assert_eq!(std::fs::read(&source).expect("unchanged source"), before);
     }
 }
+
+#[path = "../../ferritecad-fixtures/tests/support/model_names.rs"]
+mod model_names;

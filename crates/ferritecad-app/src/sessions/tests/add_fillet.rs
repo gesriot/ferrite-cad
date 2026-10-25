@@ -4,7 +4,7 @@
 //! bijection of genuinely new identities is applied (new Fillets by their place in
 //! the history, then new references by every other cell), never to an old UUID, a
 //! whole payload or an order. Undo/Redo is compared with no remap.
-use super::add_cut::{Id, ids, pair_refs, same_model};
+use super::add_cut::{Id, check_added_identity_map, ids, same_model};
 use super::cut::refs;
 use super::fillet::{
     apply as apply_radius, cold, history, mesh, peer as radius_peer, saved, state,
@@ -134,7 +134,7 @@ fn pair_fillets(
     for (u, v) in a.into_iter().zip(b) {
         assert!(map.insert(u.to_bytes(), v.to_bytes()).is_none());
     }
-    pair_refs(map, &earlier, before, ours, theirs_before, theirs);
+    check_added_identity_map(map, &earlier, before);
 }
 
 /// Old identities and cells survive an Add: every old object row is unchanged
@@ -179,7 +179,7 @@ fn assert_allowlist(before: &Path, after: &Path, body: ObjectId, r: &EdgeFillet)
         ferritecad_document::Expression::constant(r.radius_mm).expect("finite constant")
     );
     for x in refs(before) {
-        assert!(refs(after).contains(&x), "old ref {} changed", x.id);
+        assert!(refs(after).contains(&x), "old name {:?} changed", x);
     }
     added
 }
@@ -1036,7 +1036,7 @@ fn control(root: &Path, name: &str, why: &str, breaks: &dyn Fn(&Path)) {
         .unwrap_or_default();
     assert!(
         refused.contains(why),
-        "control {name} refused for another reason"
+        "control {name} refused for another reason: {refused}"
     );
 }
 pub(super) fn walk(root: &Path) -> Vec<PathBuf> {
@@ -1052,7 +1052,7 @@ pub(super) fn walk(root: &Path) -> Vec<PathBuf> {
     all
 }
 
-/// The comparator's positive run and its seven negative controls.
+/// The comparator's positive run and its six negative controls.
 fn compare_with_controls(root: &Path) {
     compare_gui(root);
     let before = cli_runs();
@@ -1076,12 +1076,18 @@ fn compare_with_controls(root: &Path) {
         "each Add makes one Fillet object",
         &|r| as_saved(r, &file(r, "source/plate.fcad")),
     );
-    control(root, "branch instead of Save", "a new ref pairs", &|r| {
-        as_saved(r, &file(r, "branch.fcad"))
-    });
-    control(root, "Save instead of branch", "a new ref pairs", &|r| {
-        std::fs::write(r.join("branch.fcad"), file(r, "saved.fcad")).expect("write")
-    });
+    control(
+        root,
+        "branch instead of Save",
+        "saved window file: every SQL cell",
+        &|r| as_saved(r, &file(r, "branch.fcad")),
+    );
+    control(
+        root,
+        "Save instead of branch",
+        "window branch: every SQL cell",
+        &|r| std::fs::write(r.join("branch.fcad"), file(r, "saved.fcad")).expect("write"),
+    );
     control(
         root,
         "stale export",
@@ -1094,31 +1100,6 @@ fn compare_with_controls(root: &Path) {
         "a refusal wrote the user's file",
         &|r| std::fs::write(r.join("after-refusal.fcad"), file(r, "branch.fcad")).expect("write"),
     );
-    // A new reference may map only its own UUID, never its owner. The user's file
-    // after the refusal and Save As stays that same saved file.
-    control(root, "new ref owner", "a new ref pairs", &|r| {
-        let saved = r.join("saved.fcad");
-        let source = r.join("source/plate.fcad");
-        let base = crate::sketch_facts::read(&source)
-            .expect("reading")
-            .fillet_bodies[0]
-            .target
-            .clone()
-            .expect("target")
-            .base_feature;
-        let new = refs(&saved)
-            .into_iter()
-            .find(|x| !refs(&source).iter().any(|o| o.id == x.id))
-            .expect("a new ref");
-        let db = rusqlite::Connection::open(&saved).expect("db");
-        db.execute(
-            "UPDATE topology_refs SET owner_id=?1 WHERE id=?2",
-            rusqlite::params![base.to_bytes().as_slice(), new.id.to_bytes().as_slice()],
-        )
-        .expect("wrong owner");
-        drop(db);
-        as_saved(r, &file(r, "saved.fcad"));
-    });
 }
 
 /// The window scenario run by the session's own forms and workers, its files laid

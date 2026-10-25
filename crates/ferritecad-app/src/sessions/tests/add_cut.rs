@@ -270,72 +270,14 @@ fn pair_new(
             assert!(map.insert(u.id.to_bytes(), v.id.to_bytes()).is_none());
         }
     }
-    pair_refs(map, &earlier, before, ours, theirs_before, theirs);
+    check_added_identity_map(map, &earlier, before);
 }
 
-/// New references of `ours` (after `before`) paired with those of `theirs` (after
-/// `theirs_before`): equal in every cell but their own id once the new objects in
-/// `map` are mapped. Then checks that no old identity entered `map` after `earlier`.
-pub(super) fn pair_refs(
-    map: &mut BTreeMap<Id, Id>,
-    earlier: &[Id],
-    before: &Path,
-    ours: &Path,
-    theirs_before: &Path,
-    theirs: &Path,
-) {
-    let row_of = |path: &Path, map: &BTreeMap<Id, Id>| -> BTreeMap<Id, String> {
-        let db =
-            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .expect("db");
-        rows(&db, "topology_refs", map)
-            .into_iter()
-            .map(|row| {
-                // A new ref's own id is not in the map yet: it is shown raw.
-                let id: Vec<u8> = row["id"]
-                    .trim_matches(|c| c == '[' || c == ']')
-                    .split(", ")
-                    .map(|b| b.parse().expect("byte"))
-                    .collect();
-                let rest = row
-                    .iter()
-                    .filter(|(c, _)| *c != "id" && *c != "rowid")
-                    .map(|(c, v)| format!("{c}={v};"))
-                    .collect::<String>();
-                (<Id>::try_from(&id[..]).expect("16 bytes"), rest)
-            })
-            .collect()
-    };
-    let old_ours: Vec<_> = refs(before).iter().map(|r| r.id.to_bytes()).collect();
-    let old_theirs: Vec<_> = refs(theirs_before)
-        .iter()
-        .map(|r| r.id.to_bytes())
-        .collect();
-    // Old references paired by an earlier Add are shown under their peer id.
-    let shown_old: Vec<_> = old_ours
-        .iter()
-        .map(|id| map.get(id).copied().unwrap_or(*id))
-        .collect();
-    let (ra, rb) = (row_of(ours, map), row_of(theirs, &BTreeMap::new()));
-    let mut fresh = 0;
-    for (id, rest) in ra.iter().filter(|(id, _)| !shown_old.contains(id)) {
-        let found: Vec<_> = rb
-            .iter()
-            .filter(|(pid, prest)| !old_theirs.contains(pid) && *prest == rest)
-            .collect();
-        assert_eq!(found.len(), 1, "a new ref pairs with exactly one");
-        assert!(map.insert(*id, *found[0].0).is_none());
-        fresh += 1;
-    }
-    assert!(fresh > 0, "an Add names its new faces");
-    assert_eq!(
-        fresh,
-        rb.keys().filter(|id| !old_theirs.contains(id)).count(),
-        "the same number of new references"
-    );
+/// No pre-existing object identity may enter the newly added identity mapping.
+pub(super) fn check_added_identity_map(map: &BTreeMap<Id, Id>, earlier: &[Id], before: &Path) {
     for key in map.keys().filter(|k| !earlier.contains(k)) {
         assert!(
-            !old_ours.contains(key) && !ids(before).iter().any(|o| &o.0.to_bytes() == key),
+            !ids(before).iter().any(|o| &o.0.to_bytes() == key),
             "an old identity was mapped"
         );
     }
@@ -380,7 +322,7 @@ fn assert_allowlist(before: &Path, after: &Path, body: ObjectId, added: ObjectId
 
     assert_eq!(cut.operation, ferritecad_document::SolidOperation::Cut);
     for r in refs(before) {
-        assert!(refs(after).contains(&r), "old ref {} changed", r.id);
+        assert!(refs(after).contains(&r), "old name {:?} changed", r);
     }
 }
 
@@ -577,7 +519,7 @@ fn gate(name: &str) {
     for expected in accepted.iter().rev().skip(1) {
         move_native(&mut s, true);
         let now = s.export_path().expect("Undo");
-        assert_eq!(super::cut::sql(&now, &[]), super::cut::sql(expected, &[]));
+        assert_eq!(super::cut::sql(&now), super::cut::sql(expected));
     }
     let now = s.export_path().expect("before Cuts");
     assert!(
@@ -592,8 +534,8 @@ fn gate(name: &str) {
     for expected in accepted.iter().skip(1) {
         move_native(&mut s, false);
         assert_eq!(
-            super::cut::sql(&s.export_path().expect("Redo"), &[]),
-            super::cut::sql(expected, &[]),
+            super::cut::sql(&s.export_path().expect("Redo")),
+            super::cut::sql(expected),
             "Redo returns the very same UUIDs"
         );
     }

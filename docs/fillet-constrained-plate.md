@@ -79,8 +79,6 @@ Exactly §28A's:
   other row.
 * **deps:** + `Fillet → base` (Predecessor), + `Body → Fillet` (BodyTip),
   − `Body → base` (BodyTip).
-* **topology_refs:** the Fillet's seven new rows; every existing row
-  byte-identical.
 * **capabilities:** `feature.fillet.v1`, `topology.origin-face.v1` and
   `feature.predecessor.v1`, added only if missing; `sketch.constraints.v1`
   stays as it was.
@@ -208,6 +206,21 @@ from edit_requests import constraint_request, line_request, line_rule, distance,
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28f-"))
 
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
+
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
@@ -292,7 +305,7 @@ def fillet_allowlist(source, copy, body):
                 for c, u, v in zip(ac, row, new):
                     assert u == v or (row[k] == bid and c in ("payload", "payload_hash")), \
                         f"objects.{c} moved"
-        elif t in ("deps", "topology_refs"):
+        elif t == "deps":
             kept = [r for r in arows if r in brows]
             lost = [r for r in arows if r not in brows]
             assert all(t == "deps" and bid in r for r in lost), (t, lost)
@@ -326,9 +339,9 @@ def measured(copy, rect, at, radius, height):
     rounded."""
     x0, y0, w, d = rect
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Fillet" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
     volume, points = stl(out)

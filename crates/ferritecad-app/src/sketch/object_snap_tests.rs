@@ -1008,10 +1008,7 @@ fn native_object_snap_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
         a.dependencies().expect("deps"),
         b.dependencies().expect("deps")
     );
-    assert_eq!(
-        a.topology_refs().expect("refs"),
-        b.topology_refs().expect("refs")
-    );
+    assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
     drop((a, b));
 
     // The exact SQL allowlist: against the source, only the sketch object's payload

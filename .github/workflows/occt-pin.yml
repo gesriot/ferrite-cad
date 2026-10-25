@@ -695,11 +695,16 @@ jobs:
           # workflow-wide vcvars export already supplies dumpbin to later
           # steps; the override above additionally guarantees that rustc sees
           # MSVC's link.exe ahead of Git Bash's unrelated utility.
-          binary="$(cargo test -p ferritecad-occt --all-targets --no-run --message-format=json 2>/dev/null \
-            | jq -sr '[.[] | select(.reason == "compiler-artifact")
+          if ! cargo test -p ferritecad-occt --all-targets --no-run --message-format=json \
+            > occt-test-build.jsonl; then
+            jq -r 'select(.reason == "compiler-message") | .message.rendered // empty' \
+              occt-test-build.jsonl
+            exit 1
+          fi
+          binary="$(jq -sr '[.[] | select(.reason == "compiler-artifact")
                       | select(.profile.test == true)
                       | select(.target.kind | index("test"))
-                      | .executable // empty] | first')"
+                      | .executable // empty] | first' occt-test-build.jsonl)"
           if [ -z "$binary" ]; then
             echo "::error::no ferritecad-occt test executable was produced"
             exit 1

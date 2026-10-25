@@ -124,6 +124,21 @@ import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28i-"))
 
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
+
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
     request.write_text(json.dumps({"request_version": 1, "changes": [
@@ -233,9 +248,9 @@ def measured(copy, rounded, H=H):
     independently read mesh is the plate with exactly `rounded` (corner,
     radius) pairs rounded; the exact volume is the B-Rep's analytic one."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Fillet" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
     volume, points = stl(out)
@@ -291,7 +306,7 @@ BASE = base["feature_id"]
 
 
 
-refs = tables(twice)["topology_refs"]
+refs = output_names(twice)
 
 def raised(source, h, name):
     version = inspect(source)["content_version"]
@@ -300,7 +315,7 @@ def raised(source, h, name):
     result = run(edit_args(source, BASE, h, version, out))["result"]
     assert source.read_bytes() == before, "the source is untouched"
     allowlist(source, out, BASE)
-    assert tables(out)["topology_refs"] == refs, "a name moved"
+    assert output_names(out) == refs, "a name moved"
     (row,) = inspect(out)["features"]
     return out
 

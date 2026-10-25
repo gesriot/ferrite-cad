@@ -87,7 +87,7 @@ fn chain(
             before,
             "source touched"
         );
-        only_a_fillet_was_added(&source, &out, uuid(&json!(g.body_id())), 7 + k);
+        only_the_fillet_was_added(&source, &out, uuid(&json!(g.body_id())));
         steps.push(Step {
             corner: corners[at],
             radius: r,
@@ -119,10 +119,7 @@ fn chain(
             .output()
             .expect("rebuild");
         let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-        assert!(
-            text.contains(&format!("{n} of {n} stored references resolved")),
-            "{text}"
-        );
+        assert!(text.matches(" entities=").count() == n, "{text}");
         docs.push(out);
     }
     (plate, docs, steps)
@@ -220,14 +217,21 @@ fn measure_history(path: &Path, cache: Option<&Path>) -> (Built, Vec<ferritecad_
         .expect("a body");
     let tip = built.shape(body.id).expect("the body was built");
     let mut named = BTreeMap::new();
-    for reference in &doc.topology_refs().expect("refs") {
-        let resolved = built.resolve(reference).expect("resolve");
-        assert!(!resolved.is_empty(), "{} resolved to nothing", reference.id);
-        let producer = built
-            .shape(reference.producer_feature)
-            .expect("the producer was built");
-        for handle in &resolved {
-            assert_eq!(handle.shape(), producer, "{} was repointed", reference.id);
+    for reference in crate::names::generated_faces(&doc, &built) {
+        let resolved = &reference.entities;
+        assert!(
+            !resolved.is_empty(),
+            "{} resolved to nothing",
+            reference.seed.digest
+        );
+        let producer = built.shape(reference.at).expect("the producer was built");
+        for handle in resolved {
+            assert_eq!(
+                handle.shape(),
+                producer,
+                "{} was repointed",
+                reference.seed.digest
+            );
         }
         let mut surfaces: Vec<FaceSurface> = resolved
             .iter()
@@ -242,21 +246,13 @@ fn measure_history(path: &Path, cache: Option<&Path>) -> (Built, Vec<ferritecad_
             }
             _ => None,
         };
-        let role = format!("{:?}", reference.output_role);
         named.insert(
-            reference.id.to_string(),
+            format!("{}:{}", reference.at, reference.seed.digest),
             Face {
-                role: role
-                    .split([' ', '{'])
-                    .next()
-                    .expect("a role name")
-                    .to_owned(),
-                owner: reference.owner,
-                producer: reference.producer_feature,
-                origin: match &reference.output_role {
-                    SemanticRole::OriginFilletFace { origin_feature, .. } => Some(*origin_feature),
-                    _ => None,
-                },
+                role: reference.label(),
+                owner: reference.at,
+                producer: reference.at,
+                origin: (reference.at != reference.origin).then_some(reference.origin),
                 surfaces,
                 axis,
                 on_tip: producer == tip,
@@ -339,7 +335,7 @@ fn verify(copy: &Path, steps: &[Step], rect: [f64; 4], height: f64, name: &str) 
         let own: Vec<&Face> = cold
             .named
             .values()
-            .filter(|f| f.role == "EdgeFilletFace" && f.owner == s.id)
+            .filter(|f| f.role == "generated Fillet" && f.owner == s.id)
             .collect();
         let [face] = own.as_slice() else {
             panic!("Fillet {} has {} own faces", s.id, own.len())
@@ -358,7 +354,7 @@ fn verify(copy: &Path, steps: &[Step], rect: [f64; 4], height: f64, name: &str) 
                 .named
                 .values()
                 .filter(|f| {
-                    f.role == "OriginFilletFace"
+                    f.role == "inherited generated Fillet"
                         && f.owner == later.id
                         && f.origin == Some(earlier.id)
                 })
@@ -657,7 +653,7 @@ fn native_early_middle_and_last_radii_answer_to_every_neighbour() {
         let built = verify(&out, &edited, RECT, H, &format!("radii-{k}"));
         // The named cylinder is the same name on a new radius.
         let id = steps[k].id;
-        assert!(built.named.values().any(|f| f.role == "EdgeFilletFace"
+        assert!(built.named.values().any(|f| f.role == "generated Fillet"
             && f.owner == id
             && f.surfaces == [FaceSurface::Cylinder { radius: r }]));
         // The cache restored from the unchanged prefix only: the plate and

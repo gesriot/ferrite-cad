@@ -117,58 +117,6 @@ pub(crate) fn validate(document: &Document) -> Result<ValidationReport> {
         report.error("graph.not-orderable", None, error.to_string());
     }
 
-    for reference in document.topology_refs()? {
-        if !by_id.contains_key(&reference.owner) {
-            report.error(
-                "topology-ref.orphan-owner",
-                Some(reference.owner),
-                format!(
-                    "topology reference {} is owned by {}, which does not exist",
-                    reference.id, reference.owner
-                ),
-            );
-        }
-        if !by_id.contains_key(&reference.producer_feature) {
-            report.error(
-                "topology-ref.missing-producer",
-                Some(reference.producer_feature),
-                format!(
-                    "topology reference {} names {} as its producer, which does not exist",
-                    reference.id, reference.producer_feature
-                ),
-            );
-        } else if !by_id[&reference.producer_feature]
-            .payload
-            .kind()
-            .is_some_and(ObjectKind::is_feature)
-        {
-            report.error(
-                "topology-ref.producer-not-feature",
-                Some(reference.producer_feature),
-                format!(
-                    "topology reference {} names {}, which is not a feature, as its producer",
-                    reference.id, reference.producer_feature
-                ),
-            );
-        }
-        if reference.owner != reference.producer_feature
-            && !edges.contains(&(
-                reference.owner,
-                reference.producer_feature,
-                DependencyRole::TopologyReference,
-            ))
-        {
-            report.error(
-                "topology-ref.missing-edge",
-                Some(reference.owner),
-                format!(
-                    "topology reference {} is owned by {} but has no topology_reference dependency on {}",
-                    reference.id, reference.owner, reference.producer_feature
-                ),
-            );
-        }
-    }
-
     Ok(report)
 }
 

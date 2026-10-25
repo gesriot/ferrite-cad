@@ -180,6 +180,21 @@ cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-27h-"))
 OP = "edit"
 
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
+
 def run(args, code=0):
     p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
     if p.returncode == 7:
@@ -319,7 +334,7 @@ assert axis == 3
 sketch = row["sketch_id"]
 source_bytes = source.read_bytes()
 # One saved face name per Line but the axis Line.
-assert len(cells(source)["topology_refs"]) == 3
+assert len([n for n in output_names(source) if n[1] == "face"]) == 3
 
 # 2. Strict request parsing rejects an array and an escaped duplicate key.
 first = lines(catalog)[0]["curve_id"]
@@ -419,7 +434,7 @@ catalog = inspect(shaft_rigid)
 shaft_wide = root / "shaft-wide.fcad"
 constrain(shaft_rigid, constraint_request(catalog["sketches"][0], [stored_constraint(catalog, "distance", 0)], [distance(lines(catalog)[0]["curve_id"], 9.25)]), shaft_wide)
 allowlist(shaft_rigid, shaft_wide, shaft_sketch)
-assert len(cells(shaft_wide)["topology_refs"]) == 5 + 2, "five faces and two caps"
+assert len([n for n in output_names(shaft_wide) if n[1] == "face"]) == 5 + 2, "five faces and two caps"
 SHAFT_WIDE = [[0, -2.25], [9.25, -2.25], [9.25, 3.5], [6.75, 3.5], [6.75, 12.75], [0, 12.75]]
 shaft_volume, shaft_r = exported(shaft_wide, SHAFT_WIDE, 137.5)
 revolve = inspect(shaft_wide)["revolves"][0]

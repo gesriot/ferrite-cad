@@ -781,8 +781,7 @@ pub(crate) mod tests {
     use std::sync::mpsc;
 
     use ferritecad_document::{
-        CapSide, DependencyRole, Document, EndCondition, ObjectPayload, SelectionRule,
-        SemanticRole, SketchGeometry,
+        DependencyRole, Document, EndCondition, ObjectPayload, SketchGeometry,
     };
     use ferritecad_types::ObjectId;
 
@@ -1184,7 +1183,13 @@ pub(crate) mod tests {
         let document =
             Document::open_read_only(session.current().path()).expect("opens what was made");
         assert_eq!(document.objects().expect("reads objects").len(), 4);
-        assert_eq!(document.topology_refs().expect("reads refs").len(), 3);
+        assert_eq!(
+            crate::test_names::names(&document)
+                .values()
+                .map(|names| names.len())
+                .sum::<usize>(),
+            26
+        );
         document.close().expect("closes");
         assert_eq!(entries(sessions.path()).len(), 1, "one private folder");
     }
@@ -1502,9 +1507,6 @@ pub(crate) mod tests {
                 .unwrap_or_else(|| format!("(not in this document: {id})"))
         };
 
-        // Where each sketch segment sits in the profile that holds it. A
-        // reference naming a segment is resolved to that, so a reference moved
-        // to another segment changes what is compared.
         let mut segment_at = Vec::new();
         for object in &objects {
             if let ObjectPayload::Sketch(sketch) = &object.payload {
@@ -1513,13 +1515,6 @@ pub(crate) mod tests {
                 }
             }
         }
-        let segment_of = |id: ferritecad_types::StableEntityId| -> String {
-            segment_at
-                .iter()
-                .find(|(other, _)| *other == id)
-                .map(|(_, place)| place.clone())
-                .unwrap_or_else(|| format!("(no such segment: {id})"))
-        };
 
         let mut described: Vec<(String, i64, String)> = objects
             .iter()
@@ -1604,46 +1599,11 @@ pub(crate) mod tests {
             .collect();
         dependencies.sort();
 
-        let stored = document.topology_refs().expect("reads references");
+        let stored = crate::test_names::names(&document);
         let mut references: Vec<String> = stored
-            .iter()
-            .map(|reference| {
-                let role = match reference.output_role {
-                    SemanticRole::ExtrudeCap { side } => format!(
-                        "cap {}",
-                        match side {
-                            CapSide::Start => "start".to_owned(),
-                            CapSide::End => "end".to_owned(),
-                            // A cap this build does not know is still a fact
-                            // about the document, and two clients must agree
-                            // about it rather than have it silently dropped.
-                            ref other => format!("{other:?}"),
-                        }
-                    ),
-                    SemanticRole::ExtrudeSide { profile_segment } => {
-                        format!("side of {}", segment_of(profile_segment))
-                    }
-                    SemanticRole::RevolveFace { profile_segment } => {
-                        format!("face turned from {}", segment_of(profile_segment))
-                    }
-                    ref other => format!("{other:?}"),
-                };
-                let selection = match reference.selection {
-                    SelectionRule::Exact => "exact".to_owned(),
-                    SelectionRule::AllDerivedFrom { ancestor } => {
-                        format!("all derived from {}", segment_of(ancestor))
-                    }
-                    ref other => format!("{other:?}"),
-                };
-                format!(
-                    "{} on {} from {} expecting {:?} by {selection} fallback={:?}",
-                    role,
-                    name_of(reference.owner),
-                    name_of(reference.producer_feature),
-                    reference.expected_kind,
-                    reference.fallback_signature,
-                )
-            })
+            .values()
+            .flat_map(|names| names.iter())
+            .map(|(kind, _)| kind.clone())
             .collect();
         references.sort();
 
@@ -1681,8 +1641,9 @@ pub(crate) mod tests {
             segment_at.iter().map(|(id, _)| id.to_string()).collect();
         segment_ids.sort();
         let mut reference_ids: Vec<String> = stored
-            .iter()
-            .map(|reference| reference.id.to_string())
+            .values()
+            .flat_map(|names| names.iter())
+            .map(|(_, digest)| digest.to_string())
             .collect();
         reference_ids.sort();
         let identities = Identities {
@@ -1723,7 +1684,7 @@ pub(crate) mod tests {
         // between two empty readings cannot pass for one.
         assert_eq!(command_line.objects.len(), 4);
         assert_eq!(command_line.dependencies.len(), 3);
-        assert_eq!(command_line.references.len(), 3);
+        assert_eq!(command_line.references.len(), 26);
         assert!(
             command_line
                 .objects
@@ -2102,47 +2063,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn semantic_comparison_preserves_the_reference_to_its_specific_segment() {
-        let dir = tempfile::tempdir().expect("directory");
-        let path = dir.path().join("plate.fcad");
-        create_through_the_window(&path, NewContent::SamplePlate, ["80", "50", "12"]);
-        let original = read_semantics(&path).0;
-        let mut doc = Document::open(&path).expect("document");
-        let segments = doc
-            .objects()
-            .expect("objects")
-            .into_iter()
-            .find_map(|object| {
-                if let ObjectPayload::Sketch(sketch) = object.payload {
-                    Some(sketch.curves)
-                } else {
-                    None
-                }
-            })
-            .expect("sketch");
-        let mut reference = doc
-            .topology_refs()
-            .expect("refs")
-            .into_iter()
-            .find(|reference| matches!(reference.output_role, SemanticRole::ExtrudeSide { .. }))
-            .expect("side ref");
-        reference.output_role = SemanticRole::ExtrudeSide {
-            profile_segment: segments[1].id,
-        };
-        reference.selection = SelectionRule::AllDerivedFrom {
-            ancestor: segments[1].id,
-        };
-        doc.write(|writer| writer.put_topology_ref(&reference))
-            .expect("change relationship");
-        doc.close().expect("close");
-        assert_ne!(
-            original,
-            read_semantics(&path).0,
-            "a different valid segment is a different graph"
-        );
-    }
-
-    #[test]
     fn both_clients_reopen_rebuild_resolve_and_export_the_saved_plate() {
         if !ferritecad_occt::is_available() {
             ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
@@ -2172,7 +2092,11 @@ pub(crate) mod tests {
             let rebuilt = run(&["rebuild".as_ref(), path.as_os_str(), "--cold".as_ref()]);
             let report = String::from_utf8_lossy(&rebuilt.stdout);
             assert!(
-                report.contains("3 of 3 stored references resolved"),
+                report
+                    .lines()
+                    .filter(|line| line.trim_start().starts_with("face "))
+                    .count()
+                    == 6,
                 "{report}"
             );
             assert!(

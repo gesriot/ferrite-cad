@@ -2713,7 +2713,7 @@ mod tests {
             "Save is not the command line's copy"
         );
         let saved = Document::open_read_only(source).expect("saved");
-        let refs = saved.topology_refs().expect("refs").len();
+        let refs = crate::test_names::names(&saved).len();
         assert!(refs > 0, "the plate carries saved names");
         let built = ferritecad_eval::rebuild_cold(
             &saved,
@@ -2721,15 +2721,7 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("cold rebuild");
-        for reference in saved.topology_refs().expect("refs") {
-            assert!(
-                built
-                    .resolve(&reference)
-                    .is_ok_and(|found| !found.is_empty()),
-                "{} did not resolve after Save",
-                reference.id
-            );
-        }
+        crate::test_names::assert_names(&built, &crate::test_names::names(&saved));
         // And the file holds exactly what is shown.
         let (stl, fbx) = peer_bytes(source, root, "saved");
         assert_eq!((stl, fbx), (peer_stl, peer_fbx));
@@ -2951,15 +2943,7 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("cold rebuild");
-        for reference in saved.topology_refs().expect("refs") {
-            assert!(
-                built
-                    .resolve(&reference)
-                    .is_ok_and(|found| !found.is_empty()),
-                "{} did not resolve after Save",
-                reference.id
-            );
-        }
+        crate::test_names::assert_names(&built, &crate::test_names::names(&saved));
         let (stl, fbx) = peer_bytes(source, root, "v-saved");
         assert_eq!((stl, fbx), (v_stl, v_fbx));
 
@@ -3633,17 +3617,9 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("cold rebuild");
-        let references = saved.topology_refs().expect("refs");
+        let references = crate::test_names::names(&saved);
         assert!(!references.is_empty(), "the plate carries saved names");
-        for reference in references {
-            assert!(
-                built
-                    .resolve(&reference)
-                    .is_ok_and(|found| !found.is_empty()),
-                "{} did not resolve after Save",
-                reference.id
-            );
-        }
+        crate::test_names::assert_names(&built, &references);
         let (stl, fbx) = peer_bytes(source, root, "c-saved");
         if let Some((name, check)) = readers {
             check(source, &stl);

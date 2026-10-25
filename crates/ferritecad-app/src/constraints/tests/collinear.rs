@@ -454,7 +454,7 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
             d.meta().document_id,
             others,
             d.dependencies().expect("dependencies"),
-            d.topology_refs().expect("refs"),
+            crate::test_names::names(&d),
         );
         d.close().expect("close");
         (s, facts)
@@ -574,9 +574,7 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
                 [[start.x, start.y], [end.x, end.y]]
             })
             .collect();
-        for r in doc.topology_refs().expect("refs") {
-            assert_eq!(built.resolve(&r).expect("resolves").len(), 1);
-        }
+        crate::test_names::assert_names(&built, &crate::test_names::names(&doc));
         built.release_all(&mut kernel);
         doc.close().expect("close");
         (measure(&ends, 0, 4), dof)

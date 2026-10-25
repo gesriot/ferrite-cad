@@ -5,7 +5,7 @@ use super::*;
 use crate::chamfers::tests::session_apply::{
     CORNER, draft_state, fixture, saved_of, typed_distance, visible_outcome,
 };
-use ferritecad_document::{MIN_FLAT_MM, ObjectPayload, SemanticRole};
+use ferritecad_document::{MIN_FLAT_MM, ObjectPayload};
 use ferritecad_jobs::EditRequest;
 use ferritecad_kernel::{FaceSurface, GeometryKernel};
 
@@ -177,14 +177,7 @@ pub(super) fn cold(path: &Path, rect: [f64; 4], corner: [f64; 2], height: f64) -
         assert_eq!(corner[1], y1);
         1.
     };
-    let refs = d.topology_refs().expect("refs");
-    let named = refs
-        .iter()
-        .find(|r| {
-            r.owner == chamfer.feature
-                && matches!(r.output_role, SemanticRole::EdgeChamferFace { .. })
-        })
-        .expect("the Chamfer names its face");
+    let refs = crate::test_names::names(&d);
     for pass in 0..3 {
         let built = if pass > 0 {
             ferritecad_eval::rebuild_cached(&d, &mut k, &mut cache, &ctx).map(|(built, events)| {
@@ -203,9 +196,7 @@ pub(super) fn cold(path: &Path, rect: [f64; 4], corner: [f64; 2], height: f64) -
             ferritecad_eval::rebuild_cold(&d, &mut k, &ctx)
         }
         .expect("rebuild");
-        for r in &refs {
-            assert!(built.resolve(r).is_ok_and(|v| !v.is_empty()), "{}", r.id);
-        }
+        crate::test_names::assert_names(&built, &refs);
         let tip = built.shape(chamfer.body).expect("body");
         let (faces, volume) = k.shape_stats(tip).expect("stats");
         assert_eq!(faces, 7, "two caps, four sides and the chamfer face");
@@ -213,13 +204,22 @@ pub(super) fn cold(path: &Path, rect: [f64; 4], corner: [f64; 2], height: f64) -
             (volume - exact).abs() < 1e-9 * block,
             "B-Rep {volume}, analytical {exact}"
         );
-        let face = built.resolve(named).expect("resolve");
-        assert_eq!(face.len(), 1, "one chamfer face");
-        assert_eq!(
-            k.face_surface(face[0]).expect("surface"),
-            FaceSurface::Plane
+        let predecessor = &built.topology().features[&chamfer.base_feature];
+        let edge = built
+            .topology()
+            .swept_edge(chamfer.base_feature, chamfer.edge)
+            .expect("consumed edge");
+        let name = ferritecad_topology::generative::generated(
+            chamfer.feature,
+            ferritecad_kernel::NamingOperation::Chamfer,
+            predecessor.entities[&edge],
+            ferritecad_kernel::SubShapeKind::Face,
         );
-        let (origin, normal, area) = k.face_plane(face[0]).expect("plane");
+        let face = built.topology().features[&chamfer.feature]
+            .resolve(name)
+            .expect("one chamfer face");
+        assert_eq!(k.face_surface(face).expect("surface"), FaceSurface::Plane);
+        let (origin, normal, area) = k.face_plane(face).expect("plane");
         let root = 0.5f64.sqrt();
         assert!(
             (normal[0] - sx * root).abs() < 1e-9

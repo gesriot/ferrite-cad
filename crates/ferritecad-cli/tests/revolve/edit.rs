@@ -367,10 +367,16 @@ fn native_revolve_profile_edits_keep_names_measure_cache_sql_and_exports() {
             .expect("print-topology");
         let listed = String::from_utf8(listed.stdout).expect("UTF-8");
         for id in &saved.ids {
-            assert!(listed.contains(&format!("revolve face from segment {id}")));
+            assert!(listed.contains(&format!("curve {id}")));
         }
         let n = case.to.len();
-        assert!(listed.contains(&format!("{n} of {n} references resolved")));
+        assert!(
+            listed
+                .lines()
+                .filter(|line| line.starts_with("    face "))
+                .count()
+                == n
+        );
 
         // An independent reading of the mesh, against the analytic volume.
         let m = mesh(&out, &out.with_extension("stl"));

@@ -704,12 +704,24 @@ pub(super) fn verify_published(
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
     let context = OperationContext::default();
     let built = ferritecad_eval::rebuild_cold(&d, &mut kernel, &context).expect("cold rebuild");
-    let refs = d.topology_refs().expect("refs");
-    assert_eq!(refs.len(), 3);
-    for r in refs {
-        let faces = built.resolve(&r).expect("preserved ref");
-        assert_eq!(faces.len(), 1);
-        let face = faces[0];
+    let faces = crate::test_names::root_faces(&d, &built);
+    assert_eq!(
+        faces.len(),
+        choices.sketches[0]
+            .vertices
+            .as_ref()
+            .expect("vertices")
+            .len()
+            + 2,
+        "every curve side and both caps have a derived face name"
+    );
+    let selected_curve = choices.sketches[0].vertices.as_ref().expect("vertices")[0].curve_id;
+    let mut checked = 0;
+    for (input, face) in faces {
+        if matches!(input, ferritecad_kernel::NamingInput::Curve(c) if c != selected_curve) {
+            continue;
+        }
+        checked += 1;
         let mesh = kernel
             .tessellate(face.shape(), &TessellationParams::default(), &context)
             .expect("face mesh");
@@ -723,25 +735,22 @@ pub(super) fn verify_published(
             .iter()
             .map(|&i| &mesh.positions[3 * i as usize..3 * i as usize + 3])
             .collect();
-        use ferritecad_document::{CapSide, SemanticRole};
-        match r.output_role {
-            SemanticRole::ExtrudeCap {
-                side: CapSide::Start,
-            } => assert!(points.iter().all(|p| p[2] == 0.)),
-            SemanticRole::ExtrudeCap { side: CapSide::End } => {
+        match input {
+            ferritecad_kernel::NamingInput::Cap { end: false } => {
+                assert!(points.iter().all(|p| p[2] == 0.))
+            }
+            ferritecad_kernel::NamingInput::Cap { end: true } => {
                 assert!(points.iter().all(|p| p[2] == 10.))
             }
-            SemanticRole::ExtrudeSide { profile_segment } => {
-                assert_eq!(
-                    profile_segment,
-                    choices.sketches[0].vertices.as_ref().expect("vertices")[0].curve_id
-                );
+            ferritecad_kernel::NamingInput::Curve(curve) => {
+                assert_eq!(curve, selected_curve);
                 assert!(points.iter().all(|p| p[1] == 0.));
                 assert!(points.iter().any(|p| p[0] == expected.side_x as f32));
             }
-            _ => panic!("unexpected reference"),
+            _ => panic!("unexpected root"),
         }
     }
+    assert_eq!(checked, 3);
     built.release_all(&mut kernel);
     d.close().expect("close");
     original.close().expect("close");
@@ -1407,14 +1416,11 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
     let original = Document::open_read_only(&ui).expect("source");
     assert_eq!(
-        a.topology_refs().expect("refs"),
-        original.topology_refs().expect("refs"),
+        crate::test_names::names(&a),
+        crate::test_names::names(&original),
         "no new names, and still none for the axis Line"
     );
-    assert_eq!(
-        a.topology_refs().expect("refs"),
-        b.topology_refs().expect("refs")
-    );
+    assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
     original.close().expect("close");
     // π·h/3·(R² + R·r + r²) for R = 10, r = 5, h = 15.
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
@@ -1669,8 +1675,8 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     let a = Document::open_read_only(&ui).expect("UI");
     let original = Document::open_read_only(&source).expect("source");
     assert_eq!(
-        a.topology_refs().expect("refs"),
-        original.topology_refs().expect("refs"),
+        crate::test_names::names(&a),
+        crate::test_names::names(&original),
         "no new names, both caps kept"
     );
     let revolve = |d: &Document| {

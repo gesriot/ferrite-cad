@@ -36,15 +36,6 @@ pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         )
         .expect("changes");
     d.write_changes(&changes).expect("written");
-    let mut extra = d
-        .topology_refs()
-        .expect("refs")
-        .into_iter()
-        .find(|r| r.owner == target.base_feature)
-        .expect("a base-owned name");
-    extra.id = StableEntityId::new();
-    d.write(|w| w.put_topology_ref(&extra))
-        .expect("one more base-owned name");
     d.close().expect("close");
     let db = rusqlite::Connection::open(&path).expect("SQL");
     db.execute_batch(

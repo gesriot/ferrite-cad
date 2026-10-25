@@ -995,7 +995,14 @@ recomputed:
 | `meta` | document UUID, display units, timestamps |
 | `objects` | sketches, features, bodies, parameters, as CBOR envelopes |
 | `deps` | the dependency graph edges, with the role of each |
-| `topology_refs` | semantic names for produced geometry |
+
+Output topology names are derived from feature provenance and incidence. The
+window shows the selected entity's feature, kind, digest and full derivation;
+ambiguous names have no selection binding. `print-topology`, `inspect` and
+`rebuild --cold` report each feature's names in stable order, with kind,
+digest and entity count; `print-topology` and `inspect` add each name's full
+derivation. Files containing the removed output-name
+table are refused; there is no format migration.
 
 Everything derived – B-Rep, tessellation, entity mappings, previews – lives in
 a separate `part.fcad-cache` sidecar. **Deleting the sidecar can cost you time

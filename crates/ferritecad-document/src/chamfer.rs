@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! The evaluator's measured Chamfer policy and output naming contract.
-use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
+use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result};
 
 use crate::fillet::{FilletCorner, corner_for, corners_of_lines};
-use crate::{
-    Chamfer, ObjectPayload, ObjectRecord, SemanticRole, Sketch, SketchConstraintRule, TopologyRef,
-};
+use crate::{Chamfer, ObjectPayload, ObjectRecord, Sketch, SketchConstraintRule};
 
 fn unsupported(message: impl Into<String>) -> CadError {
     CadError::unsupported(message)
@@ -139,26 +137,6 @@ fn require_managed_profile(sketch: &Sketch, chamfer: ObjectId) -> Result<()> {
              constraint editor's Line family{guilty}: {e}"
         ))
     })
-}
-
-/// What the finished part is called after one chamfer: the new planar face
-/// under the edge it replaced (a role of its own), and every face the plate
-/// had, as the chamfer leaves it, qualified by the plate's own Extrude.
-pub(crate) fn chamfer_references(
-    feature: ObjectId,
-    base: ObjectId,
-    joint: ProfileJoint,
-    profile_segments: &[StableEntityId],
-) -> Vec<TopologyRef> {
-    crate::fillet::edge_operation_references(
-        feature,
-        base,
-        profile_segments,
-        SemanticRole::EdgeChamferFace {
-            edge_feature: base,
-            joint,
-        },
-    )
 }
 
 pub fn evaluable_chamfer(
@@ -298,6 +276,7 @@ mod tests {
         Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
         Point2, SketchCurve, SketchGeometry, SolidOperation, SweptEdge,
     };
+    use ferritecad_types::StableEntityId;
     use ferritecad_types::Transform;
     const PLATE: [[f64; 2]; 4] = [[-4.5, 3.25], [33., 3.25], [33., 15.5], [-4.5, 15.5]];
 

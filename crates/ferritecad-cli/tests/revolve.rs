@@ -7,10 +7,12 @@
 #[path = "support/transaction.rs"]
 mod transaction;
 
+#[path = "support/names.rs"]
+mod names;
 use ferritecad_document::{
-    Body, CacheStore, DatumPlane, Dependency, DependencyRole, Document, EntityKind,
-    FullTurnRevolution, ObjectPayload, Point2, Revolve, RevolveAxis, RevolveExtent, SelectionRule,
-    SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    Body, CacheStore, DatumPlane, Dependency, DependencyRole, Document, FullTurnRevolution,
+    ObjectPayload, Point2, Revolve, RevolveAxis, RevolveExtent, Sketch, SketchCurve,
+    SketchGeometry, SolidOperation,
 };
 use ferritecad_eval::CacheOutcome;
 use ferritecad_kernel::{FaceSurface, GeometryKernel, OperationContext, TessellationParams};
@@ -372,19 +374,6 @@ fn write_revolve_document(path: &Path, points: &[[f64; 2]]) -> (ObjectId, Vec<St
                 role,
             })?;
         }
-        for label in &labels {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: revolve,
-                producer_feature: revolve,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::RevolveFace {
-                    profile_segment: *label,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: *label },
-                fallback_signature: None,
-            })?;
-        }
         Ok(())
     })
     .expect("revolve document");
@@ -469,27 +458,23 @@ fn measure(path: &Path, points: &[[f64; 2]], cache: Option<&[CacheOutcome]>) -> 
     let mesh = kernel
         .tessellate(shape, &TessellationParams::default(), &context)
         .expect("mesh");
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::root_faces(&d, &built);
     assert_eq!(refs.len(), points.len(), "one name per Line");
     let mut named = std::collections::BTreeSet::new();
-    for reference in &refs {
-        let SemanticRole::RevolveFace { profile_segment } = reference.output_role else {
-            panic!("only RevolveFace names")
+    for (_, input, face) in refs {
+        let ferritecad_kernel::NamingInput::Curve(profile_segment) = input else {
+            panic!("curve root");
         };
-        let resolved = built.resolve(reference).expect("resolves");
-        let [face] = resolved.as_slice() else {
-            panic!("one face for {profile_segment}: {resolved:?}")
-        };
-        assert!(named.insert(*face), "two names on one face");
+        assert!(named.insert(face), "two names on one face");
         let (a, b) = lines[&profile_segment];
-        let range = mesh.faces.iter().find(|r| r.face == *face).expect("drawn");
+        let range = mesh.faces.iter().find(|r| r.face == face).expect("drawn");
         let vertices: Vec<[f64; 3]> = mesh.indices
             [range.first_index as usize..(range.first_index + range.index_count) as usize]
             .iter()
             .map(|v| std::array::from_fn(|j| f64::from(mesh.positions[*v as usize * 3 + j])))
             .collect();
         let radius = |p: &[f64; 3]| p[0].hypot(p[2]);
-        let surface = kernel.face_surface(*face).expect("surface");
+        let surface = kernel.face_surface(face).expect("surface");
         match expected_surface(a, b) {
             "annulus" => {
                 assert_eq!(surface, FaceSurface::Plane);
@@ -503,14 +488,14 @@ fn measure(path: &Path, points: &[[f64; 2]], cache: Option<&[CacheOutcome]>) -> 
             }
             "cylinder" => {
                 assert_eq!(surface, FaceSurface::Cylinder { radius: a[0] });
-                let (origin, direction) = kernel.surface_axis(*face).expect("axis");
+                let (origin, direction) = kernel.surface_axis(face).expect("axis");
                 assert!(origin[0].abs() < 1e-9 && origin[2].abs() < 1e-9);
                 assert!((direction[1].abs() - 1.).abs() < 1e-12);
                 assert!(vertices.iter().all(|p| (radius(p) - a[0]).abs() < 1e-4));
             }
             _ => {
                 assert_eq!(surface, FaceSurface::Cone);
-                let (origin, direction) = kernel.surface_axis(*face).expect("axis");
+                let (origin, direction) = kernel.surface_axis(face).expect("axis");
                 assert!(origin[0].abs() < 1e-9 && origin[2].abs() < 1e-9);
                 assert!((direction[1].abs() - 1.).abs() < 1e-12);
                 for p in &vertices {
@@ -531,19 +516,17 @@ fn measure(path: &Path, points: &[[f64; 2]], cache: Option<&[CacheOutcome]>) -> 
     assert_eq!(named.len(), faces as usize, "every face has one name");
     // An extrusion's name for the same Line never resolves on a Revolve.
     let (label, _) = lines.iter().next().expect("a Line");
-    let wrong = TopologyRef {
-        id: StableEntityId::new(),
-        owner: revolve,
-        producer_feature: revolve,
-        expected_kind: ferritecad_document::EntityKind::Face,
-        output_role: SemanticRole::ExtrudeSide {
-            profile_segment: *label,
-        },
-        selection: SelectionRule::AllDerivedFrom { ancestor: *label },
-        fallback_signature: None,
-    };
+    let absent = crate::names::root_name(
+        &d,
+        revolve,
+        ferritecad_kernel::NamingInput::Curve(*label),
+        ferritecad_kernel::NamingOperation::Extrude,
+    );
     assert_eq!(
-        built.resolve(&wrong).expect_err("not a swept face").kind(),
+        built.topology().features[&revolve]
+            .resolve(absent)
+            .expect_err("no generated face")
+            .kind(),
         ErrorKind::Topology
     );
     built.release_all(&mut kernel);
@@ -737,13 +720,17 @@ fn native_revolve_geometry_names_cache_reopen_and_exports() {
         .collect::<Vec<_>>();
     assert_eq!(lines.len(), STEPPED.len());
     for id in &lines {
-        assert!(
-            listed.contains(&format!("revolve face from segment {id}")),
-            "{listed}"
-        );
+        assert!(listed.contains(&format!("curve {id}")), "{listed}");
     }
     assert!(!listed.contains("unknown semantic role"), "{listed}");
-    assert!(listed.contains("6 of 6 references resolved"), "{listed}");
+    assert!(
+        listed
+            .lines()
+            .filter(|line| line.starts_with("    face "))
+            .count()
+            == 6,
+        "{listed}"
+    );
     assert_eq!(cold, measure(&path, &STEPPED, Some(&[Miss])));
     assert_eq!(cold, measure(&path, &STEPPED, Some(&[Hit])));
     let wider: Vec<[f64; 2]> = STEPPED

@@ -69,9 +69,8 @@ pub(crate) fn write_round(
     swapped: bool,
 ) {
     use ferritecad_document::{
-        Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
-        Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch,
-        SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+        Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
+        ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
     };
     use ferritecad_types::{ObjectId, StableEntityId, Transform};
     let mut d = Document::create(path).expect("document");
@@ -147,30 +146,7 @@ pub(crate) fn write_round(
                 role,
             })?;
         }
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        for curve in &drawn {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeSide {
-                    profile_segment: *curve,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: *curve },
-                fallback_signature: None,
-            })?;
-        }
+
         Ok(())
     })
     .expect("round document");

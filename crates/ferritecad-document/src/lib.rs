@@ -3,7 +3,7 @@
 //!
 //! A document is a single SQLite file with the extension `.fcad`. It holds
 //! everything the model means and nothing that can be recomputed: the feature
-//! graph, sketches, parameters, expressions and stable topology references.
+//! graph, sketches, parameters, expressions and consumed feature inputs.
 //!
 //! # Source of truth and cache are different files
 //!
@@ -38,7 +38,6 @@ mod cut_boundary;
 mod document;
 mod edit;
 mod expression_edit;
-mod output_names;
 pub use expression_edit::{EditChange, ExpressionSlot, ExpressionSlotValue, FeatureAddition};
 mod fillet;
 mod height_edit;
@@ -74,18 +73,17 @@ pub use cache::{CacheEntry, CacheStore};
 pub use document::{
     Access, CheckpointEntry, Document, DocumentMeta, DocumentWriter, MAX_CHECKPOINT_BYTES,
     MAX_CHECKPOINT_NAME_CHARS, MAX_CHECKPOINTS, ObjectRecord, ReopenedStepImport,
-    StepImportRequest, StepImporter, StoredStepImport, StoredTopologyRef, checkpoint_name,
+    StepImportRequest, StepImporter, StoredStepImport, checkpoint_name,
 };
 pub use edit::{DocumentVersion, ExtrudeEditSource, editable_extrude};
 pub use envelope::Envelope;
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
-    Body, CapSide, Chamfer, DatumPlane, EndCondition, EntityKind, Expression, Extrude, Fillet,
-    FilletEdge, GeomSignature, ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectKind,
-    ObjectPayload, Parameter, Point2, Revolve, RevolveAngle, RevolveAxis, RevolveExtent,
-    STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch, SketchConstraint,
-    SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
-    SketchSegmentRef, SolidOperation, SweptEdge, TopologyRef,
+    Body, Chamfer, DatumPlane, EndCondition, Expression, Extrude, Fillet, FilletEdge,
+    ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter,
+    Point2, Revolve, RevolveAngle, RevolveAxis, RevolveExtent, STEP_SOURCE_FORMAT, Sketch,
+    SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
+    SketchPointSelector, SketchSegmentRef, SolidOperation, SweptEdge,
 };
 pub use schema::{CACHE_EXTENSION, DOCUMENT_EXTENSION};
 pub use validate::{Diagnostic, Severity, ValidationReport};

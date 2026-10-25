@@ -16,37 +16,8 @@ fn names(document: &Document) -> ModelNaming {
     let built = rebuild_cold(document, &mut kernel, &OperationContext::default()).expect("rebuild");
     assert!(built.all_built(), "{:?}", built.report());
     let names = built.topology().clone();
+    assert_scene_names(document, &built, &mut kernel);
     for object in document.objects().expect("objects") {
-        if let ObjectPayload::Extrude(e) = &object.payload
-            && e.previous.is_some()
-        {
-            use ferritecad_document::{
-                CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef,
-            };
-            let curve = built
-                .profile(e.profile)
-                .expect("tool profile")
-                .outer()
-                .segments()[0]
-                .label;
-            let old_undefined = TopologyRef {
-                id: ferritecad_types::StableEntityId::new(),
-                owner: object.id,
-                producer_feature: object.id,
-                expected_kind: EntityKind::Edge,
-                output_role: SemanticRole::ExtrudeCapEdge {
-                    side: CapSide::End,
-                    profile_segment: curve,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            };
-            assert!(ferritecad_topology::resolve(built.topology(), &old_undefined).is_err());
-            assert!(
-                names.resolve_legacy(&old_undefined).is_err(),
-                "a previously undefined role never acquires a neighbour"
-            );
-        }
         let (previous, edge) = match object.payload {
             ObjectPayload::Fillet(f) => (f.previous, f.edge),
             ObjectPayload::Chamfer(c) => (c.previous, c.edge),
@@ -111,7 +82,7 @@ fn names(document: &Document) -> ModelNaming {
             .iter()
             .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Miss)
     );
-    assert_same_names(document, &names, prime.topology());
+    assert_same_names(&names, prime.topology());
     prime.release_all(&mut kernel);
     let mut reader = OcctKernel::new().expect("new session");
     let (restored, events) = ferritecad_eval::rebuild_cached(
@@ -127,7 +98,7 @@ fn names(document: &Document) -> ModelNaming {
             .iter()
             .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit)
     );
-    assert_same_names(document, &names, restored.topology());
+    assert_same_names(&names, restored.topology());
     for named in restored.topology().features.values() {
         assert!(
             reader
@@ -369,26 +340,22 @@ fn name_boolean_intersections_pocket_births_and_periodic_seams() {
             }])
             .expect("blind");
             let pocket_names = names(&doc);
-            let floor_reference = doc
-                .topology_refs()
-                .expect("refs")
-                .into_iter()
-                .find(|r| {
-                    r.producer_feature == cut.feature
-                        && matches!(
-                            r.output_role,
-                            ferritecad_document::SemanticRole::ExtrudeCap {
-                                side: ferritecad_document::CapSide::End
-                            }
-                        )
-                })
-                .expect("floor reference");
-            let floor = *pocket_names
-                .resolve_legacy(&floor_reference)
-                .expect("floor")
-                .first()
-                .expect("one floor");
-            let floor_name = pocket_names.features[&cut.feature].entities[&floor];
+            let ObjectPayload::Sketch(tool) =
+                doc.object(cut.sketch).expect("tool").expect("row").payload
+            else {
+                panic!("Sketch")
+            };
+            let floor_name = ferritecad_topology::generative::generated(
+                cut.feature,
+                ferritecad_kernel::NamingOperation::Extrude,
+                ferritecad_topology::generative::cap_root(cut.feature, true, Some(tool.plane)),
+                SubShapeKind::Face,
+            );
+            assert!(
+                pocket_names.features[&cut.feature]
+                    .resolve(floor_name)
+                    .is_ok()
+            );
             let pocket = signatures(&pocket_names);
             assert_ne!(before[&cut.feature], pocket[&cut.feature]);
             doc.write_changes(&[EditChange::SetEndCondition {
@@ -676,96 +643,21 @@ fn match_the_committed_fixture_and_unconstrained_fillet_chain() {
 }
 
 #[test]
-fn translate_cap_edges_sweep_edges_and_cap_vertices_independently() {
+fn committed_plate_scene_names_every_boundary_without_aliases() {
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
     }
-    use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef};
-    let dir = tempfile::tempdir().expect("dir");
-    let path = dir.path().join("plate.fcad");
-    ferritecad_fixtures::write_plate(&path).expect("plate");
-    let document = Document::open_read_only(&path).expect("open");
-    let mut kernel = OcctKernel::new().expect("kernel");
-    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("build");
-    let model = built.topology().clone();
-    let (feature, _) = model.features.iter().next().expect("extrusion");
-    let (_, _, sketch) = ferritecad_fixtures::feature_changes::base_profile(
-        &document,
-        ferritecad_fixtures::feature_changes::body(&document).expect("body"),
-    )
-    .expect("profile");
-    let mut meanings = Vec::new();
-    for segment in sketch.curves.iter().map(|c| c.id) {
-        for side in [CapSide::Start, CapSide::End] {
-            meanings.push((
-                EntityKind::Edge,
-                SemanticRole::ExtrudeCapEdge {
-                    side,
-                    profile_segment: segment,
-                },
-            ));
-        }
-    }
-    for i in 0..sketch.curves.len() {
-        let joint = ferritecad_types::ProfileJoint::new(
-            sketch.curves[i].id,
-            sketch.curves[(i + 1) % sketch.curves.len()].id,
-        )
-        .expect("joint");
-        meanings.push((EntityKind::Edge, SemanticRole::ExtrudeSweepEdge { joint }));
-        for side in [CapSide::Start, CapSide::End] {
-            meanings.push((
-                EntityKind::Vertex,
-                SemanticRole::ExtrudeCapVertex { side, joint },
-            ));
-        }
-    }
-    assert_eq!(meanings.len(), 20);
-    let mut wrong = document
-        .topology_refs()
-        .expect("refs")
-        .into_iter()
-        .find(|r| matches!(r.output_role, SemanticRole::ExtrudeSide { .. }))
-        .expect("side ref");
-    wrong.selection = SelectionRule::AllDerivedFrom {
-        ancestor: ferritecad_types::StableEntityId::new(),
-    };
-    assert!(ferritecad_topology::resolve(built.topology(), &wrong).is_err());
-    assert!(model.resolve_legacy(&wrong).is_err());
-    wrong.selection = SelectionRule::Exact;
-    wrong.output_role = SemanticRole::RevolveCap {
-        side: CapSide::Start,
-    };
-    assert!(ferritecad_topology::resolve(built.topology(), &wrong).is_err());
-    assert!(model.resolve_legacy(&wrong).is_err());
-
-    let mut selected = BTreeSet::new();
-    for (expected_kind, output_role) in meanings {
-        let reference = TopologyRef {
-            id: ferritecad_types::StableEntityId::new(),
-            owner: *feature,
-            producer_feature: *feature,
-            expected_kind,
-            output_role,
-            selection: SelectionRule::Exact,
-            fallback_signature: None,
-        };
-        let found = built.resolve(&reference).expect("translated reference");
-        assert_eq!(found.len(), 1);
-        assert_eq!(
-            found[0].kind(),
-            match expected_kind {
-                EntityKind::Edge => SubShapeKind::Edge,
-                EntityKind::Vertex => SubShapeKind::Vertex,
-                _ => unreachable!(),
-            }
-        );
-        assert!(
-            selected.insert(found[0]),
-            "distinct meanings name distinct boundaries"
-        );
-    }
-    built.release_all(&mut kernel);
+    let model = names(
+        &Document::open_read_only(ferritecad_fixtures::plate_source()).expect("committed fixture"),
+    );
+    let feature = model.features.values().next().expect("plate");
+    assert_eq!(feature.bindings.len(), 26);
+    assert!(
+        feature
+            .bindings
+            .values()
+            .all(|entities| entities.len() == 1)
+    );
 }
 
 #[test]
@@ -813,7 +705,7 @@ fn refuse_missing_wrong_kind_and_ambiguous_names_without_picking_a_neighbour() {
     );
 }
 
-fn assert_same_names(document: &Document, a: &ModelNaming, b: &ModelNaming) {
+fn assert_same_names(a: &ModelNaming, b: &ModelNaming) {
     assert_eq!(
         a.features.keys().collect::<Vec<_>>(),
         b.features.keys().collect::<Vec<_>>()
@@ -854,21 +746,6 @@ fn assert_same_names(document: &Document, a: &ModelNaming, b: &ModelNaming) {
         assert_eq!(bindings(x), bindings(y), "bindings {id}");
         assert_eq!(ancestry(x), ancestry(y), "ancestry {id}");
         assert_eq!(incidence(x), incidence(y), "incidence {id}");
-    }
-    for reference in document.topology_refs().expect("references") {
-        let resolution = |m: &ModelNaming| {
-            m.resolve_legacy(&reference)
-                .map(|set| {
-                    let mut names = set
-                        .iter()
-                        .map(|s| m.features[&reference.producer_feature].entities[s])
-                        .collect::<Vec<_>>();
-                    names.sort();
-                    names
-                })
-                .map_err(|e| e.to_string())
-        };
-        assert_eq!(resolution(a), resolution(b), "reference {}", reference.id);
     }
 }
 
@@ -973,9 +850,91 @@ fn cold_operations_after_restored_predecessors_match_fully_cold_chains() {
         );
         let cold = rebuild_cold(&doc, &mut kernel, &OperationContext::default()).expect("cold");
         assert!(cold.all_built());
-        assert_same_names(&doc, cold.topology(), warm.topology());
+        assert_same_names(cold.topology(), warm.topology());
         warm.release_all(&mut kernel);
         cold.release_all(&mut kernel);
         assert_eq!(kernel.live_shape_count(), 0);
     }
+}
+
+fn assert_scene_names(
+    document: &Document,
+    built: &ferritecad_eval::RebuildResult,
+    kernel: &mut OcctKernel,
+) {
+    let params = ferritecad_kernel::TessellationParams::default();
+    let scene = ferritecad_scene::snapshot_from_rebuild(
+        document,
+        built,
+        kernel,
+        |_, _| Err(ferritecad_types::CadError::input("unexpected import")),
+        &params,
+        &OperationContext::default(),
+    )
+    .expect("scene snapshot");
+    let mut checked = 0;
+    let mut ambiguous = 0;
+    for (definition, entry) in scene.catalogue.iter().enumerate() {
+        let ferritecad_scene::SceneItem::Body(body) = entry.item else {
+            continue;
+        };
+        let shape = built.shape(body).expect("body shape");
+        let (feature, names) = built
+            .topology()
+            .features
+            .iter()
+            .find(|(_, names)| names.shape() == Some(shape))
+            .expect("body names");
+        let mesh = kernel
+            .tessellate(shape, &params, &OperationContext::default())
+            .expect("mesh");
+        let mut verify = |entity, meanings: &[ferritecad_scene::EntityMeaning]| {
+            let name = names.entities[&entity];
+            if names.bindings[&name].len() != 1 {
+                assert!(meanings.is_empty(), "ambiguous entity was named");
+                ambiguous += 1;
+            } else {
+                assert_eq!(meanings.len(), 1, "unique entity lacks description");
+                assert_eq!(meanings[0].feature, *feature);
+                assert_eq!(meanings[0].kind, name.kind);
+                assert_eq!(meanings[0].digest, name.digest);
+                assert_eq!(
+                    meanings[0].description,
+                    built
+                        .topology()
+                        .describe(*feature, name)
+                        .expect("complete description")
+                );
+                assert_eq!(names.resolve(name).expect("unique resolution"), entity);
+                checked += 1;
+            }
+        };
+        for (ordinal, range) in mesh.faces.iter().enumerate() {
+            let pick = scene
+                .snapshot
+                .face_of(definition, ordinal)
+                .expect("face pick");
+            verify(range.face, scene.faces.of(pick, &scene.snapshot));
+        }
+        if let Some(edges) = &mesh.edges {
+            for (ordinal, range) in edges.ranges.iter().enumerate() {
+                let pick = scene
+                    .snapshot
+                    .edge_of(definition, ordinal)
+                    .expect("edge pick");
+                verify(range.edge, scene.edges.of(pick, &scene.snapshot));
+            }
+        }
+        if let Some(vertices) = &mesh.topological_vertices {
+            for (ordinal, range) in vertices.ranges.iter().enumerate() {
+                let pick = scene
+                    .snapshot
+                    .vertex_of(definition, ordinal)
+                    .expect("vertex pick");
+                verify(range.vertex, scene.vertices.of(pick, &scene.snapshot));
+            }
+        }
+    }
+    assert!(checked > 0);
+    let _ = ambiguous;
 }

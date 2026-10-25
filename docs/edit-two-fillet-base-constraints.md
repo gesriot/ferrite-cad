@@ -77,7 +77,7 @@ Exactly §28E's, unchanged: `objects`, the base Sketch row's `schema_version`,
 upserted with `required = 1` by the existing constraints contract when the
 saved Sketch has constraints (already present when the source had them);
 `meta.modified_at` only if the existing writer stamps it. Every other table
-and column, including `deps` and `topology_refs`, nothing; row counts are
+and column, including `deps`, nothing; row counts are
 equal except for that one possible capability row. The curves, their order and
 plane, both Fillet rows (UUIDs, `previous`, edges, radii), the Extrude and its
 height, the Body tip, `document_id` and every ref are kept. Constraint UUIDs
@@ -93,7 +93,7 @@ Fillets.
 transaction it re-derives the edit from the current document (frame read
 again, both Fillets compared whole, stored list minus removals plus additions,
 curves and plane unchanged, result inside the managed family). Version,
-alias, no-clobber, cancellation, cleanup and strict references are the copy
+alias, no-clobber, cancellation, cleanup and no new failed features are the copy
 job's. Every saved name must resolve after the cold rebuild, both cylinders
 under their own names on their own solved axes. The base Extrude's key covers
 the constraints; each Fillet is keyed by its predecessor, so a changed
@@ -150,6 +150,21 @@ from edit_requests import constraint_request, line_request, line_rule, distance,
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28k-"))
 OP = "edit"
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def new_id():
     raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
@@ -261,9 +276,9 @@ def measured(copy, rect, radii, height=H):
     saved corners rounded, each by its own radius; the exact volume is the
     B-Rep's analytic one."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Fillet" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
     volume, points = stl(out)
@@ -322,7 +337,7 @@ two = done2
 
 
 
-refs = tables(twice)["topology_refs"]
+refs = output_names(twice)
 LINES = [c["curve_id"] for c in edit["curves"]]
 STORED = [c["geometry"]["start_mm"] for c in edit["curves"]]
 
@@ -353,7 +368,7 @@ def constrain(source, remove, add, name, code=0):
         assert not out.exists(), "a refusal published something"
         return reply["error"], out
     allowlist(source, out, SKETCH)
-    assert tables(out)["topology_refs"] == refs, "a name moved"
+    assert output_names(out) == refs, "a name moved"
     after = inspect(out)["sketches"][0]
     assert [c["geometry"]["start_mm"] for c in after["curves"]] == STORED, "the stored guess was replaced"
 

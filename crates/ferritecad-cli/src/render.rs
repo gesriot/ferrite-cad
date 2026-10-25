@@ -5,8 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use ferritecad_document::{
-    Access, Dependency, Document, EndCondition, ObjectPayload, ObjectRecord, SemanticRole,
-    ValidationReport,
+    Access, Dependency, Document, EndCondition, ObjectPayload, ObjectRecord, ValidationReport,
 };
 use ferritecad_types::{ObjectId, Result};
 
@@ -61,17 +60,7 @@ pub fn inspect(document: &Document) -> Result<()> {
         );
     }
 
-    let refs = document.topology_refs()?;
-    println!("\ntopology references ({})", refs.len());
-    for reference in &refs {
-        println!(
-            "  {} {} of {} :: {}",
-            reference.id,
-            reference.expected_kind.as_str(),
-            reference.producer_feature,
-            describe_role(&reference.output_role)
-        );
-    }
+    print!("\n{}", crate::topology::inspect_names(document));
 
     println!("\nevaluation order");
     let names = name_index(&objects);
@@ -238,26 +227,6 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
         ),
         _ => return None,
     })
-}
-
-fn describe_role(role: &SemanticRole) -> String {
-    match role {
-        SemanticRole::SketchSegment { segment } => format!("sketch segment {segment}"),
-        SemanticRole::ExtrudeCap { side } => format!("extrude cap {side:?}"),
-        SemanticRole::ExtrudeSide { profile_segment } => {
-            format!("extrude side from segment {profile_segment}")
-        }
-        SemanticRole::FilletFace { source_edge } => format!("fillet face from edge {source_edge}"),
-        SemanticRole::EdgeFilletFace {
-            edge_feature,
-            joint,
-        } => format!("fillet face rounded from the edge {edge_feature} swept at {joint}"),
-        SemanticRole::EdgeChamferFace {
-            edge_feature,
-            joint,
-        } => format!("chamfer face cut from the edge {edge_feature} swept at {joint}"),
-        other => format!("{other:?}"),
-    }
 }
 
 fn name_index(objects: &[ObjectRecord]) -> BTreeMap<ObjectId, String> {

@@ -37,15 +37,14 @@ mod drawing;
 mod export;
 mod prepare;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::path::Path;
 
 pub use drawing::{CIRCLE_SEGMENTS, sketch_drawing, sketch_drawings};
 pub use export::{export_scene, export_scene_with_report};
 use ferritecad_document::{
-    Document, EntityKind, ImportedDefinitionRef, ObjectPayload, ObjectRecord, SelectionRule,
-    SemanticRole, Sketch, SketchConstraintRule, TopologyRef,
+    Document, ImportedDefinitionRef, ObjectPayload, ObjectRecord, Sketch, SketchConstraintRule,
 };
 pub use ferritecad_eval::RebuildFacts;
 pub use ferritecad_eval::{
@@ -75,12 +74,12 @@ pub struct LoadedScene {
     pub snapshot: RenderSnapshot,
     /// What each packed mesh is, indexed the way the snapshot indexes them.
     pub catalogue: Vec<CatalogueEntry>,
-    /// What the document durably calls the faces of this picture, if
+    /// What the rebuilt model calls the faces of this picture, if
     /// anything does.
     pub faces: FaceNames,
-    /// What it durably calls the topological edges of this picture.
+    /// What it calls the topological edges of this picture.
     pub edges: EdgeNames,
-    /// What it durably calls the topological vertices of this picture.
+    /// What it calls the topological vertices of this picture.
     pub vertices: VertexNames,
     /// What the solve of each constrained sketch found out, in document order.
     ///
@@ -266,7 +265,7 @@ impl fmt::Debug for EdgeNames {
 }
 
 impl EdgeNames {
-    /// What the document calls this edge, or nothing.
+    /// What the rebuilt model calls this edge, or nothing.
     ///
     /// Answered through the picture that issued the edge, so an edge of a
     /// picture that has been replaced names nothing here however plausible
@@ -284,61 +283,33 @@ impl EdgeNames {
     }
 }
 
-/// What a document durably calls one entity, in the document's own words.
+/// A unique output name, with its complete derivation in portable terms.
 ///
-/// Every field is a portable term the document already stores. There is no
-/// handle here, no session, no ordinal and no traversal position: this is what
-/// a stored [`TopologyRef`] says, minus the geometric fallback, which is a hint
-/// for a person and never an identity.
-///
-/// One type for a face, an edge and a vertex. What a document stores about any
-/// of them is the same six fields, and three structures would be three places
-/// for the same rule to drift; which kind is meant is already in
-/// `expected_kind` and in the role. [`FaceMeaning`], [`EdgeMeaning`] and
-/// [`VertexMeaning`] name it where a reader expects one kind in particular.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PortableMeaning {
-    /// The stored reference itself.
-    pub reference: StableEntityId,
-    /// The object holding the reference.
-    pub owner: ObjectId,
-    /// The feature whose output is named.
-    pub producer_feature: ObjectId,
-    /// What kind of entity the reference expects.
-    pub expected_kind: EntityKind,
-    /// What the named entity is, semantically.
-    pub output_role: SemanticRole,
-    /// How many entities the reference selects, and which.
-    pub selection: SelectionRule,
+/// No handle, session, ordinal or traversal position: the digest is the
+/// identity, and the description is derived from the same naming graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityMeaning {
+    /// The feature whose result holds the entity.
+    pub feature: ObjectId,
+    pub kind: ferritecad_kernel::SubShapeKind,
+    /// The name's digest.
+    pub digest: ContentHash,
+    /// [`ferritecad_topology::ModelNaming::describe`] of the name.
+    pub description: String,
 }
 
-/// What a document calls one face. See [`PortableMeaning`].
-pub type FaceMeaning = PortableMeaning;
-
-/// What a document calls one edge. See [`PortableMeaning`].
-pub type EdgeMeaning = PortableMeaning;
-
-/// What a document calls one topological vertex. See [`PortableMeaning`].
-pub type VertexMeaning = PortableMeaning;
-
-impl PortableMeaning {
-    fn of(reference: &TopologyRef) -> Self {
-        Self {
-            reference: reference.id,
-            owner: reference.owner,
-            producer_feature: reference.producer_feature,
-            expected_kind: reference.expected_kind,
-            output_role: reference.output_role.clone(),
-            selection: reference.selection.clone(),
-        }
-    }
-}
+/// What the rebuilt model calls one face. See [`EntityMeaning`].
+pub type FaceMeaning = EntityMeaning;
+/// What the rebuilt model calls one edge. See [`EntityMeaning`].
+pub type EdgeMeaning = EntityMeaning;
+/// What the rebuilt model calls one topological vertex. See [`EntityMeaning`].
+pub type VertexMeaning = EntityMeaning;
 
 /// A portable meaning while it is still paired with the deterministic digest
 /// used to bind the picture's transient identities to it.
 #[derive(Clone)]
 struct BoundMeaning {
-    meaning: PortableMeaning,
+    meaning: EntityMeaning,
     identity: ContentHash,
 }
 
@@ -382,7 +353,7 @@ impl fmt::Debug for VertexNames {
 }
 
 impl VertexNames {
-    /// What the document calls this topological vertex, or nothing.
+    /// What the rebuilt model calls this topological vertex, or nothing.
     ///
     /// Answered through the picture that issued the corner, so a corner of a
     /// picture that has been replaced names nothing here however plausible its
@@ -435,7 +406,7 @@ impl fmt::Debug for FaceNames {
 }
 
 impl FaceNames {
-    /// What the document calls this face, or nothing.
+    /// What the rebuilt model calls this face, or nothing.
     ///
     /// Answered through the picture that issued the face, so a face of a
     /// picture that has been replaced names nothing here however plausible
@@ -500,10 +471,7 @@ impl SelectedVertex {
         self.definition
     }
 
-    /// Every stored reference that resolves exactly to this corner, in the
-    /// order the document stores them. All of them, for the reason a face and
-    /// an edge keep all of theirs: choosing the first would present storage
-    /// order as a decision about which name is right.
+    /// The exact primary name derived for this corner in the rebuilt model.
     pub fn meanings(&self) -> &[VertexMeaning] {
         &self.meanings
     }
@@ -534,10 +502,7 @@ impl SelectedEdge {
         self.definition
     }
 
-    /// Every stored reference that resolves exactly to this edge, in the order
-    /// the document stores them. All of them, for the reason a face keeps all
-    /// of its: choosing the first would present storage order as a decision
-    /// about which name is right.
+    /// The exact primary name derived for this edge in the rebuilt model.
     pub fn meanings(&self) -> &[EdgeMeaning] {
         &self.meanings
     }
@@ -562,10 +527,7 @@ impl SelectedFace {
         self.definition
     }
 
-    /// Every stored reference that resolves exactly to this face, in the order
-    /// the document stores them. All of them: several references may name one
-    /// face, and choosing the first would be presenting storage order as a
-    /// decision about which name is right.
+    /// The exact primary name derived for this face in the rebuilt model.
     pub fn meanings(&self) -> &[FaceMeaning] {
         &self.meanings
     }
@@ -843,9 +805,9 @@ struct Picture {
     rebuild: ferritecad_eval::RebuildReport,
     edit_source: Option<ferritecad_document::ExtrudeEditSource>,
     builder: SnapshotBuilder,
-    /// Every stored reference that names exactly one entity of this rebuild,
-    /// paired with the handle it named.
-    named: Vec<(ferritecad_kernel::SubShapeHandle, BoundMeaning)>,
+    /// Every primary name with exactly one binding in a drawn body, by that
+    /// entity's handle.
+    named: BTreeMap<ferritecad_kernel::SubShapeHandle, Vec<BoundMeaning>>,
     /// Where each prepared definition was packed, and the reverse.
     packed: HashMap<usize, usize>,
     drawn: Vec<usize>,
@@ -873,7 +835,7 @@ impl Picture {
             rebuild: Default::default(),
             edit_source: None,
             builder: SnapshotBuilder::new(),
-            named: Vec::new(),
+            named: BTreeMap::new(),
             packed: HashMap::new(),
             drawn: Vec::new(),
             names: BTreeMap::new(),
@@ -884,13 +846,9 @@ impl Picture {
         }
     }
 
-    /// Every meaning bound to `handle`, in the order the document stores them.
+    /// Every meaning bound to `handle`, in model order.
     fn meanings_of(&self, handle: ferritecad_kernel::SubShapeHandle) -> Vec<BoundMeaning> {
-        self.named
-            .iter()
-            .filter(|(named, _)| *named == handle)
-            .map(|(_, meaning)| meaning.clone())
-            .collect()
+        self.named.get(&handle).cloned().unwrap_or_default()
     }
 
     /// Packs one mesh and records what its faces, edges and corners are called.
@@ -955,6 +913,37 @@ impl Picture {
     }
 }
 
+/// The names of the shapes the picture draws. A handle carries its shape, so a
+/// name of an intermediate feature could never be joined to a drawn entity, and
+/// describing it would be work and memory for nothing.
+fn generative_meanings(
+    model: &ferritecad_topology::generative::ModelNaming,
+    drawn: &BTreeSet<ferritecad_kernel::ShapeHandle>,
+) -> Result<BTreeMap<ferritecad_kernel::SubShapeHandle, Vec<BoundMeaning>>> {
+    let mut named = BTreeMap::<_, Vec<_>>::new();
+    for (feature, names) in &model.features {
+        if !names.shape().is_some_and(|shape| drawn.contains(&shape)) {
+            continue;
+        }
+        for (name, entities) in &names.bindings {
+            if entities.len() != 1 {
+                continue;
+            }
+            let entity = *entities.first().expect("one binding");
+            named.entry(entity).or_default().push(BoundMeaning {
+                meaning: EntityMeaning {
+                    feature: *feature,
+                    kind: name.kind,
+                    digest: name.digest,
+                    description: model.describe(*feature, *name)?,
+                },
+                identity: name.digest,
+            });
+        }
+    }
+    Ok(named)
+}
+
 impl prepare::LoadSink for Picture {
     type Output = LoadedScene;
 
@@ -969,34 +958,13 @@ impl prepare::LoadSink for Picture {
         let mut source = ferritecad_document::ExtrudeEditSource::read(document)?;
         project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
         self.edit_source = Some(source);
-        // Resolved once, in the order the document stores its references, so
-        // what an entity is called does not depend on the order faces, edges
-        // or vertices happen to be tessellated in.
-        //
-        // A reference that resolves to several entities is not a name for
-        // whichever one was clicked, so it is not here; one that resolves to
-        // none, or that this build cannot resolve at all, names nothing and is
-        // not here either. No failure is reported: a lost reference is a
-        // document-level fact, and a viewer that refused to draw a model
-        // because one name no longer resolves would be useless exactly when it
-        // is needed.
-        self.named = document
-            .topology_refs()?
+        // The shapes `prepare` tessellates: each body's built tip.
+        let drawn = objects
             .iter()
-            .filter_map(|reference| match built.resolve(reference) {
-                Ok(found) => match found.as_slice() {
-                    [entity] => Some((
-                        *entity,
-                        BoundMeaning {
-                            meaning: PortableMeaning::of(reference),
-                            identity: reference.meaning_hash(),
-                        },
-                    )),
-                    _ => None,
-                },
-                Err(_) => None,
-            })
+            .filter(|object| matches!(object.payload, ObjectPayload::Body(_)))
+            .filter_map(|object| built.shape(object.id))
             .collect();
+        self.named = generative_meanings(built.topology(), &drawn)?;
 
         // Read from the records already in hand and the rebuild that has
         // already happened. Document order is the order `objects` is in, and
@@ -1212,8 +1180,8 @@ fn vertex_names(
 /// The exact portable meaning assigned to every packed face, edge and corner.
 ///
 /// One digest for the whole interpretation rather than one per kind. What
-/// binds a picture's transient identities is what the document says about it,
-/// and that is faces, edges and corners together: moving one stored name from
+/// binds a picture's transient identities is what the model says about it,
+/// and that is faces, edges and corners together: moving one name from
 /// one face to another, from one edge to another, or from one corner to
 /// another, must make every identity issued under the old reading stale, and so
 /// must adding a corner name to a picture whose triangles did not change.
@@ -1303,12 +1271,6 @@ pub fn project_rebuild_status(
             row.name = format!("⚠ {}", row.name);
             row.note = note;
         }
-        for warning in report.warnings.iter().filter(|w| w.owner == id) {
-            row.note.push_str(&format!(
-                "; reference {}: {}",
-                warning.reference, warning.message
-            ));
-        }
     }
 }
 
@@ -1329,57 +1291,46 @@ mod tests {
     use ferritecad_types::ObjectId;
     use ferritecad_types::Transform;
 
-    /// One reference and the digest it contributes.
-    fn bound(role: SemanticRole) -> BoundMeaning {
-        let reference = TopologyRef {
-            id: StableEntityId::new(),
-            owner: ObjectId::new(),
-            producer_feature: ObjectId::new(),
-            expected_kind: EntityKind::Edge,
-            output_role: role,
-            selection: SelectionRule::Exact,
-            fallback_signature: None,
-        };
+    /// A synthetic derivation identity for snapshot isolation tests.
+    fn bound(meaning: EntityMeaning) -> BoundMeaning {
         BoundMeaning {
-            meaning: PortableMeaning::of(&reference),
-            identity: reference.meaning_hash(),
+            identity: meaning.digest,
+            meaning,
         }
     }
 
-    fn a_cap_edge(side: ferritecad_document::CapSide) -> SemanticRole {
-        SemanticRole::ExtrudeCapEdge {
-            side,
-            profile_segment: StableEntityId::new(),
-        }
+    fn a_cap_edge(end: bool) -> EntityMeaning {
+        synthetic_meaning(ferritecad_kernel::SubShapeKind::Edge, end)
     }
 
-    fn a_cap_vertex(side: ferritecad_document::CapSide) -> SemanticRole {
-        SemanticRole::ExtrudeCapVertex {
-            side,
-            joint: ferritecad_types::ProfileJoint::new(
-                StableEntityId::new(),
-                StableEntityId::new(),
-            )
-            .expect("two different segments"),
+    fn a_cap_vertex(end: bool) -> EntityMeaning {
+        synthetic_meaning(ferritecad_kernel::SubShapeKind::Vertex, end)
+    }
+
+    fn synthetic_meaning(kind: ferritecad_kernel::SubShapeKind, end: bool) -> EntityMeaning {
+        let feature = ObjectId::new();
+        EntityMeaning {
+            feature,
+            kind,
+            digest: ContentHash::of_bytes(format!("{feature}:{kind}:{end}").as_bytes()),
+            description: format!("feature {feature}, boundary on cap end={end}"),
         }
     }
 
     #[test]
     fn what_binds_a_picture_covers_its_corners_as_well_as_its_edges_and_faces() {
-        use ferritecad_document::CapSide;
-
         // One meaning per domain, deliberately built from the same role shape
         // so what tells the three apart is the domain and not the contents.
         let faces: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
-            [(0usize, vec![vec![bound(a_cap_edge(CapSide::Start))]])]
+            [(0usize, vec![vec![bound(a_cap_edge(false))]])]
                 .into_iter()
                 .collect();
         let edges: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
-            [(0usize, vec![vec![bound(a_cap_edge(CapSide::End))]])]
+            [(0usize, vec![vec![bound(a_cap_edge(true))]])]
                 .into_iter()
                 .collect();
         let vertices: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
-            [(0usize, vec![vec![bound(a_cap_vertex(CapSide::Start))]])]
+            [(0usize, vec![vec![bound(a_cap_vertex(false))]])]
                 .into_iter()
                 .collect();
         let nothing = BTreeMap::new();
@@ -1486,7 +1437,7 @@ mod tests {
         };
 
         // Two pictures of the same geometry under different interpretations.
-        let picture = |role: SemanticRole| {
+        let picture = |role: EntityMeaning| {
             let mut builder = SnapshotBuilder::new();
             let definition = builder.add_mesh(&mesh(0)).expect("packs");
             builder
@@ -1506,9 +1457,8 @@ mod tests {
             (snapshot, names)
         };
 
-        use ferritecad_document::CapSide;
-        let (mine, my_names) = picture(a_cap_edge(CapSide::Start));
-        let (theirs, their_names) = picture(a_cap_edge(CapSide::End));
+        let (mine, my_names) = picture(a_cap_edge(false));
+        let (theirs, their_names) = picture(a_cap_edge(true));
 
         let my_edge = mine.edge_of(0, 0).expect("numbered");
         let their_edge = theirs.edge_of(0, 0).expect("numbered");
@@ -1559,11 +1509,9 @@ mod tests {
 
     #[test]
     fn a_corner_name_of_another_picture_names_nothing_here() {
-        use ferritecad_document::CapSide;
-
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         // Two pictures of the same geometry under different interpretations.
-        let picture = |role: SemanticRole| {
+        let picture = |role: EntityMeaning| {
             let mut builder = SnapshotBuilder::new();
             let definition = builder
                 .add_mesh(&a_mesh_with_corners(shape, Some(1)))
@@ -1585,8 +1533,8 @@ mod tests {
             (snapshot, names)
         };
 
-        let (mine, my_names) = picture(a_cap_vertex(CapSide::Start));
-        let (theirs, their_names) = picture(a_cap_vertex(CapSide::End));
+        let (mine, my_names) = picture(a_cap_vertex(false));
+        let (theirs, their_names) = picture(a_cap_vertex(true));
 
         let my_corner = mine.vertex_of(0, 0).expect("numbered");
         let their_corner = theirs.vertex_of(0, 0).expect("numbered");
@@ -1610,8 +1558,6 @@ mod tests {
 
     #[test]
     fn a_mesh_that_names_no_corner_gets_no_invented_one() {
-        use ferritecad_document::CapSide;
-
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         // No association at all, and an association that is provably empty.
         // Both are "this picture knows of no corner here", and neither is "a
@@ -1648,7 +1594,7 @@ mod tests {
             // And a name table built for a picture that numbers no corner has
             // nothing to hand back however it is asked.
             let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
-                [(0usize, vec![vec![bound(a_cap_vertex(CapSide::Start))]])]
+                [(0usize, vec![vec![bound(a_cap_vertex(false))]])]
                     .into_iter()
                     .collect();
             assert!(
@@ -1660,8 +1606,6 @@ mod tests {
 
     #[test]
     fn a_corner_of_the_second_definition_is_not_the_second_corner_of_the_picture() {
-        use ferritecad_document::CapSide;
-
         // Two definitions, three corners each. The second definition's first
         // corner is the picture's fourth, so a table that used the ordinal as
         // the picture-wide number would name the wrong one.
@@ -1685,11 +1629,7 @@ mod tests {
         // Only the second definition's first corner is named.
         let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
             other,
-            vec![
-                vec![bound(a_cap_vertex(CapSide::Start))],
-                Vec::new(),
-                Vec::new(),
-            ],
+            vec![vec![bound(a_cap_vertex(false))], Vec::new(), Vec::new()],
         )]
         .into_iter()
         .collect();
@@ -1722,8 +1662,6 @@ mod tests {
 
     #[test]
     fn every_occurrence_and_every_placement_of_one_corner_is_one_name() {
-        use ferritecad_document::CapSide;
-
         // One topological vertex drawn at three packed positions, in a
         // definition placed twice. That is one corner, one identity and one
         // list of names however many times it appears.
@@ -1756,7 +1694,7 @@ mod tests {
                 .expect("places");
         }
         let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
-            [(0usize, vec![vec![bound(a_cap_vertex(CapSide::Start))]])]
+            [(0usize, vec![vec![bound(a_cap_vertex(false))]])]
                 .into_iter()
                 .collect();
         builder
@@ -1785,8 +1723,6 @@ mod tests {
 
     #[test]
     fn naming_only_the_corners_makes_every_older_identity_stale() {
-        use ferritecad_document::CapSide;
-
         // The same triangles, the same faces, the same edges and the same
         // corners; only what the document calls one corner differs. Every
         // identity the picture issues must change, because a face value, an
@@ -1827,15 +1763,15 @@ mod tests {
         };
 
         let faces: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
-            [(0usize, vec![vec![bound(a_cap_edge(CapSide::Start))]])]
+            [(0usize, vec![vec![bound(a_cap_edge(false))]])]
                 .into_iter()
                 .collect();
         let edges: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
-            [(0usize, vec![vec![bound(a_cap_edge(CapSide::End))]])]
+            [(0usize, vec![vec![bound(a_cap_edge(true))]])]
                 .into_iter()
                 .collect();
 
-        let picture = |corner: SemanticRole| {
+        let picture = |corner: EntityMeaning| {
             let mut builder = SnapshotBuilder::new();
             let definition = builder.add_mesh(&mesh).expect("packs");
             builder
@@ -1851,8 +1787,8 @@ mod tests {
             builder.build()
         };
 
-        let before = picture(a_cap_vertex(CapSide::Start));
-        let after = picture(a_cap_vertex(CapSide::End));
+        let before = picture(a_cap_vertex(false));
+        let after = picture(a_cap_vertex(true));
 
         // The geometry really is identical, so nothing but the reading can be
         // telling the two apart.
@@ -1946,8 +1882,6 @@ mod tests {
     /// second carries none. The face carries one too, so "the edge wins" is a
     /// statement with content rather than the only answer available.
     fn a_named_edge() -> (RenderSnapshot, FaceNames, EdgeNames) {
-        use ferritecad_document::CapSide;
-
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         let mesh = Mesh {
             topological_vertices: None,
@@ -1993,17 +1927,15 @@ mod tests {
             .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
             .expect("places");
         // Three stored names for the first edge, none for the second.
-        let three: Vec<BoundMeaning> = (0..3).map(|_| bound(a_cap_edge(CapSide::Start))).collect();
+        let three: Vec<BoundMeaning> = (0..3).map(|_| bound(a_cap_edge(false))).collect();
         let edge_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
             [(definition, vec![three, Vec::new()])]
                 .into_iter()
                 .collect();
-        let face_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
-            definition,
-            vec![vec![bound(a_cap_edge(CapSide::End))], Vec::new()],
-        )]
-        .into_iter()
-        .collect();
+        let face_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(definition, vec![vec![bound(a_cap_edge(true))], Vec::new()])]
+                .into_iter()
+                .collect();
         builder
             .bind_identities_to(semantic_context_identity(
                 &face_named,
@@ -2029,8 +1961,6 @@ mod tests {
     /// The definition is placed twice so extents have both occurrences and
     /// both placements to cover.
     fn a_named_vertex() -> (RenderSnapshot, FaceNames, EdgeNames, VertexNames) {
-        use ferritecad_document::CapSide;
-
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         let mesh = Mesh {
             // Positions 0 and 3 are one model point drawn in both faces.
@@ -2119,27 +2049,21 @@ mod tests {
         }
         // Three stored names for the first corner, none for the second, one
         // for the third.
-        let three: Vec<BoundMeaning> = (0..3)
-            .map(|_| bound(a_cap_vertex(CapSide::Start)))
-            .collect();
+        let three: Vec<BoundMeaning> = (0..3).map(|_| bound(a_cap_vertex(false))).collect();
         let vertex_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
             definition,
-            vec![three, Vec::new(), vec![bound(a_cap_vertex(CapSide::End))]],
+            vec![three, Vec::new(), vec![bound(a_cap_vertex(true))]],
         )]
         .into_iter()
         .collect();
-        let edge_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
-            definition,
-            vec![vec![bound(a_cap_edge(CapSide::Start))], Vec::new()],
-        )]
-        .into_iter()
-        .collect();
-        let face_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
-            definition,
-            vec![vec![bound(a_cap_edge(CapSide::End))], Vec::new()],
-        )]
-        .into_iter()
-        .collect();
+        let edge_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(definition, vec![vec![bound(a_cap_edge(false))], Vec::new()])]
+                .into_iter()
+                .collect();
+        let face_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(definition, vec![vec![bound(a_cap_edge(true))], Vec::new()])]
+                .into_iter()
+                .collect();
         builder
             .bind_identities_to(semantic_context_identity(
                 &face_named,
@@ -2333,8 +2257,6 @@ mod tests {
 
     #[test]
     fn a_corner_of_the_second_definition_is_chosen_by_the_pictures_numbering() {
-        use ferritecad_document::CapSide;
-
         // Two definitions, the first with three corners and the second with
         // one. The second definition's only corner is the picture's fourth, so
         // a rule using the ordinal within the definition would choose the
@@ -2379,7 +2301,7 @@ mod tests {
         }
         let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [
             (first, vec![Vec::new(), Vec::new(), Vec::new()]),
-            (second, vec![vec![bound(a_cap_vertex(CapSide::End))]]),
+            (second, vec![vec![bound(a_cap_vertex(true))]]),
         ]
         .into_iter()
         .collect();
@@ -2587,8 +2509,6 @@ mod tests {
 
     #[test]
     fn a_second_definitions_edges_are_numbered_by_the_picture() {
-        use ferritecad_document::CapSide;
-
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         let mesh = |edges: u64| Mesh {
             topological_vertices: None,
@@ -2630,7 +2550,7 @@ mod tests {
         }
         let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [
             (first, vec![Vec::new(), Vec::new(), Vec::new()]),
-            (second, vec![vec![bound(a_cap_edge(CapSide::End))]]),
+            (second, vec![vec![bound(a_cap_edge(true))]]),
         ]
         .into_iter()
         .collect();
@@ -4842,28 +4762,10 @@ mod tests {
     fn plate_by_hand(
         path: &Path,
         kernel: &mut MockKernel,
-    ) -> (
-        Vec<(
-            ferritecad_kernel::SubShapeHandle,
-            ferritecad_types::StableEntityId,
-        )>,
-        Mesh,
-    ) {
+    ) -> (Vec<(ferritecad_kernel::SubShapeHandle, ContentHash)>, Mesh) {
         let document = Document::open_read_only(path).expect("opens");
         let built = ferritecad_eval::rebuild_cold(&document, kernel, &OperationContext::default())
             .expect("rebuilds");
-        let named = document
-            .topology_refs()
-            .expect("reads references")
-            .iter()
-            .filter_map(|reference| match built.resolve(reference) {
-                Ok(found) => match found.as_slice() {
-                    [face] => Some((*face, reference.id)),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
         let body = document
             .objects()
             .expect("reads objects")
@@ -4871,6 +4773,12 @@ mod tests {
             .find(|object| matches!(object.payload, ObjectPayload::Body(_)))
             .expect("the plate has a body");
         let shape = built.shape(body.id).expect("the body was built");
+        let named = generative_meanings(built.topology(), &BTreeSet::from([shape]))
+            .expect("names")
+            .into_iter()
+            .filter(|(entity, _)| entity.kind() == ferritecad_kernel::SubShapeKind::Face)
+            .flat_map(|(entity, bound)| bound.into_iter().map(move |b| (entity, b.identity)))
+            .collect();
         let mesh = kernel
             .tessellate(
                 shape,
@@ -4916,7 +4824,7 @@ mod tests {
                 .map(|(_, reference)| *reference)
                 .collect();
             assert_eq!(
-                meanings.iter().map(|m| m.reference).collect::<Vec<_>>(),
+                meanings.iter().map(|m| m.digest).collect::<Vec<_>>(),
                 expected,
                 "face {ordinal} of the plate is called something else"
             );
@@ -5076,34 +4984,20 @@ mod tests {
                     .faces
                     .of(one, &forwards.snapshot)
                     .iter()
-                    .map(|m| m.reference)
+                    .map(|m| m.digest)
                     .collect::<Vec<_>>(),
                 backwards
                     .faces
                     .of(other, &backwards.snapshot)
                     .iter()
-                    .map(|m| m.reference)
+                    .map(|m| m.digest)
                     .collect::<Vec<_>>(),
                 "reversing the kernel's face order retargeted a name"
             );
         }
     }
 
-    /// One square body, and the pieces a topology reference is written from.
-    ///
-    /// Returned rather than looked up again, because a test that had to find
-    /// the extrusion by searching would be testing the search.
-    fn a_named_body(
-        path: &Path,
-        write: impl FnOnce(ObjectId, ObjectId, &[ferritecad_types::StableEntityId]) -> Vec<TopologyRef>,
-    ) -> (ObjectId, Vec<TopologyRef>) {
-        a_named_body_with(path, write)
-    }
-
-    fn a_named_body_with(
-        path: &Path,
-        write: impl FnOnce(ObjectId, ObjectId, &[ferritecad_types::StableEntityId]) -> Vec<TopologyRef>,
-    ) -> (ObjectId, Vec<TopologyRef>) {
+    fn a_named_body(path: &Path) -> ObjectId {
         use ferritecad_document::{
             Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude,
             Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
@@ -5119,10 +5013,8 @@ mod tests {
         let corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
         let segments: Vec<StableEntityId> =
             (0..corners.len()).map(|_| StableEntityId::new()).collect();
-        let written = write(extrude, body, &segments);
 
         let mut document = Document::create(path).expect("creates a document");
-        let stored = written.clone();
         document
             .write(|w| {
                 w.put_object(
@@ -5197,171 +5089,11 @@ mod tests {
                     dependency: extrude,
                     role: DependencyRole::BodyTip,
                 })?;
-                for reference in &stored {
-                    w.put_topology_ref(reference)?;
-                    w.add_dependency(Dependency {
-                        dependent: reference.owner,
-                        dependency: reference.producer_feature,
-                        role: DependencyRole::TopologyReference,
-                    })?;
-                }
+
                 Ok(())
             })
             .expect("writes the document");
-        (body, written)
-    }
-
-    fn face_reference(
-        owner: ObjectId,
-        producer: ObjectId,
-        role: SemanticRole,
-        selection: SelectionRule,
-    ) -> TopologyRef {
-        TopologyRef {
-            id: ferritecad_types::StableEntityId::new(),
-            owner,
-            producer_feature: producer,
-            expected_kind: EntityKind::Face,
-            output_role: role,
-            selection,
-            fallback_signature: None,
-        }
-    }
-
-    /// A kernel whose extrusion raises two faces from the first segment.
-    ///
-    /// What a real kernel does when a face is split: the history says both
-    /// came from one input, so a family reference to that input names two
-    /// faces and an exact one names none.
-    struct RaisesTwoFaces {
-        inner: MockKernel,
-        extras: BTreeMap<ShapeHandle, (ferritecad_types::StableEntityId, SubShapeHandle)>,
-    }
-
-    impl RaisesTwoFaces {
-        fn new() -> Self {
-            Self {
-                inner: MockKernel::new(),
-                extras: BTreeMap::new(),
-            }
-        }
-    }
-
-    impl GeometryKernel for RaisesTwoFaces {
-        /// Delegated: this double is about something else, and a cut it
-        /// answered differently would be a second kernel.
-        fn cut(
-            &mut self,
-            request: &ferritecad_kernel::CutRequest,
-            context: &OperationContext,
-        ) -> Result<ferritecad_kernel::OperationResult> {
-            self.inner.cut(request, context)
-        }
-
-        fn shape_topology(
-            &mut self,
-            shape: ShapeHandle,
-        ) -> Result<ferritecad_kernel::ShapeTopology> {
-            self.inner.shape_topology(shape)
-        }
-        fn naming_history(
-            &mut self,
-            shape: ShapeHandle,
-        ) -> Result<ferritecad_kernel::NamingHistory> {
-            let mut history = self.inner.naming_history(shape)?;
-            if let Some((curve, cap)) = self.extras.get(&shape) {
-                history.relations.insert((
-                    ferritecad_kernel::NamingInput::Curve(*curve),
-                    ferritecad_kernel::NamingRelation::Generated,
-                    Some(*cap),
-                ));
-            }
-            Ok(history)
-        }
-        fn identity(&self) -> &KernelIdentity {
-            self.inner.identity()
-        }
-
-        fn extrude(
-            &mut self,
-            request: &ExtrudeRequest,
-            context: &OperationContext,
-        ) -> Result<OperationResult> {
-            let result = self.inner.extrude(request, context)?;
-            let first = request
-                .profile()
-                .outer()
-                .segments()
-                .first()
-                .expect("a profile has segments")
-                .label;
-            let history = self.inner.naming_history(result.shape)?;
-            if let Some(extra) = history.relations.iter().find_map(|(i, _, o)| {
-                (*i == ferritecad_kernel::NamingInput::Cap { end: false })
-                    .then_some(*o)
-                    .flatten()
-            }) {
-                self.extras.insert(result.shape, (first, extra));
-            }
-            Ok(result)
-        }
-
-        fn transform(
-            &mut self,
-            shape: ShapeHandle,
-            transform: &Transform,
-            context: &OperationContext,
-        ) -> Result<OperationResult> {
-            self.inner.transform(shape, transform, context)
-        }
-
-        fn tessellate(
-            &mut self,
-            shape: ShapeHandle,
-            params: &TessellationParams,
-            context: &OperationContext,
-        ) -> Result<Mesh> {
-            self.inner.tessellate(shape, params, context)
-        }
-
-        fn encode_shape_with(
-            &mut self,
-            shape: ShapeHandle,
-            sub_shapes: &[SubShapeHandle],
-        ) -> Result<(BrepBlob, Vec<ArchiveSlot>)> {
-            self.inner.encode_shape_with(shape, sub_shapes)
-        }
-
-        fn decode_shape_with(
-            &mut self,
-            blob: &BrepBlob,
-            slots: &[ArchiveSlot],
-        ) -> Result<(ShapeHandle, Vec<SubShapeHandle>)> {
-            self.inner.decode_shape_with(blob, slots)
-        }
-
-        fn encode_shape(&mut self, shape: ShapeHandle) -> Result<BrepBlob> {
-            self.inner.encode_shape(shape)
-        }
-
-        fn decode_shape(&mut self, blob: &BrepBlob) -> Result<ShapeHandle> {
-            self.inner.decode_shape(blob)
-        }
-
-        fn release(&mut self, shape: ShapeHandle) {
-            self.inner.release(shape);
-        }
-    }
-
-    fn load_with<K: GeometryKernel + ?Sized>(path: &Path, kernel: &mut K) -> LoadedScene {
-        snapshot_of(
-            path,
-            kernel,
-            no_imports,
-            &TessellationParams::default(),
-            &OperationContext::default(),
-        )
-        .expect("loads")
+        body
     }
 
     fn load(path: &Path) -> LoadedScene {
@@ -5376,7 +5108,7 @@ mod tests {
     }
 
     /// Every face of the one definition, and what the document calls it.
-    fn meanings(scene: &LoadedScene) -> Vec<Vec<ferritecad_types::StableEntityId>> {
+    fn meanings(scene: &LoadedScene) -> Vec<Vec<ContentHash>> {
         (0..scene.snapshot.meshes()[0].face_count())
             .map(|ordinal| {
                 let face = scene.snapshot.face_of(0, ordinal).expect("numbered");
@@ -5384,133 +5116,76 @@ mod tests {
                     .faces
                     .of(face, &scene.snapshot)
                     .iter()
-                    .map(|meaning| meaning.reference)
+                    .map(|meaning| meaning.digest)
                     .collect()
             })
             .collect()
     }
 
     #[test]
-    fn a_reference_naming_a_family_of_faces_names_none_of_them_in_particular() {
-        let directory = tempfile::tempdir().expect("a temporary directory");
-        let path = directory.path().join("family.fcad");
-        // One segment id on two sides of the square, so everything raised from
-        // it is two faces. A family selection is the right way to say that,
-        // and it is not a name for whichever of the two was clicked: the two
-        // are indistinguishable through it, and choosing one would be choosing
-        // by traversal order.
-        let (_body, written) = a_named_body(&path, |extrude, body, segments| {
-            vec![face_reference(
-                body,
-                extrude,
-                SemanticRole::ExtrudeSide {
-                    profile_segment: segments[0],
-                },
-                SelectionRule::AllDerivedFrom {
-                    ancestor: segments[0],
-                },
-            )]
-        });
-        assert_eq!(written.len(), 1);
-
-        let scene = load_with(&path, &mut RaisesTwoFaces::new());
-        assert!(
-            meanings(&scene).iter().all(Vec::is_empty),
-            "a reference naming two faces was accepted as a name for one"
-        );
-    }
-
-    #[test]
-    fn a_shared_segment_still_names_the_face_an_exact_reference_reaches() {
-        let directory = tempfile::tempdir().expect("a temporary directory");
-        let path = directory.path().join("shared.fcad");
-        // The same document, and beside the family reference an exact one to a
-        // cap. Refusing the ambiguous name must not refuse the unambiguous one
-        // in the same document.
-        let (_body, _written) = a_named_body(&path, |extrude, body, segments| {
-            vec![
-                face_reference(
-                    body,
-                    extrude,
-                    SemanticRole::ExtrudeSide {
-                        profile_segment: segments[0],
-                    },
-                    SelectionRule::AllDerivedFrom {
-                        ancestor: segments[0],
-                    },
-                ),
-                face_reference(
-                    body,
-                    extrude,
-                    SemanticRole::ExtrudeCap {
-                        side: ferritecad_document::CapSide::Start,
-                    },
-                    SelectionRule::Exact,
-                ),
-            ]
-        });
-
-        let scene = load_with(&path, &mut RaisesTwoFaces::new());
-        let named: usize = meanings(&scene).iter().filter(|m| !m.is_empty()).count();
-        assert_eq!(named, 1, "the exact name was lost with the ambiguous one");
-    }
-
-    #[test]
-    fn several_exact_references_to_one_face_are_all_kept_in_the_order_they_are_stored() {
-        let directory = tempfile::tempdir().expect("a temporary directory");
-        let path = directory.path().join("twice.fcad");
-        let (_body, written) = a_named_body(&path, |extrude, body, _segments| {
-            // Two references, both naming the end cap exactly. Both are true
-            // of that face, and which of them is "the" name is not this
-            // loader's decision.
-            vec![
-                face_reference(
-                    body,
-                    extrude,
-                    SemanticRole::ExtrudeCap {
-                        side: ferritecad_document::CapSide::End,
-                    },
-                    SelectionRule::Exact,
-                ),
-                face_reference(
-                    body,
-                    extrude,
-                    SemanticRole::ExtrudeCap {
-                        side: ferritecad_document::CapSide::End,
-                    },
-                    SelectionRule::Exact,
-                ),
-            ]
-        });
-
-        let scene = load(&path);
-        let both: Vec<_> = meanings(&scene)
-            .into_iter()
-            .filter(|m| !m.is_empty())
+    fn an_ambiguous_primary_name_binds_neither_entity() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("ambiguous.fcad");
+        a_named_body(&path);
+        let document = Document::open_read_only(&path).expect("document");
+        let mut kernel = MockKernel::new();
+        let built =
+            ferritecad_eval::rebuild_cold(&document, &mut kernel, &OperationContext::default())
+                .expect("rebuild");
+        let mut model = built.topology().clone();
+        let feature = model.features.values_mut().next().expect("feature");
+        let pair: Vec<_> = feature
+            .bindings
+            .keys()
+            .filter(|n| n.kind == ferritecad_kernel::SubShapeKind::Face)
+            .take(2)
+            .copied()
             .collect();
-        assert_eq!(both.len(), 1, "both references name the same one face");
-        let mut expected: Vec<_> = written.iter().map(|reference| reference.id).collect();
-        // The document hands its references back in a defined order, and that
-        // is the order they are kept in.
-        expected.sort();
-        assert_eq!(both[0], expected);
+        let second = feature.bindings.remove(&pair[1]).expect("second");
+        feature
+            .bindings
+            .get_mut(&pair[0])
+            .expect("first")
+            .extend(second);
+        let ambiguous = &model.features.values().next().expect("feature").bindings[&pair[0]];
+        assert_eq!(ambiguous.len(), 2);
+        let drawn = model.features.values().filter_map(|f| f.shape()).collect();
+        let bound = generative_meanings(&model, &drawn).expect("descriptions");
+        assert!(bound.iter().all(|(entity, _)| !ambiguous.contains(entity)));
+        assert_eq!(bound.len(), 24, "the other exact names remain available");
+        built.release_all(&mut kernel);
+    }
 
-        // Loading twice gives the same order, which is what "deterministic"
-        // has to mean for something a person will read.
+    #[test]
+    fn every_exact_primary_name_is_available_without_a_written_reference() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("derived.fcad");
+        a_named_body(&path);
+        let scene = load(&path);
+        assert_eq!(meanings(&scene).len(), 6);
+        assert!(meanings(&scene).iter().all(|names| names.len() == 1));
         assert_eq!(meanings(&load(&path)), meanings(&scene));
     }
 
     #[test]
-    fn a_body_nobody_named_has_no_face_meanings_at_all() {
-        let directory = tempfile::tempdir().expect("a temporary directory");
-        let path = directory.path().join("unnamed.fcad");
-        a_named_body(&path, |_, _, _| Vec::new());
-
+    fn each_face_has_one_primary_name_and_loading_keeps_it() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("primary.fcad");
+        a_named_body(&path);
         let scene = load(&path);
-        assert!(
-            meanings(&scene).iter().all(Vec::is_empty),
-            "a face nobody named was given a name"
-        );
+        let names = meanings(&scene);
+        assert!(names.iter().all(|names| names.len() == 1));
+        let unique: std::collections::BTreeSet<_> = names.iter().flatten().collect();
+        assert_eq!(unique.len(), 6);
+        assert_eq!(meanings(&load(&path)), names);
+    }
+
+    #[test]
+    fn a_body_gets_its_face_names_from_the_rebuilt_model() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("derived.fcad");
+        a_named_body(&path);
+        assert!(meanings(&load(&path)).iter().all(|names| names.len() == 1));
     }
 
     #[test]
@@ -5554,7 +5229,7 @@ mod tests {
         let (_directory, path) = plate();
         let scene = load(&path);
         let shown = format!("{:?}", scene.faces);
-        assert!(shown.contains("ExtrudeCap"), "the plate names its caps");
+        assert!(shown.contains("cap, producer"), "the plate names its caps");
 
         // What a face is called is what the document stores about it. A
         // renderer's own number for the face is true of one picture and of
@@ -5586,7 +5261,7 @@ mod tests {
             "SubShapeHandle",
             "SessionId",
             "SubShapeKind",
-            "TopologyMap",
+            "ModelNaming",
         ] {
             assert!(
                 !shown.contains(word),
@@ -5642,35 +5317,6 @@ mod tests {
     }
 
     #[test]
-    fn a_face_the_document_does_not_name_chooses_the_definition_it_is_on() {
-        let directory = tempfile::tempdir().expect("a temporary directory");
-        let path = directory.path().join("unnamed.fcad");
-        a_named_body(&path, |_, _, _| Vec::new());
-        let scene = load(&path);
-        let snapshot = &scene.snapshot;
-
-        let pick = snapshot.pick_of(0).expect("the body is drawn");
-        let face = snapshot.face_of(0, 0).expect("numbered");
-        assert!(scene.faces.of(face, snapshot).is_empty());
-
-        // The honest answer, and the one this application could already give:
-        // the part, not an invented name for one of its faces.
-        assert_eq!(
-            Selection::at(
-                pick,
-                face,
-                EdgePickId::NOTHING,
-                VertexPickId::NOTHING,
-                snapshot,
-                &scene.faces,
-                &EdgeNames::default(),
-                &VertexNames::default()
-            ),
-            Selection::Definition(pick)
-        );
-    }
-
-    #[test]
     fn a_face_of_an_imported_definition_chooses_the_definition() {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let path = directory.path().join("imported.fcad");
@@ -5715,7 +5361,7 @@ mod tests {
         let path = directory.path().join("two.fcad");
         // Two bodies, the second one named, so there is a face of one
         // definition and a pick of another in the same picture.
-        let (first, _) = a_named_body(&path, |_, _, _| Vec::new());
+        let first = a_named_body(&path);
         let _ = first;
         let scene = load(&path);
         let snapshot = &scene.snapshot;
@@ -5778,19 +5424,7 @@ mod tests {
         // face's.
         let directory = tempfile::tempdir().expect("a temporary directory");
         let elsewhere = directory.path().join("other.fcad");
-        a_named_body(&elsewhere, |extrude, body, segments| {
-            // Named at the same position the stale identity would land on, so
-            // a lookup that trusted the number would find this and hand it
-            // over as though it were the plate's face.
-            vec![face_reference(
-                body,
-                extrude,
-                SemanticRole::ExtrudeSide {
-                    profile_segment: segments[0],
-                },
-                SelectionRule::Exact,
-            )]
-        });
+        a_named_body(&elsewhere);
         let other = load(&elsewhere);
         assert!(
             !other
@@ -5815,17 +5449,8 @@ mod tests {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let named_path = directory.path().join("named.fcad");
         let unnamed_path = directory.path().join("unnamed.fcad");
-        a_named_body(&named_path, |extrude, body, _| {
-            vec![face_reference(
-                body,
-                extrude,
-                SemanticRole::ExtrudeCap {
-                    side: ferritecad_document::CapSide::Start,
-                },
-                SelectionRule::Exact,
-            )]
-        });
-        a_named_body(&unnamed_path, |_, _, _| Vec::new());
+        a_named_body(&named_path);
+        a_named_body(&unnamed_path);
 
         let named = load(&named_path);
         let unnamed = load(&unnamed_path);
@@ -5864,7 +5489,7 @@ mod tests {
 
         assert!(
             named.faces.of(face, &unnamed.snapshot).is_empty(),
-            "a name stored only in the first document leaked into the second"
+            "a derivation from the first document leaked into the second"
         );
         assert_eq!(
             Selection::at(
@@ -5878,7 +5503,7 @@ mod tests {
                 &VertexNames::default(),
             ),
             Selection::Definition(pick),
-            "a face the current document does not name became selectable as a face"
+            "a face from another derivation became selectable as this face"
         );
     }
 

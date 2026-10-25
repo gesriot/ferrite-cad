@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ferritecad_document::{Access, Document, DocumentVersion};
 use ferritecad_eval::rebuild_cold;
 use ferritecad_kernel::{GeometryKernel, OperationContext, ProgressSink};
-use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
+use ferritecad_types::{CadError, ObjectId, Result};
 
 use crate::{Existing, Temporary, path_entry_exists, refuse_source_as_destination};
 
@@ -122,36 +122,22 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     context.check_cancelled()?;
 
     let mut document = Document::open(temporary.path())?;
-    // Baseline and edited refs are compared by their stored IDs. An already
-    // unresolved ref may remain unresolved; a previously resolved one may not
-    // be lost. Names produced by already unbuilt features do not block repair.
     let computed;
     let facts = match run.baseline {
         Some(facts) => facts,
         None => {
-            computed = checked_rebuild(
-                &document,
-                kernel,
-                &phase(context, 0.1, 0.4),
-                None,
-                None,
-                None,
-            )?
-            .0;
+            computed = checked_rebuild(&document, kernel, &phase(context, 0.1, 0.4), None, None)?.0;
             &computed
         }
     };
     let baseline_unbuilt = &facts.unbuilt;
-    let baseline = &facts.resolved;
     context.progress().report(0.4);
     context.check_cancelled()?;
-    let minted: BTreeSet<_> = document.write_changes(changes)?.into_iter().collect();
-    let required: BTreeSet<_> = baseline.union(&minted).copied().collect();
+    document.write_changes(changes)?;
     let (_, mut checked) = checked_rebuild(
         &document,
         kernel,
         &phase(context, 0.4, 0.9),
-        Some(&required),
         Some(baseline_unbuilt),
         run.observe.as_deref_mut(),
     )?;
@@ -205,7 +191,6 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
     document: &Document,
     kernel: &mut K,
     context: &OperationContext,
-    baseline: Option<&BTreeSet<StableEntityId>>,
     baseline_unbuilt: Option<&BTreeSet<ObjectId>>,
     observe: Option<&mut Observe<'_, K>>,
 ) -> Result<(ferritecad_eval::RebuildFacts, Checked)> {
@@ -217,40 +202,9 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
     let built = rebuild_cold(document, kernel, &rebuilding)?;
     let rebuild = built.report();
     let unbuilt = rebuild.unbuilt();
-    let references = match document.topology_refs() {
-        Ok(references) => references,
-        Err(error) => {
-            built.release_all(kernel);
-            return Err(error);
-        }
-    };
-    let mut resolved = BTreeSet::new();
-    let mut lost = std::collections::BTreeMap::new();
-    for reference in references {
-        match built.resolve(&reference) {
-            Ok(found) if !found.is_empty() => {
-                resolved.insert(reference.id);
-            }
-            outcome if baseline.is_some_and(|set| set.contains(&reference.id)) => {
-                lost.insert(
-                    reference.id,
-                    outcome.err().unwrap_or_else(|| {
-                        CadError::topology(format!("edit lost reference {}", reference.id))
-                    }),
-                );
-            }
-            _ => {}
-        }
-    }
-    if let Some(required) = baseline {
-        for id in required.difference(&resolved) {
-            lost.entry(*id)
-                .or_insert_with(|| CadError::topology(format!("edit lost reference {id}")));
-        }
-    }
     let built = match baseline_unbuilt {
         Some(baseline) => built
-            .require_preserved(baseline, lost, kernel)
+            .require_no_new_failures(baseline, kernel)
             .map_err(|error| {
                 let names = document
                     .objects()
@@ -275,7 +229,6 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
         Ok((
             ferritecad_eval::RebuildFacts {
                 model: document.model_without_checkpoints()?,
-                resolved,
                 unbuilt: unbuilt.clone(),
             },
             Checked {
@@ -314,6 +267,7 @@ pub fn read_extrude_source(path: &Path) -> Result<ferritecad_document::ExtrudeEd
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
+    use super::model_names;
     use super::*;
     use crate::{CreateDocumentRequest, NewDocument, PlateSize, create_document};
     use ferritecad_document::{
@@ -450,10 +404,7 @@ mod tests {
             source.dependencies().expect("deps"),
             output.dependencies().expect("deps")
         );
-        assert_eq!(
-            source.topology_refs().expect("refs"),
-            output.topology_refs().expect("refs")
-        );
+        assert_eq!(model_names::names(&source), model_names::names(&output));
         for (old, new) in expected.iter_mut().zip(&actual) {
             if old.id == request.changes[0].object() {
                 assert_eq!(old.id, new.id);
@@ -474,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn one_refusal_reports_every_new_failure_and_lost_reference() {
+    fn one_refusal_reports_every_new_failure() {
         let (_root, mut request) = fixture();
         let mut d = Document::open(&request.source).expect("source");
         let first = d
@@ -515,7 +466,7 @@ mod tests {
         let before = std::fs::read(&request.source).expect("before");
         let mut kernel = Refusing {
             inner: MockKernel::new(),
-            lose_ref: false,
+            omit_provenance: false,
             missing_cap: None,
             sketch_fault: false,
         };
@@ -526,10 +477,6 @@ mod tests {
         for id in [first.id, second] {
             assert!(refusal.report.failed.iter().any(|f| f.id == id), "{error}");
         }
-        assert!(
-            !refusal.lost_references.is_empty(),
-            "reference losses accompany feature failures"
-        );
         assert_eq!(kernel.inner.live_shape_count(), 0);
         assert!(!request.destination.exists());
         assert_eq!(std::fs::read(&request.source).expect("unchanged"), before);
@@ -712,7 +659,7 @@ mod tests {
     #[derive(Debug)]
     struct Refusing {
         inner: MockKernel,
-        lose_ref: bool,
+        omit_provenance: bool,
         missing_cap: Option<ShapeHandle>,
         sketch_fault: bool,
     }
@@ -751,7 +698,7 @@ mod tests {
         fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<OperationResult> {
             let refuse = r.extent().total_length() == 27.0
                 || (self.sketch_fault && self.inner.extrude_count() == 1);
-            if refuse && !self.lose_ref {
+            if refuse && !self.omit_provenance {
                 return Err(CadError::kernel("deterministic edited geometry refusal"));
             }
             let result = self.inner.extrude(r, c)?;
@@ -802,13 +749,13 @@ mod tests {
     }
 
     #[test]
-    fn edited_geometry_failure_or_loss_of_a_resolved_reference_never_publishes() {
-        for lose_ref in [false, true] {
+    fn edited_geometry_or_incomplete_provenance_never_publishes() {
+        for omit_provenance in [false, true] {
             let (root, request) = fixture();
             let before = std::fs::read(&request.source).expect("source");
             let mut kernel = Refusing {
                 inner: MockKernel::new(),
-                lose_ref,
+                omit_provenance,
                 missing_cap: None,
                 sketch_fault: false,
             };
@@ -816,7 +763,7 @@ mod tests {
                 .expect_err("refused edited geometry");
             assert_eq!(
                 error.kind(),
-                if lose_ref {
+                if omit_provenance {
                     ferritecad_types::ErrorKind::Topology
                 } else {
                     ferritecad_types::ErrorKind::Kernel
@@ -1010,10 +957,7 @@ mod tests {
             copy.dependencies().expect("deps"),
             source.dependencies().expect("deps")
         );
-        assert_eq!(
-            copy.topology_refs().expect("refs"),
-            source.topology_refs().expect("refs")
-        );
+        assert_eq!(model_names::names(&copy), model_names::names(&source));
         for o in source.objects().expect("objects") {
             let actual = copy.object(o.id).expect("object").expect("same ID");
             if o.id == sketch_id {
@@ -1174,12 +1118,12 @@ mod tests {
                 }));
             let mut kernel = Refusing {
                 inner: MockKernel::new(),
-                lose_ref: case == "references",
+                omit_provenance: case == "references",
                 missing_cap: None,
                 sketch_fault: matches!(case, "geometry" | "references"),
             };
             // Reuse the fault seam after a successful baseline rebuild: the
-            // second extrusion, with the changed profile, fails or loses a ref.
+            // second extrusion, with the changed profile, fails or omits cap provenance.
             let result = if constraints {
                 edit_copy(&constraint_request(&request), &mut kernel, &context).map(|_| ())
             } else {
@@ -1238,3 +1182,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../ferritecad-fixtures/tests/support/model_names.rs"]
+mod model_names;

@@ -10,7 +10,9 @@
 #[path = "support/transaction.rs"]
 mod transaction;
 
-use ferritecad_document::{Document, ObjectPayload, SemanticRole};
+#[path = "support/names.rs"]
+mod names;
+use ferritecad_document::{Document, ObjectPayload};
 use ferritecad_kernel::{FaceSurface, GeometryKernel, OperationContext};
 use serde_json::{Value, json};
 use std::{
@@ -126,10 +128,9 @@ impl Plate {
 
     fn write(self, path: &Path) {
         use ferritecad_document::{
-            Body, CapSide, DatumPlane, Dependency, DependencyRole, EndCondition, EntityKind,
-            Expression, Extrude, Point2, SelectionRule, Sketch, SketchConstraint,
-            SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
-            SolidOperation, TopologyRef,
+            Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude,
+            Point2, Sketch, SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry,
+            SketchPointRef, SketchPointSelector, SolidOperation,
         };
         use ferritecad_types::{ObjectId, StableEntityId, Transform};
         let mut d = Document::create(path).expect("document");
@@ -228,32 +229,8 @@ impl Plate {
                         role,
                     })?;
                 }
-                for side in [CapSide::Start, CapSide::End] {
-                    w.put_topology_ref(&TopologyRef {
-                        id: StableEntityId::new(),
-                        owner: extrude,
-                        producer_feature: extrude,
-                        expected_kind: EntityKind::Face,
-                        output_role: SemanticRole::ExtrudeCap { side },
-                        selection: SelectionRule::Exact,
-                        fallback_signature: None,
-                    })?;
-                }
-                if self.cut_side {
-                    w.put_topology_ref(&TopologyRef {
-                        id: StableEntityId::new(),
-                        owner: extrude,
-                        producer_feature: extrude,
-                        expected_kind: EntityKind::Face,
-                        output_role: SemanticRole::ExtrudeSide {
-                            profile_segment: segments[0],
-                        },
-                        selection: SelectionRule::AllDerivedFrom {
-                            ancestor: segments[0],
-                        },
-                        fallback_signature: None,
-                    })?;
-                }
+
+                if self.cut_side {}
             }
             Ok(())
         })
@@ -423,17 +400,6 @@ impl Measured {
     }
 }
 
-fn role_name(role: &SemanticRole) -> String {
-    match role {
-        SemanticRole::ExtrudeCap { side } => format!("cap {side:?}"),
-        SemanticRole::ExtrudeSide { .. } => "side".to_owned(),
-        SemanticRole::OriginCap { side, .. } => format!("origin cap {side:?}"),
-        SemanticRole::OriginSide { .. } => "origin side".to_owned(),
-        SemanticRole::EdgeFilletFace { .. } => "edge fillet face".to_owned(),
-        other => panic!("unexpected role {other:?}"),
-    }
-}
-
 fn measure(path: &Path, cache: Option<(&Path, ferritecad_eval::CacheOutcome)>) -> Measured {
     let (measured, events) = measure_events(path, cache.map(|(p, _)| p));
     if let Some((_, expected)) = cache {
@@ -483,31 +449,41 @@ fn measure_events(
     let tip = built.shape(body.id).expect("the body was built");
     let mut roles: BTreeMap<String, Vec<FaceSurface>> = BTreeMap::new();
     let mut fillet = None;
-    for reference in &doc.topology_refs().expect("refs") {
-        let resolved = built.resolve(reference).expect("resolve");
-        assert!(!resolved.is_empty(), "{} resolved to nothing", reference.id);
+    for reference in crate::names::generated_faces(&doc, &built) {
+        let resolved = &reference.entities;
+        assert!(
+            !resolved.is_empty(),
+            "{} resolved to nothing",
+            reference.seed.digest
+        );
         // A reference keeps addressing its own producer's output: the base's
         // names stay on the base, and only the Fillet's are on the tip.
-        let producer = built
-            .shape(reference.producer_feature)
-            .expect("the producer was built");
-        for handle in &resolved {
-            assert_eq!(handle.shape(), producer, "{} was repointed", reference.id);
+        let producer = built.shape(reference.at).expect("the producer was built");
+        for handle in resolved {
+            assert_eq!(
+                handle.shape(),
+                producer,
+                "{} was repointed",
+                reference.seed.digest
+            );
         }
         let producer_kind = objects
             .iter()
-            .find(|o| o.id == reference.producer_feature)
+            .find(|o| o.id == reference.at)
             .expect("producer")
             .payload
             .type_name();
-        let key = format!("{} of {producer_kind}", role_name(&reference.output_role));
-        for handle in &resolved {
+        let key = format!("{} of {producer_kind}", reference.label());
+        for handle in resolved {
             roles
                 .entry(key.clone())
                 .or_default()
                 .push(kernel.face_surface(*handle).expect("surface"));
         }
-        if matches!(reference.output_role, SemanticRole::EdgeFilletFace { .. }) {
+        if reference.at == reference.origin
+            && reference.input
+                == crate::names::FaceInput::Edge(ferritecad_kernel::NamingOperation::Fillet)
+        {
             assert_eq!(resolved.len(), 1, "the rounded face is exactly one face");
             assert_eq!(producer, tip, "the Fillet's face is on the Body's tip");
             fillet = Some(resolved[0]);
@@ -779,21 +755,8 @@ fn tables(path: &Path) -> BTreeMap<String, (Vec<String>, Rows)> {
 
 /// Every SQL cell of the source survives into the copy, and the new cells are
 /// exactly the ones a Fillet is allowed to add: one object, the Body's tip,
-/// the predecessor and tip edges, seven names, capabilities, and the copy's
-/// own timestamp.
+/// the predecessor and tip edges, and the copy's own timestamp.
 fn only_the_fillet_was_added(source: &Path, copy: &Path, body: ferritecad_types::ObjectId) {
-    only_a_fillet_was_added(source, copy, body, 7);
-}
-
-/// [`only_the_fillet_was_added`] with the number of new names and the
-/// capabilities a copy may add as parameters (§28G: eight, and only
-/// `feature.fillet.sequential.v1`).
-fn only_a_fillet_was_added(
-    source: &Path,
-    copy: &Path,
-    body: ferritecad_types::ObjectId,
-    names: usize,
-) {
     let before = tables(source);
     let after = tables(copy);
     assert_eq!(
@@ -823,18 +786,14 @@ fn only_a_fillet_was_added(
                 }
                 assert_eq!(mine.len(), rows.len() + 1, "one new object");
             }
-            "deps" | "topology_refs" => {
+            "deps" => {
                 for row in rows {
                     let kept = mine.iter().any(|m| m[1..] == row[1..]);
                     let is_old_tip = table == "deps" && row.contains(&selected);
                     assert!(kept || is_old_tip, "{table} row {row:?} disappeared");
                 }
                 let added = mine.len() - rows.len();
-                match table.as_str() {
-                    "deps" => assert_eq!(added, 1, "two edges in, one out"),
-                    "topology_refs" => assert_eq!(added, names, "the new names"),
-                    _ => {}
-                }
+                assert_eq!(added, 1, "two edges in, one out");
             }
             "meta" => {
                 for (a, b) in rows.iter().zip(mine) {
@@ -858,7 +817,7 @@ fn fillet_at(f: &Fixture, corner: [f64; 2], r: f64, name: &str) -> (PathBuf, Mea
     let before = std::fs::read(&f.source).expect("source bytes");
     let source_refs = {
         let d = Document::open_read_only(&f.source).expect("source");
-        let refs = d.topology_refs().expect("refs");
+        let refs = crate::names::snapshot(&d);
         d.close().expect("close");
         refs
     };
@@ -904,29 +863,8 @@ fn fillet_at(f: &Fixture, corner: [f64; 2], r: f64, name: &str) -> (PathBuf, Mea
         body.payload,
         ObjectPayload::Body(ferritecad_document::Body { tip_feature: Some(t) }) if t == fillet_id
     ));
-    let refs = d.topology_refs().expect("refs");
-    for reference in &source_refs {
-        assert!(refs.contains(reference), "lost {}", reference.id);
-    }
-    assert_eq!(refs.len(), source_refs.len() + 7);
-    for reference in refs.iter().filter(|r| !source_refs.contains(r)) {
-        assert_eq!(reference.owner, fillet_id);
-        assert_eq!(reference.producer_feature, fillet_id);
-        match &reference.output_role {
-            SemanticRole::EdgeFilletFace {
-                edge_feature,
-                joint,
-            } => {
-                assert_eq!(*edge_feature, base_id);
-                assert_eq!(*joint, stored.edge.joint);
-            }
-            SemanticRole::OriginCap { origin_feature, .. }
-            | SemanticRole::OriginSide { origin_feature, .. } => {
-                assert_eq!(*origin_feature, base_id);
-            }
-            other => panic!("unexpected new role {other:?}"),
-        }
-    }
+    let refs = crate::names::snapshot(&d);
+    crate::names::assert_added(&source_refs, &refs, fillet_id, 7);
     d.close().expect("close");
     only_the_fillet_was_added(&f.source, &copy, body_id);
 
@@ -945,11 +883,8 @@ fn fillet_at(f: &Fixture, corner: [f64; 2], r: f64, name: &str) -> (PathBuf, Mea
         .output()
         .expect("rebuild");
     let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-    let n = source_refs.len() + 7;
-    assert!(
-        text.contains(&format!("{n} of {n} stored references resolved")),
-        "{text}"
-    );
+    let n = refs.len();
+    assert!(text.matches(" entities=").count() == n, "{text}");
     assert!(text.contains("tip Fillet"), "{text}");
     assert!(text.contains(&format!("r{r} mm")), "{text}");
 
@@ -979,23 +914,23 @@ fn fillet_at(f: &Fixture, corner: [f64; 2], r: f64, name: &str) -> (PathBuf, Mea
     // Carried faces: both caps and all four sides are still planes, named at
     // the tip under the plate; the base's own names are still the base's.
     assert_eq!(
-        cold.roles["origin cap Start of feature.fillet"],
+        cold.roles["inherited start cap of feature.fillet"],
         [FaceSurface::Plane]
     );
     assert_eq!(
-        cold.roles["origin cap End of feature.fillet"],
+        cold.roles["inherited end cap of feature.fillet"],
         [FaceSurface::Plane]
     );
     assert_eq!(
-        cold.roles["origin side of feature.fillet"],
+        cold.roles["inherited curve of feature.fillet"],
         [FaceSurface::Plane; 4]
     );
     assert_eq!(
-        cold.roles["edge fillet face of feature.fillet"],
+        cold.roles["generated Fillet of feature.fillet"],
         [FaceSurface::Cylinder { radius: r }]
     );
     assert_eq!(
-        cold.roles["cap Start of feature.extrude"],
+        cold.roles["start cap of feature.extrude"],
         [FaceSurface::Plane]
     );
     assert_eq!(cold.shapes, 2, "the plate and the rounded plate");
@@ -1489,9 +1424,9 @@ mod radius {
         moved
     }
 
-    pub(super) fn stored_refs(path: &Path) -> Vec<ferritecad_document::TopologyRef> {
+    pub(super) fn stored_refs(path: &Path) -> crate::names::Names {
         let d = Document::open_read_only(path).expect("open");
-        let refs = d.topology_refs().expect("refs");
+        let refs = crate::names::snapshot(&d);
         d.close().expect("close");
         refs
     }
@@ -1532,10 +1467,7 @@ mod radius {
             .expect("rebuild");
         let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
         let n = refs.len();
-        assert!(
-            text.contains(&format!("{n} of {n} stored references resolved")),
-            "{text}"
-        );
+        assert!(text.matches(" entities=").count() == n, "{text}");
         assert!(text.contains(&format!("r{r} mm")), "{text}");
 
         let cold = measure(&copy, None);
@@ -1564,15 +1496,15 @@ mod radius {
             cold.axis_origin
         );
         assert_eq!(
-            cold.roles["origin side of feature.fillet"],
+            cold.roles["inherited curve of feature.fillet"],
             [FaceSurface::Plane; 4]
         );
         assert_eq!(
-            cold.roles["origin cap Start of feature.fillet"],
+            cold.roles["inherited start cap of feature.fillet"],
             [FaceSurface::Plane]
         );
         assert_eq!(
-            cold.roles["origin cap End of feature.fillet"],
+            cold.roles["inherited end cap of feature.fillet"],
             [FaceSurface::Plane]
         );
 
@@ -1963,10 +1895,7 @@ mod height {
             .expect("rebuild");
         let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
         let n = refs.len();
-        assert!(
-            text.contains(&format!("{n} of {n} stored references resolved")),
-            "{text}"
-        );
+        assert!(text.matches(" entities=").count() == n, "{text}");
         assert!(text.contains(&format!("r{r} mm")), "{text}");
 
         let cold = measure(&copy, None);
@@ -2002,12 +1931,12 @@ mod height {
             cold.axis_direction
         );
         assert_eq!(
-            cold.roles["origin side of feature.fillet"],
+            cold.roles["inherited curve of feature.fillet"],
             [FaceSurface::Plane; 4]
         );
-        for side in ["Start", "End"] {
+        for side in ["start", "end"] {
             assert_eq!(
-                cold.roles[&format!("origin cap {side} of feature.fillet")],
+                cold.roles[&format!("inherited {side} cap of feature.fillet")],
                 [FaceSurface::Plane]
             );
         }
@@ -2317,53 +2246,6 @@ mod height {
         assert!(!stale_out.exists());
         assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
 
-        // A previously unresolved name remains a warning: the transaction
-        // refuses only names that resolved before and would now be lost.
-        let dangling = f.root.path().join("dangling-source.fcad");
-        std::fs::copy(&f.source, &dangling).expect("copy");
-        let mut d = Document::open(&dangling).expect("writable");
-        let base: ferritecad_types::ObjectId = f.base_id().parse().expect("UUID");
-        d.write(|w| {
-            w.put_topology_ref(&ferritecad_document::TopologyRef {
-                id: ferritecad_types::StableEntityId::new(),
-                owner: base,
-                producer_feature: base,
-                expected_kind: ferritecad_document::EntityKind::Face,
-                output_role: SemanticRole::ExtrudeSide {
-                    profile_segment: ferritecad_types::StableEntityId::new(),
-                },
-                selection: ferritecad_document::SelectionRule::Exact,
-                fallback_signature: None,
-            })
-        })
-        .expect("a name of nothing");
-        d.close().expect("close");
-        let g = Fixture {
-            catalog: inspect(&dangling),
-            source: dangling.clone(),
-            root: tempfile::tempdir().expect("dir"),
-            request: f.request.clone(),
-        };
-        let dangling_before = std::fs::read(&dangling).expect("bytes");
-        let out = f.root.path().join("dangling.fcad");
-        let v = reply(
-            g.raise(&dangling, g.base_id(), "9", &out)
-                .output()
-                .expect("process"),
-            OP,
-            0,
-        );
-        assert_eq!(v["result"]["rebuild"]["failed"], json!([]));
-        assert!(
-            v["result"]["rebuild"]["warnings"]
-                .to_string()
-                .contains("unresolved"),
-            "{v}"
-        );
-        assert!(out.exists());
-        assert_eq!(stored_refs(&out), stored_refs(&dangling));
-        assert_eq!(std::fs::read(&dangling).expect("bytes"), dangling_before);
-
         // A publication whose report is lost stays published: exit 7.
         let lost = f.root.path().join("lost.fcad");
         assert_eq!(
@@ -2544,10 +2426,7 @@ mod sketch {
             .expect("rebuild");
         let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
         let n = refs.len();
-        assert!(
-            text.contains(&format!("{n} of {n} stored references resolved")),
-            "{text}"
-        );
+        assert!(text.matches(" entities=").count() == n, "{text}");
 
         let cold = measure(&copy, None);
         let cache = copy.with_extension("fcad-cache");
@@ -2579,12 +2458,12 @@ mod sketch {
             cold.axis_origin
         );
         assert_eq!(
-            cold.roles["origin side of feature.fillet"],
+            cold.roles["inherited curve of feature.fillet"],
             [FaceSurface::Plane; 4]
         );
-        for side in ["Start", "End"] {
+        for side in ["start", "end"] {
             assert_eq!(
-                cold.roles[&format!("origin cap {side} of feature.fillet")],
+                cold.roles[&format!("inherited {side} cap of feature.fillet")],
                 [FaceSurface::Plane]
             );
         }
@@ -3313,10 +3192,7 @@ mod constraints {
             .output()
             .expect("rebuild");
         let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-        assert!(
-            text.contains(&format!("{n} of {n} stored references resolved")),
-            "{text}"
-        );
+        assert!(text.matches(" entities=").count() == n, "{text}");
         let cold = measure(&copy, None);
         let cache = copy.with_extension("fcad-cache");
         cold.same_as(&measure(
@@ -3871,7 +3747,7 @@ mod constraints {
             assert_eq!(sketch_row(&copy, g.plate_sketch_id()), sketch);
             let now = stored_refs(&copy);
             assert!(refs.iter().all(|r| now.contains(r)), "a name was lost");
-            assert_eq!(now.len(), refs.len() + 7);
+            crate::names::assert_added(&refs, &now, stored_tip(&copy), 7);
             let after = inspect(&copy);
             let fillet = &after["fillets"][0];
             assert_eq!(fillet["feature_id"], json!(stored_tip(&copy)));
@@ -3903,10 +3779,7 @@ mod constraints {
                 .output()
                 .expect("rebuild");
             let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-            assert!(
-                text.contains(&format!("{n} of {n} stored references resolved")),
-                "{text}"
-            );
+            assert!(text.matches(" entities=").count() == n, "{text}");
             let cold = measure(&copy, None);
             let cache = copy.with_extension("fcad-cache");
             cold.same_as(&measure(
@@ -3926,7 +3799,7 @@ mod constraints {
             );
             assert_eq!(cold.fillet, FaceSurface::Cylinder { radius: r });
             assert_eq!(
-                cold.roles["edge fillet face of feature.fillet"],
+                cold.roles["generated Fillet of feature.fillet"],
                 [FaceSurface::Cylinder { radius: r }]
             );
             let axis = axis_of(rect, moved, r);
@@ -4034,13 +3907,11 @@ mod constraints {
         }
 
         /// The identifiers the two routes each minted, matched by meaning:
-        /// the Fillet, its seven names by role and selection, and the Sketch's
-        /// constraints by their stored position.
+        /// the Fillet, and the Sketch's constraints by their stored position.
         fn minted(a: &Path, b: &Path) -> Vec<(Vec<u8>, Vec<u8>)> {
             let read = |p: &Path| {
                 let d = Document::open_read_only(p).expect("open");
                 let objects = d.objects().expect("objects");
-                let refs = d.topology_refs().expect("refs");
                 d.close().expect("close");
                 let fillet = objects
                     .iter()
@@ -4054,23 +3925,12 @@ mod constraints {
                         _ => None,
                     })
                     .expect("the Sketch");
-                let own: Vec<_> = refs.into_iter().filter(|r| r.owner == fillet).collect();
-                (fillet, own, constraints)
+                (fillet, constraints)
             };
-            let (fa, ra, ca) = read(a);
-            let (fb, rb, cb) = read(b);
-            assert_eq!(ra.len(), 7);
+            let (fa, ca) = read(a);
+            let (fb, cb) = read(b);
             assert_eq!(ca.len(), cb.len(), "the same number of constraints");
             let mut pairs = vec![(fb.to_bytes().to_vec(), fa.to_bytes().to_vec())];
-            for theirs in &rb {
-                let mine = ra
-                    .iter()
-                    .find(|m| {
-                        m.output_role == theirs.output_role && m.selection == theirs.selection
-                    })
-                    .expect("the same meaning");
-                pairs.push((theirs.id.to_bytes().to_vec(), mine.id.to_bytes().to_vec()));
-            }
             for (mine, theirs) in ca.iter().zip(&cb) {
                 pairs.push((theirs.id.to_bytes().to_vec(), mine.id.to_bytes().to_vec()));
             }
@@ -4492,13 +4352,6 @@ mod sequential {
         }
     }
 
-    fn role_of(role: &SemanticRole) -> String {
-        match role {
-            SemanticRole::OriginFilletFace { .. } => "origin fillet face".to_owned(),
-            other => role_name(other),
-        }
-    }
-
     /// Rebuilds `path` cold or through the cache at `cache`, resolving every
     /// stored reference in the kernel that built it.
     fn measure_two(path: &Path, cache: Option<&Path>) -> (Two, Vec<ferritecad_eval::CacheEvent>) {
@@ -4534,14 +4387,21 @@ mod sequential {
             .expect("a body");
         let tip = built.shape(body.id).expect("the body was built");
         let mut named = BTreeMap::new();
-        for reference in &doc.topology_refs().expect("refs") {
-            let resolved = built.resolve(reference).expect("resolve");
-            assert!(!resolved.is_empty(), "{} resolved to nothing", reference.id);
-            let producer = built
-                .shape(reference.producer_feature)
-                .expect("the producer was built");
-            for handle in &resolved {
-                assert_eq!(handle.shape(), producer, "{} was repointed", reference.id);
+        for reference in crate::names::generated_faces(&doc, &built) {
+            let resolved = &reference.entities;
+            assert!(
+                !resolved.is_empty(),
+                "{} resolved to nothing",
+                reference.seed.digest
+            );
+            let producer = built.shape(reference.at).expect("the producer was built");
+            for handle in resolved {
+                assert_eq!(
+                    handle.shape(),
+                    producer,
+                    "{} was repointed",
+                    reference.seed.digest
+                );
             }
             let mut surfaces: Vec<FaceSurface> = resolved
                 .iter()
@@ -4556,10 +4416,10 @@ mod sequential {
                 _ => None,
             };
             named.insert(
-                reference.id.to_string(),
+                format!("{}:{}", reference.at, reference.seed.digest),
                 Named {
-                    role: role_of(&reference.output_role),
-                    producer: reference.producer_feature,
+                    role: reference.label(),
+                    producer: reference.at,
                     surfaces,
                     axis,
                     on_tip: producer == tip,
@@ -4694,7 +4554,7 @@ mod sequential {
             ferritecad_document::Expression::constant(r2).expect("finite constant")
         );
 
-        let ObjectPayload::Fillet(kept) = &objects
+        let ObjectPayload::Fillet(_kept) = &objects
             .iter()
             .find(|o| o.id == first_id)
             .expect("Fillet 1")
@@ -4707,34 +4567,11 @@ mod sequential {
             o.payload,
             ObjectPayload::Body(ferritecad_document::Body { tip_feature: Some(t) }) if t == second_id
         )));
-        let now = d.topology_refs().expect("refs");
+        let now = crate::names::snapshot(&d);
         d.close().expect("close");
         assert!(refs.iter().all(|r| now.contains(r)), "a name was lost");
-        assert_eq!(now.len(), refs.len() + 8);
-        let first_joint = kept.edge.joint;
-        for r in now.iter().filter(|r| !refs.contains(r)) {
-            assert_eq!((r.owner, r.producer_feature), (second_id, second_id));
-            match &r.output_role {
-                SemanticRole::EdgeFilletFace {
-                    edge_feature,
-                    joint,
-                } => assert_eq!((*edge_feature, *joint), (base, stored.edge.joint)),
-                SemanticRole::OriginFilletFace {
-                    origin_feature,
-                    edge_feature,
-                    joint,
-                } => assert_eq!(
-                    (*origin_feature, *edge_feature, *joint),
-                    (first_id, base, first_joint)
-                ),
-                SemanticRole::OriginCap { origin_feature, .. }
-                | SemanticRole::OriginSide { origin_feature, .. } => {
-                    assert_eq!(*origin_feature, base)
-                }
-                other => panic!("unexpected new role {other:?}"),
-            }
-        }
-        only_a_fillet_was_added(&g.source, &copy, body, 8);
+        crate::names::assert_added(&refs, &now, second_id, 8);
+        only_the_fillet_was_added(&g.source, &copy, body);
 
         if part.constrained {
             let sketch = g.plate_sketch_id();
@@ -4769,10 +4606,7 @@ mod sequential {
             .output()
             .expect("rebuild");
         let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-        assert!(
-            text.contains(&format!("{n} of {n} stored references resolved")),
-            "{text}"
-        );
+        assert!(text.matches(" entities=").count() == n, "{text}");
         if part.constrained {
             let (starts, _) = solved(&copy);
             for (s, e) in starts.iter().zip(&part.solved) {
@@ -4845,36 +4679,36 @@ mod sequential {
         );
         assert_eq!(two.shapes, 3, "the plate and both rounded plates");
         // Fillet 2's own cylinder, on the tip.
-        let own = two.one("edge fillet face", second);
+        let own = two.one("generated Fillet", second);
         assert!(own.on_tip);
         assert_eq!(own.surfaces, [FaceSurface::Cylinder { radius: r2 }]);
         assert_axis(own, rect, c2, r2);
         // Fillet 1's cylinder as the finished part has it: its own name on
         // Fillet 2, a separate proof it survived.
-        let carried = two.one("origin fillet face", second);
+        let carried = two.one("inherited generated Fillet", second);
         assert!(carried.on_tip);
         assert_eq!(carried.surfaces, [FaceSurface::Cylinder { radius: r1 }]);
         assert_axis(carried, rect, c1, r1);
         // Fillet 1's own name still addresses Fillet 1's result.
-        let earlier = two.one("edge fillet face", first);
+        let earlier = two.one("generated Fillet", first);
         assert!(!earlier.on_tip);
         assert_eq!(earlier.surfaces, [FaceSurface::Cylinder { radius: r1 }]);
         assert_axis(earlier, rect, c1, r1);
         assert_ne!(own.axis.map(|a| a.0), carried.axis.map(|a| a.0));
         // The plate's faces under the base, on the tip.
-        for cap in ["origin cap Start", "origin cap End"] {
+        for cap in ["inherited start cap", "inherited end cap"] {
             let n = two.one(cap, second);
             assert!(n.on_tip);
             assert_eq!(n.surfaces, [FaceSurface::Plane]);
         }
-        let sides = two.all("origin side", second);
+        let sides = two.all("inherited curve", second);
         assert_eq!(sides.len(), 4);
         assert!(
             sides
                 .iter()
                 .all(|n| n.on_tip && n.surfaces == [FaceSurface::Plane])
         );
-        assert_eq!(two.one("cap Start", base).surfaces, [FaceSurface::Plane]);
+        assert_eq!(two.one("start cap", base).surfaces, [FaceSurface::Plane]);
     }
 
     /// The measured slice: adjacent (across the short and the long side) and
@@ -5493,10 +5327,7 @@ mod sequential {
                 .output()
                 .expect("rebuild");
             let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-            assert!(
-                text.contains(&format!("{n} of {n} stored references resolved")),
-                "{text}"
-            );
+            assert!(text.matches(" entities=").count() == n, "{text}");
 
             let (r1, r2) = if which == 1 { (r, r2) } else { (r1, r) };
             let first = id_of(&one["feature_id"]);
@@ -5986,10 +5817,7 @@ mod sequential {
                 .output()
                 .expect("rebuild");
             let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-            assert!(
-                text.contains(&format!("{n} of {n} stored references resolved")),
-                "{text}"
-            );
+            assert!(text.matches(" entities=").count() == n, "{text}");
             if part.constrained {
                 let (starts, _) = solved(&copy);
                 for (s, e) in starts.iter().zip(&part.solved) {
@@ -6461,10 +6289,7 @@ mod sequential {
                 .output()
                 .expect("rebuild");
             let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-            assert!(
-                text.contains(&format!("{n} of {n} stored references resolved")),
-                "{text}"
-            );
+            assert!(text.matches(" entities=").count() == n, "{text}");
 
             let (first, second, base) = (
                 id_of(&one["feature_id"]),
@@ -7153,10 +6978,7 @@ mod sequential {
                 .output()
                 .expect("rebuild");
             let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-            assert!(
-                text.contains(&format!("{n} of {n} stored references resolved")),
-                "{text}"
-            );
+            assert!(text.matches(" entities=").count() == n, "{text}");
 
             let (first, second, base) = (
                 id_of(&one["feature_id"]),

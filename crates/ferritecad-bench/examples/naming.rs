@@ -107,11 +107,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }));
                 }
             }
-            let mut compared = 0;
-            for reference in document.topology_refs()? {
-                built.resolve(&reference)?;
-                compared += 1;
-            }
             let mut swept = 0;
             for object in document.objects()? {
                 let (previous, edge) = match object.payload {
@@ -128,7 +123,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "vertices": counts[2],
                 "features": features,
                 "ambiguous": ambiguous,
-                "resolved_refs": compared,
                 "resolved_swept_edges": swept,
             });
             rebuild_samples.push(rebuild_ms);

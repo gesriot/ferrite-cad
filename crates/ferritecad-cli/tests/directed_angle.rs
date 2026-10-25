@@ -10,6 +10,8 @@
 //! other way round, and a quadrilateral whose top edge tilts either way off
 //! antiparallel.
 #![allow(clippy::panic)]
+#[path = "support/names.rs"]
+mod names;
 #[path = "support/transaction.rs"]
 mod transaction;
 use ferritecad_document::{CacheStore, Document, ObjectPayload, SketchGeometry};
@@ -260,9 +262,7 @@ fn solved(path: &Path) -> Solved {
             "joint {i} is open: {end:?} {next:?}"
         );
     }
-    for r in d.topology_refs().expect("refs") {
-        assert_eq!(built.resolve(&r).expect("same stored reference").len(), 1);
-    }
+    crate::names::assert_primary(&built);
     built.release_all(&mut kernel);
     d.close().expect("close");
     let vectors: Vec<_> = starts
@@ -606,10 +606,7 @@ fn stored_same(a: &Path, b: &Path) {
         a.dependencies().expect("deps"),
         b.dependencies().expect("deps")
     );
-    assert_eq!(
-        a.topology_refs().expect("refs"),
-        b.topology_refs().expect("refs")
-    );
+    assert_eq!(crate::names::snapshot(&a), crate::names::snapshot(&b));
     for o in a.objects().expect("objects") {
         let n = b.object(o.id).expect("read").expect("same UUID");
         if let (ObjectPayload::Sketch(s), ObjectPayload::Sketch(t)) = (&o.payload, &n.payload) {

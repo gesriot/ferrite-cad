@@ -2,11 +2,11 @@
 #![allow(dead_code, reason = "shared by focused naming test targets")]
 use ferritecad_document::*;
 use ferritecad_kernel::*;
-use ferritecad_topology::TopologyMap;
+use ferritecad_topology::ModelNaming;
 use ferritecad_types::{ObjectId, Result, StableEntityId};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub fn prepared(feature: ObjectId, profile: &Profile, revolve: bool) -> Result<TopologyMap> {
+pub fn prepared(feature: ObjectId, profile: &Profile, revolve: bool) -> Result<ModelNaming> {
     let mut document = Document::create(":memory:")?;
     let plane = "00000000-0000-7000-8000-000000000001".parse::<ObjectId>()?;
     let sketch = "00000000-0000-7000-8000-000000000002".parse::<ObjectId>()?;
@@ -80,7 +80,7 @@ pub fn prepared(feature: ObjectId, profile: &Profile, revolve: bool) -> Result<T
         w.put_object(feature, None, 1, None, &payload)?;
         Ok(())
     })?;
-    let mut model = TopologyMap::new();
+    let mut model = ModelNaming::new();
     model.prepare(&document.objects()?.into_iter().map(|o| (o.id, o)).collect())?;
     Ok(model)
 }
@@ -89,7 +89,7 @@ pub fn bind(
     feature: ObjectId,
     profile: &Profile,
     result: &OperationResult,
-) -> Result<TopologyMap> {
+) -> Result<ModelNaming> {
     let revolve = kernel.naming_history(result.shape)?.operation == Some(NamingOperation::Revolve);
     let mut model = prepared(feature, profile, revolve)?;
     let names = model.name_operation(feature, result.shape, &[], kernel)?;
@@ -126,92 +126,6 @@ pub fn cap(kernel: &mut impl GeometryKernel, shape: ShapeHandle, end: bool) -> S
     let faces = generated(kernel, shape, NamingInput::Cap { end }, SubShapeKind::Face);
     assert_eq!(faces.len(), 1);
     faces[0]
-}
-pub fn view(model: &TopologyMap, feature: ObjectId) -> View<'_> {
-    View { model, feature }
-}
-pub struct View<'a> {
-    model: &'a TopologyMap,
-    feature: ObjectId,
-}
-impl View<'_> {
-    fn query(
-        &self,
-        output_role: SemanticRole,
-        kind: EntityKind,
-    ) -> std::vec::IntoIter<SubShapeHandle> {
-        let reference = TopologyRef {
-            id: StableEntityId::new(),
-            owner: self.feature,
-            producer_feature: self.feature,
-            expected_kind: kind,
-            output_role,
-            selection: SelectionRule::Exact,
-            fallback_signature: None,
-        };
-        self.model
-            .resolve_legacy(&reference)
-            .expect("role resolves exactly")
-            .into_iter()
-            .collect::<Vec<_>>()
-            .into_iter()
-    }
-    pub fn side(&self, segment: StableEntityId) -> std::vec::IntoIter<SubShapeHandle> {
-        self.query(
-            SemanticRole::ExtrudeSide {
-                profile_segment: segment,
-            },
-            EntityKind::Face,
-        )
-    }
-    pub fn cap(&self, side: CapSide) -> Option<std::vec::IntoIter<SubShapeHandle>> {
-        Some(self.query(SemanticRole::ExtrudeCap { side }, EntityKind::Face))
-    }
-    pub fn cap_edge(
-        &self,
-        side: CapSide,
-        segment: StableEntityId,
-    ) -> Option<std::vec::IntoIter<SubShapeHandle>> {
-        Some(self.query(
-            SemanticRole::ExtrudeCapEdge {
-                side,
-                profile_segment: segment,
-            },
-            EntityKind::Edge,
-        ))
-    }
-    pub fn cap_vertex(
-        &self,
-        side: CapSide,
-        joint: ferritecad_types::ProfileJoint,
-    ) -> Option<std::vec::IntoIter<SubShapeHandle>> {
-        let reference = TopologyRef {
-            id: StableEntityId::new(),
-            owner: self.feature,
-            producer_feature: self.feature,
-            expected_kind: EntityKind::Vertex,
-            output_role: SemanticRole::ExtrudeCapVertex { side, joint },
-            selection: SelectionRule::Exact,
-            fallback_signature: None,
-        };
-        Some(
-            self.model
-                .resolve_legacy(&reference)
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<Vec<_>>()
-                .into_iter(),
-        )
-    }
-    pub fn sweep_edge(
-        &self,
-        joint: ferritecad_types::ProfileJoint,
-    ) -> std::vec::IntoIter<SubShapeHandle> {
-        self.query(SemanticRole::ExtrudeSweepEdge { joint }, EntityKind::Edge)
-    }
-    pub fn named_face_count(&self) -> usize {
-        self.model.features[&self.feature].named_face_count()
-    }
 }
 pub fn signature(
     named: &ferritecad_topology::generative::FeatureNaming,
@@ -362,4 +276,80 @@ pub fn cap_edges(
             _ => None,
         })
         .collect()
+}
+
+pub fn side_name(
+    feature: ObjectId,
+    plane: ObjectId,
+    curve: StableEntityId,
+) -> ferritecad_topology::generative::Name {
+    use ferritecad_topology::generative::{curve_root, generated};
+    generated(
+        feature,
+        NamingOperation::Extrude,
+        curve_root(feature, curve, Some(plane)),
+        SubShapeKind::Face,
+    )
+}
+pub fn cap_name(
+    feature: ObjectId,
+    plane: ObjectId,
+    end: bool,
+) -> ferritecad_topology::generative::Name {
+    use ferritecad_topology::generative::{cap_root, generated};
+    generated(
+        feature,
+        NamingOperation::Extrude,
+        cap_root(feature, end, Some(plane)),
+        SubShapeKind::Face,
+    )
+}
+pub fn resolve(
+    model: &ModelNaming,
+    feature: ObjectId,
+    name: &ferritecad_topology::generative::Name,
+) -> Result<Vec<SubShapeHandle>> {
+    let feature = model
+        .feature(feature)
+        .ok_or_else(|| ferritecad_types::CadError::topology("feature has no names"))?;
+    Ok(feature
+        .resolve_set(*name, ferritecad_topology::generative::Selection::One)?
+        .iter()
+        .copied()
+        .collect())
+}
+
+pub fn plane_id() -> ObjectId {
+    "00000000-0000-7000-8000-000000000001"
+        .parse()
+        .expect("test plane UUID")
+}
+
+// Select the test specimen by named face incidence; retain its primary name
+// across edits or archives, and check the resolved entity against the mesh.
+pub fn name_at_incidence(
+    model: &ModelNaming,
+    feature: ObjectId,
+    kind: SubShapeKind,
+    faces: impl IntoIterator<Item = ferritecad_topology::generative::Name>,
+) -> Result<ferritecad_topology::generative::Name> {
+    let named = model
+        .feature(feature)
+        .ok_or_else(|| ferritecad_types::CadError::topology("feature has no names"))?;
+    let faces = faces
+        .into_iter()
+        .map(|name| named.resolve(name))
+        .collect::<Result<BTreeSet<_>>>()?;
+    let entities: Vec<_> = named
+        .topology
+        .entities(kind)
+        .filter(|entity| named.topology.adjacent_faces[entity] == faces)
+        .collect();
+    if entities.len() != 1 {
+        return Err(ferritecad_types::CadError::topology(format!(
+            "test incidence selects {} entities",
+            entities.len()
+        )));
+    }
+    Ok(named.entities[&entities[0]])
 }

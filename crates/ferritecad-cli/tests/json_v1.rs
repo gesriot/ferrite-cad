@@ -5,6 +5,8 @@
 #[path = "support/transaction.rs"]
 mod transaction;
 
+#[path = "support/names.rs"]
+mod names;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -1014,7 +1016,12 @@ fn native_json_inspect_edit_contract() {
         let result = reply(&output, "edit", 0);
         assert_eq!(
             result["result"],
-            serde_json::json!({"destination":destination,"document_id":reading["document_id"],"content_version":inspect(&destination)["content_version"],"rebuild":{"failed":[],"skipped":[],"degraded_bodies":[],"warnings":[]}})
+            serde_json::json!({
+                "destination": destination,
+                "document_id": reading["document_id"],
+                "content_version": inspect(&destination)["content_version"],
+                "rebuild": {"failed":[], "skipped":[], "degraded_bodies":[]}
+            })
         );
         let edited = inspect(&destination);
         assert_eq!(edited["document_id"], reading["document_id"]);
@@ -1059,10 +1066,7 @@ fn native_json_inspect_edit_contract() {
             old.dependencies().expect("deps"),
             new.dependencies().expect("deps")
         );
-        assert_eq!(
-            old.topology_refs().expect("refs"),
-            new.topology_refs().expect("refs")
-        );
+        assert_eq!(crate::names::snapshot(&old), crate::names::snapshot(&new));
         for object in old.objects().expect("objects") {
             let mut expected = object.clone();
             if object.id.to_string() == feature {
@@ -1090,7 +1094,13 @@ fn native_json_inspect_edit_contract() {
         let rebuilt = success(cli().arg("rebuild").arg(&destination).arg("--cold"));
         let rebuilt = String::from_utf8(rebuilt.stdout).expect("report");
         assert!(rebuilt.contains("4 objects evaluated, 1 shape built"));
-        assert!(rebuilt.contains("3 of 3 stored references resolved"));
+        assert!(
+            rebuilt
+                .lines()
+                .filter(|line| line.starts_with("    face "))
+                .count()
+                == 6
+        );
         for (path, height) in [
             (&source, size[2].parse::<f64>().expect("height")),
             (&destination, 27.0),

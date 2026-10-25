@@ -6771,6 +6771,7 @@
         "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
+        "path+crates/ferritecad-topology#ferritecad-topology@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
         "path+crates/ferritecad-viewport#ferritecad-viewport@0.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229"
@@ -7887,11 +7888,11 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:57c06f868af4bbc0cfccfc3e4383431c7b7e53ab4ecf0dfb74a84d47abcd7812"
+        "value": "sbom/native/native-assets-inventory.json@sha256:0c4ed423983fe3b80cdefb1ab091dc5bed8fcf3193ace6ad1d91d92493f6f407"
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:87efdd1004cb9e98de46db3e0a6e087bee08ac74b96ee1196bf2896b784fd50e"
+        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:425e4588e1697d0c937646ebf5f16d6f19be33b3c2b823cabb07900ef176f056"
       },
       {
         "name": "ferritecad:sbom:product-format",

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[path = "support/names.rs"]
+mod names;
 use ferritecad_document::{
     Document, EditChange, EndCondition, Expression, ExpressionSlot, ExtrudeEditSource,
     ObjectPayload,
@@ -118,7 +120,7 @@ fn native_every_numeric_slot_preserves_history_and_edge_names() {
         }
         let document = Document::open_read_only(&source).expect("saved");
         let reading = ExtrudeEditSource::read(&document).expect("reading");
-        let references = document.topology_refs().expect("names");
+        let references = crate::names::snapshot(&document);
         let bytes = std::fs::read(&source).expect("source");
         for (index, slot) in reading.expression_slots.iter().enumerate() {
             let value = match slot.slot {
@@ -143,7 +145,7 @@ fn native_every_numeric_slot_preserves_history_and_edge_names() {
 
             let edited = Document::open_read_only(&destination).expect("reopen");
             assert_eq!(
-                edited.topology_refs().expect("names"),
+                crate::names::snapshot(&edited),
                 references,
                 "numbers do not alter edge-operation naming contracts"
             );
@@ -172,7 +174,7 @@ fn native_every_numeric_slot_preserves_history_and_edge_names() {
             session.commit_step(step).expect("commit");
 
             let accepted = Document::open_read_only(session.current().path()).expect("accepted");
-            assert_eq!(accepted.topology_refs().expect("names"), references);
+            assert_eq!(crate::names::snapshot(&accepted), references);
         }
         assert_eq!(std::fs::read(&source).expect("source"), bytes);
     }

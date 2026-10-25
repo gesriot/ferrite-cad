@@ -95,7 +95,11 @@ fn a_cold_rebuild_reports_what_the_document_produced() {
     assert!(report.contains("solid, 6 named faces"), "{report}");
     assert!(report.contains("4 segments"), "{report}");
     assert!(
-        report.contains("6 of 6 stored references resolved"),
+        report
+            .lines()
+            .filter(|line| line.starts_with("    face "))
+            .count()
+            == 6,
         "{report}"
     );
 }
@@ -292,7 +296,7 @@ fn the_duration_guard_knows_a_timing_from_a_target_triple() {
         "  4 objects evaluated, 1 shape built",
         "  019fe39c-0c09-78a1-80d3-905a79570e50  Profile  sketch  4 segments",
         "  Extrude1  feature.extrude  solid, 6 named faces",
-        "  6 of 6 stored references resolved",
+        "    face 54bb0bfef95da512d4d0863114bc61579cf6bed1299a206eac64706bedca054c entities=1",
         r"rebuilt C:\Users\RUNNER~1\AppData\Local\Temp\.tmpfETos3\plate.fcad",
     ] {
         assert!(

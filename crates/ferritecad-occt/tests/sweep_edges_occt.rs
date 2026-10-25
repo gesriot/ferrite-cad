@@ -19,9 +19,7 @@ mod naming;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
-use ferritecad_document::{
-    CapSide, Document, EntityKind, ObjectPayload, SelectionRule, SemanticRole, TopologyRef,
-};
+use ferritecad_document::{Document, ObjectPayload, SweptEdge};
 use ferritecad_eval::rebuild_cold;
 use ferritecad_fixtures::{drop_segment, open_plate};
 use ferritecad_kernel::{
@@ -30,7 +28,7 @@ use ferritecad_kernel::{
     SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_topology::{TopologyMap, archive_feature, resolve, restore_feature};
+use ferritecad_topology::{ModelNaming, archive_feature, restore_feature};
 use ferritecad_types::{ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId, Tolerance};
 
 macro_rules! kernel_or_skip {
@@ -112,7 +110,7 @@ fn arc_profile() -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
 
 struct Built {
     kernel: OcctKernel,
-    map: TopologyMap,
+    map: ModelNaming,
     feature: ObjectId,
     shape: ShapeHandle,
 }
@@ -134,45 +132,34 @@ fn build(request: &ExtrudeRequest) -> Built {
     }
 }
 
-fn sweep_reference(feature: ObjectId, joint: ProfileJoint) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Edge,
-        output_role: SemanticRole::ExtrudeSweepEdge { joint },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
+fn sweep_reference(feature: ObjectId, joint: ProfileJoint) -> SweptEdge {
+    SweptEdge { feature, joint }
+}
+fn resolve_sweep(map: &ModelNaming, edge: &SweptEdge) -> Result<Vec<SubShapeHandle>> {
+    Ok(vec![map.swept_edge(edge.feature, *edge)?])
 }
 
-fn cap_edge_reference(feature: ObjectId, side: CapSide, segment: StableEntityId) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Edge,
-        output_role: SemanticRole::ExtrudeCapEdge {
-            side,
-            profile_segment: segment,
-        },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
+fn cap_edge_name(
+    map: &ModelNaming,
+    feature: ObjectId,
+    end: bool,
+    segment: StableEntityId,
+) -> ferritecad_topology::generative::Name {
+    let plane = naming::plane_id();
+    naming::name_at_incidence(
+        map,
+        feature,
+        SubShapeKind::Edge,
+        [
+            naming::side_name(feature, plane, segment),
+            naming::cap_name(feature, plane, end),
+        ],
+    )
+    .expect("one cap boundary")
 }
 
-fn side_reference(feature: ObjectId, segment: StableEntityId) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeSide {
-            profile_segment: segment,
-        },
-        selection: SelectionRule::AllDerivedFrom { ancestor: segment },
-        fallback_signature: None,
-    }
+fn side_name(feature: ObjectId, segment: StableEntityId) -> ferritecad_topology::generative::Name {
+    naming::side_name(feature, naming::plane_id(), segment)
 }
 
 /// The corner where the segment before `index` meets the segment at `index`.
@@ -186,49 +173,41 @@ fn joint_at(labels: &[StableEntityId], index: usize) -> ProfileJoint {
 
 /// The one edge a joint resolves to.
 fn sweep_edge_of(built: &Built, joint: ProfileJoint) -> Result<SubShapeHandle> {
-    let resolved = resolve(&built.map, &sweep_reference(built.feature, joint))?;
+    let resolved = resolve_sweep(&built.map, &sweep_reference(built.feature, joint))?;
     assert_eq!(resolved.len(), 1, "one edge, not {}", resolved.len());
     Ok(resolved[0])
 }
 
 #[test]
-fn a_stored_joint_names_the_edge_running_along_the_sweep() {
+fn a_profile_joint_derives_the_edge_running_along_the_sweep() {
     kernel_or_skip!();
 
     // A temporary copy of the committed plate. The reference is written into
     // the copy: the committed fixture keeps naming exactly what it named.
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut document = open_plate(dir.path()).expect("the fixture opens");
+    let document = open_plate(dir.path()).expect("the fixture opens");
     let segments = segments_of(&document).expect("reads the sketch");
     let feature = extrusion_of(&document);
 
     let joint = ProfileJoint::new(segments[0], segments[1]).expect("two different segments");
     let reference = sweep_reference(feature, joint);
-    document
-        .write(|w| w.put_topology_ref(&reference))
-        .expect("the copy stores the reference");
 
     let mut kernel = OcctKernel::new().expect("opens");
     let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
         .expect("Open CASCADE rebuilds the stored plate");
 
-    let resolved = built
-        .resolve(&reference)
+    let resolved = resolve_sweep(built.topology(), &reference)
         .unwrap_or_else(|error| panic!("{joint} names no edge: {error}"));
     assert_eq!(resolved.len(), 1, "one edge, not {}", resolved.len());
     assert_eq!(resolved[0].kind(), SubShapeKind::Edge);
 
-    // What the document kept is the pair and nothing else. A handle, a session
-    // or a position stored beside it would be a name that stops meaning the
-    // same thing the moment anything upstream is rebuilt.
-    let stored = document
-        .topology_refs()
-        .expect("reads references")
-        .into_iter()
-        .find(|entry| entry.id == reference.id)
-        .expect("the reference is stored");
-    assert_eq!(stored.output_role, SemanticRole::ExtrudeSweepEdge { joint });
-    let written = format!("{:?}", stored.output_role);
+    let named = built.topology().feature(feature).expect("named feature");
+    let name = named.entities[&resolved[0]];
+    assert_eq!(named.resolve(name).expect("primary name"), resolved[0]);
+    let written = built
+        .topology()
+        .describe(feature, name)
+        .expect("complete description");
     for forbidden in [
         "SessionId",
         "ShapeHandle",
@@ -269,10 +248,11 @@ fn the_four_joints_and_the_eight_cap_edges_cover_the_plate_exactly_once() {
 
     let mut capped = BTreeSet::new();
     for segment in &labels {
-        for side in [CapSide::Start, CapSide::End] {
-            let resolved = resolve(
+        for side in [false, true] {
+            let resolved = naming::resolve(
                 &built.map,
-                &cap_edge_reference(built.feature, side, *segment),
+                built.feature,
+                &cap_edge_name(&built.map, built.feature, side, *segment),
             )
             .expect("the cap edges are still named");
             assert_eq!(resolved.len(), 1);
@@ -309,8 +289,12 @@ fn each_joint_names_the_edge_where_its_own_two_swept_faces_meet() {
 
         let mut expected = BTreeSet::new();
         for segment in joint.segments() {
-            let faces = resolve(&built.map, &side_reference(built.feature, segment))
-                .expect("the swept faces are named");
+            let faces = naming::resolve(
+                &built.map,
+                built.feature,
+                &side_name(built.feature, segment),
+            )
+            .expect("the swept faces are named");
             expected.extend(faces);
         }
         assert_eq!(expected.len(), 2, "two segments raise two faces");
@@ -399,11 +383,14 @@ fn a_joint_between_two_lines_is_not_confused_with_one_against_the_arc() {
     // the only sweep edge of this profile bounded by no curved face. Asked
     // through the drawn segment counts, which the arc makes plainly different.
     let drawn = drawn_segment_counts(&mut built);
-    let arc_faces: BTreeSet<SubShapeHandle> =
-        resolve(&built.map, &side_reference(built.feature, labels[0]))
-            .expect("the arc raised a face")
-            .into_iter()
-            .collect();
+    let arc_faces: BTreeSet<SubShapeHandle> = naming::resolve(
+        &built.map,
+        built.feature,
+        &side_name(built.feature, labels[0]),
+    )
+    .expect("the arc raised a face")
+    .into_iter()
+    .collect();
     let bounding = edge_faces(&mut built);
     assert!(
         bounding
@@ -435,7 +422,7 @@ fn a_pair_that_meets_nowhere_and_a_joint_of_another_feature_each_name_nothing() 
     let apart_refusal = sweep_edge_of(&built, apart).expect_err("no corner is theirs");
     assert_eq!(apart_refusal.kind(), ErrorKind::Topology);
     assert!(
-        apart_refusal.to_string().contains("produced none"),
+        apart_refusal.to_string().contains("has 0 descendants"),
         "{apart_refusal}"
     );
 
@@ -444,15 +431,15 @@ fn a_pair_that_meets_nowhere_and_a_joint_of_another_feature_each_name_nothing() 
     let foreign_refusal = sweep_edge_of(&built, foreign).expect_err("not this profile's corner");
     assert_eq!(foreign_refusal.kind(), ErrorKind::Topology);
     assert!(
-        foreign_refusal.to_string().contains("produced none"),
+        foreign_refusal.to_string().contains("has 0 descendants"),
         "{foreign_refusal}"
     );
 
     // A reference to a feature that produced nothing at all.
     let elsewhere = sweep_reference(ObjectId::new(), joint_at(&labels, 1));
-    let absent = resolve(&built.map, &elsewhere).expect_err("another feature");
-    assert_eq!(absent.kind(), ErrorKind::Topology);
-    assert!(absent.to_string().contains("produced nothing for"));
+    let absent = resolve_sweep(&built.map, &elsewhere).expect_err("another feature");
+    assert_eq!(absent.kind(), ErrorKind::Input);
+    assert!(absent.to_string().contains("naming root has no plane"));
 
     // Three refusals, three different reasons, each naming what it refused.
     let reasons = BTreeSet::from([
@@ -466,30 +453,18 @@ fn a_pair_that_meets_nowhere_and_a_joint_of_another_feature_each_name_nothing() 
 }
 
 #[test]
-fn a_joint_asked_for_as_the_wrong_kind_or_under_the_wrong_rule_is_refused() {
+fn a_sweep_edge_digest_cannot_resolve_as_a_face() {
     kernel_or_skip!();
-
     let (request, labels) = plate(10.0).expect("a valid plate");
     let mut built = build(&request);
-    let joint = joint_at(&labels, 1);
-
-    let mut as_face = sweep_reference(built.feature, joint);
-    as_face.expected_kind = EntityKind::Face;
-    let refusal = resolve(&built.map, &as_face).expect_err("a sweep edge is never a face");
-    assert_eq!(refusal.kind(), ErrorKind::Input);
-    assert!(refusal.to_string().contains("always a edge"), "{refusal}");
-
-    let mut family = sweep_reference(built.feature, joint);
-    family.selection = SelectionRule::AllDerivedFrom {
-        ancestor: labels[0],
-    };
-    let refusal = resolve(&built.map, &family).expect_err("one edge is not a family");
-    assert_eq!(refusal.kind(), ErrorKind::Input);
-    assert!(
-        refusal.to_string().contains("which is one edge"),
-        "{refusal}"
+    let edge = sweep_edge_of(&built, joint_at(&labels, 1)).expect("edge");
+    let named = built.map.feature(built.feature).expect("feature");
+    let mut name = named.entities[&edge];
+    name.kind = SubShapeKind::Face;
+    assert_eq!(
+        named.resolve(name).expect_err("wrong kind").kind(),
+        ErrorKind::Topology
     );
-
     built.kernel.release(built.shape);
 }
 
@@ -531,14 +506,18 @@ fn a_profile_whose_two_segments_meet_at_two_corners_names_neither() {
     let ambiguous = ProfileJoint::new(arc_label, chord_label).expect("two segments");
     let refusal = sweep_edge_of(&built, ambiguous).expect_err("this pair names two corners");
     assert_eq!(refusal.kind(), ErrorKind::Topology);
-    assert!(refusal.to_string().contains("produced none"), "{refusal}");
+    assert!(
+        refusal.to_string().contains("has 2 descendants"),
+        "{refusal}"
+    );
 
     // And the cap edges of the same shape are still named, so the refusal is
     // about this pair and not about the shape being unnameable.
-    for side in [CapSide::Start, CapSide::End] {
-        let resolved = resolve(
+    for side in [false, true] {
+        let resolved = naming::resolve(
             &built.map,
-            &cap_edge_reference(built.feature, side, arc_label),
+            built.feature,
+            &cap_edge_name(&built.map, built.feature, side, arc_label),
         )
         .expect("the cap edges are named as before");
         assert_eq!(resolved.len(), 1);
@@ -560,13 +539,13 @@ fn two_plates_of_the_same_shape_do_not_share_the_names_of_their_corners() {
     // the other even though a plate corner is there to be found.
     let joint = joint_at(&first_labels, 1);
     assert!(sweep_edge_of(&one, joint).is_ok());
-    let refusal = resolve(&other.map, &sweep_reference(other.feature, joint))
+    let refusal = resolve_sweep(&other.map, &sweep_reference(other.feature, joint))
         .expect_err("another plate's corner");
     assert_eq!(refusal.kind(), ErrorKind::Topology);
 
     // Nor does naming the right pair against the wrong producer work.
     let borrowed = sweep_reference(one.feature, joint_at(&second_labels, 1));
-    assert!(resolve(&one.map, &borrowed).is_err());
+    assert!(resolve_sweep(&one.map, &borrowed).is_err());
 
     one.kernel.release(one.shape);
     other.kernel.release(other.shape);
@@ -588,15 +567,13 @@ fn editing_a_part_of_the_profile_that_is_not_the_corner_leaves_its_name_alone() 
     // corner between the first two segments is untouched by the edit.
     let kept = ProfileJoint::new(segments[0], segments[1]).expect("two segments");
     let reference = sweep_reference(feature, kept);
-    document
-        .write(|w| w.put_topology_ref(&reference))
-        .expect("stores the reference");
 
     let mut kernel = OcctKernel::new().expect("opens");
     let before = rebuild_cold(&document, &mut kernel, &OperationContext::default())
         .expect("rebuilds the plate");
-    let named_before = before.resolve(&reference).expect("the corner is named");
+    let named_before = resolve_sweep(before.topology(), &reference).expect("the corner is named");
     assert_eq!(named_before.len(), 1);
+    let kept_name = before.topology().feature(feature).expect("named").entities[&named_before[0]];
     before.release_all(&mut kernel);
 
     let gone = drop_segment(&mut document).expect("removes a segment");
@@ -607,8 +584,7 @@ fn editing_a_part_of_the_profile_that_is_not_the_corner_leaves_its_name_alone() 
 
     let after = rebuild_cold(&document, &mut kernel, &OperationContext::default())
         .expect("a three-sided profile still rebuilds");
-    let named_after = after
-        .resolve(&reference)
+    let named_after = naming::resolve(after.topology(), feature, &kept_name)
         .expect("the surviving corner keeps its name");
     assert_eq!(named_after.len(), 1);
     assert_eq!(named_after[0].kind(), SubShapeKind::Edge);
@@ -620,17 +596,29 @@ fn editing_a_part_of_the_profile_that_is_not_the_corner_leaves_its_name_alone() 
     let shape = after.shape(extrusion).expect("the extrusion made a solid");
     let mut probe = Built {
         kernel,
-        map: TopologyMap::new(),
+        map: ModelNaming::new(),
         feature: extrusion,
         shape,
     };
     let bounding = edge_faces(&mut probe);
+    let plane = document
+        .objects()
+        .expect("objects")
+        .iter()
+        .find_map(|o| match &o.payload {
+            ObjectPayload::Sketch(s) => Some(s.plane),
+            _ => None,
+        })
+        .expect("sketch plane");
     let mut expected = BTreeSet::new();
     for segment in kept.segments() {
         expected.extend(
-            after
-                .resolve(&side_reference(extrusion, segment))
-                .expect("the swept faces are named"),
+            naming::resolve(
+                after.topology(),
+                extrusion,
+                &naming::side_name(extrusion, plane, segment),
+            )
+            .expect("the swept faces are named"),
         );
     }
     assert_eq!(expected.len(), 2, "two segments raise two faces");
@@ -645,7 +633,7 @@ fn editing_a_part_of_the_profile_that_is_not_the_corner_leaves_its_name_alone() 
     // rather than borrowing a neighbour.
     let lost = sweep_reference(feature, ProfileJoint::new(gone, segments[0]).expect("two"));
     assert!(
-        after.resolve(&lost).is_err(),
+        resolve_sweep(after.topology(), &lost).is_err(),
         "a lost corner must not resolve"
     );
 
@@ -785,7 +773,7 @@ fn the_names_of_corners_survive_a_file_and_a_new_session_but_their_handles_do_no
         .map(|index| joint_at(&labels, index))
         .collect();
 
-    let (archived, before) = {
+    let (archived, before, names) = {
         let mut writer = OcctKernel::new().expect("opens");
         let result = writer
             .extrude(&request, &OperationContext::default())
@@ -795,7 +783,7 @@ fn the_names_of_corners_survive_a_file_and_a_new_session_but_their_handles_do_no
 
         let mut named = Vec::new();
         for joint in &joints {
-            let found = resolve(&map, &sweep_reference(feature, *joint)).expect("named");
+            let found = resolve_sweep(&map, &sweep_reference(feature, *joint)).expect("named");
             assert_eq!(found.len(), 1);
             named.push(found[0]);
         }
@@ -810,8 +798,12 @@ fn the_names_of_corners_survive_a_file_and_a_new_session_but_their_handles_do_no
                 "the archive mentions {forbidden}: {written}"
             );
         }
+        let names: Vec<_> = named
+            .iter()
+            .map(|edge| map.feature(feature).expect("named").entities[edge])
+            .collect();
         writer.release(result.shape);
-        (archived, named)
+        (archived, named, names)
     };
 
     // Encoded and read back, which is the form a cache entry actually takes.
@@ -829,9 +821,9 @@ fn the_names_of_corners_survive_a_file_and_a_new_session_but_their_handles_do_no
         .expect("the restore produced a shape");
 
     let mut after = Vec::new();
-    for joint in &joints {
-        let found = resolve(&restored, &sweep_reference(feature, *joint))
-            .unwrap_or_else(|error| panic!("{joint} lost its name across the file: {error}"));
+    for name in names {
+        let found = naming::resolve(&restored, feature, &name)
+            .unwrap_or_else(|error| panic!("{name:?} lost its name across the file: {error}"));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind(), SubShapeKind::Edge);
         after.push(found[0]);

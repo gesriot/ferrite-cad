@@ -14,15 +14,13 @@ mod naming;
 
 use std::path::Path;
 
-use ferritecad_document::{
-    CacheStore, CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef,
-};
+use ferritecad_document::CacheStore;
 use ferritecad_eval::{extrude_archive_key, load_extrude_archive, store_extrude_archive};
 use ferritecad_kernel::{
     ExtrudeExtent, ExtrudeRequest, GeometryKernel, KernelIdentity, OperationContext, PlanarPoint,
     Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, mock::MockKernel,
 };
-use ferritecad_topology::{ARCHIVE_CACHE_KIND, archive_feature, resolve};
+use ferritecad_topology::{ARCHIVE_CACHE_KIND, archive_feature};
 use ferritecad_types::{DocumentId, ErrorKind, ObjectId, Result, StableEntityId};
 
 struct Plate {
@@ -62,32 +60,6 @@ fn plate(height: f64) -> Result<Plate> {
         segments: labels,
         feature: ObjectId::new(),
     })
-}
-
-fn cap_reference(feature: ObjectId, side: CapSide) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeCap { side },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    }
-}
-
-fn side_reference(feature: ObjectId, segment: StableEntityId) -> TopologyRef {
-    TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::ExtrudeSide {
-            profile_segment: segment,
-        },
-        selection: SelectionRule::AllDerivedFrom { ancestor: segment },
-        fallback_signature: None,
-    }
 }
 
 /// Builds the plate, stores its archive, and drops session and store.
@@ -155,18 +127,33 @@ fn names_survive_a_closed_file_and_a_new_session() {
     ferritecad_topology::restore_feature(&mut kernel, &archived, &mut restored)
         .expect("restores into this session");
 
-    let start = resolve(&restored, &cap_reference(plate.feature, CapSide::Start))
-        .expect("the start cap resolves");
-    let end = resolve(&restored, &cap_reference(plate.feature, CapSide::End))
-        .expect("the end cap resolves");
+    let plane = "00000000-0000-7000-8000-000000000001"
+        .parse()
+        .expect("plane");
+    let start = naming::resolve(
+        &restored,
+        plate.feature,
+        &naming::cap_name(plate.feature, plane, false),
+    )
+    .expect("the start cap resolves");
+    let end = naming::resolve(
+        &restored,
+        plate.feature,
+        &naming::cap_name(plate.feature, plane, true),
+    )
+    .expect("the end cap resolves");
     assert_eq!(start.len(), 1);
     assert_eq!(end.len(), 1);
     assert_ne!(start[0], end[0]);
 
     let mut all = Vec::new();
     for segment in &plate.segments {
-        let faces = resolve(&restored, &side_reference(plate.feature, *segment))
-            .unwrap_or_else(|e| panic!("side {segment} should resolve after a reopen: {e}"));
+        let faces = naming::resolve(
+            &restored,
+            plate.feature,
+            &naming::side_name(plate.feature, plane, *segment),
+        )
+        .unwrap_or_else(|e| panic!("side {segment} should resolve after a reopen: {e}"));
         assert_eq!(faces.len(), 1);
         all.extend(faces);
     }

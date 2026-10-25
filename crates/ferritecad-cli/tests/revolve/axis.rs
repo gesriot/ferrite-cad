@@ -128,7 +128,7 @@ fn measure_solid(
         (0., 0.),
         "the stated axis Line is on the axis"
     );
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::root_faces(&d, &built);
     assert_eq!(
         refs.len(),
         points.len() - 1,
@@ -138,25 +138,21 @@ fn measure_solid(
         .tessellate(shape, &TessellationParams::default(), &context)
         .expect("mesh");
     let mut named = BTreeSet::new();
-    for reference in &refs {
-        let SemanticRole::RevolveFace { profile_segment } = reference.output_role else {
-            panic!("only RevolveFace names")
+    for (_, input, face) in refs {
+        let ferritecad_kernel::NamingInput::Curve(profile_segment) = input else {
+            panic!("curve root");
         };
         assert_ne!(profile_segment, axis, "no name for the axis Line");
-        let resolved = built.resolve(reference).expect("resolves");
-        let [face] = resolved.as_slice() else {
-            panic!("one face for {profile_segment}: {resolved:?}")
-        };
-        assert!(named.insert(*face), "two names on one face");
+        assert!(named.insert(face), "two names on one face");
         let (a, b) = lines[&profile_segment];
-        let range = mesh.faces.iter().find(|r| r.face == *face).expect("drawn");
+        let range = mesh.faces.iter().find(|r| r.face == face).expect("drawn");
         let vertices: Vec<[f64; 3]> = mesh.indices
             [range.first_index as usize..(range.first_index + range.index_count) as usize]
             .iter()
             .map(|v| std::array::from_fn(|j| f64::from(mesh.positions[*v as usize * 3 + j])))
             .collect();
         let radius = |p: &[f64; 3]| p[0].hypot(p[2]);
-        let surface = kernel.face_surface(*face).expect("surface");
+        let surface = kernel.face_surface(face).expect("surface");
         match expected_surface(a, b) {
             "annulus" => {
                 // A radial Line from the axis turns into a whole disc.
@@ -167,14 +163,14 @@ fn measure_solid(
             }
             "cylinder" => {
                 assert_eq!(surface, FaceSurface::Cylinder { radius: a[0] });
-                let (origin, direction) = kernel.surface_axis(*face).expect("axis");
+                let (origin, direction) = kernel.surface_axis(face).expect("axis");
                 assert!(origin[0].abs() < 1e-9 && origin[2].abs() < 1e-9);
                 assert!((direction[1].abs() - 1.).abs() < 1e-12);
                 assert!(vertices.iter().all(|p| (radius(p) - a[0]).abs() < 1e-4));
             }
             _ => {
                 assert_eq!(surface, FaceSurface::Cone);
-                let (origin, direction) = kernel.surface_axis(*face).expect("axis");
+                let (origin, direction) = kernel.surface_axis(face).expect("axis");
                 assert!(origin[0].abs() < 1e-9 && origin[2].abs() < 1e-9);
                 assert!((direction[1].abs() - 1.).abs() < 1e-12);
                 for p in &vertices {
@@ -186,18 +182,19 @@ fn measure_solid(
     }
     assert_eq!(named.len(), faces as usize, "every face has one name");
     // A name made up for the axis Line resolves to nothing.
-    let fake = TopologyRef {
-        id: StableEntityId::new(),
-        owner: revolve,
-        producer_feature: revolve,
-        expected_kind: EntityKind::Face,
-        output_role: SemanticRole::RevolveFace {
-            profile_segment: axis,
-        },
-        selection: SelectionRule::AllDerivedFrom { ancestor: axis },
-        fallback_signature: None,
-    };
-    assert!(built.resolve(&fake).is_err(), "the axis Line has no face");
+    let absent = crate::names::root_name(
+        &d,
+        revolve,
+        ferritecad_kernel::NamingInput::Curve(axis),
+        ferritecad_kernel::NamingOperation::Revolve,
+    );
+    assert_eq!(
+        built.topology().features[&revolve]
+            .resolve(absent)
+            .expect_err("no generated face")
+            .kind(),
+        ErrorKind::Topology
+    );
     built.release_all(&mut kernel);
     d.close().expect("close");
     assert_eq!(kernel.live_shape_count(), 0);
@@ -352,10 +349,20 @@ fn native_solid_revolutions_create_measure_name_cache_and_export() {
                 .expect("print-topology");
             let listed = String::from_utf8(listed.stdout).expect("UTF-8");
             for id in ids.iter().filter(|id| **id != axis) {
-                assert!(listed.contains(&format!("revolve face from segment {id}")));
+                assert!(listed.contains(&format!("curve {id}")));
             }
-            assert!(!listed.contains(&format!("revolve face from segment {axis}")));
-            assert!(listed.contains(&format!("{} of {} references resolved", n - 1, n - 1)));
+            assert!(
+                crate::names::printed_face_descriptions(&listed)
+                    .iter()
+                    .all(|description| !description.contains(&format!("curve {axis}")))
+            );
+            assert!(
+                listed
+                    .lines()
+                    .filter(|line| line.starts_with("    face "))
+                    .count()
+                    == n - 1
+            );
             let m = mesh(&out, &out.with_extension("stl"));
             check_solid_mesh(&m, &p, analytic);
             if tag == "as-drawn" && artifact < 2 {
@@ -847,19 +854,6 @@ pub(super) fn write_solid_document(
                 dependent,
                 dependency,
                 role,
-            })?;
-        }
-        for label in labels.iter().filter(|l| Some(**l) != axis) {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: revolve,
-                producer_feature: revolve,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::RevolveFace {
-                    profile_segment: *label,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: *label },
-                fallback_signature: None,
             })?;
         }
         Ok(())

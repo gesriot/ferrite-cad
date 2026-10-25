@@ -2,7 +2,7 @@
 //! §30E: real session workers, current snapshots, strict SQL/CLI and geometry peers.
 use super::*;
 use crate::sketch::tests::angle_apply::typed_angle;
-use ferritecad_document::{ObjectPayload, SemanticRole};
+use ferritecad_document::ObjectPayload;
 use ferritecad_jobs::EditRequest;
 use ferritecad_kernel::OperationContext;
 
@@ -140,16 +140,22 @@ fn cold(path: &Path, inner: f64, outer: f64, height: f64, degrees: f64) -> f64 {
     let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
     let built =
         ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default()).expect("cold");
-    let refs = d.topology_refs().expect("refs");
-    assert_eq!(
-        refs.iter()
-            .filter(|r| matches!(r.output_role, SemanticRole::RevolveCap { .. }))
-            .count(),
-        2
-    );
-    for r in refs {
-        assert!(built.resolve(&r).is_ok_and(|v| !v.is_empty()), "{}", r.id);
-    }
+    let refs = crate::test_names::names(&d);
+    let caps = built
+        .topology()
+        .features
+        .iter()
+        .flat_map(|(id, feature)| {
+            feature
+                .bindings
+                .keys()
+                .filter(|name| name.kind == ferritecad_kernel::SubShapeKind::Face)
+                .map(|name| built.topology().describe(*id, *name).expect("description"))
+        })
+        .filter(|text| text.contains("cap, producer"))
+        .count();
+    assert_eq!(caps, 2);
+    crate::test_names::assert_names(&built, &refs);
     let body = d
         .objects()
         .expect("objects")
@@ -319,10 +325,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
             .expect("session"),
     );
     let opened = crate::sketch_facts::read(&source).expect("reading");
-    let original_refs = Document::open_read_only(&source)
-        .expect("doc")
-        .topology_refs()
-        .expect("refs");
+    let original_refs = crate::test_names::names(&Document::open_read_only(&source).expect("doc"));
     let axis_line = opened
         .sketches
         .iter()
@@ -419,10 +422,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         assert_eq!(cells(&applied), cells(&independent_peer));
     }
     assert_eq!(
-        Document::open_read_only(&applied)
-            .expect("doc")
-            .topology_refs()
-            .expect("refs"),
+        crate::test_names::names(&Document::open_read_only(&applied).expect("doc")),
         original_refs
     );
     assert_eq!(
@@ -766,14 +766,8 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
         cold(&saved, inner, 8.75, 12.75, 212.25);
         mesh(&stl, inner, 8.75, -3.25, 12.75, 212.25);
         assert_eq!(
-            Document::open_read_only(&source)
-                .expect("source")
-                .topology_refs()
-                .expect("refs"),
-            Document::open_read_only(&saved)
-                .expect("saved")
-                .topology_refs()
-                .expect("refs")
+            crate::test_names::flat_names(&source),
+            crate::test_names::flat_names(&saved)
         );
         if !axis {
             expected_radial = expected;

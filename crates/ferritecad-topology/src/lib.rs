@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: MIT
-//! Complete generative topology and temporary document-role translation.
+//! Complete generative topology and profile-corner edge selection.
 mod archive;
 mod codec;
-mod map;
-mod resolve;
+mod description;
 
 pub use archive::{ArchivedFeature, archive_feature, restore_feature};
 pub use codec::ARCHIVE_CACHE_KIND;
-pub use map::TopologyMap;
-pub use resolve::resolve;
+pub use generative::ModelNaming;
 
 pub mod generative;
-mod generative_legacy;
+mod swept_edge;
 
 mod derivation;
 

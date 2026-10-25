@@ -2,7 +2,7 @@
 //! §26C. Process, SQL, semantic geometry and independent STL evidence.
 use super::*;
 use crate::cut_facts::CutSpec;
-use ferritecad_document::{CapSide, EndCondition, Expression};
+use ferritecad_document::{EndCondition, Expression};
 use ferritecad_eval::CacheOutcome;
 use ferritecad_kernel::{FaceSurface, TessellationParams};
 use ferritecad_types::ObjectId;
@@ -274,44 +274,31 @@ fn measure_part_at(
     }
     let mut named_final = std::collections::BTreeSet::new();
     let mut named_producers = BTreeMap::<_, std::collections::BTreeSet<_>>::new();
-    for reference in d.topology_refs().expect("refs") {
-        let resolved = built.resolve(&reference).expect("resolve");
+    for reference in crate::names::generated_faces(&d, &built) {
+        let resolved = &reference.entities;
         assert_eq!(resolved.len(), 1);
         let face = resolved[0];
         assert!(
             named_producers
-                .entry(reference.producer_feature)
+                .entry(reference.at)
                 .or_default()
                 .insert(face),
             "duplicate name in historical producer"
         );
-        if reference.producer_feature == last {
+        if reference.at == last {
             assert!(named_final.insert(face), "two meanings share a face");
         }
         assert_eq!(
             face.shape(),
-            built
-                .shape(reference.producer_feature)
-                .expect("historical producer")
+            built.shape(reference.at).expect("historical producer")
         );
-        let (origin, cap, segment) = match reference.output_role {
-            SemanticRole::ExtrudeCap { side } => (reference.producer_feature, Some(side), None),
-            SemanticRole::ExtrudeSide { profile_segment } => {
-                (reference.producer_feature, None, Some(profile_segment))
-            }
-            SemanticRole::CarriedCap { side } => (base, Some(side), None),
-            SemanticRole::CarriedSide { profile_segment } => (base, None, Some(profile_segment)),
-            SemanticRole::OriginCap {
-                origin_feature,
-                side,
-            } => (origin_feature, Some(side), None),
-            SemanticRole::OriginSide {
-                origin_feature,
-                profile_segment,
-            } => (origin_feature, None, Some(profile_segment)),
-            _ => panic!("unexpected role"),
+        let origin = reference.origin;
+        let (cap, segment) = match reference.input {
+            crate::names::FaceInput::Curve(curve) => (None, Some(curve)),
+            crate::names::FaceInput::Cap(end) => (Some(end), None),
+            _ => panic!("sweep seed"),
         };
-        let mesh = &meshes[&reference.producer_feature];
+        let mesh = &meshes[&reference.at];
         let range = mesh
             .faces
             .iter()
@@ -339,12 +326,12 @@ fn measure_part_at(
                 FaceSurface::Plane
             );
             if let Some(side) = cap {
-                let z = if side == CapSide::Start { 0. } else { height };
+                let z = if !side { 0. } else { height };
                 assert!(
                     vertices.iter().all(|p| (p[2] - z).abs() < ROUNDING_MM),
                     "outer cap changed meaning"
                 );
-                let sign = if side == CapSide::Start { -1. } else { 1. };
+                let sign = if !side { -1. } else { 1. };
                 assert!(normals.iter().all(|n| n[2] * sign > 0.99));
             } else {
                 let segment = segment.expect("wall segment");
@@ -396,7 +383,7 @@ fn measure_part_at(
                 .position(|id| *id == origin)
                 .expect("exact origin UUID")];
             if cap.is_some() {
-                assert_eq!(cap, Some(CapSide::End));
+                assert_eq!(cap, Some(true));
                 assert_eq!(
                     kernel.face_surface(face).expect("surface"),
                     FaceSurface::Plane
@@ -537,16 +524,10 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
                 .iter()
                 .filter(|t| t.extent.blind_depth_mm().expect("blind") < SIZE[2])
                 .count();
-            assert_eq!(
-                b["topology_refs"].1.len(),
-                a["topology_refs"].1.len() + named
-            );
-            for row in &a["topology_refs"].1 {
-                assert!(
-                    b["topology_refs"].1.contains(row),
-                    "saved reference including rowid changed"
-                );
-            }
+            let prior = crate::names::snapshot(&Document::open_read_only(&source).expect("source"));
+            let next = crate::names::snapshot(&Document::open_read_only(&copy).expect("copy"));
+            let added = history::ordered(&copy)[1].feature;
+            crate::names::assert_added(&prior, &next, added, named);
             let role_column = a["deps"].0.iter().position(|c| c == "role").expect("role");
             for row in &a["deps"].1 {
                 if row[role_column] != rusqlite::types::Value::Text("body_tip".into()) {

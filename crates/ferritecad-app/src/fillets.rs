@@ -592,9 +592,8 @@ pub(crate) mod tests {
     pub(crate) mod session_apply;
     use super::*;
     use ferritecad_document::{
-        Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
-        Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch,
-        SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+        Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
+        ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
     };
     use ferritecad_types::{StableEntityId, Transform};
 
@@ -769,17 +768,7 @@ pub(crate) mod tests {
                     role,
                 })?;
             }
-            for side in [CapSide::Start, CapSide::End] {
-                w.put_topology_ref(&TopologyRef {
-                    id: StableEntityId::new(),
-                    owner: extrude,
-                    producer_feature: extrude,
-                    expected_kind: EntityKind::Face,
-                    output_role: SemanticRole::ExtrudeCap { side },
-                    selection: SelectionRule::Exact,
-                    fallback_signature: None,
-                })?;
-            }
+
             Ok(())
         })
         .expect("plate");

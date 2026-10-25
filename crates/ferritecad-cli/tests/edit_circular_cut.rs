@@ -11,10 +11,12 @@
 #![allow(clippy::panic)]
 #[path = "support/cut_facts.rs"]
 mod cut_facts;
+#[path = "support/names.rs"]
+mod names;
 #[path = "support/transaction.rs"]
 mod transaction;
 use crate::cut_facts::CutDepth;
-use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
+use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
 use std::{
@@ -253,7 +255,7 @@ struct Stored {
     )>,
     tip: Option<ferritecad_types::ObjectId>,
     circles: BTreeMap<ferritecad_types::StableEntityId, ([f64; 2], f64)>,
-    refs: Vec<ferritecad_document::TopologyRef>,
+    refs: crate::names::Names,
     dependencies: Vec<ferritecad_document::Dependency>,
 }
 fn stored(path: &Path) -> Stored {
@@ -284,7 +286,7 @@ fn stored(path: &Path) -> Stored {
             _ => {}
         }
     }
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::snapshot(&d);
     let dependencies = d.dependencies().expect("dependencies");
     let count = objects.len();
     d.close().expect("close");
@@ -346,22 +348,16 @@ fn analytic_with_cache(
     let shape = built.shape(body.id).expect("the body was built");
     let mut by_role: BTreeMap<String, Vec<_>> = BTreeMap::new();
     let mut stats = None;
-    for reference in &doc.topology_refs().expect("refs") {
-        let resolved = built.resolve(reference).expect("resolve");
+    for reference in crate::names::generated_faces(&doc, &built) {
+        let resolved = &reference.entities;
         assert!(
             !resolved.is_empty(),
             "{:?} resolved to nothing",
-            reference.id
+            reference.seed.digest
         );
-        let role = match &reference.output_role {
-            SemanticRole::ExtrudeCap { side } => format!("cap {side:?}"),
-            SemanticRole::ExtrudeSide { .. } => "side".to_owned(),
-            SemanticRole::CarriedCap { side } => format!("carried cap {side:?}"),
-            SemanticRole::CarriedSide { .. } => "carried side".to_owned(),
-            other => panic!("unexpected role {other:?}"),
-        };
-        let owner = format!("{role} of {}", reference.producer_feature);
-        for handle in &resolved {
+        let role = reference.label();
+        let owner = format!("{role} of {}", reference.at);
+        for handle in resolved {
             let surface = kernel.face_surface(*handle).expect("surface");
             by_role.entry(owner.clone()).or_default().push(surface);
             if handle.shape() == shape {
@@ -616,15 +612,9 @@ fn tables(path: &Path) -> BTreeMap<String, (Vec<String>, Rows)> {
 /// operation is allowed to change.
 ///
 /// The allow-list, stated once: the payload and payload hash of exactly the two
-/// selected `objects` rows, the copy's own `meta.modified_at`, and — only when
-/// the edit turns a hole back into a pocket — one added `topology_refs` row. No
-/// row of any table may disappear, and nothing else may be altered.
-fn only_the_numbers_moved(
-    source: &Path,
-    copy: &Path,
-    edited: &[ferritecad_types::ObjectId],
-    added_refs: usize,
-) {
+/// selected `objects` rows and the copy's own `meta.modified_at`. No row of any
+/// table may disappear, and nothing else may be altered.
+fn only_the_numbers_moved(source: &Path, copy: &Path, edited: &[ferritecad_types::ObjectId]) {
     let before = tables(source);
     let after = tables(copy);
     assert_eq!(
@@ -661,19 +651,6 @@ fn only_the_numbers_moved(
                     }
                 }
             }
-            "topology_refs" => {
-                for row in rows {
-                    assert!(
-                        mine.iter().any(|m| m[1..] == row[1..]),
-                        "topology_refs row {row:?} disappeared"
-                    );
-                }
-                assert_eq!(
-                    mine.len(),
-                    rows.len() + added_refs,
-                    "this edit adds exactly {added_refs} name(s)"
-                );
-            }
             "meta" => {
                 for (a, b) in rows.iter().zip(mine) {
                     for (i, cell) in a.iter().enumerate() {
@@ -692,7 +669,7 @@ fn only_the_numbers_moved(
 
 /// Everything about the edited copy that must be the source's, whatever the
 /// numbers did. Returns the copy's own catalogue.
-fn identities_survived(source: &Path, copy: &Path, added_refs: usize) -> Value {
+fn identities_survived(source: &Path, copy: &Path, added_faces: usize) -> Value {
     let before = stored(source);
     let after = stored(copy);
     assert_eq!(after.objects, before.objects, "an object appeared or left");
@@ -704,15 +681,24 @@ fn identities_survived(source: &Path, copy: &Path, added_refs: usize) -> Value {
         before.circles.keys().collect::<Vec<_>>(),
         "the tool circle lost its identity"
     );
-    assert_eq!(
-        after.refs.len(),
-        before.refs.len() + added_refs,
-        "the set of names is not what this edit promised"
+    let faces = |names: &crate::names::Names| {
+        names
+            .iter()
+            .copied()
+            .filter(|(_, n)| n.kind == ferritecad_kernel::SubShapeKind::Face)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let before_faces = faces(&before.refs);
+    let after_faces = faces(&after.refs);
+    assert_eq!(after_faces.len(), before_faces.len() + added_faces);
+    assert!(
+        before_faces.is_subset(&after_faces),
+        "an existing face name changed"
     );
-    for reference in &before.refs {
-        assert!(
-            after.refs.contains(reference),
-            "a saved name was lost or rewritten: {reference:?}"
+    if added_faces == 0 {
+        assert_eq!(
+            after.refs, before.refs,
+            "unchanged topology preserves all names"
         );
     }
     let checked = cli()
@@ -794,7 +780,7 @@ fn native_the_centre_radius_and_depth_move_alone_and_together() {
             .find(|(_, previous, _)| previous.is_some())
             .expect("the cut")
             .0;
-        only_the_numbers_moved(&f.source, &copy, &[tool, cut], 0);
+        only_the_numbers_moved(&f.source, &copy, &[tool, cut]);
         let catalog = identities_survived(&f.source, &copy, 0);
         let saved = cut_facts::observed(&copy).remove(0);
         assert_eq!(saved.center_mm, center);
@@ -816,7 +802,7 @@ fn native_the_centre_radius_and_depth_move_alone_and_together() {
         // planar sides the plate's extrusion named.
         let wall = a
             .by_role
-            .get(&format!("side of {}", f.feature_id()))
+            .get(&format!("curve of {}", f.feature_id()))
             .expect("the cut's own bore wall");
         assert!(
             wall.iter().any(|s| matches!(s,
@@ -866,7 +852,7 @@ fn native_the_centre_radius_and_depth_move_alone_and_together() {
 
 /// The pocket/through policy, in both directions and separately.
 #[test]
-fn native_a_hole_may_be_shortened_and_a_pocket_may_not_be_cut_through() {
+fn native_holes_and_pockets_can_transition_when_no_feature_consumes_the_floor() {
     if !native() {
         return;
     }
@@ -874,7 +860,13 @@ fn native_a_hole_may_be_shortened_and_a_pocket_may_not_be_cut_through() {
     // name and loses nothing, which is why it is supported.
     let hole = Fixture::built(HEIGHT);
     assert!(!hole.saved().extent.leaves_a_floor(HEIGHT));
-    assert!(hole.saved().protected_floor_references.is_empty());
+    assert!(
+        crate::names::floor_names(
+            &Document::open_read_only(&hole.source).expect("source"),
+            hole.saved().feature
+        )
+        .is_empty()
+    );
     let before = analytic(&hole.source);
     assert_eq!(before.faces, 7, "a through hole");
 
@@ -896,7 +888,7 @@ fn native_a_hole_may_be_shortened_and_a_pocket_may_not_be_cut_through() {
         .find(|(_, previous, _)| previous.is_some())
         .expect("the cut")
         .0;
-    only_the_numbers_moved(&hole.source, &pocket, &[tool, cut], 1);
+    only_the_numbers_moved(&hole.source, &pocket, &[tool, cut]);
     let a = analytic(&pocket);
     assert_eq!(a.faces, 8, "a floor appeared");
     assert!(
@@ -907,14 +899,14 @@ fn native_a_hole_may_be_shortened_and_a_pocket_may_not_be_cut_through() {
     // The floor is named by the cut, and the part's own far side by the carried
     // name beside it. Two flat faces, two different meanings.
     assert!(
-        a.by_role.keys().any(|role| role.starts_with("cap End of")),
+        a.by_role.keys().any(|role| role.starts_with("end cap of")),
         "the new floor has no name: {:?}",
         a.by_role.keys().collect::<Vec<_>>()
     );
     assert!(
         a.by_role
             .keys()
-            .any(|role| role.starts_with("carried cap End of")),
+            .any(|role| role.starts_with("inherited end cap of")),
         "the part's far side lost its name"
     );
     check_cut_mesh(
@@ -935,21 +927,29 @@ fn native_a_hole_may_be_shortened_and_a_pocket_may_not_be_cut_through() {
         HEIGHT,
     );
 
-    // And the refused direction, with everything else about the call valid.
     let p = Fixture::built(4.0);
-    let floor = p.saved().protected_floor_references[0].to_string();
-    p.ask(CENTER, RADIUS, HEIGHT);
-    let never = p.root.path().join("never.fcad");
-    let refused = reply(p.edit(&never).output().expect("process"), OP, 2);
-    assert_eq!(refused["error"]["kind"], json!("topology"));
     assert!(
-        refused["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains(&floor),
-        "the refusal must name the reference it protects: {refused}"
+        !crate::names::floor_names(
+            &Document::open_read_only(&p.source).expect("pocket"),
+            p.saved().feature
+        )
+        .is_empty()
     );
-    assert!(!never.exists());
+    let through = p.published(CENTER, RADIUS, HEIGHT, "through");
+    assert!(
+        crate::names::floor_names(
+            &Document::open_read_only(&through).expect("through"),
+            p.saved().feature
+        )
+        .is_empty()
+    );
+    assert_eq!(analytic(&through).faces, 7);
+    check_cut_mesh(
+        &mesh(&through, &through.with_extension("stl")),
+        CENTER,
+        RADIUS,
+        HEIGHT,
+    );
     // Everything just short of the part's height is still accepted.
     p.published(CENTER, RADIUS, HEIGHT - 0.001, "nearly-through");
 }
@@ -1006,12 +1006,9 @@ fn native_the_edited_cut_is_keyed_by_its_own_numbers() {
         let (_, volume) = kernel.shape_stats(shape).expect("stats");
         // Every name still resolves out of the cached archive, exactly as it
         // does cold.
-        let resolved = doc
-            .topology_refs()
-            .expect("refs")
-            .iter()
-            .map(|r| built.resolve(r).expect("resolve").len())
-            .sum::<usize>();
+        assert_eq!(crate::names::primary(&built), crate::names::snapshot(&doc));
+        crate::names::assert_primary(&built);
+        let resolved = crate::names::primary(&built).len();
         built.release_all(&mut kernel);
         doc.close().expect("close");
         (volume, resolved)
@@ -1192,7 +1189,7 @@ fn native_unknown_tables_survive_and_a_stored_trigger_stops_the_edit() {
         .0;
     // The whole-table comparison covers the extension table by construction;
     // asserting it is here so the reason it is covered is not an accident.
-    only_the_numbers_moved(&f.source, &copy, &[tool, cut], 0);
+    only_the_numbers_moved(&f.source, &copy, &[tool, cut]);
     assert!(
         tables(&copy).contains_key("extra_data"),
         "the table vanished"

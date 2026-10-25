@@ -85,8 +85,7 @@ unchanged (`FilletEdge` stays as an alias). `edge.feature == previous` is
 required: this slice chamfers the Extrude's own edge.
 
 * **Capabilities:** the object requires `core.part.v1`, `feature.predecessor.v1`
-  and the new `feature.chamfer.v1`. The new role `EdgeChamferFace` requires
-  `feature.chamfer.v1`; the origin roles keep `topology.origin-face.v1`.
+  and `feature.chamfer.v1`. Output names are derived during rebuild.
 * **Why a new capability and kind:** a `main` build does not know
   `feature.chamfer`. It preserves the object verbatim and opens the document
   **read-only**; it cannot build the Body whose tip is a Chamfer, so it never
@@ -158,20 +157,19 @@ the points.
 
 ## Names
 
-* Existing references keep their producer (the base Extrude's historical
-  output); they are never repointed.
-* The Chamfer's own references, all produced by the Chamfer:
-  * `EdgeChamferFace { edge_feature: base, joint }` — **new role**, the one
-    planar face made from that edge (`Face`, `Exact`). Not `EdgeFilletFace`:
-    one is a cylinder, the other a plane, and the roles do not resolve
-    against each other.
-  * `OriginCap { base, Start|End }` ×2, `OriginSide { base, segment }` ×4 —
-    through the Chamfer's own OCCT history: the two sides at the corner and both
-    caps are trimmed (`Modified`), the other two sides are kept. A name the
-    operation removed is recorded removed, never matched by geometry.
-    Seven references in all.
-* Edges and vertices of the base remain historical at the base producer; the
-  Chamfer tip publishes no edge or vertex names in this slice.
+Output names are derived at rebuild time from the feature, operation, saved
+profile curves and cap roots, together with complete kernel history and
+incidence. Each feature exposes face, edge and vertex names. A name binds a
+selection only when it identifies exactly one entity in that feature; an
+ambiguous name never selects a neighbour. Names of historical results stay at
+their producing feature. No output-name rows are stored in the document.
+
+The CLI reports the kind, digest, entity count and complete derivation for
+each name. The window displays the same derivation and digest. See
+[ADR 0007](decisions/0007-generative-topological-naming.md) and the
+[current file format](file-format.md). Fillet and Chamfer still consume
+`SweptEdge { feature, joint }`; their corner policies and refusal messages
+are unchanged.
 
 ## Cache and archive
 
@@ -191,7 +189,6 @@ rebuilds. Cold, Miss and Hit give the same Body, names and refusals.
 * `objects`: one new Chamfer row; the Body row's payload and payload hash (its tip);
 * `deps`: + `Chamfer → Extrude` (Predecessor), + `Body → Chamfer` (BodyTip),
   − `Body → Extrude` (BodyTip);
-* `topology_refs`: + 7 rows (the names above);
 * `capabilities`: `feature.chamfer.v1`, `feature.predecessor.v1` and
   `topology.origin-face.v1` if not yet declared;
 * `meta.modified_at`.
@@ -289,6 +286,21 @@ the exact and the measured volumes.
 import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile, uuid, time
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-29a-"))
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
@@ -388,9 +400,9 @@ def measured(copy, distance):
     corner cut by one planar face facing out of it whose triangles add up to
     d*sqrt(2)*h, with the two new vertex columns d along each adjacent side."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Chamfer" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Chamfer" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--json"])
     volume, tri = stl(out)
@@ -439,7 +451,8 @@ body, version = catalog["bodies"][0]["body_id"], catalog["content_version"]
 done = geometry(["edit", plate, "--expect-version", version, "--request", request, "-o", one, "--json"], one)["result"]
 done = tip(inspect(one), "chamfers")
 assert done["edge"] == edge and done["expression"]["value"] == d1
-assert len(tables(one)["topology_refs"][1]) - len(tables(plate)["topology_refs"][1]) == 7
+assert len([n for n in output_names(one) if n[1] == "face"]) - \
+    len([n for n in output_names(plate) if n[1] == "face"]) == 7
 exact_one = measured(one, d1)
 
 # 4. The saved Chamfer, and every other editor's honest refusal.
@@ -462,8 +475,8 @@ for d2 in (4.5, D - 0.01):
     edited = geometry(["edit", one, "--expect-version", version, "--request", request, "-o", two, "--json"], two)["result"]
     assert inspect(two)["chamfers"][0]["feature_id"] == chamfer["feature_id"]
     only_row(one, two, chamfer["feature_id"])
-    assert [r[0] for r in tables(two)["topology_refs"][1]] == [r[0] for r in tables(one)["topology_refs"][1]], \
-        "every name keeps its UUID"
+    assert output_names(two) == output_names(one), \
+        "every name keeps its digest"
     measured(two, d2)
 
 # 6. The bound is exact: the largest distance was accepted above, the next

@@ -3,7 +3,6 @@
 //! cold rebuilds and cache hits; mode transitions keep, add or refuse names.
 use super::*;
 use crate::cut_facts::CutObservation;
-use ferritecad_document::TopologyRef;
 use ferritecad_types::ObjectId;
 
 const BOUNDS: [[f64; 2]; 2] = [[0., 0.], [80., 50.]];
@@ -116,30 +115,15 @@ fn height(source: &Path, destination: &Path, height: f64, code: i32) -> Value {
 }
 
 /// Every saved name of this Cut's floor, wherever it is stored.
-fn floor_names(path: &Path, feature: ObjectId) -> Vec<TopologyRef> {
-    Document::open_read_only(path)
-        .expect("doc")
-        .topology_refs()
-        .expect("refs")
-        .into_iter()
-        .filter(|r| match r.output_role {
-            SemanticRole::ExtrudeCap {
-                side: ferritecad_document::CapSide::End,
-            } => r.producer_feature == feature,
-            SemanticRole::OriginCap {
-                origin_feature,
-                side: ferritecad_document::CapSide::End,
-            } => origin_feature == feature,
-            _ => false,
-        })
-        .collect()
+fn floor_names(path: &Path, feature: ObjectId) -> crate::names::Names {
+    crate::names::floor_names(&Document::open_read_only(path).expect("doc"), feature)
 }
 
 /// The SQL allowlist of one Cut edit: the tool Sketch and Cut payload/hash,
 /// the Cut's `schema_version` column when its end changes layout, the one
-/// `feature.through-all.v1` index row when first needed, the added refs and
+/// `feature.through-all.v1` index row when first needed, and
 /// `meta.modified_at`. Every other cell and every rowid is unchanged.
-fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation, added: usize) {
+fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation) {
     use rusqlite::types::Value as Sql;
     let a = tables(source);
     let b = tables(copy);
@@ -147,11 +131,6 @@ fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation, added: usize
     for (name, (columns, rows)) in &a {
         let (cols, now) = &b[name];
         assert_eq!(columns, cols);
-        if name == "topology_refs" {
-            assert_eq!(now.len(), rows.len() + added, "added refs");
-            assert!(rows.iter().all(|r| now.contains(r)), "a saved ref moved");
-            continue;
-        }
 
         assert_eq!(rows.len(), now.len(), "{name} rows");
         for (old, new) in rows.iter().zip(now) {
@@ -352,7 +331,6 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
         let source = build(root.path(), &tools);
         let original = std::fs::read(&source).expect("bytes");
         let ordered = history::ordered(&source);
-        let never = root.path().join("never.fcad");
         for index in [0, n / 2, n - 1] {
             let saved = &ordered[index];
             let tool = tools[index];
@@ -370,7 +348,7 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                     edit(&source, &copy, saved, changed, 0);
                     assert_eq!(history::ordered(&copy)[index].extent, changed.extent);
                     assert!(!floor_names(&copy, saved.feature).is_empty());
-                    only_the_cut(&source, &copy, saved, later);
+                    only_the_cut(&source, &copy, saved);
                     assert_eq!(floor_names(&copy, saved.feature).len(), later);
                     let mut all = tools.clone();
                     all[index] = changed;
@@ -389,7 +367,7 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                         ..tool
                     };
                     edit(&source, &copy, saved, moved, 0);
-                    only_the_cut(&source, &copy, saved, 0);
+                    only_the_cut(&source, &copy, saved);
                 }
                 CutDepth::Blind { depth_mm } if depth_mm == SIZE[2] => {
                     // Blind through -> ThroughAll keeps every name; it stays
@@ -401,7 +379,7 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                     };
                     edit(&source, &copy, saved, changed, 0);
                     assert!(floor_names(&copy, saved.feature).is_empty());
-                    only_the_cut(&source, &copy, saved, 0);
+                    only_the_cut(&source, &copy, saved);
                     let mut all = tools.clone();
                     all[index] = changed;
                     let grown = root.path().join(format!("intent-{index}-grown.fcad"));
@@ -416,28 +394,22 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
                     );
                     let back = root.path().join(format!("back-{index}.fcad"));
                     edit(&copy, &back, &history::ordered(&copy)[index], tool, 0);
-                    only_the_cut(&copy, &back, &history::ordered(&copy)[index], 0);
+                    only_the_cut(&copy, &back, &history::ordered(&copy)[index]);
                 }
                 CutDepth::Blind { .. } => {
-                    // A pocket whose floor is named refuses ThroughAll during
-                    // rebuild, naming the Cut and every protected UUID.
-                    assert!(!saved.protected_floor_references.is_empty());
-                    let refused = edit(
-                        &source,
-                        &never,
-                        saved,
-                        CutSpec {
-                            extent: CutDepth::ThroughAll,
-                            ..tool
-                        },
-                        2,
+                    assert!(!floor_names(&source, saved.feature).is_empty());
+                    let through = root.path().join(format!("through-{index}.fcad"));
+                    let mut changed = tools.clone();
+                    changed[index].extent = CutDepth::ThroughAll;
+                    edit(&source, &through, saved, changed[index], 0);
+                    assert!(floor_names(&through, saved.feature).is_empty());
+                    measure_history_at(&through, &changed, BOUNDS, SIZE[2], None);
+                    check_history_mesh_at(
+                        &mesh(&through, &through.with_extension("stl")),
+                        &changed,
+                        BOUNDS,
+                        SIZE[2],
                     );
-                    let message = refused["error"]["message"].as_str().expect("message");
-                    assert!(message.contains(&saved.feature.to_string()), "{message}");
-                    for id in &saved.protected_floor_references {
-                        assert!(message.contains(&id.to_string()), "{message}");
-                    }
-                    assert!(!never.exists());
                 }
             }
         }
@@ -462,7 +434,7 @@ fn native_through_all_transitions_refs_sql_and_refusals() {
             },
             0,
         );
-        only_the_cut(&blind, &copy, saved, 0);
+        only_the_cut(&blind, &copy, saved);
         assert_eq!(std::fs::read(&source).expect("source"), original);
     }
 }

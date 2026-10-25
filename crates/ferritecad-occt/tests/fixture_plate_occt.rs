@@ -9,7 +9,7 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
-use ferritecad_document::{CacheStore, SemanticRole};
+use ferritecad_document::CacheStore;
 use ferritecad_eval::{CacheOutcome, rebuild_cached, rebuild_cold};
 use ferritecad_fixtures::{drop_segment, open_plate, plate_manifest, render_manifest, set_height};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
@@ -105,6 +105,22 @@ fn open_cascade_loses_only_the_dropped_segments_name() {
     let mut document = open_plate(dir.path()).expect("the fixture opens");
     let mut kernel = OcctKernel::new().expect("opens");
 
+    let before =
+        rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("original plate");
+    let originals: Vec<_> = before
+        .topology()
+        .features
+        .iter()
+        .flat_map(|(id, n)| {
+            n.bindings
+                .keys()
+                .filter(|n| n.kind == ferritecad_kernel::SubShapeKind::Face)
+                .map(|n| (*id, *n))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(originals.len(), 6);
+    before.release_all(&mut kernel);
     // Taller as well, so the edit is not only topological.
     set_height(&mut document, 25.0).expect("resizes");
     let gone = drop_segment(&mut document).expect("removes a segment");
@@ -113,23 +129,36 @@ fn open_cascade_loses_only_the_dropped_segments_name() {
         .expect("a three-sided profile still rebuilds");
 
     let mut resolved = Vec::new();
-    for reference in document.topology_refs().expect("reads references") {
-        let names_the_gone_segment = matches!(
-            reference.output_role,
-            SemanticRole::ExtrudeSide { profile_segment } if profile_segment == gone
-        );
-        match built.resolve(&reference) {
+    for (feature, name) in originals {
+        let names_the_gone_segment = name == {
+            use ferritecad_topology::generative::{curve_root, generated};
+            let objects = document.objects().expect("objects");
+            let plane = objects
+                .iter()
+                .find_map(|o| match &o.payload {
+                    ferritecad_document::ObjectPayload::Sketch(s) => Some(s.plane),
+                    _ => None,
+                })
+                .expect("plane");
+            generated(
+                feature,
+                ferritecad_kernel::NamingOperation::Extrude,
+                curve_root(feature, gone, Some(plane)),
+                ferritecad_kernel::SubShapeKind::Face,
+            )
+        };
+        match built
+            .topology()
+            .feature(feature)
+            .expect("feature")
+            .resolve(name)
+        {
             Ok(found) => {
                 assert!(!names_the_gone_segment, "a lost name must not resolve");
-                assert_eq!(found.len(), 1);
-                resolved.extend(found);
+                resolved.push(found);
             }
             Err(error) => {
-                assert!(
-                    names_the_gone_segment,
-                    "{:?} failed: {error}",
-                    reference.output_role
-                );
+                assert!(names_the_gone_segment, "{name:?} failed: {error}");
                 assert_eq!(error.kind(), ErrorKind::Topology);
             }
         }

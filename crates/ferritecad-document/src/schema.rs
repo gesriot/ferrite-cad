@@ -51,19 +51,6 @@ CREATE TABLE deps (
 
 CREATE INDEX deps_by_dependency ON deps(dependency_id);
 
-CREATE TABLE topology_refs (
-    id                BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 16),
-    owner_id          BLOB NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
-    producer_feature  BLOB NOT NULL REFERENCES objects(id) ON DELETE RESTRICT,
-    expected_kind     TEXT NOT NULL,
-    payload           BLOB NOT NULL,
-    payload_hash      BLOB NOT NULL CHECK (length(payload_hash) = 32)
-) STRICT;
-
-CREATE INDEX topology_refs_by_owner ON topology_refs(owner_id);
-CREATE INDEX topology_refs_by_producer ON topology_refs(producer_feature);
-
-
 CREATE TABLE imported_sources (
     id           BLOB    PRIMARY KEY NOT NULL CHECK (length(id) = 16),
     format       TEXT    NOT NULL,
@@ -190,6 +177,23 @@ pub fn check_application_id(conn: &Connection, expected: i32, what: &str) -> Res
         return Err(CadError::input(format!(
             "not a FerriteCAD {what}: application id is {found:#010x}, expected {expected:#010x}"
         )));
+    }
+    Ok(())
+}
+
+/// Reject an output catalogue before reading any model payload.
+pub(crate) fn check_document_tables(conn: &Connection) -> Result<()> {
+    let catalogue: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'topology_refs')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| CadError::io("checking document tables", e))?;
+    if catalogue {
+        return Err(CadError::input(
+            "unsupported document table topology_refs: output names must be derived from features",
+        ));
     }
     Ok(())
 }

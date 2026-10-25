@@ -10,13 +10,12 @@
 #![allow(clippy::panic)]
 
 use ferritecad_document::{
-    Access, Body, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole, Document,
-    EndCondition, EntityKind, Envelope, Expression, Extrude, ObjectPayload, Point2, SelectionRule,
-    SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    Access, Body, CacheStore, DatumPlane, Dependency, DependencyRole, Document, EndCondition,
+    Envelope, Expression, Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry,
+    SolidOperation,
 };
 use ferritecad_types::{
-    CadError, ContentHash, ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId, Transform,
-    Unit,
+    CadError, ContentHash, ErrorKind, ObjectId, Result, StableEntityId, Transform, Unit,
 };
 use tempfile::TempDir;
 
@@ -117,19 +116,7 @@ fn populate(document: &mut Document) -> Result<Plate> {
             dependency: plate.extrude,
             role: DependencyRole::BodyTip,
         })?;
-        w.put_topology_ref(&TopologyRef {
-            id: StableEntityId::new(),
-            owner: plate.extrude,
-            producer_feature: plate.extrude,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::ExtrudeSide {
-                profile_segment: plate.first_segment,
-            },
-            selection: SelectionRule::AllDerivedFrom {
-                ancestor: plate.first_segment,
-            },
-            fallback_signature: None,
-        })?;
+
         Ok(())
     })?;
 
@@ -150,7 +137,6 @@ fn a_document_survives_save_reload_and_resave_unchanged() {
     populate(&mut document).expect("populates");
     let before_objects = document.objects().expect("reads");
     let before_deps = document.dependencies().expect("reads");
-    let before_refs = document.topology_refs().expect("reads");
     let before_id = document.meta().document_id;
     document.close().expect("closes");
 
@@ -158,7 +144,6 @@ fn a_document_survives_save_reload_and_resave_unchanged() {
     assert_eq!(reopened.meta().document_id, before_id);
     assert_eq!(reopened.objects().expect("reads"), before_objects);
     assert_eq!(reopened.dependencies().expect("reads"), before_deps);
-    assert_eq!(reopened.topology_refs().expect("reads"), before_refs);
 
     // Rewriting every object must be a no-op on meaning.
     reopened
@@ -179,7 +164,6 @@ fn a_document_survives_save_reload_and_resave_unchanged() {
 
     let final_read = Document::open(&path).expect("reopens");
     assert_eq!(final_read.objects().expect("reads"), before_objects);
-    assert_eq!(final_read.topology_refs().expect("reads"), before_refs);
 }
 
 #[test]
@@ -340,7 +324,7 @@ fn a_cycle_in_the_graph_is_reported_rather_than_evaluated() {
             w.add_dependency(Dependency {
                 dependent: plate.plane,
                 dependency: plate.extrude,
-                role: DependencyRole::TopologyReference,
+                role: DependencyRole::Profile,
             })
         })
         .expect("the edge is storable; it is the graph that is wrong");
@@ -614,152 +598,6 @@ fn modification_time_advances_only_on_a_successful_edit() {
 }
 
 #[test]
-fn one_corner_has_one_meaning_and_one_stored_spelling() {
-    let feature = ObjectId::new();
-    let one = StableEntityId::new();
-    let other = StableEntityId::new();
-    // One reference identity throughout: what is under test is whether the
-    // pair changes the meaning, not whether two different references differ.
-    let id = StableEntityId::new();
-    let reference = |joint| TopologyRef {
-        id,
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Edge,
-        output_role: SemanticRole::ExtrudeSweepEdge { joint },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    };
-
-    // Named either way round, it means the same thing.
-    let forwards = ProfileJoint::new(one, other).expect("two segments");
-    let backwards = ProfileJoint::new(other, one).expect("two segments");
-    assert_eq!(
-        reference(forwards).meaning_hash(),
-        reference(backwards).meaning_hash()
-    );
-    // And a different corner means something else.
-    let elsewhere = ProfileJoint::new(one, StableEntityId::new()).expect("two segments");
-    assert_ne!(
-        reference(forwards).meaning_hash(),
-        reference(elsewhere).meaning_hash()
-    );
-
-    // A stored pair out of order is refused rather than sorted on the way in,
-    // so one corner never acquires a second spelling on disk. Checked through
-    // CBOR, which is the codec a stored role actually travels in.
-    let [first, second] = forwards.segments();
-    let mut canonical = Vec::new();
-    ciborium::into_writer(&[first, second], &mut canonical).expect("encodes");
-    assert_eq!(
-        ciborium::from_reader::<ProfileJoint, _>(canonical.as_slice()).expect("round trips"),
-        forwards
-    );
-
-    let mut swapped = Vec::new();
-    ciborium::into_writer(&[second, first], &mut swapped).expect("encodes");
-    let refusal = ciborium::from_reader::<ProfileJoint, _>(swapped.as_slice())
-        .expect_err("a swapped stored pair is refused");
-    assert!(refusal.to_string().contains("canonical order"), "{refusal}");
-}
-
-#[test]
-fn one_corner_on_one_cap_has_one_meaning_and_one_stored_spelling() {
-    let feature = ObjectId::new();
-    let one = StableEntityId::new();
-    let other = StableEntityId::new();
-    // One reference identity throughout: what is under test is whether the
-    // side and the pair change the meaning, not whether two references differ.
-    let id = StableEntityId::new();
-    let reference = |side, joint| TopologyRef {
-        id,
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: EntityKind::Vertex,
-        output_role: SemanticRole::ExtrudeCapVertex { side, joint },
-        selection: SelectionRule::Exact,
-        fallback_signature: None,
-    };
-
-    let forwards = ProfileJoint::new(one, other).expect("two segments");
-    let backwards = ProfileJoint::new(other, one).expect("two segments");
-
-    // Naming the pair the other way round is the same corner, and the stored
-    // meaning says so rather than producing a second name for one point.
-    assert_eq!(
-        reference(CapSide::Start, forwards).meaning_hash(),
-        reference(CapSide::Start, backwards).meaning_hash()
-    );
-
-    // The side is part of the meaning: the two ends of one corner are two
-    // points, and one hash for both would make them one reference.
-    assert_ne!(
-        reference(CapSide::Start, forwards).meaning_hash(),
-        reference(CapSide::End, forwards).meaning_hash()
-    );
-
-    // Both segments are part of it too: a corner sharing one segment with a
-    // neighbour is not that neighbour.
-    let neighbour = ProfileJoint::new(one, StableEntityId::new()).expect("two segments");
-    assert_ne!(
-        reference(CapSide::Start, forwards).meaning_hash(),
-        reference(CapSide::Start, neighbour).meaning_hash()
-    );
-
-    // And it is not the sweep edge named by the same pair. The two roles
-    // select different geometry and must not collide.
-    let mut edge = reference(CapSide::Start, forwards);
-    edge.expected_kind = EntityKind::Edge;
-    edge.output_role = SemanticRole::ExtrudeSweepEdge { joint: forwards };
-    assert_ne!(
-        reference(CapSide::Start, forwards).meaning_hash(),
-        edge.meaning_hash()
-    );
-
-    // Nor the cap edge of one of its segments, on the same cap.
-    let mut cap_edge = reference(CapSide::Start, forwards);
-    cap_edge.expected_kind = EntityKind::Edge;
-    cap_edge.output_role = SemanticRole::ExtrudeCapEdge {
-        side: CapSide::Start,
-        profile_segment: one,
-    };
-    assert_ne!(
-        reference(CapSide::Start, forwards).meaning_hash(),
-        cap_edge.meaning_hash()
-    );
-}
-
-#[test]
-fn a_corner_role_survives_being_written_down_as_itself() {
-    let joint = ProfileJoint::new(StableEntityId::new(), StableEntityId::new())
-        .expect("two different segments");
-    let encoded = |role: &SemanticRole| -> Vec<u8> {
-        let mut bytes = Vec::new();
-        ciborium::into_writer(role, &mut bytes).expect("serialises");
-        bytes
-    };
-
-    for side in [CapSide::Start, CapSide::End] {
-        let role = SemanticRole::ExtrudeCapVertex { side, joint };
-        let bytes = encoded(&role);
-        let back: SemanticRole = ciborium::from_reader(bytes.as_slice()).expect("deserialises");
-        assert_eq!(back, role);
-    }
-
-    // The two sides are not one another after a round trip either.
-    assert_ne!(
-        encoded(&SemanticRole::ExtrudeCapVertex {
-            side: CapSide::Start,
-            joint,
-        }),
-        encoded(&SemanticRole::ExtrudeCapVertex {
-            side: CapSide::End,
-            joint,
-        })
-    );
-}
-
-#[test]
 fn unknown_types_and_corrupt_payloads_refuse_open_without_changing_the_file() {
     for (type_name, payload) in [("feature.unrecognised", vec![0xf6]), ("body", vec![0xff])] {
         let (_dir, path) = workspace();
@@ -808,5 +646,35 @@ fn unknown_types_and_corrupt_payloads_refuse_open_without_changing_the_file() {
             );
             assert_eq!(std::fs::read(&path).expect("unchanged bytes"), before);
         }
+    }
+}
+
+#[test]
+fn refuse_an_output_catalogue_before_reading_model_payloads() {
+    let dir = tempfile::tempdir().expect("directory");
+    let path = dir.path().join("catalogue.fcad");
+    Document::create(&path)
+        .expect("create")
+        .close()
+        .expect("close");
+    let db = rusqlite::Connection::open(&path).expect("connection");
+    db.execute_batch(
+        "CREATE TABLE topology_refs (id BLOB);
+         INSERT INTO topology_refs VALUES (x'01');
+         DROP TABLE objects;",
+    )
+    .expect("unsupported table");
+    drop(db);
+    let bytes = std::fs::read(&path).expect("bytes");
+    for writable in [false, true] {
+        let opened = if writable {
+            Document::open(&path)
+        } else {
+            Document::open_read_only(&path)
+        };
+        let error = opened.expect_err("output catalogue must be refused");
+        assert!(error.to_string().contains("topology_refs"), "{error}");
+        assert!(error.to_string().contains("output names"), "{error}");
+        assert_eq!(std::fs::read(&path).expect("unchanged file"), bytes);
     }
 }

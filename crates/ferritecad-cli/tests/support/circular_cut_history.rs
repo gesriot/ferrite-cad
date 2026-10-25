@@ -70,12 +70,7 @@ fn native_history_origins_floors_sql_and_old_sidecars() {
             changed[index].extent = CutDepth::Blind { depth_mm: 2.75 };
             let copy = root.path().join(format!("edit-{n}-{index}.fcad"));
             edit(&source, &copy, &saved[index], changed[index], 0);
-            let adds = if tools[index].extent.blind_depth_mm().expect("blind") == 12. {
-                n - index
-            } else {
-                0
-            };
-            only_numbers(&source, &copy, &saved[index], adds);
+            only_numbers(&source, &copy, &saved[index]);
             let cold = measure_history(&copy, &changed, None);
             std::fs::copy(
                 source.with_extension("fcad-cache"),
@@ -94,23 +89,24 @@ fn native_history_origins_floors_sql_and_old_sidecars() {
             let current = ordered(&copy);
             let again = root.path().join(format!("again-{n}-{index}.fcad"));
             edit(&copy, &again, &current[index], changed[index], 0);
-            only_numbers(&copy, &again, &current[index], 0);
-            let never = root.path().join("never.fcad");
-            let failure = edit(
-                &copy,
-                &never,
-                &current[index],
-                CutSpec {
-                    extent: CutDepth::Blind { depth_mm: 12. },
-                    ..changed[index]
-                },
-                2,
+            only_numbers(&copy, &again, &current[index]);
+            let through = root.path().join(format!("through-{n}-{index}.fcad"));
+            let floors = crate::names::floor_names(
+                &Document::open_read_only(&copy).expect("copy"),
+                current[index].feature,
             );
-            assert_eq!(current[index].protected_floor_references.len(), n - index);
-            for id in &current[index].protected_floor_references {
-                assert!(failure.to_string().contains(&id.to_string()));
-            }
-            assert!(!never.exists());
+            assert_eq!(floors.len(), n - index);
+            let mut no_floor = changed.clone();
+            no_floor[index].extent = CutDepth::Blind { depth_mm: 12. };
+            edit(&copy, &through, &current[index], no_floor[index], 0);
+            assert!(
+                crate::names::floor_names(
+                    &Document::open_read_only(&through).expect("through"),
+                    current[index].feature
+                )
+                .is_empty()
+            );
+            measure_history(&through, &no_floor, None);
             if n <= 4 {
                 let fbx = copy.with_extension("fbx");
                 reply(
@@ -156,19 +152,20 @@ fn native_adds_seventeen_with_names_cold_geometry_and_mesh() {
         only_the_cut_was_added(&source, &dest, tip(&d).0);
         let a = tables(&source);
         let b = tables(&dest);
-        for table in ["topology_refs"] {
-            for row in &a[table].1 {
-                assert!(b[table].1.contains(row), "saved {table} rowid/cell changed");
-            }
-        }
-        assert_eq!(
-            b["topology_refs"].1.len() - a["topology_refs"].1.len(),
+        let next = Document::open_read_only(&dest).expect("copy");
+        let prior_names = crate::names::snapshot(&d);
+        let next_names = crate::names::snapshot(&next);
+        let added = ordered(&dest)[index].feature;
+        crate::names::assert_added(
+            &prior_names,
+            &next_names,
+            added,
             6 + index
                 + 1
                 + tools[..=index]
                     .iter()
                     .filter(|t| t.extent.blind_depth_mm().expect("blind") < 12.)
-                    .count()
+                    .count(),
         );
         let role = a["deps"].0.iter().position(|c| c == "role").expect("role");
         for row in &a["deps"].1 {

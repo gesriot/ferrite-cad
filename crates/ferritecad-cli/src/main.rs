@@ -35,10 +35,6 @@ use ferritecad_types::{CadError, Result, Unit};
 /// that could not run at all.
 const EXIT_INVALID: u8 = 1;
 const EXIT_FAILED: u8 = 2;
-/// A document that opened and rebuilt, and whose stored names no longer all
-/// find geometry. Distinct from both of the above: nothing went wrong with the
-/// command, and the document is not malformed — it has simply lost a name.
-const EXIT_UNRESOLVED: u8 = 3;
 /// An import that produced a complete document, with things noticed on the way.
 ///
 /// Separate from success because a script should be able to tell the two apart
@@ -114,7 +110,7 @@ enum Command {
     /// and feature additions to a new .fcad copy.
     /// Preserves identities; never overwrites source or output. Requires a kernel.
     Edit(edit::EditArgs),
-    /// Show a document's metadata, objects, graph and references.
+    /// Show a document's metadata, objects, graph and derived topology names.
     Inspect(InspectArgs),
     /// Check stored consistency without writes or a geometry kernel.
     Validate(ValidateArgs),
@@ -139,7 +135,7 @@ enum Command {
     ExportFbx(ExportFbxArgs),
     /// Rebuild a document from scratch and report what it produced.
     Rebuild(RebuildArgs),
-    /// Rebuild a document and report what each stored reference resolves to.
+    /// Rebuild a document and report each feature's derived names and their cardinalities.
     PrintTopology(DocumentArgs),
     /// Read a STEP file into a new document, source bytes and all.
     ImportStep(ImportStepArgs),
@@ -293,7 +289,7 @@ struct CreateArgs {
     angle_unit: String,
 
     /// Populate the document with a sample plate: a plane, a rectangular
-    /// profile, an extrusion and its topology references.
+    /// profile and an extrusion.
     #[arg(long)]
     sample: bool,
 

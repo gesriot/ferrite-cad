@@ -616,8 +616,8 @@ pub(crate) mod tests {
                     original_document.dependencies().expect("original links")
                 );
                 assert_eq!(
-                    doc.topology_refs().expect("refs"),
-                    original_document.topology_refs().expect("original refs")
+                    crate::test_names::names(&doc),
+                    crate::test_names::names(&original_document)
                 );
                 for old in original_document.objects().expect("objects") {
                     let new = doc
@@ -649,7 +649,11 @@ pub(crate) mod tests {
                     "{rebuilt}"
                 );
                 assert!(
-                    rebuilt.contains("3 of 3 stored references resolved"),
+                    rebuilt
+                        .lines()
+                        .filter(|line| line.trim_start().starts_with("face "))
+                        .count()
+                        == 6,
                     "{rebuilt}"
                 );
                 opened(path);

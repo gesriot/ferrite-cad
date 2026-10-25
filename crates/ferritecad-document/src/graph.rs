@@ -29,8 +29,6 @@ pub enum DependencyRole {
     BodyTip,
     /// A named value an expression reads.
     Parameter,
-    /// Geometry named through a topology reference.
-    TopologyReference,
 }
 
 impl DependencyRole {
@@ -41,7 +39,6 @@ impl DependencyRole {
             Self::Predecessor => "predecessor",
             Self::BodyTip => "body_tip",
             Self::Parameter => "parameter",
-            Self::TopologyReference => "topology_reference",
         }
     }
 
@@ -52,7 +49,6 @@ impl DependencyRole {
             "predecessor" => Ok(Self::Predecessor),
             "body_tip" => Ok(Self::BodyTip),
             "parameter" => Ok(Self::Parameter),
-            "topology_reference" => Ok(Self::TopologyReference),
             other => Err(CadError::input(format!(
                 "unknown dependency role {other:?}"
             ))),

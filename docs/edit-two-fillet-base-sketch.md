@@ -95,7 +95,7 @@ Stored coordinates are never replaced by solver output.
 `Document::write_sketch_geometry` unchanged: inside its transaction it
 re-derives the edit from the current document through the same choice (both
 Fillets read again) and compares the whole prepared payload; version, alias,
-no-clobber, cancellation, cleanup and strict references are the copy job's.
+no-clobber, cancellation, cleanup and no new failed features are the copy job's.
 Every name must resolve after the cold rebuild, both cylinders under their
 own names. The base Extrude's key covers the coordinates and each Fillet is
 keyed by its predecessor, so a moved rectangle misses all three; a repeat
@@ -142,6 +142,21 @@ sys.path.insert(0, str(pathlib.Path.cwd() / "tools"))
 from edit_requests import line_request
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28j-"))
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def edit_args(source, feature, height, version, out):
     request = root / "expression.json"
@@ -256,9 +271,9 @@ def measured(copy, rect, rounded, height):
     independently read mesh is `rect` extruded `height` with exactly `rounded`
     (corner, radius) pairs rounded; the exact volume is the B-Rep's analytic one."""
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
-    n = len(tables(copy)["topology_refs"][1])
+    n = len(output_names(copy))
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and f"{n} of {n} stored references resolved" in text, text
+    assert "tip Fillet" in text and text.count(" entities=1") == n, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
     volume, points = stl(out)
@@ -317,7 +332,7 @@ SKETCH = row["sketch_id"]
 
 
 
-refs = tables(twice)["topology_refs"]
+refs = output_names(twice)
 
 def redraw(source, rect, name, code=0, starts=None):
     """One edit: every saved Line UUID, in saved order, at the new corners."""
@@ -335,7 +350,7 @@ def redraw(source, rect, name, code=0, starts=None):
         return reply["error"], out
 
     allowlist(source, out, SKETCH)
-    assert tables(out)["topology_refs"] == refs, "a name moved"
+    assert output_names(out) == refs, "a name moved"
     return out, reply
 
 # 3. Move and resize: the Fillets stay on the same named corners, which move.

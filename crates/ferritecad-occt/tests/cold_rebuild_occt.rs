@@ -13,8 +13,8 @@
 mod naming;
 
 use ferritecad_document::{
-    Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression,
-    Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+    Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
+    ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_eval::rebuild_cold;
 use ferritecad_kernel::OperationContext;
@@ -22,6 +22,7 @@ use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_types::{ObjectId, Result, StableEntityId, Transform};
 
 struct Plate {
+    plane: ObjectId,
     sketch: ObjectId,
     extrude: ObjectId,
     body: ObjectId,
@@ -32,6 +33,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
     let plane = ObjectId::new();
     let sketch = ObjectId::new();
     let plate = Plate {
+        plane,
         sketch,
         extrude: ObjectId::new(),
         body: ObjectId::new(),
@@ -157,17 +159,25 @@ fn a_saved_document_rebuilds_into_open_cascade_geometry() {
 
     // Every sketch segment is named by the face it raised. This is the whole
     // reason history exists, and the reason the bridge shares corner vertices.
-    let names = naming::view(built.topology(), plate.extrude);
+    let names = &built.topology().features[&plate.extrude];
     for segment in &plate.segments {
         assert_eq!(
-            names.side(*segment).count(),
+            names
+                .resolve(naming::side_name(plate.extrude, plate.plane, *segment))
+                .map(|_| 1)
+                .expect("generated face"),
             1,
             "segment {segment} should have raised one face"
         );
     }
 
-    assert_eq!(names.cap(CapSide::Start).expect("a start cap").len(), 1);
-    assert_eq!(names.cap(CapSide::End).expect("an end cap").len(), 1);
+    let start = names
+        .resolve(naming::cap_name(plate.extrude, plate.plane, false))
+        .expect("start cap");
+    let end = names
+        .resolve(naming::cap_name(plate.extrude, plate.plane, true))
+        .expect("end cap");
+    assert_ne!(start, end);
 
     built.release_all(&mut kernel);
     assert_eq!(

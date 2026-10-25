@@ -74,7 +74,7 @@ dependency, topology reference and capability row. Nothing is minted.
 | --- | --- |
 | `objects` | the base Sketch row's `payload` and `payload_hash` |
 | `meta` | `modified_at` |
-| every other table, including `deps`, `topology_refs`, `capabilities` | nothing |
+| every other table, including `deps`, `capabilities` | nothing |
 
 Row counts are equal in every table.
 
@@ -180,6 +180,21 @@ from edit_requests import line_request
 cli = os.environ["FERRITECAD"]
 root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28d-"))
 OP = "edit"
+
+def output_names(path):
+    text = run(["print-topology", path])
+    feature, names = None, []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "feature":
+            feature = fields[1]
+        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
+            assert feature and len(fields[1]) == 64, line
+            assert fields[2] == "entities=1", line
+            names.append((feature, fields[0], fields[1]))
+    assert names, text
+    return sorted(names)
+
 
 def new_id():
     raw = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
@@ -287,7 +302,7 @@ def measured(copy, rect, at):
     x0, y0, w, d = rect
     assert run(["validate", copy, "--json"])["result"]["valid"] is True
     text = run(["rebuild", copy, "--cold"])
-    assert "tip Fillet" in text and "10 of 10 stored references resolved" in text, text
+    assert "tip Fillet" in text and sum(line.lstrip().startswith("face ") for line in text.splitlines()) == 13, text
     assert f"r{r} mm" in text, text
     out = copy.with_suffix(".stl")
     run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
@@ -331,7 +346,7 @@ assert len(sketch["curves"]) == 4, sketch
 
 
 
-refs = tables(rounded)["topology_refs"]
+refs = output_names(rounded)
 
 def ask(target, vertices, at):
     path = root / "sketch.json"
@@ -349,7 +364,7 @@ def redrawn(source, row, version, was, rect, name):
     assert source.read_bytes() == before
     changed = allowlist(source, out, row["sketch_id"])
     assert {("objects", "payload"), ("objects", "payload_hash")} <= changed, changed
-    assert tables(out)["topology_refs"] == refs, "a name moved"
+    assert output_names(out) == refs, "a name moved"
     after = inspect(out)
     (again,) = after["fillets"]
     assert again["feature_id"] == fillet["feature_id"] and again["expression"]["value"] == r, again

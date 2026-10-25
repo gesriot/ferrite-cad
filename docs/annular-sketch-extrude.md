@@ -77,18 +77,19 @@ id)` и придуманного угла нет ни у одного. Шов, �
 
 ## Identities
 
-Ссылок четыре, все — `TopologyRef` с собственными UUID:
+Output names are derived at rebuild time from the feature, operation, saved
+profile curves and cap roots, together with complete kernel history and
+incidence. Each feature exposes face, edge and vertex names. A name binds a
+selection only when it identifies exactly one entity in that feature; an
+ambiguous name never selects a neighbour. Names of historical results stay at
+their producing feature. No output-name rows are stored in the document.
 
-* `ExtrudeCap { side: Start }` и `ExtrudeCap { side: End }` — прежние
-  типизированные anchors, по одному на торец;
-* `ExtrudeSide { profile_segment }` **дважды** — по одной на окружность, каждая
-  с `AllDerivedFrom { ancestor }` по UUID своей `Circle`.
-
-Две ссылки, а не одна на обе: наружная стенка трубы и стенка отверстия — две
-разные грани готовой детали, и одно правило «все грани этого профиля» разрешало
-бы в обе, не давая последующей операции способа сказать, какая имеется в виду.
-Ни одна ссылка не привязана к индексу грани OCCT и не зависит от порядка
-тесселяции.
+The CLI reports the kind, digest, entity count and complete derivation for
+each name. The window displays the same derivation and digest. See
+[ADR 0007](decisions/0007-generative-topological-naming.md) and the
+[current file format](file-format.md). Fillet and Chamfer still consume
+`SweptEdge { feature, joint }`; their corner policies and refusal messages
+are unchanged.
 
 ## C ABI
 

@@ -13,8 +13,10 @@ mod cut_facts;
 #[path = "support/transaction.rs"]
 mod transaction;
 
+#[path = "support/names.rs"]
+mod names;
 use crate::cut_facts::CutDepth;
-use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
+use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
 
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
@@ -183,9 +185,8 @@ fn write_plate_document(path: &Path, width: f64, depth: f64, height: f64) {
 /// The four objects a straight Line-polygon part is, written without a kernel.
 fn write_polygon_document(path: &Path, corners: &[[f64; 2]], height: f64) {
     use ferritecad_document::{
-        Body, CapSide, DatumPlane, Dependency, DependencyRole, EndCondition, EntityKind,
-        Expression, Extrude, Point2, SelectionRule, Sketch, SketchCurve, SolidOperation,
-        TopologyRef,
+        Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude, Point2,
+        Sketch, SketchCurve, SolidOperation,
     };
 
     use ferritecad_types::{ObjectId, StableEntityId, Transform};
@@ -263,30 +264,7 @@ fn write_polygon_document(path: &Path, corners: &[[f64; 2]], height: f64) {
                 role,
             })?;
         }
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        w.put_topology_ref(&TopologyRef {
-            id: StableEntityId::new(),
-            owner: extrude,
-            producer_feature: extrude,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::ExtrudeSide {
-                profile_segment: segments[0],
-            },
-            selection: SelectionRule::AllDerivedFrom {
-                ancestor: segments[0],
-            },
-            fallback_signature: None,
-        })?;
+
         Ok(())
     })
     .expect("plate document");
@@ -305,7 +283,7 @@ struct Stored {
     tip: Option<ferritecad_types::ObjectId>,
     /// Every sketch, by identity, with the curves it holds.
     sketches: BTreeMap<ferritecad_types::ObjectId, Vec<SketchGeometry>>,
-    refs: Vec<ferritecad_document::TopologyRef>,
+    refs: crate::names::Names,
     dependencies: Vec<ferritecad_document::Dependency>,
     objects: usize,
 }
@@ -338,7 +316,7 @@ fn stored(path: &Path) -> Stored {
             _ => {}
         }
     }
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::snapshot(&d);
     let dependencies = d.dependencies().expect("dependencies");
     let count = objects.len();
     d.close().expect("close");
@@ -409,22 +387,16 @@ fn analytic_with_cache(
     let shape = built.shape(body.id).expect("the body was built");
     let mut by_role: BTreeMap<String, Vec<_>> = BTreeMap::new();
     let mut stats = None;
-    for reference in &doc.topology_refs().expect("refs") {
-        let resolved = built.resolve(reference).expect("resolve");
+    for reference in crate::names::generated_faces(&doc, &built) {
+        let resolved = &reference.entities;
         assert!(
             !resolved.is_empty(),
             "{:?} resolved to nothing",
-            reference.id
+            reference.seed.digest
         );
-        let role = match &reference.output_role {
-            SemanticRole::ExtrudeCap { side } => format!("cap {side:?}"),
-            SemanticRole::ExtrudeSide { .. } => "side".to_owned(),
-            SemanticRole::CarriedCap { side } => format!("carried cap {side:?}"),
-            SemanticRole::CarriedSide { .. } => "carried side".to_owned(),
-            other => panic!("unexpected role {other:?}"),
-        };
-        let owner = format!("{role} of {}", reference.producer_feature);
-        for handle in &resolved {
+        let role = reference.label();
+        let owner = format!("{role} of {}", reference.at);
+        for handle in resolved {
             let surface = kernel.face_surface(*handle).expect("surface");
             by_role.entry(owner.clone()).or_default().push(surface);
             if handle.shape() == shape {
@@ -668,7 +640,7 @@ fn tables(path: &Path) -> BTreeMap<String, (Vec<String>, Rows)> {
 /// exactly the ones this operation is allowed to add.
 ///
 /// A short explicit allow-list: two new `objects` rows, the selected `body`
-/// row's payload and hash, the new `deps` and `topology_refs` rows, the
+/// row's payload and hash, the new `deps` rows and derived names, the
 /// capabilities a predecessor and a carried name newly require, and the copy's
 /// own timestamp. Anything else that moved is a cell this operation had no
 /// business touching.
@@ -712,7 +684,7 @@ fn only_the_cut_was_added(source: &Path, copy: &Path, body: ferritecad_types::Ob
                     "a cut adds a sketch and a feature"
                 );
             }
-            "deps" | "topology_refs" => {
+            "deps" => {
                 for row in rows {
                     // The body's old tip edge is the one row a cut replaces:
                     // the body tips at the new feature now, and leaving the old
@@ -812,10 +784,16 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
             assert!(
                 now.refs.contains(reference),
                 "the cut lost reference {}",
-                reference.id
+                reference.1.digest
             );
         }
-        assert_eq!(now.refs.len(), refs, "the cut names its own geometry too");
+        assert_eq!(
+            now.refs
+                .iter()
+                .filter(|(_, n)| n.kind == ferritecad_kernel::SubShapeKind::Face)
+                .count(),
+            refs + 3
+        );
         for dependency in &saved.dependencies {
             let replaced_tip = dependency.role == ferritecad_document::DependencyRole::BodyTip;
             assert!(
@@ -841,7 +819,7 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
             .expect("rebuild");
         let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
         assert!(
-            text.contains(&format!("{refs} of {refs} stored references resolved")),
+            text.matches(" entities=").count() == now.refs.len(),
             "{text}"
         );
         assert!(text.contains("tip Cut"), "{text}");
@@ -864,7 +842,7 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
         let bore = solid
             .by_role
             .iter()
-            .find(|(role, _)| role.starts_with("side of") && role.contains(&cut.to_string()))
+            .find(|(role, _)| role.starts_with("curve of") && role.contains(&cut.to_string()))
             .map(|(_, surfaces)| surfaces.clone())
             .expect("the bore is named under the cut");
         assert_eq!(
@@ -878,7 +856,7 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
             solid
                 .by_role
                 .keys()
-                .any(|role| role.starts_with("carried cap Start of")),
+                .any(|role| role.starts_with("inherited start cap of")),
             "{:?}",
             solid.by_role.keys().collect::<Vec<_>>()
         );

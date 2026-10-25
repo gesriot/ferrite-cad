@@ -18,14 +18,13 @@ use std::{
     f64::consts::PI,
 };
 
-use ferritecad_document::CapSide;
 use ferritecad_kernel::{
     CancelToken, ExtrudeExtent, ExtrudeRequest, GeometryKernel, Mesh, OperationContext,
     PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
     SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_topology::{TopologyMap, resolve};
+use ferritecad_topology::ModelNaming;
 use ferritecad_types::{ErrorKind, ObjectId, Result, StableEntityId};
 
 const WIDTH: f64 = 60.0;
@@ -161,7 +160,7 @@ fn normal(mesh: &Mesh, face: SubShapeHandle) -> [f64; 3] {
 
 struct Built {
     kernel: OcctKernel,
-    map: TopologyMap,
+    map: ModelNaming,
     feature: ObjectId,
     segments: Vec<StableEntityId>,
     shape: ferritecad_kernel::ShapeHandle,
@@ -186,31 +185,23 @@ fn build() -> Built {
     }
 }
 
-fn face_of(built: &Built, role: ferritecad_document::SemanticRole) -> SubShapeHandle {
-    use ferritecad_document::{EntityKind, SelectionRule, TopologyRef};
-    let selection = match role {
-        ferritecad_document::SemanticRole::ExtrudeSide { profile_segment } => {
-            SelectionRule::AllDerivedFrom {
-                ancestor: profile_segment,
-            }
-        }
-        _ => SelectionRule::Exact,
-    };
-    let found = resolve(
-        &built.map,
-        &TopologyRef {
-            id: StableEntityId::new(),
-            owner: built.feature,
-            producer_feature: built.feature,
-            expected_kind: EntityKind::Face,
-            output_role: role,
-            selection,
-            fallback_signature: None,
-        },
-    )
-    .expect("the name resolves");
-    assert_eq!(found.len(), 1);
-    found[0]
+fn cap_face(built: &Built, end: bool) -> SubShapeHandle {
+    let name = naming::cap_name(built.feature, naming::plane_id(), end);
+    built
+        .map
+        .feature(built.feature)
+        .expect("named")
+        .resolve(name)
+        .expect("cap")
+}
+fn side_face(built: &Built, curve: StableEntityId) -> SubShapeHandle {
+    let name = naming::side_name(built.feature, naming::plane_id(), curve);
+    built
+        .map
+        .feature(built.feature)
+        .expect("named")
+        .resolve(name)
+        .expect("curve face")
 }
 
 #[test]
@@ -220,7 +211,6 @@ fn every_named_face_gets_the_area_and_place_it_should_have() {
         return;
     }
 
-    use ferritecad_document::SemanticRole;
     let mut built = build();
     let mesh = built
         .kernel
@@ -235,8 +225,8 @@ fn every_named_face_gets_the_area_and_place_it_should_have() {
     assert_eq!(mesh.triangle_count(), 12, "each face is two triangles");
 
     // Caps: the full rectangle, one at each end, facing away from the solid.
-    for (side, z, direction) in [(CapSide::Start, 0.0, -1.0), (CapSide::End, HEIGHT, 1.0)] {
-        let face = face_of(&built, SemanticRole::ExtrudeCap { side });
+    for (side, z, direction) in [(false, 0.0, -1.0), (true, HEIGHT, 1.0)] {
+        let face = cap_face(&built, side);
         let (area, centroid) = measure(&mesh, face);
         assert!(
             (area - WIDTH * DEPTH).abs() < 1e-6,
@@ -261,12 +251,7 @@ fn every_named_face_gets_the_area_and_place_it_should_have() {
         DEPTH * HEIGHT,
     ];
     for (index, segment) in built.segments.iter().enumerate() {
-        let face = face_of(
-            &built,
-            SemanticRole::ExtrudeSide {
-                profile_segment: *segment,
-            },
-        );
+        let face = side_face(&built, *segment);
         let (area, centroid) = measure(&mesh, face);
         assert!(
             (area - expected[index]).abs() < 1e-6,
@@ -361,8 +346,7 @@ fn a_finer_deflection_is_the_same_shape_measured_more_closely() {
 
     // The plate is flat, so the areas must agree exactly whatever the chord
     // tolerance; what a finer setting must never do is change the answer.
-    use ferritecad_document::SemanticRole;
-    let face = face_of(&built, SemanticRole::ExtrudeCap { side: CapSide::End });
+    let face = cap_face(&built, true);
     let (coarse_area, _) = measure(&coarse, face);
     let (fine_area, _) = measure(&fine, face);
     assert!((coarse_area - fine_area).abs() < 1e-6);
@@ -515,7 +499,6 @@ fn a_restored_solid_draws_the_same_as_the_one_that_was_built() {
         return;
     }
 
-    use ferritecad_document::SemanticRole;
     use ferritecad_topology::{archive_feature, restore_feature};
 
     // What a warm rebuild must guarantee about pictures: the solid that comes
@@ -529,24 +512,16 @@ fn a_restored_solid_draws_the_same_as_the_one_that_was_built() {
         .expect("meshes");
 
     let mut names = Vec::new();
-    for side in [CapSide::Start, CapSide::End] {
+    for side in [false, true] {
         names.push((
             format!("cap {side:?}"),
-            measure(&fresh, face_of(&built, SemanticRole::ExtrudeCap { side })),
+            measure(&fresh, cap_face(&built, side)),
         ));
     }
     for segment in &built.segments {
         names.push((
             format!("side {segment}"),
-            measure(
-                &fresh,
-                face_of(
-                    &built,
-                    SemanticRole::ExtrudeSide {
-                        profile_segment: *segment,
-                    },
-                ),
-            ),
+            measure(&fresh, side_face(&built, *segment)),
         ));
     }
 
@@ -578,19 +553,14 @@ fn a_restored_solid_draws_the_same_as_the_one_that_was_built() {
     for (label, (area, centroid)) in names {
         let face = if let Some(rest) = label.strip_prefix("side ") {
             let segment: StableEntityId = rest.parse().expect("a segment id");
-            face_of(
-                &restored_built,
-                SemanticRole::ExtrudeSide {
-                    profile_segment: segment,
-                },
-            )
+            side_face(&restored_built, segment)
         } else {
-            let side = if label.contains("Start") {
-                CapSide::Start
-            } else {
-                CapSide::End
-            };
-            face_of(&restored_built, SemanticRole::ExtrudeCap { side })
+            let side = label
+                .strip_prefix("cap ")
+                .expect("cap label")
+                .parse()
+                .expect("cap end");
+            cap_face(&restored_built, side)
         };
 
         let (restored_area, restored_centroid) = measure(&restored_mesh, face);
@@ -833,23 +803,22 @@ fn the_same_shape_names_the_same_edges_twice() {
 
 /// A durable reference to the edge where one cap of an extrusion meets the
 /// face raised from one profile segment.
-fn cap_edge_reference(
+fn cap_edge_name(
+    map: &ModelNaming,
     feature: ObjectId,
-    side: ferritecad_document::CapSide,
+    end: bool,
     segment: StableEntityId,
-) -> ferritecad_document::TopologyRef {
-    ferritecad_document::TopologyRef {
-        id: StableEntityId::new(),
-        owner: feature,
-        producer_feature: feature,
-        expected_kind: ferritecad_document::EntityKind::Edge,
-        output_role: ferritecad_document::SemanticRole::ExtrudeCapEdge {
-            side,
-            profile_segment: segment,
-        },
-        selection: ferritecad_document::SelectionRule::Exact,
-        fallback_signature: None,
-    }
+) -> Result<ferritecad_topology::generative::Name> {
+    let plane = naming::plane_id();
+    naming::name_at_incidence(
+        map,
+        feature,
+        SubShapeKind::Edge,
+        [
+            naming::side_name(feature, plane, segment),
+            naming::cap_name(feature, plane, end),
+        ],
+    )
 }
 
 #[test]
@@ -868,12 +837,9 @@ fn every_profile_segment_names_its_two_cap_boundary_edges() {
     // different edges of the one shape.
     let mut named = BTreeSet::new();
     for segment in &built.segments {
-        for side in [
-            ferritecad_document::CapSide::Start,
-            ferritecad_document::CapSide::End,
-        ] {
-            let reference = cap_edge_reference(feature, side, *segment);
-            let resolved = resolve(map, &reference).unwrap_or_else(|error| {
+        for side in [false, true] {
+            let reference = cap_edge_name(map, feature, side, *segment).expect("name");
+            let resolved = naming::resolve(map, feature, &reference).unwrap_or_else(|error| {
                 panic!("the {side:?} cap edge of segment {segment} is not named: {error}")
             });
             assert_eq!(resolved.len(), 1, "one edge, not {}", resolved.len());
@@ -967,17 +933,13 @@ fn arc_profile() -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
 }
 
 /// The one edge a cap-edge reference resolves to, or the failure.
-fn cap_edge_of(
-    built: &Built,
-    side: ferritecad_document::CapSide,
-    segment: StableEntityId,
-) -> Result<SubShapeHandle> {
-    let resolved = resolve(
-        &built.map,
-        &cap_edge_reference(built.feature, side, segment),
-    )?;
-    assert_eq!(resolved.len(), 1, "an exact reference selects one edge");
-    Ok(resolved[0])
+fn cap_edge_of(built: &Built, side: bool, segment: StableEntityId) -> Result<SubShapeHandle> {
+    let name = cap_edge_name(&built.map, built.feature, side, segment)?;
+    built
+        .map
+        .feature(built.feature)
+        .expect("feature")
+        .resolve(name)
 }
 
 #[test]
@@ -1021,14 +983,13 @@ fn the_two_ends_of_a_sweep_are_never_confused_for_each_other() {
             .any(|vertex| face_of.get(vertex).copied() == Some(face))
     };
 
-    let start_cap = face_of_side(&built, ferritecad_document::CapSide::Start);
-    let end_cap = face_of_side(&built, ferritecad_document::CapSide::End);
+    let start_cap = face_of_side(&built, false);
+    let end_cap = face_of_side(&built, true);
     assert_ne!(start_cap, end_cap);
 
     for segment in &built.segments {
-        let start =
-            cap_edge_of(&built, ferritecad_document::CapSide::Start, *segment).expect("named");
-        let end = cap_edge_of(&built, ferritecad_document::CapSide::End, *segment).expect("named");
+        let start = cap_edge_of(&built, false, *segment).expect("named");
+        let end = cap_edge_of(&built, true, *segment).expect("named");
         assert_ne!(
             start, end,
             "segment {segment} named one edge for both ends of the sweep"
@@ -1050,11 +1011,8 @@ fn the_two_ends_of_a_sweep_are_never_confused_for_each_other() {
 }
 
 /// The face closing one end of the sweep, by its own durable name.
-fn face_of_side(built: &Built, side: ferritecad_document::CapSide) -> SubShapeHandle {
-    face_of(
-        built,
-        ferritecad_document::SemanticRole::ExtrudeCap { side },
-    )
+fn face_of_side(built: &Built, side: bool) -> SubShapeHandle {
+    cap_face(built, side)
 }
 
 #[test]
@@ -1084,10 +1042,7 @@ fn a_reversed_and_a_symmetric_sweep_name_their_cap_edges_too() {
         let (mut built, _) = swept(extent, reversed, false);
         let mut named = BTreeSet::new();
         for segment in &built.segments {
-            for side in [
-                ferritecad_document::CapSide::Start,
-                ferritecad_document::CapSide::End,
-            ] {
+            for side in [false, true] {
                 let edge = cap_edge_of(&built, side, *segment)
                     .unwrap_or_else(|e| panic!("{what}: {side:?} of {segment} is unnamed: {e}"));
                 assert_eq!(edge.kind(), SubShapeKind::Edge);
@@ -1127,10 +1082,7 @@ fn an_arc_segment_names_the_curved_edge_of_each_cap() {
             .expect("the named edge is drawn")
     };
 
-    for side in [
-        ferritecad_document::CapSide::Start,
-        ferritecad_document::CapSide::End,
-    ] {
+    for side in [false, true] {
         let curved = cap_edge_of(&built, side, arc).expect("named");
         let straight = cap_edge_of(&built, side, chord).expect("named");
         assert_ne!(curved, straight);
@@ -1148,7 +1100,7 @@ fn an_arc_segment_names_the_curved_edge_of_each_cap() {
 }
 
 #[test]
-fn the_edges_along_the_sweep_stay_unnamed() {
+fn cap_boundaries_and_sweep_edges_have_distinct_primary_names() {
     if !is_available() {
         ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
         return;
@@ -1156,10 +1108,7 @@ fn the_edges_along_the_sweep_stay_unnamed() {
     let mut built = build();
     let mut named = BTreeSet::new();
     for segment in &built.segments {
-        for side in [
-            ferritecad_document::CapSide::Start,
-            ferritecad_document::CapSide::End,
-        ] {
+        for side in [false, true] {
             named.insert(cap_edge_of(&built, side, *segment).expect("named"));
         }
     }
@@ -1181,15 +1130,19 @@ fn the_edges_along_the_sweep_stay_unnamed() {
         .map(|range| range.edge)
         .collect();
 
-    // A plate has twelve edges: eight around the two caps and four running
-    // along the sweep. The four are drawn and deliberately have no name.
+    // Cap boundaries and sweep edges together cover all twelve primary names.
     assert_eq!(drawn.len(), 12, "the plate draws twelve edges");
     assert_eq!(named.len(), 8, "eight of them are named");
     assert_eq!(
         drawn.difference(&named).count(),
         4,
-        "and four are not, which is the honest answer for an edge along the sweep"
+        "the remaining four run along the sweep"
     );
+    let feature = built.map.feature(built.feature).expect("named");
+    for edge in drawn {
+        let name = feature.entities[&edge];
+        assert_eq!(feature.resolve(name).expect("edge name"), edge);
+    }
     built.kernel.release(built.shape);
 }
 
@@ -1204,7 +1157,7 @@ fn two_features_with_the_same_shape_do_not_share_a_name() {
     let (mut first, _) = swept(ExtrudeExtent::blind(HEIGHT).expect("valid"), false, false);
     let (mut second, _) = swept(ExtrudeExtent::blind(HEIGHT).expect("valid"), false, false);
 
-    let side = ferritecad_document::CapSide::Start;
+    let side = false;
     let mine = cap_edge_of(&first, side, first.segments[0]).expect("named");
     let theirs = cap_edge_of(&second, side, second.segments[0]).expect("named");
     assert_ne!(mine.shape(), theirs.shape(), "two shapes, two sessions");
@@ -1216,13 +1169,11 @@ fn two_features_with_the_same_shape_do_not_share_a_name() {
         "a label of another feature resolved against this one"
     );
     // And a reference naming the wrong producer resolves to nothing.
-    let wrong_producer = ferritecad_document::TopologyRef {
-        producer_feature: second.feature,
-        ..cap_edge_reference(first.feature, side, first.segments[0])
-    };
+    let other_name = cap_edge_name(&second.map, second.feature, side, second.segments[0])
+        .expect("second feature name");
     assert!(
-        resolve(&first.map, &wrong_producer).is_err(),
-        "a reference to another feature's output was answered"
+        naming::resolve(&first.map, first.feature, &other_name).is_err(),
+        "another feature's output was answered"
     );
 
     first.kernel.release(first.shape);

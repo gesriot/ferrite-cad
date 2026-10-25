@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
-use ferritecad_document::{CapSide, Document, ObjectPayload, SemanticRole, SketchGeometry};
+#[path = "support/names.rs"]
+mod names;
+use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext, TessellationParams};
 use serde_json::{Value, json};
 use std::{
@@ -333,10 +335,7 @@ fn check_copy(source: &Path, out: &Path, count: usize) {
         a.dependencies().expect("deps"),
         b.dependencies().expect("deps")
     );
-    assert_eq!(
-        a.topology_refs().expect("refs"),
-        b.topology_refs().expect("refs")
-    );
+    assert_eq!(crate::names::snapshot(&a), crate::names::snapshot(&b));
     for old in a.objects().expect("objects") {
         let new = b.object(old.id).expect("row").expect("ID preserved");
         if let (ObjectPayload::Sketch(s), ObjectPayload::Sketch(t)) = (&old.payload, &new.payload) {
@@ -395,12 +394,15 @@ fn check_reference_domains(path: &Path) {
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
     let context = OperationContext::default();
     let built = ferritecad_eval::rebuild_cold(&d, &mut kernel, &context).expect("cold");
-    let refs = d.topology_refs().expect("refs");
+    let refs: Vec<_> = crate::names::root_faces(&d, &built)
+        .into_iter()
+        .filter(|(_, input, _)| {
+            !matches!(input, ferritecad_kernel::NamingInput::Curve(curve)
+            if *curve != sketch.curves[0].id)
+        })
+        .collect();
     assert_eq!(refs.len(), 3);
-    for r in &refs {
-        let faces = built.resolve(r).expect("resolve");
-        assert_eq!(faces.len(), 1);
-        let face = faces[0];
+    for (_, input, face) in refs {
         let mesh = kernel
             .tessellate(face.shape(), &TessellationParams::default(), &context)
             .expect("mesh");
@@ -415,14 +417,14 @@ fn check_reference_domains(path: &Path) {
             .map(|&i| &mesh.positions[3 * i as usize..3 * i as usize + 3])
             .collect();
         assert!(!points.is_empty());
-        match r.output_role {
-            SemanticRole::ExtrudeCap {
-                side: CapSide::Start,
-            } => assert!(points.iter().all(|p| p[2] == 0.)),
-            SemanticRole::ExtrudeCap { side: CapSide::End } => {
+        match input {
+            ferritecad_kernel::NamingInput::Cap { end: false } => {
+                assert!(points.iter().all(|p| p[2] == 0.))
+            }
+            ferritecad_kernel::NamingInput::Cap { end: true } => {
                 assert!(points.iter().all(|p| p[2] == 10.))
             }
-            SemanticRole::ExtrudeSide { profile_segment } => {
+            ferritecad_kernel::NamingInput::Curve(profile_segment) => {
                 assert_eq!(profile_segment, sketch.curves[0].id);
                 assert!(points.iter().all(|p| p[1] == 0.));
                 assert!(points.iter().any(|p| p[0] == 80.));

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/names.rs"]
+mod names;
 #[path = "support/transaction.rs"]
 mod transaction;
-use ferritecad_document::{
-    CapSide, Document, ObjectPayload, SemanticRole, SketchGeometry, TopologyRef,
-};
+use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
 use std::{
@@ -89,7 +89,7 @@ struct Stored {
     inner: (ferritecad_types::StableEntityId, [f64; 2], f64),
     /// Both curves in the order the Sketch actually stores them.
     stored_order: Vec<ferritecad_types::StableEntityId>,
-    refs: Vec<TopologyRef>,
+    refs: Option<crate::names::Names>,
     objects: usize,
 }
 fn stored(path: &Path) -> Stored {
@@ -115,7 +115,9 @@ fn stored(path: &Path) -> Stored {
     assert_ne!(circles[0].0, circles[1].0, "two curves, two identities");
     let stored_order = circles.iter().map(|c| c.0).collect();
     circles.sort_by(|a, b| b.2.total_cmp(&a.2));
-    let refs = doc.topology_refs().expect("refs");
+    let refs =
+        ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
+            .then(|| crate::names::snapshot(&doc));
     let count = objects.len();
     doc.close().expect("close");
     Stored {
@@ -174,30 +176,20 @@ fn analytic_with_cache(
             .expect("cold rebuild after reopen")
     };
     assert_eq!(built.shape_count(), 1);
-    let refs = doc.topology_refs().expect("refs");
     let mut walls: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut caps = Vec::new();
     let mut stats = None;
-    for reference in &refs {
-        let resolved = built.resolve(reference).expect("resolve");
-        assert!(
-            !resolved.is_empty(),
-            "reference {:?} resolved to nothing after a cold reopen",
-            reference.output_role
-        );
-        for handle in &resolved {
-            let surface = kernel.face_surface(*handle).expect("surface");
-            match reference.output_role {
-                // Filed under the circle the reference names, so which wall is
-                // which is the document's answer rather than a face index.
-                SemanticRole::ExtrudeSide { profile_segment } => {
-                    walls.entry(profile_segment).or_default().push(surface)
-                }
-                SemanticRole::ExtrudeCap { .. } => caps.push(surface),
-                _ => panic!("unexpected role"),
+    crate::names::assert_primary(&built);
+    for (_, input, handle) in crate::names::root_faces(&doc, &built) {
+        let surface = kernel.face_surface(handle).expect("surface");
+        match input {
+            ferritecad_kernel::NamingInput::Curve(curve) => {
+                walls.entry(curve).or_default().push(surface)
             }
-            stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
+            ferritecad_kernel::NamingInput::Cap { .. } => caps.push(surface),
+            _ => panic!("unexpected root"),
         }
+        stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
     }
     let (faces, volume) = stats.expect("a resolved reference names the solid");
     built.release_all(&mut kernel);
@@ -710,7 +702,7 @@ fn native_annular_extrude_process_analytic_geometry_and_delivery() {
     assert_eq!(v["result"]["destination"], out.to_str().expect("UTF-8"));
     assert_eq!(
         v["result"]["rebuild"],
-        json!({"failed":[], "skipped":[], "degraded_bodies":[], "warnings":[]})
+        json!({"failed":[], "skipped":[], "degraded_bodies":[]})
     );
     let saved = std::fs::read(&out).expect("source");
 
@@ -761,25 +753,18 @@ fn native_annular_extrude_process_analytic_geometry_and_delivery() {
     }
     doc.close().expect("close");
 
-    assert_eq!(first.refs.len(), 4, "two caps and two walls");
-    for (curve, what) in [(first.outer.0, "outer"), (first.inner.0, "inner")] {
-        assert!(
-            first.refs.iter().any(|r| r.output_role
-                == SemanticRole::ExtrudeSide {
-                    profile_segment: curve
-                }),
-            "the {what} wall is named by the circle that drew it"
-        );
-    }
-    for want in [CapSide::Start, CapSide::End] {
-        assert!(
-            first
-                .refs
-                .iter()
-                .any(|r| r.output_role == SemanticRole::ExtrudeCap { side: want }),
-            "{want:?} cap is named"
-        );
-    }
+    assert_eq!(
+        first
+            .refs
+            .as_ref()
+            .expect("native names")
+            .iter()
+            .filter(|(_, n)| n.kind == ferritecad_kernel::SubShapeKind::Face)
+            .count(),
+        4
+    );
+    let document = Document::open_read_only(&out).expect("published");
+    crate::names::assert_root_faces(&document, first.refs.as_ref().expect("native names"));
     std::fs::remove_file(&input).expect("private request no longer needed");
 
     // Reopening and rebuilding cold twice changes no identity.
@@ -1064,7 +1049,7 @@ fn native_annulus_height_copy_keeps_both_circles_and_every_identity() {
     assert_eq!(after.outer, before.outer, "the boundary keeps its UUID");
     assert_eq!(after.inner, before.inner, "and so does the hole");
     assert_eq!(after.stored_order, before.stored_order);
-    assert_eq!(after.refs, before.refs, "same reference UUIDs and roles");
+    assert_eq!(after.refs, before.refs, "same primary name digests");
     assert_eq!(after.objects, before.objects);
     assert_eq!(
         std::fs::read(&source).expect("source"),
@@ -1139,9 +1124,8 @@ fn native_annulus_height_copy_keeps_both_circles_and_every_identity() {
 // production creation route and makes no geometric claim.
 fn write_annular_fixture(path: &Path) {
     use ferritecad_document::{
-        Body, CapSide, DatumPlane, Dependency, DependencyRole, EndCondition, EntityKind,
-        Expression, Extrude, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
-        SolidOperation, TopologyRef,
+        Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude, Point2,
+        Sketch, SketchCurve, SolidOperation,
     };
     use ferritecad_types::{ObjectId, StableEntityId, Transform};
     let mut d = Document::create(path).expect("document");
@@ -1224,30 +1208,7 @@ fn write_annular_fixture(path: &Path) {
                 role,
             })?;
         }
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        for curve in [curve, inner] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeSide {
-                    profile_segment: curve,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: curve },
-                fallback_signature: None,
-            })?;
-        }
+
         Ok(())
     })
     .expect("circle document");

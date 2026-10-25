@@ -44,7 +44,7 @@ form allows its own Add; other forms, load/export and session work exclude it.
   does not.
 * The class is unchanged: unconstrained simple XY Line polygon base, 0–16 Cuts, the
   real finite outline (not the box), all disk clearances, Blind or ThroughAll, face
-  provenance and strict references. ThroughAll stays intent and follows later height;
+  provenance and no new failed features. ThroughAll stays intent and follows later height;
   Blind keeps its absolute depth. A constrained base is refused by the catalogue as
   before (`read_history` is called with `constrained_base=false`), also after an
   unsaved constraint Apply. A 17th Cut, a tool outside the outline or touching another

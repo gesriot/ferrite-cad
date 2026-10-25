@@ -115,28 +115,19 @@ See the [current document format](file-format.md).
 
 ### Topology outputs
 
-* **Faces of revolution.** One `RevolveFace { profile_segment }` per
-  non-axis Line, unchanged.
-* **Caps.** New role `RevolveCap { side: start | end }`.
-  - **Owner:** the Revolve, as producer and owner of the reference.
-  - **Provenance:** the sweep's `FirstShape`/`LastShape` of the profile
-    face, checked in the bridge. Each cap must be one face of the finished
-    solid, the two must differ, and neither may also be a Line's face.
-    Every face of the solid must be claimed once.
-  - It is not `ExtrudeCap`: an Extrude cap reference never resolves against
-    a Revolve, and a Revolve cap reference never against an Extrude.
-  - It requires `feature.revolve.v1` and `feature.revolve.partial.v1`.
-* **What is not named.** The axis Line still raises nothing and gets no
-  name. There is no seam, axis face, apex, cap edge or vertex name, no face
-  index, and no fallback to the first face of any kind.
-* **A full turn names no caps.** A cap reported for a full turn is refused.
-* **Creation** writes one `RevolveFace` reference per non-axis Line and the
-  two `RevolveCap` references. Publication requires every one to resolve
-  after the cold build.
-* **Cache.** The archive stores the caps under new `RevolvedCap` names (new
-  tags; an older cache reader refuses the unknown tag and rebuilds). The
-  evaluator's key adds the angle only for a partial turn, so full-turn keys
-  do not move.
+Output names are derived at rebuild time from the feature, operation, saved
+profile curves and cap roots, together with complete kernel history and
+incidence. Each feature exposes face, edge and vertex names. A name binds a
+selection only when it identifies exactly one entity in that feature; an
+ambiguous name never selects a neighbour. Names of historical results stay at
+their producing feature. No output-name rows are stored in the document.
+
+The CLI reports the kind, digest, entity count and complete derivation for
+each name. The window displays the same derivation and digest. See
+[ADR 0007](decisions/0007-generative-topological-naming.md) and the
+[current file format](file-format.md). Fillet and Chamfer still consume
+`SweptEdge { feature, joint }`; their corner policies and refusal messages
+are unchanged.
 
 ### Kernel
 

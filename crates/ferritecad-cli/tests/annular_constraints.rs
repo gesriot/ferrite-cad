@@ -9,11 +9,12 @@
 //! it always was, and the boundary and the bore are still the circles they were
 //! before the solve.
 #![allow(clippy::panic)]
+#[path = "support/names.rs"]
+mod names;
 #[path = "support/transaction.rs"]
 mod transaction;
 use ferritecad_document::{
-    Document, ObjectPayload, SemanticRole, SketchConstraintRule, SketchGeometry,
-    SketchPointSelector,
+    Document, ObjectPayload, SketchConstraintRule, SketchGeometry, SketchPointSelector,
 };
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
@@ -198,9 +199,8 @@ fn write_annular_document(
     swapped: bool,
 ) {
     use ferritecad_document::{
-        Body, CapSide, DatumPlane, Dependency, DependencyRole, EndCondition, EntityKind,
-        Expression, Extrude, Point2, SelectionRule, Sketch, SketchCurve, SolidOperation,
-        TopologyRef,
+        Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude, Point2,
+        Sketch, SketchCurve, SolidOperation,
     };
     use ferritecad_types::{ObjectId, StableEntityId, Transform};
     let mut d = Document::create(path).expect("document");
@@ -277,30 +277,7 @@ fn write_annular_document(
                 role,
             })?;
         }
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        for drawn in [outer, inner] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeSide {
-                    profile_segment: drawn,
-                },
-                selection: SelectionRule::AllDerivedFrom { ancestor: drawn },
-                fallback_signature: None,
-            })?;
-        }
+
         Ok(())
     })
     .expect("annular document");
@@ -316,7 +293,7 @@ struct Stored {
     circles: BTreeMap<ferritecad_types::StableEntityId, ([f64; 2], f64)>,
     height_mm: f64,
     constraints: Vec<(ferritecad_types::StableEntityId, String)>,
-    refs: Vec<ferritecad_document::TopologyRef>,
+    refs: crate::names::Names,
     objects: usize,
 }
 fn stored(path: &Path) -> Stored {
@@ -350,7 +327,7 @@ fn stored(path: &Path) -> Stored {
         .iter()
         .map(|c| (c.id, rule_text(c.rule.clone())))
         .collect();
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::snapshot(&d);
     let count = objects.len();
     let stored_order = sketch.curves.iter().map(|c| c.id).collect();
     d.close().expect("close");
@@ -439,24 +416,17 @@ fn analytic_with_cache(
     let mut walls: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut caps = Vec::new();
     let mut stats = None;
-    for reference in &doc.topology_refs().expect("refs") {
-        let resolved = built.resolve(reference).expect("resolve");
-        assert!(
-            !resolved.is_empty(),
-            "reference {:?} resolved to nothing",
-            reference.output_role
-        );
-        for handle in &resolved {
-            let surface = kernel.face_surface(*handle).expect("surface");
-            match reference.output_role {
-                SemanticRole::ExtrudeSide { profile_segment } => {
-                    walls.entry(profile_segment).or_default().push(surface)
-                }
-                SemanticRole::ExtrudeCap { .. } => caps.push(surface),
-                _ => panic!("unexpected role"),
+    crate::names::assert_primary(&built);
+    for (_, input, handle) in crate::names::root_faces(&doc, &built) {
+        let surface = kernel.face_surface(handle).expect("surface");
+        match input {
+            ferritecad_kernel::NamingInput::Curve(curve) => {
+                walls.entry(curve).or_default().push(surface)
             }
-            stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
+            ferritecad_kernel::NamingInput::Cap { .. } => caps.push(surface),
+            _ => panic!("unexpected root"),
         }
+        stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
     }
     let (faces, volume) = stats.expect("a resolved reference names the solid");
     built.release_all(&mut kernel);
@@ -890,7 +860,13 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         .expect("rebuild");
     let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
     assert!(text.contains("solid, 4 named faces"), "{text}");
-    assert!(text.contains("4 of 4 stored references resolved"), "{text}");
+    assert!(
+        text.lines()
+            .filter(|line| line.starts_with("    face "))
+            .count()
+            == 4,
+        "{text}"
+    );
 
     // The B-Rep, each wall under the reference carrying its own circle's UUID.
     let solved = analytic(&sized);

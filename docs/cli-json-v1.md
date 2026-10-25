@@ -2083,20 +2083,30 @@ add в одном request, в том числе на другой ответ т�
 Native `inspect --json`, checked creation, edits, STL and FBX exports include
 `rebuild` with arrays
 `failed` (`id`, error `kind`, `message`), `skipped` (`id`, root failed `cause`),
-`degraded_bodies` (`id`, optional `rolled_back_to`, `cause`) and `warnings`
-(`owner`, saved `reference`, `message`). Inspection without a native kernel
+and `degraded_bodies` (`id`, optional `rolled_back_to`, `cause`). Inspection without a native kernel
 reports `rebuild: null`; creations that need no kernel also return null.
 Inspection still returns stored metadata when a structural
 or capability error prevents evaluation: `rebuild` is null and `rebuild_error`
-carries the ordinary error fields. Unresolved saved references are warnings; consumed
-references fail their feature without retargeting.
+carries the ordinary error fields. Missing or ambiguous consumed references
+fail their feature without retargeting. There is no stored output-name catalogue
+and no catalogue warning array.
 
 An edit refusal caused by new failed/skipped objects includes the same object
 under `error.rebuild`. Its message lists every failed object and every skipped
-object with its root cause. Existing unresolved-reference checks still apply.
+object with its root cause. Losing an unconsumed output name does not refuse an edit.
 
 An STL export of a degraded or shapeless selected body returns exit 6,
 `complete: false`, named `omissions`, zero `triangles` and `bytes`, and writes
 no file. The requested `destination` is retained in the response. FBX exports
 retain omitted body placements and use the existing completeness and omission
 fields, with refusal `UnbuiltBody`. Fallback geometry is never exported.
+
+### Derived topology names
+
+`inspect` (text), `rebuild --cold` and `print-topology` list every feature's
+primary names in feature/kind/digest order. Each entry has `kind digest
+entities=N`; `inspect` and `print-topology` follow it with the complete derivation: generated/modified/merge or
+boundary, feature and operation, and all inputs down to saved curves, curve
+ends and cap roots. An entity count above one exposes ambiguity. Cold and
+cached rebuilds produce the same text. These descriptions are not persisted
+rows or editable output UUIDs; consumers keep their existing payloads.

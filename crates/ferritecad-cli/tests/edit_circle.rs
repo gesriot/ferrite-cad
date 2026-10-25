@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/names.rs"]
+mod names;
 #[path = "support/transaction.rs"]
 mod transaction;
-use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
+use ferritecad_document::{Document, ObjectPayload, SketchGeometry};
 use ferritecad_kernel::{FaceSurface, GeometryKernel, OperationContext, TessellationParams};
 use serde_json::{Value, json};
 use std::{
@@ -124,9 +126,8 @@ impl Fixture {
 /// The four objects a circle extrusion is, written without a kernel.
 fn write_circle_document(path: &Path, center: [f64; 2], radius: f64, height: f64) {
     use ferritecad_document::{
-        Body, CapSide, DatumPlane, Dependency, DependencyRole, EndCondition, EntityKind,
-        Expression, Extrude, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
-        SolidOperation, TopologyRef,
+        Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude, Point2,
+        Sketch, SketchCurve, SolidOperation,
     };
     use ferritecad_types::{ObjectId, StableEntityId, Transform};
     let mut d = Document::create(path).expect("document");
@@ -195,28 +196,7 @@ fn write_circle_document(path: &Path, center: [f64; 2], radius: f64, height: f64
                 role,
             })?;
         }
-        for side in [CapSide::Start, CapSide::End] {
-            w.put_topology_ref(&TopologyRef {
-                id: StableEntityId::new(),
-                owner: extrude,
-                producer_feature: extrude,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::ExtrudeCap { side },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            })?;
-        }
-        w.put_topology_ref(&TopologyRef {
-            id: StableEntityId::new(),
-            owner: extrude,
-            producer_feature: extrude,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::ExtrudeSide {
-                profile_segment: curve,
-            },
-            selection: SelectionRule::AllDerivedFrom { ancestor: curve },
-            fallback_signature: None,
-        })?;
+
         Ok(())
     })
     .expect("circle document");
@@ -230,7 +210,7 @@ struct Stored {
     center: [f64; 2],
     radius: f64,
     height_mm: f64,
-    refs: Vec<ferritecad_document::TopologyRef>,
+    refs: crate::names::Names,
 }
 fn stored(path: &Path) -> Stored {
     let d = Document::open_read_only(path).expect("reopen");
@@ -258,7 +238,7 @@ fn stored(path: &Path) -> Stored {
             _ => None,
         })
         .expect("extrude");
-    let refs = d.topology_refs().expect("refs");
+    let refs = crate::names::snapshot(&d);
     d.close().expect("close");
     Stored {
         sketch: id,
@@ -317,23 +297,16 @@ fn analytic_with_cache(
     let mut caps = Vec::new();
     let mut stats = None;
     let mut shape = None;
-    for reference in &d.topology_refs().expect("refs") {
-        let resolved = built.resolve(reference).expect("resolve");
-        assert!(
-            !resolved.is_empty(),
-            "{:?} resolved to nothing after a cold reopen",
-            reference.output_role
-        );
-        for handle in &resolved {
-            let surface = kernel.face_surface(*handle).expect("surface");
-            match reference.output_role {
-                SemanticRole::ExtrudeSide { .. } => side.push(surface),
-                SemanticRole::ExtrudeCap { .. } => caps.push(surface),
-                _ => panic!("unexpected role"),
-            }
-            stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
-            shape = Some(handle.shape());
+    crate::names::assert_primary(&built);
+    for (_, input, handle) in crate::names::root_faces(&d, &built) {
+        let surface = kernel.face_surface(handle).expect("surface");
+        match input {
+            ferritecad_kernel::NamingInput::Curve(_) => side.push(surface),
+            ferritecad_kernel::NamingInput::Cap { .. } => caps.push(surface),
+            _ => panic!("unexpected root"),
         }
+        stats = Some(kernel.shape_stats(handle.shape()).expect("stats"));
+        shape = Some(handle.shape());
     }
     let (faces, volume) = stats.expect("a resolved reference names the solid");
     let mesh = kernel
@@ -607,7 +580,7 @@ fn native_circle_edit_moves_and_resizes_only_the_named_circle() {
         after.height_mm, 15.,
         "the height is not this edit's to change"
     );
-    assert_eq!(after.refs, original.refs, "same reference UUIDs and roles");
+    assert_eq!(after.refs, original.refs, "same primary name digests");
     only_the_circle_row_changed(&f.source, &both, original.sketch);
 
     let real = analytic(&both);

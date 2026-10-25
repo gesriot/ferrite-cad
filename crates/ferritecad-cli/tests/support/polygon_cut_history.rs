@@ -235,9 +235,9 @@ fn created(root: &Path, points: &[[f64; 2]], name: &str) -> PathBuf {
 }
 
 /// The SQL allowlist of one Cut parameter edit: the tool Sketch and Cut
-/// payload/hash (and the Cut's layout column when its end changes form), added
-/// refs and `meta.modified_at`. Every other cell, rowid and byte is kept.
-fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation, added: usize) {
+/// payload/hash (and the Cut's layout column when its end changes form) and
+/// `meta.modified_at`. Every other cell, rowid and byte is kept.
+fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation) {
     use rusqlite::types::Value as Sql;
     let a = tables(source);
     let b = tables(copy);
@@ -245,11 +245,7 @@ fn only_the_cut(source: &Path, copy: &Path, saved: &CutObservation, added: usize
     for (name, (columns, rows)) in &a {
         let (cols, now) = &b[name];
         assert_eq!(columns, cols);
-        if name == "topology_refs" {
-            assert_eq!(now.len(), rows.len() + added, "added refs");
-            assert!(rows.iter().all(|r| now.contains(r)), "a saved ref moved");
-            continue;
-        }
+
         assert_eq!(rows.len(), now.len(), "{name} rows");
         for (old, new) in rows.iter().zip(now) {
             for (i, (x, y)) in old.iter().zip(new).enumerate() {
@@ -325,7 +321,7 @@ fn native_l_profile_history_matrix() {
                 ..tool
             };
             edit(&source, &copy, saved, changed, 0);
-            only_the_cut(&source, &copy, saved, 0);
+            only_the_cut(&source, &copy, saved);
             let mut all = tools.clone();
             all[index] = changed;
             measured(&copy, &all, &L, H);
@@ -481,9 +477,7 @@ fn native_sloped_polygons_both_windings_translated() {
                 ferritecad_eval::rebuild_cold(&d, &mut kernel, &OperationContext::default())
                     .expect("cold");
             assert!(built.all_built(), "{:?}", built.report());
-            for r in d.topology_refs().expect("names") {
-                assert!(!built.resolve(&r).expect("resolved").is_empty());
-            }
+            crate::names::assert_primary(&built);
             let volume = kernel
                 .shape_stats(built.shape(tip(&d).0).expect("body"))
                 .expect("volume")
