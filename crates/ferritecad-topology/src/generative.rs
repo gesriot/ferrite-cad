@@ -74,7 +74,7 @@ impl FeatureNaming {
 
 #[derive(Debug, Clone, Default)]
 pub struct ModelNaming {
-    derivations: std::cell::RefCell<Derivations>,
+    derivations: Derivations,
     pub(crate) operations: BTreeMap<ObjectId, NamingOperation>,
     pub(crate) planes: BTreeMap<ObjectId, ObjectId>,
     roots: BTreeMap<ObjectId, BTreeSet<NamingInput>>,
@@ -193,19 +193,29 @@ impl ModelNaming {
                 return Err(CadError::topology("extrusion provenance is missing a cap"));
             }
         }
-        let named = derive(
+        derive(
             shape,
             owner,
             self.planes.get(&owner).copied(),
             inputs,
             kernel,
             history,
-        )?;
-        self.accept_derivations(owner, &named.derivations)?;
-        Ok(named)
+        )
     }
 
-    pub(crate) fn accept_derivations(&self, producer: ObjectId, graph: &Derivations) -> Result<()> {
+    /// Publishes a feature's names after checking its graph against the model.
+    pub fn insert_feature(&mut self, owner: ObjectId, named: FeatureNaming) -> Result<()> {
+        self.check_derivations(owner, &named.derivations)?;
+        for (digest, node) in &named.derivations {
+            self.derivations
+                .entry(*digest)
+                .or_insert_with(|| node.clone());
+        }
+        self.features.insert(owner, named);
+        Ok(())
+    }
+
+    pub(crate) fn check_derivations(&self, producer: ObjectId, graph: &Derivations) -> Result<()> {
         let mut lineage = BTreeSet::new();
         let mut cursor = Some(producer);
         while let Some(owner) = cursor {
@@ -214,9 +224,12 @@ impl ModelNaming {
             }
             cursor = self.previous.get(&owner).copied();
         }
-        let mut known = self.derivations.borrow_mut();
         for (digest, node) in graph {
-            if known.get(digest).is_some_and(|prior| **prior != **node) {
+            if self
+                .derivations
+                .get(digest)
+                .is_some_and(|prior| **prior != **node)
+            {
                 return Err(CadError::topology(format!(
                     "unequal derivations collide at {digest}; refusing to merge names"
                 )));
@@ -257,9 +270,6 @@ impl ModelNaming {
                     "cached derivation has a foreign model root",
                 ));
             }
-        }
-        for (digest, node) in graph {
-            known.entry(*digest).or_insert_with(|| node.clone());
         }
         Ok(())
     }

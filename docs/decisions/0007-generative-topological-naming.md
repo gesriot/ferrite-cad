@@ -110,7 +110,7 @@ bindings even though their positions could distinguish them.
 ### 5. Store consumption, derive production
 
 Choose to store only references in consuming payloads: Fillet/Chamfer edge
-selections now, sketch support faces and axes later. Rebuild derives output
+selections from task 10, sketch support faces and axes from 11. Rebuild derives output
 names and ancestry in memory. A reference UUID identifies the consumption for
 diagnostics; it is not a UUID assigned to every output entity.
 
@@ -238,9 +238,9 @@ of legacy maps. Median milliseconds:
 
 ### 10. Integration and subsequent consumers
 
-In 08 replace `SemanticRole`, `SweptEdge`, `CarriedName`, role maps in
-`FeatureNames` and the output `TopologyRef` catalogue with the derivation graph,
-compact consumed references and per-feature bindings. Consume the complete
+In 08 replace `SemanticRole`, `CarriedName`, role maps in `FeatureNames` and
+the output `TopologyRef` catalogue with the derivation graph and per-feature
+bindings. Consume the complete
 kernel query API immediately after each operation and remove `track`, the old
 face-only history DTOs and the cap/sweep output maps and queries. Operation
 results become the common shape result; complete provenance remains a query
@@ -254,12 +254,17 @@ consumed predecessor. Translate caps/sides by their root ancestry, cap edges
 and vertices by face intersections, Fillet/Chamfer faces by generated ancestry
 of the consumed edge, and carried roles by the original producer's ancestry.
 The experiment's independent translator compares these meanings with existing
-session handles; 08 removes this translator together with the old roles.
+session handles; 08 removes this translator together with the old roles, except the
+corner-to-edge translation of `SweptEdge`.
 
-Fillet/Chamfer payloads consume generic edge references instead of a producer
-and a pair of profile Lines. Task 09 uses complete sweep/boolean provenance for
-Extrude/Revolve variants; 10 submits resolved edge sets directly to the kernel;
-11 consumes a face reference for sketch support. None needs a document-shape
+Task 09 uses complete sweep/boolean provenance for Extrude/Revolve variants.
+Task 10 makes Fillet/Chamfer payloads consume generic edge references instead of
+a producer and a pair of profile Lines, submits resolved edge sets directly to
+the kernel, and deletes `SweptEdge`, its corner translation and the corner-only
+Fillet/Chamfer policies together. A `SweptEdge` names only a profile corner and
+those policies read corners, so replacing the payload in 08 would need a reverse
+translation from references back to corners. 11 consumes a face reference for
+sketch support. None needs a document-shape
 role, a geometric fallback, or a new naming rule.
 
 Reject integrating only selected document combinations or retaining old roles

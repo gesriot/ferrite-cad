@@ -1175,7 +1175,9 @@ FcOcctStatus revolve_profile(FcOcctSession *session, const FcOcctPlane *plane,
       return FC_OCCT_KERNEL;
     }
 
-    naming_sweep(record, sweep, edges, segments, partial ? sweep.FirstShape(face) : TopoDS_Shape{}, partial ? sweep.LastShape(face) : TopoDS_Shape{});
+    naming_sweep(record, sweep, edges, segments,
+                 partial ? sweep.FirstShape(face) : TopoDS_Shape{},
+                 partial ? sweep.LastShape(face) : TopoDS_Shape{});
 
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
@@ -2237,7 +2239,8 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
       if (it.Value().ShapeType() == TopAbs_FACE && in_result(it.Value())) ++generated_faces;
     }
     if (generated_faces != 1) {
-      write_error(out_error, "the " + what + " must generate exactly one face from its selected edge");
+      write_error(out_error, "the " + what +
+                                 " must generate exactly one face from its selected edge");
       return FC_OCCT_KERNEL;
     }
 

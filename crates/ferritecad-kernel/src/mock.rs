@@ -611,7 +611,7 @@ impl GeometryKernel for MockKernel {
             };
             if sub.kind() != expected || sub.index() >= 6 * n + 2 {
                 return Err(CadError::kernel(format!(
-                    "{sub} is not a face of the shape being archived"
+                    "{sub} is not a sub-shape of the shape being archived"
                 )));
             }
             named.push(sub.index());
@@ -665,9 +665,10 @@ impl GeometryKernel for MockKernel {
 
         let face_count = prism.side_face_count() as u64 + 2;
         let n = prism.side_face_count() as u64;
-        if let Some(invalid) = named.iter().find(|face| **face >= 6 * n + 2) {
+        if let Some(invalid) = named.iter().find(|index| **index >= 6 * n + 2) {
             return Err(CadError::kernel(format!(
-                "the archive names face {invalid}, but the restored shape has {face_count} faces"
+                "the archive names sub-shape {invalid}, but the restored shape has {} sub-shapes",
+                6 * n + 2
             )));
         }
 

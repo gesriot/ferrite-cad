@@ -93,7 +93,7 @@ pub fn bind(
     let revolve = kernel.naming_history(result.shape)?.operation == Some(NamingOperation::Revolve);
     let mut model = prepared(feature, profile, revolve)?;
     let names = model.name_operation(feature, result.shape, &[], kernel)?;
-    model.features.insert(feature, names);
+    model.insert_feature(feature, names)?;
     Ok(model)
 }
 pub fn outputs(

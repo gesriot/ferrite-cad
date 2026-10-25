@@ -97,8 +97,9 @@ pub trait GeometryKernel {
     /// Rounds exactly one edge of a shape to one constant radius (§28A).
     ///
     /// The edge is named by the caller from the target's own names. The
-    /// result is one valid solid that lost material, with the rounded edge
-    /// reported gone and the face generated from it reported, or a refusal.
+    /// result is one valid solid that lost material, or a refusal; its
+    /// `naming_history` reports the rounded edge gone and the one face
+    /// generated from it.
     ///
     /// A kernel that cannot round a selected edge refuses with
     /// [`ferritecad_types::CadError::Unsupported`]; that is the default, so a
@@ -119,8 +120,8 @@ pub trait GeometryKernel {
     /// of its faces (§29A).
     ///
     /// Named and answered like [`Self::fillet_edge`]: the result is one valid
-    /// solid that lost material, with the cut edge reported gone and the one
-    /// planar face generated from it reported, or a refusal. A kernel that
+    /// solid that lost material, or a refusal; its `naming_history` reports
+    /// the cut edge gone and the one planar face generated from it. A kernel that
     /// cannot chamfer refuses with [`ferritecad_types::CadError::Unsupported`],
     /// which is the default.
     fn chamfer_edge(

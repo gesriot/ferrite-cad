@@ -46,6 +46,12 @@ impl ModelNaming {
     }
 
     pub fn swept_edge(&self, at: ObjectId, edge: SweptEdge) -> Result<SubShapeHandle> {
+        let found = self.swept_edges(at, edge)?;
+        one(found, &format!("swept edge {edge:?} at {at}"))
+    }
+
+    /// Every edge of `at` between the faces swept from the joint's two curves.
+    pub fn swept_edges(&self, at: ObjectId, edge: SweptEdge) -> Result<BTreeSet<SubShapeHandle>> {
         let plane = self.plane_of(edge.feature)?;
         let faces: Vec<_> = edge
             .joint
@@ -63,8 +69,7 @@ impl ModelNaming {
                 )
             })
             .collect();
-        let found = self.boundary(at, SubShapeKind::Edge, &faces);
-        one(found, &format!("swept edge {edge:?} at {at}"))
+        Ok(self.boundary(at, SubShapeKind::Edge, &faces))
     }
 
     pub fn resolve_legacy(&self, reference: &TopologyRef) -> Result<BTreeSet<SubShapeHandle>> {

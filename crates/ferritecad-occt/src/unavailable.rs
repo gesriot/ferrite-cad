@@ -107,7 +107,6 @@ impl GeometryKernel for OcctKernel {
     fn cut(
         &mut self,
         _request: &CutRequest,
-
         _context: &OperationContext,
     ) -> Result<OperationResult> {
         match self.0 {}

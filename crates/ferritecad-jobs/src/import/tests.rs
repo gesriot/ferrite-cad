@@ -90,7 +90,6 @@ impl GeometryKernel for CountingKernel {
     fn cut(
         &mut self,
         _request: &ferritecad_kernel::CutRequest,
-
         _context: &OperationContext,
     ) -> Result<ferritecad_kernel::OperationResult> {
         Err(CadError::unsupported(

@@ -342,7 +342,7 @@ fn unequal_derivations_under_one_digest_are_refused_atomically() {
     collision.insert(*digest, foreign);
     assert!(
         model
-            .accept_derivations(feature, &collision)
+            .check_derivations(feature, &collision)
             .expect_err("model collision")
             .to_string()
             .contains("unequal derivations collide")
@@ -379,7 +379,7 @@ fn a_valid_hash_does_not_make_foreign_roots_or_incomplete_derivations_valid() {
         let mut graph = crate::derivation::Derivations::new();
         intern(&mut graph, node).expect("hash");
         assert!(crate::derivation::validate(&graph).is_ok());
-        assert!(model.accept_derivations(feature, &graph).is_err());
+        assert!(model.check_derivations(feature, &graph).is_err());
     }
     let good = archive_feature(&mut kernel, &model, feature).expect("archive");
     let name = *good.entities.values().next().expect("name");
@@ -429,7 +429,7 @@ fn roots_of_another_known_body_cannot_enter_a_feature_lineage() {
     let root = crate::derivation::Derivation::Cap(other, false, model.planes.get(&other).copied());
     let mut graph = crate::derivation::Derivations::new();
     crate::derivation::intern(&mut graph, root).expect("hash");
-    assert!(model.accept_derivations(feature, &graph).is_err());
+    assert!(model.check_derivations(feature, &graph).is_err());
     let archive = archive_feature(&mut kernel, &model, feature).expect("original graph unchanged");
     assert!(archive.validate().is_ok());
 }

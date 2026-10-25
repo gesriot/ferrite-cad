@@ -116,7 +116,6 @@ impl GeometryKernel for ObservedKernel {
     fn cut(
         &mut self,
         r: &ferritecad_kernel::CutRequest,
-
         c: &OperationContext,
     ) -> Result<ferritecad_kernel::OperationResult> {
         self.inner.cut(r, c)

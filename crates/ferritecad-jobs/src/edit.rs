@@ -722,7 +722,6 @@ mod tests {
         fn cut(
             &mut self,
             request: &ferritecad_kernel::CutRequest,
-
             context: &OperationContext,
         ) -> Result<ferritecad_kernel::OperationResult> {
             self.inner.cut(request, context)

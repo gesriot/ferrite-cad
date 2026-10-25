@@ -40,7 +40,16 @@ impl ArchivedFeature {
             return Err(bad());
         }
         for name in self.entities.values().chain(self.ancestry.keys()) {
-            if self.derivations.get(&name.digest).is_none_or(|node| node.kind() != name.kind || !matches!(&**node, crate::derivation::Derivation::Expression {tag,..} if *tag!="curve-end")) { return Err(bad()); }
+            let output = self.derivations.get(&name.digest).is_some_and(|node| {
+                node.kind() == name.kind
+                    && matches!(
+                        &**node,
+                        crate::derivation::Derivation::Expression { tag, .. } if *tag != "curve-end"
+                    )
+            });
+            if !output {
+                return Err(bad());
+            }
         }
         for (digest, node) in &self.derivations {
             if matches!(
@@ -181,8 +190,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 "archive incidence disagrees with restored B-Rep",
             ));
         }
-        into.accept_derivations(archived.producer, &archived.derivations)?;
-        Ok(FeatureNaming {
+        let named = FeatureNaming {
             derivations: archived.derivations.clone(),
             topology,
             entities,
@@ -192,18 +200,13 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 .iter()
                 .map(|(name, set)| (*name, rebind(set)))
                 .collect(),
-        })
+        };
+        into.insert_feature(archived.producer, named)
     })();
-    match result {
-        Ok(named) => {
-            into.features.insert(archived.producer, named);
-            Ok(())
-        }
-        Err(error) => {
-            kernel.release(shape);
-            Err(error)
-        }
+    if result.is_err() {
+        kernel.release(shape);
     }
+    result
 }
 
 #[cfg(test)]

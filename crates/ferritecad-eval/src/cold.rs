@@ -68,9 +68,9 @@ use crate::solve::SketchSolveReport;
 /// # What a face is called lives in one place
 ///
 /// [`topology`][Self::topology] is the only account of what this rebuild
-/// produced. Complete operation provenance is
-/// used while building that account and then dropped: they describe an
-/// operation, and a feature restored from a cache had no operation. Anything a
+/// produced. Complete operation provenance is used while building that
+/// account and then dropped: it describes an operation, and a feature restored
+/// from a cache had no operation. Anything a
 /// caller needs about a face it must ask for by name.
 ///
 /// # What a solve found out is kept, and only for the sketch that was solved
@@ -527,7 +527,7 @@ fn run<K: GeometryKernel + ?Sized>(
                                     &[],
                                     kernel,
                                 )?;
-                                state.topology.features.insert(*id, names);
+                                state.topology.insert_feature(*id, names)?;
                                 state.shapes.insert(*id, result.shape);
 
                                 if let Some(cache) = cache.as_deref_mut() {
@@ -601,7 +601,11 @@ fn run<K: GeometryKernel + ?Sized>(
                                             "feature {id} modifies {previous}, which named nothing"
                                         ))
                                     })?;
-                                let target_shape = state.shapes[&previous];
+                                let target_shape = previous_names.shape().ok_or_else(|| {
+                                    CadError::topology(format!(
+                                        "feature {id} modifies {previous}, which built no shape"
+                                    ))
+                                })?;
                                 let request = CutRequest::new(target_shape, tool.shape)?;
                                 let result = kernel.cut(&request, &scoped)?;
                                 state.owned.push(result.shape);
@@ -612,7 +616,7 @@ fn run<K: GeometryKernel + ?Sized>(
                                     &[previous_names, &tool_names],
                                     kernel,
                                 )?;
-                                state.topology.features.insert(*id, names);
+                                state.topology.insert_feature(*id, names)?;
                                 state.shapes.insert(*id, result.shape);
 
                                 if let Some(cache) = cache.as_deref_mut() {
@@ -655,7 +659,7 @@ fn run<K: GeometryKernel + ?Sized>(
                             state
                                 .topology
                                 .name_operation(*id, result.shape, &[], kernel)?;
-                        state.topology.features.insert(*id, names);
+                        state.topology.insert_feature(*id, names)?;
                         state.shapes.insert(*id, result.shape);
                         if let Some(cache) = cache.as_deref_mut() {
                             store(kernel, cache, key, *id, state, events);
@@ -756,15 +760,44 @@ fn run<K: GeometryKernel + ?Sized>(
                     if !restored {
                         let previous_names = state.topology.feature(previous).ok_or_else(|| {
                             CadError::topology(format!(
-                                "fillet {id} consumes {previous}, which named nothing"
+                                "fillet {id} rounds an edge of {previous}, which named nothing"
                             ))
                         })?;
-                        let edge = state.topology.swept_edge(previous, fillet.edge)?;
-                        let request = FilletRequest::new(
-                            state.shapes[&previous],
-                            edge,
-                            fillet.radius_mm.value(),
-                        )?;
+                        let target_shape = previous_names.shape().ok_or_else(|| {
+                            CadError::topology(format!(
+                                "fillet {id} rounds an edge of {previous}, which built no shape"
+                            ))
+                        })?;
+                        // Exactly the edge the payload means, found by its name
+                        // in the predecessor's own output: its own sweep edge,
+                        // or (§28G) the plate's edge as an earlier Fillet left
+                        // it. None, or more than one, is a refusal: never the
+                        // nearest edge.
+                        let edge_feature = fillet.edge.feature;
+                        let edges: Vec<_> = state
+                            .topology
+                            .swept_edges(previous, fillet.edge)?
+                            .into_iter()
+                            .collect();
+                        let [edge] = edges.as_slice() else {
+                            if edges.is_empty()
+                                && edge_feature != previous
+                                && state.topology.swept_edges(edge_feature, fillet.edge)?.len() == 1
+                            {
+                                return Err(CadError::topology(format!(
+                                    "fillet {id} rounds the edge {edge_feature} swept at {joint}, \
+                                     and {previous} already removed it"
+                                )));
+                            }
+                            return Err(CadError::topology(format!(
+                                "fillet {id} rounds the edge {edge_feature} swept at {joint} on \
+                                 the result of {previous}, and that name matches {} edges; it \
+                                 must match exactly one",
+                                edges.len()
+                            )));
+                        };
+                        let request =
+                            FilletRequest::new(target_shape, *edge, fillet.radius_mm.value())?;
                         let result = kernel.fillet_edge(&request, &scoped)?;
                         state.owned.push(result.shape);
                         context.check_cancelled()?;
@@ -774,7 +807,7 @@ fn run<K: GeometryKernel + ?Sized>(
                             &[previous_names],
                             kernel,
                         )?;
-                        state.topology.features.insert(*id, names);
+                        state.topology.insert_feature(*id, names)?;
                         state.shapes.insert(*id, result.shape);
                         if let Some(cache) = cache.as_deref_mut() {
                             store(kernel, cache, key, *id, state, events);
@@ -839,15 +872,31 @@ fn run<K: GeometryKernel + ?Sized>(
                     if !restored {
                         let previous_names = state.topology.feature(previous).ok_or_else(|| {
                             CadError::topology(format!(
-                                "chamfer {id} consumes {previous}, which named nothing"
+                                "chamfer {id} cuts an edge of {previous}, which named nothing"
                             ))
                         })?;
-                        let edge = state.topology.swept_edge(previous, chamfer.edge)?;
-                        let request = ChamferRequest::new(
-                            state.shapes[&previous],
-                            edge,
-                            chamfer.distance_mm.value(),
-                        )?;
+                        let target_shape = previous_names.shape().ok_or_else(|| {
+                            CadError::topology(format!(
+                                "chamfer {id} cuts an edge of {previous}, which built no shape"
+                            ))
+                        })?;
+                        // Exactly the edge the payload means, found by its name in
+                        // the plate's own output: none, or more than one, is a
+                        // refusal, never the nearest edge.
+                        let edges: Vec<_> = state
+                            .topology
+                            .swept_edges(previous, chamfer.edge)?
+                            .into_iter()
+                            .collect();
+                        let [edge] = edges.as_slice() else {
+                            return Err(CadError::topology(format!(
+                                "chamfer {id} cuts the edge {previous} swept at {joint}, and that \
+                                 name matches {} edges; it must match exactly one",
+                                edges.len()
+                            )));
+                        };
+                        let request =
+                            ChamferRequest::new(target_shape, *edge, chamfer.distance_mm.value())?;
                         let result = kernel.chamfer_edge(&request, &scoped)?;
                         state.owned.push(result.shape);
                         context.check_cancelled()?;
@@ -857,7 +906,7 @@ fn run<K: GeometryKernel + ?Sized>(
                             &[previous_names],
                             kernel,
                         )?;
-                        state.topology.features.insert(*id, names);
+                        state.topology.insert_feature(*id, names)?;
                         state.shapes.insert(*id, result.shape);
                         if let Some(cache) = cache.as_deref_mut() {
                             store(kernel, cache, key, *id, state, events);
@@ -977,6 +1026,7 @@ impl CacheEvent {
 /// `Ok(true)` means the shape is built, named and owned by `state`. `Ok(false)`
 /// means the caller must extrude, and says why in `events`. An error is a
 /// genuine failure of the rebuild — cancellation, or a kernel that restored a
+/// shape it will not then describe — never a disappointing cache.
 fn restore<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     cache: &CacheStore,

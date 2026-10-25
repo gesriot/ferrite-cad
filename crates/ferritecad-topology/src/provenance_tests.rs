@@ -157,7 +157,7 @@ fn incomplete_foreign_and_contradictory_live_provenance_cannot_publish_names() {
         topology,
         slot_fault: 0,
     };
-    let before = model.derivations.borrow().clone();
+    let before = model.derivations.clone();
     for fault in cases {
         kernel.trace = fault;
         assert!(
@@ -165,7 +165,7 @@ fn incomplete_foreign_and_contradictory_live_provenance_cannot_publish_names() {
                 .name_operation(owner, shape, &[], &mut kernel)
                 .is_err()
         );
-        assert_eq!(*model.derivations.borrow(), before);
+        assert_eq!(model.derivations, before);
     }
     kernel.trace = Some(trace);
     let named = model
