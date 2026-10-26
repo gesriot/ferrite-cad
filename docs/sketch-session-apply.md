@@ -66,12 +66,12 @@ folder (§30A), and nothing can be published inside the session's own folder.
 
 A **dimensioned** (constrained) plate offers no vertex form — its Lines are the
 solver's; the §29D constraint editor and the height Apply work on it as before
-(constraints stay byte for byte). Add Cut joined the session in [§30I](add-circular-cut-session.md),
+(constraints stay byte for byte). Add Cut joined the session in [§30I](generic-sweeps.md),
 Add Fillet in [§30J](add-fillet-session.md) and Add Chamfer in [§30K](add-chamfer-session.md);
 their copy routes stay clean-only. The constraint editor joined the session in
 [§30C](constraint-session-apply.md), and the Circle and annulus editors in
 [§30D](analytic-sketch-session-apply.md). A saved partial Revolve angle joined in
-[§30E](revolve-angle-session-apply.md); creating Revolve remains a copy workflow.
+[§30E](generic-sweeps.md); creating Revolve remains a copy workflow.
 `edit-sketch-copy` and every JSON are unchanged.
 
 ## Not claimed

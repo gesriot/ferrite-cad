@@ -183,6 +183,20 @@ impl CountingMock {
     }
 }
 impl GeometryKernel for CountingMock {
+    fn projected_bounds(
+        &mut self,
+        shape: ShapeHandle,
+        direction: ferritecad_types::Vec3,
+    ) -> Result<[f64; 2]> {
+        if !self.live.contains(&shape) {
+            return Err(CadError::input("unknown counting shape"));
+        }
+        if direction.x == 0. && direction.y == 0. && direction.z == 0. {
+            return Err(CadError::input("a projection needs a direction"));
+        }
+        // This topology-only double needs finite reach, not a geometric measurement.
+        Ok([0., 10.])
+    }
     fn identity(&self) -> &KernelIdentity {
         &self.identity
     }

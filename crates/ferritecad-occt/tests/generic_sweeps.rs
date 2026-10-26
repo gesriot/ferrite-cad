@@ -437,6 +437,73 @@ fn revolve_axes_and_curved_profiles() {
 }
 
 #[test]
+fn partial_turn_follows_the_directed_line_axis() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    for reversed in [false, true] {
+        let temp = tempfile::tempdir().expect("root");
+        let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
+        let plane = put(
+            &mut d,
+            ObjectPayload::DatumPlane(DatumPlane {
+                placement: Transform::IDENTITY,
+            }),
+        );
+        let axis = StableEntityId::new();
+        let ends = if reversed { [10., 0.] } else { [0., 10.] };
+        let profile = put(
+            &mut d,
+            ObjectPayload::Sketch(Sketch {
+                plane,
+                constraints: vec![],
+                curves: vec![
+                    SketchCurve {
+                        id: StableEntityId::new(),
+                        construction: false,
+                        geometry: SketchGeometry::Circle {
+                            center: Point2::new(10., 0.).expect("center"),
+                            radius: 2.,
+                        },
+                    },
+                    SketchCurve {
+                        id: axis,
+                        construction: true,
+                        geometry: SketchGeometry::Line {
+                            start: Point2::new(0., ends[0]).expect("start"),
+                            end: Point2::new(0., ends[1]).expect("end"),
+                        },
+                    },
+                ],
+            }),
+        );
+        let tip = revolve(
+            &mut d,
+            profile,
+            None,
+            SolidOperation::NewBody,
+            RevolveAxis::Line(axis),
+            RevolveExtent::Partial {
+                angle: Expression::constant(std::f64::consts::FRAC_PI_2).expect("angle"),
+            },
+        );
+        check(&d, tip, 20. * std::f64::consts::PI.powi(2));
+        let mut kernel = OcctKernel::new().expect("kernel");
+        let built = rebuild_cold(&d, &mut kernel, &OperationContext::default()).expect("rebuild");
+        let bounds = kernel
+            .projected_bounds(
+                built.shape(tip).expect("shape"),
+                ferritecad_types::Vec3::new(0., 0., 1.).expect("z"),
+            )
+            .expect("bounds");
+        let expected = if reversed { [0., 12.] } else { [-12., 0.] };
+        assert!((bounds[0] - expected[0]).abs() < 1e-6, "{bounds:?}");
+        assert!((bounds[1] - expected[1]).abs() < 1e-6, "{bounds:?}");
+        built.release_all(&mut kernel);
+    }
+}
+
+#[test]
 fn invalid_results_fail_the_feature_with_a_reason() {
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
@@ -528,96 +595,152 @@ fn through_all_projects_rotated_planes_over_symmetric_and_revolved_targets() {
         return;
     }
     use ferritecad_types::Vec3;
+    let mut facts = String::from(concat!(
+        "target\treversed\toperation\tlow\thigh\tlength\tvolume\t",
+        "faces\tedges\tvertices\tambiguous\n",
+    ));
     for revolved in [false, true] {
         for reversed in [false, true] {
-            let temp = tempfile::tempdir().expect("root");
-            let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
-            let plane = put(
-                &mut d,
-                ObjectPayload::DatumPlane(DatumPlane {
-                    placement: Transform::IDENTITY,
-                }),
-            );
-            let profile = rectangle(&mut d, plane, [[0., 0.], [10., 0.], [10., 10.], [0., 10.]]);
-            let root = if revolved {
-                revolve(
+            for operation in [SolidOperation::Cut, SolidOperation::Intersect] {
+                let temp = tempfile::tempdir().expect("root");
+                let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
+                let plane = put(
                     &mut d,
-                    profile,
-                    None,
-                    SolidOperation::NewBody,
-                    RevolveAxis::SketchY,
-                    RevolveExtent::FullTurn,
-                )
-            } else {
-                extrude(
-                    &mut d,
-                    profile,
-                    None,
-                    SolidOperation::NewBody,
-                    EndCondition::Symmetric {
-                        distance: Expression::constant(10.).expect("depth"),
-                    },
-                    false,
-                )
-            };
-            let (rotation, offset) = if revolved {
-                (
-                    Vec3::X,
-                    Vec3::new(0., if reversed { 0. } else { 10. }, 0.).expect("origin"),
-                )
-            } else {
-                (
-                    Vec3::Y,
-                    Vec3::new(if reversed { 10. } else { 0. }, 0., 0.).expect("origin"),
-                )
-            };
-            let transform = Transform::from_rotation(rotation, std::f64::consts::FRAC_PI_2)
-                .expect("rotation")
-                .then(&Transform::from_translation(offset).expect("offset"))
-                .expect("placement");
-            let plane = put(
-                &mut d,
-                ObjectPayload::DatumPlane(DatumPlane {
-                    placement: transform,
-                }),
-            );
-            let tool = if revolved {
-                put(
-                    &mut d,
-                    ObjectPayload::Sketch(Sketch {
-                        plane,
-                        constraints: vec![],
-                        curves: vec![SketchCurve {
-                            id: StableEntityId::new(),
-                            construction: false,
-                            geometry: SketchGeometry::Circle {
-                                center: Point2::ORIGIN,
-                                radius: 2.,
-                            },
-                        }],
+                    ObjectPayload::DatumPlane(DatumPlane {
+                        placement: Transform::IDENTITY,
                     }),
-                )
-            } else {
-                rectangle(&mut d, plane, [[-2., 2.], [2., 2.], [2., 8.], [-2., 8.]])
-            };
-            let tip = extrude(
-                &mut d,
-                tool,
-                Some(root),
-                SolidOperation::Cut,
-                EndCondition::ThroughAll,
-                reversed,
-            );
-            check(
-                &d,
-                tip,
-                if revolved {
-                    960. * std::f64::consts::PI
+                );
+                let profile =
+                    rectangle(&mut d, plane, [[0., 0.], [10., 0.], [10., 10.], [0., 10.]]);
+                let root = if revolved {
+                    revolve(
+                        &mut d,
+                        profile,
+                        None,
+                        SolidOperation::NewBody,
+                        RevolveAxis::SketchY,
+                        RevolveExtent::FullTurn,
+                    )
                 } else {
-                    1760.
-                },
-            );
+                    extrude(
+                        &mut d,
+                        profile,
+                        None,
+                        SolidOperation::NewBody,
+                        EndCondition::Symmetric {
+                            distance: Expression::constant(10.).expect("depth"),
+                        },
+                        false,
+                    )
+                };
+                let (rotation, offset) = if revolved {
+                    (
+                        Vec3::X,
+                        Vec3::new(0., if reversed { 0. } else { 10. }, 0.).expect("origin"),
+                    )
+                } else {
+                    (
+                        Vec3::Y,
+                        Vec3::new(if reversed { 10. } else { 0. }, 0., 0.).expect("origin"),
+                    )
+                };
+                let transform = Transform::from_rotation(rotation, std::f64::consts::FRAC_PI_2)
+                    .expect("rotation")
+                    .then(&Transform::from_translation(offset).expect("offset"))
+                    .expect("placement");
+                let plane = put(
+                    &mut d,
+                    ObjectPayload::DatumPlane(DatumPlane {
+                        placement: transform,
+                    }),
+                );
+                let tool = if revolved {
+                    put(
+                        &mut d,
+                        ObjectPayload::Sketch(Sketch {
+                            plane,
+                            constraints: vec![],
+                            curves: vec![SketchCurve {
+                                id: StableEntityId::new(),
+                                construction: false,
+                                geometry: SketchGeometry::Circle {
+                                    center: Point2::ORIGIN,
+                                    radius: 2.,
+                                },
+                            }],
+                        }),
+                    )
+                } else {
+                    rectangle(&mut d, plane, [[-2., 2.], [2., 2.], [2., 8.], [-2., 8.]])
+                };
+                let tip = extrude(
+                    &mut d,
+                    tool,
+                    Some(root),
+                    operation,
+                    EndCondition::ThroughAll,
+                    reversed,
+                );
+                check(
+                    &d,
+                    tip,
+                    match (revolved, operation) {
+                        (true, SolidOperation::Cut) => 960. * std::f64::consts::PI,
+                        (true, _) => 40. * std::f64::consts::PI,
+                        (false, SolidOperation::Cut) => 1760.,
+                        (false, _) => 240.,
+                    },
+                );
+                let mut k = OcctKernel::new().expect("kernel");
+                let built =
+                    rebuild_cold(&d, &mut k, &OperationContext::default()).expect("rebuild");
+                let profile = built.profile(tool).expect("profile").clone();
+                let normal = profile.plane().normal();
+                let sign = if reversed { -1. } else { 1. };
+                let direction = Vec3::new(normal.x * sign, normal.y * sign, normal.z * sign)
+                    .expect("direction");
+                let bounds = k
+                    .projected_bounds(built.shape(root).expect("target"), direction)
+                    .expect("projected bounds");
+                let ObjectPayload::Extrude(feature) =
+                    d.object(tip).expect("read").expect("tip").payload
+                else {
+                    unreachable!()
+                };
+                let request = ferritecad_eval::extrude_request(&feature, profile, Some(bounds))
+                    .expect("resolved tool");
+                let shape = built.shape(tip).expect("shape");
+                let volume = k.shape_stats(shape).expect("volume").1;
+                let names = built.topology().feature(tip).expect("names");
+                use ferritecad_kernel::SubShapeKind;
+                facts.push_str(&format!(
+                    "{}\t{}\t{:?}\t{:.12}\t{:.12}\t{:.12}\t{:.12}\t{}\t{}\t{}\t{}\n",
+                    if revolved { "revolve" } else { "symmetric" },
+                    reversed,
+                    operation,
+                    bounds[0],
+                    bounds[1],
+                    request.extent().total_length(),
+                    volume,
+                    names.topology.entities(SubShapeKind::Face).count(),
+                    names.topology.entities(SubShapeKind::Edge).count(),
+                    names.topology.entities(SubShapeKind::Vertex).count(),
+                    names.ambiguous().count()
+                ));
+                built.release_all(&mut k);
+            }
         }
+    }
+    if let Some(directory) = std::env::var_os("FCAD_SWEEP_ARTIFACTS") {
+        use std::io::Write;
+        let path = std::path::PathBuf::from(directory).join("through-all.tsv");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .expect("fresh sweep report")
+            .write_all(facts.as_bytes())
+            .expect("report");
     }
 }
 

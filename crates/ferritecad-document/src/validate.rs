@@ -265,8 +265,8 @@ fn check_semantic_references(
                 object,
                 extrude.operation,
                 extrude.previous,
-                &by_id,
-                &edges,
+                by_id,
+                edges,
                 report,
             );
         }
@@ -422,8 +422,8 @@ fn check_semantic_references(
                 object,
                 revolve.operation,
                 revolve.previous,
-                &by_id,
-                &edges,
+                by_id,
+                edges,
                 report,
             );
             if let crate::RevolveAxis::Line(line) = revolve.axis {

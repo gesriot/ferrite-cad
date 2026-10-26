@@ -281,6 +281,15 @@ fn describe(name: &str, path: PathBuf, bodies: usize) -> Result<Case> {
         body,
         extrude,
         fillet: find(|p| matches!(p, ObjectPayload::Fillet(_))),
-        revolve: find(|p| matches!(p, ObjectPayload::Revolve(_))),
+        // FullTurn has no angle expression to edit.
+        revolve: find(|p| {
+            matches!(
+                p,
+                ObjectPayload::Revolve(Revolve {
+                    extent: RevolveExtent::Partial { .. },
+                    ..
+                })
+            )
+        }),
     })
 }

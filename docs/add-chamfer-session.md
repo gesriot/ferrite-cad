@@ -4,7 +4,7 @@ Marker `FCAD_30K_ADD_CHAMFER_SESSION`. [Verification and real-window recipe](add
 The existing [rectangular-corner Chamfer](rectangular-corner-chamfer.md) joins the
 [document session](document-session.md), beside the existing Chamfer distance edit of
 [§30H](chamfer-distance-session-apply.md) and the session Adds of a Cut
-([§30I](add-circular-cut-session.md)) and a Fillet ([§30J](add-fillet-session.md)).
+([§30I](generic-sweeps.md)) and a Fillet ([§30J](add-fillet-session.md)).
 It is the same operation moved, not a new geometry class.
 
 ## What a person can do

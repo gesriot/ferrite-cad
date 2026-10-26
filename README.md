@@ -82,20 +82,20 @@ A simple Line polygon drawn entirely at X > 0 can instead be turned one full
 turn about the sketch Y axis: **Feature: Revolve 360°** in the same sketch
 window, or `create-sketch-revolve`. The new Body is a real revolution and each
 Line names its own face. Crossing the axis is not supported.
-[Contract and recipe](docs/full-turn-revolve.md).
+[Contract and recipe](docs/generic-sweeps.md).
 Such a part's profile coordinates can be changed later in the ordinary
 **Edit Sketch** window or with `edit`, saving a new copy that keeps
 every Line, face name and UUID; the axis and the full turn stay as saved.
-[Profile edit contract and recipe](docs/edit-revolve-profile.md).
+[Profile edit contract and recipe](docs/generic-sweeps.md).
 A solid cylinder, cone or stepped shaft is made the same way by putting exactly
 one whole edge of the profile on X = 0. That Line lies on the axis and raises
 no face, so it gets no name. Its coordinates are edited like any other
 Revolve's, but the axis edge stays on the axis: a part cannot change between
-solid and bored. [Solid Revolve contract and recipe](docs/axis-closed-revolve.md).
+solid and bored. [Solid Revolve contract and recipe](docs/generic-sweeps.md).
 Both profile classes also support **Feature: Revolve angle**, from 0.01° to
 359.99° about the same +Y axis. CLI request v2 states the angle explicitly;
 the sector has two separately named end faces.
-[Partial Revolve contract and recipe](docs/partial-angle-revolve.md).
+[Partial Revolve contract and recipe](docs/generic-sweeps.md).
 A saved sector's angle is changed with **Edit Revolve angle** or
 `edit` into a new copy. The copy keeps every object, Line and
 cap UUID, and the angle is the only thing that changes. A full turn does
@@ -104,7 +104,7 @@ A saved sector's profile is edited like a full turn's, in the same **Edit
 Sketch** editor (drag or exact X/Y) or with `edit`. The saved
 angle, axis and every Line and cap UUID are kept; a part with a bore stays
 one and the axis Line stays on the axis.
-[Sector profile edit contract and recipe](docs/edit-partial-revolve-profile.md).
+[Sector profile edit contract and recipe](docs/generic-sweeps.md).
 The Line profile of a full turn or a sector with a bore also takes the
 existing **Edit constraints** dimensions — H/V, Line length, one Fixed
 endpoint, equal length, Parallel, Perpendicular — through the same editor or
@@ -287,13 +287,13 @@ owns the work — including recipes with expected exit codes — is documented i
 The same `Edit Sketch` / `edit` can also resize or shift the original
 rectangular base of a supported 1–16 circular Cut history. Hole centres, radii
 and depths stay fixed; every disk must clear the new boundaries.
-[Contract and runnable recipe](docs/edit-cut-base-sketch.md).
+[Contract and runnable recipe](docs/generic-sweeps.md).
 
 `Edit extrusion` / `edit` can change that history's base thickness while
 keeping Blind depths fixed and Through all Cuts open. A thicker plate names every
 new Blind pocket floor;
 removing a saved floor or exceeding the new thickness is refused with UUIDs.
-[Height policy and executable recipe](docs/edit-cut-base-height.md).
+[Height policy and executable recipe](docs/generic-sweeps.md).
 
 
 The opt-in `create --json`, `inspect --json`, `edit --json`,

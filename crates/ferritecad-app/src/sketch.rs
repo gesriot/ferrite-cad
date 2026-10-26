@@ -1997,9 +1997,8 @@ impl Editor {
         });
         if revolve {
             ui.label(
-                "X is the radius and Y runs along the axis, which is X = 0. Keep every point \
-                 at X > 0 for a part with a hole, or put exactly one whole edge on X = 0 for a \
-                 solid part. The profile may not cross the axis or touch it at a single point.",
+                "X is the radius and Y runs along the axis, which is X = 0. \
+                 The swept profile must form one valid solid.",
             );
         }
         let sector = self
@@ -4865,16 +4864,11 @@ pub(crate) mod tests {
         let out = frame(&ctx, e, vec![]);
         click(&ctx, e, text_at(&out, "Redo draft"));
         assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
-        // Onto the axis: the document refuses, no request, and Undo restores.
+        // Axis contact is decided by the kernel when building, not by this form.
         replace_field(&ctx, e, "4.000", "0");
-        // One vertex alone on the axis is not a Line on it (§27C).
-        let refused = e.content().expect_err("a vertex on the axis");
-        assert!(
-            refused.to_string().contains("touches the axis alone"),
-            "{refused}"
-        );
+        assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
         let out = frame(&ctx, e, vec![]);
-        assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
+        assert!(out.shapes.iter().any(|c| matches!(&c.shape,
             egui::Shape::Text(t) if t.galley.text() == CREATE_DRAWN)));
         click(&ctx, e, text_at(&out, "Undo draft"));
         assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
@@ -4882,7 +4876,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn revolve_draft_widgets_name_the_axis_and_refuse_it() {
+    fn revolve_draft_widgets_name_the_axis_and_defer_contact_to_the_kernel() {
         let mut e = Editor::default();
         let ctx = draw_stepped_revolve_through_widgets(&mut e);
         let out = frame(&ctx, &mut e, vec![]);

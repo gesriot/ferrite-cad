@@ -64,7 +64,7 @@ to preserve DYLD loader settings. Stub uses the existing
 `/private/tmp/ferrite-25j-stub-target` with its package-discovery-disabled bridge
 cache and native/solver env unset. Mixed uses a temporary symlink facade whose
 `target` points to the existing native target, following the
-[§30E recipe](revolve-angle-session-apply-verification.md). Restore combined
+[§30E recipe](generic-sweeps.md). Restore combined
 CLI/app afterwards. Configuration-specific skips are N/A, never execution proof.
 The workflows extend all old gates and require `FCAD_FILLET_SESSION_UFBX_EXECUTED`.
 

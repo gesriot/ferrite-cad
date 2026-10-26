@@ -1,175 +1,16 @@
-# §27H — dimensional constraints on a saved Revolve profile closed on the axis
+# Constrained profiles meeting the axis
 
-[Executed verification and limitations](axis-closed-revolve-constraints-verification.md).
+The shared `edit` transaction modifies constraint UUIDs without changing stored
+coordinate guesses. The evaluator solves the sketch, builds the sweep and checks
+its dependents before publication. The kernel decides validity and axis contact;
+there is no retained solid/bored profile class or prescribed axis boundary.
+Explicit Fixed and H/V constraints express the intended geometry; no points are
+snapped. See [generic sweep semantics](generic-sweeps.md).
 
-A person or an agent opens a saved **solid** Revolve (§27C) or a solid
-sector (§27D): a cylinder, a cone, a stepped shaft. It is closed on the sketch
-Y axis along one stated Line (`axis_segment`). The profile's Lines can be
-dimensioned through the existing **Edit constraints** window or the existing
-`edit-sketch-constraints-copy`, with:
-
-* H/V and a Line length;
-* one Fixed endpoint;
-* EqualLength, Parallel and Perpendicular.
-
-A dimension can be changed later by exact UUID. The new copy's Body turns the
-**solved** profile. It keeps:
-
-* the stored axis Line, which still raises no face;
-* the turn angle and every other Line's face name;
-* on a sector, both `RevolveCap` names.
-
-This widens the class the §27G constraint editor accepts. The bored-profile
-behaviour of §27G is unchanged. There is no new command, request field, rule
-family, solver, copier, capability or editor.
-
-## Contract recorded before implementation
-
-### Which documents are editable
-
-The §27G frame is used unchanged: four root objects, namely the untransformed
-XY datum, the Sketch, one SketchY/NewBody Revolve of that Sketch and its Body,
-with exactly the plane, profile and body-tip dependencies. §27G refused a
-Revolve that states an `axis_segment`. §27H accepts it: full turn (payload
-v2) and partial (payload v4).
-
-The **stored** Lines must already satisfy the §27C class policy for the
-stated axis Line (`stated_revolution`). Concretely:
-
-* both ends of the stated Line have x = 0 exactly;
-* every other vertex is beyond the positive clearance;
-* no other Line lies on the axis.
-
-The stored constraints must be the families the editor already manages.
-
-Still refused, each with its own reason: Circles and Arcs, other axes and
-extents, booleans, multibody and other document shapes. A Revolve stating an
-`axis_segment` that is not one of the Sketch's Lines is refused as before.
-
-### The numerical contract at the axis
-
-Measured before widening the refusal. A probe calls the shim's own session
-API (`fc_gcs_session_*`) the way the evaluator does: two points per Line,
-closure Coincidents first, then the additions. It is compiled from the same
-FreeCAD 1.0.1 `planegcs` sources and Eigen 3.4.0, with Boost 1.83 because the
-pinned 1.91 archive is unreachable from this container. The probe is recorded
-in the verification. What the pinned library does on all three platforms is
-established again by the CI gates.
-
-* **Aliasing.** planegcs turns H, V and Coincident into parameter-to-parameter
-  equalities and *reduces* them in `initSolution`: the two x of a vertical
-  Line, and the two coordinates of a closure joint, become one parameter. A V
-  on the stated axis Line therefore makes its two ends bit-identical in x.
-* **Fixed.** A Fixed endpoint becomes `CoordinateX`/`CoordinateY` equalities to
-  a constant. These are **not** reduced; they are solved.
-* **Measured results, with a pin at x = 0 on the axis Line (or on the corner
-  it shares with its neighbour) and V on the axis Line.** The solved axis ends
-  came back exactly `0x0p+0` for:
-  * a rigid set equal to the stored profile;
-  * a wider and a taller cylinder;
-  * fractional offsets;
-  * a cone;
-  * a stepped shaft.
-* **Without any constraint holding the axis Line on x = 0.** Changing a radius
-  moved the axis Line to x = −1.58 (no pin), or to −2.5 (only the outer corner
-  pinned).
-
-The contract is therefore:
-
-1. **Every evaluation checks the solved profile.** The solved Lines of every
-   cold or cached evaluation pass through the existing `stated_revolution`
-   with the Revolve's own `axis_segment`, and so does the copy job's
-   solved-profile check before publication. That check requires:
-   * both ends of that **same** Line at x = 0.0 **exactly**;
-   * every other vertex beyond the clearance;
-   * no second axis contact.
-2. **Nothing is snapped.** Near-axis values are not snapped, the axis Line is
-   not substituted, no seam or face is invented, and no Fixed is hidden or
-   added. A solution whose axis ends are not exactly 0.0 is outside the class
-   and refuses publication, even if the solver residual is tiny. The refusal
-   reads, for example, "vertex … is not strictly on the positive radial side
-   and not on the axis" or "no longer touches the axis".
-3. **Pin the axis explicitly.** To change a size, the user states the axis
-   with the existing rules: a Fixed endpoint on the axis Line (x = 0) and V on
-   that Line. The window's owner line and the discovery kinds say so. The
-   editor does not add these for the user.
-4. **This is a numeric limitation, stated rather than hidden.** It holds for
-   the measured library. A platform whose solver returned a non-zero x for a
-   pinned axis end would refuse publication, not publish a wrong part.
-
-### What a request may say, and what stays
-
-The §27G contract applies unchanged:
-
-* **Request.** The same request v1 with its seven Line forms and closure
-  Coincidents, exact-UUID removal, atomic Replace, the 128-step history, and
-  the strict request decode.
-* **SQL allowlist.** Only the Sketch row's `payload`, `payload_hash` and
-  `schema_version` change, plus the `sketch.constraints.v1` capability row.
-  The Revolve row stays byte-identical: extent, angle, axis and
-  `axis_segment`.
-* **Identities.** Every object and Line UUID, every face reference and both
-  caps stay the same.
-* **Axis Line.** It still produces no face, and no reference changes producer.
-
-Removing the last user constraint keeps the closure. The Sketch then still
-requires a solver, and coordinate editing (`editable`) keeps refusing it. The
-angle edit of a constrained solid sector keeps its constraints.
-
-### Discovery (additive)
-
-For these rows `sketches[].constraint_edit` becomes available. Its
-`profile_feature` uses the existing kinds `full_turn_revolve_axis_closed` and
-`partial_turn_revolve_axis_closed`, with `axis_curve_id`, so an agent knows
-which Line to pin. JSON v1 field names and types are unchanged.
-
-### Compatibility
-
-There is no new capability. A constrained solid Revolve requires
-`sketch.constraints.v1`, which every build since §25E knows. The evaluator
-already solves the Sketch and applies `stated_revolution` with the stated
-axis Line; neither changes here. A prior-main reader therefore reads and
-validates these documents, and rebuilds them with a solver. Its constraint
-editor refuses axis-closed profiles by name, which is the honest read-only
-boundary for that edit.
-
-### UI
-
-The existing window's owner line names the axis Line and says that it stays
-on the axis. The worker, draft, history, Replace length and Save/Cancel are
-unchanged. The solver never runs on redraw.
-
-## Agent recipe
-
-An agent needs only `inspect --json`, the UUIDs it reports and the existing
-request. The recipe below runs the public contract end to end:
-
-* discovery of the stated axis Line;
-* a rigid dimensioning that pins that Line on the axis;
-* a changed dimension, by exact remove + add;
-* the refusals when a solution leaves the axis or the class, and a typed
-  conflict;
-* an exact removal down to the closure;
-* a solid sector's angle edit that keeps the constraints;
-* cold rebuilds, and STL and FBX exports measured independently of the
-  product.
-
-Extract it from this file and run it:
-
-```sh
-python3 - <<'EXTRACT'
-from pathlib import Path
-text = Path("docs/axis-closed-revolve-constraints.md").read_text(encoding="utf-8")
-code = text.split("# FCAD_27H_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
-Path("ferrite-27h-recipe.py").write_text(code, encoding="utf-8")
-EXTRACT
-FERRITECAD=/path/to/ferritecad python3 ferrite-27h-recipe.py
-```
-
-A build without PlaneGCS stops at the first publication and prints
-`FCAD_27H_RECIPE_NO_SOLVER` with the typed `unsupported` error; with
-`FCAD_EXPECT_SOLVER=1` that is a failure. A complete run prints
-`FCAD_27H_RECIPE_OK` with the measured volumes and radii.
+This recipe exercises discovery, exact removals and additions, cold rebuilds,
+independent STL measurements, FBX export, solver conflicts and atomic publication.
+Extract the Python block with `tools/occt/check-cli-recipes.py`; its dependency guard
+reports a missing kernel or solver honestly.
 
 ```python
 # FCAD_27H_AGENT_RECIPE
@@ -238,11 +79,13 @@ def stored_constraint(catalog, kind, i):
     raise KeyError((kind, i))
 
 def axis_index(catalog):
-    """The stated axis Line, as the constraint editor and the Revolve report it."""
+    """Find the fixture boundary on the stated coordinate axis."""
     feature = catalog["revolves"][0]
-    assert feature["axis_curve_id"] == catalog["revolves"][0]["axis_curve_id"], feature
-    ids = [c["curve_id"] for c in lines(catalog)]
-    return ids.index(feature["axis_curve_id"])
+    assert feature["axis"] == "sketch_y" and feature["axis_curve_id"] is None, feature
+    candidates = [i for i, c in enumerate(lines(catalog))
+                  if c["geometry"]["start_mm"][0] == 0 and c["geometry"]["end_mm"][0] == 0]
+    assert len(candidates) == 1, candidates
+    return candidates[0]
 
 def cells(path):
     db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
@@ -256,7 +99,7 @@ def cells(path):
 
 def allowlist(source, copy, sketch):
     """Only the Sketch row's payload/payload_hash may differ. The Revolve row, with
-    its axis_segment, and every saved face name are compared exactly."""
+    its axis and extent, and every derived face name are compared exactly."""
     sid = bytes.fromhex(sketch.replace("-", ""))
     a, b = cells(source), cells(copy)
     assert a.keys() == b.keys()

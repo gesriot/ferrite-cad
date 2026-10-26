@@ -134,10 +134,12 @@ fn ordered_additions_dependencies_names_and_end_transitions() {
         refs,
         "an unconsumed pocket floor may disappear"
     );
-    let contact = circular_tool(&d, b, [2., 15.], 2., EndCondition::ThroughAll).expect("contact");
+    // An entirely disjoint tool removes no material; exact contact is the kernel's decision.
+    let outside =
+        circular_tool(&d, b, [100., 100.], 2., EndCondition::ThroughAll).expect("outside tool");
     refuse(
-        &request(&src, &root.path().join("contact.fcad"), contact.changes),
-        contact.feature,
+        &request(&src, &root.path().join("outside.fcad"), outside.changes),
+        outside.feature,
     );
 }
 

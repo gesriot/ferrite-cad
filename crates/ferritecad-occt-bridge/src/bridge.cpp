@@ -844,6 +844,12 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
                   "as separate regions, so it bounds no face with a cavity");
       return FC_OCCT_INVALID_INPUT;
     }
+    // Revolving a self-intersecting wire can hide its crossing in the final B-Rep.
+    if (axis_origin && loop_count == 1 && !BRepCheck_Analyzer(face).IsValid()) {
+      write_error(out_error, "the revolution profile does not bound a valid planar face; "
+                             "check for self-intersections");
+      return FC_OCCT_INVALID_INPUT;
+    }
 
     if (cancelled(cancel, cancel_context)) {
       return FC_OCCT_CANCELLED;

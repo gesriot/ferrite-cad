@@ -61,7 +61,7 @@ solver path, evaluator, history or writer, or any write to the logical file befo
 The other copy-only editors (creating Revolve, Add Fillet until [§30J](add-fillet-session.md), Add Chamfer until [§30K](add-chamfer-session.md),
 *Edit extrusion…* copy) stay copy workflows; the Circle and annulus editors joined the
 session in [§30D](analytic-sketch-session-apply.md), and a saved partial Revolve
-angle in [§30E](revolve-angle-session-apply.md).
+angle in [§30E](generic-sweeps.md).
 
 ## Review finding fixed here
 

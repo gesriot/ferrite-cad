@@ -93,13 +93,13 @@ pub trait GeometryKernel {
         )))
     }
 
-    /// Removes the material of one shape from another.
+    /// Combines target and tool with Fuse, Cut or Common.
     ///
     /// The result is one solid or a refusal. A boolean that leaves nothing, or
     /// that splits the target into pieces, is not a feature this contract can
     /// name: there would be no single result to be the body's new tip, and
     /// choosing one of several would be the kernel deciding what the user
-    /// meant. A tool that misses the target entirely is a refusal too — it
+    /// meant. A Cut tool that misses the target entirely is a refusal too — it
     /// produces a perfectly valid solid which happens to be the target again,
     /// and calling that a cut would put a feature in the history that did
     /// nothing.

@@ -636,12 +636,12 @@ fn native_floor_refs_transitions_and_refusals_survive_undo_redo() {
     let original = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
-    // Blind-through <-> ThroughAll preserves expressed intent; then through -> pocket.
+    // Both tool caps lie beyond the target; then change through -> pocket.
     let mut r = request(&s, 0);
     if let ferritecad_document::EditChange::SetEndCondition { end_condition, .. } =
         &mut r.changes[1]
     {
-        *end_condition = (CutExtent::Blind { depth_mm: 12.75 }).end().expect("end");
+        *end_condition = (CutExtent::Blind { depth_mm: 15.75 }).end().expect("end");
     } else {
         panic!("end change")
     }

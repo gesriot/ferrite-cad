@@ -5,7 +5,7 @@ The existing [single-edge Fillet](single-edge-fillet.md), with its
 [constrained plate](fillet-constrained-plate.md) and [0–4 Fillet history](rectangular-fillet-history.md)
 contracts, joins the [document session](document-session.md), beside the existing
 Fillet radius edit of [§30G](fillet-radius-session-apply.md) and the session Add of a
-Cut in [§30I](add-circular-cut-session.md). It is the same operation moved, not a new
+Cut in [§30I](generic-sweeps.md). It is the same operation moved, not a new
 geometry class.
 
 ## What a person can do

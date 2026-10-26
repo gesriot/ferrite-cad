@@ -134,11 +134,11 @@ no-solver step of the same workflow.
 * **Next (§30C).** The existing constraints of a saved Sketch are applied inside the open document: [contract](constraint-session-apply.md).
 * **Next (§30D).** The geometry of a saved Circle or annulus is applied inside the open document: [contract](analytic-sketch-session-apply.md).
 
-* **Next (§30E).** The angle of a saved partial Revolve is applied inside the open document: [contract](revolve-angle-session-apply.md).
+* **Next (§30E).** The angle of a saved partial Revolve is applied inside the open document: [contract](generic-sweeps.md).
 
 §30F now applies parameters of an existing supported circular Cut through this
 same session. Add Cut remains copy-only; existing-Cut copy still requires a clean
-document. See [Cut session contract](cut-session-apply.md).
+document. See [Cut session contract](generic-sweeps.md).
 
 §30G applies an existing Fillet radius through this session, including while dirty.
 Add Fillet and radius copy remain clean-only. See [Fillet session contract](fillet-radius-session-apply.md).
@@ -148,7 +148,7 @@ Add Chamfer and distance copy remain clean-only. See [Chamfer session contract](
 
 §30I adds a new circular Cut through this same session, including while dirty
 (**Add cut**). Save cut copy, Add Fillet, Add Chamfer and the other copies remain
-clean-only. See [Add Cut session contract](add-circular-cut-session.md).
+clean-only. See [Add Cut session contract](generic-sweeps.md).
 
 §30L: a new document is an untitled session before it is a file: New and the
 drawing forms create without a dialog, the first Save asks where, and Open, Quit and

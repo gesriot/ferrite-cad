@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: MIT
-//! §27H: dimensional constraints on the saved profile of a solid Revolve —
-//! closed on the axis along its stated Line — through the existing
-//! `edit`, and measured after the fact.
-//!
-//! Nothing is snapped to the axis: a solution keeps the stated Line on it
-//! only because the request pins one of its ends at X 0 and keeps it
-//! vertical. Each copy is read back cold and through a shared cache, and the
-//! Body is measured against the solved Lines alone by the §27G measure, which
-//! also requires both ends of the stated Line at exactly 0.0 and no face and
-//! no name for it.
+//! Dimension constrained Revolve profiles with explicit pins and lengths.
+//! Measure cold/cache geometry, names and exports against the solved Lines.
+//! Valid changes of axis contact are accepted; crossings and conflicts refuse.
 use super::angle::{angle_edit, angle_reply, refs, revolve_payload, target, write_angle};
 use super::axis::write_solid_document;
 use super::constraints::{
@@ -49,19 +42,18 @@ const SHAFT_WIDE: [[f64; 2]; 6] = [
 ];
 const SHAFT_DEG: f64 = 137.5;
 
-/// The saved Revolve's stated axis Line, as discovery and the constraint
-/// editor both report it.
-fn stated_axis(catalog: &Value, index: usize) -> Value {
-    let _edit = &catalog["sketches"][0];
+/// The fixture boundary on SketchY; coordinate-axis discovery names no Line.
+fn fixture_axis_boundary(catalog: &Value, index: usize) -> Value {
     let axis = curve(catalog, index);
 
-    assert_eq!(catalog["revolves"][0]["axis_curve_id"], axis);
+    assert_eq!(catalog["revolves"][0]["axis"], "sketch_y");
+    assert_eq!(catalog["revolves"][0]["axis_curve_id"], Value::Null);
     axis
 }
 
 /// A solid cylinder: dimensioned rigid with the axis pinned, widened by
-/// replacing one length, refused wherever a solution leaves the axis or the
-/// class, and stripped back to its closure. A cone follows, with both of its
+/// replacing one length, translated away from axis contact and stripped back
+/// to its closure. A cone follows, with both of its
 /// sizes replaced in one request.
 #[test]
 fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
@@ -74,9 +66,8 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     let request = root.join("constraints.json");
     let (sketch, stored) = sketch_of(&source);
     let catalog = inspect(&source);
-    let _edit = &catalog["sketches"][0];
 
-    let axis = stated_axis(&catalog, 3);
+    let axis = fixture_axis_boundary(&catalog, 3);
     let source_refs = refs(&source);
     assert_eq!(
         crate::names::face_count(&source_refs),
@@ -111,7 +102,7 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     assert_eq!(sketch_of(&rigid).1.curves, stored.curves, "stored inputs");
     assert_eq!(refs(&rigid), source_refs);
     assert_eq!(revolve_payload(&rigid), revolve_payload(&source));
-    assert_eq!(stated_axis(&inspect(&rigid), 3), axis);
+    assert_eq!(fixture_axis_boundary(&inspect(&rigid), 3), axis);
     let cache = root.join("shared.fcad-cache");
     let solved = measure_solved(&rigid, None, Some((&cache, &[CacheOutcome::Miss])));
     assert_eq!((solved.dof, solved.redundant.len()), (0, 0));
@@ -151,8 +142,7 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     assert!((grown.volume - cylinder(8.5, 15.25)).abs() < 1e-7 * grown.volume);
     exports(&wide, &grown, None, "axis-constraints-cylinder");
 
-    // Solutions outside the class refuse publication, whatever the solver's
-    // residual; nothing is written and nothing is snapped.
+    // Crossing profiles still refuse publication; no coordinates are snapped.
     let refused = root.join("refused.fcad");
     let pin = stored_id(&catalog, "fixed", 3);
     for (why, edits) in [
@@ -176,14 +166,6 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
             ),
         ),
         (
-            "the axis Line moved away from the axis",
-            transaction::constraints(
-                &catalog["sketches"][0],
-                std::slice::from_ref(&pin),
-                &[fixed(&catalog, 3, "end", 0.5, -1.5)],
-            ),
-        ),
-        (
             "the axis Line crosses the axis",
             transaction::constraints(
                 &catalog["sketches"][0],
@@ -197,6 +179,23 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
         assert!(message.contains("axis"), "{why}: {error}");
         assert!(error.get("constraint_conflict").is_none(), "{why}");
     }
+    // A positive translation leaves the axis and makes a valid hollow cylinder.
+    let off_axis = root.join("off-axis.fcad");
+    publish(
+        &rigid,
+        &request,
+        &transaction::constraints(
+            &catalog["sketches"][0],
+            std::slice::from_ref(&pin),
+            &[fixed(&catalog, 3, "end", 0.5, -1.5)],
+        ),
+        &off_axis,
+    );
+    check_constraint_cells(&rigid, &off_axis, sketch);
+    assert_solved(
+        &measure_solved(&off_axis, None, None),
+        &[[0.5, -1.5], [7.75, -1.5], [7.75, 13.75], [0.5, 13.75]],
+    );
     let conflict = refuse(
         &rigid,
         &request,
@@ -260,7 +259,7 @@ fn native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse() {
     let cone = create_full(root, &CONE_T, "cone");
     let (cone_sketch, _) = sketch_of(&cone);
     let catalog = inspect(&cone);
-    stated_axis(&catalog, 2);
+    fixture_axis_boundary(&catalog, 2);
     let cone_refs = refs(&cone);
     let pinned = root.join("cone-rigid.fcad");
     let published = publish(
@@ -323,7 +322,7 @@ fn native_axis_closed_sector_caps_names_angle_edit_and_exports() {
     let catalog = inspect(&source);
     let feature = &catalog["revolves"][0];
     assert_eq!(feature["angle_deg"], SHAFT_DEG);
-    stated_axis(&catalog, 5);
+    fixture_axis_boundary(&catalog, 5);
     let source_refs = refs(&source);
     assert_eq!(
         crate::names::face_count(&source_refs),
@@ -421,10 +420,11 @@ fn native_axis_closed_sector_caps_names_angle_edit_and_exports() {
     assert_eq!(further.dof, 0);
     assert_solved(&further, &SHAFT_WIDE);
 
-    // Pulled off the axis: refused, the constrained copy untouched.
+    // A valid translation can leave axis contact without changing the turn.
     let catalog = inspect(&wide);
     let pin = stored_id(&catalog, "fixed", 0);
-    let error = refuse(
+    let translated = root.join("translated.fcad");
+    publish(
         &wide,
         &request,
         &transaction::constraints(
@@ -432,11 +432,13 @@ fn native_axis_closed_sector_caps_names_angle_edit_and_exports() {
             &[pin],
             &[fixed(&catalog, 0, "start", 0.75, -2.25)],
         ),
-        &root.join("refused.fcad"),
+        &translated,
     );
-    assert!(
-        error["message"].as_str().expect("message").contains("axis"),
-        "{error}"
+    check_constraint_cells(&wide, &translated, sketch);
+    let expected = SHAFT_WIDE.map(|p| [p[0] + 0.75, p[1]]);
+    assert_solved(
+        &measure_solved(&translated, Some(SHAFT_DEG), None),
+        &expected,
     );
 }
 
@@ -458,14 +460,7 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
                 .expect("angle"),
         }
     });
-    for (path, _kind, _axis) in [
-        (&solid, "full_turn_revolve_axis_closed", labels[3]),
-        (
-            &solid_sector,
-            "partial_turn_revolve_axis_closed",
-            sector_labels[3],
-        ),
-    ] {
+    for path in [&solid, &solid_sector] {
         let c = inspect(path);
         let row = &c["sketches"][0];
         let edit = &row;

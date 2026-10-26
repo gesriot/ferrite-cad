@@ -45,8 +45,7 @@ const SHAFT_WIDE: [[f64; 2]; 6] = [
     [0., 12.75],
 ];
 
-/// The standalone Revolve frame, written without a kernel. `axis` is the
-/// index of the stated axis Line of a solid part.
+/// The standalone SketchY Revolve frame, written without a kernel.
 pub(crate) fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64) -> ObjectId {
     let mut d = Document::create(path).expect("document");
     let [plane, sketch, revolve, body] = std::array::from_fn(|_| ObjectId::new());
@@ -236,8 +235,8 @@ fn revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length() {
     assert_eq!(
         owner,
         format!(
-            "Profile of Revolve {revolve}: 137.5° about the sketch Y axis. The turn and the axis \
-             are kept; the solved profile must keep its bore clear of the axis."
+            "Profile of Revolve {revolve}: 137.5° about SketchY. \
+             Apply rebuilds the feature and its dependents."
         )
     );
     dimension_sector(&ctx, &mut e);
@@ -549,7 +548,6 @@ fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
     assert_eq!(choice.refusal, None);
     assert_eq!(choice.height_mm, None);
     let curves = choice.stored.as_ref().expect("stored").curves.clone();
-    let axis = curves[5].id;
     let Some(SketchProfileUse::PartialRevolve {
         feature,
         axis: stated,
@@ -574,9 +572,8 @@ fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
     assert_eq!(
         owner,
         format!(
-            "Profile of Revolve {revolve}: 137.5° about the sketch Y axis, closed on the axis \
-             along Line {axis}. The turn and that Line are kept; the solved Line must lie exactly \
-             on the axis — pin one of its ends at X 0 and keep it vertical."
+            "Profile of Revolve {revolve}: 137.5° about SketchY. \
+             Apply rebuilds the feature and its dependents."
         )
     );
     dimension_shaft(&ctx, &mut e);

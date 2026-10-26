@@ -656,16 +656,9 @@ fn native_sequential_refusals_publish_nothing() {
     let never = root.path().join("never.fcad");
     let before = std::fs::read(&source).expect("bytes");
     for bad in [
+        TOOLS[0], // A repeated Cut removes no material.
         CutSpec {
-            center_mm: [32., 20.],
-            ..TOOLS[1]
-        },
-        CutSpec {
-            center_mm: [32. + 0.5e-7, 20.],
-            ..TOOLS[1]
-        },
-        CutSpec {
-            center_mm: [7., 30.],
+            center_mm: [100., 100.],
             ..TOOLS[1]
         },
     ] {

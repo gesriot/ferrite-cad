@@ -329,19 +329,6 @@ pub(super) fn history_refusals(count: usize) {
             "{failure}"
         );
         assert!(!never.exists());
-        // Exact contact remains a named evaluator refusal; overlap is accepted
-        // and checked separately by the transaction-boundary tests.
-        let other = tools[(index + count - 1) % count];
-        let cut = CutSpec {
-            center_mm: [
-                other.center_mm[0] + other.radius_mm + saved.radius_mm,
-                other.center_mm[1],
-            ],
-            ..tools[index]
-        };
-        let contact = edit(&source, &never, &saved, cut, 2);
-        assert!(contact.to_string().contains("touches Cut"), "{contact}");
-        assert!(!never.exists());
         let delivered = root.path().join("lost-report.fcad");
         let mut changed = tools.clone();
         changed[index].extent = CutDepth::Blind { depth_mm: 3. };

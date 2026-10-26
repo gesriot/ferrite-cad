@@ -605,10 +605,16 @@ fn gate(name: &str) {
     .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
     .expect("changes");
     let repeated = refuse(&mut s, &r);
-    assert!(
-        repeated.contains(&added[1].to_string()),
-        "the same disk again: {repeated}"
-    );
+    let duplicate = r
+        .changes
+        .iter()
+        .find_map(|change| match change {
+            ferritecad_document::EditChange::AddFeature { object, .. } => Some(*object),
+            _ => None,
+        })
+        .expect("new Cut identity");
+    assert!(repeated.contains(&duplicate.to_string()), "{repeated}");
+    assert!(repeated.contains("removed no material"), "{repeated}");
     if let ferritecad_document::EditChange::AddSketch { sketch, .. } = &mut r.changes[0] {
         sketch.curves[0].geometry = ferritecad_document::SketchGeometry::Circle {
             center: ferritecad_document::Point2::new(70., 42.).expect("point"),

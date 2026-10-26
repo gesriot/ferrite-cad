@@ -939,3 +939,27 @@ fn assert_scene_names(
     assert!(checked > 0);
     let _ = ambiguous;
 }
+
+#[test]
+fn angle_actions_select_partial_revolutions_and_skip_full_turns() {
+    let root = tempfile::tempdir().expect("root");
+    let cases = ferritecad_bench::corpus::generate(root.path(), false).expect("corpus");
+    for case in cases {
+        if case.name == "revolve" {
+            assert!(case.revolve.is_some());
+        }
+        if case.name == "revolve_cut" {
+            assert!(case.revolve.is_none());
+        }
+        if let Some(id) = case.revolve {
+            let d = Document::open_read_only(&case.path).expect("document");
+            assert!(matches!(
+                d.object(id).expect("row").expect("feature").payload,
+                ObjectPayload::Revolve(ferritecad_document::Revolve {
+                    extent: ferritecad_document::RevolveExtent::Partial { .. },
+                    ..
+                })
+            ));
+        }
+    }
+}

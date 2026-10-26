@@ -160,7 +160,7 @@ struct RevolveDiscovery {
 
 #[derive(Serialize)]
 struct RevolveProfile {
-    /// Whether the stored profile is the class this build turns.
+    /// Whether the stored profile can be read for inspection.
     available: bool,
     refusal: Option<String>,
     /// The Lines in stored order, with their saved identities; `null` when the

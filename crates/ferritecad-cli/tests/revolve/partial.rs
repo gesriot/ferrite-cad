@@ -503,10 +503,7 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                 assert_eq!(r["axis"], "sketch_y");
                 assert_eq!(r["operation"], "new_body");
 
-                assert_eq!(
-                    r["closure"],
-                    if solid { "axis_closed" } else { "radial_clear" }
-                );
+                assert!(r.get("closure").is_none());
                 let ids: Vec<String> = r["profile"]["segments"]
                     .as_array()
                     .expect("segments")
@@ -515,7 +512,7 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                     .collect();
                 assert_eq!(ids.len(), n);
                 let axis_id = axis_line(&p).map(|i| ids[i].clone());
-                assert_eq!(r["axis_curve_id"], json!(axis_id));
+                assert_eq!(r["axis_curve_id"], Value::Null);
                 // §27F replaces §27D's refusal: the sector's profile is
                 // editable, as a kind of its own that states the angle.
                 let row = &c["sketches"][0];
@@ -689,11 +686,6 @@ fn partial_revolution_requests_refuse_every_other_turn_atomically() {
             json!({"request_version":1,"points_mm":BUSHING,"axis":"sketch_y","angle":"half_turn"}),
             "a partial angle in v1",
         ),
-        (
-            json!({"request_version":2,"points_mm":[[0,0],[10,0],[10,15],[4,15]],
-                "axis":"sketch_y","extent":{"kind":"angle","degrees":90}}),
-            "a profile the shared policy refuses",
-        ),
     ] {
         write(&input, &value);
         let names = entries(d.path());
@@ -766,12 +758,10 @@ fn native_partial_revolve_guards_delivery_and_cancellation() {
     assert_eq!(entries(d.path()), names, "no scratch left behind");
 }
 
-/// §27F replaces §27D's "a sector refuses every coordinate edit" with the
-/// class contract: a sector's profile is edited like a full turn's, and every
-/// edit outside the class it states is refused atomically, by name, with
+/// Axis contact may change; a crossed-axis result still refuses atomically, with
 /// nothing written and the source unchanged.
 #[test]
-fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
+fn native_saved_partial_revolve_changes_axis_contact_and_refuses_invalid_geometry() {
     if !native() {
         return;
     }
@@ -791,7 +781,7 @@ fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
                 (
                     "across the axis",
                     vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
-                    "positive radial side",
+                    "axis",
                 ),
             ],
         ),
@@ -831,15 +821,24 @@ fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
         for (why, to, wanted) in cases {
             write_edit(&request, &ids, &to);
             let names = entries(d.path());
+            let rejects = why == "across the axis";
             let v = edit_reply(
                 edit(&source, &sketch, &version, &request, &out)
                     .output()
                     .expect("edit"),
-                2,
+                if rejects { 2 } else { 0 },
             );
-            let message = v["error"]["message"].as_str().expect("message");
-            assert!(message.contains(wanted), "{name}, {why}: {v}");
-            assert_eq!(entries(d.path()), names, "{name}, {why}: nothing written");
+            if rejects {
+                let message = v["error"]["message"].as_str().expect("message");
+                assert!(message.contains(wanted), "{name}, {why}: {v}");
+                assert_eq!(entries(d.path()), names, "{name}, {why}: nothing written");
+            } else {
+                measure_partial(&out, &to, 137.5, pappus(&to), None);
+                let m = mesh(&out, &out.with_extension("stl"));
+                check_partial_mesh(&m, &to, 137.5, pappus(&to));
+                std::fs::remove_file(out.with_extension("stl")).expect("remove measured mesh");
+                std::fs::remove_file(&out).expect("next candidate");
+            }
             assert_eq!(std::fs::read(&source).expect("source"), before);
         }
     }

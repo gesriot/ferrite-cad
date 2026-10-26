@@ -71,7 +71,7 @@ hex-символа. Не вычисляйте токен самостоятел�
 для базы допустимой 1–16 Cut history — объект `{body_id, base_feature_id, tools,
 wall_clearance_mm}`. `tools` имеет прежние поля tool DTO и порядок history;
 координаты абсолютные, глубина/радиус остаются прежними. Контекст задаёт проверку
-новых стен, не новый запрос. [Точный контракт](edit-cut-base-sketch.md).
+новых стен, не новый запрос. [Точный контракт](generic-sweeps.md).
 
 
 Девятая opt-in команда `edit-sketch-copy`: result `destination:string`,
@@ -189,8 +189,8 @@ boolean `leaves_a_floor`. UUID существующих объектов сох�
 что у `existing_cut` ниже). Неизвестные поля следует игнорировать.
 Через→карман добавляет собственный floor ref и OriginCap(selected, End)
 на каждом последующем producer. Карман→через отказывает со всеми
-защищаемыми UUID. [Контракт §26E](circular-cut-history.md).
-[Полный контракт, все поля discovery и запускаемый рецепт](edit-circular-cut-copy.md).
+защищаемыми UUID. [Контракт §26E](generic-sweeps.md).
+[Полный контракт, все поля discovery и запускаемый рецепт](generic-sweeps.md).
 
 ## До 16 Cut в существующем Body (§26A/C/E)
 
@@ -239,9 +239,9 @@ Feature.previous от первого Cut до tip, с теми же полями
 Для N>1 `existing_cut:null`; для N≠2 `neighboring_tool:null`. Старые значения
 на прежних документах сохраняются. Массив edit включает выбранный инструмент.
 Конфликт с любым другим диском называет его feature UUID.
-[Точный контракт §26E и исполняемый рецепт](circular-cut-history.md).
+[Точный контракт §26E и исполняемый рецепт](generic-sweeps.md).
 Точные ограничения, семантика истории, правила UI/writer и запускаемый рецепт:
-[первый Cut](circular-cut-copy.md), [второй Cut и новые поля discovery](sequential-circular-cuts.md).
+[первый Cut](generic-sweeps.md), [второй Cut и новые поля discovery](generic-sweeps.md).
 
 ## Явный ThroughAll для circular Cut (§26H)
 
@@ -279,7 +279,7 @@ Cut и `request_version 2`): v1 не может выразить это наме
 получают `request_versions` (`[1,2]` для добавления и Blind, `[2]` для
 ThroughAll). `leaves_a_floor` у ThroughAll всегда false. Result обеих команд
 получает аддитивное `extent`.
-[Контракт §26H и исполняемый рецепт](circular-cut-through-all.md).
+[Контракт §26H и исполняемый рецепт](generic-sweeps.md).
 
 ## Cut в простом Line-полигоне (§26I)
 
@@ -308,210 +308,23 @@ bounding box иного контура им не является, поэтом�
 `bounds_mm` — только диапазон, никогда не доказательство вложенности.
 `segments` — сохранённые Line в порядке хранения с их UUID; `orientation`
 (`counter_clockwise`/`clockwise`) — направление, в котором их нарисовали.
-[Контракт §26I и исполняемый рецепт](polygon-cut-history.md).
+[Контракт §26I и исполняемый рецепт](generic-sweeps.md).
 
-## Revolve на полный оборот (§27A)
+## Общие Extrude и Revolve
 
-`ferritecad create-sketch-revolve <request.json> -o <new.fcad> [--json]`.
-Request v1 (`deny_unknown_fields`, не больше 65536 байт):
+Сохранённые операции редактируются через [общую транзакцию](edit-transactions.md).
+У Revolve есть `previous`, ось SketchX/SketchY/Line и полный или частичный оборот;
+у обоих видов развёртки — NewBody/Add/Cut/Intersect. `inspect --json` сообщает
+сохранённые поля и UUID, а перестроение определяет пригодность операции.
+`axis_curve_id` задаёт только явно выбранную Line; для координатной оси это null.
+Поля класса `closure` и аналитических зазоров удалены. Контакт с осью определяет
+ядро; профили с ограничениями решаются перед построением. Конфликт ограничений
+остаётся типизированной ошибкой `constraint` с `constraint_conflict`.
 
-```json
-{"request_version":1,"points_mm":[[4,0],[10,0],[10,15],[4,15]],"axis":"sketch_y","angle":"full_turn"}
-```
-
-Envelope общий: `operation:"create-sketch-revolve"`, result
-`{destination, document_id}`; exit 0 — опубликовано, 2 — отказ (ничего не
-записано), 7 — отчёт не доставлен после публикации.
-
-`inspect --json` получает аддитивный массив верхнего уровня `revolves`:
-
-```json
-"revolves": [{"feature_id": "…", "name": "Revolve1", "body_id": "…",
-  "profile_sketch_id": "…", "plane_id": "…",
-  "axis": "sketch_y", "extent": "full_turn", "operation": "new_body",
-  "profile": {"available": true, "refusal": null,
-              "segments": [{"curve_id": "…", "start_mm": [4.0, 0.0], "end_mm": [10.0, 0.0]}, …]}}]
-```
-
-`features`, `bodies`, `sketches` и их типы не меняются. Revolve не попадает в
-`features`, поэтому прежний потребитель не примет его за Extrude; блоки правки
-тела и эскиза недоступны с отказом. Для документа без Revolve массив пуст.
-[Контракт §27A и исполняемый рецепт](full-turn-revolve.md).
-
-## Правка профиля Revolve и `profile_feature` (§27B)
-
-`edit-sketch-copy`, его request v1, envelope и exit 0/2/7 не меняются. Для
-самостоятельного документа §27A строка `sketches[]` теперь имеет
-`editable:true` (если документ и структура позволяют) и заполненные
-`vertices`; прежде она отказывала. На прежних моделях все прежние поля и
-значения те же. Аддитивное поле каждой строки `sketches[]`:
-
-```json
-"profile_feature": null
-"profile_feature": {"kind": "blind_extrude", "feature_id": "…", "height_mm": 10.0}
-"profile_feature": {"kind": "full_turn_revolve", "feature_id": "…", "body_id": "…",
-                    "axis": "sketch_y", "extent": "full_turn", "axis_clearance_mm": 1e-6}
-```
-
-`null` ровно тогда, когда `vertices` — null. `kind` называет политику, которую
-применит задание: `PolygonExtrusion` или `FullTurnRevolution`. Revolve
-по-прежнему не входит в `features`; `revolves[].profile.available` означает
-только читаемость профиля, а разрешение правки — `editable` строки Sketch.
-[Контракт §27B и исполняемый рецепт](edit-revolve-profile.md).
-
-### Сплошной Revolve на оси (§27C)
-
-Профиль, лежащий на оси одной целой Line, получает третий `kind`; прежний
-`full_turn_revolve` по-прежнему означает только профиль строго вне оси, со
-своим `axis_clearance_mm`:
-
-```json
-"profile_feature": {"kind": "full_turn_revolve_axis_closed", "feature_id": "…",
-                    "body_id": "…", "axis": "sketch_y", "extent": "full_turn",
-                    "axis_curve_id": "…", "off_axis_clearance_mm": 1e-6}
-```
-
-Клиент, знающий только прежние `kind`, на новом останавливается. `revolves[]`
-аддитивно получает `closure` (`"radial_clear"` или `"axis_closed"`) и
-`axis_curve_id` (null или UUID Line на оси).
-[Контракт §27C и исполняемый рецепт](axis-closed-revolve.md).
-
-### Сектор Revolve (§27D)
-
-`create-sketch-revolve` аддитивно принимает строгий request v2:
-
-```json
-{"request_version":2,"points_mm":[[4,0],[10,0],[10,15],[4,15]],
- "axis":"sketch_y","extent":{"kind":"angle","degrees":137.5}}
-```
-
-Вместо угла допустимо `extent:{"kind":"full_turn"}` без `degrees`.
-Неизвестные поля отказываются, v2 не принимает прежнее поле `angle`;
-request v1 с `angle:"full_turn"` сохранён. Диапазон угла — 0.01°–359.99°
-включительно; 360° не преобразуется в полный оборот автоматически.
-Envelope v1, operation, result и exit 0/2/7 прежние.
-
-`revolves[].extent` сохраняет строковый тип: сектор имеет `"partial_turn"`.
-Новое обязательное поле `angle_deg` — число для сектора, null для полного
-оборота. Клиент останавливается на незнакомом extent. У сохранённого сектора
-`sketches[].editable:false`, `vertices:null`, `profile_feature:null`, а
-`refusal` объясняет отсутствие правки. Payload v3 (полый) / v4 (на оси)
-требует `feature.revolve.partial.v1`; старый читатель сохраняет объект, но
-не может перестроить его как полный оборот.
-[Контракт §27D и исполняемый рецепт](partial-angle-revolve.md).
-
-### Правка угла сохранённого сектора (§27E)
-
-```text
-ferritecad edit-revolve-angle <source.fcad> --feature <uuid> --expect-version <token> --request <angle.json> -o <new.fcad> --json
-```
-
-Request v1 строгий:
-- ровно `{"request_version":1,"angle_deg":220}`;
-- только JSON-объект; массив, строка или `null` на месте числа, лишнее поле и
-  файл больше 65536 байт дают `input`;
-- `request_version` ≠ 1 даёт `unsupported`.
-
-Угол решает доменный `RevolveAngle`: 0.01°–359.99° включительно, хранится
-как задан, без округления и без превращения 360 в полный оборот.
-
-Успех:
-`{"schema_version":1,"operation":"edit-revolve-angle","ok":true,"result":{"destination":…,"document_id":…,"feature_id":…}}`.
-Коды выхода 0/2/7 прежние: при 7 копия опубликована.
-
-Discovery аддитивна: у каждой записи `revolves[]` есть
-`"angle_edit":{"available":…,"refusal":…,"document_refusal":…,"min_deg":0.01,"max_deg":359.99}`.
-Сохранённый угол остаётся в `angle_deg`. Полный оборот имеет
-`available:false`, причина — «a full-turn Revolve has no angle to edit».
-
-Приоритет ошибок:
-1. UTF-8 путей и request;
-2. открытие источника;
-3. ядро: stub-сборка здесь отвечает `unsupported` на любой корректный
-   request, какой бы ни был угол;
-4. job: вывод и версия, затем UUID, класс и угол.
-
-[Контракт §27E и исполняемый рецепт](edit-revolve-angle.md).
-
-### Правка профиля сохранённого сектора (§27F)
-
-Та же команда `edit-sketch-copy` и тот же request v1: все сохранённые
-`curve_id` по одному разу, в сохранённом порядке. Угла, оси и extent в
-запросе нет.
-
-Строка `sketches[]` сектора теперь `editable:true`, у неё есть `vertices`,
-а `profile_feature` получает один из двух новых видов:
-
-```json
-{"kind":"partial_turn_revolve","feature_id":"…","body_id":"…","axis":"sketch_y",
- "extent":"partial_turn","angle_deg":137.5,"axis_clearance_mm":1e-6}
-{"kind":"partial_turn_revolve_axis_closed","feature_id":"…","body_id":"…",
- "axis":"sketch_y","extent":"partial_turn","angle_deg":220,
- "axis_curve_id":"…","off_axis_clearance_mm":1e-6}
-```
-
-Прежние виды и поля не меняются. Клиент, не знающий новых видов,
-останавливается на них.
-
-Request этого маршрута строже прежнего:
-- исходные байты десериализуются в строгий тип один раз;
-- дубли ключей на любом уровне, включая записанные через JSON escape,
-  отказываются как `input`;
-- запрос и каждая вершина обязаны быть JSON-объектами.
-
-Остальные команды не менялись.
-[Контракт §27F и исполняемый рецепт](edit-partial-revolve-profile.md).
-
-### Ограничения профиля Revolve с отверстием (§27G)
-
-Та же команда `edit-sketch-constraints-copy`, тот же request v1 и тот же
-result (`added_constraints`, `removed_constraint_ids`, `solve`). У строки
-`sketches[]` профиля Revolve `constraint_edit.available` теперь `true` для
-полного оборота и сектора с отверстием (и, с §27H, для замкнутых на оси —
-ниже). `constraint_edit` аддитивно получает
-`profile_feature`: `null` ровно тогда, когда `curves` равен `null`, иначе
-объект прежних видов `profile_feature`:
-
-```json
-{"kind":"partial_turn_revolve","feature_id":"…","body_id":"…","axis":"sketch_y",
- "extent":"partial_turn","angle_deg":137.5,"axis_clearance_mm":1e-6}
-```
-
-У вытянутого полигона это `{"kind":"blind_extrude","feature_id":"…","height_mm":10}`.
-
-- `sketches[].profile_feature` по-прежнему описывает только правку
-  координат и равен `null` у профиля с ограничениями.
-- `revolves[].profile` больше не отказывает профилю только из-за
-  ограничений. Его `segments` — сохранённые, а не решённые Lines.
-
-Отказы решённого профиля:
-- решение, которое пересекает ось или касается её, либо меняет класс
-  детали, — `input` с причиной;
-- противоречивый набор — `constraint` с `constraint_conflict`.
-
-Request этой команды отказывает JSON-массиву на месте запроса или
-добавления (`input`). Дубли ключей, включая escape, отказывались и раньше.
-[Контракт §27G и исполняемый рецепт](revolve-profile-constraints.md).
-
-### Ограничения замкнутого на оси профиля Revolve (§27H)
-
-Та же команда, тот же request v1 и тот же result. У сплошной детали,
-замкнутой на оси вдоль заявленной Line, `constraint_edit.available` теперь
-`true`, а `constraint_edit.profile_feature` — существующий вид с
-`axis_curve_id`, равным `revolves[].axis_curve_id`:
-
-```json
-{"kind":"partial_turn_revolve_axis_closed","feature_id":"…","body_id":"…",
- "axis":"sketch_y","extent":"partial_turn","angle_deg":137.5,
- "axis_curve_id":"…","off_axis_clearance_mm":1e-6}
-```
-
-Имена и типы полей не менялись. Решённая Line с этим `axis_curve_id` должна
-лежать ровно на X = 0.0; клиент удерживает её там Fixed одного из концов
-(`x_mm: 0`) и `vertical`. Иначе — `input` с причиной («not strictly on the
-positive radial side and not on the axis» или «no longer touches the axis»),
-ничего не записано. Конфликт остаётся `constraint` с `constraint_conflict`.
-[Контракт §27H и исполняемый рецепт](axis-closed-revolve-constraints.md).
+`create-sketch-revolve` — шаблон вокруг локальной Y. Request v1 принимает
+`axis:"sketch_y", angle:"full_turn"`; v2 принимает
+`extent:{"kind":"angle","degrees":137.5}` или `extent:{"kind":"full_turn"}`.
+Общие оси и операции задаются через `edit`, см. [семантику развёрток](generic-sweeps.md).
 
 ### Скругление одного ребра плиты (§28A)
 
@@ -1208,7 +1021,7 @@ Body и Extrude — разные объекты: `features[].feature_id` адр�
 `protected_floors`: массив `{feature_id, reference_ids}` с собственными и
 descendant floor UUID каждого Cut. Для standalone/неподдерживаемой фичи — null.
 Это аддитивный контекст, не новый request. `editable` и command/response v1
-продолжают отвечать про `edit-extrude`; [политика высоты](edit-cut-base-height.md)
+продолжают отвечать про `edit-extrude`; [политика высоты](generic-sweeps.md)
 требует поддерживаемого каталога и разрешимости всех прежних/новых refs после
 публикации. Глубины tools не меняются. Exit 7 не разрешает слепой retry.
 

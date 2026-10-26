@@ -3278,8 +3278,8 @@ aliases источника и назначения, занятый выход, �
 неподдерживаемый frame, промах, уничтожение тела, отмена и потеря stdout.
 Face attachment, произвольные плоскости, Add/Intersect, Fillet, ThroughAll,
 live preview, правка созданного Cut и in-place Save в срез не входят.
-[Контракт и рецепт](circular-cut-copy.md),
-[локальные доказательства и ограничения](circular-cut-copy-verification.md).
+[Контракт и рецепт](generic-sweeps.md),
+[локальные доказательства и ограничения](generic-sweeps.md).
 Изменения оставлены unstaged/uncommitted; CI базы учитывается отдельно от нового
 diff. Оконный GUI smoke не исполнен: в этой сессии нет инструмента управления
 нативным интерфейсом macOS.
@@ -3291,7 +3291,7 @@ edit-extrude и потеря draft при отказе Open. Mixed gate отде
 native-сборки. Реальный macOS GUI smoke выполнен: неверный ввод → Apply →
 Undo/Redo → Save Cancel → hole publish/Open → повторный Open исходника →
 pocket publish/Open. GUI/CLI STL и FBX побайтово равны; peak 196.42 MiB,
-swap без роста, exit 0. [Протокол независимого ревью](circular-cut-copy-verification.md#независимое-ревью--2026-09-17).
+swap без роста, exit 0. [Протокол независимого ревью](generic-sweeps.md).
 
 **§26B — реализована правка параметров сохранённого circular Cut.**
 Из сохранённой плиты с одним Cut пользователь выбирает существующую Cut-фичу,
@@ -3379,8 +3379,8 @@ worker и тем же CLI request. Отказы проверены с остал
 Второй Cut, face attachment, произвольные плоскости, Add/Intersect, Fillet,
 ThroughAll, constrained-инструмент, live preview, правка Cut в середине более
 длинной истории и in-place Save в срез не входят.
-[Контракт и рецепт](edit-circular-cut-copy.md),
-[локальные доказательства и ограничения](edit-circular-cut-copy-verification.md).
+[Контракт и рецепт](generic-sweeps.md),
+[локальные доказательства и ограничения](generic-sweeps.md).
 Изменения оставлены unstaged/uncommitted; CI базы учитывается отдельно от нового
 diff.
 
@@ -3414,8 +3414,8 @@ Writer заново проверяет план, отказывает колли
 зазор строго больше 1e-7 mm, без nudge. Существующие version/alias/no-clobber,
 cancellation, SQLite close и atomic publication переиспользованы.
 
-[Контракт и исполняемый рецепт](sequential-circular-cuts.md),
-[фактические локальные проверки и ограничения](sequential-circular-cuts-verification.md).
+[Контракт и исполняемый рецепт](generic-sweeps.md),
+[фактические локальные проверки и ограничения](generic-sweeps.md).
 Независимое ревью повторило 537 native tests, отдельные stub/mixed gates,
 публичный рецепт и pinned reader, без блокирующих замечаний. Оконный прогон
 автора сохранён отдельно; повтор ревью отложен из-за блокировки Mac.
@@ -3431,7 +3431,7 @@ cancellation, SQLite close и atomic publication переиспользован�
 copy worker. Правка первого пересчитывает второй; UUID, Body tip, deps и
 previous chain сохраняются. Порог дисков/стенок общий: gap > 1e-7 mm.
 
-[Политика refs](edit-sequential-cuts.md) записана до кода. Through→pocket
+[Политика refs](generic-sweeps.md) записана до кода. Through→pocket
 первого добавляет собственный исторический floor и OriginCap(first, End)
 на final producer; второго — только собственный floor. Pocket→through
 отказывает при подготовке со всеми защищаемыми UUID. Старые refs сохраняют
@@ -3439,8 +3439,8 @@ producer/origin; archive v3 и predecessor-qualified cache keys не менял�
 Writer заново выводит подготовку и отказывает занятым/повторным новым UUID
 в транзакции, не пересоздавая optional capability rows/rowid.
 
-[Контракт и извлекаемый рецепт](edit-sequential-cuts.md),
-[фактические результаты, команды и ограничения](edit-sequential-cuts-verification.md).
+[Контракт и извлекаемый рецепт](generic-sweeps.md),
+[фактические результаты, команды и ограничения](generic-sweeps.md).
 Независимое ревью не выявило блокирующих дефектов реализации. Повторены
 основная native-матрица, mixed OCCT/no-solver и настоящий stub; учёт основной
 матрицы уточнён: 540 исполненных tests, два stub-only пропуска и один прежний
@@ -3459,8 +3459,8 @@ through→pocket adds one own and every descendant origin floor reference.
 No new schema, feature, copier or archive version. An additive diagnostic bridge
 query measures the analytic cylinder axis of an already resolved face handle. Wider history,
 constraints, intersecting disks and in-place Save remain outside this slice.
-[Contract and executable recipe](circular-cut-history.md),
-[verification](circular-cut-history-verification.md). Native, stub, mixed,
+[Contract and executable recipe](generic-sweeps.md),
+[verification](generic-sweeps.md). Native, stub, mixed,
 worker/widget, mutation and independent export checks are recorded separately.
 The implementer's guarded attempt exceeded 1536 MiB. Independent review found
 and fixed a self-sustaining RedrawRequested loop; separate widget/timer requests
@@ -3481,8 +3481,8 @@ Writer re-derives inside the write transaction; every UUID/reference and every
 SQL cell outside selected payload/hash stays intact. Baseline/edited cold rebuild,
 strict names and Keep publication use the existing job. Action-list scrolling
 keeps the 16-Cut base accessible; failed Open restores the coordinate draft through
-the existing retention mechanism. [Contract/recipe](edit-cut-base-sketch.md),
-[verification and limits](edit-cut-base-sketch-verification.md).
+the existing retention mechanism. [Contract/recipe](generic-sweeps.md),
+[verification and limits](generic-sweeps.md).
 Independent review fixed loss of typed errors/SQLite causes in coordinate preparation
 and added a required kernel-free regression gate. Fresh native GUI repeated the
 16-Cut edit, Undo/Redo, Save Cancel, publication/Open and distant-tool refusal:
@@ -3502,8 +3502,8 @@ preserves all SQL outside height payload/hash, new refs and modified_at. The
 existing copy job enforces all old/new refs and keeps its guards/publication.
 The height form retains input on failures and failed async Open through the
 existing worker/current-scene completion path; a bounded feature list keeps
-16-Cut controls reachable. [Policy and executable recipe](edit-cut-base-height.md),
-[verification](edit-cut-base-height-verification.md). Standalone behavior and
+16-Cut controls reachable. [Policy and executable recipe](generic-sweeps.md),
+[verification](generic-sweeps.md). Standalone behavior and
 the history limit are unchanged. No next slice or publication is included.
 Independent review found no blocking defect and repeated native, genuine stub,
 mixed OCCT/no-solver and fresh guarded GUI checks. The 16-Cut GUI height edit,
@@ -3529,15 +3529,15 @@ refuses at preparation. Request v2 is added beside the unchanged v1. Discovery
 keeps every v1 block and type; a v1 block that cannot describe ThroughAll is
 unavailable where it was already nullable, and additive `_v2` blocks carry
 `extent` and `request_versions`.
-[Contract and recipe](circular-cut-through-all.md),
-[verification](circular-cut-through-all-verification.md). The 16-link limit and
+[Contract and recipe](generic-sweeps.md),
+[verification](generic-sweeps.md). The 16-link limit and
 all clearances are unchanged. Independent review restored JSON v1 type
 compatibility, clarified height-form wording, and completed guarded macOS GUI
 checks including Undo/Redo, Save Cancel, publication/Open, base growth, floor
 refusal and adding ThroughAll. GUI/CLI STL and FBX match byte-for-byte; final
 viewer peak 215.376 MiB, exit 0, swap 0. Exact cloud-head CI logs independently
 confirm 183 native gates and 66 ufbx reads per OS; review/merge checks are audited
-with publication. [Full review evidence](circular-cut-through-all-verification.md#independent-macos-review--2026-09-24).
+with publication. [Full review evidence](generic-sweeps.md).
 
 **§26I — circular Cut history on a simple Line polygon.**
 
@@ -3555,8 +3555,8 @@ saved Line UUID; nothing new is stored and no schema, cache key or FFI
 changes. JSON keeps every rectangle block byte-identical; for any other
 polygon the v1/`_v2` blocks report themselves unavailable and additive `_v3`
 blocks carry `bounds_mm` and a typed `boundary`. The UI and the recipe read
-that same boundary. [Contract and recipe](polygon-cut-history.md),
-[verification](polygon-cut-history-verification.md).
+that same boundary. [Contract and recipe](generic-sweeps.md),
+[verification](generic-sweeps.md).
 
 Independent review completed native, genuine stub, mixed OCCT/no-solver and
 guarded macOS GUI checks. The L-profile scenario covered notch/reflex/edge
@@ -3598,8 +3598,8 @@ sketch's local Y axis through the datum origin.
 * **Out of scope.** Revolve editing, booleans on it, partial angles, other
   axes and closing on the axis. This does not complete Revolve or wave 5A.
 
-[Contract and recipe](full-turn-revolve.md),
-[verification](full-turn-revolve-verification.md).
+[Contract and recipe](generic-sweeps.md),
+[verification](generic-sweeps.md).
 
 Independent review completed native, genuine stub, mixed OCCT/no-solver and
 watchdog-guarded macOS GUI checks for §27A. Actual GUI covered numeric profile
@@ -3635,8 +3635,8 @@ class: an untransformed XY plane, one unconstrained closed Line Sketch, one
 * **Out of scope.** Axis/angle changes, adding/removing vertices,
   constraints, booleans, in-place Save and preview.
 
-[Contract and recipe](edit-revolve-profile.md),
-[verification](edit-revolve-profile-verification.md).
+[Contract and recipe](generic-sweeps.md),
+[verification](generic-sweeps.md).
 
 
 Independent §27B review completed native, real stub, mixed OCCT/no-solver
@@ -3646,7 +3646,7 @@ and a cylinder-to-cone edit. Every GUI/CLI SQL cell and both STL/FBX pairs
 match; sources and saved identities are preserved. Viewer peak 199.4542 MiB,
 exit 0, swap 0. CI logs confirm 214 distinct required gate names and 72 ufbx
 reads per OS. Report counts were corrected; product code needed no change.
-[Independent evidence](edit-revolve-profile-verification.md#independent-macos-review--2026-09-25).
+[Independent evidence](generic-sweeps.md).
 
 **§27C — solid full-turn Revolve: a profile closed on the axis.**
 
@@ -3679,8 +3679,8 @@ simple Line polygon with X ≥ 0 and exactly one whole Line exactly on X = 0.
 * **Out of scope.** Partial turns, other axes, Circle/Arc, constraints,
   several profiles, booleans on the Revolve, in-place Save and preview.
 
-[Contract and recipe](axis-closed-revolve.md),
-[verification](axis-closed-revolve-verification.md). The cloud
+[Contract and recipe](generic-sweeps.md),
+[verification](generic-sweeps.md). The cloud
 implementation leaves actual macOS GUI verification to the reviewer.
 
 Independent §27C review completed native, genuine stub, OCCT/no-solver and
@@ -3692,7 +3692,7 @@ peak 211.673 MiB, exit 0, swap 0. Review strengthened FBX comparison and
 added a precision-boundary refusal case for the global triangle filter;
 no geometry/storage implementation correction was needed. Initial exact
 head CI logs confirm 226 distinct native gate names and 74 ufbx reads per
-OS. [Independent evidence](axis-closed-revolve-verification.md#independent-macos-review--2026-09-25).
+OS. [Independent evidence](generic-sweeps.md).
 
 **§27D — partial-angle Revolve / NewBody.**
 
@@ -3706,8 +3706,8 @@ adds `angle_deg` (null for a full turn) and the `partial_turn` extent.
 Saved sectors deliberately refuse coordinate/angle editing in this slice.
 Other axes, constraints, booleans, preview and in-place Save remain pending.
 
-[Contract and executable recipe](partial-angle-revolve.md),
-[verification and independent review](partial-angle-revolve-verification.md).
+[Contract and executable recipe](generic-sweeps.md),
+[verification and independent review](generic-sweeps.md).
 
 **§27E — edit a saved sector's angle in a new copy.**
 
@@ -3729,8 +3729,8 @@ Full turns, other compositions and angles the domain refuses are refused
 atomically. Sector coordinates, full↔partial, axis/direction, booleans,
 preview and in-place Save remain out of scope.
 
-[Contract and executable recipe](edit-revolve-angle.md),
-[verification](edit-revolve-angle-verification.md).
+[Contract and executable recipe](generic-sweeps.md),
+[verification](generic-sweeps.md).
 
 **§27F — edit a saved sector's profile in a new copy.**
 
@@ -3746,8 +3746,8 @@ The request of this route is now strict about duplicate keys and arrays.
 class contract: hollow↔solid, the axis Line and the frame are still
 refused.
 
-[Contract and executable recipe](edit-partial-revolve-profile.md),
-[verification](edit-partial-revolve-profile-verification.md).
+[Contract and executable recipe](generic-sweeps.md),
+[verification](generic-sweeps.md).
 
 **§27G — dimensional constraints on a saved Revolve profile with a bore.**
 
@@ -3768,7 +3768,7 @@ What is new:
 - The request of this command refuses arrays in place of objects.
 
 [Contract and executable recipe](revolve-profile-constraints.md),
-[verification](revolve-profile-constraints-verification.md).
+[verification](generic-sweeps.md).
 
 **§27H — dimensional constraints on a saved Revolve profile closed on the
 axis.**
@@ -3793,7 +3793,7 @@ What is new:
 - The window's owner line names the axis Line and what keeps it there.
 
 [Contract and executable recipe](axis-closed-revolve-constraints.md),
-[verification](axis-closed-revolve-constraints-verification.md).
+[verification](generic-sweeps.md).
 
 **§28A — one named Fillet on one vertical edge of a saved plate, in a new
 copy.** This is the first real Fillet feature. It is not the 5C milestone:
@@ -4450,7 +4450,7 @@ stale answers, scene failure and cleanup preserve accepted state and typed draft
 UUIDs, both caps, axis class and stored constrained approximation remain unchanged.
 Exact widget/native/stub/mixed workflow gates and strict ufbx comparisons extend the
 existing campaigns. No new geometry, format, CLI/JSON or document class.
-[Contract](revolve-angle-session-apply.md), [verification and executable window recipe](revolve-angle-session-apply-verification.md).
+[Contract](generic-sweeps.md), [verification and executable window recipe](generic-sweeps.md).
 §30, Milestone 5C and the product remain open; the next slice has not started.
 
 
@@ -4470,7 +4470,7 @@ and document histories, unsaved exports, Save/Save As and reopen. Actual GUI
 SQL and STL/FBX match CLI; all seven artifact-dependent negative controls fired.
 The fresh viewer exited normally, peak footprint 227.001 MiB, pressure normal
 and swap unchanged. Review also corrected two obsolete Cut instructions.
-[Contract](cut-session-apply.md), [verification](cut-session-apply-verification.md).
+[Contract](generic-sweeps.md), [verification](generic-sweeps.md).
 §30, Milestone 5C and the product remain open; no next slice has started.
 
 **§30G — edit an existing Fillet radius inside the open document.** Apply radius
@@ -4541,8 +4541,8 @@ unchanged. Widget, native, stub and mixed gates, all-cell SQL/CLI comparison und
 proved bijection of new identities only, Undo/Redo without remap, byte-equal
 unsaved/branch STL/FBX, pinned ufbx, two directed mutations, a window comparator
 with seven negative controls and a real-window recipe are tracked in
-[contract](add-circular-cut-session.md) and
-[verification](add-circular-cut-session-verification.md). Add Fillet, Add Chamfer,
+[contract](generic-sweeps.md) and
+[verification](generic-sweeps.md). Add Fillet, Add Chamfer,
 the clean-only copy routes and Revolve creation remain copy-only. Independent
 PR #89 review read all 24 new exact CI executions and the reader markers on three
 platforms (code 15/15, author docs 7/7). The macOS arm64 window recipe passed:

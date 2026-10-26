@@ -1,7 +1,7 @@
 # Карта предметных возможностей: UI ↔ CLI ↔ общий API
 
 Карта возможностей с историей изменений от §24A. Записи отдельных срезов ниже
-сохраняют контекст своих проверок; актуальные изменения 06–08 имеют приоритет.
+сохраняют контекст своих проверок; актуальные изменения 06–09 имеют приоритет.
 После 08b выходные имена выводятся из перестроения. Непотребляемое дно Cut может
 исчезнуть при правке глубины или переходе к ThroughAll; отказ возникает, когда
 падает потребляющая фича. Каталога выходных ссылок и его предупреждений больше нет.
@@ -10,157 +10,15 @@
 
 Сборки и чертежи в beta не входят. Импортированная STEP-сборка сохраняет структуру и может быть экспортирована в FBX; это не редактор сборок.
 
-§26G: [высота базы circular Cut history](edit-cut-base-height.md) правится
-существующими `Edit extrusion` и `edit-extrude --distance-mm` через общий copy
-job. Глубины tools абсолютны; новые дна получают собственные/descendant refs,
-потеря сохранённого дна и выход глубины за толщину отказываются с UUID. Discovery
-`features[].base_height_edit` содержит typed контекст того же snapshot.
-
-§26H: [явный ThroughAll](circular-cut-through-all.md) у circular Cut. UI —
-`End: Blind depth / Through all` в прежних формах `Cut circle into…`/`Edit cut…`;
-CLI — request v2 тех же `cut-circular-copy`/`edit-circular-cut` с
-`extent:{"kind":"through_all"}`. Намерение хранится как `EndCondition::ThroughAll`
-(payload v3, `feature.through-all.v1`); длину evaluator берёт из текущей высоты
-базы, поэтому Cut остаётся сквозным после `edit-extrude`, reopen, cold rebuild и
-cache hit. Blind↔ThroughAll без потери дна сохраняет имена; ThroughAll→карман
-добавляет дно; карман с сохранённым дном→ThroughAll и request v1 на ThroughAll
-отказываются с UUID. Discovery: прежние v1-блоки не меняют типов и для истории
-с ThroughAll честно недоступны; новые `cut_edit_v2`, `circular_cut_edit_v2`,
-`base_height_edit_v2`, `cut_history_v2` несут `extent` и `request_versions`.
-
-§26I: та же история Cut [в простом Line-полигоне](polygon-cut-history.md) —
-3..256 сторон без constraints, обе ориентации, наклонные стены и вогнутые
-вершины (L-профиль). Инструмент должен отстоять от реальных конечных отрезков
-контура, а не от его bounding box; правка базы проверяет все инструменты и
-называет UUID нарушающего Cut. Команды и request прежние. Discovery: для
-прямоугольника прежние блоки побайтно те же; для иного полигона v1/`_v2`
-недоступны, новые `cut_edit_v3`, `circular_cut_edit_v3`, `base_height_edit_v3`,
-`cut_history_v3` несут `bounds_mm` и типизированный `boundary`.
-
-§27A: `create-sketch-revolve <request.json> -o <new.fcad> [--json]` —
-[полный оборот](full-turn-revolve.md) простого Line-полигона 3..256 вершин без
-constraints вокруг локальной оси Y эскиза. Все точки строго при X > 0;
-касание/пересечение оси, частичный угол, другая ось и несколько контуров
-отказываются (exit 2). Request v1 строгий: `request_version`, `points_mm`,
-`axis:"sketch_y"`, `angle:"full_turn"`. Хранится намерение `feature.revolve`
-с новой capability `feature.revolve.v1`; каждая Line даёт одну грань под своим
-UUID (`RevolveFace`). Сборки до §27A открывают такой документ только для
-чтения. Discovery: новый массив `revolves`; `features` его не содержит, прежние
-редакторы отказываются. Без ядра создание отказывается и ничего не публикует.
-
-§27B: [координаты профиля такого Revolve](edit-revolve-profile.md) меняет
-прежний `edit-sketch-copy` (request v1 без изменений) в новую копию. Все UUID
-линий, объектов и имён граней сохраняются; ось, полный оборот и NewBody
-остаются. Касание/пересечение оси, самопересечение, смена порядка/числа линий
-или направления обхода отказываются (exit 2). Discovery добавляет
-`sketches[].profile_feature` с `kind` `blind_extrude` или `full_turn_revolve`.
-
-§27C: тот же `create-sketch-revolve` и тот же request v1 принимают и сплошной
-профиль: X ≥ 0 и ровно одна целая Line точно на X = 0 (−0 равно 0), прочие
-вершины при X > 1e-6. Одиночное касание, пересечение, несколько отрезков на
-оси и вершина вплотную к оси отказываются (exit 2). Такой Revolve хранится
-payload v2 с `axis_segment` и требует capability
-`feature.revolve.axis-closed.v1`; сборка §27B открывает его только для чтения
-и не правит. Line на оси грани не даёт и имени не получает. `edit-sketch-copy`
-правит его координаты, оставляя ту же Line на оси; переход между сплошной
-деталью и деталью с отверстием отказывается (exit 2). Discovery:
-`profile_feature.kind` `full_turn_revolve_axis_closed`.
-[Контракт §27C и исполняемый рецепт](axis-closed-revolve.md).
-
-§27D: тот же `create-sketch-revolve` принимает строгий request v2 с
-`extent:{"kind":"angle","degrees":137.5}` либо `extent:{"kind":"full_turn"}`.
-Допустимый угол — 0.01°–359.99° включительно, вокруг +Y; 360° нужно явно
-задавать как полный оборот. Обе прежние формы профиля поддержаны. У сектора
-два собственных `RevolveCap` и capability `feature.revolve.partial.v1`;
-`revolves[].extent` становится `partial_turn`, новый `angle_deg` — число
-(null у полного оборота). Правка координат сохранённого сектора в §27D
-отказывалась; §27F её добавляет (см. ниже). Request v1, response и exit
-0/2/7 сохраняются.
-[Контракт §27D и исполняемый рецепт](partial-angle-revolve.md).
-
-§27E: угол сохранённого сектора меняется в новой копии:
-`edit-revolve-angle source.fcad --feature UUID --expect-version HASH
---request request.json -o copy.fcad [--json]` с request v1
-`{"request_version":1,"angle_deg":220}`. В окне этому соответствует
-`Edit Revolve angle <имя> — <UUID>…`: поле Angle °, Apply, Undo/Redo и
-`Save edited Revolve copy…`. UI и CLI идут через один job,
-`prepare_revolve_angle` → `write_revolve_angle` → прежний `edit_object_copy`:
-- тот же snapshot;
-- baseline cold rebuild;
-- пере-вывод строки в транзакции записи;
-- обязательное разрешение всех прежних имён;
-- повторная проверка версии источника;
-- атомарная no-clobber публикация.
-
-Меняются только payload/payload_hash строки Revolve и `meta.modified_at`.
-Все UUID (объекты, Lines, оба `RevolveCap`), refs, capabilities, версии
-payload и прочие SQL-ячейки сохраняются, источник побайтово цел. Тот же угол
-принимается и публикует копию с побайтово тем же Revolve.
-
-Отказывают (exit 2):
-- полный оборот (`unsupported`);
-- UUID, который не Revolve;
-- неизвестный UUID (`input`);
-- угол вне 0.01°–359.99° (`input`, решает `RevolveAngle`);
-- любой другой состав документа.
-
-Discovery — аддитивный `revolves[].angle_edit`. Смена оси/направления и
-full↔partial не входят.
-[Контракт §27E и исполняемый рецепт](edit-revolve-angle.md).
-
-§27F: координаты сохранённого сектора (v3 с отверстием, v4 замкнутый на оси)
-правятся тем же `Edit Sketch` (перетаскивание или точные X/Y, Undo/Redo) и
-тем же `edit-sketch-copy` с прежним request v1. Угол не входит в запрос и не
-меняется.
-
-Как и у полного оборота, сохраняются:
-- класс детали (с отверстием или сплошная);
-- Line на оси;
-- число и порядок Lines, все UUID, оба `RevolveCap`.
-
-Меняются только payload/payload_hash строки Sketch; `meta.modified_at` при
-правке координат не штампуется. Discovery аддитивна: строка Sketch сектора
-становится `editable:true` с новым видом `profile_feature.kind`
-`partial_turn_revolve` / `partial_turn_revolve_axis_closed` и полем
-`angle_deg`.
-
-Request этого маршрута стал строже: дубли ключей (в том числе через JSON
-escape) и массивы на месте объектов отказываются как `input`.
-[Контракт §27F и исполняемый рецепт](edit-partial-revolve-profile.md).
-
-§27G: `edit-sketch-constraints-copy` с прежним request v1 принимает профиль
-сохранённого Revolve с отверстием — полного оборота (v1) и сектора (v3).
-Те же семь Line-правил, closure, точное удаление по UUID и атомарная замена
-длины. Stored координаты не переписываются; тело строится из решённого
-профиля, и тот же класс (отверстие, зазор до оси, простой полигон)
-проверяется на решении до публикации.
-
-Сохраняются:
-- строка Revolve (угол, ось, `axis_segment`);
-- все UUID объектов, Lines и имён, оба `RevolveCap`.
-
-Меняются только payload/payload_hash/schema_version строки Sketch и строка
-`sketch.constraints.v1`. Замкнутый на оси профиль (v2/v4) отказывался в
-§27G и принимается с §27H (ниже); окружности, booleans и иные документы
-отказываются. Discovery аддитивна:
-`constraint_edit.profile_feature` называет Revolve теми же видами, что
-`profile_feature`, без выдуманной высоты. Правка угла сектора принимает
-профиль с ограничениями и сохраняет их. Request этой команды теперь
-отказывает массиву на месте запроса или добавления (`input`).
-[Контракт §27G и исполняемый рецепт](revolve-profile-constraints.md).
-
-§27H: та же команда и тот же request v1 принимают и замкнутый на оси профиль
-сплошной детали — полного оборота (v2) и сектора (v4) — с тем же
-`axis_segment`. Новой capability нет. Решённая осевая Line должна лежать ровно
-на X = 0.0: ничего не притягивается к оси, осевая Line не подменяется, шов
-или грань не выдумываются. Удерживает её на оси сам request: Fixed одного из
-её концов с X 0 и V на ней. Решение, уводящее её с оси или пересекающее ось,
-отказывается (`input`) до публикации. Осевая Line по-прежнему не даёт грани;
-оба `RevolveCap` сектора сохраняют имена. Discovery аддитивна:
-`constraint_edit.profile_feature` имеет вид
-`full_turn_revolve_axis_closed` / `partial_turn_revolve_axis_closed` с
-`axis_curve_id`.
-[Контракт §27H и исполняемый рецепт](axis-closed-revolve-constraints.md).
+09a: [общие Extrude и Revolve](generic-sweeps.md) поддерживают NewBody, Add,
+Cut и Intersect. Blind/Symmetric учитывают направление; ThroughAll для Cut и
+Intersect берёт проекцию габаритов цели с запасом 1 мм. Кэш использует ключ цели
+без запроса габаритов. Revolve принимает SketchX, SketchY и направленную Line,
+полный или частичный оборот. Ограничения контакта и классов профиля удалены:
+валидность и одно тело определяет ядро. Данные операции доступны через общий
+[JSON edit](edit-transactions.md); существующие формы окна продолжают работать.
+Смена контакта с осью допустима, когда ядро строит валидное тело. Потребляемые
+ссылки должны разрешаться; непотребляемые грани могут исчезать.
 
 §28A: `fillet-edge-copy <source.fcad> --body UUID --expect-version HASH
 --request <request.json> -o <copy.fcad> [--json]` скругляет одно вертикальное
@@ -446,7 +304,7 @@ capability по прежней политике) и штамп. Новой ко�
 
 §30I: CLI не меняется. Форма `Cut circle into … — UUID…` получает кнопку
 **Add cut**, которая добавляет новый circular Cut в открытый документ шагом общей
-истории через тот же `circular_cut_copy` ([контракт](add-circular-cut-session.md));
+истории через тот же `circular_cut_copy` ([контракт](generic-sweeps.md));
 бывшая кнопка подтверждения черновика называется **Confirm draft numbers**.
 `cut-circular-copy` на том же снимке даёт тот же результат во всех ячейках SQL,
 кроме `meta.modified_at` и доказанного соответствия новых UUID.
@@ -525,13 +383,13 @@ UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o ne
 та же команда `edit-sketch-constraints-copy` и тот же solver-маршрут получают
 две новые формы запроса, а `ferritecad-sketch-solver` — настоящую аналитическую
 окружность с тремя неизвестными.
-§26A добавляет [первый Cut в существующем Body](circular-cut-copy.md):
+§26A добавляет [первый Cut в существующем Body](generic-sweeps.md):
 `cut-circular-copy source.fcad --body UUID --expect-version HASH --request
 request.json -o copy.fcad [--json]` вырезает круглый инструмент на базовой
 XY-плоскости детали на конечную глубину вдоль +Z. Body сохраняет свой UUID, а
 его tip становится новой фичей; история выражена явно
 ([ADR 4](decisions/0004-feature-predecessor.md)).
-§26C расширяет ту же команду на [второй отдельный circular Cut](sequential-circular-cuts.md):
+§26C расширяет ту же команду на [второй отдельный circular Cut](generic-sweeps.md):
 все четыре сочетания through/pocket, зазор между дисками строго больше 1e-7 mm,
 сохранение исторических refs и явные origin names на final Body. Добавление
 третьего Cut и редактирование обоих Cut восьмиобъектной копии пока недоступны.
@@ -584,9 +442,9 @@ JSON v1 доступен только явно перечисленным ком
 | Полая деталь: окружность с одним концентрическим отверстием | `Create sketch + Extrude…` → `Profile: Circle with hole`, численные Center X/Y, Outer radius, Inner radius, Blind height, `Save annular extrusion…`; Line- и Circle-черновики рядом сохраняются; §31I: canvas над полями, центр и оба радиуса перетаскиваются отдельными ручками | `ferritecad create-annular-extrude request.json -o new.fcad [--json]` | `AnnularExtrusion` → `CreateDocumentRequest` → `create_document_with_kernel`; тот же `NewDocument::needs_kernel()`, writer, evaluator и Keep publish, что у одной окружности | Две концентрические XY `SketchGeometry::Circle`/mm/Blind/NewBody, `0 < r < R`, стенка не тоньше 0.001 mm; [контракт и рецепт](annular-sketch-extrude.md). Отверстие — второй контур того же профиля, а не второе тело и не boolean: в B-Rep две цилиндрические поверхности радиусов R и r и два плоских cap, по одной side-ссылке на каждую окружность по её собственному UUID. Внешний и внутренний контуры определяются геометрией, а не порядком записи. STL/FBX — тесселяция, не аналитика. Произвольные вложенные контуры, несколько отверстий, неконцентрическое отверстие, смешанные профили, circle constraints и boolean Cut не входят; правка радиусов доступна отдельной операцией §25M. Line- и Circle-редакторы этот Sketch по-прежнему отказывают. |
 | Правка сохранённой кольцевой пары: общий центр и оба радиуса | `Edit annulus <имя> — <UUID>…` — оба UUID окружностей, их сохранённые центры и радиусы, неизменяемая высота, точные Center X/Y, Outer radius, Inner radius, один `Confirm draft numbers` на все три числа, `Save edited annulus copy…`; §31I: canvas с ручками центра, внешнего радиуса и bore (жест — один шаг черновика) | `ferritecad edit-annular source.fcad --sketch UUID --expect-version HASH --request request.json -o copy.fcad [--json]` | `AnnulusEdit` → `replace_annulus_geometry` → прежний `edit_object_copy`: тот же snapshot, baseline cold rebuild, strict-проверка refs, повторная проверка версии, закрытие SQLite и атомарная no-clobber публикация; `write_annulus_geometry` идёт через общий с окружностью guard `write_prepared_sketch_geometry` | Ровно класс §25L внутри frame §25K; роли outer/inner — по сохранённым радиусам, не по порядку кривых; [контракт и рецепт](edit-annular-copy.md). Меняются только центр и радиус двух названных кривых, их payload/payload_hash и `meta.modified_at`; оба UUID, их порядок, высота, refs и все прочие SQL-ячейки сохраняются, источник побайтово цел. Высота остаётся у `edit-extrude`. Discovery — аддитивный `annulus_edit` в `inspect --json`, работает и без ядра. Произвольные отверстия, boolean Cut, circle constraints, in-place Save, рисование мышью новых кривых, новая схема БД и новые FFI не входят (§31I: только перетаскивание центра и радиусов на canvas формы). |
 | Параметрическая окружность: сохранённый радиус и закреплённый центр | `Edit constraints <имя> — <UUID>…` → строка `Circle · <UUID> · centre (x, y) mm · radius r mm`, поле `Radius mm`, прежние `Fixed X/Y (mm)`, кнопки `Add radius` и `Add Fixed centre`; один Apply — один Undo, 128 шагов | `ferritecad edit-sketch-constraints-copy source.fcad --sketch UUID --expect-version HASH --request request.json -o copy.fcad [--json]` с формами `{"rule":"radius",…}` и `{"rule":"fixed",…,"at":"center",…}` | `AddSketchConstraint::Circle` → `prepare_sketch_constraints` → прежний `edit_object_copy`; solver получил `CircleId`, `Circle{center: PointId, radius}` и `Constraint::Radius`, C ABI — отдельный `circles[2]`, `FcGcsCircle` и `fc_gcs_session_radii` | Одна неконструкционная XY `Circle` в прежнем frame §25K; [контракт и рецепт](circle-radius-constraints.md). Геометрия берётся из решения PlaneGCS; сохранённый Sketch остаётся исходным приближением, как у Line-ограничений. Измеренные DOF: свободная окружность 3, с радиусом 2, с закреплённым центром 1, с обоими 0. Sketch с ограничением про окружность хранится как payload v3 и объявляет `sketch.constraints.circle.v1`; прежние v1/v2 не меняются, SQL-схема не поднята. Diameter, Tangent, EqualRadius, Arc, смешанные профили, отверстия, mouse drag, live solve и выражения вместо literal radius не входят; §25L/M и прежние редакторы контрактов не теряют. |
-| Первый Cut в существующем Body: круглый инструмент на конечную глубину | `Cut circle into <имя> — <UUID>…` у поддерживаемого Body; форма называет базовую XY-плоскость и направление +Z, показывает размеры детали, её высоту и фичу, которую правка изменит; поля Centre X/Y, Radius, Depth, один подтверждённый `Apply cut` на все четыре, bounded Undo/Redo, `Save cut copy…` | `ferritecad cut-circular-copy source.fcad --body UUID --expect-version HASH --request request.json -o copy.fcad [--json]`, request v1 `{"request_version":1,"center_mm":[x,y],"radius_mm":N,"depth_mm":N}` | `CircularCut` → `prepare_circular_cut` → узкий `write_circular_cut` → прежний `edit_object_copy`; `GeometryKernel::cut` + `fc_occt_cut` (`BRepAlgoAPI_Cut`) с настоящей history по названным граням обоих входов | Прежний frame §25K плюс осепараллельный прямоугольный неограниченный профиль; [контракт и рецепт](circular-cut-copy.md). Фича называет фичу (`Extrude.previous`, ребро `Predecessor`), Body называет tip; владение не хранится дважды, граф ацикличен по построению, payload v2 + `feature.predecessor.v1`. Имена — из OCCT history: инструмент под `ExtrudeSide`/`ExtrudeCap`, прежние грани под `CarriedCap`/`CarriedSide`, удалённое записано как удалённое. Ключ Cut зависит от обоих входов; cold и cache Miss/Hit совпадают. Касание внешней стенки, промах, уничтожение тела и расщепление отказывают. Face attachment, произвольные плоскости, Add/Intersect, Fillet, ThroughAll, live preview и in-place Save не входят; после Cut прежние четырёхобъектные редакторы честно отказывают. |
-| До 16 отдельных circular Cut в том же Body | Та же форма Add cut, с ограниченной по высоте прокруткой инструментов и требуемым зазором | Та же `cut-circular-copy` и request v1 | Прежний shared copy job; qualified origin names через OCCT history, archive v3 | До 16 попарно разделённых дисков; все прежние Cut/refs/SQL сохраняются. На 16 добавить нельзя, править можно любой. [Контракт и рецепт](circular-cut-history.md). |
-| Правка сохранённого circular Cut | `Edit cut <имя> — <UUID>…`: сохранённые числа, Apply, Undo/Redo, Save Cancel и сохранность draft при отказах | `ferritecad edit-circular-cut source.fcad --feature UUID --expect-version HASH --request request.json -o copy.fcad [--json]` | `CircularCutEdit` → `prepare_cut_parameters` → узкий `write_cut_parameters` → прежний `edit_object_copy`; каталог из одного снимка | Любой Cut линейной истории до 16 над прямоугольной плитой (§26E). Прежние UUID/история/refs/SQL сохранены. Через→карман добавляет собственную ссылку на дно; по одному OriginCap на каждом последующем producer. Карман→через отказывает со всеми защищаемыми UUID. Discovery: `features[].circular_cut_edit`; прежний `editable` у Cut остаётся false. [Контракт и рецепт](circular-cut-history.md). |
+| Первый Cut в существующем Body: круглый инструмент на конечную глубину | `Cut circle into <имя> — <UUID>…` у поддерживаемого Body; форма называет базовую XY-плоскость и направление +Z, показывает размеры детали, её высоту и фичу, которую правка изменит; поля Centre X/Y, Radius, Depth, один подтверждённый `Apply cut` на все четыре, bounded Undo/Redo, `Save cut copy…` | `ferritecad cut-circular-copy source.fcad --body UUID --expect-version HASH --request request.json -o copy.fcad [--json]`, request v1 `{"request_version":1,"center_mm":[x,y],"radius_mm":N,"depth_mm":N}` | `CircularCut` → `prepare_circular_cut` → узкий `write_circular_cut` → прежний `edit_object_copy`; `GeometryKernel::cut` + `fc_occt_cut` (`BRepAlgoAPI_Cut`) с настоящей history по названным граням обоих входов | Прежний frame §25K плюс осепараллельный прямоугольный неограниченный профиль; [контракт и рецепт](generic-sweeps.md). Фича называет фичу (`Extrude.previous`, ребро `Predecessor`), Body называет tip; владение не хранится дважды, граф ацикличен по построению, payload v2 + `feature.predecessor.v1`. Имена — из OCCT history: инструмент под `ExtrudeSide`/`ExtrudeCap`, прежние грани под `CarriedCap`/`CarriedSide`, удалённое записано как удалённое. Ключ Cut зависит от обоих входов; cold и cache Miss/Hit совпадают. Касание внешней стенки, промах, уничтожение тела и расщепление отказывают. Face attachment, произвольные плоскости, Add/Intersect, Fillet, ThroughAll, live preview и in-place Save не входят; после Cut прежние четырёхобъектные редакторы честно отказывают. |
+| До 16 отдельных circular Cut в том же Body | Та же форма Add cut, с ограниченной по высоте прокруткой инструментов и требуемым зазором | Та же `cut-circular-copy` и request v1 | Прежний shared copy job; qualified origin names через OCCT history, archive v3 | До 16 попарно разделённых дисков; все прежние Cut/refs/SQL сохраняются. На 16 добавить нельзя, править можно любой. [Контракт и рецепт](generic-sweeps.md). |
+| Правка сохранённого circular Cut | `Edit cut <имя> — <UUID>…`: сохранённые числа, Apply, Undo/Redo, Save Cancel и сохранность draft при отказах | `ferritecad edit-circular-cut source.fcad --feature UUID --expect-version HASH --request request.json -o copy.fcad [--json]` | `CircularCutEdit` → `prepare_cut_parameters` → узкий `write_cut_parameters` → прежний `edit_object_copy`; каталог из одного снимка | Любой Cut линейной истории до 16 над прямоугольной плитой (§26E). Прежние UUID/история/refs/SQL сохранены. Через→карман добавляет собственную ссылку на дно; по одному OriginCap на каждом последующем producer. Карман→через отказывает со всеми защищаемыми UUID. Discovery: `features[].circular_cut_edit`; прежний `editable` у Cut остаётся false. [Контракт и рецепт](generic-sweeps.md). |
 | Параметрическое кольцо: два радиуса, концентричность и закреплённый общий центр | `Edit constraints <имя> — <UUID>…` → строки `Boundary circle · <UUID> · centre (x, y) mm · radius R mm` и `Bore circle · …`, поле `Radius mm`, прежние `Fixed X/Y (mm)`, `Pair Circle A`/`Pair Circle B` и `Add Concentric`; persisted строки `Concentric`/`Radius`/`Fixed centre` с собственными Remove; один Apply — один Undo, 128 шагов | та же `ferritecad edit-sketch-constraints-copy source.fcad --sketch UUID --expect-version HASH --request request.json -o copy.fcad [--json]`, новая форма `{"rule":"concentric","a_curve_id":UUID_A,"b_curve_id":UUID_B}` рядом с прежними `radius`/`fixed at center` | `AddSketchConstraint::Concentric` → `prepare_sketch_constraints` → прежний `edit_object_copy`; **solver и C ABI не менялись** — концентричность это прежний `Constraint::Coincident` двух центров, а центр окружности стал адресуемой точкой ещё в §25N | Ровно две неконструкционные XY `Circle` в прежнем frame §25K; [контракт и рецепт](annular-circle-constraints.md). Роли boundary/bore — по сохранённым радиусам через ту же функцию, что у §25M, и должны сохраниться **после** решения: пара, поменявшаяся размерами, отказывается. Измеренные DOF: две свободные окружности 6, с концентричностью 4, с двумя радиусами 2, с `Fixed` одного центра 0; сдвиг единственного pin двигает оба центра. Persisted layout и capability не поднимались: `Coincident` двух центров уже требует payload v3 и `sketch.constraints.circle.v1`. Writer различает снимаемую концентричность и обязательное Line-замыкание по тому, что говорит правило. Снятие концентричности допустимо, только если результат остаётся кольцом. Discovery — аддитивное поле `role` у `constraint_edit.circles`. Diameter, Tangent, EqualRadius, Arc, несколько отверстий, неконцентрический результат, mouse drag, live solve, boolean Cut и in-place Save не входят. |
 | Диаметр окружности вместо радиуса (§31E) | В той же форме `Edit constraints …` под строкой `Radius mm` — строка `Diameter mm` и кнопка `Add diameter` для окружности, выбранной по UUID (одиночная `Circle`, `Boundary circle` или `Bore circle`); в draft попадает обычный `Radius` с `R = D/2` и один шаг Undo, текст не интерпретируется в другой единице | та же `ferritecad edit-sketch-constraints-copy …` (request v1), новая строгая форма `{"rule":"diameter","curve_id":UUID,"diameter_mm":13.5}`; ни `radius_mm`, ни лишних/пропущенных полей, ни нечисловых, неположительных и неделимых пополам значений | один перевод `CircleRadiusMm::from_diameter_mm` (UI и CLI), затем прежний `AddSketchConstraint::Circle`/`Radius` → `prepare_sketch_constraints` → прежний `edit_object_copy`; **ограничения Diameter, solver-уравнения, ABI/shim kind, capability, схемы и версии ответа нет** | Radius и Diameter одной окружности занимают один слот (замена — прежний атомарный remove exact UUID + add); discovery и ответ называют `radius` с прежними полями (`radius`, `radius_mm`), единица ввода не сохраняется. Для кольца роли boundary/bore остаются сохранёнными: перепутанные диаметры отказывают так же, как перепутанные радиусы. [Контракт, проверки и оконный рецепт](circle-diameter-input.md). Hover-опоры §31D и центр окружности §31C этим не закрыты. |
 | Центр и радиус сохранённой окружности → новая копия | `Edit circle <имя> — <UUID>…`, численные Center X/Y и Radius, показ сохранённых центра/радиуса/высоты и обоих UUID, bounded Undo/Redo черновика, `Save edited circle copy…`; §31I: canvas с ручками центра и радиуса (жест — один шаг черновика) | `ferritecad edit-circle source.fcad --sketch UUID --expect-version HASH --request request.json -o copy.fcad [--json]` | document `CircleChoice`/`replace_circle_geometry` + узкий writer → jobs `edit_circle_copy` поверх прежнего `edit_object_copy`: тот же snapshot, baseline rebuild, проверка refs, повторная проверка версии и атомарная публикация | [Контракт и рецепт](edit-circle-copy.md). Ровно класс §25J: одна неконструкционная неограниченная `Circle`. Меняются только центр и радиус названной окружности; UUID окружности, высота Extrude, refs и все прочие SQL-ячейки сохраняются. `inspect --json` даёт отдельное `circle_edit`, не меняя смысла `editable`/`vertices`/`constraint_edit`. Высоту по-прежнему меняет `edit-extrude`. |
@@ -1033,13 +891,13 @@ Inspect JSON v1 обнаруживает Sketch/curve UUID и координат
 §26E расширяет Add cut до 16 отдельных инструментов. На границе добавление
 недоступно, правка всех 16 доступна. Add/Edit читают единый bounded-каталог
 с `tools` в порядке history; общий валидатор проверяет все диски.
-[Discovery, nullable singular поля и UI/CLI эквивалентность](circular-cut-history.md).
+[Discovery, nullable singular поля и UI/CLI эквивалентность](generic-sweeps.md).
 
 §26F расширяет прежний `edit-sketch-copy`/Edit Sketch на исходный прямоугольник
 допустимой 1–16 Cut history. Высота и инструменты остаются прежними; координаты
 границ можно расширять, сужать и смещать при строгом зазоре всех дисков.
 Discovery даёт typed `cut_history`, polygon draft и writer используют одну
-проверку. [Контракт/рецепт](edit-cut-base-sketch.md). Остальные профильные editors
+проверку. [Контракт/рецепт](generic-sweeps.md). Остальные профильные editors
 по-прежнему требуют отдельный четырёхобъектный документ.
 
 `rebuild --cold` reports Built, Failed (with reason), or Skipped (with root

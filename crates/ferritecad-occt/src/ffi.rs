@@ -632,17 +632,13 @@ impl Session {
         Ok(shape)
     }
 
-    /// Turns one closed Line loop exactly one full turn about an axis.
-    ///
-    /// The angle is stated to the bridge as `full_turn = 1`, never as a
-    /// number of radians the bridge would have to trust.
+    /// Sweep a profile about an axis through a partial angle or a full turn.
     pub(crate) fn revolve(
         &mut self,
         plane: &Plane,
         segments: &[Segment],
         loops: &[usize],
-        axis_origin: [f64; 3],
-        axis_direction: [f64; 3],
+        axis: ([f64; 3], [f64; 3]),
         angle: f64,
         cancel: &CancelToken,
     ) -> Result<u64> {
@@ -657,8 +653,8 @@ impl Session {
                 segments.len(),
                 loops.as_ptr(),
                 loops.len(),
-                axis_origin.as_ptr(),
-                axis_direction.as_ptr(),
+                axis.0.as_ptr(),
+                axis.1.as_ptr(),
                 angle,
                 Some(cancel_trampoline),
                 cancel as *const CancelToken as *mut c_void,
@@ -1661,8 +1657,7 @@ mod tests {
                     &plane,
                     &ring,
                     &[ring.len()],
-                    origin,
-                    y,
+                    (origin, y),
                     f64::to_radians(angle),
                     &token,
                 )
@@ -1675,8 +1670,7 @@ mod tests {
                 &plane,
                 &ring,
                 &[ring.len()],
-                origin,
-                y,
+                (origin, y),
                 std::f64::consts::FRAC_PI_2,
                 &token,
             )
@@ -1705,8 +1699,7 @@ mod tests {
                 &plane,
                 &ring,
                 &[ring.len()],
-                origin,
-                y,
+                (origin, y),
                 std::f64::consts::TAU,
                 &token,
             )

@@ -433,6 +433,12 @@ jobs:
           source tools/occt/test-env.sh
           cargo build --workspace --all-targets
           cargo test --workspace -- --include-ignored --show-output --test-threads=1 2>&1 | tee "native-tests-$FERRITECAD_REQUIRE_PLANEGCS.log"
+          python3 - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          shutil.copyfile(Path(os.environ["FCAD_SWEEP_ARTIFACTS"]) / "through-all.tsv",
+                          "through-all-0-${{ matrix.name }}.tsv")
+          PY
           python3 tools/occt/check-cli-recipes.py no-solver target/debug/ferritecad
 
       - name: Run the whole workspace with OCCT and PlaneGCS
@@ -447,7 +453,20 @@ jobs:
           source tools/occt/test-env.sh
           cargo build --workspace --all-targets --all-features
           cargo test --workspace --all-features -- --include-ignored --show-output --test-threads=1 2>&1 | tee "native-tests-$FERRITECAD_REQUIRE_PLANEGCS.log"
+          python3 - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          shutil.copyfile(Path(os.environ["FCAD_SWEEP_ARTIFACTS"]) / "through-all.tsv",
+                          "through-all-1-${{ matrix.name }}.tsv")
+          PY
           python3 tools/occt/check-cli-recipes.py solver target/debug/ferritecad
+
+      - name: Upload sweep corpus measurements
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweep-corpus-${{ matrix.name }}
+          path: through-all-*-${{ matrix.name }}.tsv
+          if-no-files-found: error
 
       - name: Build the real application and the command line tool against both
         id: build
@@ -1118,6 +1137,15 @@ jobs:
       # inside the archive with the committed one. Checked out first: it is the
       # only step here that writes to the workspace root.
       - uses: actions/checkout@v7
+
+      - name: Download sweep corpus measurements
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sweep-corpus-*
+          path: sweep-corpora
+
+      - name: Compare ThroughAll geometry on all platforms
+        run: python3 tools/occt/compare-sweep-corpus.py sweep-corpora
 
       - name: Download every summary
         uses: actions/download-artifact@v4

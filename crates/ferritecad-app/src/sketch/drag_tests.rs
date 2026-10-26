@@ -74,6 +74,19 @@ pub(super) fn vertex(ctx: &egui::Context, e: &mut Editor, i: usize) -> egui::Pos
         Canvas::points(e.draft.as_ref().expect("draft")).expect("numbers")[i],
     )
 }
+fn assert_revolve_edit_builds(request: &ferritecad_jobs::EditRequest) {
+    let bytes = std::fs::read(&request.source).expect("source");
+    let root = tempfile::tempdir().expect("destination");
+    let mut request = request.clone();
+    request.destination = root.path().join("accepted.fcad");
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let result = ferritecad_jobs::edit_copy(&request, &mut kernel, &Default::default())
+        .expect("the kernel accepts the changed axis contact");
+    assert!(result.rebuild.failed.is_empty() && result.rebuild.skipped.is_empty());
+    assert!(request.destination.exists());
+    assert_eq!(std::fs::read(&request.source).expect("source"), bytes);
+}
+
 /// §30P: vertex 0 of the open draft pressed on the canvas and still held: the
 /// gesture is under way when this returns; `release_vertex` ends it.
 pub(crate) fn hold_vertex(e: &mut Editor) -> (egui::Context, egui::Pos2) {
@@ -1179,24 +1192,17 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
             .collect();
         assert!(texts.iter().any(|t| t == "axis (Y) at X = 0 · radius X →"));
         assert!(
-            texts
+            !texts
                 .iter()
-                .any(|t| t.contains("put exactly one whole edge on X = 0 for a solid part")),
-            "{texts:?}"
+                .any(|t| t.contains("put exactly one whole edge on X = 0"))
         );
-        assert!(
-            !texts.iter().any(|t| t.contains("Keep every point X > 0")),
-            "no unconditional X > 0 rule"
-        );
-        // An isolated touch and a crossing are refused by the document's own
-        // policy, with nothing to publish, and Undo gives the cylinder back.
+        // The form preserves axis contact/crossing edits for the kernel to assess.
         let valid = e.draft.clone();
-        for (to, refusal) in [("4", "touches the axis alone"), ("-1", "cross")] {
+        for to in ["4", "-1"] {
             replace_field(&ctx, e, "0.000", to);
-            let refused = e.content().expect_err("refused").to_string();
-            assert!(refused.contains(refusal), "{to}: {refused}");
+            assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
             let out = frame(&ctx, e, vec![]);
-            assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
+            assert!(out.shapes.iter().any(|c| matches!(&c.shape,
                 egui::Shape::Text(t) if t.galley.text() == crate::sketch::CREATE_DRAWN)));
             click(&ctx, e, text_at(&out, "Undo draft"));
             assert_eq!(e.draft, valid);
@@ -1321,25 +1327,23 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     choose(&ctx, &mut e, "Redo draft");
     assert_eq!(e.draft, frustum);
 
-    // An axis end dragged off the axis is refused in preview; Escape cancels
-    // the whole gesture.
+    // Axis contact may change; Escape still cancels the whole gesture.
     let at = vertex(&ctx, &mut e, 0);
     let off = at + egui::vec2(3. * e.canvas.scale, 0.);
     press(&ctx, &mut e, at);
     move_to(&ctx, &mut e, off);
-    crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Revolve"]);
+    assert_revolve_edit_builds(&e.edit_request().expect("payload"));
     frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
     button(&ctx, &mut e, off, false);
     assert_eq!(e.draft, frustum);
     assert_eq!(e.undo.len(), 1);
-    // Both axis ends off the axis would make a bored part: refused as a
-    // class change, and undone.
+    // Both ends off the axis make a valid bored part; Undo restores the draft.
     let before = e.draft.clone().expect("draft");
     for i in [0, 3] {
         e.draft.as_mut().expect("draft").points[i][0] = "1".into();
     }
     e.record(before);
-    crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Revolve"]);
+    assert_revolve_edit_builds(&e.edit_request().expect("payload"));
     choose(&ctx, &mut e, "Undo draft");
     assert_eq!(e.draft, frustum);
 
@@ -1531,11 +1535,7 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     ] {
         assert!(texts.iter().any(|t| t == wanted), "{wanted} in {texts:?}");
     }
-    assert!(
-        texts
-            .iter()
-            .any(|t| t.starts_with("Solid part: edge 4 (Line "))
-    );
+    assert!(!texts.iter().any(|t| t.starts_with("Solid part: edge ")));
     for absent in ["Feature:", "Revolve 360°", "Blind height mm"] {
         assert!(!texts.iter().any(|t| t == absent), "{absent} shown");
     }
@@ -1571,12 +1571,12 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
             .to_vec()
     );
     assert_eq!(exact.angle, "220", "the angle is not part of the edit");
-    // An axis end dragged off the axis is refused in preview and cancelled.
+    // A valid axis-contact change can be published and the gesture cancelled.
     let at = vertex(&ctx, &mut e, 0);
     let off = at + egui::vec2(3. * e.canvas.scale, 0.);
     press(&ctx, &mut e, at);
     move_to(&ctx, &mut e, off);
-    crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Revolve"]);
+    assert_revolve_edit_builds(&e.edit_request().expect("payload"));
     frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
     button(&ctx, &mut e, off, false);
     assert_eq!(e.draft.as_ref(), Some(&exact));

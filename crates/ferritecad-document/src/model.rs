@@ -671,8 +671,8 @@ pub enum SolidOperation {
 
 /// The axis a [`Revolve`] turns its profile about.
 ///
-/// Named, not computed: the sketch's own local Y axis through its origin. On
-/// the canvas X is then the radial distance and Y the axial coordinate.
+/// A sketch coordinate axis or an infinite Line, directed from its stored
+/// start to its end. Construction Lines may supply the axis too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]

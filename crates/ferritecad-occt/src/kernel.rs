@@ -496,8 +496,7 @@ impl GeometryKernel for OcctKernel {
             &plane_of(plane),
             &segments,
             &loops,
-            axis_origin,
-            axis_direction,
+            (axis_origin, axis_direction),
             partial.unwrap_or(std::f64::consts::TAU),
             context.cancel(),
         )?;

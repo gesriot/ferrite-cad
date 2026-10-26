@@ -91,7 +91,7 @@ workflows.
 The whole of §30, Milestone 5C or the beta; Windows or macOS from this container; a window
 run from this container; that the historical OOM is fixed.
 
-The saved partial Revolve angle joins the session in [§30E](revolve-angle-session-apply.md).
+The saved partial Revolve angle joins the session in [§30E](generic-sweeps.md).
 
 Existing Fillet radii now Apply through the same session, including while dirty:
 [§30G](fillet-radius-session-apply.md). Fillet copy remains clean-only; a new Fillet joined

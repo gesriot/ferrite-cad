@@ -116,6 +116,6 @@ fn turn_json(extent: &ferritecad_document::RevolveExtent) -> Value {
         ferritecad_document::RevolveExtent::FullTurn => json!({"kind":"full_turn"}),
         ferritecad_document::RevolveExtent::Partial { angle } => json!({"kind":"partial",
             "angle":{"value":angle.value(), "unit":"rad"}}),
-        _ => panic!("known fixture extent"),
+        _ => unreachable!("fixture covers every current revolution extent"),
     }
 }
