@@ -896,14 +896,15 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
       auto sweep_builder = prism.Prism();
       naming_sweep(record, sweep_builder, edges, segments, prism.FirstShape(), prism.LastShape());
     }
-    TopTools_IndexedMapOfShape solids;
-    TopExp::MapShapes(record.shape, TopAbs_SOLID, solids);
-    GProp_GProps properties;
-    BRepGProp::VolumeProperties(record.shape, properties);
-    if (solids.Extent() != 1 || !BRepCheck_Analyzer(record.shape).IsValid() ||
-        !(properties.Mass() > 0)) {
-      write_error(out_error, "the sweep is not one valid solid with positive volume");
-      return FC_OCCT_KERNEL;
+    if (axis_origin) {
+      TopTools_IndexedMapOfShape solids;
+      TopExp::MapShapes(record.shape, TopAbs_SOLID, solids);
+      GProp_GProps properties;
+      BRepGProp::VolumeProperties(record.shape, properties);
+      if (solids.Extent() != 1 || !(properties.Mass() > 0)) {
+        write_error(out_error, "the revolution is not one valid solid with positive volume");
+        return FC_OCCT_KERNEL;
+      }
     }
 
     const uint64_t id = session->next_shape++;

@@ -1292,8 +1292,16 @@ impl ObjectPayload {
                             )));
                         }
                     }
-                    EndCondition::ThroughAll if extrude.operation == SolidOperation::NewBody => {
-                        return Err(CadError::input("a new body has nothing to go ThroughAll"));
+                    EndCondition::ThroughAll
+                        if matches!(
+                            extrude.operation,
+                            SolidOperation::NewBody | SolidOperation::Add
+                        ) =>
+                    {
+                        return Err(CadError::input(
+                            "a new body or additive boss has nothing to go ThroughAll; \
+                             ThroughAll requires Cut or Intersect",
+                        ));
                     }
                     EndCondition::ThroughAll => {}
                 }

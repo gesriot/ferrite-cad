@@ -40,9 +40,11 @@ use crate::{
 
 use crate::cache::{
     boolean_archive_key, chamfer_archive_key, extrude_archive_key, fillet_archive_key,
-    load_feature_archive, revolve_archive_key, store_feature_archive,
+    load_feature_archive, revolve_archive_key, store_feature_archive, through_all_profile_key,
 };
-use crate::convert::{extrude_request, plane_from_datum, profile_from_sketch, revolve_request};
+use crate::convert::{
+    extrude_request, plane_from_datum, profile_from_sketch, revolve_request, through_all_request,
+};
 use crate::document_graph::DocumentGraph;
 use crate::presentation::SketchPresentation;
 use crate::solve::SketchSolveReport;
@@ -459,22 +461,15 @@ fn run<K: GeometryKernel + ?Sized>(
                         })
                         .transpose()?;
                     let request = match &object.payload {
+                        ObjectPayload::Extrude(e) if through_all => SweepRequest::ThroughAll {
+                            profile,
+                            reversed: e.reversed,
+                            target: target.ok_or_else(|| {
+                                CadError::input("ThroughAll has no target to go through")
+                            })?,
+                        },
                         ObjectPayload::Extrude(e) => {
-                            let bounds = if through_all {
-                                let n = profile.plane().normal();
-                                let sign = if e.reversed { -1. } else { 1. };
-                                let direction = ferritecad_types::Vec3::new(
-                                    n.x * sign,
-                                    n.y * sign,
-                                    n.z * sign,
-                                )?;
-                                target
-                                    .map(|shape| kernel.projected_bounds(shape, direction))
-                                    .transpose()?
-                            } else {
-                                None
-                            };
-                            SweepRequest::Extrude(extrude_request(e, profile, bounds)?)
+                            SweepRequest::Extrude(extrude_request(e, profile, None)?)
                         }
                         ObjectPayload::Revolve(r) => SweepRequest::Revolve(revolve_request(
                             r,
@@ -1073,6 +1068,11 @@ fn boolean_kind(
 }
 
 enum SweepRequest {
+    ThroughAll {
+        profile: Profile,
+        reversed: bool,
+        target: ShapeHandle,
+    },
     Extrude(ferritecad_kernel::ExtrudeRequest),
     Revolve(ferritecad_kernel::RevolveRequest),
 }
@@ -1083,6 +1083,9 @@ impl SweepRequest {
         context: &OperationContext,
     ) -> ContentHash {
         match self {
+            Self::ThroughAll {
+                profile, reversed, ..
+            } => through_all_profile_key(profile, *reversed),
             Self::Extrude(r) => extrude_archive_key(kernel, r, context),
             Self::Revolve(r) => revolve_archive_key(kernel, r, context),
         }
@@ -1093,6 +1096,18 @@ impl SweepRequest {
         context: &OperationContext,
     ) -> Result<ferritecad_kernel::OperationResult> {
         match self {
+            Self::ThroughAll {
+                profile,
+                reversed,
+                target,
+            } => {
+                let n = profile.plane().normal();
+                let sign = if *reversed { -1. } else { 1. };
+                let direction = ferritecad_types::Vec3::new(n.x * sign, n.y * sign, n.z * sign)?;
+                let bounds = kernel.projected_bounds(*target, direction)?;
+                let request = through_all_request(profile.clone(), *reversed, bounds)?;
+                kernel.extrude(&request, context)
+            }
             Self::Extrude(r) => kernel.extrude(r, context),
             Self::Revolve(r) => kernel.revolve(r, context),
         }

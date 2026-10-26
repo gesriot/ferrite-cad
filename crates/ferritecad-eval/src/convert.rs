@@ -328,17 +328,7 @@ pub fn extrude_request(
             let bounds = bounds.ok_or_else(|| {
                 CadError::input("ThroughAll needs a target body; there is nothing to go through")
             })?;
-            let normal = profile.plane().normal();
-            let origin = profile.plane().origin();
-            let sign = if feature.reversed { -1. } else { 1. };
-            let ahead = bounds[1]
-                - sign * (origin.x * normal.x + origin.y * normal.y + origin.z * normal.z);
-            if ahead <= 0. {
-                return Err(CadError::input(
-                    "ThroughAll has nothing ahead of the sketch plane to go through",
-                ));
-            }
-            ExtrudeExtent::blind(ahead + THROUGH_ALL_MARGIN_MM)?
+            return through_all_request(profile, feature.reversed, bounds);
         }
         other => {
             return Err(CadError::unsupported(format!(
@@ -348,6 +338,25 @@ pub fn extrude_request(
     };
 
     Ok(ExtrudeRequest::new(profile, extent, feature.reversed))
+}
+
+pub(crate) fn through_all_request(
+    profile: Profile,
+    reversed: bool,
+    bounds: [f64; 2],
+) -> Result<ExtrudeRequest> {
+    let normal = profile.plane().normal();
+    let origin = profile.plane().origin();
+    let sign = if reversed { -1. } else { 1. };
+    let ahead =
+        bounds[1] - sign * (origin.x * normal.x + origin.y * normal.y + origin.z * normal.z);
+    if ahead <= 0. {
+        return Err(CadError::input(
+            "ThroughAll has nothing ahead of the sketch plane to go through",
+        ));
+    }
+    let extent = ExtrudeExtent::blind(ahead + THROUGH_ALL_MARGIN_MM)?;
+    Ok(ExtrudeRequest::new(profile, extent, reversed))
 }
 
 fn segment_geometry(curve: &SketchCurve) -> Result<SegmentGeometry> {

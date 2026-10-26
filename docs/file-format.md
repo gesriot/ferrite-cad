@@ -35,7 +35,8 @@ Sketch curve coordinates, circle radii and arc angles remain `f64`: they describ
 solver state and the initial approximation, rather than editable dimensions.
 Extrude and Revolve name their consumed feature through `previous`. `NewBody`
 requires no predecessor; `Add`, `Cut` and `Intersect` require one. Extrude keeps
-`Blind`, `Symmetric` and `ThroughAll` plus `reversed`; `ThroughAll` requires a target.
+`Blind`, `Symmetric` and `ThroughAll` plus `reversed`; `ThroughAll` is valid only
+for `Cut` and `Intersect`. New bodies and additive bosses have nothing to go through.
 Revolve stores `previous`, `axis` (`sketch_x`, `sketch_y` or `{"line": curve UUID}`),
 and `FullTurn` or a partial angle expression. A Line axis follows its stored
 start-to-end direction and may be construction geometry. There is no stored

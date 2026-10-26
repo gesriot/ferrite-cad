@@ -52,6 +52,18 @@ pub fn revolve_archive_key(
     revolve_cache_key(kernel, request, context)
 }
 
+/// The unresolved ThroughAll tool; the boolean key supplies its target geometry.
+pub(crate) fn through_all_profile_key(
+    profile: &ferritecad_kernel::Profile,
+    reversed: bool,
+) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("eval.through_all.profile");
+    hasher.algorithm_version(1);
+    profile.feed(&mut hasher);
+    hasher.field("reversed").bool(reversed);
+    hasher.finish()
+}
+
 /// Where a cut's archive lives in the sidecar.
 ///
 /// Both inputs are named by their own keys rather than by their handles, so the
@@ -74,8 +86,8 @@ pub fn boolean_archive_key(
     hasher.algorithm_version(1);
     hasher.field("previous").bytes(&previous.to_bytes());
     // Extent semantics remain distinct even when the computed tool lengths agree.
-    // The tool key already moves with the computed length; this keeps a
-    // ThroughAll archive from ever answering a Blind request of equal numbers.
+    // ThroughAll resolves its length only on a miss: the target key already
+    // determines the bounds. Its profile key does not query the kernel.
     if through_all {
         hasher.field("through_all").bool(true);
     }

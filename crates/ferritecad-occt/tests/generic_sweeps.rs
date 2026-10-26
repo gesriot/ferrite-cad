@@ -69,6 +69,7 @@ fn check(d: &Document, id: ObjectId, volume: f64) {
     let built = rebuild_cold(d, &mut kernel, &context).expect("rebuild");
     assert!(built.report().failed.is_empty(), "{:?}", built.report());
     let shape = built.shape(id).expect("shape");
+    assert!(kernel.is_valid(shape).expect("independent BRepCheck"));
     let (_, measured) = kernel.shape_stats(shape).expect("volume");
     assert!(
         (measured - volume).abs() < 1e-6 * volume.max(1.),
@@ -105,7 +106,8 @@ fn check(d: &Document, id: ObjectId, volume: f64) {
             assert!(
                 events
                     .iter()
-                    .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit)
+                    .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit),
+                "{events:?}"
             );
         }
         let names = cached.topology().feature(id).expect("cached names");
@@ -178,7 +180,9 @@ fn extrusion_end_conditions_and_directions() {
                 SolidOperation::Cut,
                 SolidOperation::Intersect,
             ] {
-                if operation == SolidOperation::NewBody && end == EndCondition::ThroughAll {
+                if matches!(operation, SolidOperation::NewBody | SolidOperation::Add)
+                    && end == EndCondition::ThroughAll
+                {
                     continue;
                 }
                 let temp = tempfile::tempdir().expect("root");
@@ -631,8 +635,8 @@ fn an_unrelated_add_keeps_faces_edges_and_vertices_when_an_earlier_add_changes_e
     let mut d = Document::open(path).expect("document");
     let b = body(&d).expect("body");
     let mut features = Vec::new();
-    for y in [10., 30.] {
-        let mut tool = circular_tool(&d, b, [60., y], 3., blind(14.)).expect("tool");
+    for (y, height) in [(10., 12.), (30., 14.)] {
+        let mut tool = circular_tool(&d, b, [60., y], 3., blind(height)).expect("tool");
         for c in &mut tool.changes {
             if let EditChange::AddFeature {
                 feature: FeatureAddition::Extrude { operation, .. },
@@ -678,16 +682,142 @@ fn an_unrelated_add_keeps_faces_edges_and_vertices_when_an_earlier_add_changes_e
         for kind in [SubShapeKind::Face, SubShapeKind::Edge, SubShapeKind::Vertex] {
             assert!(found.iter().any(|n| n.kind == kind));
         }
+        let details = found
+            .iter()
+            .map(|name| (*name, names.derivations[&name.digest].clone()))
+            .collect::<BTreeMap<_, _>>();
         built.release_all(&mut k);
-        found
+        (found, details)
     };
     let before = collect(&d);
-    for extent in [EndCondition::ThroughAll, blind(4.), blind(14.)] {
+    // The early boss remains above the plate and below the later boss's cap.
+    // Its changed top is not incident on any boundary of the later boss.
+    for extent in [blind(11.), blind(13.), blind(12.)] {
         d.write_changes(&[EditChange::SetEndCondition {
             object: first.feature,
             end_condition: extent,
         }])
         .expect("change early Add");
-        assert_eq!(before, collect(&d));
+        let after = collect(&d);
+        if before.0 != after.0 {
+            eprintln!("before: {:#?}\nafter: {:#?}", before.1, after.1);
+        }
+        assert_eq!(before.0, after.0);
+    }
+}
+
+#[test]
+fn projected_bounds_ignore_triangulation_and_preserve_symmetric_face_planes() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    use ferritecad_kernel::{ExtrudeExtent, ExtrudeRequest, TessellationParams};
+    use ferritecad_types::Vec3;
+    let root = tempfile::tempdir().expect("root");
+    let mut d = Document::create(root.path().join("cylinder.fcad")).expect("document");
+    let plane = put(
+        &mut d,
+        ObjectPayload::DatumPlane(DatumPlane {
+            placement: Transform::IDENTITY,
+        }),
+    );
+    let sketch = put(
+        &mut d,
+        ObjectPayload::Sketch(Sketch {
+            plane,
+            curves: vec![SketchCurve {
+                id: StableEntityId::new(),
+                construction: false,
+                geometry: SketchGeometry::Circle {
+                    center: Point2::new(2., 3.).expect("point"),
+                    radius: 5.,
+                },
+            }],
+            constraints: vec![],
+        }),
+    );
+    let base = extrude(
+        &mut d,
+        sketch,
+        None,
+        SolidOperation::NewBody,
+        EndCondition::Symmetric {
+            distance: Expression::constant(7.).expect("distance"),
+        },
+        false,
+    );
+    let context = OperationContext::default();
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let built = rebuild_cold(&d, &mut kernel, &context).expect("rebuild");
+    let shape = built.shape(base).expect("cylinder");
+    assert!(
+        kernel
+            .is_valid(shape)
+            .expect("symmetric face and wire agree")
+    );
+    assert_eq!(
+        kernel
+            .projected_bounds(shape, Vec3::new(0., 0., 1.).expect("z"))
+            .expect("bounds"),
+        [-7., 7.]
+    );
+    let direction = Vec3::new(1., 2., 3.).expect("direction");
+    let before = kernel
+        .projected_bounds(shape, direction)
+        .expect("analytic bounds");
+    for deflection in [2., 0.01] {
+        kernel
+            .tessellate(
+                shape,
+                &TessellationParams::new(deflection, 0.5, false).expect("params"),
+                &context,
+            )
+            .expect("triangulate");
+        assert_eq!(
+            kernel.projected_bounds(shape, direction).expect("bounds"),
+            before
+        );
+    }
+    let request = ExtrudeRequest::new(
+        built.profile(sketch).expect("profile").clone(),
+        ExtrudeExtent::symmetric(7.).expect("distance"),
+        true,
+    );
+    let reverse = kernel
+        .extrude(&request, &context)
+        .expect("reverse symmetric");
+    assert!(kernel.is_valid(reverse.shape).expect("valid"));
+    assert_eq!(
+        kernel
+            .projected_bounds(reverse.shape, direction)
+            .expect("bounds"),
+        before
+    );
+    kernel.release(reverse.shape);
+    built.release_all(&mut kernel);
+}
+
+#[test]
+fn through_all_refuses_new_bodies_and_additive_bosses_at_the_write_boundary() {
+    let root = tempfile::tempdir().expect("root");
+    let mut d = Document::create(root.path().join("invalid.fcad")).expect("document");
+    for operation in [SolidOperation::NewBody, SolidOperation::Add] {
+        let payload = ObjectPayload::Extrude(Extrude {
+            profile: ObjectId::new(),
+            previous: (operation == SolidOperation::Add).then(ObjectId::new),
+            operation,
+            reversed: false,
+            end_condition: EndCondition::ThroughAll,
+        });
+        let error = d
+            .write(|w| w.put_object(ObjectId::new(), None, 0, None, &payload))
+            .expect_err("ThroughAll has no meaning for new material");
+        assert!(
+            error
+                .to_string()
+                .contains("ThroughAll requires Cut or Intersect"),
+            "{error}"
+        );
+        assert!(d.objects().expect("objects").is_empty());
     }
 }
