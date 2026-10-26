@@ -63,6 +63,13 @@ of historical input-boundary witnesses on each part. This separates the two
 pieces of the plate wall in the open-slot test using its surviving original
 corners. It does not use an already named output edge, avoiding a naming cycle.
 
+When a sweep has several regions, their caps share the root
+`(feature, start|end cap, plane)`. Refine each cap with the canonical set of
+curve roots on that region's outer boundary, using the same historical-boundary
+witness expression as split faces. Hole boundaries are not cap witnesses. A
+sweep with one region has nothing to distinguish and retains its existing cap
+names, including when that region contains holes.
+
 If both provenance and these witnesses still coincide, retain one name with
 multiple bindings. The open slot's periodic tool wall and some boundaries in
 the overlapping-tool test remain such sets. Exact resolution refuses them.

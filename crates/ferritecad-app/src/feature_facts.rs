@@ -53,6 +53,7 @@ impl CircularCut {
         };
         ObjectPayload::Sketch(payload.clone()).to_storage_bytes()?;
         let feature = FeatureAddition::Extrude {
+            regions: Vec::new(),
             operation: ferritecad_document::SolidOperation::Cut,
             profile: sketch,
             end_condition: self.extent.end()?,

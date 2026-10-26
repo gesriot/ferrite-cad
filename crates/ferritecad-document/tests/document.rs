@@ -88,6 +88,7 @@ fn populate(document: &mut Document) -> Result<Plate> {
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: plate.sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::new("thickness", 8.0)?,
@@ -484,6 +485,7 @@ fn display_units_are_remembered_but_values_stay_internal() {
                 Some("Boss"),
                 // One inch, entered as such, stored as millimetres.
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: ObjectId::new(),
                     end_condition: EndCondition::Blind {
                         distance: Expression::new("1in", 25.4)?,

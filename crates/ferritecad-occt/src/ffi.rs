@@ -18,6 +18,11 @@ use std::ffi::{CStr, c_char, c_void};
 use ferritecad_kernel::{CancelToken, FaceSurface, TessellationRefusal};
 use ferritecad_types::{CadError, Result};
 
+pub(crate) struct ProfilePartition<'a> {
+    pub loops: &'a [usize],
+    pub regions: &'a [usize],
+}
+
 /// Must match `FC_OCCT_ERROR_CAPACITY` in `ferritecad_occt.h`.
 const ERROR_CAPACITY: usize = 512;
 
@@ -167,6 +172,12 @@ unsafe extern "C" {
     fn fc_occt_version() -> *const c_char;
     fn fc_occt_session_create(out_session: *mut *mut RawSession, out_error: *mut RawError) -> i32;
     fn fc_occt_session_destroy(session: *mut RawSession);
+    fn fc_occt_solid_count(
+        session: *mut RawSession,
+        shape: u64,
+        count: *mut usize,
+        error: *mut RawError,
+    ) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn fc_occt_extrude(
         session: *mut RawSession,
@@ -175,6 +186,8 @@ unsafe extern "C" {
         segment_count: usize,
         loop_segment_counts: *const usize,
         loop_count: usize,
+        region_loop_counts: *const usize,
+        region_count: usize,
         base_offset: f64,
         top_offset: f64,
         cancel: Option<CancelFn>,
@@ -189,6 +202,8 @@ unsafe extern "C" {
         segment_count: usize,
         loop_segment_counts: *const usize,
         loop_count: usize,
+        region_loop_counts: *const usize,
+        region_count: usize,
         axis_origin: *const f64,
         axis_direction: *const f64,
         angle: f64,
@@ -572,23 +587,29 @@ impl Session {
         Ok(Self { raw })
     }
 
-    /// Sweeps one planar region, whose loops are given by their lengths.
-    ///
-    /// `loop_segment_counts` partitions `segments`: the first loop bounds the
-    /// region and the rest are holes in it. The partition is checked here
-    /// before the pointers are handed over, so a caller that built the two
-    /// arrays inconsistently is refused on this side of the boundary rather
-    /// than being trusted to have counted right — the bridge checks it again,
-    /// and neither check stands alone.
+    pub(crate) fn solid_count(&mut self, shape: u64) -> Result<usize> {
+        let mut count = 0;
+        let mut error = RawError::empty();
+        // SAFETY: the session and output pointers live across this noexcept call.
+        let status = unsafe { fc_occt_solid_count(self.raw, shape, &mut count, &mut error) };
+        interpret(status, &error, "counting solids")?;
+        Ok(count)
+    }
+
+    /// Region counts partition loops; loop counts partition segments.
     pub(crate) fn extrude(
         &mut self,
         plane: &Plane,
         segments: &[Segment],
-        loop_segment_counts: &[usize],
+        partition: ProfilePartition<'_>,
         base_offset: f64,
         top_offset: f64,
         cancel: &CancelToken,
     ) -> Result<u64> {
+        let ProfilePartition {
+            loops: loop_segment_counts,
+            regions,
+        } = partition;
         if loop_segment_counts.is_empty() {
             return Err(CadError::input("a region is bounded by at least one loop"));
         }
@@ -620,6 +641,8 @@ impl Session {
                 segments.len(),
                 loop_segment_counts.as_ptr(),
                 loop_segment_counts.len(),
+                regions.as_ptr(),
+                regions.len(),
                 base_offset,
                 top_offset,
                 Some(cancel_trampoline),
@@ -637,11 +660,12 @@ impl Session {
         &mut self,
         plane: &Plane,
         segments: &[Segment],
-        loops: &[usize],
+        partition: ProfilePartition<'_>,
         axis: ([f64; 3], [f64; 3]),
         angle: f64,
         cancel: &CancelToken,
     ) -> Result<u64> {
+        let ProfilePartition { loops, regions } = partition;
         let mut shape = 0;
         let mut error = RawError::empty();
         // SAFETY: arrays and cancellation token remain live for this noexcept call.
@@ -653,6 +677,8 @@ impl Session {
                 segments.len(),
                 loops.as_ptr(),
                 loops.len(),
+                regions.as_ptr(),
+                regions.len(),
                 axis.0.as_ptr(),
                 axis.1.as_ptr(),
                 angle,
@@ -1656,7 +1682,10 @@ mod tests {
                 .revolve(
                     &plane,
                     &ring,
-                    &[ring.len()],
+                    ProfilePartition {
+                        loops: &[ring.len()],
+                        regions: &[1],
+                    },
                     (origin, y),
                     f64::to_radians(angle),
                     &token,
@@ -1669,7 +1698,10 @@ mod tests {
             .revolve(
                 &plane,
                 &ring,
-                &[ring.len()],
+                ProfilePartition {
+                    loops: &[ring.len()],
+                    regions: &[1],
+                },
                 (origin, y),
                 std::f64::consts::FRAC_PI_2,
                 &token,
@@ -1698,7 +1730,10 @@ mod tests {
             .revolve(
                 &plane,
                 &ring,
-                &[ring.len()],
+                ProfilePartition {
+                    loops: &[ring.len()],
+                    regions: &[1],
+                },
                 (origin, y),
                 std::f64::consts::TAU,
                 &token,
@@ -1782,6 +1817,8 @@ mod tests {
             "size_t segment_count",
             "const size_t *loop_segment_counts",
             "size_t loop_count",
+            "const size_t *region_loop_counts",
+            "size_t region_count",
             "double base_offset",
             "double top_offset",
             "FcOcctCancelFn cancel",
@@ -1816,6 +1853,8 @@ mod tests {
             "size_t segment_count",
             "const size_t *loop_segment_counts",
             "size_t loop_count",
+            "const size_t *region_loop_counts",
+            "size_t region_count",
             "const double *axis_origin",
             "const double *axis_direction",
             "double angle_radians",
@@ -1863,7 +1902,17 @@ mod tests {
         circle.center_y = -7.0;
         circle.radius = 10.0;
         let shape = session
-            .extrude(&plane, &[circle], &[1], 0.0, 15.0, &CancelToken::new())
+            .extrude(
+                &plane,
+                &[circle],
+                ProfilePartition {
+                    loops: &[1],
+                    regions: &[1],
+                },
+                0.0,
+                15.0,
+                &CancelToken::new(),
+            )
             .expect("one closed curve is a whole profile");
 
         let (faces, volume) = session.shape_stats(shape).expect("stats");
@@ -1930,7 +1979,10 @@ mod tests {
                     whole_circle(12.0, -7.0, 10.0),
                     whole_circle(12.0, -7.0, 4.0),
                 ],
-                &[1, 1],
+                ProfilePartition {
+                    loops: &[1, 1],
+                    regions: &[2],
+                },
                 0.0,
                 15.0,
                 &CancelToken::new(),
@@ -2042,7 +2094,17 @@ mod tests {
             ),
         ] {
             let error = session
-                .extrude(&plane, &loops, &[1, 1], 0.0, 3.0, &CancelToken::new())
+                .extrude(
+                    &plane,
+                    &loops,
+                    ProfilePartition {
+                        loops: &[1, 1],
+                        regions: &[2],
+                    },
+                    0.0,
+                    3.0,
+                    &CancelToken::new(),
+                )
                 .expect_err(what);
             assert_eq!(error.kind(), ErrorKind::Input, "{what}: {error}");
             assert!(
@@ -2057,7 +2119,10 @@ mod tests {
             .extrude(
                 &plane,
                 &[whole_circle(0.0, 0.0, 10.0), whole_circle(3.0, 0.0, 4.0)],
-                &[1, 1],
+                ProfilePartition {
+                    loops: &[1, 1],
+                    regions: &[2],
+                },
                 0.0,
                 2.0,
                 &CancelToken::new(),
@@ -2093,7 +2158,17 @@ mod tests {
             vec![usize::MAX, usize::MAX],
         ] {
             let error = session
-                .extrude(&plane, &two, &counts, 0.0, 2.0, &CancelToken::new())
+                .extrude(
+                    &plane,
+                    &two,
+                    ProfilePartition {
+                        loops: &counts,
+                        regions: &[counts.len()],
+                    },
+                    0.0,
+                    2.0,
+                    &CancelToken::new(),
+                )
                 .expect_err(&format!("{counts:?}"));
             assert_eq!(error.kind(), ErrorKind::Input, "{counts:?}: {error}");
             // Exercise the C ABI independently of the Rust preflight. Every
@@ -2110,6 +2185,8 @@ mod tests {
                     two.len(),
                     counts.as_ptr(),
                     counts.len(),
+                    [counts.len()].as_ptr(),
+                    1,
                     0.0,
                     2.0,
                     None,
@@ -2130,7 +2207,17 @@ mod tests {
         // Two circles in one loop reach the bridge, which refuses them as a
         // chain of closed curves rather than building one of them.
         let error = session
-            .extrude(&plane, &two, &[2], 0.0, 2.0, &CancelToken::new())
+            .extrude(
+                &plane,
+                &two,
+                ProfilePartition {
+                    loops: &[2],
+                    regions: &[1],
+                },
+                0.0,
+                2.0,
+                &CancelToken::new(),
+            )
             .expect_err("a chain of two circles is not a loop");
         assert!(error.to_string().contains("whole loop"), "{error}");
         // And the one-loop spelling is exactly what it always was.
@@ -2138,7 +2225,10 @@ mod tests {
             .extrude(
                 &plane,
                 &rectangle_segments(),
-                &[4],
+                ProfilePartition {
+                    loops: &[4],
+                    regions: &[1],
+                },
                 0.0,
                 2.0,
                 &CancelToken::new(),
@@ -2167,7 +2257,10 @@ mod tests {
                 .extrude(
                     &plane,
                     &mixed,
-                    &[mixed.len()],
+                    ProfilePartition {
+                        loops: &[mixed.len()],
+                        regions: &[1]
+                    },
                     0.0,
                     2.0,
                     &CancelToken::new()
@@ -2181,7 +2274,17 @@ mod tests {
             degenerate.radius = radius;
             assert!(
                 session
-                    .extrude(&plane, &[degenerate], &[1], 0.0, 2.0, &CancelToken::new())
+                    .extrude(
+                        &plane,
+                        &[degenerate],
+                        ProfilePartition {
+                            loops: &[1],
+                            regions: &[1]
+                        },
+                        0.0,
+                        2.0,
+                        &CancelToken::new()
+                    )
                     .is_err()
             );
         }
@@ -2200,7 +2303,10 @@ mod tests {
             .extrude(
                 &plane,
                 &rectangle_segments(),
-                &[4],
+                ProfilePartition {
+                    loops: &[4],
+                    regions: &[1],
+                },
                 0.0,
                 2.0,
                 &CancelToken::new(),
@@ -2263,7 +2369,10 @@ mod tests {
             .extrude(
                 &plane,
                 &rectangle_segments(),
-                &[4],
+                ProfilePartition {
+                    loops: &[4],
+                    regions: &[1],
+                },
                 0.0,
                 2.0,
                 &CancelToken::new(),
@@ -2436,7 +2545,17 @@ mod tests {
         let c = [[x0, y0], [x0 + w, y0], [x0 + w, y0 + d], [x0, y0 + d]];
         let segments: Vec<Segment> = (0..4).map(|i| line(c[i], c[(i + 1) % 4])).collect();
         let shape = session
-            .extrude(&plane, &segments, &[4], 0.0, h, &CancelToken::new())
+            .extrude(
+                &plane,
+                &segments,
+                ProfilePartition {
+                    loops: &[4],
+                    regions: &[1],
+                },
+                0.0,
+                h,
+                &CancelToken::new(),
+            )
             .expect("a plate");
         let side = sweep_face(&mut session, shape, 0)[0];
         let never = CancelToken::new();

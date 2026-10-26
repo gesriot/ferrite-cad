@@ -92,6 +92,34 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
         cases.push(describe(name, path, bodies)?);
     }
     if !smoke {
+        let path = root.join("plate_regions.fcad");
+        ferritecad_fixtures::write_plate(&path)?;
+        let mut document = Document::open(&path)?;
+        let body = body_of(&document)?;
+        let mut tool = ferritecad_fixtures::feature_changes::circular_tool(
+            &document,
+            body,
+            [15., 15.],
+            8.,
+            EndCondition::Blind {
+                distance: Expression::constant(4.)?,
+            },
+        )?;
+        if let EditChange::AddSketch { sketch, .. } = &mut tool.changes[0] {
+            for (x, radius) in [(15., 5.), (15., 2.), (40., 4.)] {
+                sketch.curves.push(SketchCurve {
+                    id: ferritecad_types::StableEntityId::new(),
+                    construction: false,
+                    geometry: SketchGeometry::Circle {
+                        center: Point2::new(x, 15.)?,
+                        radius,
+                    },
+                });
+            }
+        }
+        document.write_changes(&tool.changes)?;
+        document.close()?;
+        cases.push(describe("plate_regions", path, 1)?);
         let path = root.join("plate_4_fillets_constraints.fcad");
         let chain = ferritecad_fixtures::write_constrained_fillet_chain(&path, 2.0, 60.0, 40.0)?;
         let mut document = Document::open(&path)?;
@@ -134,6 +162,7 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
                         ObjectPayload::Sketch(sketch)
                     }
                     ObjectPayload::Extrude(_) => ObjectPayload::Revolve(Revolve {
+                        regions: Vec::new(),
                         profile: sketch_id,
                         axis: RevolveAxis::SketchY,
                         extent: RevolveExtent::Partial {
@@ -181,6 +210,7 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
                 if let EditChange::AddFeature { feature, .. } = change {
                     *feature = if name == "revolve_cut" {
                         FeatureAddition::Revolve {
+                            regions: Vec::new(),
                             profile: tool.sketch,
                             axis: RevolveAxis::SketchY,
                             extent: RevolveExtent::FullTurn,
@@ -188,6 +218,7 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
                         }
                     } else {
                         FeatureAddition::Extrude {
+                            regions: Vec::new(),
                             profile: tool.sketch,
                             operation,
                             reversed: false,

@@ -46,6 +46,12 @@ pub trait GeometryKernel {
         ))
     }
 
+    fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
+        Err(ferritecad_types::CadError::unsupported(format!(
+            "this kernel does not count solids in {shape}"
+        )))
+    }
+
     /// Tight bounds of the shape projected on a model-space unit direction.
     fn projected_bounds(
         &mut self,

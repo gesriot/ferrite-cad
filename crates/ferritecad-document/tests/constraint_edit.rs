@@ -47,6 +47,7 @@ fn fixture() -> (tempfile::TempDir, Document, ObjectId) {
                 extrude,
                 2,
                 ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: id,
                     end_condition: EndCondition::Blind {
                         distance: Expression::constant(10.)?,
@@ -408,6 +409,7 @@ fn a_symmetric_end_is_written_and_left_to_the_rebuild() {
             body,
             name: None,
             feature: FeatureAddition::Extrude {
+                regions: Vec::new(),
                 operation: ferritecad_document::SolidOperation::Cut,
                 profile,
                 end_condition: symmetric(),
@@ -447,6 +449,7 @@ fn end_changes_and_body_tip_moves_preserve_unread_payload_fields() {
                 body: object.id,
                 name: None,
                 feature: FeatureAddition::Extrude {
+                    regions: Vec::new(),
                     operation: ferritecad_document::SolidOperation::Cut,
                     profile,
                     end_condition: EndCondition::ThroughAll,

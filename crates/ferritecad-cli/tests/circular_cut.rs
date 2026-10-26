@@ -235,6 +235,7 @@ fn write_polygon_document(path: &Path, corners: &[[f64; 2]], height: f64) {
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,

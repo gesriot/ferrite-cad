@@ -198,6 +198,7 @@ impl Plate {
                     i64::from(copy) * 4 + 2,
                     Some("Extrude1"),
                     &ObjectPayload::Extrude(Extrude {
+                        regions: Vec::new(),
                         profile: sketch,
                         end_condition: if self.symmetric {
                             EndCondition::Symmetric { distance }

@@ -23,6 +23,7 @@ pub struct RevolveChoice {
     /// The Body whose tip this Revolve is; `None` if no Body names it.
     pub body: Option<ObjectId>,
     pub profile_sketch: ObjectId,
+    pub regions: Vec<StableEntityId>,
     /// The datum the profile Sketch is drawn on, when it is one.
     pub plane: Option<ObjectId>,
     pub axis: RevolveAxis,
@@ -74,6 +75,7 @@ pub fn revolve_choices(objects: &[ObjectRecord]) -> Vec<RevolveChoice> {
                 name: object.name.clone(),
                 body,
                 profile_sketch: revolve.profile,
+                regions: revolve.regions.clone(),
                 plane: sketch.map(|s| s.plane),
                 axis: revolve.axis,
                 extent: revolve.extent.clone(),

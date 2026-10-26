@@ -205,6 +205,7 @@ fn native_single_vertex_of_the_second_body_moves_in_a_mixed_transaction() {
                 21,
                 Some("Second extrusion"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: second,
                     end_condition: EndCondition::Blind {
                         distance: Expression::constant(10.0)?,

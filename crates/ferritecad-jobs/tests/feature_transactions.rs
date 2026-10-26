@@ -172,6 +172,7 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
             body: ObjectId::new(),
             name: None,
             feature: FeatureAddition::Extrude {
+                regions: Vec::new(),
                 operation: ferritecad_document::SolidOperation::Cut,
                 profile: tool.sketch,
                 end_condition: blind(3.),
@@ -183,6 +184,7 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
             body: b,
             name: None,
             feature: FeatureAddition::Extrude {
+                regions: Vec::new(),
                 operation: ferritecad_document::SolidOperation::Cut,
                 profile: ObjectId::new(),
                 end_condition: blind(3.),
@@ -570,3 +572,108 @@ fn stored_history_integrity_rejects_forks_and_shared_bodies() {
 
 #[path = "../../ferritecad-fixtures/tests/support/model_names.rs"]
 mod model_names;
+
+#[path = "../../ferritecad-fixtures/tests/support/region_edits.rs"]
+mod region_edits;
+
+#[test]
+fn session_regions_restore_names_and_geometry_with_undo_redo() {
+    if !native() {
+        return;
+    }
+    for revolve in [false, true] {
+        let root = tempfile::tempdir().expect("directory");
+        let source = root.path().join("source.fcad");
+        ferritecad_fixtures::write_plate(&source).expect("plate");
+        let d = Document::open_read_only(&source).expect("source");
+        let f = region_edits::fixture(&d, revolve);
+        let mut session = ferritecad_jobs::DocumentSession::open(&source).expect("session");
+        let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+        session
+            .current()
+            .load_scene(
+                &mut k,
+                |_, _| unreachable!("no imports"),
+                &ferritecad_kernel::TessellationParams::default(),
+                &OperationContext::default(),
+            )
+            .expect("initial picture");
+        for changes in [f.changes.clone(), f.resize_and_move(), f.switch()] {
+            let before = verify(session.current().path());
+            let step = session
+                .begin_step()
+                .edit(
+                    changes,
+                    session.current().version(),
+                    &mut k,
+                    |_, _| unreachable!("no imports"),
+                    &OperationContext::default(),
+                )
+                .expect("edit");
+            session.commit_step(step).expect("commit");
+            let after = verify(session.current().path());
+            let volume = region_edits::volume(session.current().path(), f.feature);
+            session
+                .commit_move(session.begin_undo().expect("undo"))
+                .expect("undo commit");
+            assert_eq!(verify(session.current().path()), before);
+            session
+                .commit_move(session.begin_redo().expect("redo"))
+                .expect("redo commit");
+            assert_eq!(verify(session.current().path()), after);
+            assert_eq!(
+                region_edits::volume(session.current().path(), f.feature),
+                volume
+            );
+        }
+        let restored = vec![EditChange::SetRegions {
+            object: f.feature,
+            regions: vec![f.curves[0]],
+        }];
+        // Restore the original outline so the dependent Cut is entirely inside it.
+        let mut changes = restored;
+        changes.push(EditChange::SetCurveGeometry {
+            sketch: f.sketch,
+            curve: f.curves[0],
+            geometry: SketchGeometry::Circle {
+                center: Point2::new(8., 0.).expect("point"),
+                radius: 2.,
+            },
+        });
+        changes.extend(f.dependency.clone());
+        let step = session
+            .begin_step()
+            .edit(
+                changes,
+                session.current().version(),
+                &mut k,
+                |_, _| unreachable!("no imports"),
+                &OperationContext::default(),
+            )
+            .expect("dependent");
+        session.commit_step(step).expect("commit");
+        let before = session.current().version();
+        let error = session
+            .begin_step()
+            .edit(
+                f.switch(),
+                before,
+                &mut k,
+                |_, _| unreachable!("no imports"),
+                &OperationContext::default(),
+            )
+            .expect_err("dependent must fail");
+        assert!(
+            error.to_string().contains(&f.dependent.to_string()),
+            "{error}"
+        );
+        assert_eq!(session.current().version(), before);
+        assert!(
+            Document::open_read_only(session.current().path())
+                .expect("current")
+                .object(f.body)
+                .expect("body")
+                .is_some()
+        );
+    }
+}

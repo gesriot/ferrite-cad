@@ -134,6 +134,7 @@ fn write(path: &Path, placement: Transform, curves: Vec<SketchCurve>, extruded: 
                     2,
                     Some("Extrude"),
                     &ObjectPayload::Extrude(Extrude {
+                        regions: Vec::new(),
                         profile: sketch,
                         end_condition: EndCondition::Blind {
                             distance: Expression::constant(10.0)?,

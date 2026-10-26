@@ -16,6 +16,10 @@ pub(super) enum Change {
         feature_name: Option<String>,
         feature: Feature,
     },
+    SetRegions {
+        object: ObjectId,
+        regions: Vec<StableEntityId>,
+    },
     SetOperation {
         object: ObjectId,
         operation: ferritecad_document::SolidOperation,
@@ -86,6 +90,7 @@ impl Change {
                 feature_name,
                 feature: feature.into_feature()?,
             },
+            Self::SetRegions { object, regions } => EditChange::SetRegions { object, regions },
             Self::SetOperation { object, operation } => {
                 EditChange::SetOperation { object, operation }
             }
@@ -437,12 +442,16 @@ impl End {
 pub(super) enum Feature {
     Extrude {
         profile: ObjectId,
+        #[serde(default)]
+        regions: Vec<StableEntityId>,
         end_condition: End,
         reversed: bool,
         operation: ferritecad_document::SolidOperation,
     },
     Revolve {
         profile: ObjectId,
+        #[serde(default)]
+        regions: Vec<StableEntityId>,
         axis: ferritecad_document::RevolveAxis,
         extent: Turn,
         operation: ferritecad_document::SolidOperation,
@@ -462,22 +471,26 @@ impl Feature {
         Ok(match self {
             Self::Extrude {
                 profile,
+                regions,
                 end_condition,
                 reversed,
                 operation,
             } => F::Extrude {
                 profile,
+                regions,
                 end_condition: end_condition.into_end()?,
                 reversed,
                 operation,
             },
             Self::Revolve {
                 profile,
+                regions,
                 axis,
                 extent,
                 operation,
             } => F::Revolve {
                 profile,
+                regions,
                 axis,
                 extent: extent.into_extent()?,
                 operation,

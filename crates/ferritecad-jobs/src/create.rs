@@ -527,6 +527,7 @@ fn populate_profile(
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,
@@ -607,6 +608,7 @@ fn populate_revolve(
             2,
             Some("Revolve1"),
             &ObjectPayload::Revolve(Revolve {
+                regions: Vec::new(),
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
                 extent: extent.clone(),
@@ -708,6 +710,7 @@ fn populate_circle(
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,
@@ -821,6 +824,7 @@ fn populate_annulus(
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,

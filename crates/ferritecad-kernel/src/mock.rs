@@ -331,7 +331,7 @@ impl GeometryKernel for MockKernel {
         }
 
         let profile = request.profile();
-        if !profile.inner().is_empty() {
+        if profile.regions().len() != 1 || !profile.inner().is_empty() {
             return Err(CadError::unsupported(
                 "the mock kernel does not implement profile holes; refusing to return a solid without them",
             ));

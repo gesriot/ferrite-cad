@@ -359,6 +359,30 @@ fn run<K: GeometryKernel + ?Sized>(
         })?;
 
         state.order.push(*id);
+        let selection = match &object.payload {
+            ObjectPayload::Extrude(e) => Some((e.profile, &e.regions)),
+            ObjectPayload::Revolve(r) => Some((r.profile, &r.regions)),
+            _ => None,
+        };
+        if let Some((sketch_id, selected)) = selection
+            && let Some(ObjectPayload::Sketch(sketch)) = objects.get(&sketch_id).map(|o| &o.payload)
+            && let Some(curve) = selected.iter().find(|id| {
+                !sketch
+                    .curves
+                    .iter()
+                    .any(|c| c.id == **id && !c.construction)
+            })
+        {
+            state.statuses.insert(
+                *id,
+                RebuildStatus::Failed {
+                    error: CadError::input(format!(
+                        "region curve {curve} is missing or is construction geometry"
+                    )),
+                },
+            );
+            continue;
+        }
         let cause = graph
             .dependencies()
             .iter()
@@ -446,11 +470,19 @@ fn run<K: GeometryKernel + ?Sized>(
                         _ => unreachable!("sweep branch"),
                     };
                     let previous = object.payload.previous_feature();
-                    let profile = state.profiles.get(&profile_id).cloned().ok_or_else(|| {
+                    let profile = state.profiles.get(&profile_id).ok_or_else(|| {
                         CadError::input(format!(
                             "feature {id} reads {profile_id}, which produced no profile"
                         ))
                     })?;
+                    let selected = match &object.payload {
+                        ObjectPayload::Extrude(e) => &e.regions,
+                        ObjectPayload::Revolve(r) => &r.regions,
+                        _ => unreachable!("sweep branch"),
+                    };
+                    let profile = profile.select(selected)?;
+                    let multiple_regions = profile.regions().len() > 1;
+                    state.topology.select_profile(*id, &profile)?;
                     let target = previous
                         .map(|p| {
                             state.shapes.get(&p).copied().ok_or_else(|| {
@@ -501,6 +533,12 @@ fn run<K: GeometryKernel + ?Sized>(
                         let tool = request.build(kernel, &scoped)?;
                         state.owned.push(tool.shape);
                         context.check_cancelled()?;
+                        if previous.is_none()
+                            && multiple_regions
+                            && kernel.solid_count(tool.shape)? != 1
+                        {
+                            return Err(CadError::kernel("the sweep is not one valid solid"));
+                        }
                         let tool_names =
                             state
                                 .topology

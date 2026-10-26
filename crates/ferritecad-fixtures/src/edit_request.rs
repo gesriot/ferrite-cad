@@ -25,6 +25,9 @@ pub fn edit_request_json(changes: &[EditChange]) -> Value {
             "kind":"add_body", "object":object, "name":name, "feature_object":feature_object,
             "feature_name":feature_name, "feature":feature_json(feature),
         }),
+        EditChange::SetRegions { object, regions } => json!({
+            "kind":"set_regions", "object":object, "regions":regions,
+        }),
         EditChange::SetOperation { object, operation } => json!({
             "kind":"set_operation", "object":object, "operation":operation,
         }),
@@ -89,20 +92,23 @@ fn feature_json(feature: &ferritecad_document::FeatureAddition) -> Value {
     match feature {
         F::Extrude {
             profile,
+            regions,
             end_condition,
             reversed,
             operation,
         } => json!({
-            "kind":"extrude", "profile":profile, "end_condition":end_json(end_condition),
+            "kind":"extrude", "profile":profile, "regions":regions,
+            "end_condition":end_json(end_condition),
             "reversed":reversed, "operation":operation,
         }),
         F::Revolve {
             profile,
+            regions,
             axis,
             extent,
             operation,
         } => json!({
-            "kind":"revolve", "profile":profile, "axis":axis,
+            "kind":"revolve", "profile":profile, "regions":regions, "axis":axis,
             "extent":turn_json(extent), "operation":operation,
         }),
         F::Fillet { edge, radius_mm } => json!({"kind":"fillet", "edge":edge,

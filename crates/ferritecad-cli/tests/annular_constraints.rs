@@ -248,6 +248,7 @@ fn write_annular_document(
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,
@@ -942,11 +943,9 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     );
     analytic_with_cache(&widened, Some((&cache, ferritecad_eval::CacheOutcome::Hit)));
 
-    // Concentricity is removable, and what decides whether a removal is
-    // allowed is whether what is left is still a ring. Taking it off while the
-    // boundary is still pinned somewhere the bore's stored centre is not
-    // leaves two circles about different centres, so the whole operation is
-    // refused and nothing is published.
+    // Removing concentricity leaves these circles disjoint: the pinned centre
+    // is far from the other circle's stored guess. NewBody still requires one
+    // solid, so the kernel refuses and nothing is published.
     let catalog = inspect(&widened);
     let never = f.root.path().join("never.fcad");
     let present = entries(f.root.path());
@@ -958,11 +957,12 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         OP,
         2,
     );
+    assert_eq!(split["error"]["kind"], "kernel", "{split:?}");
     assert!(
-        matches!(
-            split["error"]["kind"].as_str(),
-            Some("constraint" | "input" | "unsupported")
-        ),
+        split["error"]["message"]
+            .as_str()
+            .expect("diagnostic")
+            .contains("the sweep is not one valid solid"),
         "{split:?}"
     );
     assert_eq!(entries(f.root.path()), present, "a refusal left something");
@@ -1096,7 +1096,7 @@ fn native_stored_order_does_not_decide_the_roles() {
     check_annular_mesh(&mesh(&sized, &stl), [-3.5, 4.25], 6.75, 2.125, 15.0);
 }
 
-/// A solve whose answer is not the ring it was editing publishes nothing.
+/// Intersecting or coincident solved boundaries publish nothing.
 #[test]
 fn native_annular_constraint_refusals_are_atomic() {
     if !native() {
@@ -1109,54 +1109,73 @@ fn native_annular_constraint_refusals_are_atomic() {
     let never = f.root.path().join("never.fcad");
     f.ask(&[], &[radius_add(&boundary, 5.0)]);
     let names = entries(f.root.path());
-    for (add, why) in [
-        (
-            vec![
-                concentric_add(&boundary, &bore),
-                radius_add(&boundary, 2.0),
-                radius_add(&bore, 10.0),
-                center_add(&boundary, -3.5, 4.25),
-            ],
-            "the two radii crossed over each other",
-        ),
-        (
-            vec![
-                concentric_add(&boundary, &bore),
-                radius_add(&boundary, 6.0),
-                radius_add(&bore, 5.9999999),
-                center_add(&boundary, 0.0, 0.0),
-            ],
-            "the wall is thinner than this slice publishes",
-        ),
-        (
-            vec![
-                radius_add(&boundary, 6.75),
-                radius_add(&bore, 2.125),
-                center_add(&boundary, -3.5, 4.25),
-            ],
-            "without concentricity the pinned boundary leaves the bore behind",
-        ),
-        (
-            vec![
-                concentric_add(&boundary, &bore),
-                radius_add(&boundary, 2.0e6),
-                radius_add(&bore, 1.0),
-            ],
-            "a radius past the published bound",
-        ),
+    for add in [
+        vec![
+            concentric_add(&boundary, &bore),
+            radius_add(&boundary, 6.),
+            radius_add(&bore, 6.),
+            center_add(&boundary, 0., 0.),
+        ],
+        vec![
+            radius_add(&boundary, 6.),
+            radius_add(&bore, 4.),
+            center_add(&boundary, 0., 0.),
+            center_add(&bore, 5., 0.),
+        ],
     ] {
         f.ask(&[], &add);
         let refused = reply(f.edit(&never).output().expect("process"), OP, 2);
-        assert!(
-            matches!(
-                refused["error"]["kind"].as_str(),
-                Some("input" | "unsupported" | "constraint")
-            ),
-            "{why}: {refused:?}"
-        );
+        let diagnostic = refused.to_string();
+        assert!(diagnostic.contains(&boundary), "{diagnostic}");
+        assert!(diagnostic.contains(&bore), "{diagnostic}");
     }
     assert_eq!(entries(f.root.path()), names, "a refusal left something");
     assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
+}
+
+#[test]
+fn native_solved_regions_have_no_saved_circle_roles_or_template_radius_bound() {
+    if !native() {
+        return;
+    }
+    let f = Fixture::drawn(false);
+    let boundary = f.boundary();
+    let bore = f.bore();
+    for (index, outer, inner, offset, swap) in [
+        (0, 10., 2., 0., true),
+        (1, 6.75, 2.125, 1., false),
+        (2, 2.0e6, 1., 0., false),
+    ] {
+        let (outer_id, inner_id) = if swap {
+            (bore, boundary)
+        } else {
+            (boundary, bore)
+        };
+        f.ask(
+            &[],
+            &[
+                radius_add(outer_id, outer),
+                radius_add(inner_id, inner),
+                center_add(outer_id, 0., 0.),
+                center_add(inner_id, offset, 0.),
+            ],
+        );
+        let out = f.root.path().join(format!("region-{index}.fcad"));
+        reply(f.edit(&out).output().expect("process"), OP, 0);
+        analytic_matches(
+            &analytic(&out),
+            outer_id.parse().expect("curve"),
+            inner_id.parse().expect("curve"),
+            outer,
+            inner,
+            15.,
+        );
+        assert_eq!(
+            stored(&out).circles,
+            stored(&f.source).circles,
+            "the solver never rewrites the stored approximation"
+        );
+    }
 }
 
 /// A build with a kernel and no solver builds rings and refuses to constrain
@@ -1278,10 +1297,8 @@ fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
             );
         }
 
-        // Roles are the saved ones: the same two diameters given to the wrong
-        // circles cross the pair over, and that publishes nothing.
-        let never = f.root.path().join("never.fcad");
-        let names = entries(f.root.path());
+        // Swapping solved sizes changes containment, not either curve's identity.
+        let crossed = f.root.path().join("crossed.fcad");
         f.ask(
             &[],
             &[
@@ -1291,15 +1308,10 @@ fn native_diameter_on_each_circle_follows_the_uuid_not_the_order() {
                 center_add(&boundary, -3.5, 4.25),
             ],
         );
-        let refused = reply(f.edit(&never).output().expect("process"), OP, 2);
-        assert!(
-            matches!(
-                refused["error"]["kind"].as_str(),
-                Some("input" | "unsupported" | "constraint")
-            ),
-            "{refused:?}"
-        );
-        assert_eq!(entries(f.root.path()), names, "a refusal left something");
+        reply(f.edit(&crossed).output().expect("process"), OP, 0);
+        analytic_matches(&analytic(&crossed), bore_id, boundary_id, 6.75, 2.125, 15.);
+        let never = f.root.path().join("never.fcad");
+        let names = entries(f.root.path());
 
         // One Radius slot per circle, whichever unit filled it; replacing the
         // bore's keeps the boundary's radius, the pair and the pin as they were.

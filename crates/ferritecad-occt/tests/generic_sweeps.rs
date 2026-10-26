@@ -55,6 +55,7 @@ fn extrude(
     put(
         d,
         ObjectPayload::Extrude(Extrude {
+            regions: Vec::new(),
             profile,
             previous,
             operation,
@@ -234,6 +235,7 @@ fn revolve(
     put(
         d,
         ObjectPayload::Revolve(Revolve {
+            regions: Vec::new(),
             profile,
             previous,
             operation,
@@ -926,6 +928,7 @@ fn through_all_refuses_new_bodies_and_additive_bosses_at_the_write_boundary() {
     let mut d = Document::create(root.path().join("invalid.fcad")).expect("document");
     for operation in [SolidOperation::NewBody, SolidOperation::Add] {
         let payload = ObjectPayload::Extrude(Extrude {
+            regions: Vec::new(),
             profile: ObjectId::new(),
             previous: (operation == SolidOperation::Add).then(ObjectId::new),
             operation,

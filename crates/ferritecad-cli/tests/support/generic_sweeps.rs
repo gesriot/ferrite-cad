@@ -137,6 +137,7 @@ fn generic_sweeps_edit_cli_and_session_history_share_one_path() {
         let feature = ObjectId::new();
         let addition = match kind {
             "revolve_cut" | "new_revolve" => FeatureAddition::Revolve {
+                regions: Vec::new(),
                 profile,
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
@@ -147,6 +148,7 @@ fn generic_sweeps_edit_cli_and_session_history_share_one_path() {
                 },
             },
             _ => FeatureAddition::Extrude {
+                regions: Vec::new(),
                 profile,
                 end_condition: blind(14.),
                 reversed: false,
@@ -271,6 +273,7 @@ fn changing_an_add_to_cut_refuses_the_dependent_empty_intersection_atomically() 
             body,
             name: Some("Sweep".into()),
             feature: FeatureAddition::Extrude {
+                regions: Vec::new(),
                 profile,
                 operation,
                 reversed: false,

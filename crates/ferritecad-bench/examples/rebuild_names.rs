@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rows = Vec::new();
     for case in [
         "plate",
+        "plate_regions",
         "plate_16_cuts",
         "10_bodies",
         "50_bodies",

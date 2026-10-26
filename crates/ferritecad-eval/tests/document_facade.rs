@@ -104,6 +104,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: plate.sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,

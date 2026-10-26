@@ -2728,6 +2728,7 @@ mod tests {
                         ordinal + 2,
                         None,
                         &ObjectPayload::Extrude(Extrude {
+                            regions: Vec::new(),
                             profile: sketch,
                             end_condition: EndCondition::Blind {
                                 distance: Expression::constant(2.0)?,
@@ -5061,6 +5062,7 @@ mod tests {
                     2,
                     None,
                     &ObjectPayload::Extrude(Extrude {
+                        regions: Vec::new(),
                         profile: sketch,
                         end_condition: EndCondition::Blind {
                             distance: Expression::constant(2.0)?,

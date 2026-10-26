@@ -90,6 +90,7 @@ pub(crate) fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64) -> Ob
             2,
             Some("Revolve1"),
             &ObjectPayload::Revolve(Revolve {
+                regions: Vec::new(),
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::Partial {

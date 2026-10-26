@@ -206,8 +206,11 @@ FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
 /* Destroys a session and every shape it still holds. Null is accepted. */
 void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
 
+FcOcctStatus fc_occt_solid_count(FcOcctSession *session, uint64_t shape,
+    size_t *count, FcOcctError *error) FC_OCCT_NOEXCEPT;
+
 /*
- * Sweeps a closed planar region into a solid.
+ * Sweeps disjoint planar regions into a shape.
  *
  * `base_offset` and `top_offset` are distances along the plane normal, so a
  * blind extrusion is (0, d) and a symmetric one is (-d, +d).
@@ -218,14 +221,9 @@ void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
  * holds `loop_count` lengths that partition it: loop 0 owns the first
  * `loop_segment_counts[0]` entries, loop 1 the next, and so on. The lengths
  * must sum to exactly `segment_count`, and a sum that does not refuses the
- * call rather than sweeping part of a drawing. Loop 0 bounds the region and
- * every later loop is a hole in it; which loop is which is the caller's
- * decision, read from its geometry, and is not re-derived here.
- *
- * The boundaries are a separate argument because `segment_count` alone cannot
- * express them, and no existing argument is reinterpreted to carry them. A
- * one-loop caller passes `loop_count` 1 and a single length equal to
- * `segment_count`, which is exactly the profile this entry point built before.
+ * call rather than sweeping part of a drawing. `region_loop_counts` partitions
+ * these loops into regions. Each region starts with its outer loop, followed
+ * by its holes. The caller establishes containment and disjointness.
  *
  * Each loop on its own is either two or more segments meeting at corners, or
  * exactly one FC_OCCT_SEGMENT_CIRCLE, which closes on itself. The circle form
@@ -258,7 +256,8 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count,
                              const size_t *loop_segment_counts,
-                             size_t loop_count, double base_offset,
+                             size_t loop_count, const size_t *region_loop_counts,
+                             size_t region_count, double base_offset,
                              double top_offset, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) FC_OCCT_NOEXCEPT;
@@ -268,6 +267,7 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
 FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
     const FcOcctSegment *segments, size_t segment_count,
     const size_t *loop_segment_counts, size_t loop_count,
+    const size_t *region_loop_counts, size_t region_count,
     const double *axis_origin, const double *axis_direction, double angle_radians,
     FcOcctCancelFn cancel, void *cancel_context, uint64_t *out_shape,
     FcOcctError *out_error) FC_OCCT_NOEXCEPT;

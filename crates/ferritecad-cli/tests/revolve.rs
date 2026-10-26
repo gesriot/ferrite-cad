@@ -331,6 +331,7 @@ fn write_revolve_document(path: &Path, points: &[[f64; 2]]) -> (ObjectId, Vec<St
             2,
             Some("Revolve1"),
             &ObjectPayload::Revolve(Revolve {
+                regions: Vec::new(),
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
